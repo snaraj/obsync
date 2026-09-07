@@ -107,9 +107,9 @@ this repository.
 
 ## Reference deployment
 
-Static local PersistentVolumes under `/mnt/local-pie-ssd/obsync/{blobs,
+Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/{blobs,
 journal}` on class `local-pie-ssd`, `Retain`, `WaitForFirstConsumer`,
 `ReadWriteOnce`, node-affine to the single node, claimed by
-`obsync-blobs` and `obsync-journal` in namespace `obsync`. Growth to 500
+`obsidian-blobs` and `obsidian-journal` in namespace `obsidian`. Growth to 500
 GiB is a PV capacity edit and a claim resize. The platform's storage
 exposure policy already admits this class, provisioner, and root.

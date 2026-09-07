@@ -376,12 +376,12 @@ Environment only, so containers and charts need no config file:
 
 ## 10. Reference deployment (pie5)
 
-Namespace `obsync`; one Deployment (single replica, `Recreate`), one
+Namespace `obsidian` (owner ruling 2026-09-07); one Deployment (single replica, `Recreate`), one
 Service on 8080, one default-deny NetworkPolicy admitting ingress only from
 the tunnel connector; two static local PersistentVolumes on `local-pie-ssd`
 (blobs 250 GiB, journal 4 GiB), growable to 500 GiB; `OBSYNC_SERVER_KEY`
 from a SOPS-managed Secret; `OBSYNC_EDGE=cloudflare`; a third per-app
-Cloudflare Tunnel for one hostname with Cloudflare Access in front
+Cloudflare Tunnel (`obsidian`) for one hostname (`obsidian.naranjo.online`) with Cloudflare Access in front
 (identity policy for the dashboard, service-token policy for `/v1/*`).
 `docs/platform-onboarding.md` lists the platform-repository changes.
 
