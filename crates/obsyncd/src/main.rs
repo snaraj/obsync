@@ -1,6 +1,8 @@
-//! obsyncd entry point. Subcommands: serve, check, export, bench (docs/architecture.md).
+//! obsyncd entry point. Subcommands: serve, check, export, version
+//! (`docs/architecture.md`).
 #![forbid(unsafe_code)]
 
 fn main() {
-    println!("obsyncd {}", env!("CARGO_PKG_VERSION"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    std::process::exit(obsyncd::cli::run(&args));
 }
