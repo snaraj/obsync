@@ -131,16 +131,22 @@ vectors. The server performs no AES and no asymmetric operation in v1.
 | --- | --- | --- | --- |
 | Vault root key `VRK` | 32 B random | Every paired device; recovery phrase | Created by the first device |
 | Domain key `K_d` | 32 B | Devices only; never sent to the server | `HKDF(VRK, salt="obsync/v1/domain", info=domain_id)` |
-| Manifest key `K_m` | 32 B | Devices | `HKDF(VRK, salt="obsync/v1/manifest", info="")` |
+| Manifest key `K_m,d` | 32 B | Devices holding `K_d` | `HKDF(K_d, salt="obsync/v1/manifest", info=domain_id)` |
+| Domain-map key `K_map` | 32 B | Devices holding `VRK`; owner only | `HKDF(VRK, salt="obsync/v1/domainmap", info="")` |
 | Chunk key `K_c` | 32 B | Transient on the device | `HKDF(K_d, salt="obsync/v1/chunk", info=cid)` |
 | Device secret | 32 B | The device; wrapped at rest on the server | Issued by the server at pairing |
 | Server key | 32 B | `OBSYNC_SERVER_KEY` or generated once | Random |
 
-A **domain** is a set of paths that share `K_d`. The default vault has one
-domain covering everything. The user may declare a folder as its own domain
-(random `domain_id`, recorded in the encrypted vault metadata); that is the
-unit key derivation scopes to. Renaming the folder updates metadata, not
-keys. v0.1 uses exactly one domain (section 5).
+A **domain** is a set of paths that share `K_d`, and it is the unit every
+content key derives from: the chunk keys of its files and, since the manifest
+key is derived from `K_d` rather than from `VRK`, its file names too. One
+domain therefore hands over exactly one set of files and nothing about any
+other. The default vault has one domain covering everything, declared as the
+empty path prefix; a folder or a single file may be its own domain (random
+`domain_id`). Which paths belong to which domain is owner-only metadata, and
+5.1 states the format of that map, of the keys above, and of everything the
+phase-2 grant will need. v0.1 uses exactly one domain and grants it to
+nobody (section 5).
 
 ### 3.2 Chunk encryption (deterministic, deduplicating, blind)
 
@@ -176,8 +182,8 @@ imposes and bounds memory on mobile.
 ### 3.4 File manifests and versions
 
 A file has a random 16-byte `file_id` chosen by the device that created it.
-Each version carries a manifest, JSON encrypted under `K_m` with a random
-12-byte nonce:
+Each version carries a manifest, JSON encrypted under `K_m,d` — the manifest
+key of the domain the file belongs to (5.1) — with a random 12-byte nonce:
 
 ```json
 {"v":1,"path":"Notes/Ideas.md","size":1234,"mtime":1757200000000,
@@ -320,13 +326,116 @@ data read-only.
 1. A recipient cannot read unshared content or filenames, cannot enumerate
    unrelated files, cannot write through a read-only grant, cannot acquire
    owner privileges.
-2. The wire format for separate sharing scopes is defined and reviewed
-   before any recipient identity exists: a path-to-domain map encrypted
-   under an owner-only key, a per-domain manifest key, single-file domains,
-   move semantics between domains, and revocation as rotation, which cannot
-   recall copies already taken.
+2. The wire format for separate sharing scopes is defined, implemented and
+   reviewed before any recipient identity exists: a path-to-domain map
+   encrypted under an owner-only key, a per-domain manifest key, single-file
+   domains, move semantics between domains, and revocation as rotation,
+   which cannot recall copies already taken.
 
-Until both hold, sharing is a design note and not a feature.
+The second holds as of v0.1.0: 5.1 is that format, and it ships in the
+genesis release. The first does not, so sharing is a design note and not a
+feature: nothing invites anybody, and the acceptance criteria above are what
+that changes on.
+
+### 5.1 Sharing scopes: the format (decided 2026-09-07)
+
+**The runtime stays owner-only; the format does not wait.** v0.1.0 is the
+genesis release, so every vault that will ever exist is written by it or by
+something later. A format change after the first vault means re-encrypting
+every manifest on every device; a format change now costs nothing. What
+follows is implemented and tested in v0.1. Only the grant is missing, and
+until the acceptance criteria above pass, no code path creates one.
+
+**What was wrong.** Until this section the manifest key was vault-wide,
+`HKDF(VRK, "obsync/v1/manifest", "")`. That left phase 2 no move worth
+making. A recipient handed one domain key could decrypt that domain's chunks
+but not the manifests that name them, so the grant was useless; a recipient
+handed the manifest key could read the name, size, path and chunk list of
+every file in the vault, so the grant was catastrophic. With one vault-wide
+key there is no third option, and the fix is a derivation, not a policy.
+
+**1. A domain is a set of paths, and one file can be a domain.** A domain
+owns exact paths and path prefixes; where two entries match a path, the
+longest match wins. `Notes/Trip.md` may therefore be its own domain while
+`Notes/` is another, so sharing one note never hands over its siblings —
+the property that makes single-file sharing safe rather than approximate.
+The default domain is the one holding the empty prefix, exactly one exists,
+and it catches every path no other entry claims.
+
+**2. The manifest key is per domain.** `K_m,d = HKDF(K_d,
+salt="obsync/v1/manifest", info=domain_id)`. The vault-wide manifest key is
+gone. A recipient of `K_d` derives `K_m,d` and reads that domain's names and
+its chunks, and can derive neither for a domain it was not given, because
+`K_d` is `HKDF(VRK, "obsync/v1/domain", domain_id)` and `VRK` never leaves
+the owner's devices. The manifest AAD is unchanged (`file_id ||
+content_version_id`), so a manifest still cannot be replayed onto another
+file, another point in the version graph, or another chunk list.
+
+**3. The path-to-domain map is owner-only, and it is synced.** Devices must
+agree about which key a path belongs under, so the map is data, not local
+configuration. It is one object encrypted under `K_map = HKDF(VRK,
+salt="obsync/v1/domainmap", info="")`, which no recipient ever holds, and it
+travels through the ordinary file mechanism: one reserved file id, ordinary
+versions, the ciphertext in the manifest slot the server already cannot
+read. Both reserved identifiers come from one `HMAC(K_map,
+"obsync/v1/domain-map")`: the first 16 bytes are the file id, the last 16
+are the domain id the file records itself under. Neither is guessable
+without `VRK`, and to the server the object is one more opaque file.
+
+The plaintext is
+`{"v":1,"domains":[{"id":"<32 hex>","paths":["<prefix>",…]},…]}`, bounded by
+the 1 MiB manifest ceiling. Its nonce is derived, not random —
+`HKDF(K_map, "obsync/v1/nonce", SHA-256(aad || plaintext))[0..12]` — so two
+devices that write the same map at the same moment produce the same bytes
+and the same version id and collide harmlessly, exactly as two devices
+producing the same chunk do (3.2). The key and nonce repeat only for a
+message that is identical in both its plaintext and its AAD.
+
+The map on the server is the authority. A device reads it at every start,
+before it syncs anything: if it is absent the device writes one (v0.1's map
+is a single default domain with the empty prefix), if it is present it
+replaces whatever the device remembered, and if it cannot be read or has
+more than one head the device refuses to sync and says so. Guessing which
+map is current would mean writing a file under the wrong key, so this
+refusal is fail-closed by construction (AGENTS.md requirement 4).
+
+**4. File records carry `domain_id` in cleartext.** A version post names the
+domain of its file, and the server records it on the file. This is what
+phase 2 authorizes against: a change feed filtered per domain, and chunk
+access allowed per domain, are both server-side decisions that need a
+server-visible label. The id is random and means nothing to anyone without
+the map, so it leaks no path, and it is the only new clear field. A file's
+domain is set by its first version and is immutable: a later version naming
+a different domain is refused (`409 domain_mismatch`), so a grant cannot be
+widened, narrowed, or redirected under a recipient by a version post. The
+server-side consequence is visible today, before any recipient exists:
+`obsyncd export --domain` now exports that domain's files instead of every
+file the store holds.
+
+**5. Moving a path across a domain boundary is a delete and a create.**
+Content encrypted under domain A cannot become content under domain B by
+relabelling: `cid = HMAC(K_d, plaintext)` and the chunk key derive from
+`K_d`, so the bytes must be re-chunked and re-encrypted under `K_B`, which
+yields new cids, new sids and a new manifest under `K_m,B`. Because a file's
+domain is immutable (item 4), the move is a tombstone for the old file id in
+domain A and a new file id in domain B. The old chunks age out through
+retention and garbage collection. Anyone who held domain A keeps every copy
+they already downloaded; a move removes future access, never past access.
+
+**6. Revocation is rotation, and rotation is a new domain.** To revoke a
+recipient the owner points the same paths at a NEW `domain_id` in the map.
+`K_d` for the new id is unrelated to the old one, files re-upload lazily
+under it as they are next written, and the old domain's data ages out. The
+recipient keeps what it already has: nothing in this design, or in any
+end-to-end encrypted design, recalls a copy on somebody else's disk. That
+limit is stated here so no interface ever implies otherwise.
+
+**7. What phase 2 must prove.** A recipient cannot read unshared content or
+filenames, cannot enumerate unrelated files, cannot write through a
+read-only grant, cannot acquire owner privileges; and inviting anyone is not
+presented as supported until those pass. The format above is the reason the
+first two are achievable at all — the third and the fourth are the server's
+authorization work, and none of it exists yet.
 
 ## 6. Sync engine
 
@@ -465,7 +574,7 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_MAX_CONNECTIONS` | `256` | Concurrent connections (one thread each; long-polls are cheap) |
 | `OBSYNC_LOG` | `info` | `error`, `info`, `debug` |
 
-## 10. Reference deployment (pie5)
+## 10. Reference deployment (the reference node)
 
 **Private and owner-only** (owner ruling 2026-09-07). A single-node cluster
 reached over private connectivity, LAN or VPN: no public hostname, no public
