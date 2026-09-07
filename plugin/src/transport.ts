@@ -12,7 +12,10 @@
  * 4). The only unsigned calls are the three the protocol defines as
  * unauthenticated: `POST /v1/setup`, `POST /v1/pairing/{id}/claim` (the
  * device has no credential yet; the enroll token in the body is the
- * authenticator) and `GET /v1/plugin/*` (the bundle is public source).
+ * authenticator) and `GET /v1/plugin/manifest`, from which this client reads
+ * ONE field, the version. Code served by the server is never fetched: an
+ * unauthenticated endpoint can be replaced by whoever terminates TLS, so the
+ * trusted source of plugin code is the GitHub Release, not this transport.
  *
  * BACKOFF. Network errors and 5xx retry with exponential backoff and
  * jitter, 1 s doubling to a 60 s ceiling, half fixed and half random so a
@@ -143,10 +146,9 @@ export interface PairingEnvelope {
   nonce: string;
 }
 
+/** Only the field the plugin reads; the served hashes are the Install page's. */
 export interface PluginManifest {
   version: string;
-  bundle_sha256: string;
-  styles_sha256: string;
 }
 
 /** The long-poll ceiling, chosen to stay inside a 100 s edge idle limit. */
@@ -422,16 +424,15 @@ export class Transport {
     return this.json("POST", "/v1/dashboard/login-link", { auth: "device", json: {} });
   }
 
+  /**
+   * The server's plugin version, and nothing else. There is deliberately no
+   * client for `GET /v1/plugin/{bundle,styles}`: the plugin never fetches
+   * code it would run (`docs/architecture.md` 6.3). Those endpoints exist for
+   * the dashboard's Install page, which shows hashes to compare against the
+   * GitHub Release.
+   */
   pluginManifest(): Promise<PluginManifest> {
     return this.json("GET", "/v1/plugin/manifest", { auth: "none" });
-  }
-
-  async pluginBundle(): Promise<string> {
-    return (await this.call("GET", "/v1/plugin/bundle", { auth: "none" })).text;
-  }
-
-  async pluginStyles(): Promise<string> {
-    return (await this.call("GET", "/v1/plugin/styles", { auth: "none" })).text;
   }
 }
 

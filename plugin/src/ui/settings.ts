@@ -38,9 +38,21 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this.server(containerEl);
+    this.version(containerEl);
     this.device(containerEl);
     this.devices(containerEl);
     this.vaultKey(containerEl);
+  }
+
+  /**
+   * What to do when the server runs a newer plugin. obsync never installs
+   * code the server serves (`docs/architecture.md` 6.3), so this line is the
+   * whole update path: it names both versions, the Release asset and its URL.
+   */
+  private version(containerEl: HTMLElement): void {
+    const line = this.plugin.updateLine();
+    if (line === null) return;
+    new Setting(containerEl).setName("Update available").setDesc(line);
   }
 
   private server(containerEl: HTMLElement): void {

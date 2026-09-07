@@ -118,8 +118,6 @@ test("only the three unauthenticated endpoints go unsigned", async () => {
     { status: 201, text: JSON.stringify({ account_id: "a", device_id: DEVICE_ID, device_secret: DEVICE_SECRET_HEX }) },
     { status: 201, text: JSON.stringify({ device_id: DEVICE_ID, device_secret: DEVICE_SECRET_HEX }) },
     { status: 200, text: JSON.stringify({ version: "0.1.0", bundle_sha256: "", styles_sha256: "" }) },
-    { status: 200, text: "bundle" },
-    { status: 200, text: "css" },
     { status: 200, text: JSON.stringify({ devices: [] }) },
   ]);
   const enrolled = await transport.setup("token", "account", {
@@ -136,15 +134,20 @@ test("only the three unauthenticated endpoints go unsigned", async () => {
   });
   await transport.pairingClaim("00".repeat(16), "11".repeat(32), { name: "n", platform: "linux", app_version: "0.1.0" });
   await transport.pluginManifest();
-  await transport.pluginBundle();
-  await transport.pluginStyles();
   await transport.devices();
 
-  for (const request of sent.slice(0, 5)) {
+  for (const request of sent.slice(0, 3)) {
     assert.equal("X-Obsync-Sig" in request.headers, false, request.url);
     assert.equal("X-Obsync-Device" in request.headers, false, request.url);
   }
-  assert.equal("X-Obsync-Sig" in sent[5].headers, true, "/v1/devices is signed");
+  assert.equal("X-Obsync-Sig" in sent[3].headers, true, "/v1/devices is signed");
+  assert.deepEqual(
+    sent.map((request) => request.url.replace(SERVER, "")),
+    ["/v1/setup", `/v1/pairing/${"00".repeat(16)}/claim`, "/v1/plugin/manifest", "/v1/devices"],
+    "the manifest is the only plugin endpoint this client has: code is never fetched",
+  );
+  assert.equal(typeof transport.pluginBundle, "undefined", "there is no bundle client to call");
+  assert.equal(typeof transport.pluginStyles, "undefined", "there is no stylesheet client to call");
 });
 
 test("an unpaired device cannot make a signed call at all", async () => {

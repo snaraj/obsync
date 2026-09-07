@@ -43,12 +43,15 @@ class Plugin extends Component {}
 class Modal { constructor(app) { this.app = app; } }
 class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
 class Setting { constructor(el) { this.el = el; } }
-class Notice { constructor(message) { this.message = message; } hide() {} }
+// Every Notice the plugin raises is recorded, so a test can read what the
+// user was actually told instead of asserting on a call it cannot see.
+const notices = [];
+class Notice { constructor(message) { this.message = message; notices.push(message); } hide() {} }
 class TFile {}
 class TFolder {}
 class TAbstractFile {}
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, notices,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,

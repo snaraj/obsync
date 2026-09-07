@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const plugin = join(dirname(fileURLToPath(import.meta.url)), "..");
+const RELEASE_URL_PREFIX = "https://github.com/snaraj/obsync/releases/tag/v";
 
 function build() {
   return execFileSync(process.execPath, ["build.mjs"], { cwd: plugin, encoding: "utf8" });
@@ -81,9 +82,24 @@ test("the bundle carries the whole plugin and nothing from the build machine", (
     /(?:^|[\s"`(=,;:])\/(?:Users|home|root|private|var|tmp|src|opt|mnt|data)\/[A-Za-z0-9._/-]+/g,
   );
   assert.deepEqual(leaked, null, `an absolute build path leaked into the artifact: ${leaked}`);
+  // The ONE external URL the bundle may carry is the project's own GitHub
+  // Release, and it is displayed, never fetched: v0.1 has no self-update
+  // (docs/architecture.md 6.3), so the only host this code contacts is the
+  // server the user configured. Every other URL still fails here.
   for (const url of bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? []) {
-    assert.ok(url === "https://" || url.includes("example."), `the bundle reaches for ${url}`);
+    const allowed =
+      url === "https://" || url.includes("example.") || url.startsWith(RELEASE_URL_PREFIX);
+    assert.ok(allowed, `the bundle reaches for ${url}`);
   }
+});
+
+test("the shipped bundle has no path that installs code served by the server", () => {
+  build();
+  const bundle = readFileSync(join(plugin, "dist", "main.js"), "utf8");
+  for (const marker of ["/v1/plugin/bundle", "/v1/plugin/styles", "installUpdate", "configDir"]) {
+    assert.equal(bundle.includes(marker), false, `the bundle still carries ${marker}`);
+  }
+  assert.ok(bundle.includes(RELEASE_URL_PREFIX), "it points at the Release instead");
 });
 
 test("no ingress, tunnel or access provider is named in the shipped code", () => {

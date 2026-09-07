@@ -1,6 +1,6 @@
 /**
  * The obsync Obsidian plugin: lifecycle, commands, the vault host, and the
- * self-update check.
+ * update notice.
  *
  * This is the ONLY module that imports Obsidian's runtime API (`ui/` aside),
  * which is what lets the crypto, chunker, transport and sync modules be
@@ -22,10 +22,15 @@
  * A device with no Node filesystem (mobile, or a desktop adapter that does
  * not expose a base path) takes the adapter path automatically; there is no
  * setting for it.
+ *
+ * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
+ * The plugin compares versions and tells the user; the trusted source of
+ * plugin code is the GitHub Release. Nothing here writes into
+ * `.obsidian/plugins/`.
  */
 
 import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
-import { Bytes, hex, randomBytes, sha256, unhex, utf8 } from "./crypto";
+import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource, bytesSource } from "./chunker";
 import { State } from "./state";
 import { DeviceRecord, Transport } from "./transport";
@@ -61,6 +66,24 @@ function nodeFs(): NodeFs | null {
   } catch {
     return null;
   }
+}
+
+/** The GitHub Release that carries a version's plugin bundle and its hashes. */
+export function releaseUrl(version: string): string {
+  return `https://github.com/snaraj/obsync/releases/tag/v${version}`;
+}
+
+/**
+ * The one sentence the notice and the settings tab both show when the server
+ * runs a newer plugin than this device. It names the file to install and
+ * where it comes from, because obsync will not install it for the user: a
+ * server that could serve the code could serve any code.
+ */
+export function updateMessage(server: string, local: string): string {
+  return (
+    `Server runs ${server}, you have ${local}; update from the GitHub Release ` +
+    `(obsync-plugin-v${server}.zip) and reinstall: ${releaseUrl(server)}`
+  );
 }
 
 /** `1.2.3` is newer than `1.2.2`; anything unparseable is not newer. */
@@ -239,6 +262,8 @@ export default class ObsyncPlugin extends Plugin {
   transport!: Transport;
   host!: ObsidianHost;
   engine: SyncEngine | null = null;
+  /** The newer version the server reports, for the settings tab to name. */
+  updateAvailable: string | null = null;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
 
@@ -513,60 +538,36 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
-  // --- self-update -------------------------------------------------------
+  // --- update notice -----------------------------------------------------
 
   /**
-   * The server ships the plugin bundle built from its own commit. Compare
-   * versions on start, and offer a one-tap update whose bundle is checked
-   * against the SHA-256 the server's manifest names before a byte is
-   * written. A mismatch refuses; it never installs "probably right" code.
+   * v0.1 HAS NO SELF-UPDATE, by decision (`docs/architecture.md` 6.3). The
+   * manifest, the bundle and the stylesheet all come from the same
+   * unauthenticated endpoint, so a hostile server or TLS terminator could
+   * replace the bytes AND the hash that is supposed to check them; installing
+   * that would hand it the vault key at the next reload. This device
+   * therefore reads ONE unauthenticated field — the version — and tells the
+   * user where the trusted copy is. It never fetches the bundle, and nothing
+   * in this plugin writes into `.obsidian/plugins/`. Signed updates against
+   * a key pinned in the installed plugin are a v0.2 item.
    */
   async checkForUpdate(): Promise<void> {
     if (this.state.data.serverUrl === "") return;
     try {
       const remote = await this.transport.pluginManifest();
       if (!isNewer(remote.version, this.manifest.version)) return;
-      const notice = new Notice(
-        `obsync ${remote.version} is available on your server (this device runs ${this.manifest.version}). Tap to update.`,
-        15000,
-      );
-      notice.noticeEl.addEventListener("click", () => {
-        notice.hide();
-        void this.installUpdate();
-      });
+      this.updateAvailable = remote.version;
+      this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
+      new Notice(`obsync: ${updateMessage(remote.version, this.manifest.version)}`, 15000);
     } catch (error) {
       this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  async installUpdate(): Promise<void> {
-    try {
-      const remote = await this.transport.pluginManifest();
-      const bundle = await this.transport.pluginBundle();
-      const styles = await this.transport.pluginStyles();
-      if (hex(await sha256(utf8(bundle))) !== remote.bundle_sha256) {
-        throw new Error("the bundle does not match the hash the server published");
-      }
-      if (hex(await sha256(utf8(styles))) !== remote.styles_sha256) {
-        throw new Error("the stylesheet does not match the hash the server published");
-      }
-      const directory = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-      const adapter = this.app.vault.adapter;
-      if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
-      const manifest: Record<string, unknown> = { ...remote };
-      delete manifest["bundle_sha256"];
-      delete manifest["styles_sha256"];
-      await adapter.write(`${directory}/main.js`, bundle);
-      await adapter.write(`${directory}/styles.css`, styles);
-      await adapter.write(`${directory}/manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
-      this.log(`update decision=installed version=${remote.version} bytes=${bundle.length}`);
-      new Notice(
-        `obsync ${remote.version} is installed. Reload Obsidian, or disable and re-enable obsync, to run it.`,
-        15000,
-      );
-    } catch (error) {
-      new Notice(`obsync: update refused — ${error instanceof Error ? error.message : String(error)}`, 10000);
-    }
+  /** The settings tab's update line, or `null` when this device is current. */
+  updateLine(): string | null {
+    const server = this.updateAvailable;
+    return server === null ? null : updateMessage(server, this.manifest.version);
   }
 
   // --- status ------------------------------------------------------------
