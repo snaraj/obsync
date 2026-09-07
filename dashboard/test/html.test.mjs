@@ -18,6 +18,7 @@ const HTML = read('index.html');
 const APP_JS = read('app.js');
 const LIB_JS = read('lib.js');
 const CSS = read('app.css');
+const MOCK = read('dev/mock.mjs');
 
 // One tag at a time, tolerating ">" inside a quoted attribute value.
 const TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
@@ -212,6 +213,41 @@ test('the devices table, its skeleton, and its history row agree on 11 columns',
   assert.ok(APP_JS.includes('skeleton(body, 11, 3)'));
 });
 
+// Every endpoint app.js calls, as the exact literal the mock must contain to
+// route it: a table key for a GET, the path itself for a fixed mutation, and
+// the anchored tail of the matching regex for a mutation with an id in it.
+function mockRouteMarkers(appJs) {
+  const markers = [];
+  // Bounded to one line, or a function declaration would swallow the next
+  // template literal in the file and report a route nobody calls.
+  for (const m of appJs.matchAll(/\b(get|request|runJob)\([^`\n]*`\$\{ADMIN\}([^`]+)`/g)) {
+    const path = m[2].split('?')[0];
+    if (m[1] === 'get') markers.push(`'GET ${path}'`);
+    else if (path.includes('${')) markers.push(`${path.slice(path.lastIndexOf('/'))}$`);
+    else markers.push(`'${path}'`);
+  }
+  for (const m of appJs.matchAll(/get\('(\/v1\/[a-z/]+)'\)/g)) markers.push(`'${m[1]}'`);
+  return [...new Set(markers)];
+}
+
+const missingMockRoutes = (appJs, mockJs) =>
+  mockRouteMarkers(appJs).filter((marker) => !mockJs.includes(marker));
+
+// The mock is only useful while it answers what the page actually asks for.
+test('dev/mock.mjs answers every endpoint app.js calls', () => {
+  const markers = mockRouteMarkers(APP_JS);
+  assert.ok(markers.length >= 10, `expected the whole admin surface, found ${markers.join(', ')}`);
+  assert.deepEqual(missingMockRoutes(APP_JS, MOCK), []);
+});
+
+test('dev/mock.mjs sends the CSP the dashboard is written against', () => {
+  assert.ok(MOCK.includes("default-src 'self'; script-src 'self'; style-src 'self'"));
+  assert.ok(MOCK.includes("connect-src 'self'; frame-ancestors 'none'"));
+  // and refuses a mutation whose double-submit header does not match.
+  assert.ok(MOCK.includes("req.headers['x-obsync-csrf']"));
+  assert.ok(MOCK.includes('csrf_mismatch'));
+});
+
 /* ---- the checks themselves ---------------------------------------------- */
 
 test('the checks reject a hostile document', () => {
@@ -241,6 +277,12 @@ test('the checks reject a hostile document', () => {
   assert.equal(forbiddenPatterns("el.style.width = '1px';", FORBIDDEN_JS).length, 1);
   assert.equal(forbiddenPatterns('fetch("https://evil.example")', FORBIDDEN_JS).length, 1);
   assert.equal(forbiddenPatterns('node.textContent = x;', FORBIDDEN_JS).length, 0);
+
+  assert.deepEqual(mockRouteMarkers("get(`${ADMIN}/nope`)"), ["'GET /nope'"]);
+  assert.deepEqual(mockRouteMarkers("function runJob(a) {\n}\nget(`${ADMIN}/x`)"), ["'GET /x'"]);
+  assert.deepEqual(mockRouteMarkers("request('POST', `${ADMIN}/x/${id}/burn`)"), ['/burn$']);
+  assert.deepEqual(missingMockRoutes("get(`${ADMIN}/nope`)", '// an empty mock'), ["'GET /nope'"]);
+  assert.deepEqual(missingMockRoutes("get(`${ADMIN}/nope`)", "'GET /nope': () => ({})"), []);
 });
 
 test('the tag scanner survives quoted angle brackets and entities', () => {
