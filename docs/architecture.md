@@ -104,18 +104,33 @@ imposes and bounds memory on mobile.
 
 A file has a random 16-byte `file_id` chosen by the device that created it.
 Each version carries a manifest, JSON encrypted under `K_m` with a random
-12-byte nonce and `aad = file_id || version_id`:
+12-byte nonce:
 
 ```json
 {"v":1,"path":"Notes/Ideas.md","size":1234,"mtime":1757200000000,
- "domain":"<domain_id>","chunks":[{"sid":"<hex>","len":1234}],
- "sha256":"<hex of plaintext>","deleted":false}
+ "domain":"<domain_id>",
+ "chunks":[{"cid":"<hex keyed content id>","sid":"<hex>","len":1234}],
+ "sha256":"<hex of plaintext, single-chunk files only>","deleted":false}
 ```
 
+`cid` is the keyed content id from §3.2: a puller needs it to derive the
+chunk key, and it never leaves the encrypted manifest. `sha256` is the
+plaintext digest for single-chunk files; multi-chunk files carry no
+whole-file digest because WebCrypto has no streaming digest and the plugin
+implements no hash of its own. Their integrity is per chunk: AES-GCM
+authenticates each chunk under a key derived from its `cid`, and the puller
+recomputes `cid` from the decrypted bytes before writing anything.
+
+The manifest's AAD is `file_id || content_version_id` where
+`content_version_id = SHA-256(file_id || parents sorted || sids in order)`,
+the version preimage minus the ciphertext itself, so the manifest is bound
+to its file, its parents, and its chunk list without a circular reference.
+
 The server-visible version record is `{file_id, version_id, parents[],
-sids[], bytes, manifest_ct, device_id, ts}`. `version_id = SHA-256(file_id
-|| sorted parents || manifest_ct || sids)`, so two devices producing the
-same version collide harmlessly. Paths live only inside `manifest_ct`.
+sids[], bytes, manifest_ct, manifest_nonce, device_id, ts}`.
+`version_id = SHA-256(file_id || parents sorted || manifest_ct || sids)`,
+recomputed by the server, so two devices producing the same version
+collide harmlessly. Paths live only inside `manifest_ct`.
 
 ### 3.5 Request authentication
 
@@ -144,9 +159,11 @@ Obsidian has no identity API, so "signed in" means "this device is paired."
 
 ### 4.1 First device
 
-`obsyncd` prints a one-time setup token at first boot. The dashboard's setup
-page (or the plugin's setup form) consumes it, creates the account, and the
-first plugin instance generates `VRK` locally. The user is shown the
+`obsyncd` prints a one-time setup token at first boot. The first plugin
+instance consumes it: `POST /v1/setup` creates the account AND enrols that
+device, returning its device credential, because every later enrolment
+goes through pairing and pairing needs an already-paired device. The
+plugin then generates `VRK` locally. The user is shown the
 recovery phrase (the `VRK` as 24 words from a fixed 2048-word list, with a
 checksum) once and must confirm it. Without any paired device and without
 that phrase the vault is unrecoverable by design.

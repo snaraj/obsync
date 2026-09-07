@@ -41,8 +41,12 @@ edge_required`.
 
 ## Setup and account
 
-- `POST /v1/setup` `{"setup_token":"…","account_name":"…"}` → `201
-  {"account_id":"…"}`. Valid once; `409 already_set_up` afterwards.
+- `POST /v1/setup` (no device auth; the token is the credential)
+  `{"setup_token":"…","account_name":"…","device":{"name":"…","platform":
+  "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
+  "device_secret":"<64hex>"}`: creates the account and enrols the first
+  device in one step, since pairing requires a paired device. Valid once;
+  `409 already_set_up` afterwards; `401 bad_setup_token` otherwise.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
   "quota_bytes","used_bytes","device_count"}`.
 
