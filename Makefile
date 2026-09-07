@@ -93,6 +93,12 @@ build: ## Release binary for the host
 # start and the one shape that catches a mount point the runtime uid cannot
 # write. Both builds can be green while that path cannot complete once.
 #
+# The SECOND smoke runs the other install path README.md offers -- `deploy/
+# compose` with its own TLS terminator, for a deployer with no provider and no
+# Kubernetes. It needs ports 80 and 443 on this host and pulls Caddy by digest
+# from Docker Hub; it refuses with a named reason rather than a puzzle if
+# either is unavailable.
+#
 # On a host whose Docker declares a `credsStore`, run `make image-isolated`:
 # an empty configuration directory is what keeps a credential helper out of
 # anonymous, digest-pinned base-image pulls, and is what the gate points
@@ -101,6 +107,7 @@ image: ## Build the release stages locally, exactly as the gate's container job 
 	docker build --target server --tag obsync-server:$$(cat VERSION) .
 	docker build --tag obsync:$$(cat VERSION) .
 	./scripts/ci/image-smoke.sh obsync:$$(cat VERSION)
+	./scripts/ci/compose-smoke.sh obsync:$$(cat VERSION)
 
 # Emptying DOCKER_CONFIG also drops the CONTEXT it selects, and on Docker
 # Desktop the context is the only thing that names the daemon socket: an

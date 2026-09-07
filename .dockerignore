@@ -24,6 +24,9 @@ bench/results
 docs
 chart
 scripts
+# deploy/ is the Compose deployment: a file the OPERATOR runs beside the image,
+# never anything the image contains. Excluded for the same reason as chart/.
+deploy
 *.log
 **/.DS_Store
 **/__pycache__
