@@ -98,9 +98,18 @@ services:
     #              behind a firewall or a NAT the deployer controls, and the
     #              firewall or NAT is then theirs to get right; it is never
     #              what happens because nobody chose.
+    #
+    # The two numbers after it are HOST ports, and they are the part most
+    # deployers leave alone: change them only if something else on this host
+    # already listens on 80 or 443. The CONTAINER ports stay
+    # 80 and 443, so Caddy's own configuration, the certificate and the name it
+    # is issued for do not change with them -- a device then reaches this
+    # deployment at `https://name:<that https port>`. The smoke publishes a
+    # high pair for exactly this reason: proving the binding must not require a
+    # privileged port on every machine that runs the gate.
     ports:
-      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:80:80"
-      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:443:443"
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:${OBSYNC_HTTP_PORT:-80}:80"
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:${OBSYNC_HTTPS_PORT:-443}:443"
     environment:
       OBSYNC_HOST: ${OBSYNC_HOST:?set it to the hostname you reach obsync at}
     volumes:

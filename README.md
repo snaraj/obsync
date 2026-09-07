@@ -147,7 +147,10 @@ here that is safe for everybody.
 `OBSYNC_EDGE=none` and trusts forwarded addresses only from the compose
 network's own range, which is written in that file beside the network it
 belongs to. Ports 80 and 443 on the address you chose are the only ones
-opened.
+opened, and `OBSYNC_HTTP_PORT` and `OBSYNC_HTTPS_PORT` move that pair of HOST
+ports if something on this machine already holds them -- they default to 80 and
+443, and the container ports, the certificate and the name never change with
+them.
 
 The setup token is read the same way as in step 1, from the container compose
 created:
