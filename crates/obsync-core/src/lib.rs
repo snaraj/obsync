@@ -9,4 +9,6 @@
 pub mod crc32;
 pub mod ct;
 pub mod hex;
+pub mod hkdf;
+pub mod hmac;
 pub mod sha256;
