@@ -261,6 +261,28 @@ class WorkflowIntegrityTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, {refusal.rule for refusal in refusals("hostile.yml", text)})
 
+    def test_a_mutable_reference_is_refused_even_with_a_version_comment(self):
+        # Without this case the pin rule and the comment rule are
+        # indistinguishable: `@v7` with no comment reddens either way, so a
+        # regex loosened to accept a tag would still look green.
+        text = CLEAN_WORKFLOW.replace(
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+            "actions/checkout@v7 # v7.0.1",
+        )
+        found = refusals("hostile.yml", text)
+        self.assertEqual([refusal.rule for refusal in found], ["action-pin"])
+        self.assertIn("40-hex", found[0].detail)
+
+    def test_a_branch_or_partial_sha_reference_is_refused(self):
+        for reference in ("actions/checkout@main", "actions/checkout@3d3c42e", "actions/checkout"):
+            with self.subTest(reference=reference):
+                text = CLEAN_WORKFLOW.replace(
+                    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", reference
+                )
+                self.assertIn(
+                    "action-pin", {refusal.rule for refusal in refusals("hostile.yml", text)}
+                )
+
     def test_the_version_comment_is_required_not_only_the_sha(self):
         text = CLEAN_WORKFLOW.replace(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",

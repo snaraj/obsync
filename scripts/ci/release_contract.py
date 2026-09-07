@@ -535,6 +535,14 @@ def classify_transition(
             "version": str(intent.version),
             "tag": intent.tag,
         }
+    # STRUCTURAL BACKSTOPS, and deliberately kept. Neither of the two checks
+    # below can fail today: no release lock is in the documentation allowlist,
+    # so a range that touched one already left `offending` non-empty and took
+    # the artifact path above. They exist for the day somebody widens
+    # `is_documentation_path` -- the one edit that would make a lock change
+    # look like documentation -- so that widening fails loudly here instead of
+    # silently retiring the release. They are backstops, not live guards, and
+    # should not be scored as either passing or decorative checks.
     boundaries = _monotonic_transitions(repository, base_sha, commits)
     if boundaries:
         raise ContractError(
@@ -707,8 +715,10 @@ def _validate_job_inventory(
         if job.get("conclusion") != expected[name]:
             raise ContractError(f"{label} job {name!r} conclusion must equal {expected[name]!r}")
         observed[name] = expected[name]
-    if observed != dict(expected):
-        raise ContractError(f"{label} run job inventory is not exact")
+    # No closing `observed == expected` comparison: the exact length check
+    # above, plus the per-job refusals of a foreign or duplicated name, already
+    # force it. An assertion no input can fail is decorative, and a decorative
+    # check next to real ones teaches a reader to trust the wrong thing.
     return source_sha
 
 

@@ -288,6 +288,36 @@ def pin_storage() -> None:
         ("OBSYNC_JOURNAL_CLASS", configured["storage"]["journal"]["className"]),
     ):
         equals(default[variable], str(expected), f"the rendered {variable}")
+    # The shipped size and capacity are EQUAL, so the assertions above cannot
+    # tell a template reading the right value from one reading the wrong one.
+    # Drive a render where they differ -- a volume grown ahead of its claim,
+    # the exact situation the distinction exists for -- and require the process
+    # to still be told the claim size while the annotation reports the volume.
+    grown = render("storage.blobs.capacity=500Gi")
+    grown_pod = only(grown, "Deployment")["spec"]["template"]["spec"]
+    grown_environment = {
+        entry["name"]: entry.get("value")
+        for entry in grown_pod["containers"][0]["env"]
+        if "value" in entry
+    }
+    equals(
+        grown_environment["OBSYNC_BLOBS_CAPACITY"],
+        str(configured["storage"]["blobs"]["size"]),
+        "the declared capacity when the volume is larger than the claim",
+    )
+    grown_claim = {
+        claim["metadata"]["name"]: claim for claim in every(grown, "PersistentVolumeClaim")
+    }["obsync-blobs"]
+    equals(
+        grown_claim["metadata"]["annotations"]["platform.snaraj.dev/volume-capacity"],
+        "500Gi",
+        "the provisioned-capacity annotation when the volume is larger than the claim",
+    )
+    equals(
+        grown_claim["spec"]["resources"]["requests"]["storage"],
+        configured["storage"]["blobs"]["size"],
+        "the claim request when the volume is larger than the claim",
+    )
     print("chart-pins storage: (d) declared capacity is the claim size, and the class is labelled")
 
     # (e) A half-specified mirror must fail the render rather than mounting a
@@ -297,9 +327,31 @@ def pin_storage() -> None:
 
 
 def pin_security() -> None:
+    configured = values()
     documents = render()
     pod = only(documents, "Deployment")["spec"]["template"]["spec"]
     equals(pod["automountServiceAccountToken"], False, "the pod service-account token mount")
+    # The server key wraps every device secret. A pod that started without it
+    # would generate a second key and orphan every paired device, so the
+    # reference must be non-optional: `optional: true` here is a silent
+    # data-loss switch, not a resilience feature.
+    key_reference = {
+        entry["name"]: entry.get("valueFrom")
+        for entry in pod["containers"][0]["env"]
+        if "valueFrom" in entry
+    }
+    equals(
+        key_reference,
+        {
+            "OBSYNC_SERVER_KEY": {
+                "secretKeyRef": {
+                    "name": configured["serverKeySecret"]["name"],
+                    "key": configured["serverKeySecret"]["key"],
+                }
+            }
+        },
+        "the server key reference",
+    )
     equals(
         only(documents, "ServiceAccount")["automountServiceAccountToken"],
         False,
@@ -325,6 +377,24 @@ def pin_security() -> None:
             "capabilities": {"drop": ["ALL"]},
         },
         "the container security context",
+    )
+    # Requirement 7: readiness reflects real serving ability and never a
+    # hardcoded yes. A chart that pointed the readiness probe at /livez would
+    # report a process that is merely alive as ready to serve -- a hardcoded
+    # yes written in YAML rather than in code -- so the three probe paths are
+    # pinned here, where the render can be read.
+    probes = {
+        name: container[name]["httpGet"]["path"]
+        for name in ("startupProbe", "readinessProbe", "livenessProbe")
+    }
+    equals(
+        probes,
+        {
+            "startupProbe": "/livez",
+            "readinessProbe": "/readyz",
+            "livenessProbe": "/livez",
+        },
+        "the rendered probe paths",
     )
     equals(pod["terminationGracePeriodSeconds"], 30, "the termination grace period")
     equals(only(documents, "Deployment")["spec"]["strategy"], {"type": "Recreate"}, "the strategy")

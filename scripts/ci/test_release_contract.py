@@ -168,6 +168,28 @@ class TheSevenLocks(unittest.TestCase):
                     contract.validate_snapshot({**locks("0.1.4"), **mutation})
 
 
+class TheNextPatchBackstop(unittest.TestCase):
+    """A backstop the range walk reaches only after the mainline check passes.
+
+    `_monotonic_transitions` refuses a skipped patch first, so this guard is
+    never the one that reddens a real range -- which is exactly why it is
+    exercised directly here. A backstop nothing can turn red is decoration, and
+    decoration next to real checks teaches a reader to trust the wrong thing.
+    """
+
+    def test_only_the_exact_next_patch_is_accepted(self):
+        base = contract.Version.parse("0.1.4")
+        contract.require_next_patch(base, contract.Version.parse("0.1.5"))
+        for head in ("0.1.4", "0.1.6", "0.2.0", "1.0.0", "0.1.3"):
+            with self.subTest(head=head):
+                with self.assertRaises(contract.ContractError):
+                    contract.require_next_patch(base, contract.Version.parse(head))
+
+    def test_versions_order_by_precedence_not_by_string(self):
+        self.assertLess(contract.Version.parse("0.1.9"), contract.Version.parse("0.1.10"))
+        self.assertLess(contract.Version.parse("0.9.0"), contract.Version.parse("0.10.0"))
+
+
 class TheChangelogLadder(unittest.TestCase):
     def test_a_descending_ladder_resolves(self):
         headings = contract.parse_changelog(locks("0.1.4", ["0.1.3", "0.1.2"])["CHANGELOG.md"])
@@ -252,8 +274,14 @@ class TheClassifier(GitFixture):
             {**locks("0.1.2", ["0.1.1", "0.1.0"]), "src.rs": "b\n"}, "two"
         )
         self.assertEqual(self.classify(self.base, first)["tag"], "v0.1.1")
-        with self.assertRaises(contract.ContractError):
+        with self.assertRaises(contract.ContractError) as refusal:
             self.classify(self.base, second)
+        # The message matters, and not for tidiness: "exactly one patch
+        # boundary" tells an author their RANGE spans two releases, where the
+        # next-patch backstop underneath would only say the head version is
+        # wrong -- and would send them to change the version rather than to
+        # re-cut the branch.
+        self.assertIn("exactly one patch boundary", str(refusal.exception))
 
     def test_a_multi_commit_rebase_range_is_one_release(self):
         # A squash merge is one commit; an allowed rebase merge installs
@@ -435,7 +463,17 @@ class EventAndRunRecords(unittest.TestCase):
         missing.pop("gate")
         extra = {**expected, "surprise": "success"}
         wrong = {**expected, "gate": "skipped"}
-        for label, inventory in (("missing", missing), ("extra", extra), ("wrong", wrong)):
+        # A RENAMED job keeps the count identical, so only the per-job foreign
+        # name refusal can catch it -- and a rename is the realistic way a job
+        # leaves the inventory the publisher authorizes against.
+        renamed = dict(expected)
+        renamed["aggregate"] = renamed.pop("gate")
+        for label, inventory in (
+            ("missing", missing),
+            ("extra", extra),
+            ("wrong", wrong),
+            ("renamed", renamed),
+        ):
             with self.subTest(inventory=label):
                 with self.assertRaises(contract.ContractError):
                     contract.validate_main_jobs_record(
@@ -710,6 +748,21 @@ class ThePublicationStateMachines(unittest.TestCase):
             with self.subTest():
                 with self.assertRaises(contract.ContractError):
                     contract.classify_release_state(200, record, **arguments)
+
+    def test_the_terminal_record_check_refuses_a_still_mutable_release(self):
+        # The publisher and the audit both call `release-record` DIRECTLY, on
+        # a Release they expect to be published. Reached that way there is no
+        # classifier upstream to have derived the state, so this is the only
+        # thing standing between "we published" and "a draft still sitting
+        # there, editable, that we called immutable".
+        for record in (
+            release_record("staged", assets(self.MANIFEST)),
+            release_record("exact", assets(self.MANIFEST), immutable=False),
+            release_record("exact", assets(self.MANIFEST), draft=True),
+        ):
+            with self.subTest():
+                with self.assertRaises(contract.ContractError):
+                    contract.validate_release_record(record, **self.release_arguments())
 
     def test_a_replaced_asset_is_refused_by_its_digest(self):
         forged = assets(self.MANIFEST)

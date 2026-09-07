@@ -92,6 +92,21 @@ class VolumeSourcesAreRefusedByName(unittest.TestCase):
                     chart_pins._volume_claims({"name": "v", "persistentVolumeClaim": claim})
 
 
+class TheMustFailHelperCanItselfFail(unittest.TestCase):
+    """`refuse` is what makes every non-vacuity claim in the pins true.
+
+    If it stopped requiring a failure, five weakening overrides and two
+    unpinned-peer renders would all report `refused as required` while
+    refusing nothing. Nothing else in the suite would notice, so it is
+    exercised here directly.
+    """
+
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_a_render_that_succeeds_is_reported_as_a_failure(self):
+        with self.assertRaises(chart_pins.PinError):
+            chart_pins.refuse(because="the default render succeeds, so this must raise")
+
+
 class ExpectationsComeFromValues(unittest.TestCase):
     def test_the_shipped_values_file_supplies_every_expectation_the_pins_read(self):
         configured = chart_pins.values()
