@@ -38,11 +38,11 @@ use obsync_core::json::obj;
 
 use crate::config::Config;
 use crate::dashboard::Dashboard;
-use crate::log::Log;
+use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
 use crate::storage::Store;
 use crate::storage::types::StoreError;
-use crate::types::AccountId;
+use crate::types::{AccountId, DeviceId};
 
 use self::auth::{Clock, SystemClock};
 use self::edge::ClientInfo;
@@ -131,25 +131,30 @@ impl ApiError {
 }
 
 impl From<StoreError> for ApiError {
+    /// A storage refusal becomes its documented status and wire code.
+    ///
+    /// The code is always [`StoreError::code`], so the two can never drift;
+    /// only the status and the human detail are decided here. The detail
+    /// never restates the store's own numbers, which belong in the log line
+    /// and not in a response body a client keeps.
     fn from(e: StoreError) -> Self {
+        let code = e.code();
         match e {
             StoreError::SidMismatch { .. } => {
-                ApiError::new(422, "sid_mismatch", "body hash does not equal the sid")
+                ApiError::new(422, code, "body hash does not equal the sid")
             }
-            StoreError::LengthMismatch { .. } => ApiError::new(
-                400,
-                "length_mismatch",
-                "body length does not equal Content-Length",
-            ),
+            StoreError::LengthMismatch { .. } => {
+                ApiError::new(400, code, "body length does not equal Content-Length")
+            }
             StoreError::VolumeFull { .. } => {
-                ApiError::new(507, "volume_full", "free space is below the watermark")
+                ApiError::new(507, code, "free space is below the watermark")
             }
             StoreError::QuotaExceeded { .. } => {
-                ApiError::new(507, "quota_exceeded", "account quota exceeded")
+                ApiError::new(507, code, "the account quota is exhausted")
             }
             StoreError::MissingChunks(sids) => ApiError::new(
                 409,
-                "missing_chunks",
+                code,
                 "referenced chunks are not stored; upload them and repost",
             )
             .with_field(
@@ -160,41 +165,38 @@ impl From<StoreError> for ApiError {
             // naming it leaks nothing and lets a client correct itself.
             StoreError::VersionIdMismatch { expected, .. } => ApiError::new(
                 422,
-                "version_id_mismatch",
+                code,
                 "version_id does not equal the server recomputation",
             )
             .with_field("expected", s(&expected.to_string())),
             StoreError::SeqAhead { .. } => {
-                ApiError::new(416, "seq_ahead", "since is beyond the journal head")
+                ApiError::new(416, code, "since is beyond the journal head")
             }
-            StoreError::UnknownDevice => ApiError::new(404, "unknown_device", "no such device"),
-            StoreError::DeviceRevoked => ApiError::new(403, "device_revoked", "device is revoked"),
-            StoreError::UnknownFile => ApiError::new(404, "unknown_file", "no such file"),
-            StoreError::UnknownVersion => ApiError::new(404, "unknown_version", "no such version"),
-            StoreError::NotSetUp => ApiError::new(409, "not_set_up", "no account exists yet"),
-            StoreError::AlreadySetUp => {
-                ApiError::new(409, "already_set_up", "the account already exists")
-            }
-            StoreError::Io(_) => ApiError::new(500, "storage_io", "storage io error"),
-            StoreError::Corrupt(_) => {
-                ApiError::new(500, "storage_corrupt", "storage inconsistency")
-            }
+            StoreError::UnknownDevice => ApiError::new(404, code, "no such device"),
+            StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
+            StoreError::UnknownFile => ApiError::new(404, code, "no such file"),
+            StoreError::UnknownDomain => ApiError::new(404, code, "no such domain"),
+            StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
+            StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
+            StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
+            StoreError::Io(_) => ApiError::new(500, code, "the volume refused"),
+            StoreError::Corrupt(_) => ApiError::new(500, code, "stored state is inconsistent"),
         }
     }
 }
 
 /// One request as remembered for `GET /v1/admin/logs`. Exactly the fields of
 /// the request log line: no vault path, no body, no key material.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct LogLine {
     /// Unix milliseconds.
     pub ts: u64,
-    /// Request method.
-    pub method: String,
+    /// Request method, reduced to a word this server serves.
+    pub method: &'static str,
     /// Route template, never a vault path.
     pub path_class: &'static str,
     /// Device id as claimed by the request, when it was well formed.
-    pub device: Option<String>,
+    pub device: Option<DeviceId>,
     /// Response status.
     pub status: u16,
     /// Response body bytes.
@@ -202,7 +204,7 @@ pub struct LogLine {
     /// Wall time spent in the handler.
     pub duration_ms: u64,
     /// Wire code of the refusal, or `ok`.
-    pub decision: String,
+    pub decision: &'static str,
 }
 
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
@@ -350,11 +352,13 @@ impl App {
             .iter()
             .rev()
             .filter(|l| {
-                device
-                    .is_none_or(|prefix| l.device.as_ref().is_some_and(|id| id.starts_with(prefix)))
+                device.is_none_or(|prefix| {
+                    l.device
+                        .is_some_and(|id| id.to_string().starts_with(prefix))
+                })
             })
             .take(limit)
-            .cloned()
+            .copied()
             .collect()
     }
 
@@ -383,7 +387,7 @@ impl App {
             return Err("journal volume is not writable");
         }
         for m in &self.cfg.blobs_mirrors {
-            if probe_writable(m).is_err() {
+            if probe_writable(&m.path).is_err() {
                 return Err("a mirror volume is not writable");
             }
         }
@@ -412,13 +416,11 @@ impl App {
             ),
         };
         let (resp, decision) = match out {
-            Ok(r) => {
-                let d: &str = if r.status >= 400 { "refused" } else { "ok" };
-                (r, d.to_string())
-            }
+            Ok(r) if r.status >= 400 => (r, "refused"),
+            Ok(r) => (r, "ok"),
             Err(e) => {
-                let d = e.code.to_string();
-                (e.to_response(), d)
+                let code = e.code;
+                (e.to_response(), code)
             }
         };
         self.finish(req, resp, class, decision, start)
@@ -494,7 +496,7 @@ impl App {
         req: &Request,
         resp: Response,
         class: &'static str,
-        decision: String,
+        decision: &'static str,
         start: Instant,
     ) -> Response {
         let seq = self.store.head_seq();
@@ -506,7 +508,7 @@ impl App {
         };
         let line = LogLine {
             ts: self.clock.unix_ms(),
-            method: req.method.clone(),
+            method: method_word(&req.method),
             path_class: class,
             device: device_field(req),
             status,
@@ -529,18 +531,21 @@ impl App {
             .header("X-Obsync-Seq", &format!("{}", render::seq_u64(seq)))
     }
 
+    /// The one line every request logs (`docs/protocol.md`, "Limits and
+    /// headers"). A refusal raises it to warn, and a server fault to error, so
+    /// the decision is visible at any level an operator runs (requirement 12).
     fn emit(&self, line: &LogLine) {
-        let status = format!("{}", line.status);
-        let bytes = format!("{}", line.bytes);
-        let duration = format!("{}", line.duration_ms);
-        let fields: [(&str, &str); 7] = [
-            ("method", line.method.as_str()),
-            ("path_class", line.path_class),
-            ("device", line.device.as_deref().unwrap_or("-")),
-            ("status", status.as_str()),
-            ("bytes", bytes.as_str()),
-            ("duration_ms", duration.as_str()),
-            ("decision", line.decision.as_str()),
+        let fields = [
+            ("method", Val::word(line.method)),
+            ("path_class", Val::word(line.path_class)),
+            (
+                "device",
+                line.device.map_or(Val::word("-"), |id| Val::device(&id)),
+            ),
+            ("status", Val::status(line.status)),
+            ("bytes", Val::bytes(line.bytes)),
+            ("duration_ms", Val::ms(line.duration_ms)),
+            ("decision", Val::word(line.decision)),
         ];
         if line.status >= 500 {
             self.log.error("request", &fields);
@@ -552,6 +557,20 @@ impl App {
     }
 }
 
+/// The request method reduced to a word this server serves, so an arbitrary
+/// method token from the wire can never reach a log line.
+fn method_word(method: &str) -> &'static str {
+    match method {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "PATCH" => "PATCH",
+        "DELETE" => "DELETE",
+        "HEAD" => "HEAD",
+        _ => "other",
+    }
+}
+
 /// Wrap the application in the handler the HTTP server calls.
 pub fn handler(app: Arc<App>) -> Handler {
     Arc::new(move |req: &mut Request| app.handle(req))
@@ -559,9 +578,9 @@ pub fn handler(app: Arc<App>) -> Handler {
 
 /// The claimed device id, kept only when it is 32 lowercase hex characters.
 /// No header value reaches a log line unsanitized.
-fn device_field(req: &Request) -> Option<String> {
+fn device_field(req: &Request) -> Option<DeviceId> {
     match req.headers.get("x-obsync-device") {
-        Some(v) if is_hex(v, 32) => Some(v.to_string()),
+        Some(v) if is_hex(v, 32) => v.parse().ok(),
         _ => None,
     }
 }

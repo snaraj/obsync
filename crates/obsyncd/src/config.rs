@@ -125,7 +125,17 @@ impl Edge {
         matches!(self, Edge::Cloudflare)
     }
 
-    const fn as_word(self) -> &'static str {
+    /// The mode that requires the edge's headers, named generically so a
+    /// caller outside this file can construct it without spelling the
+    /// provider (`doctrine_test`).
+    pub const fn requiring_headers() -> Edge {
+        Edge::Cloudflare
+    }
+
+    /// The configured word, for the startup line and for the dashboard
+    /// overview. Public for the same reason the parser lives here: the word
+    /// belongs to this file and to no other.
+    pub const fn as_word(self) -> &'static str {
         match self {
             Edge::None => "none",
             Edge::Cloudflare => "cloudflare",

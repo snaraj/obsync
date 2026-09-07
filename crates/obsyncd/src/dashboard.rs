@@ -13,7 +13,7 @@ use std::path::Path;
 use obsync_core::http::Response;
 
 use crate::api::{ApiError, CSP};
-use crate::log::Log;
+use crate::log::{Log, Val};
 
 /// The files the dashboard is made of, with the content type each is served
 /// as. This list is the whole of what `/` serves.
@@ -56,20 +56,16 @@ impl Dashboard {
                 Err(e) => log.warn(
                     "dashboard_file_missing",
                     &[
-                        ("dir", &dir.display().to_string()),
-                        ("file", name),
-                        ("reason", &e.to_string()),
-                        ("decision", "dashboard_unavailable"),
+                        ("file", Val::word(name)),
+                        ("io", Val::io(&e)),
+                        ("decision", Val::word("dashboard_unavailable")),
                     ],
                 ),
             }
         }
         log.info(
             "dashboard_loaded",
-            &[
-                ("dir", &dir.display().to_string()),
-                ("files", &files.len().to_string()),
-            ],
+            &[("files", Val::count(files.len() as u64))],
         );
         Self { files }
     }

@@ -21,11 +21,11 @@ use obsync_core::{hmac, sha256};
 
 use crate::api::auth::{Clock, FakeClock};
 use crate::api::{App, handler};
-use crate::config::Config;
+use crate::config::{Config, Edge};
 use crate::dashboard::Dashboard;
 use crate::log::Log;
 use crate::plugin_dist::PluginDist;
-use crate::storage::Store;
+use crate::storage::{Store, load_or_create_server_key};
 
 /// The frozen wall clock every test signs against.
 const NOW: u64 = 1_757_200_000;
@@ -94,20 +94,23 @@ impl Harness {
             std::fs::write(plugin_dir.join("styles.css"), b".obsync{}").expect("styles");
         }
 
+        let edge = if setup.edge_mode {
+            Edge::requiring_headers()
+        } else {
+            Edge::None
+        };
         let pairs: Vec<(String, String)> = [
             ("OBSYNC_BLOBS_DIR", blobs.display().to_string()),
             ("OBSYNC_JOURNAL_DIR", journal.display().to_string()),
+            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
+            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
+            // A test volume is tiny, so the shipped 2 GiB watermark would
+            // refuse the first byte. The threshold itself is exercised by the
+            // storage lane's own tests.
+            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
             ("OBSYNC_DASHBOARD_DIR", dashboard_dir.display().to_string()),
             ("OBSYNC_PLUGIN_DIR", plugin_dir.display().to_string()),
-            (
-                "OBSYNC_EDGE",
-                if setup.edge_mode {
-                    "cloudflare"
-                } else {
-                    "none"
-                }
-                .to_string(),
-            ),
+            ("OBSYNC_EDGE", edge.as_word().to_string()),
             ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
             ("OBSYNC_PUBLIC_URL", "http://127.0.0.1".to_string()),
             ("OBSYNC_LOG", "error".to_string()),
@@ -117,7 +120,10 @@ impl Harness {
         .collect();
         let cfg = Config::from_pairs(&pairs).expect("configuration");
         let log = Log::new(cfg.log_level);
-        let store = Store::open(&cfg.storage(), cfg.server_key, log.clone()).expect("store");
+        let storage = cfg.storage();
+        let server_key = load_or_create_server_key(&storage.journal_dir, cfg.server_key, &log)
+            .expect("server key");
+        let store = Store::open(&storage, server_key, log.clone()).expect("store");
 
         let dashboard = if setup.dashboard {
             Dashboard::load(&dashboard_dir, &log)
@@ -170,7 +176,7 @@ impl Harness {
     /// Create the account and return the first device's credential.
     fn setup_account(&self) -> Cred {
         let body = format!(
-            r#"{{"setup_token":"{}","account_name":"vault","name":"laptop","platform":"macos","app_version":"0.1.0"}}"#,
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
             "5e".repeat(32)
         );
         let res = Req::post("/v1/setup").body(&body).send(self.addr);
@@ -402,14 +408,38 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
 }
 
 #[test]
-fn readyz_is_false_while_shutting_down() {
-    let h = Harness::start("shutdown");
+fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
+    use std::fs::{Permissions, set_permissions};
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::start("readyz");
     assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+
+    // A volume that stops taking writes makes readiness false over the wire.
+    // The clock moves past the probe cache so the verdict is re-measured
+    // rather than remembered.
+    let blobs = h.dir.join("blobs");
+    set_permissions(&blobs, Permissions::from_mode(0o500)).expect("make read-only");
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let refused = Req::get("/readyz").send(h.addr);
+    set_permissions(&blobs, Permissions::from_mode(0o700)).expect("restore");
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "not_ready");
+
+    // And a shutdown makes it false immediately, before the listener stops:
+    // the probe answers from the flag, not from the volumes.
     h.shutdown.store(true, Ordering::SeqCst);
-    let res = Req::get("/readyz").send(h.addr);
-    assert_eq!(res.status, 503, "{}", res.text());
-    assert_eq!(res.code(), "not_ready");
+    assert!(
+        h.app.readiness().is_err(),
+        "readiness is false the moment a shutdown starts"
+    );
     h.shutdown.store(false, Ordering::SeqCst);
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    assert_eq!(
+        Req::get("/readyz").send(h.addr).status,
+        200,
+        "and true again once the volume takes writes"
+    );
 }
 
 #[test]
@@ -439,12 +469,17 @@ fn setup_runs_once_and_mints_the_first_device() {
 
     let again = Req::post("/v1/setup")
         .body(&format!(
-            r#"{{"setup_token":"{}","account_name":"other"}}"#,
+            r#"{{"setup_token":"{}","account_name":"other","device":{{"name":"second","platform":"linux","app_version":"0.1.0"}}}}"#,
             "5e".repeat(32)
         ))
         .send(h.addr);
     assert_eq!(again.status, 409);
     assert_eq!(again.code(), "already_set_up");
+    assert_eq!(
+        h.app.store.devices().len(),
+        1,
+        "a refused second setup enrols nobody"
+    );
 }
 
 #[test]
@@ -452,7 +487,7 @@ fn a_wrong_setup_token_is_refused() {
     let h = Harness::start("setup-bad");
     let res = Req::post("/v1/setup")
         .body(&format!(
-            r#"{{"setup_token":"{}","account_name":"vault"}}"#,
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
             "11".repeat(32)
         ))
         .send(h.addr);
@@ -461,6 +496,30 @@ fn a_wrong_setup_token_is_refused() {
     assert!(
         h.app.store.account().is_none(),
         "a refused setup creates nothing"
+    );
+
+    let no_device = Req::post("/v1/setup")
+        .body(&format!(
+            r#"{{"setup_token":"{}","account_name":"vault"}}"#,
+            "5e".repeat(32)
+        ))
+        .send(h.addr);
+    assert_eq!(no_device.status, 400, "the device object is required");
+    assert!(
+        h.app.store.account().is_none(),
+        "a body refused for its device leaves no account behind"
+    );
+
+    let bad_platform = Req::post("/v1/setup")
+        .body(&format!(
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"toaster","app_version":"0.1.0"}}}}"#,
+            "5e".repeat(32)
+        ))
+        .send(h.addr);
+    assert_eq!(bad_platform.status, 400);
+    assert!(
+        h.app.store.account().is_none(),
+        "the device is validated before the account is created"
     );
 }
 
@@ -581,7 +640,7 @@ fn edge_mode_refuses_a_request_without_the_edge_headers_but_still_serves_health(
     assert_eq!(res.code(), "edge_required");
 
     let body = format!(
-        r#"{{"setup_token":"{}","account_name":"vault","name":"laptop","platform":"macos","app_version":"0.1.0"}}"#,
+        r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
         "5e".repeat(32)
     );
     let res = Req::post("/v1/setup")
@@ -1567,7 +1626,10 @@ fn the_request_log_keeps_a_route_template_and_never_a_vault_path() {
         .find(|l| l.path_class == "/v1/chunks/{sid}")
         .expect("the chunk line");
     assert_eq!(chunk_line.decision, "unknown_chunk");
-    assert_eq!(chunk_line.device.as_deref(), Some(cred.id.as_str()));
+    assert_eq!(
+        chunk_line.device.map(|id| id.to_string()).as_deref(),
+        Some(cred.id.as_str())
+    );
     assert!(chunk_line.duration_ms < 5_000);
     for line in &lines {
         assert!(

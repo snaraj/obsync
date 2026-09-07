@@ -409,6 +409,15 @@ impl Store {
         self.index().seq
     }
 
+    /// Retained versions and files, as the index already counts them.
+    ///
+    /// The dashboard overview states both on every page load, so it reads two
+    /// lengths under the index lock rather than walking the vault.
+    pub fn counts(&self) -> (u64, u64) {
+        let index = self.index();
+        (index.feed.len() as u64, index.files.len() as u64)
+    }
+
     /// Block until the head passes `since`, or until `timeout` elapses.
     pub fn wait_for_change(&self, since: Seq, timeout: Duration) -> Seq {
         let index = self.index();

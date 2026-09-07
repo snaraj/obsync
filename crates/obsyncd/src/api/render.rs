@@ -12,7 +12,7 @@ use obsync_core::json::{Value, obj, parse_limited};
 
 use crate::storage::types::{
     AccountRecord, Change, DevicePolicy, DeviceRecord, DomainRecord, FileRecord, FileSummary,
-    GcSummary, QuarantineEntry, ScrubSummary, SeenEvent, SeenKind, VersionRecord, VolumeStatus,
+    GcSummary, ScrubSummary, SeenEvent, VersionRecord, VolumeStatus,
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -58,15 +58,21 @@ pub fn ms_u64(v: UnixMs) -> u64 {
     v.0
 }
 
-/// `GET /v1/account`.
-pub fn account(a: &AccountRecord) -> Value {
+/// A value that may be absent, as JSON `null` or the rendered value.
+pub fn maybe<T>(v: Option<T>, render: impl FnOnce(T) -> Value) -> Value {
+    v.map_or(Value::Null, render)
+}
+
+/// `GET /v1/account`. The device count is the caller's, because the record
+/// does not carry it and the store is the only place that knows.
+pub fn account(a: &AccountRecord, device_count: u64) -> Value {
     obj(vec![
         ("account_id", s(&a.account_id.to_string())),
         ("name", s(&a.name)),
         ("created", ms(a.created)),
-        ("quota_bytes", n(a.quota_bytes)),
+        ("quota_bytes", maybe(a.quota_bytes, n)),
         ("used_bytes", n(a.used_bytes)),
-        ("device_count", n(a.device_count)),
+        ("device_count", n(device_count)),
     ])
 }
 
@@ -78,11 +84,11 @@ pub fn device(d: &DeviceRecord) -> Value {
         ("platform", s(&d.platform)),
         ("app_version", s(&d.app_version)),
         ("created", ms(d.created)),
-        ("last_seen", ms(d.last_seen)),
-        ("last_sign_in", ms(d.last_sign_in)),
-        ("last_edit", ms(d.last_edit)),
-        ("address", s(&d.address)),
-        ("country", s(&d.country)),
+        ("last_seen", maybe(d.last_seen, ms)),
+        ("last_sign_in", maybe(d.last_sign_in, ms)),
+        ("last_edit", maybe(d.last_edit, ms)),
+        ("address", maybe(d.address.as_deref(), s)),
+        ("country", maybe(d.country.as_deref(), s)),
         ("policy", policy(&d.policy)),
         ("revoked", b(d.revoked)),
     ])
@@ -105,19 +111,10 @@ pub fn device_with_history(d: &DeviceRecord, history: &[SeenEvent]) -> Value {
 pub fn seen(e: &SeenEvent) -> Value {
     obj(vec![
         ("ts", ms(e.ts)),
-        ("event", s(seen_kind(e.kind))),
-        ("address", s(&e.address)),
-        ("country", s(&e.country)),
+        ("event", s(e.kind.as_word())),
+        ("address", maybe(e.address.as_deref(), s)),
+        ("country", maybe(e.country.as_deref(), s)),
     ])
-}
-
-/// Wire name of a seen event kind.
-pub fn seen_kind(k: SeenKind) -> &'static str {
-    match k {
-        SeenKind::SignIn => "sign_in",
-        SeenKind::Edit => "edit",
-        SeenKind::Heartbeat => "heartbeat",
-    }
 }
 
 /// A device policy as the plugin reports and reads it.
@@ -166,20 +163,22 @@ pub fn file_summary(f: &FileSummary) -> Value {
     ])
 }
 
-/// One entry of the change feed.
+/// One entry of the change feed: the version that landed, its journal
+/// position, and the file's heads as they stand now.
 pub fn change(c: &Change) -> Value {
+    let v = &c.version;
     obj(vec![
-        ("seq", seq(c.seq)),
-        ("file_id", s(&c.file_id.to_string())),
-        ("version_id", s(&c.version_id.to_string())),
-        ("parents", strs(c.parents.iter().map(ToString::to_string))),
-        ("sids", strs(c.sids.iter().map(ToString::to_string))),
-        ("bytes", n(c.bytes)),
-        ("manifest_ct", s(&base64::encode(&c.manifest_ct))),
-        ("manifest_nonce", s(&hex::encode(&c.manifest_nonce))),
-        ("device_id", s(&c.device_id.to_string())),
-        ("ts", ms(c.ts)),
-        ("deleted", b(c.deleted)),
+        ("seq", seq(v.seq)),
+        ("file_id", s(&v.file_id.to_string())),
+        ("version_id", s(&v.version_id.to_string())),
+        ("parents", strs(v.parents.iter().map(ToString::to_string))),
+        ("sids", strs(v.sids.iter().map(ToString::to_string))),
+        ("bytes", n(v.bytes)),
+        ("manifest_ct", s(&base64::encode(&v.manifest_ct))),
+        ("manifest_nonce", s(&hex::encode(&v.manifest_nonce))),
+        ("device_id", s(&v.device_id.to_string())),
+        ("ts", ms(v.ts)),
+        ("deleted", b(v.deleted)),
         ("heads", strs(c.heads.iter().map(ToString::to_string))),
         ("conflicted", b(c.conflicted)),
     ])
@@ -194,11 +193,12 @@ pub fn domain(d: &DomainRecord) -> Value {
     ])
 }
 
-/// One volume, with its class name but never its host path.
+/// One volume: its role, the class label the operator gave it, and its
+/// numbers. The mount point never leaves the process (requirement 6).
 pub fn volume(v: &VolumeStatus) -> Value {
     obj(vec![
         ("role", s(&v.role)),
-        ("path_class", s(&v.path_class)),
+        ("path_class", s(&v.class_label)),
         ("bytes_total", n(v.bytes_total)),
         ("bytes_used", n(v.bytes_used)),
         ("bytes_free", n(v.bytes_free)),
@@ -209,7 +209,7 @@ pub fn volume(v: &VolumeStatus) -> Value {
 /// The last garbage collection (`docs/protocol.md`, `<gc>`).
 pub fn gc(g: &GcSummary) -> Value {
     obj(vec![
-        ("ts", ms(g.ts)),
+        ("ts", ms(g.started)),
         ("duration_ms", n(g.duration_ms)),
         ("chunks_collected", n(g.chunks_collected)),
         ("bytes_collected", n(g.bytes_collected)),
@@ -220,24 +220,39 @@ pub fn gc(g: &GcSummary) -> Value {
 /// The last scrub pass (`docs/protocol.md`, `<scrub>`).
 pub fn scrub(v: &ScrubSummary) -> Value {
     obj(vec![
-        ("ts", ms(v.ts)),
+        ("ts", ms(v.started)),
         ("duration_ms", n(v.duration_ms)),
         ("chunks_verified", n(v.chunks_verified)),
         ("bytes_verified", n(v.bytes_verified)),
         ("mismatches", n(v.mismatches)),
-        ("quarantined", n(v.quarantined)),
+        ("quarantined", n(v.quarantined.len() as u64)),
         ("complete_pass", b(v.complete_pass)),
     ])
 }
 
-/// One quarantined chunk (`docs/protocol.md`, `GET /v1/admin/storage`).
-pub fn quarantined(q: &QuarantineEntry) -> Value {
-    obj(vec![
-        ("sid", s(&q.sid.to_string())),
-        ("ts", ms(q.ts)),
-        ("bytes", n(q.bytes)),
-        ("reason", s(&q.reason)),
-    ])
+/// The quarantine list of `GET /v1/admin/storage`.
+///
+/// What the server can state is the last scrub step's quarantined sids and
+/// when that step ran; the byte count of a quarantined chunk is not tracked,
+/// so it is reported as zero rather than guessed.
+pub fn quarantine(last: Option<&ScrubSummary>) -> Value {
+    let Some(summary) = last else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(
+        summary
+            .quarantined
+            .iter()
+            .map(|sid| {
+                obj(vec![
+                    ("sid", s(&sid.to_string())),
+                    ("ts", ms(summary.started)),
+                    ("bytes", n(0)),
+                    ("reason", s("sid_mismatch")),
+                ])
+            })
+            .collect(),
+    )
 }
 
 /// Read and parse a JSON request body under the protocol's 4 MiB ceiling.

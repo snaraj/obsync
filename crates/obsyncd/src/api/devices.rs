@@ -6,11 +6,12 @@ use obsync_core::hex;
 use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
+use crate::log::Val;
 use crate::storage::types::{DevicePolicy, DeviceRecord, NewDevice};
 
 use super::edge::ClientInfo;
 use super::render::{self};
-use super::{ApiError, App, auth};
+use super::{ApiError, App, auth, rand};
 
 /// `GET /v1/devices`.
 ///
@@ -27,20 +28,65 @@ pub fn devices_body(app: &App) -> Value {
     obj(vec![("devices", Value::Array(devices))])
 }
 
-/// Create a device and hand back its record with its secret as hex. The two
-/// callers are the first-device path of `POST /v1/setup` and a pairing claim;
-/// they are the only places the server ever states a device secret.
+/// What a caller must say to enrol a device.
+pub struct Enrolment {
+    /// User-chosen name, already validated as printable ASCII.
+    pub name: String,
+    /// One of `docs/protocol.md`'s platform words.
+    pub platform: String,
+    /// The plugin version the device reports.
+    pub app_version: String,
+}
+
+/// Mint a device secret, create the device, and hand back its record with the
+/// secret as hex.
+///
+/// The two callers are `POST /v1/setup` for device one and a pairing claim for
+/// every device after it; they are the only places the server ever states a
+/// device secret, and it goes to the device that will use it and nowhere else.
 ///
 /// # Errors
-/// Whatever the store refuses with, or `500 device_secret_missing` if the
-/// secret cannot be read back.
-pub fn enrol(app: &App, new_device: NewDevice) -> Result<(DeviceRecord, String), ApiError> {
-    let record = app.store.create_device(new_device)?;
-    let secret = app
-        .store
-        .device_secret(&record.device_id)
-        .ok_or_else(|| ApiError::new(500, "device_secret_missing", "device secret unavailable"))?;
+/// `500 no_randomness` when the CSPRNG is unavailable, `409 not_set_up` before
+/// setup, or whatever the store refuses with.
+pub fn enrol(app: &App, e: Enrolment) -> Result<(DeviceRecord, String), ApiError> {
+    let account_id = app.account_id()?;
+    let mut secret = [0u8; 32];
+    rand::fill(&mut secret)
+        .map_err(|_| ApiError::new(500, "no_randomness", "the system CSPRNG is unavailable"))?;
+    let record = app.store.create_device(NewDevice {
+        account_id,
+        name: e.name,
+        platform: e.platform,
+        app_version: e.app_version,
+        secret,
+    })?;
     Ok((record, hex::encode(&secret)))
+}
+
+/// The platforms a device may declare (`docs/protocol.md`, "Pairing").
+pub const PLATFORMS: [&str; 6] = ["ios", "ipados", "android", "macos", "windows", "linux"];
+
+/// Read and validate the `{name, platform, app_version}` a device describes
+/// itself with, wherever it appears.
+///
+/// # Errors
+/// `400 bad_request` for a missing field, an unprintable name, or a platform
+/// this protocol does not name.
+pub fn enrolment_fields(body: &Value) -> Result<Enrolment, ApiError> {
+    let name = render::text_field(render::field_str(body, "name")?, "name", 64)?;
+    let platform = render::field_str(body, "platform")?.to_string();
+    if !PLATFORMS.contains(&platform.as_str()) {
+        return Err(ApiError::bad_request(
+            "platform is not one of the supported platforms",
+        ));
+    }
+    let app_version =
+        render::text_field(render::field_str(body, "app_version")?, "app_version", 32)?;
+    Ok(Enrolment {
+        name,
+        platform,
+        app_version,
+    })
 }
 
 /// `PATCH /v1/devices/{id}`: rename a device or change its ceilings. Any
@@ -101,8 +147,8 @@ pub fn revoke(
     app.log.warn(
         "device_revoked",
         &[
-            ("device", &target.to_string()),
-            ("by", &authed.id.to_string()),
+            ("device", Val::device(&target)),
+            ("by_device", Val::device(&authed.id)),
         ],
     );
     Ok(Response::empty(204))

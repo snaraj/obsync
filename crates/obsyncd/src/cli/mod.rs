@@ -13,7 +13,8 @@ pub mod serve;
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::log::Log;
+use crate::log::{Log, Val};
+use crate::storage::StoreError;
 use crate::types::DomainId;
 
 /// What `obsyncd help` prints, on standard error.
@@ -41,32 +42,84 @@ pub fn run(args: &[String]) -> i32 {
             eprintln!("{USAGE}");
             0
         }
-        Some("check") => with_config(|cfg, log| check::run(&cfg, &log)),
+        Some("check") => with_config(|cfg| {
+            let log = Log::new(cfg.log_level);
+            report(check::run(&cfg, &log), "check", &log)
+        }),
         Some("export") => match ExportArgs::parse(&args[1..]) {
-            Ok(a) => with_config(|cfg, log| export::run(&cfg, &log, a.domain, a.key, &a.out)),
+            Ok(a) => with_config(|cfg| {
+                let log = Log::new(cfg.log_level);
+                report(export::run(&cfg, &a.domain, &a.key, &a.out), "export", &log)
+            }),
             Err(e) => {
                 eprintln!("obsyncd export: {e}\n{USAGE}");
                 2
             }
         },
         Some(other) => {
-            eprintln!("obsyncd: unknown subcommand {other:?}\n{USAGE}");
+            eprintln!(
+                "obsyncd: unknown subcommand: {}\n{USAGE}",
+                word_class(other)
+            );
             2
         }
     }
 }
 
 /// Parse the environment once for a subcommand that needs it.
-fn with_config(job: impl FnOnce(Config, Log) -> i32) -> i32 {
+fn with_config(job: impl FnOnce(Config) -> i32) -> i32 {
     match Config::from_env() {
-        Ok(cfg) => {
-            let log = Log::new(cfg.log_level);
-            job(cfg, log)
-        }
+        Ok(cfg) => job(cfg),
         Err(e) => {
             eprintln!("obsyncd: configuration: {e}");
             2
         }
+    }
+}
+
+/// Print a report, or state the refusal and its code, and give the exit code.
+fn report<T: Report>(outcome: Result<T, StoreError>, job: &'static str, log: &Log) -> i32 {
+    match outcome {
+        Ok(report) => {
+            report.print();
+            0
+        }
+        Err(e) => {
+            log.error(
+                "cli_failed",
+                &[("job", Val::word(job)), ("decision", Val::word(e.code()))],
+            );
+            eprintln!("obsyncd {job}: {e}");
+            1
+        }
+    }
+}
+
+/// What a subcommand's report can do: print itself for an operator.
+trait Report {
+    /// Print the counts on standard output.
+    fn print(&self);
+}
+
+impl Report for check::CheckReport {
+    fn print(&self) {
+        check::CheckReport::print(self);
+    }
+}
+
+impl Report for export::ExportReport {
+    fn print(&self) {
+        export::ExportReport::print(self);
+    }
+}
+
+/// An unrecognized subcommand, reduced to a class rather than echoed: a
+/// process argument is untrusted text and this goes to a terminal.
+fn word_class(arg: &str) -> &'static str {
+    if arg.starts_with('-') {
+        "not a flag this command takes"
+    } else {
+        "no such subcommand"
     }
 }
 
@@ -92,7 +145,9 @@ impl ExportArgs {
         let mut out = None;
         let mut i = 0;
         while i < args.len() {
-            let value = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| format!("{} needs a value", args[i]))?;
             match args[i].as_str() {
                 "--domain" => domain = Some(value.clone()),
                 "--key" => key = Some(value.clone()),
@@ -105,7 +160,9 @@ impl ExportArgs {
         let key = key.ok_or("--key is required")?;
         let out = out.ok_or("--out is required")?;
         Ok(Self {
-            domain: domain.parse().map_err(|_| "--domain must be 32 hex characters".to_string())?,
+            domain: domain
+                .parse()
+                .map_err(|_| "--domain must be 32 hex characters".to_string())?,
             key: obsync_core::hex::decode_array::<32>(&key)
                 .map_err(|_| "--key must be 64 hex characters".to_string())?,
             out,
@@ -138,8 +195,14 @@ mod tests {
 
     #[test]
     fn export_arguments_refuse_what_is_missing_or_malformed() {
-        assert!(ExportArgs::parse(&args(&["--out", "/tmp"])).is_err(), "no domain or key");
-        assert!(ExportArgs::parse(&args(&["--domain"])).is_err(), "value missing");
+        assert!(
+            ExportArgs::parse(&args(&["--out", "/tmp"])).is_err(),
+            "no domain or key"
+        );
+        assert!(
+            ExportArgs::parse(&args(&["--domain"])).is_err(),
+            "value missing"
+        );
         assert!(
             ExportArgs::parse(&args(&[
                 "--domain",
@@ -164,6 +227,9 @@ mod tests {
             .is_err(),
             "key is the wrong length"
         );
-        assert!(ExportArgs::parse(&args(&["--nope", "1"])).is_err(), "unknown flag");
+        assert!(
+            ExportArgs::parse(&args(&["--nope", "1"])).is_err(),
+            "unknown flag"
+        );
     }
 }

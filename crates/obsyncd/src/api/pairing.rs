@@ -12,7 +12,7 @@ use obsync_core::ct;
 use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
-use crate::storage::types::{DevicePolicy, NewDevice};
+use crate::log::Val;
 use crate::types::DeviceId;
 
 use super::edge::ClientInfo;
@@ -22,9 +22,6 @@ use super::{ApiError, App, auth, devices, rand};
 /// A pairing is claimable for ten minutes and no longer
 /// (`docs/architecture.md` 4.2).
 pub const PAIRING_TTL_SECS: u64 = 600;
-
-/// Platforms a claiming device may declare (`docs/protocol.md`, "Pairing").
-pub const PLATFORMS: [&str; 6] = ["ios", "ipados", "android", "macos", "windows", "linux"];
 
 /// Where a pairing is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,33 +347,19 @@ pub fn claim(
 ) -> Result<Response, ApiError> {
     let body = render::json_body(req)?;
     let enroll = render::field_str(&body, "enroll_token")?.to_string();
-    let name = render::text_field(render::field_str(&body, "name")?, "name", 64)?;
-    let platform = render::field_str(&body, "platform")?.to_string();
-    let app_version =
-        render::text_field(render::field_str(&body, "app_version")?, "app_version", 32)?;
-    if !PLATFORMS.contains(&platform.as_str()) {
-        return Err(ApiError::bad_request(
-            "platform is not one of the supported platforms",
-        ));
-    }
+    let enrolment = devices::enrolment_fields(&body)?;
+    let (name, platform, app_version) = (
+        enrolment.name.clone(),
+        enrolment.platform.clone(),
+        enrolment.app_version.clone(),
+    );
     let now = app.clock.unix_secs();
 
     // The table lock is held across device creation so two racing claims
     // cannot both pass `begin_claim`.
     let mut pairings = app.pairings.lock().expect("pairings");
     pairings.begin_claim(id, &enroll, now)?;
-    let (record, secret) = devices::enrol(
-        app,
-        NewDevice {
-            name: name.clone(),
-            platform: platform.clone(),
-            app_version: app_version.clone(),
-            policy: DevicePolicy {
-                per_file_max_bytes: 0,
-                total_budget_bytes: 0,
-            },
-        },
-    )?;
+    let (record, secret) = devices::enrol(app, enrolment)?;
     pairings.finish_claim(
         id,
         Claimant {
@@ -479,7 +462,7 @@ pub fn reject(
         .reject(id, &authed.id)?;
     app.store.delete_device(&claimant)?;
     app.log
-        .info("pairing_rejected", &[("device", &claimant.to_string())]);
+        .info("pairing_rejected", &[("device", Val::device(&claimant))]);
     Ok(Response::empty(204))
 }
 

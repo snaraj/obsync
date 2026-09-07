@@ -13,6 +13,7 @@ use obsync_core::hex;
 use obsync_core::http::Request;
 use obsync_core::{ct, hmac, sha256};
 
+use crate::log::Val;
 use crate::storage::types::{DeviceRecord, SeenEvent, SeenKind};
 use crate::types::{DeviceId, UnixMs};
 
@@ -330,14 +331,14 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
         ts: UnixMs(now * 1000),
         kind,
         address: client.address.clone(),
-        country: client.country.clone().unwrap_or_default(),
+        country: client.country.clone(),
     };
     if let Err(e) = app.store.record_seen(id, event) {
         app.log.warn(
             "seen_event_dropped",
             &[
-                ("kind", render::seen_kind(kind)),
-                ("error", &format!("{e:?}")),
+                ("kind", Val::word(kind.as_word())),
+                ("decision", Val::word(e.code())),
             ],
         );
     }

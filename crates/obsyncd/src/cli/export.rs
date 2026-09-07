@@ -118,10 +118,7 @@ pub fn run(
                     ),
                     ("bytes", Value::Int(version.bytes as i64)),
                     ("deleted", Value::Bool(version.deleted)),
-                    (
-                        "manifest_ct",
-                        Value::Str(hex::encode(&version.manifest_ct)),
-                    ),
+                    ("manifest_ct", Value::Str(hex::encode(&version.manifest_ct))),
                     (
                         "manifest_nonce",
                         Value::Str(hex::encode(&version.manifest_nonce)),

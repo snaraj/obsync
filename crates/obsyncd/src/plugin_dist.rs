@@ -13,7 +13,7 @@ use obsync_core::hex;
 use obsync_core::json::{Value, parse};
 use obsync_core::sha256::sha256;
 
-use crate::log::Log;
+use crate::log::{Log, Val};
 
 /// File names the bundle is made of.
 pub const MANIFEST_FILE: &str = "manifest.json";
@@ -52,24 +52,23 @@ impl PluginDist {
     /// manifest. Any missing or unreadable file leaves the whole distribution
     /// unavailable and logs why.
     pub fn load(dir: &Path, log: &Log) -> Self {
-        let dir_text = dir.display().to_string();
         let manifest_raw = match std::fs::read(dir.join(MANIFEST_FILE)) {
             Ok(v) => v,
-            Err(e) => return Self::missing(log, MANIFEST_FILE, &dir_text, &e.to_string()),
+            Err(e) => return Self::missing(log, MANIFEST_FILE, Val::io(&e)),
         };
         let bundle = match std::fs::read(dir.join(BUNDLE_FILE)) {
             Ok(v) => v,
-            Err(e) => return Self::missing(log, BUNDLE_FILE, &dir_text, &e.to_string()),
+            Err(e) => return Self::missing(log, BUNDLE_FILE, Val::io(&e)),
         };
         let styles = match std::fs::read(dir.join(STYLES_FILE)) {
             Ok(v) => v,
-            Err(e) => return Self::missing(log, STYLES_FILE, &dir_text, &e.to_string()),
+            Err(e) => return Self::missing(log, STYLES_FILE, Val::io(&e)),
         };
 
         let bundle_sha256 = hex::encode(&sha256(&bundle));
         let styles_sha256 = hex::encode(&sha256(&styles));
         let Ok(Value::Object(mut fields)) = parse(&manifest_raw) else {
-            return Self::missing(log, MANIFEST_FILE, &dir_text, "not a JSON object");
+            return Self::missing(log, MANIFEST_FILE, Val::word("not a JSON object"));
         };
         fields.retain(|(k, _)| k != "bundle_sha256" && k != "styles_sha256");
         fields.push((
@@ -84,10 +83,8 @@ impl PluginDist {
         log.info(
             "plugin_loaded",
             &[
-                ("dir", &dir_text),
-                ("bundle_bytes", &bundle.len().to_string()),
-                ("bundle_sha256", &bundle_sha256),
-                ("styles_sha256", &styles_sha256),
+                ("bundle_bytes", Val::bytes(bundle.len() as u64)),
+                ("styles_bytes", Val::bytes(styles.len() as u64)),
             ],
         );
         Self {
@@ -97,14 +94,13 @@ impl PluginDist {
         }
     }
 
-    fn missing(log: &Log, file: &str, dir: &str, reason: &str) -> Self {
+    fn missing(log: &Log, file: &'static str, reason: Val) -> Self {
         log.warn(
             "plugin_unavailable",
             &[
-                ("dir", dir),
-                ("file", file),
+                ("file", Val::word(file)),
                 ("reason", reason),
-                ("decision", "plugin_unavailable"),
+                ("decision", Val::word("plugin_unavailable")),
             ],
         );
         Self::unavailable()

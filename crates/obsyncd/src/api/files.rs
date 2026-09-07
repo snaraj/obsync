@@ -11,7 +11,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::storage::types::NewVersion;
-use crate::types::{FileId, Sid, UnixMs, VersionId};
+use crate::types::{FileId, Sid, VersionId};
 
 use super::edge::ClientInfo;
 use super::render::{self, b, s};
@@ -79,8 +79,8 @@ pub fn post_version(
         return Err(ApiError::bad_request("a tombstone carries no sids"));
     }
 
-    let ts = UnixMs(app.clock.unix_ms());
     let outcome = app.store.append_version(NewVersion {
+        account_id: app.account_id()?,
         file_id,
         version_id,
         parents,
@@ -90,13 +90,12 @@ pub fn post_version(
         manifest_nonce,
         deleted,
         device_id: authed.id,
-        ts,
     })?;
 
-    if !outcome.existing {
+    if !outcome.existed {
         auth::record_edit(app, &authed.id, client);
     }
-    let status = if outcome.existing { 200 } else { 201 };
+    let status = if outcome.existed { 200 } else { 201 };
     Ok(Response::json(
         status,
         &obj(vec![

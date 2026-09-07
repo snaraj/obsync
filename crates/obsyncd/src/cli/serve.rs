@@ -18,9 +18,9 @@ use obsync_core::http::{Limits, Server};
 use crate::api::{self, App};
 use crate::config::Config;
 use crate::dashboard::Dashboard;
-use crate::log::Log;
+use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
-use crate::storage::Store;
+use crate::storage::{Store, StoreError, load_or_create_server_key};
 use crate::types::UnixMs;
 use crate::{api::rand, signal};
 
@@ -49,6 +49,8 @@ pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
 pub const TICK: Duration = Duration::from_secs(1);
 /// The first-boot setup token, under the journal volume.
 pub const SETUP_TOKEN_FILE: &str = "v1/setup-token";
+/// A setup token is 32 random bytes as hex.
+pub const TOKEN_HEX_LEN: usize = 64;
 
 /// Run the server. Returns the process exit code.
 pub fn run() -> i32 {
@@ -60,17 +62,17 @@ pub fn run() -> i32 {
         }
     };
     let log = Log::new(cfg.log_level);
+    cfg.log_startup(&log);
     let shutdown = signal::install();
 
-    let store = match Store::open(&cfg.storage(), cfg.server_key, log.clone()) {
+    let storage = cfg.storage();
+    let server_key = match load_or_create_server_key(&storage.journal_dir, cfg.server_key, &log) {
+        Ok(key) => key,
+        Err(e) => return fatal(&log, "server_key_failed", &e),
+    };
+    let store = match Store::open(&storage, server_key, log.clone()) {
         Ok(store) => store,
-        Err(e) => {
-            log.error(
-                "store_open_failed",
-                &[("decision", "exit"), ("error", &format!("{e:?}"))],
-            );
-            return 1;
-        }
+        Err(e) => return fatal(&log, "store_open_failed", &e),
     };
 
     let setup_token = match setup_token(&cfg, &store, &log) {
@@ -78,7 +80,7 @@ pub fn run() -> i32 {
         Err(e) => {
             log.error(
                 "setup_token_failed",
-                &[("decision", "exit"), ("error", &e.to_string())],
+                &[("decision", Val::word("exit")), ("io", Val::io(&e))],
             );
             return 1;
         }
@@ -91,31 +93,23 @@ pub fn run() -> i32 {
         min_body_rate_bytes_per_sec: MIN_BODY_RATE,
         max_connections: cfg.max_connections,
     };
-    let mut server = match Server::bind(&cfg.listen, limits) {
+    let mut server = match Server::bind(&cfg.listen.to_string(), limits) {
         Ok(server) => server,
         Err(e) => {
             log.error(
                 "listen_failed",
-                &[
-                    ("listen", &cfg.listen),
-                    ("decision", "exit"),
-                    ("error", &e.to_string()),
-                ],
+                &[("decision", Val::word("exit")), ("io", Val::io(&e))],
             );
             return 1;
         }
     };
     let sink_log = log.clone();
-    server.set_error_sink(Arc::new(move |msg: &str| {
-        sink_log.warn(
-            "http_refused",
-            &[("decision", "parser_refusal"), ("detail", msg)],
-        );
+    server.set_error_sink(Arc::new(move |_| {
+        sink_log.warn("http_refused", &[("decision", Val::word("parser_refusal"))]);
     }));
 
     let dashboard = Dashboard::load(&cfg.dashboard_dir, &log);
     let plugin = PluginDist::load(&cfg.plugin_dir, &log);
-    let listen = server.local_addr().to_string();
     let app = Arc::new(App::new(
         cfg,
         store,
@@ -129,10 +123,12 @@ pub fn run() -> i32 {
     log.info(
         "serve_start",
         &[
-            ("version", env!("CARGO_PKG_VERSION")),
-            ("listen", &listen),
-            ("max_connections", &app.cfg.max_connections.to_string()),
-            ("drain_secs", &DRAIN.as_secs().to_string()),
+            ("version", Val::word(env!("CARGO_PKG_VERSION"))),
+            (
+                "max_connections",
+                Val::count(app.cfg.max_connections as u64),
+            ),
+            ("drain_ms", Val::ms(DRAIN.as_millis() as u64)),
         ],
     );
 
@@ -144,14 +140,23 @@ pub fn run() -> i32 {
         let _ = worker.join();
     }
     match app.store.snapshot() {
-        Ok(()) => log.info("shutdown_snapshot", &[("decision", "ok")]),
-        Err(e) => log.error(
-            "shutdown_snapshot",
-            &[("decision", "failed"), ("error", &format!("{e:?}"))],
-        ),
+        Ok(()) => log.info("shutdown_snapshot", &[("decision", Val::word("ok"))]),
+        Err(e) => log.error("shutdown_snapshot", &[("decision", Val::word(e.code()))]),
     }
-    log.info("serve_stop", &[("decision", "clean")]);
+    log.info("serve_stop", &[("decision", Val::word("clean"))]);
     0
+}
+
+/// Log a fatal storage refusal by its code and exit non-zero.
+fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
+    log.error(
+        event,
+        &[
+            ("decision", Val::word("exit")),
+            ("refusal", Val::word(e.code())),
+        ],
+    );
+    1
 }
 
 /// Start the four background threads: collection, scrub, sweep, and snapshot.
@@ -163,26 +168,25 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
             GC_PERIOD,
             |app| app.take_gc_request(),
             |app| {
-                let started = app.log.start("gc", GC_BUDGET);
+                let started = app.log.start("gc_cycle", GC_BUDGET.as_millis() as u64);
                 let at = Instant::now();
                 app.set_gc_running(true);
                 let summary = app.store.gc_run(UnixMs(app.clock.unix_ms()));
                 app.set_gc_running(false);
-                started.summary(&[
-                    ("chunks_collected", &summary.chunks_collected.to_string()),
-                    ("bytes_collected", &summary.bytes_collected.to_string()),
-                    ("chunks_retained", &summary.chunks_retained.to_string()),
-                    ("duration_ms", &at.elapsed().as_millis().to_string()),
-                    ("budget_ms", &GC_BUDGET.as_millis().to_string()),
-                    (
-                        "decision",
-                        if at.elapsed() > GC_BUDGET {
-                            "over_budget"
-                        } else {
-                            "ok"
-                        },
-                    ),
-                ]);
+                let over = at.elapsed() > GC_BUDGET;
+                started.summary(
+                    &app.log,
+                    &[
+                        ("chunks_collected", Val::count(summary.chunks_collected)),
+                        ("bytes_collected", Val::bytes(summary.bytes_collected)),
+                        ("chunks_retained", Val::count(summary.chunks_retained)),
+                        ("budget_ms", Val::ms(GC_BUDGET.as_millis() as u64)),
+                        (
+                            "decision",
+                            Val::word(if over { "over_budget" } else { "ok" }),
+                        ),
+                    ],
+                );
             },
         ),
         scrub_thread(app),
@@ -198,9 +202,9 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
                     app.log.debug(
                         "swept",
                         &[
-                            ("nonces", &nonces.to_string()),
-                            ("pairings", &pairings.to_string()),
-                            ("sessions", &sessions.to_string()),
+                            ("nonces", Val::count(nonces as u64)),
+                            ("pairings", Val::count(pairings as u64)),
+                            ("sessions", Val::count(sessions as u64)),
                         ],
                     );
                 }
@@ -216,8 +220,8 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
                     app.log.error(
                         "snapshot_failed",
                         &[
-                            ("decision", "retry_next_period"),
-                            ("error", &format!("{e:?}")),
+                            ("decision", Val::word("retry_next_period")),
+                            ("refusal", Val::word(e.code())),
                         ],
                     );
                 }
@@ -271,9 +275,9 @@ fn scrub_thread(app: &Arc<App>) -> JoinHandle<()> {
                     app.log.error(
                         "scrub_mismatch",
                         &[
-                            ("decision", "quarantined"),
-                            ("mismatches", &summary.mismatches.to_string()),
-                            ("quarantined", &summary.quarantined.to_string()),
+                            ("decision", Val::word("quarantined")),
+                            ("mismatches", Val::count(summary.mismatches)),
+                            ("quarantined", Val::count(summary.quarantined.len() as u64)),
                         ],
                     );
                 }
@@ -299,36 +303,43 @@ fn nap(app: &Arc<App>, total: Duration) {
 ///
 /// The token is written to the journal volume with mode 0600 and survives
 /// restarts: `docs/architecture.md` 4.5 makes it the dashboard's recovery
-/// login as well as the first-boot credential. Only its first eight
-/// characters are ever logged, with the path that holds the rest.
+/// login as well as the first-boot credential.
+///
+/// The line says where the token is, never what it is. Not even a prefix
+/// reaches the log: the logger takes no free text for a credential
+/// (`doctrine_test`), and a prefix in a log file is a prefix an attacker
+/// reading logs does not have to guess.
 fn setup_token(cfg: &Config, store: &Store, log: &Log) -> std::io::Result<Option<String>> {
-    let path = cfg.journal_dir.join(SETUP_TOKEN_FILE);
-    if let Some(parent) = path.parent() {
+    let file = cfg.journal_dir.join(SETUP_TOKEN_FILE);
+    if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let existing = std::fs::read_to_string(&path)
+    let existing = std::fs::read_to_string(&file)
         .ok()
         .map(|v| v.trim().to_string());
     let token = match existing {
-        Some(v) if v.len() == 64 => v,
+        Some(v) if v.len() == TOKEN_HEX_LEN => v,
         _ => {
             let minted = rand::hex_token(32)?;
-            write_private(&path, &minted)?;
+            write_private(&file, &minted)?;
             minted
         }
     };
-    if store.account().is_none() {
-        log.info(
-            "setup_token_ready",
-            &[
-                ("prefix", &token[..8]),
-                ("file", &path.display().to_string()),
-                ("hint", "the full token is in that file, mode 0600"),
-            ],
-        );
-    } else {
-        log.debug("setup_token_ready", &[("recovery_login", "available")]);
-    }
+    log.info(
+        "setup_token_ready",
+        &[
+            ("file", Val::word("<journal volume>/v1/setup-token")),
+            ("mode", Val::word("0600")),
+            (
+                "state",
+                Val::word(if store.account().is_none() {
+                    "awaiting_setup"
+                } else {
+                    "recovery_login"
+                }),
+            ),
+        ],
+    );
     Ok(Some(token))
 }
 
