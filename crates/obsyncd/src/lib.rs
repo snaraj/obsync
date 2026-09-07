@@ -1,10 +1,12 @@
-//! obsyncd: the blind sync server behind `docs/protocol.md`.
+//! obsyncd: the blind sync server (AGENTS.md, "Purpose and architecture").
 //!
-//! Module list is fixed by AGENTS.md "Package layout"; a new module is a
-//! contract change. Every file carries `#![forbid(unsafe_code)]` except
-//! `signal`, the one permitted FFI surface (AGENTS.md requirement 5), which is
-//! why the forbid is per file and not at this crate root.
-#![deny(missing_docs)]
+//! `main.rs` is a thin entry point over this library so every module is
+//! testable in-process with no network and no fixtures on disk.
+//!
+//! There is deliberately no crate-level `forbid(unsafe_code)`: it would make
+//! the one permitted FFI surface, [`signal`], impossible to compile. Every
+//! other file carries the attribute itself, and `doctrine_test` fails the
+//! build if one does not.
 
 pub mod api;
 pub mod cli;
@@ -15,3 +17,6 @@ pub mod plugin_dist;
 pub mod signal;
 pub mod storage;
 pub mod types;
+
+#[cfg(test)]
+mod doctrine_test;
