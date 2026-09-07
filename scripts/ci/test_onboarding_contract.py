@@ -283,6 +283,12 @@ COMPOSE_PINNED_VERBS = frozenset({"up", "run"})
 # default; this is the other half, so the documented command answers it.
 BIND_ADDRESS_VARIABLE = "OBSYNC_BIND_ADDRESS"
 EVERY_INTERFACE = "0.0.0.0"
+# Rule 12: a bind address limits the DESTINATION interface, never the source.
+# Routed, VPN or port-forwarded traffic arriving at a LAN address is accepted
+# unless a firewall or the router's forwarding rules refuse it, so the README
+# must say so in these words and may not claim source exclusivity for a bind.
+REACHABILITY_SENTENCE = "a bind address limits the destination interface, not the source"
+SOURCE_EXCLUSIVITY_CLAIMS = ("and no further", "nothing else does", "nothing off this host can open")
 VOLUME_FLAGS = frozenset({"-v", "--volume", "--mount"})
 
 
@@ -569,6 +575,7 @@ def refusals(documents: dict[str, str]) -> list[str]:
                 "README.md: the quick start no longer says the token "
                 f"{RECOVERY_SENTENCE!r}"
             )
+        found.extend(_reachability_refusals(quick_start))
         found.extend(_program_refusals(quick_start))
     architecture = documents.get(ARCHITECTURE_NAME, "")
     if architecture:
@@ -740,6 +747,28 @@ def _compose_file_refusals(text: str) -> list[str]:
             found.append(
                 f"{COMPOSE_NAME}: service `{service}` runs {image!r}, which is "
                 "not an @sha256 digest with no tag"
+            )
+    return found
+
+
+def _reachability_refusals(quick_start: str) -> list[str]:
+    """Rule 12 over the quick start: the destination/source sentence is present
+    and no sentence claims a bind address excludes sources."""
+    found: list[str] = []
+    # Markdown wraps sentences across lines; judge the words, not the wrapping.
+    lowered = " ".join(quick_start.split()).lower()
+    if REACHABILITY_SENTENCE not in lowered:
+        found.append(
+            "README.md: the quick start no longer says that "
+            f"{REACHABILITY_SENTENCE!r}, so a reader may take a LAN bind for "
+            "a source access control"
+        )
+    for claim in SOURCE_EXCLUSIVITY_CLAIMS:
+        if claim in lowered:
+            found.append(
+                f"README.md: the quick start claims source exclusivity for a bind "
+                f"address ({claim!r}); routed, VPN or forwarded traffic reaches a "
+                f"LAN bind unless a firewall or the router refuses it"
             )
     return found
 
@@ -997,6 +1026,32 @@ QUICK_START_READ = f"docker cp obsync{TOKEN_PATH} - | tar -xO"
 
 # The compose path's own two lines, named once for the same reason.
 COMPOSE_UP_IMAGE = f"OBSYNC_IMAGE={SERVER_IMAGE_PREFIX}<digest>"
+class ReachabilityWordingIsPinned(unittest.TestCase):
+    """Rule 12: destination, not source, and no exclusivity claim."""
+
+    def test_the_readme_as_shipped_says_destination_not_source(self):
+        self.assertEqual([], _reachability_refusals(section(documents()["README.md"], "## Get syncing")))
+
+    def test_deleting_the_sentence_is_refused(self):
+        quick_start = " ".join(section(documents()["README.md"], "## Get syncing").split())
+        index = quick_start.lower().index(REACHABILITY_SENTENCE)
+        mutated = quick_start[:index] + "the bind address is the whole story" + quick_start[index + len(REACHABILITY_SENTENCE):]
+        found = _reachability_refusals(mutated)
+        self.assertTrue(any("no longer says" in f for f in found), found)
+
+    def test_each_source_exclusivity_claim_is_refused(self):
+        quick_start = section(documents()["README.md"], "## Get syncing")
+        for claim in SOURCE_EXCLUSIVITY_CLAIMS:
+            with self.subTest(claim=claim):
+                found = _reachability_refusals(quick_start + f"\nA LAN address reaches it from that network {claim}.\n")
+                self.assertTrue(any(claim in f for f in found), found)
+
+    def test_the_claim_check_is_case_insensitive(self):
+        quick_start = section(documents()["README.md"], "## Get syncing")
+        found = _reachability_refusals(quick_start + "\nNothing Else Does.\n")
+        self.assertTrue(any("nothing else does" in f for f in found), found)
+
+
 COMPOSE_UP_BIND = f"{BIND_ADDRESS_VARIABLE}=192.168.1.10"
 COMPOSE_SERVICE_IMAGE = f"image: {COMPOSE_IMAGE}"
 # A syntactically perfect digest that is not this project's image, and one that

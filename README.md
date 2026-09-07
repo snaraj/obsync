@@ -130,15 +130,21 @@ is a requirement, and nothing below assumes them.
 `OBSYNC_BIND_ADDRESS` is the host address ports 80 and 443 are published
 on, and it is the answer to a question the two certificate options above do
 not touch. The private name and the certificate authority decide what this
-service is CALLED and which devices TRUST it; the bind address decides who
-can OPEN it, and nothing else does -- a client from anywhere can pick the
-name itself and skip certificate verification entirely. So state the
-interface: `192.168.1.10`, this host's own address on your LAN, reaches it
-from that network and no further; `127.0.0.1` reaches it only from this
+service is CALLED and which devices TRUST it; they decide nothing about who
+can reach it -- a client from anywhere can pick the name itself and skip
+certificate verification entirely. The bind address decides which of this
+host's interfaces accepts connections: a bind address limits the destination
+interface, not the source. `127.0.0.1` accepts only connections from this
 machine, which is what you want when a VPN terminates here or another
-reverse proxy sits in front. Neither value puts this server anywhere beyond
-the interface you named. `0.0.0.0` publishes on every interface this host
-has, and that IS the decision to expose it -- a legitimate one behind a
+reverse proxy sits in front. A LAN address of this host (`192.168.1.10`)
+accepts every connection that arrives at that address, which is your LAN
+and also anything routed to it: a VPN that routes into your LAN, another
+subnet your router forwards, or a port forward you set up. So a non-loopback
+bind assumes three things you own: your router forwards nothing from the
+internet to this host on 80 or 443, a host firewall or router policy limits
+sources to the networks you intend, and you know which VPNs route into the
+LAN. `0.0.0.0` publishes on every interface this host has, and that IS the
+decision to expose it wherever the host is reachable -- legitimate behind a
 firewall or a NAT you control, and then the firewall is yours to get right.
 Compose refuses to start until you have chosen, because there is no value
 here that is safe for everybody.

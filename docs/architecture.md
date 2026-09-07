@@ -625,10 +625,12 @@ terminator and the edge mode:
 
 The Compose row is the one a stranger can run: a private name, a certificate
 authority Caddy generates, and no account with any provider. Reachability is
-the deployer's own decision and is made once, in `OBSYNC_BIND_ADDRESS`: the
-name and the certificate authority settle what the service is called and
-which devices trust it, while the host address 80 and 443 are published on
-settles who can open them. The compose file requires that variable and
+the deployer's own decision, in `OBSYNC_BIND_ADDRESS` and in the firewall
+and routing around the host: the name and the certificate authority settle
+what the service is called and which devices trust it; the bind address
+settles which interface accepts connections and nothing about their source,
+since routed, VPN or forwarded traffic arriving at a LAN address is accepted
+unless a firewall or the router's forwarding rules refuse it. The compose file requires that variable and
 defaults it to nothing. `README.md`, "Any network, no provider", is its
 install path.
 

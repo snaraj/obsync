@@ -91,8 +91,13 @@ services:
     #   127.0.0.1  reached over a VPN that terminates on this host, or by a
     #              reverse proxy running beside it. Nothing off this host can
     #              open the port at all.
-    #   a LAN address of this host (`192.168.1.10`) for LAN-only: the phones
-    #              and laptops on that network reach it and nothing else does.
+    #   a LAN address of this host (`192.168.1.10`): the phones and laptops
+    #              on that network reach it, and so does anything ROUTED to
+    #              that address -- a VPN into the LAN, a forwarded subnet, a
+    #              port forward. A bind address limits the destination
+    #              interface, not the source; the router's forwarding rules
+    #              and a host firewall are what limit sources, and they are
+    #              the deployer's.
     #   0.0.0.0    every interface, which is a decision to expose this service
     #              wherever this host is reachable. It is a legitimate choice
     #              behind a firewall or a NAT the deployer controls, and the
