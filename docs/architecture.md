@@ -317,8 +317,9 @@ should suggest otherwise.
 
 **Manual access on the host** is the only access path beyond a paired
 device: `obsyncd export --domain <id> --key <hex> --out <dir>` reconstructs
-the stored ciphertext from the volumes, and the operator decrypts it on a
-device that holds the key. It is the same binary and touches the server's
+that domain's stored ciphertext from the volumes -- file records carry their
+domain in clear (5.1 item 4), so the filter is exact -- and the operator
+decrypts it on a device that holds the key. It is the same binary and touches the server's
 data read-only.
 
 **Phase 2 adds recipients**, and ships only when both of these hold:

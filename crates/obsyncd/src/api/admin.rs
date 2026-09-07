@@ -18,7 +18,7 @@ use crate::types::Seq;
 
 use super::edge::ClientInfo;
 use super::render::{self, n, s};
-use super::{ApiError, App, auth, domains, rand};
+use super::{ApiError, App, auth, rand};
 
 /// Cookie carrying the dashboard session.
 pub const SESSION_COOKIE: &str = "obsync_session";
@@ -387,15 +387,6 @@ pub fn scrub_run(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
     app.request_scrub();
     Ok(Response::json(202, &obj(vec![("queued", render::b(true))])))
-}
-
-/// `GET /v1/admin/domains`.
-///
-/// # Errors
-/// `401 no_session`.
-pub fn domains(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    session(app, req)?;
-    Ok(Response::json(200, &domains::domains_body(app)))
 }
 
 /// `GET /v1/admin/logs?device=<id prefix>&limit=<n>`: the recent decision

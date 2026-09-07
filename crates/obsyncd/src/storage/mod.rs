@@ -30,7 +30,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod testutil;
+pub(crate) mod testutil;
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
@@ -53,8 +53,8 @@ use self::journal::{Frame, Journal, Record};
 
 pub use self::types::{
     AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DeviceState,
-    DomainRecord, FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome,
-    ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
+    FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome, ScrubSummary, SeenEvent,
+    SeenKind, StoreError, VersionRecord, VolumeStatus,
 };
 
 /// The domain separator device secrets rest under
@@ -283,6 +283,7 @@ impl Store {
         let timed = self.log.timed("version_append");
         let mut fields = vec![
             ("file", Val::file(&v.file_id)),
+            ("domain", Val::domain(&v.domain_id)),
             ("device", Val::device(&v.device_id)),
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
@@ -337,6 +338,18 @@ impl Store {
             DeviceState::Pending => return Err(StoreError::DevicePending),
             DeviceState::Revoked => return Err(StoreError::DeviceRevoked),
         }
+        // A file never changes domain (`docs/architecture.md` 5.1 item 4).
+        // Allowing it would let one version move a file into or out of a
+        // domain somebody had been granted, which is the whole authorization
+        // decision phase 2 will make.
+        if let Some(entry) = index.files.get(&v.file_id)
+            && entry.domain_id != v.domain_id
+        {
+            return Err(StoreError::DomainMismatch {
+                expected: entry.domain_id,
+                actual: v.domain_id,
+            });
+        }
         if let Some(existing) = index.version(&v.file_id, &v.version_id) {
             let entry = index.files.get(&v.file_id).expect("the version's file");
             return Ok(AppendOutcome {
@@ -360,6 +373,7 @@ impl Store {
         let seq = append(&mut journal, &mut index, |seq| {
             Frame::Version(VersionRecord {
                 file_id: v.file_id,
+                domain_id: v.domain_id,
                 version_id: v.version_id,
                 parents: v.parents.clone(),
                 sids: v.sids.clone(),
@@ -650,23 +664,16 @@ impl Store {
 
     // -- domains -----------------------------------------------------------
 
-    /// Every domain, in id order.
-    pub fn domains(&self) -> Vec<DomainRecord> {
-        self.index().domains.values().copied().collect()
-    }
-
-    /// Declare a domain. Declaring one twice changes nothing.
-    pub fn create_domain(&self, id: DomainId) -> Result<(), StoreError> {
-        let mut journal = self.journal();
-        let mut index = self.index();
-        if index.domains.contains_key(&id) {
-            return Ok(());
-        }
-        append(&mut journal, &mut index, |_| Frame::Domain {
-            domain_id: id,
-            created: UnixMs::now(),
-        })?;
-        Ok(())
+    /// Whether any file the store holds is in this domain.
+    ///
+    /// A domain exists because a file is in it: file records carry the domain
+    /// (`docs/architecture.md` 5.1 item 4), so a separate ledger of declared
+    /// domains would be a second answer to one question.
+    pub fn domain_exists(&self, id: &DomainId) -> bool {
+        self.index()
+            .files
+            .values()
+            .any(|entry| entry.domain_id == *id)
     }
 
     // -- volumes, collection, integrity ------------------------------------
@@ -969,7 +976,7 @@ fn append(
 /// `version_id = SHA-256(file_id || sorted parents || manifest_ct || sids)`
 /// (docs/architecture.md §3.4). Parents are sorted by their bytes so two
 /// devices that name the same parents in a different order agree.
-fn version_id_of(
+pub(crate) fn version_id_of(
     file_id: &FileId,
     parents: &[VersionId],
     manifest_ct: &[u8],

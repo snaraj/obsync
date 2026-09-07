@@ -110,21 +110,24 @@ edge_required`.
 
 - `POST /v1/files/{file_id}/versions`
   `{"version_id":"<64hex>","parents":["<64hex>",…],"sids":["<64hex>",…],
-  "bytes":<n>,"manifest_ct":"<base64>","manifest_nonce":"<24hex>",
-  "deleted":false}` → `201 {"seq":<n>,"heads":["<64hex>",…],"conflicted":
-  false}`. Rules: every sid must exist (`409 missing_chunks` with the
-  list); `version_id` must equal the server's recomputation (`422
-  version_id_mismatch`); `parents` equal to the current heads → sole head;
+  "bytes":<n>,"domain_id":"<32hex>","manifest_ct":"<base64>",
+  "manifest_nonce":"<24hex>","deleted":false}` → `201 {"seq":<n>,
+  "heads":["<64hex>",…],"conflicted":false}`. Rules: every sid must exist
+  (`409 missing_chunks` with the list); `version_id` must equal the server's
+  recomputation (`422 version_id_mismatch`); `domain_id` is required and
+  must equal the file's own (`409 domain_mismatch`), which its first version
+  fixed for life; `parents` equal to the current heads → sole head;
   otherwise the version is added as a head and `conflicted:true`. Posting an
   existing `version_id` is a `200` no-op.
-- `GET /v1/files/{file_id}` → `{"file_id","heads":[…],"conflicted",
-  "versions":[{"version_id","parents","sids","bytes","manifest_ct",
-  "manifest_nonce","device_id","ts","deleted"}]}` newest first, capped at
-  `OBSYNC_RETENTION_VERSIONS` plus every head.
+- `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
+  "conflicted","versions":[{"version_id","parents","sids","bytes",
+  "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
+  first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head. The domain
+  is stated once on the file, because every version of a file is in it.
 - `GET /v1/files/{file_id}/versions/{version_id}` → one version record.
 - `GET /v1/files?after=<file_id>&limit=<n>` → `{"files":[{"file_id",
-  "heads","conflicted","latest_ts"}],"next":"<file_id>|null"}`. Used for
-  initial reconciliation; the feed is the normal path.
+  "domain_id","heads","conflicted","latest_ts"}],"next":"<file_id>|null"}`.
+  Used for initial reconciliation; the feed is the normal path.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
 
@@ -132,19 +135,22 @@ A **tombstone** is a version with `"deleted":true` and no sids.
 
 - `GET /v1/changes?since=<seq>&wait=<seconds ≤ 55>&limit=<n ≤ 1000>` →
   `{"seq":<last_included>,"head_seq":<journal_head>,"changes":[{"seq",
-  "file_id","version_id","parents","sids","bytes","manifest_ct",
-  "manifest_nonce","device_id","ts","deleted","heads","conflicted"}]}`.
+  "file_id","domain_id","version_id","parents","sids","bytes","manifest_ct",
+  "manifest_nonce","device_id","ts","deleted","heads","conflicted"}]}`. A
+  feed entry arrives without its file, so it carries its own `domain_id`.
   With `wait`, the server holds the request until a new frame lands or the
   wait elapses, then returns whatever exists (possibly an empty list).
   `since` beyond `head_seq` → `416 seq_ahead`.
 
 ## Domains
 
-- `GET /v1/domains` → `{"domains":[{"domain_id","created"}]}`. Domain
-  membership of paths is client-side metadata; the server tracks the id and
-  when it was declared, and holds no key for it. There is no request on this
-  API that hands the server a content key.
-- `POST /v1/domains` `{"domain_id":"<32hex>"}` → `201`.
+A domain is the key-scoping unit (`docs/architecture.md` 3.1 and 5.1). It has
+no endpoints: a domain exists because a file record names it, and which
+PATHS it covers is owner-only metadata the server never sees. That metadata
+is one encrypted object under a reserved file id, written and read through
+the version endpoints above like any other file; the server cannot tell it
+from a note, and there is no request on this API that hands the server a
+content key.
 
 ## Dashboard (admin) API
 
@@ -173,7 +179,6 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",
   "last":<scrub>|null},"quarantine":[{"sid","ts","bytes","reason"}]}`.
 - `POST /v1/admin/gc/run`, `POST /v1/admin/scrub/run` → `202`.
-- `GET /v1/admin/domains` → the body `GET /v1/domains` returns.
 - `GET /v1/admin/logs?device=<id prefix>&limit=<n ≤ 500>` → `{"lines":
   [{"ts","method","path_class","device":"<id>"|null,"status","bytes",
   "duration_ms","decision"}]}` newest first: the pinned request log line

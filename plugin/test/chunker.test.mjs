@@ -156,7 +156,7 @@ test("cutPoint honours the minimum and the maximum", async () => {
 });
 
 test("chunk encryption over a chunked file yields per-chunk sids", async () => {
-  const domainKey = Uint8Array.from(Buffer.from(fixtures.domain_key, "hex"));
+  const domainKey = Uint8Array.from(Buffer.from(fixtures.domains[0].domain_key, "hex"));
   const data = stream(12 << 20, 0x9911);
   const sids = [];
   for await (const chunk of chunker.chunkStream(chunker.bytesSource(data))) {

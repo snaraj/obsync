@@ -7,8 +7,10 @@
  * - CREATOR (an already-paired device): mints a pairing through the server,
  *   generates the 16-byte pairing secret `PS` LOCALLY, shows the code, polls
  *   for a claimant, asks the user to approve it by name and platform, and
- *   posts `{VRK, domains}` sealed under `K_pair = HKDF(PS, "obsync/v1/pair",
- *   pairing_id)`.
+ *   posts `{VRK}` sealed under `K_pair = HKDF(PS, "obsync/v1/pair",
+ *   pairing_id)`. The vault key is the whole envelope: which paths live in
+ *   which domain is read from the synced map (`domainmap.ts`), which `VRK`
+ *   is exactly what unlocks.
  * - CLAIMANT (the new device): reads the code, claims the pairing with the
  *   enroll token to get its device credential, fetches the sealed envelope
  *   once, and opens it with `PS`.
@@ -58,7 +60,6 @@ export interface PairingCode {
 /** What a paired device seals for a new one. */
 export interface VaultEnvelope {
   vrk: string;
-  domains: Record<string, string>;
 }
 
 /**
@@ -93,18 +94,13 @@ export function newVaultKey(): Bytes {
   return randomBytes(VRK_BYTES);
 }
 
-/** A fresh domain id: 16 random bytes as hex, the unit key derivation scopes to. */
-export function newDomainId(): string {
-  return hex(randomBytes(16));
-}
-
 async function envelopeKey(pairingSecret: Bytes, pairingId: string): Promise<CryptoKey> {
   const key = await pairingKey(pairingSecret, pairingId);
   return crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
 /**
- * Seal `{VRK, domains}` for the claimant. The AAD is the pairing id, so an
+ * Seal `{VRK}` for the claimant. The AAD is the pairing id, so an
  * envelope cannot be replayed into a different pairing even if the same `PS`
  * were somehow reused.
  */
@@ -141,7 +137,7 @@ export async function openEnvelope(
   if (typeof parsed.vrk !== "string" || parsed.vrk.length !== VRK_BYTES * 2) {
     throw new Error("pairing: the envelope carries no vault key");
   }
-  return { vrk: parsed.vrk, domains: parsed.domains ?? {} };
+  return { vrk: parsed.vrk };
 }
 
 /**

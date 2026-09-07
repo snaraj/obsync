@@ -99,6 +99,7 @@ async function vault({ fs: injected } = {}) {
     domainKey: k.domainKey,
     manifestKey: k.manifestKey,
     domainId: KEYS.domainId,
+    mapFileId: k.map.fileId,
     deviceId: KEYS.deviceId,
     concurrency: 4,
     authored: new Set(),

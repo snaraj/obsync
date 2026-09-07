@@ -11,8 +11,8 @@ use obsync_core::http::Request;
 use obsync_core::json::{Value, obj, parse_limited};
 
 use crate::storage::types::{
-    AccountRecord, Change, DevicePolicy, DeviceRecord, DomainRecord, FileRecord, FileSummary,
-    GcSummary, ScrubSummary, SeenEvent, VersionRecord, VolumeStatus,
+    AccountRecord, Change, DevicePolicy, DeviceRecord, FileRecord, FileSummary, GcSummary,
+    ScrubSummary, SeenEvent, VersionRecord, VolumeStatus,
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -144,9 +144,15 @@ pub fn version(v: &VersionRecord) -> Value {
 }
 
 /// `GET /v1/files/{file_id}`.
+///
+/// The domain is stated once, on the file: every version of a file is in the
+/// file's domain, so repeating it per version would be a second copy of one
+/// fact (`docs/architecture.md` 5.1 item 4). The change feed carries its own,
+/// because a feed entry arrives without its file.
 pub fn file(f: &FileRecord) -> Value {
     obj(vec![
         ("file_id", s(&f.file_id.to_string())),
+        ("domain_id", s(&f.domain_id.to_string())),
         ("heads", strs(f.heads.iter().map(ToString::to_string))),
         ("conflicted", b(f.conflicted)),
         (
@@ -160,6 +166,7 @@ pub fn file(f: &FileRecord) -> Value {
 pub fn file_summary(f: &FileSummary) -> Value {
     obj(vec![
         ("file_id", s(&f.file_id.to_string())),
+        ("domain_id", s(&f.domain_id.to_string())),
         ("heads", strs(f.heads.iter().map(ToString::to_string))),
         ("conflicted", b(f.conflicted)),
         ("latest_ts", ms(f.latest_ts)),
@@ -173,6 +180,7 @@ pub fn change(c: &Change) -> Value {
     obj(vec![
         ("seq", seq(v.seq)),
         ("file_id", s(&v.file_id.to_string())),
+        ("domain_id", s(&v.domain_id.to_string())),
         ("version_id", s(&v.version_id.to_string())),
         ("parents", strs(v.parents.iter().map(ToString::to_string))),
         ("sids", strs(v.sids.iter().map(ToString::to_string))),
@@ -184,14 +192,6 @@ pub fn change(c: &Change) -> Value {
         ("deleted", b(v.deleted)),
         ("heads", strs(c.heads.iter().map(ToString::to_string))),
         ("conflicted", b(c.conflicted)),
-    ])
-}
-
-/// One domain as `GET /v1/domains` reports it.
-pub fn domain(d: &DomainRecord) -> Value {
-    obj(vec![
-        ("domain_id", s(&d.domain_id.to_string())),
-        ("created", ms(d.created)),
     ])
 }
 

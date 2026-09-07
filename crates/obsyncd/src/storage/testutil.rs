@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, VersionRecord};
-use crate::types::{AccountId, DeviceId, FileId, Seq, UnixMs, VersionId};
+use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, UnixMs, VersionId};
 
 /// A directory under `std::env::temp_dir()` removed when the test ends,
 /// including when the test fails: `Drop` runs on the unwind.
@@ -77,6 +77,7 @@ pub(crate) fn version_record(
 ) -> VersionRecord {
     VersionRecord {
         file_id,
+        domain_id: DomainId::new([0xd0; 16]),
         version_id,
         parents: parents.to_vec(),
         sids: Vec::new(),

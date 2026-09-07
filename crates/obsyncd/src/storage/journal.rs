@@ -22,10 +22,10 @@ use obsync_core::json::{self, Value};
 
 use crate::storage::index::{DeviceEntry, FileEntry, Index};
 use crate::storage::types::{
-    DevicePolicy, DeviceRecord, DeviceState, DomainRecord, GcSummary, ScrubSummary, SeenEvent,
-    SeenKind, StoreError, VersionRecord,
+    DevicePolicy, DeviceRecord, DeviceState, GcSummary, ScrubSummary, SeenEvent, SeenKind,
+    StoreError, VersionRecord,
 };
-use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
+use crate::types::{AccountId, DeviceId, FileId, Seq, Sid, UnixMs, VersionId};
 
 #[cfg(test)]
 use crate::storage::Fault;
@@ -72,11 +72,6 @@ pub(crate) enum Frame {
     DeviceDelete { device_id: DeviceId },
     /// A version landed.
     Version(VersionRecord),
-    /// A domain was declared.
-    Domain {
-        domain_id: DomainId,
-        created: UnixMs,
-    },
     /// A device was seen.
     Seen {
         device_id: DeviceId,
@@ -588,6 +583,7 @@ fn id_of<T: std::str::FromStr>(value: &Value) -> Result<T, StoreError> {
 fn version_value(version: &VersionRecord) -> Value {
     json::obj(vec![
         ("file", text(version.file_id)),
+        ("domain", text(version.domain_id)),
         ("id", text(version.version_id)),
         ("parents", list(&version.parents, |p| text(*p))),
         ("sids", list(&version.sids, |s| text(*s))),
@@ -604,6 +600,7 @@ fn version_value(version: &VersionRecord) -> Value {
 fn version_from(value: &Value) -> Result<VersionRecord, StoreError> {
     Ok(VersionRecord {
         file_id: field_id(value, "file")?,
+        domain_id: field_id(value, "domain")?,
         version_id: field_id(value, "id")?,
         parents: field_list(value, "parents", id_of)?,
         sids: field_list(value, "sids", id_of)?,
@@ -773,10 +770,6 @@ impl Record {
                 pairs.push(("device", text(*device_id)));
             }
             Frame::Version(version) => pairs.push(("version", version_value(version))),
-            Frame::Domain { domain_id, created } => {
-                pairs.push(("domain", text(*domain_id)));
-                pairs.push(("created", num(created.0)));
-            }
             Frame::Seen { device_id, event } => {
                 pairs.push(("device", text(*device_id)));
                 pairs.push(("event", seen_value(event)));
@@ -847,10 +840,6 @@ impl Record {
                 device_id: field_id(&value, "device")?,
             },
             "version" => Frame::Version(version_from(field(&value, "version")?)?),
-            "domain" => Frame::Domain {
-                domain_id: field_id(&value, "domain")?,
-                created: UnixMs(field_num(&value, "created")?),
-            },
             "seen" => Frame::Seen {
                 device_id: field_id(&value, "device")?,
                 event: seen_from(field(&value, "event")?)?,
@@ -886,7 +875,6 @@ impl Frame {
             Frame::DeviceRevoke { .. } => "device_revoke",
             Frame::DeviceDelete { .. } => "device_delete",
             Frame::Version(_) => "version",
-            Frame::Domain { .. } => "domain",
             Frame::Seen { .. } => "seen",
             Frame::Gc { .. } => "gc",
             Frame::Scrub { .. } => "scrub",
@@ -928,20 +916,9 @@ fn snapshot_value(index: &Index) -> Value {
             .map(|(file_id, entry)| {
                 json::obj(vec![
                     ("id", text(*file_id)),
+                    ("domain", text(entry.domain_id)),
                     ("heads", list(&entry.heads, |h| text(*h))),
                     ("versions", list(&entry.versions, version_value)),
-                ])
-            })
-            .collect(),
-    );
-    let domains = Value::Array(
-        index
-            .domains
-            .values()
-            .map(|record| {
-                json::obj(vec![
-                    ("id", text(record.domain_id)),
-                    ("created", num(record.created.0)),
                 ])
             })
             .collect(),
@@ -952,7 +929,6 @@ fn snapshot_value(index: &Index) -> Value {
         ("account", account),
         ("devices", devices),
         ("files", files),
-        ("domains", domains),
         (
             "gc",
             match &index.last_gc {
@@ -1021,6 +997,7 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
         index.files.insert(
             file_id,
             FileEntry {
+                domain_id: field_id(file, "domain")?,
                 conflicted: heads.len() > 1,
                 heads,
                 versions,
@@ -1028,19 +1005,6 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
         );
     }
     index.feed.sort_by_key(|(seq, _, _)| *seq);
-    for domain in field(value, "domains")?
-        .as_array()
-        .ok_or_else(|| StoreError::Corrupt("domains is not an array".to_string()))?
-    {
-        let domain_id: DomainId = field_id(domain, "id")?;
-        index.domains.insert(
-            domain_id,
-            DomainRecord {
-                domain_id,
-                created: UnixMs(field_num(domain, "created")?),
-            },
-        );
-    }
     if let Some(summary) = value.get("gc").filter(|v| !v.is_null()) {
         index.last_gc = Some(gc_from(summary)?);
     }
@@ -1126,10 +1090,6 @@ mod tests {
                 &[VersionId::new([4u8; 32])],
                 Seq(6),
             )),
-            Frame::Domain {
-                domain_id: DomainId::new([5u8; 16]),
-                created: UnixMs(7),
-            },
             Frame::Seen {
                 device_id: device.device_id,
                 event: SeenEvent {
@@ -1191,10 +1151,12 @@ mod tests {
         journal
             .append(&record(
                 2,
-                Frame::Domain {
-                    domain_id: DomainId::new([5u8; 16]),
-                    created: UnixMs(7),
-                },
+                Frame::Version(version_record(
+                    FileId::new([2u8; 16]),
+                    VersionId::new([3u8; 32]),
+                    &[],
+                    Seq(2),
+                )),
             ))
             .expect("append");
         journal.set_fault(Fault::JournalMidAppend);
@@ -1208,7 +1170,7 @@ mod tests {
         assert_eq!(report.frames, 2, "the two complete frames survive");
         assert!(report.truncated_bytes > 0, "the torn tail is reported");
         assert_eq!(seen[0].frame.kind(), "account");
-        assert_eq!(seen[1].frame.kind(), "domain");
+        assert_eq!(seen[1].frame.kind(), "version");
 
         // The truncation is durable: a second replay finds a clean tail and
         // appending afterwards works.
@@ -1250,10 +1212,12 @@ mod tests {
         journal
             .append(&record(
                 2,
-                Frame::Domain {
-                    domain_id: DomainId::new([5u8; 16]),
-                    created: UnixMs(7),
-                },
+                Frame::Version(version_record(
+                    FileId::new([2u8; 16]),
+                    VersionId::new([3u8; 32]),
+                    &[],
+                    Seq(2),
+                )),
             ))
             .expect("append");
 
@@ -1270,7 +1234,7 @@ mod tests {
             .expect("replay after the snapshot");
         assert_eq!(report.frames, 1, "only the frames after the snapshot");
         assert_eq!(loaded.seq, Seq(2));
-        assert_eq!(loaded.domains.len(), 1);
+        assert_eq!(loaded.files.len(), 1, "the post-snapshot version landed");
     }
 
     #[test]

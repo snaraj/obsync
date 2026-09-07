@@ -61,8 +61,6 @@ export interface ObsyncData {
   lastSeq: number;
   /** Vault path to the last version this device wrote or read. */
   files: Record<string, FileRecord>;
-  /** Domain id to the vault path prefix it covers. */
-  domains: Record<string, string>;
   /** File id to the file this device declined to materialise. */
   remoteOnly: Record<string, RemoteOnlyRecord>;
   policy: Policy;
@@ -78,7 +76,6 @@ export function defaultData(isMobile: boolean): ObsyncData {
     edgeHeaders: [],
     lastSeq: 0,
     files: {},
-    domains: {},
     remoteOnly: {},
     policy: defaultPolicy(isMobile),
   };
@@ -134,12 +131,6 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
         size: num(record["size"], 0),
         sha256: str(record["sha256"], ""),
       };
-    }
-  }
-  const domains = loaded["domains"];
-  if (isRecord(domains)) {
-    for (const [id, prefix] of Object.entries(domains)) {
-      if (typeof prefix === "string") data.domains[id] = prefix;
     }
   }
   const remoteOnly = loaded["remoteOnly"];

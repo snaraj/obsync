@@ -65,7 +65,9 @@ test("the pairing link is an obsidian URI carrying the code", () => {
 
 test("the envelope opens only with the right pairing secret and id", async () => {
   const secret = pairing.newPairingSecret();
-  const envelope = { vrk: "00".repeat(32), domains: { "0123456789abcdef0123456789abcdef": "" } };
+  // The vault key is the whole envelope: which paths live in which domain
+  // comes from the synced map, which this key is exactly what unlocks.
+  const envelope = { vrk: "00".repeat(32) };
   const sealed = await pairing.sealEnvelope(secret, PAIRING_ID, envelope);
   assert.equal(sealed.nonce.length, 24);
   assert.deepEqual(await pairing.openEnvelope(secret, PAIRING_ID, sealed.envelope, sealed.nonce), envelope);
@@ -87,7 +89,7 @@ test("the envelope opens only with the right pairing secret and id", async () =>
 
 test("an envelope without a vault key is refused", async () => {
   const secret = pairing.newPairingSecret();
-  const sealed = await pairing.sealEnvelope(secret, PAIRING_ID, { domains: {} });
+  const sealed = await pairing.sealEnvelope(secret, PAIRING_ID, {});
   await assert.rejects(
     () => pairing.openEnvelope(secret, PAIRING_ID, sealed.envelope, sealed.nonce),
     /no vault key/,
@@ -165,10 +167,4 @@ test("checksum rejection is not a coincidence of one key", async () => {
     }
   }
   assert.ok(rejected > 60, `only ${rejected} of 72 substitutions were rejected`);
-});
-
-test("a domain id is 16 fresh bytes of hex", () => {
-  const first = pairing.newDomainId();
-  assert.equal(c.isHex(first, 16), true);
-  assert.notEqual(first, pairing.newDomainId());
 });

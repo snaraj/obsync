@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 
 use crate::storage::journal::{Frame, Record};
 use crate::storage::types::{
-    AccountRecord, Change, Changes, DeviceRecord, DeviceState, DomainRecord, FileRecord,
-    FileSummary, GcSummary, ScrubSummary, SeenEvent, StoreError, VersionRecord,
+    AccountRecord, Change, Changes, DeviceRecord, DeviceState, FileRecord, FileSummary, GcSummary,
+    ScrubSummary, SeenEvent, StoreError, VersionRecord,
 };
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -30,9 +30,16 @@ pub(crate) struct DeviceEntry {
     pub(crate) seen: VecDeque<SeenEvent>,
 }
 
-/// A file: its heads and every version the store still holds, oldest first.
-#[derive(Clone, Debug, Default)]
+/// A file: its domain, its heads, and every version the store still holds,
+/// oldest first.
+///
+/// There is no `Default`: a file exists because a version created it, and
+/// that version is the only thing that can say which domain the file is in
+/// (`docs/architecture.md` 5.1 item 4). A default-constructed entry would
+/// have to invent one.
+#[derive(Clone, Debug)]
 pub(crate) struct FileEntry {
+    pub(crate) domain_id: DomainId,
     pub(crate) heads: Vec<VersionId>,
     pub(crate) conflicted: bool,
     pub(crate) versions: Vec<VersionRecord>,
@@ -55,7 +62,6 @@ pub(crate) struct Index {
     pub(crate) account: Option<AccountRecord>,
     pub(crate) devices: BTreeMap<DeviceId, DeviceEntry>,
     pub(crate) files: BTreeMap<FileId, FileEntry>,
-    pub(crate) domains: BTreeMap<DomainId, DomainRecord>,
     pub(crate) chunks: BTreeMap<Sid, ChunkMeta>,
     /// Version frames in journal order: the change feed.
     pub(crate) feed: Vec<(Seq, FileId, VersionId)>,
@@ -142,12 +148,6 @@ impl Index {
                 self.devices.remove(device_id);
             }
             Frame::Version(version) => self.apply_version(version.clone()),
-            Frame::Domain { domain_id, created } => {
-                self.domains.entry(*domain_id).or_insert(DomainRecord {
-                    domain_id: *domain_id,
-                    created: *created,
-                });
-            }
             Frame::Seen { device_id, event } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {
                     match event.kind {
@@ -205,7 +205,18 @@ impl Index {
     /// which is what "conflicted" means. A merge naming both heads resolves
     /// the conflict by the same rule, with no special case.
     fn apply_version(&mut self, version: VersionRecord) {
-        let entry = self.files.entry(version.file_id).or_default();
+        // The first version of a file fixes its domain; every later version
+        // repeats it, and `Store::append_version` refuses one that does not,
+        // so replay never has to choose between two answers.
+        let entry = self
+            .files
+            .entry(version.file_id)
+            .or_insert_with(|| FileEntry {
+                domain_id: version.domain_id,
+                heads: Vec::new(),
+                conflicted: false,
+                versions: Vec::new(),
+            });
         if entry
             .versions
             .iter()
@@ -290,6 +301,7 @@ impl Index {
         }
         Some(FileRecord {
             file_id: *file_id,
+            domain_id: entry.domain_id,
             heads: entry.heads.clone(),
             conflicted: entry.conflicted,
             versions,
@@ -330,6 +342,7 @@ impl Index {
             }
             page.push(FileSummary {
                 file_id: *file_id,
+                domain_id: entry.domain_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
                 latest_ts: entry.versions.last().map(|v| v.ts).unwrap_or_default(),

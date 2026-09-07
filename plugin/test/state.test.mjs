@@ -55,7 +55,6 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
         bad: { fileId: 5 },
         alsoBad: "no",
       },
-      domains: { d: "", e: 9 },
       remoteOnly: { r: { path: "p", size: 2 }, broken: {} },
       policy: { perFileMaxBytes: 100, totalBudgetBytes: "lots" },
     },
@@ -67,7 +66,6 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
   assert.equal(mixed.lastSeq, 0, "a non-numeric sequence resets");
   assert.deepEqual(mixed.edgeHeaders, [{ name: "X-A", value: "1" }]);
   assert.deepEqual(Object.keys(mixed.files), ["good"]);
-  assert.deepEqual(mixed.domains, { d: "" });
   assert.deepEqual(Object.keys(mixed.remoteOnly), ["r"]);
   assert.deepEqual(mixed.policy, { perFileMaxBytes: 100, totalBudgetBytes: 0 });
 });

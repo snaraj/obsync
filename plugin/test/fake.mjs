@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
+const dm = require("../build/domainmap.js");
 const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -187,6 +188,8 @@ export class FakeServer {
     this.unsigned = [];
     this.feedWaiters = [];
     this.heartbeats = 0;
+    /** Set by `seedDomainMap`: the reserved file the map occupies. */
+    this.mapFileId = null;
     this.request = this.request.bind(this);
   }
 
@@ -258,7 +261,6 @@ export class FakeServer {
       return this.json(204, {});
     }
     if (path === "/v1/devices") return this.json(200, { devices: this.devices });
-    if (path === "/v1/domains" && request.method === "POST") return this.json(201, {});
 
     const devicePatch = /^\/v1\/devices\/([0-9a-f]{32})$/.exec(path);
     if (devicePatch && request.method === "PATCH") {
@@ -333,8 +335,17 @@ export class FakeServer {
       }
       const recomputed = this.versionId(fileId, posted.parents, posted.manifest_ct, posted.sids);
       if (recomputed !== posted.version_id) return this.error(422, "version_id_mismatch", recomputed);
-      const file = this.files.get(fileId) ?? { heads: [], versions: [] };
+      // The server's own domain rules (`docs/architecture.md` 5.1 item 4):
+      // every version names a domain, and a file never changes the one its
+      // first version gave it.
+      if (!/^[0-9a-f]{32}$/.test(posted.domain_id ?? "")) {
+        return this.error(400, "bad_request", "domain_id must be 32 hex characters");
+      }
+      const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: posted.domain_id };
       this.files.set(fileId, file);
+      if (file.domain_id !== posted.domain_id) {
+        return this.error(409, "domain_mismatch", file.domain_id);
+      }
       if (file.versions.some((version) => version.version_id === posted.version_id)) {
         return this.json(200, { seq: this.seq, heads: file.heads, conflicted: file.heads.length > 1 });
       }
@@ -360,6 +371,7 @@ export class FakeServer {
       if (!file) return this.error(404, "unknown_file");
       return this.json(200, {
         file_id: fileGet[1],
+        domain_id: file.domain_id,
         heads: file.heads,
         conflicted: file.heads.length > 1,
         versions: file.versions.map((version) => ({ ...version, file_id: fileGet[1] })),
@@ -379,6 +391,46 @@ export class FakeServer {
     }
 
     return this.error(404, "not_found", path);
+  }
+
+  /**
+   * Give this vault the domain map a real one already has, WITHOUT putting it
+   * on the feed: the engine reads it at start through `GET /v1/files`. The
+   * feed case has its own test, because skipping the map by file id is a
+   * guard and guards are proved, not assumed.
+   */
+  /** Every file except the domain map: what a vault's own files are. */
+  vaultFiles() {
+    return [...this.files.keys()].filter((id) => id !== this.mapFileId);
+  }
+
+  async seedDomainMap(mapKeys, domainId) {
+    this.mapFileId = mapKeys.fileId;
+    const map = dm.defaultDomainMap(domainId);
+    const json = dm.serialiseDomainMap(map);
+    const binder = await c.contentVersionId(mapKeys.fileId, [], []);
+    const sealed = await c.encryptDomainMap(mapKeys.key, mapKeys.fileId, binder, json);
+    const versionId = await c.versionId(mapKeys.fileId, [], sealed.ciphertext, []);
+    this.files.set(mapKeys.fileId, {
+      heads: [versionId],
+      domain_id: mapKeys.domainId,
+      versions: [
+        {
+          version_id: versionId,
+          parents: [],
+          sids: [],
+          bytes: 0,
+          manifest_ct: c.base64(sealed.ciphertext),
+          manifest_nonce: c.hex(sealed.nonce),
+          domain_id: mapKeys.domainId,
+          deleted: false,
+          device_id: "ffffffffffffffffffffffffffffffff",
+          ts: 1757200000000,
+          seq: ++this.seq,
+        },
+      ],
+    });
+    return versionId;
   }
 
   releaseFeed() {
@@ -423,7 +475,7 @@ export class FakeServer {
     const sealed = await c.encryptManifest(manifestKey, fileId, binder, JSON.stringify(manifest));
     const manifestCt = c.base64(sealed.ciphertext);
     const versionId = await c.versionId(fileId, parents, sealed.ciphertext, sids);
-    const file = this.files.get(fileId) ?? { heads: [], versions: [] };
+    const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: manifest.domain };
     this.files.set(fileId, file);
     const sameHeads = file.heads.length === parents.length && file.heads.every((head) => parents.includes(head));
     file.heads = sameHeads ? [versionId] : [...file.heads, versionId];
@@ -434,6 +486,7 @@ export class FakeServer {
       bytes,
       manifest_ct: manifestCt,
       manifest_nonce: c.hex(sealed.nonce),
+      domain_id: manifest.domain,
       deleted: manifest.deleted,
       device_id: deviceId,
       ts: manifest.mtime,
@@ -561,14 +614,16 @@ export async function fakeState(isMobile = false) {
   state.data.deviceId = KEYS.deviceId;
   state.data.deviceSecret = KEYS.deviceSecret;
   state.data.serverUrl = "https://sync.example.invalid";
-  state.data.domains[KEYS.domainId] = "";
   return { state, saved: () => stored };
 }
 
 export async function keys() {
   const vrk = Uint8Array.from(Buffer.from(KEYS.vrk, "hex"));
+  const domainKey = await c.deriveDomainKey(vrk, KEYS.domainId);
   return {
-    domainKey: await c.deriveDomainKey(vrk, KEYS.domainId),
-    manifestKey: await c.deriveManifestKey(vrk),
+    domainKey,
+    // Per domain, not vault-wide (`docs/architecture.md` 5.1 item 2).
+    manifestKey: await c.deriveManifestKey(domainKey, KEYS.domainId),
+    map: await dm.domainMapKeys(vrk),
   };
 }

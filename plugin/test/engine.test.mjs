@@ -18,6 +18,7 @@ const { SyncEngine, HEARTBEAT_MS } = require("../build/sync/engine.js");
 const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
 const c = require("../build/crypto.js");
+const dm = require("../build/domainmap.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 
@@ -72,6 +73,9 @@ async function rig({ isMobile = false, policy } = {}) {
     log: (line) => host.logs.push(line),
   });
   const k = await keys();
+  // Every real vault has a domain map before it syncs anything; a rig that
+  // started without one would be testing a vault that cannot exist.
+  await server.seedDomainMap(k.map, KEYS.domainId);
   const context = {
     state,
     transport,
@@ -79,6 +83,7 @@ async function rig({ isMobile = false, policy } = {}) {
     domainKey: k.domainKey,
     manifestKey: k.manifestKey,
     domainId: KEYS.domainId,
+    mapFileId: k.map.fileId,
     deviceId: KEYS.deviceId,
     concurrency: isMobile ? 2 : 4,
     authored: new Set(),
@@ -98,7 +103,7 @@ test("a push uploads ciphertext and posts a version the server recomputes", asyn
 
   assert.equal(outcome.status, "pushed");
   assert.equal(server.chunks.size, 1);
-  assert.equal(server.files.size, 1);
+  assert.deepEqual(server.vaultFiles().length, 1);
   const record = state.fileByPath("Notes/Ideas.md");
   assert.equal(record.versionId, outcome.versionId);
   assert.equal(record.size, 29);
@@ -546,7 +551,6 @@ test("the engine queues, debounces and pushes what the watcher reports", async (
       maxAttempts: 2,
     }),
     host,
-    domainId: KEYS.domainId,
     now: () => host.clock,
     timers,
     onStatus: (status) => statuses.push(status.kind),
@@ -581,7 +585,6 @@ test("the growing-file guard waits for a file to stop changing", async () => {
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   await engine.start();
@@ -606,6 +609,110 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   engine.stop();
 });
 
+/** The engine, wired to one rig. The domain comes from the vault's map. */
+function engineOf({ host, server, state }, timers, extra = {}) {
+  return new SyncEngine({
+    state,
+    transport: new Transport({
+      request: server.request,
+      serverUrl: () => state.data.serverUrl,
+      device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+      edgeHeaders: () => [],
+      now: () => host.clock,
+      sleep: async () => undefined,
+      maxAttempts: 2,
+    }),
+    host,
+    now: () => host.clock,
+    timers,
+    ...extra,
+  });
+}
+
+test("a vault with no domain map gets one, and syncs under the domain it declares", async () => {
+  const rigged = await rig();
+  const { host, server, state, transport, keys: k } = rigged;
+  // A vault nobody has synced yet: no map on the server at all.
+  server.files.delete(k.map.fileId);
+  server.mapFileId = null;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+
+  host.seed("First.md", "the first note\n", 1000);
+  await engine.start();
+  await timers.run(1000, () => state.fileByPath("First.md") !== undefined);
+
+  // The map the engine wrote is readable, is one default domain, and is the
+  // domain the note was actually pushed under.
+  const map = await dm.loadDomainMap(transport, k.map);
+  assert.notEqual(map, null, "the engine wrote the vault's map");
+  const domainId = dm.soleDomain(map);
+  assert.equal(c.isHex(domainId, 16), true);
+  assert.equal(engine.context.domainId, domainId);
+  const fileId = state.fileByPath("First.md").fileId;
+  assert.equal(server.files.get(fileId).domain_id, domainId);
+  assert.ok(host.logs.some((line) => line.includes("domainmap decision=created")));
+
+  // A second start reads the map instead of writing another one.
+  engine.stop();
+  const again = engineOf(rigged, timers);
+  await again.start();
+  assert.equal(again.context.domainId, domainId, "the map is the authority, not a fresh guess");
+  assert.ok(host.logs.some((line) => line.includes("domainmap decision=loaded")));
+  assert.equal(server.files.get(k.map.fileId).versions.length, 1, "one map, one version");
+  again.stop();
+});
+
+test("a map declaring more than one domain stops this version instead of syncing part of it", async () => {
+  const rigged = await rig();
+  const { host, server, state, transport, keys: k } = rigged;
+  const head = server.files.get(k.map.fileId).heads[0];
+  await dm.saveDomainMap(
+    transport,
+    k.map,
+    {
+      v: 1,
+      domains: [
+        { id: KEYS.domainId, paths: [""] },
+        { id: "9876543210abcdef9876543210abcdef", paths: ["Shared"] },
+      ],
+    },
+    [head],
+  );
+
+  const engine = engineOf(rigged, new FakeTimers());
+  host.seed("Untouched.md", "still here\n", 1000);
+  await assert.rejects(
+    () => engine.start(),
+    (error) => error.name === "DomainMapError" && error.reason === "more_than_one_domain",
+  );
+  assert.equal(engine.context, null, "no keys were derived");
+  assert.equal(state.fileByPath("Untouched.md"), undefined, "and nothing was pushed");
+  assert.equal(server.vaultFiles().length, 0);
+  assert.ok(host.notices.some((notice) => notice.includes("more than one sharing domain")));
+});
+
+test("the domain map on the feed is skipped, not written into the vault", async () => {
+  const rigged = await rig();
+  const { host, server, state, transport, keys: k } = rigged;
+  const engine = engineOf(rigged, new FakeTimers());
+  await engine.start();
+
+  // Another device rewrote the map: it rides the same feed as any version.
+  const head = server.files.get(k.map.fileId).heads[0];
+  await dm.saveDomainMap(transport, k.map, dm.defaultDomainMap(KEYS.domainId), [head]);
+  const frame = server.journal[server.journal.length - 1];
+  assert.equal(frame.file_id, k.map.fileId);
+
+  const before = host.files.size;
+  assert.equal(await applyChange(engine.context, frame), "skipped");
+  assert.equal(host.files.size, before, "nothing was written into the vault");
+  assert.equal(Object.keys(state.data.files).length, 0);
+  assert.equal(host.notices.length, 0, "and it is not reported as a refusal");
+  assert.ok(host.logs.some((line) => line.includes("path_class=domainmap decision=skipped")));
+  engine.stop();
+});
+
 test("a write made by the pull path does not bounce back up", async () => {
   const { host, server, state, keys: k } = await rig();
   const timers = new FakeTimers();
@@ -620,7 +727,6 @@ test("a write made by the pull path does not bounce back up", async () => {
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   // The vault is empty, so startup has nothing to push: this only lets the
@@ -661,7 +767,6 @@ test("a rename keeps the file id and moves the path inside the manifest", async 
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   host.seed("Old name.md", "stable content", 1000);
@@ -676,7 +781,7 @@ test("a rename keeps the file id and moves the path inside the manifest", async 
 
   assert.equal(state.fileByPath("Old name.md"), undefined);
   assert.equal(state.fileByPath("New name.md").fileId, fileId, "the file kept its identity");
-  assert.equal(server.files.size, 1, "no second file was created");
+  assert.equal(server.vaultFiles().length, 1, "no second file was created");
   assert.equal(server.files.get(fileId).versions.length, 2);
   engine.stop();
 });
@@ -695,7 +800,6 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   host.seed("Notes/Secret.md", "content", 1000);
@@ -754,7 +858,6 @@ test("a path the host cannot sync is skipped by the watcher and by reconciliatio
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   // What the desktop host reports for a path under a symlinked folder: the
@@ -790,7 +893,6 @@ test("startup reconciliation tombstones a file deleted while Obsidian was closed
       sleep: async () => undefined,
     }),
     host,
-    domainId: KEYS.domainId,
     timers,
   });
   host.seed("Removed.md", "content", 1000);
