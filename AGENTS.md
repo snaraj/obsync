@@ -32,12 +32,14 @@ encrypted manifests on local volumes, serves a sync API, a dashboard, and its
 own plugin bundle; plus an Obsidian plugin that encrypts on the device and
 talks to that server on every Obsidian platform. Files of any size follow one
 path, bounded only by the backing volume. The reference deployment is a
-single-node Kubernetes cluster on a Raspberry Pi behind a tunnel provider
-with an access policy in front, delivered by the same signed-image,
+single-node Kubernetes cluster on a Raspberry Pi reached over private
+connectivity (LAN or VPN) with a TLS terminator the owner trusts; a tunnel
+provider with an access policy in front is the optional published-hostname
+path, not the reference. It is delivered by the same signed-image,
 digest-pinned release path as the owner's existing sites. The product is
-meant to be trusted and run
-by strangers, so every deployment concern is a configuration value and every
-security property is true by construction, not by setting.
+meant to be trusted and run by strangers, so every deployment concern is a
+configuration value and every security property is true by construction,
+not by setting.
 
 `docs/architecture.md` is the design; `docs/protocol.md` the wire contract;
 `docs/storage.md` the volume and durability contract; `docs/threat-model.md`
@@ -96,8 +98,8 @@ Numbered for citation, repo-scoped, none negotiable in code:
    journal frame carries a field named or shaped like a key or a path.
 7. **Truthful serving contract, TLS outside the process.** The server
    listens on plain HTTP, port 8080 by default, and is always deployed behind
-   a TLS terminator (Cloudflare Tunnel on the reference deployment; any
-   reverse proxy or tunnel elsewhere). TLS is never implemented or linked in
+   a TLS terminator (a reverse proxy the owner trusts on the reference
+   deployment; any reverse proxy or tunnel elsewhere). TLS is never implemented or linked in
    this process. `/livez` and `/readyz` stay truthful: readiness reflects
    real serving ability (volumes writable, journal replayed, not shutting
    down), never a hardcoded yes.
