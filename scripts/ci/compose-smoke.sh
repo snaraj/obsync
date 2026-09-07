@@ -304,6 +304,12 @@ prove "setup token: ${TOKEN_PATH} read from the compose container is 64 lowercas
 obsync_hardening="$(docker container inspect --format \
   'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} capadd={{.HostConfig.CapAdd}} secopt={{.HostConfig.SecurityOpt}} user={{.Config.User}}' \
   "${obsync_container}")"
+# Docker Engine spells a capability two ways in HostConfig depending on the
+# version that recorded it: Desktop 24 says `NET_BIND_SERVICE`, the runner's
+# engine says `CAP_NET_BIND_SERVICE`. Same capability, one spelling here, so
+# the comparison below is about WHICH capabilities ran and never about the
+# engine that echoed them.
+obsync_hardening="${obsync_hardening//CAP_/}"
 case "${obsync_hardening}" in
   'readonly=true capdrop=[ALL] capadd=[] secopt=[no-new-privileges:true] user=65532:65532') ;;
   *) deny "the obsync container did not run hardened: ${obsync_hardening}" ;;
@@ -311,6 +317,7 @@ esac
 caddy_hardening="$(docker container inspect --format \
   'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} capadd={{.HostConfig.CapAdd}} secopt={{.HostConfig.SecurityOpt}}' \
   "${caddy_container}")"
+caddy_hardening="${caddy_hardening//CAP_/}"
 case "${caddy_hardening}" in
   'readonly=true capdrop=[ALL] capadd=[NET_BIND_SERVICE] secopt=[no-new-privileges:true]') ;;
   *) deny "the caddy container did not run hardened: ${caddy_hardening}" ;;
