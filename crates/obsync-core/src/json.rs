@@ -375,9 +375,9 @@ impl<'a> Parser<'a> {
                 return Err(self.at(escape_at, JsonErrorKind::InvalidEscape));
             }
             0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00)
-        } else if (0xdc00..0xe000).contains(&first) {
-            return Err(self.at(escape_at, JsonErrorKind::InvalidEscape));
         } else {
+            // A lone low surrogate arrives here and `char::from_u32` refuses
+            // it, along with every other value that is not a scalar.
             first
         };
         match char::from_u32(code) {
@@ -989,6 +989,11 @@ mod tests {
             "[\"\\uDEAD\"]",
             JsonErrorKind::InvalidEscape,
         ),
+        (
+            "obsync_string_high_surrogate_then_bmp_escape",
+            "[\"\\uD800\\u0041\"]",
+            JsonErrorKind::InvalidEscape,
+        ),
         ("n_structure_no_data", "", JsonErrorKind::UnexpectedEof),
         ("n_single_space", " ", JsonErrorKind::UnexpectedEof),
         (
@@ -1044,6 +1049,11 @@ mod tests {
             "{\"\\u0061b\":1,\"ab\":2}",
             JsonErrorKind::DuplicateKey,
         ),
+        (
+            "obsync_object_duplicated_key_not_adjacent",
+            "{\"a\":1,\"b\":2,\"a\":3}",
+            JsonErrorKind::DuplicateKey,
+        ),
     ];
 
     #[test]
@@ -1070,7 +1080,7 @@ mod tests {
                 err.offset
             );
         }
-        assert_eq!(REFUSE.len(), 53, "refusal corpus size changed");
+        assert_eq!(REFUSE.len(), 55, "refusal corpus size changed");
     }
 
     #[test]
