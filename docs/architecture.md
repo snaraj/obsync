@@ -179,13 +179,18 @@ that phrase the vault is unrecoverable by design.
 2. On the new device the user pastes or opens the code. The plugin claims
    the pairing (`POST /v1/pairing/{id}/claim` with the enroll token and
    `{name, platform, app_version}`), receiving `{device_id,
-   device_secret}`. The device is now authenticated but holds no `VRK`.
+   device_secret}`. The device is PENDING: it can sign requests, but every
+   device-authenticated route refuses it (`403 device_pending`) except
+   polling this pairing's envelope (`409 not_approved`). A claimant has no
+   authority of any kind until step 3.
 3. The paired device polls the pairing, shows "Approve <name> on
    <platform>?", and on approval encrypts `{VRK, domains}` with `K_pair =
    HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
    envelope. The server stores it for one fetch.
 4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and stores `VRK` in the plugin's data store. Sync starts.
+   `PS`, and stores `VRK` in the plugin's data store. Sync starts. Approval
+   is what activates the device; rejection, or expiry of an unapproved
+   pairing, destroys the pending credential.
 
 The dashboard can display pairing instructions but cannot approve a device:
 it holds no `VRK`. Approval is always from a paired Obsidian instance.
@@ -266,7 +271,14 @@ returns immediately when a new frame lands.
    download missing chunks, decrypt, assemble, verify the plaintext
    `sha256`, and write atomically (temp file plus rename on desktop via the
    Node filesystem; adapter write on mobile). Echoes of the device's own
-   versions are recognized by `version_id` and skipped.
+   versions are recognized by `version_id` and skipped. A decrypted
+   manifest is data from another device, not an instruction: its path is
+   validated as a canonical relative vault path (no absolute path, no `..`
+   or empty segment, no control character, no hidden segment) before any
+   vault operation, and the desktop writer proves the resolved absolute
+   path stays below the vault root before every read, write, rename, or
+   unlink. Hidden folders (`.obsidian`, `.git`) are excluded from sync in
+   both directions in v0.1; syncing them is a later opt-in.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge; a clean merge posts a new version
    with both heads as parents. Anything else (binary, no ancestor,
@@ -285,15 +297,20 @@ returns immediately when a new frame lands.
    the mobile per-file ceiling exists. Both facts are stated in the
    settings UI.
 
-### 6.3 Self-update
+### 6.3 Updates
 
-The server ships with the plugin bundle built from the same commit (read
-at start from `OBSYNC_PLUGIN_DIR`, hashes computed once) and serves it at
-`GET /v1/plugin/{manifest,bundle,styles}`. A paired plugin compares versions
-on start and offers a one-tap update (bundle SHA-256 pinned in the server's
-manifest). The first install on a device is manual: copy the three plugin
-files into `.obsidian/plugins/obsync/`. `docs/validation.md` has the
-per-platform steps.
+The plugin never installs code it fetched from the server: a server or a
+TLS terminator that could replace both the bytes and the hash it serves
+would otherwise gain the vault key at the next reload. In v0.1 the plugin
+only compares its version with `GET /v1/plugin/manifest` on start and
+tells the user when the server runs a newer one; the user installs the
+matching GitHub Release (whose evidence manifest carries the bundle's
+SHA-256) by copying the three files into `.obsidian/plugins/obsync/`, as
+on the first install. The server still serves the bundle at
+`GET /v1/plugin/{manifest,bundle,styles}` as a convenience copy for the
+Install page, with hashes to compare against the Release. Signed updates
+verified against a key pinned in the installed plugin are a v0.2 item
+that needs an owner decision on signing-key custody.
 
 ## 7. Storage, durability, replication
 
@@ -369,9 +386,10 @@ Cloudflare Tunnel for one hostname with Cloudflare Access in front
 
 1. **v0.1.x — MVP:** core primitives, server (storage, journal, API, feed,
    GC, scrub, dashboard v1, CLI), plugin (watch, chunk, encrypt, push, pull,
-   conflicts, policy, pairing, self-update), chart, CI, release path, three
-   device validation, first benchmark table.
-2. **v0.2.x:** X25519 pairing, passkeys, Cloudflare Access JWT verification
-   from a mounted JWKS, `VRK` rotation, QR pairing codes.
+   conflicts, policy, pairing, version notice), chart, CI, release path,
+   three device validation, first benchmark table.
+2. **v0.2.x:** X25519 pairing, passkeys, signed plugin updates against a
+   pinned key, Cloudflare Access JWT verification from a mounted JWKS,
+   `VRK` rotation, QR pairing codes.
 3. **v0.3.x:** replica server mode, size padding option, text compression
    opt-in, multi-account.

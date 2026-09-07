@@ -17,7 +17,8 @@ page or the GitHub Release) into `<vault>/.obsidian/plugins/obsync/`:
   `obsync` → paste the three files; restart Obsidian; enable the plugin.
 - **Android:** any file manager on the vault folder; same layout.
 
-After the first install the plugin updates itself from the server.
+Updates are manual as well: the plugin says when the server runs a newer
+version; install the matching GitHub Release the same way.
 
 ## Scenarios
 

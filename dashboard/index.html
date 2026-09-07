@@ -326,12 +326,14 @@
   <section id="page-install" class="page" hidden aria-labelledby="install-h">
     <h1 id="install-h">Install</h1>
     <p>
-      The first install on a device is manual by design. Afterwards the plugin updates itself from
-      this server. Community-plugin restricted mode must be off in Obsidian.
+      The first install on a device is manual by design, and so is every update: the plugin tells
+      you when this server runs a newer version, and you install the matching GitHub Release the
+      same way. Community-plugin restricted mode must be off in Obsidian.
     </p>
     <h2>Files</h2>
-    <p class="note">Downloaded straight from this server, built from the same commit as the running
-      binary. Check the hash if you carried the file across a machine.</p>
+    <p class="note">A convenience copy served by this server, built from the same commit as the
+      running binary. The trusted source is the GitHub Release: compare each SHA-256 below with the
+      Release's evidence manifest before installing.</p>
     <div class="scroller">
       <table class="grid" id="plugin-table">
         <caption class="visually-hidden">Plugin files and their hashes</caption>
