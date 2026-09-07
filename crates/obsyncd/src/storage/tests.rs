@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::io::Read;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -1088,4 +1089,352 @@ fn the_scrub_repairs_from_a_mirror_and_quarantines_what_it_cannot() {
 /// Reopen a store on an existing volume, without running setup again.
 fn ready_existing(cfg: &StorageConfig) -> Store {
     open(cfg)
+}
+
+// --- Volume posture -------------------------------------------------------
+//
+// A restored snapshot, a `tar -x`, a `docker cp`, or a bind mount hands the
+// server volumes it did not create. These drive the start-time pass against
+// exactly that shape.
+
+/// The mode a restore hands a file over at.
+const WEAK_FILE: u32 = 0o644;
+/// The mode a restore hands a directory over at.
+const WEAK_DIR: u32 = 0o755;
+
+fn mode_of(path: &std::path::Path) -> u32 {
+    fs::symlink_metadata(path)
+        .expect("the path is there")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+fn chmod(path: &std::path::Path, mode: u32) {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("the mode is set");
+}
+
+/// Both roots, both credential files, all of them widely readable: the state
+/// a restore or a bind mount leaves behind.
+fn restored_volume(cfg: &StorageConfig) -> (PathBuf, PathBuf) {
+    let journal_root = PathClass::JournalRoot.path(&cfg.journal_dir);
+    let blobs_root = PathClass::BlobsRoot.path(&cfg.blobs_dir);
+    fs::create_dir_all(&journal_root).expect("the journal root is restored");
+    fs::create_dir_all(&blobs_root).expect("the blob root is restored");
+    let server_key = PathClass::ServerKey.path(&cfg.journal_dir);
+    let setup_token = PathClass::SetupToken.path(&cfg.journal_dir);
+    fs::write(&server_key, "ab".repeat(32)).expect("the wrapping material is restored");
+    fs::write(&setup_token, "cd".repeat(32)).expect("the recovery login is restored");
+    chmod(&server_key, WEAK_FILE);
+    chmod(&setup_token, WEAK_FILE);
+    chmod(&journal_root, WEAK_DIR);
+    chmod(&blobs_root, WEAK_DIR);
+    (server_key, setup_token)
+}
+
+#[test]
+fn a_restored_volume_is_corrected_and_re_read_before_anything_is_served() {
+    let dir = TempDir::new("posture-restored");
+    let cfg = config(&dir);
+    let (server_key, setup_token) = restored_volume(&cfg);
+    let log = Log::buffered(LogLevel::Debug);
+
+    let posture = Posture::enforce(&cfg, &log).expect("what can be corrected is corrected");
+
+    assert_eq!(mode_of(&server_key), 0o600, "the wrapping material");
+    assert_eq!(mode_of(&setup_token), 0o600, "the standing recovery login");
+    assert_eq!(
+        mode_of(&PathClass::JournalRoot.path(&cfg.journal_dir)),
+        0o700
+    );
+    assert_eq!(mode_of(&PathClass::BlobsRoot.path(&cfg.blobs_dir)), 0o700);
+
+    let captured = log.captured();
+    for line in [
+        "event=posture path_class=blobs_root decision=repaired from=0755 to=0700",
+        "event=posture path_class=journal_root decision=repaired from=0755 to=0700",
+        "event=posture path_class=server_key decision=repaired from=0644 to=0600",
+        "event=posture path_class=setup_token decision=repaired from=0644 to=0600",
+    ] {
+        assert!(captured.contains(line), "missing {line}\n{captured}");
+    }
+    assert_eq!(posture.outcomes().len(), 4, "one decision per class");
+    for outcome in posture.outcomes() {
+        assert_eq!(
+            outcome.decision,
+            Decision::Repaired {
+                from: if outcome.class.required_mode() == 0o700 {
+                    WEAK_DIR
+                } else {
+                    WEAK_FILE
+                },
+                to: outcome.class.required_mode(),
+            },
+            "{:?}",
+            outcome.class
+        );
+    }
+}
+
+#[test]
+fn a_corrected_volume_is_quiet_and_unchanged_on_the_next_start() {
+    let dir = TempDir::new("posture-idempotent");
+    let cfg = config(&dir);
+    let (server_key, _) = restored_volume(&cfg);
+    let first = Log::buffered(LogLevel::Debug);
+    Posture::enforce(&cfg, &first).expect("the first start corrects");
+
+    let second = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &second).expect("the second start has nothing to do");
+    assert!(
+        !second.captured().contains("event=posture"),
+        "a corrected volume produces no posture line\n{}",
+        second.captured()
+    );
+    for outcome in posture.outcomes() {
+        assert_eq!(
+            outcome.decision,
+            Decision::Ok {
+                mode: outcome.class.required_mode()
+            },
+            "{:?}",
+            outcome.class
+        );
+    }
+    assert_eq!(mode_of(&server_key), 0o600);
+}
+
+#[test]
+fn a_link_where_a_credential_file_belongs_refuses_and_is_never_followed() {
+    let dir = TempDir::new("posture-link");
+    let cfg = config(&dir);
+    fs::create_dir_all(PathClass::JournalRoot.path(&cfg.journal_dir)).expect("the journal root");
+    let target = dir.path().join("attacker-owned");
+    fs::write(&target, "ab".repeat(32)).expect("the link target");
+    chmod(&target, WEAK_FILE);
+    std::os::unix::fs::symlink(&target, PathClass::ServerKey.path(&cfg.journal_dir))
+        .expect("the link is planted");
+
+    let log = Log::buffered(LogLevel::Debug);
+    let err = Posture::enforce(&cfg, &log).expect_err("a link is never followed");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                class: "server_key",
+                reason: "symlink"
+            }
+        ),
+        "{err}"
+    );
+    assert!(
+        log.captured()
+            .contains("event=posture path_class=server_key decision=refused reason=symlink"),
+        "{}",
+        log.captured()
+    );
+    assert_eq!(
+        mode_of(&target),
+        WEAK_FILE,
+        "the link was not followed: its target was not touched"
+    );
+}
+
+#[test]
+fn a_directory_where_the_setup_token_belongs_refuses() {
+    let dir = TempDir::new("posture-token-dir");
+    let cfg = config(&dir);
+    fs::create_dir_all(PathClass::SetupToken.path(&cfg.journal_dir))
+        .expect("a directory takes the name");
+    let log = Log::buffered(LogLevel::Debug);
+    let err = Posture::enforce(&cfg, &log).expect_err("a substituted type is never used");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                class: "setup_token",
+                reason: "not_a_regular_file"
+            }
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_regular_file_where_a_volume_root_belongs_refuses() {
+    let dir = TempDir::new("posture-root-file");
+    let cfg = config(&dir);
+    fs::create_dir_all(&cfg.blobs_dir).expect("the volume");
+    fs::write(PathClass::BlobsRoot.path(&cfg.blobs_dir), "not a root").expect("a file takes it");
+    let log = Log::buffered(LogLevel::Debug);
+    let err = Posture::enforce(&cfg, &log).expect_err("a root is a directory or it is nothing");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                class: "blobs_root",
+                reason: "not_a_directory"
+            }
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn every_measured_file_is_owned_by_the_user_this_process_runs_as() {
+    let dir = TempDir::new("posture-owner");
+    let cfg = config(&dir);
+    let (server_key, _) = restored_volume(&cfg);
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).expect("the pass runs");
+
+    // The positive control: the pass learned the user from the filesystem
+    // and it is the user that owns what this test created.
+    assert_eq!(
+        fs::symlink_metadata(&server_key).expect("the file").uid(),
+        posture.uid(),
+        "the pass measures owners against the user it runs as"
+    );
+
+    // The negative: a pass that expects another user refuses. Owning a file
+    // as somebody else needs root, so the expectation is what varies; the
+    // comparison under test is the same one.
+    let err = Posture::expecting(posture.uid() ^ 1)
+        .verify(PathClass::ServerKey, &server_key, &log)
+        .expect_err("a foreign owner can widen it again the moment we look away");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                reason: "foreign_owner",
+                ..
+            }
+        ),
+        "{err}"
+    );
+}
+
+/// Defence in depth: the pass runs at the top of a start, and the function
+/// that actually reads the wrapping material measures it again, so a volume
+/// that changes underneath the start is caught where it is used.
+#[test]
+fn the_wrapping_material_is_measured_where_it_is_read_not_only_where_the_pass_looked() {
+    let dir = TempDir::new("posture-toctou");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).expect("an empty volume");
+
+    // After the pass, and before the read.
+    let server_key = PathClass::ServerKey.path(&cfg.journal_dir);
+    fs::write(&server_key, "ab".repeat(32)).expect("a key appears");
+    chmod(&server_key, WEAK_FILE);
+
+    let loaded =
+        load_or_create_server_key(&cfg.journal_dir, None, &posture, &log).expect("the key loads");
+    assert_eq!(loaded, [0xabu8; 32], "it is the key that was there");
+    assert_eq!(
+        mode_of(&server_key),
+        0o600,
+        "measured again where it is read"
+    );
+    assert!(
+        log.captured()
+            .contains("event=server_key source=volume mode=0600"),
+        "{}",
+        log.captured()
+    );
+}
+
+#[test]
+fn a_credential_file_that_is_not_there_after_it_was_written_refuses() {
+    let dir = TempDir::new("posture-vanished");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).expect("an empty volume is created correctly");
+    let err = posture
+        .verify_present(
+            PathClass::SetupToken,
+            &PathClass::SetupToken.path(&cfg.journal_dir),
+            &log,
+        )
+        .expect_err("a credential file that vanished is not one to carry on from");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                reason: "absent_after_write",
+                ..
+            }
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_restored_tree_takes_one_start_to_reach_the_mode_every_class_requires() {
+    let dir = TempDir::new("posture-tree");
+    let cfg = config(&dir);
+    // A real volume with real content, as a backup would have captured it.
+    let setup = ready(&cfg);
+    let account = setup.account;
+    let sid = put(&setup, b"restored");
+    drop(setup);
+    let key_hex = "ab".repeat(32);
+    fs::write(PathClass::ServerKey.path(&cfg.journal_dir), &key_hex).expect("the key is restored");
+    fs::write(
+        PathClass::SetupToken.path(&cfg.journal_dir),
+        "cd".repeat(32),
+    )
+    .expect("the login is restored");
+    // The restore itself: every directory and every file, widely readable.
+    widen(dir.path());
+
+    // One start.
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).expect("the pass corrects the tree");
+    let loaded = load_or_create_server_key(&cfg.journal_dir, None, &posture, &log)
+        .expect("the restored key loads");
+    let store = Store::open(&cfg, loaded, log.clone()).expect("the store opens");
+
+    assert_eq!(
+        store.account().expect("the account survived").account_id,
+        account
+    );
+    assert!(store.chunk_exists(&sid), "and so did its content");
+    assert_eq!(loaded, hex::decode_array::<32>(&key_hex).expect("hex"));
+    for (class, dir_of) in [
+        (PathClass::ServerKey, &cfg.journal_dir),
+        (PathClass::SetupToken, &cfg.journal_dir),
+        (PathClass::JournalRoot, &cfg.journal_dir),
+        (PathClass::BlobsRoot, &cfg.blobs_dir),
+    ] {
+        assert_eq!(
+            mode_of(&class.path(dir_of)),
+            class.required_mode(),
+            "{class:?} after one start"
+        );
+    }
+    // The line an operator reads states the mode that was read back.
+    assert!(
+        log.captured()
+            .contains("event=server_key source=volume mode=0600"),
+        "{}",
+        log.captured()
+    );
+}
+
+/// Widen every directory and file under a tree, the way a restore that does
+/// not carry modes leaves one.
+fn widen(root: &std::path::Path) {
+    let entries = fs::read_dir(root).expect("the tree is readable");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            widen(&path);
+            chmod(&path, WEAK_DIR);
+        } else {
+            chmod(&path, WEAK_FILE);
+        }
+    }
+    chmod(root, WEAK_DIR);
 }

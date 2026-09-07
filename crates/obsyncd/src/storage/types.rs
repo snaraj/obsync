@@ -446,6 +446,14 @@ pub enum StoreError {
     AlreadySetUp,
     /// The filesystem refused.
     Io(io::Error),
+    /// A volume root or credential file whose type, owner, or mode is not
+    /// safe to serve from, and could not be corrected.
+    Posture {
+        /// Which class of path, matching the refusal line's `path_class`.
+        class: &'static str,
+        /// Why it was refused, matching the refusal line's `reason`.
+        reason: &'static str,
+    },
     /// On-disk state that replay cannot make sense of.
     Corrupt(String),
 }
@@ -493,6 +501,9 @@ impl fmt::Display for StoreError {
             StoreError::NotSetUp => f.write_str("not set up"),
             StoreError::AlreadySetUp => f.write_str("already set up"),
             StoreError::Io(e) => write!(f, "io error: {:?}", e.kind()),
+            StoreError::Posture { class, reason } => {
+                write!(f, "unsafe posture on the {class}: {reason}")
+            }
             StoreError::Corrupt(what) => write!(f, "corrupt on-disk state: {what}"),
         }
     }
@@ -529,6 +540,7 @@ impl StoreError {
             StoreError::NotSetUp => "not_set_up",
             StoreError::AlreadySetUp => "already_set_up",
             StoreError::Io(_) => "io_error",
+            StoreError::Posture { .. } => "unsafe_posture",
             StoreError::Corrupt(_) => "corrupt",
         }
     }
@@ -564,6 +576,15 @@ mod tests {
         };
         assert_eq!(err.to_string(), "seq 9 is ahead of head 3");
         assert_eq!(err.code(), "seq_ahead");
+
+        // A posture refusal states the class and the reason, both compile
+        // time words, and no location.
+        let err = StoreError::Posture {
+            class: "server_key",
+            reason: "symlink",
+        };
+        assert_eq!(err.to_string(), "unsafe posture on the server_key: symlink");
+        assert_eq!(err.code(), "unsafe_posture");
     }
 
     #[test]

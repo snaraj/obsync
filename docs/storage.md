@@ -23,13 +23,65 @@ code change.
 ## On-disk layout
 
 ```
+<blobs>/v1                                   chunk volume root, mode 0700
 <blobs>/v1/<sid[0..2]>/<sid[2..4]>/<sid>     one chunk, mode 0600
 <blobs>/v1/tmp/<random>                      in-flight upload, renamed on success
+<journal>/v1                                 journal volume root, mode 0700
 <journal>/v1/journal/<000001>.log            append-only segments, 64 MiB each
 <journal>/v1/index/<seq>.snap                periodic index snapshot
 <journal>/v1/server.key                      only when OBSYNC_SERVER_KEY is unset, 0600
+<journal>/v1/setup-token                     first-boot and recovery login, 0600
 <journal>/v1/quarantine/<sid>                chunks that failed a scrub
 ```
+
+## Volume posture
+
+Modes above are enforced on every start, not only at creation. A restored
+snapshot, a `tar -x`, a `docker cp`, or a bind mount hands the server volumes
+it did not create, and a `server.key` or `setup-token` that arrives readable
+by every account on the host is a standing way in: the token is the dashboard
+recovery login, and the key with the journal unwraps every stored device
+credential.
+
+`serve`, `check`, and `export` therefore run one pass over four classes —
+`blobs_root` (the primary and each mirror), `journal_root`, `server_key`,
+`setup_token` — before anything is read or written through them:
+
+1. **Type.** Read with `symlink_metadata`, so a link is seen rather than
+   followed. A link, a directory where a file belongs, or a file where a root
+   belongs refuses the start.
+2. **Owner.** The file's user must be the user the process runs as, learned
+   from a file the process creates on the journal volume and then removes.
+   The process cannot `chown`, and whoever does own a file can widen it again,
+   so a foreign owner is a refusal and never a correction.
+3. **Mode.** Roots must be exactly 0700 and credential files exactly 0600.
+   Anything else is corrected with one `chmod` and then RE-READ: a mode that
+   was set is not a mode that stuck. A correction the volume ignored, or one
+   it refused, refuses the start.
+
+Each decision is one line — `event=posture path_class=<class>
+decision=<ok|repaired|refused> …` — and a correction states `from` and `to`
+in octal. The modes on the `server_key` and `setup_token_ready` lines are the
+modes read back off the volume, so a startup line cannot claim a protection a
+file does not have. No line carries a filesystem location or any file content.
+
+`obsyncd check` runs the identical pass, and its policy is **repair and
+report**: an operator who runs it on a restored volume leaves that volume
+correct, and the report names every class with its decision
+(`posture setup_token: repaired 0644 -> 0600`). A posture that cannot be
+corrected exits non-zero, exactly as it refuses a start.
+
+On Kubernetes the kubelet may re-apply group bits to volume contents at each
+mount when an `fsGroup` is set (the chart sets 65532). The pass corrects them
+again and logs one `repaired` line per affected class per start: that is the
+pass working, not a fault.
+
+The volume mount points themselves (`OBSYNC_BLOBS_DIR`, `OBSYNC_JOURNAL_DIR`)
+are the platform's to own: on the reference deployment they are mount points
+the server neither creates nor owns, and refusing their mode would refuse a
+correct deployment. They are not the control. The `v1` root inside each is
+0700 and owned by the server, which is what stops another account on the host
+from reaching anything below it.
 
 ## Durability rules
 

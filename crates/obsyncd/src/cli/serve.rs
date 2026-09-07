@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::dashboard::Dashboard;
 use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
-use crate::storage::{Store, StoreError, load_or_create_server_key};
+use crate::storage::{PathClass, Posture, Store, StoreError, load_or_create_server_key};
 use crate::types::UnixMs;
 use crate::{api::rand, signal};
 
@@ -47,8 +47,6 @@ pub const SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
 /// How often a background thread wakes to check for shutdown or a request.
 pub const TICK: Duration = Duration::from_secs(1);
-/// The first-boot setup token, under the journal volume.
-pub const SETUP_TOKEN_FILE: &str = "v1/setup-token";
 /// A setup token is 32 random bytes as hex.
 pub const TOKEN_HEX_LEN: usize = 64;
 
@@ -66,24 +64,25 @@ pub fn run() -> i32 {
     let shutdown = signal::install();
 
     let storage = cfg.storage();
-    let server_key = match load_or_create_server_key(&storage.journal_dir, cfg.server_key, &log) {
-        Ok(key) => key,
-        Err(e) => return fatal(&log, "server_key_failed", &e),
+    // Before anything is read or written through them: what the volumes are,
+    // who owns them, and what they let other users do.
+    let posture = match Posture::enforce(&storage, &log) {
+        Ok(posture) => posture,
+        Err(e) => return fatal(&log, "posture_failed", &e),
     };
+    let server_key =
+        match load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log) {
+            Ok(key) => key,
+            Err(e) => return fatal(&log, "server_key_failed", &e),
+        };
     let store = match Store::open(&storage, server_key, log.clone()) {
         Ok(store) => store,
         Err(e) => return fatal(&log, "store_open_failed", &e),
     };
 
-    let setup_token = match setup_token(&cfg, &store, &log) {
+    let setup_token = match setup_token(&cfg, &store, &posture, &log) {
         Ok(token) => token,
-        Err(e) => {
-            log.error(
-                "setup_token_failed",
-                &[("decision", Val::word("exit")), ("io", Val::io(&e))],
-            );
-            return 1;
-        }
+        Err(e) => return fatal(&log, "setup_token_failed", &e),
     };
 
     let limits = Limits {
@@ -303,17 +302,26 @@ fn nap(app: &Arc<App>, total: Duration) {
 ///
 /// The token is written to the journal volume with mode 0600 and survives
 /// restarts: `docs/architecture.md` 4.5 makes it the dashboard's recovery
-/// login as well as the first-boot credential.
+/// login as well as the first-boot credential. Because it stands until it is
+/// used, a restored or bind-mounted volume that hands it over widely is a
+/// standing way in; the posture pass has already refused a link, a wrong
+/// type, or a foreign owner here and corrected a mode, so nothing below is
+/// read or written through a location whose posture is unknown.
+///
+/// The mode on the line is read back off the volume after the token is in
+/// place, so the line cannot claim a protection the file does not have.
 ///
 /// The line says where the token is, never what it is. Not even a prefix
 /// reaches the log: the logger takes no free text for a credential
 /// (`doctrine_test`), and a prefix in a log file is a prefix an attacker
 /// reading logs does not have to guess.
-fn setup_token(cfg: &Config, store: &Store, log: &Log) -> std::io::Result<Option<String>> {
-    let file = cfg.journal_dir.join(SETUP_TOKEN_FILE);
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+fn setup_token(
+    cfg: &Config,
+    store: &Store,
+    posture: &Posture,
+    log: &Log,
+) -> Result<Option<String>, StoreError> {
+    let file = PathClass::SetupToken.path(&cfg.journal_dir);
     let existing = std::fs::read_to_string(&file)
         .ok()
         .map(|v| v.trim().to_string());
@@ -325,11 +333,12 @@ fn setup_token(cfg: &Config, store: &Store, log: &Log) -> std::io::Result<Option
             minted
         }
     };
+    let mode = posture.verify_present(PathClass::SetupToken, &file, log)?;
     log.info(
         "setup_token_ready",
         &[
             ("file", Val::word("<journal volume>/v1/setup-token")),
-            ("mode", Val::word("0600")),
+            ("mode", Val::mode(mode)),
             (
                 "state",
                 Val::word(if store.account().is_none() {
@@ -357,4 +366,153 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     f.write_all(b"\n")?;
     f.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::cli::testutil::config;
+    use crate::log::LogLevel;
+    use crate::storage::testutil::TempDir;
+
+    /// The start sequence up to the token, as `run` performs it.
+    fn start(cfg: &Config, log: &Log) -> (Posture, Store) {
+        let storage = cfg.storage();
+        let posture = Posture::enforce(&storage, log).expect("volume posture");
+        let key = load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, log)
+            .expect("server key");
+        let store = Store::open(&storage, key, log.clone()).expect("store");
+        (posture, store)
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::symlink_metadata(path)
+            .expect("the path is there")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn a_restored_setup_token_is_corrected_before_the_line_that_states_its_mode() {
+        let dir = TempDir::new("serve-token-restored");
+        let cfg = config(&dir);
+        // A restore hands over the standing recovery login, readable by
+        // every account on the host.
+        let file = PathClass::SetupToken.path(&cfg.journal_dir);
+        fs::create_dir_all(PathClass::JournalRoot.path(&cfg.journal_dir)).expect("journal root");
+        let restored = "ab".repeat(32);
+        fs::write(&file, &restored).expect("the token is restored");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("weak mode");
+
+        let log = Log::buffered(LogLevel::Debug);
+        let (posture, store) = start(&cfg, &log);
+        let token = setup_token(&cfg, &store, &posture, &log).expect("the token is read");
+
+        assert_eq!(
+            token,
+            Some(restored),
+            "the standing recovery login survives a restart"
+        );
+        assert_eq!(mode_of(&file), 0o600, "and is no longer readable widely");
+        let captured = log.captured();
+        assert!(
+            captured.contains(
+                "event=posture path_class=setup_token decision=repaired from=0644 to=0600"
+            ),
+            "{captured}"
+        );
+        assert!(
+            captured.contains(
+                "event=setup_token_ready file=\"<journal volume>/v1/setup-token\" \
+                               mode=0600 state=awaiting_setup"
+            ),
+            "{captured}"
+        );
+    }
+
+    #[test]
+    fn a_minted_setup_token_states_the_mode_the_volume_was_read_at() {
+        let dir = TempDir::new("serve-token-minted");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (posture, store) = start(&cfg, &log);
+
+        let token = setup_token(&cfg, &store, &posture, &log).expect("the token is minted");
+        let file = PathClass::SetupToken.path(&cfg.journal_dir);
+        assert_eq!(
+            token.as_ref().expect("a token").len(),
+            TOKEN_HEX_LEN,
+            "32 random bytes as hex"
+        );
+        assert_eq!(mode_of(&file), 0o600);
+        assert!(
+            log.captured().contains("mode=0600 state=awaiting_setup"),
+            "{}",
+            log.captured()
+        );
+        // A second start reads the same one and says nothing about repairs.
+        let again = Log::buffered(LogLevel::Debug);
+        let (posture, store) = start(&cfg, &again);
+        assert_eq!(
+            setup_token(&cfg, &store, &posture, &again).expect("read"),
+            token
+        );
+        assert!(
+            !again.captured().contains("decision=repaired"),
+            "{}",
+            again.captured()
+        );
+    }
+
+    /// The pass runs at the top of a start; the token is measured again where
+    /// it is read, so a volume that changes underneath the start is caught.
+    #[test]
+    fn the_token_is_measured_where_it_is_read_not_only_where_the_pass_looked() {
+        let dir = TempDir::new("serve-token-toctou");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (posture, store) = start(&cfg, &log);
+
+        // After the pass, and before the token is read.
+        let file = PathClass::SetupToken.path(&cfg.journal_dir);
+        fs::write(&file, "ab".repeat(32)).expect("a token appears");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("weak mode");
+
+        setup_token(&cfg, &store, &posture, &log).expect("the token is read");
+        assert_eq!(mode_of(&file), 0o600, "measured again where it is read");
+        assert!(
+            log.captured().contains("mode=0600 state=awaiting_setup"),
+            "{}",
+            log.captured()
+        );
+    }
+
+    #[test]
+    fn a_link_where_the_setup_token_belongs_stops_the_start() {
+        let dir = TempDir::new("serve-token-link");
+        let cfg = config(&dir);
+        fs::create_dir_all(PathClass::JournalRoot.path(&cfg.journal_dir)).expect("journal root");
+        let target = dir.path().join("attacker-owned");
+        fs::write(&target, "ab".repeat(32)).expect("the target");
+        std::os::unix::fs::symlink(&target, PathClass::SetupToken.path(&cfg.journal_dir))
+            .expect("the link is planted");
+
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg.storage(), &log).expect_err("the start refuses");
+        assert_eq!(err.code(), "unsafe_posture", "{err}");
+        assert!(
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "setup_token",
+                    reason: "symlink"
+                }
+            ),
+            "{err}"
+        );
+    }
 }

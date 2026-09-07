@@ -25,7 +25,7 @@ use crate::config::{Config, Edge};
 use crate::dashboard::Dashboard;
 use crate::log::Log;
 use crate::plugin_dist::PluginDist;
-use crate::storage::{Store, load_or_create_server_key};
+use crate::storage::{Posture, Store, load_or_create_server_key};
 
 /// The frozen wall clock every test signs against.
 const NOW: u64 = 1_757_200_000;
@@ -121,8 +121,10 @@ impl Harness {
         let cfg = Config::from_pairs(&pairs).expect("configuration");
         let log = Log::new(cfg.log_level);
         let storage = cfg.storage();
-        let server_key = load_or_create_server_key(&storage.journal_dir, cfg.server_key, &log)
-            .expect("server key");
+        let posture = Posture::enforce(&storage, &log).expect("volume posture");
+        let server_key =
+            load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)
+                .expect("server key");
         let store = Store::open(&storage, server_key, log.clone()).expect("store");
 
         let dashboard = if setup.dashboard {

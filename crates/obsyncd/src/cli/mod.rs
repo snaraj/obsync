@@ -170,6 +170,36 @@ impl ExportArgs {
     }
 }
 
+/// Scaffolding the subcommand tests share: one configuration on a temp
+/// volume, so `serve` and `check` are exercised through the same start.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use super::Config;
+    use crate::storage::testutil::TempDir;
+
+    /// A configuration on a temp volume, with a watermark a tiny volume can
+    /// clear.
+    pub(crate) fn config(dir: &TempDir) -> Config {
+        let pairs: Vec<(String, String)> = [
+            ("OBSYNC_BLOBS_CAPACITY", "64MiB"),
+            ("OBSYNC_JOURNAL_CAPACITY", "16MiB"),
+            ("OBSYNC_FREE_WATERMARK", "1%,64KiB"),
+            (
+                "OBSYNC_BLOBS_DIR",
+                &dir.path().join("blobs").display().to_string(),
+            ),
+            (
+                "OBSYNC_JOURNAL_DIR",
+                &dir.path().join("journal").display().to_string(),
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        Config::from_pairs(&pairs).expect("configuration")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

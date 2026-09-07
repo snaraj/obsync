@@ -187,6 +187,10 @@ impl From<StoreError> for ApiError {
             StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
             StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
             StoreError::Io(_) => ApiError::new(500, code, "the volume refused"),
+            // Start-time only: a refused posture never opens a listener.
+            StoreError::Posture { .. } => {
+                ApiError::new(500, code, "the volume is not safe to serve from")
+            }
             StoreError::Corrupt(_) => ApiError::new(500, code, "stored state is inconsistent"),
         }
     }
