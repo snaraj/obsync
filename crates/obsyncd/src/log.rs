@@ -17,9 +17,9 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::types::{
-    AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId, hex_string,
-};
+use obsync_core::hex;
+
+use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
 /// Verbosity, ordered least to most verbose (`OBSYNC_LOG`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -76,7 +76,7 @@ impl Val {
 
     /// A device id, truncated to its first eight hex characters.
     pub fn device(id: &DeviceId) -> Val {
-        Val(hex_string(&id.as_bytes()[..4]))
+        Val(hex::encode(&id.as_bytes()[..4]))
     }
 
     /// A file id.
@@ -359,10 +359,20 @@ impl Timed {
     /// Emit the line: `fields` plus `duration_ms`.
     pub fn done(mut self, fields: &[(&'static str, Val)]) {
         self.finished = true;
+        self.emit(LogLevel::Info, fields);
+    }
+
+    /// Emit the line for a refusal, which is a warning, not routine.
+    pub fn refused(mut self, fields: &[(&'static str, Val)]) {
+        self.finished = true;
+        self.emit(LogLevel::Warn, fields);
+    }
+
+    fn emit(&self, level: LogLevel, fields: &[(&'static str, Val)]) {
         let mut all: Vec<(&'static str, Val)> = Vec::with_capacity(fields.len() + 1);
         all.extend(fields.iter().cloned());
         all.push(("duration_ms", Val::ms(self.elapsed_ms())));
-        self.log.info(self.event, &all);
+        self.log.emit(level, self.event, &all);
     }
 }
 

@@ -19,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use crate::log::{Log, LogLevel, Val};
-use crate::types::parse_hex;
+use obsync_core::hex;
 
 /// Everything `obsyncd` needs to run, parsed from the environment.
 #[derive(Clone, PartialEq, Eq)]
@@ -31,11 +31,15 @@ pub struct Config {
     /// Journal, snapshots, server key (`OBSYNC_JOURNAL_DIR`).
     pub journal_dir: PathBuf,
     /// Extra blob copies, written before every acknowledgement.
-    pub blobs_mirrors: Vec<PathBuf>,
+    pub blobs_mirrors: Vec<MirrorVolume>,
     /// Declared capacity of the blob volume (`OBSYNC_BLOBS_CAPACITY`).
     pub blobs_capacity: u64,
     /// Declared capacity of the journal volume (`OBSYNC_JOURNAL_CAPACITY`).
     pub journal_capacity: u64,
+    /// Display label for the blob volume's class (`OBSYNC_BLOBS_CLASS`).
+    pub blobs_class: String,
+    /// Display label for the journal volume's class (`OBSYNC_JOURNAL_CLASS`).
+    pub journal_class: String,
     /// Dashboard static files (`OBSYNC_DASHBOARD_DIR`).
     pub dashboard_dir: PathBuf,
     /// Plugin bundle (`OBSYNC_PLUGIN_DIR`).
@@ -72,6 +76,8 @@ impl fmt::Debug for Config {
             .field("blobs_mirrors", &self.blobs_mirrors)
             .field("blobs_capacity", &self.blobs_capacity)
             .field("journal_capacity", &self.journal_capacity)
+            .field("blobs_class", &self.blobs_class)
+            .field("journal_class", &self.journal_class)
             .field("dashboard_dir", &self.dashboard_dir)
             .field("plugin_dir", &self.plugin_dir)
             .field("edge", &self.edge)
@@ -86,6 +92,18 @@ impl fmt::Debug for Config {
             .field("log_level", &self.log_level)
             .finish()
     }
+}
+
+/// An extra blob volume and the label the dashboard shows for it.
+///
+/// `OBSYNC_BLOBS_MIRRORS` entries are `path` or `path=label`; without a label
+/// the volume is shown as `mirror`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MirrorVolume {
+    /// Where the mirror is mounted.
+    pub path: PathBuf,
+    /// Display label for its class.
+    pub label: String,
 }
 
 /// Which edge behaviour the server requires (`OBSYNC_EDGE`).
@@ -193,11 +211,15 @@ pub struct StorageConfig {
     /// Journal volume.
     pub journal_dir: PathBuf,
     /// Extra blob copies.
-    pub mirrors: Vec<PathBuf>,
+    pub mirrors: Vec<MirrorVolume>,
     /// Declared capacity of the blob volume, in bytes.
     pub blobs_capacity: u64,
     /// Declared capacity of the journal volume, in bytes.
     pub journal_capacity: u64,
+    /// Display label for the blob volume's class.
+    pub blobs_class: String,
+    /// Display label for the journal volume's class.
+    pub journal_class: String,
     /// Free-space refusal threshold.
     pub free_watermark: Watermark,
     /// Version and tombstone retention in days.
@@ -213,6 +235,8 @@ pub struct StorageConfig {
 pub enum ConfigError {
     /// An `OBSYNC_*` variable this build does not know.
     Unknown(String),
+    /// A required variable that the environment does not set.
+    Missing(&'static str),
     /// A known variable whose value does not parse or does not validate.
     Invalid {
         /// The variable name.
@@ -226,6 +250,7 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConfigError::Unknown(var) => write!(f, "unknown variable {var}"),
+            ConfigError::Missing(var) => write!(f, "{var} is required"),
             ConfigError::Invalid { var, reason } => write!(f, "{var} is invalid: {reason}"),
         }
     }
@@ -240,6 +265,10 @@ const TIB: u64 = 1024 * GIB;
 
 impl Default for Config {
     /// The defaults documented in docs/architecture.md §9.
+    ///
+    /// The capacities have no default: they are required, and
+    /// [`Config::from_pairs`] refuses an environment that omits them. The
+    /// values here exist only so a partially built `Config` is a valid value.
     fn default() -> Config {
         Config {
             listen: "0.0.0.0:8080".parse().expect("default listener parses"),
@@ -248,6 +277,8 @@ impl Default for Config {
             blobs_mirrors: Vec::new(),
             blobs_capacity: 250 * GIB,
             journal_capacity: 4 * GIB,
+            blobs_class: "host".to_string(),
+            journal_class: "host".to_string(),
             dashboard_dir: PathBuf::from("/opt/obsync/dashboard"),
             plugin_dir: PathBuf::from("/opt/obsync/plugin"),
             edge: Edge::None,
@@ -279,6 +310,8 @@ impl Config {
     /// Parse an explicit set of variables. Every key must be a known variable.
     pub fn from_pairs(pairs: &[(String, String)]) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
+        let mut blobs_capacity_set = false;
+        let mut journal_capacity_set = false;
         for (key, raw) in pairs {
             let value = raw.trim();
             match key.as_str() {
@@ -292,14 +325,22 @@ impl Config {
                 "OBSYNC_BLOBS_MIRRORS" => {
                     cfg.blobs_mirrors = list(value)
                         .iter()
-                        .map(|p| dir("OBSYNC_BLOBS_MIRRORS", p))
+                        .map(|entry| mirror(entry))
                         .collect::<Result<_, _>>()?;
                 }
                 "OBSYNC_BLOBS_CAPACITY" => {
                     cfg.blobs_capacity = size("OBSYNC_BLOBS_CAPACITY", value)?;
+                    blobs_capacity_set = true;
                 }
                 "OBSYNC_JOURNAL_CAPACITY" => {
                     cfg.journal_capacity = size("OBSYNC_JOURNAL_CAPACITY", value)?;
+                    journal_capacity_set = true;
+                }
+                "OBSYNC_BLOBS_CLASS" => {
+                    cfg.blobs_class = class("OBSYNC_BLOBS_CLASS", value)?;
+                }
+                "OBSYNC_JOURNAL_CLASS" => {
+                    cfg.journal_class = class("OBSYNC_JOURNAL_CLASS", value)?;
                 }
                 "OBSYNC_DASHBOARD_DIR" => cfg.dashboard_dir = dir("OBSYNC_DASHBOARD_DIR", value)?,
                 "OBSYNC_PLUGIN_DIR" => cfg.plugin_dir = dir("OBSYNC_PLUGIN_DIR", value)?,
@@ -334,10 +375,9 @@ impl Config {
                     cfg.server_key = if value.is_empty() {
                         None
                     } else {
-                        Some(parse_hex::<32>(value).ok_or(invalid(
-                            "OBSYNC_SERVER_KEY",
-                            "expected 64 lowercase hex characters",
-                        ))?)
+                        Some(hex::decode_array::<32>(value).map_err(|_| {
+                            invalid("OBSYNC_SERVER_KEY", "expected 64 hex characters")
+                        })?)
                     };
                 }
                 "OBSYNC_FREE_WATERMARK" => {
@@ -370,6 +410,14 @@ impl Config {
                 other => return Err(ConfigError::Unknown(other.to_string())),
             }
         }
+        // Capacity is the number the watermark is measured against, so a
+        // missing one would mean refusing writes against a guess.
+        if !blobs_capacity_set {
+            return Err(ConfigError::Missing("OBSYNC_BLOBS_CAPACITY"));
+        }
+        if !journal_capacity_set {
+            return Err(ConfigError::Missing("OBSYNC_JOURNAL_CAPACITY"));
+        }
         cfg.validate()?;
         Ok(cfg)
     }
@@ -394,7 +442,11 @@ impl Config {
                 "expected at least one term above zero",
             ));
         }
-        if self.blobs_mirrors.contains(&self.blobs_dir) {
+        if self
+            .blobs_mirrors
+            .iter()
+            .any(|mirror| mirror.path == self.blobs_dir)
+        {
             return Err(invalid(
                 "OBSYNC_BLOBS_MIRRORS",
                 "expected volumes distinct from the blob volume",
@@ -411,6 +463,8 @@ impl Config {
             mirrors: self.blobs_mirrors.clone(),
             blobs_capacity: self.blobs_capacity,
             journal_capacity: self.journal_capacity,
+            blobs_class: self.blobs_class.clone(),
+            journal_class: self.journal_class.clone(),
             free_watermark: self.free_watermark,
             retention_days: self.retention_days,
             retention_versions: self.retention_versions,
@@ -475,6 +529,27 @@ fn dir(var: &'static str, value: &str) -> Result<PathBuf, ConfigError> {
         return Err(invalid(var, "expected an absolute directory path"));
     }
     Ok(path)
+}
+
+/// A `path` or `path=label` mirror entry.
+fn mirror(entry: &str) -> Result<MirrorVolume, ConfigError> {
+    let (path, label) = match entry.split_once('=') {
+        Some((path, label)) => (path.trim(), label.trim()),
+        None => (entry, "mirror"),
+    };
+    Ok(MirrorVolume {
+        path: dir("OBSYNC_BLOBS_MIRRORS", path)?,
+        label: class("OBSYNC_BLOBS_MIRRORS", label)?,
+    })
+}
+
+/// A volume class label: display only, so the only rules are that it exists
+/// and stays short enough to render.
+fn class(var: &'static str, value: &str) -> Result<String, ConfigError> {
+    if value.is_empty() || value.chars().count() > 64 {
+        return Err(invalid(var, "expected a label of 1 to 64 characters"));
+    }
+    Ok(value.to_string())
 }
 
 fn list(value: &str) -> Vec<String> {
@@ -573,13 +648,26 @@ mod tests {
             .collect()
     }
 
+    /// The two required variables, so a case can say only what it is about.
+    fn required() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("OBSYNC_BLOBS_CAPACITY", "250GiB"),
+            ("OBSYNC_JOURNAL_CAPACITY", "4GiB"),
+        ]
+    }
+
     fn parse(kv: &[(&str, &str)]) -> Result<Config, ConfigError> {
-        Config::from_pairs(&pairs(kv))
+        let mut all: Vec<(&str, &str)> = required();
+        for (key, value) in kv {
+            all.retain(|(name, _)| name != key);
+            all.push((key, value));
+        }
+        Config::from_pairs(&pairs(&all))
     }
 
     #[test]
     fn defaults_match_the_documented_table() {
-        let cfg = parse(&[]).expect("empty environment is valid");
+        let cfg = parse(&[]).expect("the required variables alone are valid");
         assert_eq!(cfg.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(cfg.blobs_dir, PathBuf::from("/data/blobs"));
         assert_eq!(cfg.journal_dir, PathBuf::from("/data/journal"));
@@ -612,9 +700,11 @@ mod tests {
             ("OBSYNC_LISTEN", "127.0.0.1:9090"),
             ("OBSYNC_BLOBS_DIR", "/mnt/blobs"),
             ("OBSYNC_JOURNAL_DIR", "/mnt/journal"),
-            ("OBSYNC_BLOBS_MIRRORS", "/mnt/m1, /mnt/m2"),
+            ("OBSYNC_BLOBS_MIRRORS", "/mnt/m1, /mnt/m2=slow-hdd"),
             ("OBSYNC_BLOBS_CAPACITY", "500GiB"),
             ("OBSYNC_JOURNAL_CAPACITY", "8GiB"),
+            ("OBSYNC_BLOBS_CLASS", "local-pie-ssd"),
+            ("OBSYNC_JOURNAL_CLASS", "local-pie-ssd"),
             ("OBSYNC_DASHBOARD_DIR", "/srv/dash"),
             ("OBSYNC_PLUGIN_DIR", "/srv/plugin"),
             ("OBSYNC_EDGE", "cloudflare"),
@@ -637,10 +727,21 @@ mod tests {
         assert_eq!(cfg.journal_dir, PathBuf::from("/mnt/journal"));
         assert_eq!(
             cfg.blobs_mirrors,
-            vec![PathBuf::from("/mnt/m1"), PathBuf::from("/mnt/m2")]
+            vec![
+                MirrorVolume {
+                    path: PathBuf::from("/mnt/m1"),
+                    label: "mirror".to_string()
+                },
+                MirrorVolume {
+                    path: PathBuf::from("/mnt/m2"),
+                    label: "slow-hdd".to_string()
+                }
+            ]
         );
         assert_eq!(cfg.blobs_capacity, 500 * GIB);
         assert_eq!(cfg.journal_capacity, 8 * GIB);
+        assert_eq!(cfg.blobs_class, "local-pie-ssd");
+        assert_eq!(cfg.journal_class, "local-pie-ssd");
         assert_eq!(cfg.dashboard_dir, PathBuf::from("/srv/dash"));
         assert_eq!(cfg.plugin_dir, PathBuf::from("/srv/plugin"));
         assert!(cfg.edge.requires_edge_headers());
@@ -663,6 +764,58 @@ mod tests {
         assert_eq!(cfg.storage().blobs_dir, cfg.blobs_dir);
         assert_eq!(cfg.storage().mirrors.len(), 2);
         assert_eq!(cfg.storage().retention_days, 90);
+    }
+
+    #[test]
+    fn the_capacities_are_required() {
+        assert_eq!(
+            Config::from_pairs(&pairs(&[("OBSYNC_JOURNAL_CAPACITY", "4GiB")])),
+            Err(ConfigError::Missing("OBSYNC_BLOBS_CAPACITY")),
+            "a watermark measured against a guessed capacity is not a watermark"
+        );
+        assert_eq!(
+            Config::from_pairs(&pairs(&[("OBSYNC_BLOBS_CAPACITY", "1GiB")])),
+            Err(ConfigError::Missing("OBSYNC_JOURNAL_CAPACITY"))
+        );
+        assert_eq!(
+            Config::from_pairs(&[]),
+            Err(ConfigError::Missing("OBSYNC_BLOBS_CAPACITY"))
+        );
+        assert_eq!(
+            ConfigError::Missing("OBSYNC_BLOBS_CAPACITY").to_string(),
+            "OBSYNC_BLOBS_CAPACITY is required"
+        );
+    }
+
+    #[test]
+    fn class_labels_default_to_the_host_and_stay_short() {
+        let cfg = parse(&[]).expect("defaults");
+        assert_eq!(cfg.blobs_class, "host");
+        assert_eq!(cfg.journal_class, "host");
+        assert_eq!(cfg.storage().journal_class, "host");
+        for value in ["", &"x".repeat(65)] {
+            assert!(
+                matches!(
+                    parse(&[("OBSYNC_BLOBS_CLASS", value)]),
+                    Err(ConfigError::Invalid {
+                        var: "OBSYNC_BLOBS_CLASS",
+                        ..
+                    })
+                ),
+                "a label of {} characters is refused",
+                value.len()
+            );
+        }
+        assert!(
+            matches!(
+                parse(&[("OBSYNC_BLOBS_MIRRORS", "/mnt/m1=")]),
+                Err(ConfigError::Invalid {
+                    var: "OBSYNC_BLOBS_MIRRORS",
+                    ..
+                })
+            ),
+            "an empty mirror label is refused, not silently defaulted"
+        );
     }
 
     #[test]
@@ -809,7 +962,7 @@ mod tests {
         assert!(!text.contains("abcdef"), "{text}");
         assert_eq!(
             text,
-            "OBSYNC_SERVER_KEY is invalid: expected 64 lowercase hex characters"
+            "OBSYNC_SERVER_KEY is invalid: expected 64 hex characters"
         );
         assert_eq!(
             ConfigError::Unknown("OBSYNC_X".to_string()).to_string(),

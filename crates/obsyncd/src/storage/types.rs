@@ -245,6 +245,9 @@ pub struct VolumeStatus {
     pub role: String,
     /// Where it is mounted.
     pub path: PathBuf,
+    /// Display label for the volume's class, from `OBSYNC_*_CLASS`; the
+    /// dashboard shows this and never the path.
+    pub class_label: String,
     /// Declared capacity (`OBSYNC_*_CAPACITY`).
     pub bytes_total: u64,
     /// Bytes tracked as used.
@@ -367,6 +370,8 @@ pub enum StoreError {
     DeviceRevoked,
     /// No such file.
     UnknownFile,
+    /// No such domain.
+    UnknownDomain,
     /// No such version.
     UnknownVersion,
     /// Setup has not run.
@@ -410,6 +415,7 @@ impl fmt::Display for StoreError {
             StoreError::UnknownDevice => f.write_str("unknown device"),
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::UnknownFile => f.write_str("unknown file"),
+            StoreError::UnknownDomain => f.write_str("unknown domain"),
             StoreError::UnknownVersion => f.write_str("unknown version"),
             StoreError::NotSetUp => f.write_str("not set up"),
             StoreError::AlreadySetUp => f.write_str("already set up"),
@@ -443,6 +449,7 @@ impl StoreError {
             StoreError::UnknownDevice => "unknown_device",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::UnknownFile => "unknown_file",
+            StoreError::UnknownDomain => "unknown_domain",
             StoreError::UnknownVersion => "unknown_version",
             StoreError::NotSetUp => "not_set_up",
             StoreError::AlreadySetUp => "already_set_up",

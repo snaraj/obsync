@@ -1,13 +1,16 @@
 //! Identifier newtypes shared by the storage engine and the API.
 //!
-//! Every identifier is a fixed-size byte array that prints and parses as
-//! lowercase hex (`docs/protocol.md`, "Hex is lowercase"). Parsing rejects a
-//! wrong length, so an identifier of the wrong shape cannot reach the store.
+//! Every identifier is a fixed-size byte array that prints as lowercase hex
+//! (`docs/protocol.md`, "Hex is lowercase") and parses through
+//! `obsync_core::hex`, which refuses a wrong length, so an identifier of the
+//! wrong shape cannot reach the store.
 #![forbid(unsafe_code)]
 
 use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use obsync_core::hex;
 
 /// A hex identifier failed to parse: wrong length, or a non-hex character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,49 +21,11 @@ pub struct ParseIdError {
 
 impl fmt::Display for ParseIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expected {} lowercase hex characters",
-            self.expected_chars
-        )
+        write!(f, "expected {} hex characters", self.expected_chars)
     }
 }
 
 impl std::error::Error for ParseIdError {}
-
-/// Lowercase hex of `bytes`.
-pub(crate) fn hex_string(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(char::from(DIGITS[usize::from(b >> 4)]));
-        out.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-    }
-    out
-}
-
-/// Parse exactly `N` bytes of lowercase hex.
-pub(crate) fn parse_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    let bytes = s.as_bytes();
-    if bytes.len() != N * 2 {
-        return None;
-    }
-    let mut out = [0u8; N];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let hi = digit(bytes[i * 2])?;
-        let lo = digit(bytes[i * 2 + 1])?;
-        *slot = (hi << 4) | lo;
-    }
-    Some(out)
-}
-
-fn digit(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
-}
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident, $len:literal) => {
@@ -85,13 +50,13 @@ macro_rules! id_type {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&hex_string(&self.0))
+                f.write_str(&hex::encode(&self.0))
             }
         }
 
         impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&hex_string(&self.0))
+                f.write_str(&hex::encode(&self.0))
             }
         }
 
@@ -99,9 +64,9 @@ macro_rules! id_type {
             type Err = ParseIdError;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                parse_hex::<$len>(s)
+                hex::decode_array::<$len>(s)
                     .map(Self)
-                    .ok_or(ParseIdError { expected_chars: $len * 2 })
+                    .map_err(|_| ParseIdError { expected_chars: $len * 2 })
             }
         }
     };
@@ -213,14 +178,20 @@ mod tests {
     }
 
     #[test]
-    fn non_hex_rejected() {
+    fn non_hex_rejected_and_case_canonicalised() {
         assert!(
             "00112233445566778899aabbccddeegg"
                 .parse::<FileId>()
                 .is_err()
         );
+        // Either case decodes; an identifier always re-emits lowercase, so
+        // one file id has exactly one spelling on the wire.
+        let upper: FileId = "00112233445566778899AABBCCDDEEFF"
+            .parse()
+            .expect("uppercase decodes");
+        assert_eq!(upper.to_string(), "00112233445566778899aabbccddeeff");
         assert!(
-            "00112233445566778899AABBCCDDEEFF"
+            "00112233445566778899aabbccddeeff00"
                 .parse::<FileId>()
                 .is_err()
         );
@@ -240,7 +211,7 @@ mod tests {
     fn parse_error_names_the_length() {
         assert_eq!(
             ParseIdError { expected_chars: 64 }.to_string(),
-            "expected 64 lowercase hex characters"
+            "expected 64 hex characters"
         );
     }
 }

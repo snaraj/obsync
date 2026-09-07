@@ -59,8 +59,12 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Uses of the FFI keyword as a keyword: bounded by non-identifier bytes, so
-/// the `_code` lint name and identifiers that merely contain it do not count.
+/// Uses of the FFI keyword in the only grammar that can introduce it: a
+/// block, a function, an `impl`, a `trait`, or an `extern` block.
+///
+/// The keyword must be bounded by non-identifier bytes, so the `_code` lint
+/// name and identifiers containing it do not count, and it must be followed
+/// by one of the five forms, so prose that names the keyword does not either.
 fn unsafe_uses(content: &str) -> usize {
     let token = unsafe_token();
     let bytes = content.as_bytes();
@@ -71,7 +75,11 @@ fn unsafe_uses(content: &str) -> usize {
         let end = at + token.len();
         let before_free = at == 0 || !is_ident_byte(bytes[at - 1]);
         let after_free = end >= bytes.len() || !is_ident_byte(bytes[end]);
-        if before_free && after_free {
+        let rest = content[end..].trim_start();
+        let introduces = ["{", "fn ", "impl ", "trait ", "extern "]
+            .iter()
+            .any(|form| rest.starts_with(form));
+        if before_free && after_free && introduces {
             count += 1;
         }
         from = end;
@@ -193,8 +201,12 @@ fn unsafe_check_flags_a_mutated_fixture() {
     let token = unsafe_token();
     assert_eq!(unsafe_uses("#![forbid(unsafe_code)]"), 0);
     assert_eq!(unsafe_uses("fn f() {}"), 0);
+    assert_eq!(unsafe_uses(&format!("//! prose about `{token}` keys")), 0);
+    assert_eq!(unsafe_uses(&format!("fn {token}_uses() {{}}")), 0);
     assert_eq!(unsafe_uses(&format!("{token} {{ transmute() }}")), 1);
     assert_eq!(unsafe_uses(&format!("{token} extern \"C\" {{}}")), 1);
+    assert_eq!(unsafe_uses(&format!("{token} fn raw() {{}}")), 1);
+    assert_eq!(unsafe_uses(&format!("{token} impl Send for X {{}}")), 1);
     assert_eq!(
         unsafe_uses(&format!("#![forbid({token}_code)] {token} {{}}")),
         1
@@ -329,19 +341,26 @@ fn every_source_file_but_the_ffi_surface_forbids_unsafe_code() {
     let root = repo_root();
     let allowed = root.join("crates/obsyncd/src/signal.rs");
     let lint = format!("#![forbid({}_code)]", unsafe_token());
-    for file in rust_sources(&root.join("crates")) {
-        if file == allowed {
-            continue;
+    for crate_dir in ["crates/obsync-core", "crates/obsyncd"] {
+        let src = root.join(crate_dir).join("src");
+        // A crate root that forbids the keyword covers every file under it,
+        // and cannot be overridden from inside. Only a crate without that
+        // blanket needs the attribute file by file, because it holds the one
+        // permitted FFI surface.
+        let crate_wide = read(&src.join("lib.rs")).contains(&lint);
+        for file in rust_sources(&src) {
+            if crate_wide || file == allowed {
+                continue;
+            }
+            let content = read(&file);
+            let is_crate_root = file
+                .file_name()
+                .is_some_and(|n| n == "lib.rs" || n == "main.rs");
+            assert!(
+                content.contains(&lint) || is_crate_root,
+                "{} must carry the forbid attribute",
+                relative(&file, &root)
+            );
         }
-        let content = read(&file);
-        let is_module_root = file
-            .file_name()
-            .is_some_and(|n| n == "lib.rs" || n == "main.rs");
-        let declares = content.contains(&lint);
-        assert!(
-            declares || is_module_root,
-            "{} must carry the forbid attribute",
-            relative(&file, &root)
-        );
     }
 }
