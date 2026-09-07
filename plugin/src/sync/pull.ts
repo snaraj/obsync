@@ -9,6 +9,16 @@
  * SHA-256 checked against the manifest before anything reaches the vault.
  * Nothing is written unverified.
  *
+ * UNTRUSTED MANIFESTS. Decryption proves a manifest came from a device that
+ * holds the vault key; it proves nothing about what the manifest SAYS. Every
+ * decrypted manifest is therefore parsed through `parseManifest`, which
+ * checks each field's type and puts `path` through the one vault-path rule
+ * (`vaultPath.ts`), so a compromised paired device cannot name
+ * `../../outside-the-vault.md`, an absolute path, or `.obsidian/**` and have
+ * the writer land bytes there. A refused version is logged with its file id,
+ * skipped without a single write, reported to the user once per file, and
+ * the feed moves on — one hostile version cannot wedge sync.
+ *
  * ECHOES. A write this device made comes back down the feed. It is dropped
  * twice over: by `version_id` (the ids this device authored) and by the
  * `(path, mtime, size)` of the writes this device made, which is what stops
@@ -38,12 +48,14 @@ import {
   decryptManifest,
   encryptChunk,
   hex,
+  isHex,
   sha256,
   unbase64,
   unhex,
 } from "../crypto";
 import { ChangeRecord } from "../transport";
 import { admissionReason, admit } from "../policy";
+import { assertVaultPath, isVaultPath, vaultPathRefusal } from "../vaultPath";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
 
@@ -58,7 +70,63 @@ export type ApplyResult =
   | "remote_only"
   | "merged"
   | "conflict_copy"
+  | "refused"
   | "skipped";
+
+/** A decrypted manifest that does not describe a file this device may write. */
+export class ManifestError extends Error {
+  constructor(readonly reason: string) {
+    super(`manifest refused: ${reason}`);
+    this.name = "ManifestError";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function size(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/** A 32-byte identity as lowercase hex: every sid, cid and plaintext digest. */
+function digest32(value: unknown): boolean {
+  return typeof value === "string" && isHex(value, 32);
+}
+
+/**
+ * The runtime schema check for a decrypted manifest: every field is verified
+ * against the shape `Manifest` claims, and `path` against the vault-path rule,
+ * BEFORE any of it is used. Without this the type assertion is a promise the
+ * compiler cannot keep — the bytes came off the wire from another device.
+ */
+export function parseManifest(json: string): Manifest {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new ManifestError("not_json");
+  }
+  if (!isRecord(value)) throw new ManifestError("not_an_object");
+  const refusal = vaultPathRefusal(value["path"]);
+  if (refusal !== null) throw new ManifestError(`path_${refusal}`);
+  if (value["v"] !== 1) throw new ManifestError("version");
+  if (!size(value["size"])) throw new ManifestError("size");
+  if (typeof value["mtime"] !== "number" || !Number.isFinite(value["mtime"])) throw new ManifestError("mtime");
+  if (typeof value["domain"] !== "string") throw new ManifestError("domain");
+  if (typeof value["deleted"] !== "boolean") throw new ManifestError("deleted");
+  const digest = value["sha256"];
+  if (digest !== "" && !digest32(digest)) throw new ManifestError("sha256");
+  const chunks = value["chunks"];
+  if (!Array.isArray(chunks)) throw new ManifestError("chunks");
+  for (const chunk of chunks as unknown[]) {
+    if (!isRecord(chunk)) throw new ManifestError("chunk");
+    if (!digest32(chunk["sid"])) throw new ManifestError("chunk_sid");
+    if (!digest32(chunk["cid"])) throw new ManifestError("chunk_cid");
+    if (!size(chunk["len"])) throw new ManifestError("chunk_len");
+  }
+  return value as unknown as Manifest;
+}
 
 export async function decryptRecordManifest(
   context: SyncContext,
@@ -72,7 +140,7 @@ export async function decryptRecordManifest(
     unhex(record.manifest_nonce),
     unbase64(record.manifest_ct),
   );
-  return JSON.parse(json) as Manifest;
+  return parseManifest(json);
 }
 
 /** Fetch, decrypt and verify every chunk of a manifest, in file order. */
@@ -122,6 +190,10 @@ export async function assembleBytes(context: SyncContext, manifest: Manifest): P
  * of what landed, which becomes the echo-suppression key.
  */
 async function materialise(context: SyncContext, manifest: Manifest): Promise<void> {
+  // The single choke point for every byte this device writes: the decoded
+  // manifest's path was checked at decode, a conflict copy's derived path is
+  // checked here, and neither reaches a writer unchecked.
+  assertVaultPath(manifest.path);
   const writer = await context.host.writer(manifest.path);
   try {
     if (manifest.chunks.length === 1) {
@@ -147,6 +219,25 @@ async function firstChunk(context: SyncContext, manifest: Manifest): Promise<Byt
 }
 
 /**
+ * A version whose manifest this device will not act on. It is never written,
+ * never recorded, and never retried: the feed advances past it, because a
+ * hostile device that could wedge the feed could stop sync for the vault.
+ */
+function refuse(context: SyncContext, change: ChangeRecord, error: ManifestError): ApplyResult {
+  context.host.log(
+    `pull path_class=manifest decision=refused reason=${error.reason} file=${change.file_id} seq=${change.seq}`,
+  );
+  if (!context.refused.has(change.file_id)) {
+    context.refused.add(change.file_id);
+    context.host.notify(
+      `obsync refused a change from another device: it does not name a plain file inside this vault (${error.reason}). ` +
+        `Nothing was written. File id ${change.file_id}.`,
+    );
+  }
+  return "refused";
+}
+
+/**
  * Apply one change-feed record.
  */
 export async function applyChange(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
@@ -156,7 +247,13 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   }
   if (change.device_id === context.deviceId) return "echo";
 
-  const manifest = await decryptRecordManifest(context, change);
+  let manifest: Manifest;
+  try {
+    manifest = await decryptRecordManifest(context, change);
+  } catch (error) {
+    if (!(error instanceof ManifestError)) throw error;
+    return refuse(context, change, error);
+  }
   const localPath = context.state.pathByFileId(change.file_id);
   const local = localPath === undefined ? undefined : context.state.fileByPath(localPath);
 
@@ -350,10 +447,16 @@ async function postMerged(
   await context.state.save();
 }
 
-/** Remote-only accounting for the "Remote only" view. */
+/**
+ * Remote-only accounting for the "Remote only" view. The stored paths were
+ * checked when they were recorded; they are checked again here because this
+ * list is what the user sees and what a fetch acts on, and a data file is
+ * editable by anything that can reach the vault.
+ */
 export function remoteOnlyList(context: SyncContext): { fileId: string; path: string; size: number; why: string }[] {
   const policy = context.state.data.policy;
-  return Object.entries(context.state.data.remoteOnly).map(([fileId, record]) => {
+  const listable = Object.entries(context.state.data.remoteOnly).filter(([, record]) => isVaultPath(record.path));
+  return listable.map(([fileId, record]) => {
     const admission = admit(policy, context.state.localBytes(), record.size);
     return {
       fileId,

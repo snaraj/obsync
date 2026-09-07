@@ -48,6 +48,7 @@ async function rig({ isMobile = false, policy } = {}) {
     concurrency: isMobile ? 2 : 4,
     authored: new Set(),
     written: new Set(),
+    refused: new Set(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
@@ -176,6 +177,121 @@ test("a manifest that lies about its plaintext hash is refused before the write"
   });
   await assert.rejects(() => applyChange(context, frame), /plaintext hash mismatch/);
   assert.equal(host.files.has("Notes/Lying.md"), false, "nothing unverified reached the vault");
+});
+
+test("an encrypted manifest for a path outside the vault is refused, and nothing is written", async () => {
+  const { host, server, state, context, keys: k } = await rig();
+  const fileId = "18".repeat(16);
+  // The reviewer's mutant: a manifest this vault's key would decrypt happily,
+  // naming a path two levels above the vault root.
+  const frame = await server.publish({
+    fileId,
+    path: "../../outside-the-vault.md",
+    bytes: enc("attacker bytes\n"),
+    mtime: 1757200001000,
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+  });
+
+  assert.equal(await applyChange(context, frame), "refused");
+  assert.equal(host.files.size, 0, "not one byte reached a writer");
+  assert.deepEqual(host.trashed, [], "and nothing was deleted either");
+  assert.deepEqual(Object.keys(state.data.files), [], "the version was not recorded");
+  assert.deepEqual(Object.keys(state.data.remoteOnly), []);
+  assert.ok(
+    host.logs.some((line) => line.includes(`decision=refused reason=path_dot_segment file=${fileId}`)),
+    `the refusal names the file id and the rule: ${host.logs.join(" | ")}`,
+  );
+  assert.match(host.notices.join(" "), /refused a change from another device/);
+});
+
+test("every escaping, hidden or malformed manifest path is refused the same way", async () => {
+  const cases = [
+    ["/etc/obsync-escape.md", "path_absolute"],
+    ["a/../../b.md", "path_dot_segment"],
+    [".obsidian/plugins/obsync/main.js", "path_hidden_segment"],
+    [".obsidian/plugins/obsync/data.json", "path_hidden_segment"],
+    ["Notes/pass\u0000wd.md", "path_control_character"],
+    ["..\\..\\Windows\\evil.md", "path_backslash"],
+    ["C:/Windows/evil.md", "path_drive_letter"],
+    ["", "path_empty"],
+    ["Notes//Ideas.md", "path_empty_segment"],
+  ];
+  const { host, server, context, keys: k } = await rig();
+  for (const [index, [path, reason]] of cases.entries()) {
+    const fileId = String(index).padStart(2, "0").repeat(16);
+    const frame = await server.publish({
+      fileId,
+      path,
+      bytes: enc(`payload ${index}\n`),
+      mtime: 1757200001000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+    });
+    assert.equal(await applyChange(context, frame), "refused", path);
+    assert.ok(
+      host.logs.some((line) => line.includes(`reason=${reason} file=${fileId}`)),
+      `${path} should be refused as ${reason}: ${host.logs.join(" | ")}`,
+    );
+  }
+  assert.equal(host.files.size, 0, "none of them reached the vault");
+  assert.equal(host.notices.length, cases.length, "each hostile file is reported once");
+});
+
+test("a refused file is reported once, however many versions it sends", async () => {
+  const { host, server, context, keys: k } = await rig();
+  const fileId = "19".repeat(16);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const frame = await server.publish({
+      fileId,
+      path: ".obsidian/plugins/obsync/main.js",
+      bytes: enc(`attempt ${attempt}\n`),
+      mtime: 1757200001000 + attempt,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+    });
+    assert.equal(await applyChange(context, frame), "refused");
+  }
+  assert.equal(host.notices.length, 1, "one notice per file, not per version");
+  assert.equal(
+    host.logs.filter((line) => line.includes("decision=refused")).length,
+    3,
+    "every refusal is still logged",
+  );
+});
+
+test("a manifest whose fields are the wrong shape is refused before a chunk is fetched", async () => {
+  const { host, server, context, keys: k } = await rig();
+  const content = enc("honest bytes\n");
+  const { cid, sid, ciphertext } = await c.encryptChunk(k.domainKey, content);
+  server.chunks.set(sid, ciphertext);
+  const frame = await server.publishManifest({
+    fileId: "1a".repeat(16),
+    manifest: {
+      v: 1,
+      path: "Notes/Malformed.md",
+      size: "quite large",
+      mtime: 1757200001000,
+      domain: "0123456789abcdef0123456789abcdef",
+      chunks: [{ sid, cid: c.hex(cid), len: content.length }],
+      sha256: "",
+      deleted: false,
+    },
+    sids: [sid],
+    parents: [],
+    deviceId: "ffffffffffffffffffffffffffffffff",
+    manifestKey: k.manifestKey,
+    bytes: content.length,
+  });
+
+  assert.equal(await applyChange(context, frame), "refused");
+  assert.ok(host.logs.some((line) => line.includes("reason=size file=1a1a")), host.logs.join(" | "));
+  assert.equal(host.files.has("Notes/Malformed.md"), false);
+  assert.equal(
+    server.requests.some((request) => request.target.startsWith("/v1/chunks/get")),
+    false,
+    "the shape is checked before any chunk is downloaded",
+  );
 });
 
 test("our own versions are dropped on the way back down the feed", async () => {
@@ -504,6 +620,60 @@ test("a rename keeps the file id and moves the path inside the manifest", async 
   assert.equal(state.fileByPath("New name.md").fileId, fileId, "the file kept its identity");
   assert.equal(server.files.size, 1, "no second file was created");
   assert.equal(server.files.get(fileId).versions.length, 2);
+  engine.stop();
+});
+
+test("a rename whose target is hidden is not synced, and neither is the plugin's own state", async () => {
+  const { host, server, state } = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state,
+    transport: new Transport({
+      request: server.request,
+      serverUrl: () => state.data.serverUrl,
+      device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+      edgeHeaders: () => [],
+      now: () => host.clock,
+      sleep: async () => undefined,
+    }),
+    host,
+    domainId: KEYS.domainId,
+    timers,
+  });
+  host.seed("Notes/Secret.md", "content", 1000);
+  await engine.start();
+  await timers.run(1000, () => state.fileByPath("Notes/Secret.md") !== undefined);
+  const posted = server.journal.length;
+
+  // The vault key lives in this file. A watcher event for it must never
+  // become an upload, and moving a note into a hidden folder must not either.
+  host.seed(".obsidian/plugins/obsync/data.json", '{"vrk":"0f0f0f0f"}', 2000);
+  engine.changed(".obsidian/plugins/obsync/data.json");
+  host.files.set(".obsidian/Secret.md", host.files.get("Notes/Secret.md"));
+  host.files.delete("Notes/Secret.md");
+  engine.renamed("Notes/Secret.md", ".obsidian/Secret.md");
+  await timers.run(1000);
+
+  assert.equal(server.journal.length, posted, "nothing hidden was posted");
+  assert.equal(state.fileByPath(".obsidian/Secret.md"), undefined, "the hidden path is not tracked");
+  assert.equal(state.fileByPath("Notes/Secret.md") !== undefined, true, "the record stayed where it was");
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=not_synced reason=hidden_segment event=change")),
+    host.logs.join(" | "),
+  );
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=not_synced reason=hidden_segment event=rename_to")),
+    host.logs.join(" | "),
+  );
+  for (const request of server.requests) {
+    assert.equal(request.json === null || !request.json.includes("vrk"), true, request.target);
+  }
+
+  // Startup reconciliation walks the same gate: the hidden files it sees are
+  // counted as skipped, never queued.
+  await engine.reconcile();
+  await timers.run(1000);
+  assert.ok(host.logs.some((line) => line.includes("reconcile decision=queued") && line.includes("skipped=2")));
   engine.stop();
 });
 

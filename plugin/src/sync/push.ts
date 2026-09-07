@@ -26,6 +26,11 @@
  * HMAC(K_d, plaintext)` is verified inside `decryptChunk` on every pull, and
  * the chunk list itself is bound into the manifest's AAD.
  *
+ * WHAT IS PUSHED. Only a canonical relative vault path: the watcher gate and
+ * these two entry points both apply the rule, so a hidden file — the plugin's
+ * own `data.json` above all — cannot be uploaded even if an event names one
+ * (`vaultPath.ts`).
+ *
  * PLATFORM. Desktop streams the file through Node's `fs` in 8 MiB windows
  * with concurrency 4; mobile reads the whole file through the vault adapter
  * with concurrency 2, which is why the mobile per-file ceiling exists.
@@ -47,6 +52,7 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, VersionAck } from "../transport";
+import { assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
   sid: string;
@@ -114,6 +120,7 @@ async function uploadMissing(
  * on every other device.
  */
 export async function pushFile(context: SyncContext, path: string, force = false): Promise<PushOutcome> {
+  assertVaultPath(path);
   const stat = await context.host.stat(path);
   if (!stat) throw new Error(`push: ${path} disappeared`);
   const record = context.state.fileByPath(path);
@@ -181,6 +188,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
 
 /** Post a tombstone: a version with `deleted:true` and no sids. */
 export async function pushDelete(context: SyncContext, path: string): Promise<PushOutcome | null> {
+  assertVaultPath(path);
   const record = context.state.fileByPath(path);
   if (!record) return null;
   const manifest: Manifest = {

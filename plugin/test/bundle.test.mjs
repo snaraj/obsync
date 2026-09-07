@@ -69,6 +69,7 @@ test("the bundle carries the whole plugin and nothing from the build machine", (
     "./sync/conflict",
     "./ui/settings",
     "./ui/modals",
+    "./vaultPath",
   ]) {
     assert.ok(bundle.includes(`__modules[${JSON.stringify(id)}]`), `${id} is in the bundle`);
   }

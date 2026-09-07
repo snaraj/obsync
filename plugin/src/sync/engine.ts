@@ -19,6 +19,11 @@
  * record whose `version_id` this device authored. Without both, one edit
  * would ping-pong between devices forever.
  *
+ * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
+ * the watcher, startup reconciliation and the pull path all refuse anything
+ * else, which is what takes `.obsidian/**` and `.git/**` out of sync in v0.1
+ * (`vaultPath.ts` states the rule and why hidden folders wait for an opt-in).
+ *
  * PLATFORM. Concurrency is 4 on desktop and 2 on mobile; the desktop host
  * streams files through Node's `fs` while the mobile host reads and writes
  * whole files through the vault adapter. Both use the same loops.
@@ -28,6 +33,7 @@ import { ByteSource } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
+import { vaultPathRefusal } from "../vaultPath";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
 
@@ -73,6 +79,8 @@ export interface SyncContext {
   readonly authored: Set<string>;
   /** `path:mtime:size` of writes this device made, awaiting their watcher event. */
   readonly written: Set<string>;
+  /** File ids whose refusal the user has already been told about, once each. */
+  readonly refused: Set<string>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -150,6 +158,7 @@ export class SyncEngine {
       concurrency: host.isMobile ? 2 : 4,
       authored: new Set<string>(),
       written: new Set<string>(),
+      refused: new Set<string>(),
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -188,16 +197,30 @@ export class SyncEngine {
 
   // --- watcher -----------------------------------------------------------
 
+  /**
+   * The gate every watcher event and every reconciliation entry passes: a
+   * path that is not a canonical relative vault path is not synced, in either
+   * direction, and the refusal is visible. This is what keeps `.obsidian/**`
+   * — this plugin's own bundle and its `data.json`, which holds the vault key
+   * — and `.git/**` out of the vault's history (`vaultPath.ts`).
+   */
+  private tracked(path: string, event: string): boolean {
+    const refusal = vaultPathRefusal(path);
+    if (refusal === null) return true;
+    this.options.host.log(`watch path_class=file decision=not_synced reason=${refusal} event=${event}`);
+    return false;
+  }
+
   /** A create or modify event from the vault. */
   changed(path: string): void {
-    if (!this.running) return;
+    if (!this.running || !this.tracked(path, "change")) return;
     this.deletions.delete(path);
     this.debounce(path, 0);
   }
 
   /** A delete event from the vault. */
   deleted(path: string): void {
-    if (!this.running) return;
+    if (!this.running || !this.tracked(path, "delete")) return;
     const entry = this.pending.get(path);
     if (entry) {
       this.timers.clear(entry.handle);
@@ -214,7 +237,7 @@ export class SyncEngine {
    * of downloading a copy and deleting the original.
    */
   renamed(from: string, to: string): void {
-    if (!this.running) return;
+    if (!this.running || !this.tracked(from, "rename_from") || !this.tracked(to, "rename_to")) return;
     const context = this.need();
     const record = context.state.fileByPath(from);
     if (record) {
@@ -395,7 +418,12 @@ export class SyncEngine {
     const started = context.now();
     const seen = new Set<string>();
     let queued = 0;
+    let skipped = 0;
     for (const file of await context.host.list()) {
+      if (!this.tracked(file.path, "reconcile")) {
+        skipped++;
+        continue;
+      }
       seen.add(file.path);
       const record = context.state.fileByPath(file.path);
       if (record && record.mtime === file.mtime && record.size === file.size) continue;
@@ -404,12 +432,16 @@ export class SyncEngine {
     }
     for (const path of Object.keys(context.state.data.files)) {
       if (seen.has(path)) continue;
+      if (!this.tracked(path, "reconcile_state")) {
+        skipped++;
+        continue;
+      }
       this.deletions.add(path);
       this.enqueue(path);
       queued++;
     }
     context.host.log(
-      `reconcile decision=queued files=${seen.size} queued=${queued} duration_ms=${context.now() - started}`,
+      `reconcile decision=queued files=${seen.size} queued=${queued} skipped=${skipped} duration_ms=${context.now() - started}`,
     );
   }
 

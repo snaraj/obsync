@@ -23,6 +23,13 @@
  * not expose a base path) takes the adapter path automatically; there is no
  * setting for it.
  *
+ * PATH CONFINEMENT. Every method here takes a vault path from the engine and
+ * puts it through `vaultPath.ts` first; the desktop branch additionally
+ * resolves the absolute target and proves it is strictly below the vault
+ * root before it opens, renames or unlinks anything. The two layers are
+ * deliberately redundant: the string rule states what a vault path IS, and
+ * the root proof holds even for a caller that forgot to ask.
+ *
  * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
  * The plugin compares versions and tells the user; the trusted source of
  * plugin code is the GitHub Release. Nothing here writes into
@@ -39,6 +46,7 @@ import { fetchRemoteOnly } from "./sync/pull";
 import { newDomainId, newVaultKey } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import { PathResolver, assertVaultPath, isVaultPath, vaultTarget } from "./vaultPath";
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these five calls are used, and only on desktop.
@@ -59,13 +67,21 @@ interface NodeFs {
 }
 declare const require: (id: string) => unknown;
 
-function nodeFs(): NodeFs | null {
+/** A Node built-in, on the platforms that have one. Mobile has none. */
+function nodeModule<T>(id: string): T | null {
   if (!Platform.isDesktopApp) return null;
   try {
-    return require("fs") as NodeFs;
+    return require(id) as T;
   } catch {
     return null;
   }
+}
+
+/** What the desktop path needs: the filesystem, the resolver, the vault root. */
+interface DesktopVault {
+  fs: NodeFs;
+  path: PathResolver;
+  base: string;
 }
 
 /** The GitHub Release that carries a version's plugin bundle and its hashes. */
@@ -100,14 +116,15 @@ export function isNewer(candidate: string, current: string): boolean {
   return false;
 }
 
-class ObsidianHost implements VaultHost {
-  private readonly fs: NodeFs | null;
-  private readonly basePath: string | null;
+export class ObsidianHost implements VaultHost {
+  private readonly desktop: DesktopVault | null;
 
   constructor(private readonly plugin: ObsyncPlugin) {
-    this.fs = nodeFs();
+    const fs = nodeModule<NodeFs>("fs");
+    const path = nodeModule<PathResolver>("path");
     const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
-    this.basePath = this.fs && typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
+    const base = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
+    this.desktop = fs !== null && path !== null && base !== null ? { fs, path, base } : null;
   }
 
   get isMobile(): boolean {
@@ -126,19 +143,25 @@ class ObsidianHost implements VaultHost {
     return this.plugin.deviceName();
   }
 
+  /** Every vault file whose path this device may sync, and no other. */
   async list(): Promise<VaultStat[]> {
-    return this.plugin.app.vault
-      .getFiles()
-      .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+    const files = this.plugin.app.vault.getFiles();
+    const synced = files.filter((file) => isVaultPath(file.path));
+    if (synced.length !== files.length) {
+      this.plugin.log(`list decision=skipped_unsyncable files=${files.length - synced.length}`);
+    }
+    return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
   }
 
   async stat(path: string): Promise<VaultStat | null> {
+    assertVaultPath(path);
     const stat = await this.plugin.app.vault.adapter.stat(path);
     if (!stat || stat.type !== "file") return null;
     return { path, mtime: stat.mtime, size: stat.size };
   }
 
   async read(path: string): Promise<Bytes> {
+    assertVaultPath(path);
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
   }
 
@@ -147,9 +170,9 @@ class ObsidianHost implements VaultHost {
    * never lands in memory. Mobile has no such API and buffers the file once.
    */
   source(path: string, size: number): ByteSource {
-    const fs = this.fs;
-    const base = this.basePath;
-    if (!fs || base === null) {
+    assertVaultPath(path);
+    const desktop = this.desktop;
+    if (desktop === null) {
       let cached: Bytes | null = null;
       return {
         size,
@@ -159,10 +182,12 @@ class ObsidianHost implements VaultHost {
         },
       };
     }
+    const fs = desktop.fs;
+    const target = vaultTarget(desktop.base, path, desktop.path);
     return {
       size,
       read: async (offset, length) => {
-        const handle = await fs.promises.open(`${base}/${path}`, "r");
+        const handle = await fs.promises.open(target, "r");
         try {
           const buffer = new Uint8Array(length);
           let filled = 0;
@@ -186,12 +211,18 @@ class ObsidianHost implements VaultHost {
    * `writeBinary` once, which is the strongest primitive the adapter has.
    */
   async writer(path: string): Promise<VaultWriter> {
+    assertVaultPath(path);
     const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
-    const fs = this.fs;
-    const base = this.basePath;
-    if (fs && base !== null) {
-      if (folder !== "") await fs.promises.mkdir(`${base}/${folder}`, { recursive: true });
-      const temp = `${base}/${path}.obsync-${hex(randomBytes(6))}.tmp`;
+    const desktop = this.desktop;
+    if (desktop !== null) {
+      const fs = desktop.fs;
+      // Both the file and its folder are proven to be below the vault root
+      // before a directory is created or a byte is opened.
+      const target = vaultTarget(desktop.base, path, desktop.path);
+      if (folder !== "") {
+        await fs.promises.mkdir(vaultTarget(desktop.base, folder, desktop.path), { recursive: true });
+      }
+      const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
       const handle = await fs.promises.open(temp, "w");
       let open = true;
       return {
@@ -203,12 +234,14 @@ class ObsidianHost implements VaultHost {
           open = false;
           const seconds = mtime / 1000;
           await fs.promises.utimes(temp, seconds, seconds);
-          await fs.promises.rename(temp, `${base}/${path}`);
-          const stat = await fs.promises.stat(`${base}/${path}`);
+          await fs.promises.rename(temp, target);
+          const stat = await fs.promises.stat(target);
           return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
         },
         abort: async () => {
           if (open) await handle.close();
+          // The temp file sits beside a proven target, so this unlink is
+          // confined by the same proof.
           await fs.promises.unlink(temp).catch(() => undefined);
         },
       };
@@ -239,7 +272,9 @@ class ObsidianHost implements VaultHost {
     };
   }
 
+  /** Obsidian's own vault-rooted delete; the path rule is applied first. */
   async trash(path: string): Promise<void> {
+    assertVaultPath(path);
     const file = this.plugin.app.vault.getAbstractFileByPath(path);
     if (file) {
       await this.plugin.app.vault.trash(file, true);

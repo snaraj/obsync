@@ -21,6 +21,7 @@
  */
 
 import { Policy, defaultPolicy } from "./policy";
+import { isVaultPath } from "./vaultPath";
 
 /** Obsidian's `Plugin` provides exactly this pair. */
 export interface Store {
@@ -120,6 +121,10 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   const files = loaded["files"];
   if (isRecord(files)) {
     for (const [path, record] of Object.entries(files)) {
+      // A data file is editable by anything that can reach the vault, so the
+      // paths it names are input, not memory: an entry that is not a vault
+      // path is dropped rather than handed to the engine (`vaultPath.ts`).
+      if (!isVaultPath(path)) continue;
       if (!isRecord(record)) continue;
       if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
       data.files[path] = {
@@ -140,7 +145,7 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   const remoteOnly = loaded["remoteOnly"];
   if (isRecord(remoteOnly)) {
     for (const [fileId, record] of Object.entries(remoteOnly)) {
-      if (!isRecord(record) || typeof record["path"] !== "string") continue;
+      if (!isRecord(record) || !isVaultPath(record["path"])) continue;
       data.remoteOnly[fileId] = { path: record["path"], size: num(record["size"], 0) };
     }
   }
