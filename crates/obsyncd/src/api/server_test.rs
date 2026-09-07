@@ -995,9 +995,43 @@ fn a_version_posts_reposts_as_a_no_op_and_conflicts_on_a_stale_parent() {
         .sign(&cred, NOW)
         .send(h.addr);
     assert_eq!(file.status, 200);
+    let file_body = file.json();
     assert_eq!(
-        file.json().get("conflicted").and_then(Value::as_bool),
+        file_body.get("conflicted").and_then(Value::as_bool),
         Some(true)
+    );
+    let two_heads: Vec<String> = file_body
+        .get("heads")
+        .and_then(Value::as_array)
+        .expect("heads")
+        .iter()
+        .map(|h| h.as_str().expect("head").to_string())
+        .collect();
+    assert_eq!(two_heads.len(), 2);
+
+    // A merge: one version naming both heads as parents resolves the file.
+    let merged = post_version(
+        &h,
+        &cred,
+        &file_id,
+        &[two_heads[0].as_str(), two_heads[1].as_str()],
+        &[sid.as_str()],
+        "bWFuaWZlc3QtbWVyZ2Vk",
+    );
+    assert_eq!(merged.status, 201, "{}", merged.text());
+    let merged_body = merged.json();
+    assert_eq!(
+        merged_body.get("conflicted").and_then(Value::as_bool),
+        Some(false),
+        "a version naming every head is the new sole head"
+    );
+    assert_eq!(
+        merged_body
+            .get("heads")
+            .and_then(Value::as_array)
+            .expect("heads")
+            .len(),
+        1
     );
 
     let page = Req::get("/v1/files").sign(&cred, NOW).send(h.addr);
@@ -1010,6 +1044,35 @@ fn a_version_posts_reposts_as_a_no_op_and_conflicts_on_a_stale_parent() {
             .len(),
         1
     );
+}
+
+#[test]
+fn a_version_id_the_server_does_not_recompute_is_refused_and_named() {
+    let h = Harness::start("versions-mismatch");
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"mismatch-ciphertext");
+    Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+
+    let file_id = "1a".repeat(16);
+    let res = Req::post(&format!("/v1/files/{file_id}/versions"))
+        .body(&format!(
+            r#"{{"version_id":"{}","parents":[],"sids":["{sid}"],"bytes":19,"manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#,
+            "00".repeat(32)
+        ))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(res.status, 422, "{}", res.text());
+    assert_eq!(res.code(), "version_id_mismatch");
+    let v = res.json();
+    let expected = v
+        .get("expected")
+        .and_then(Value::as_str)
+        .expect("the refusal names the id the server recomputed");
+    assert_eq!(expected.len(), 64);
+    assert_ne!(expected, "00".repeat(32));
 }
 
 #[test]
