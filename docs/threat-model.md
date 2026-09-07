@@ -16,7 +16,7 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
 | TLS terminator / edge operator | request metadata, ciphertext, device secret once at pairing (v1) | read content, names, or keys; replace plugin code (the plugin never installs served code; updates come from the signed Release) |
 | Server operator or stolen volumes | ciphertext, sizes, version graph, device activity | decrypt anything; device secrets are wrapped under the server key |
-| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root or into hidden folders (manifest paths are confined) |
+| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves |
 | Other cluster tenant | nothing (default-deny NetworkPolicy, non-root pod, private volume dirs) | reach the API or the volumes |
 | Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits) |

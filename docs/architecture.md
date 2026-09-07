@@ -275,9 +275,12 @@ returns immediately when a new frame lands.
    manifest is data from another device, not an instruction: its path is
    validated as a canonical relative vault path (no absolute path, no `..`
    or empty segment, no control character, no hidden segment) before any
-   vault operation, and the desktop writer proves the resolved absolute
-   path stays below the vault root before every read, write, rename, or
-   unlink. Hidden folders (`.obsidian`, `.git`) are excluded from sync in
+   vault operation, and the desktop writer proves the boundary on the
+   filesystem, not on the string: every path component from the vault root
+   down is checked with a no-follow stat and must be a real directory,
+   never a symlink; the temp file is opened exclusive-create and verified
+   by descriptor before writing and after the rename. Hidden folders
+   (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge; a clean merge posts a new version
