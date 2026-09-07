@@ -213,12 +213,17 @@ export function bindManifestToRecord(
   // million one-byte chunks, sum correctly, and buy 500 000 fetches.
   const count = manifest.chunks.length;
   if (manifest.deleted) {
+    // A tombstone names nothing to fetch. One that carries chunks or a size
+    // is a live file wearing a delete bit: the record's tombstone check above
+    // passed because both sides agree it is deleted, so this is the only
+    // place the shape is refused.
     if (count !== 0 || manifest.size !== 0) throw new ManifestError("chunk_count");
   } else if (manifest.size <= CHUNK_MAX) {
     if (count !== 1) throw new ManifestError("chunk_count");
-  } else if (count < 2) {
-    throw new ManifestError("chunk_count");
   }
+  // Above CHUNK_MAX no count check is needed: the length sum equals the size
+  // and every length is at most CHUNK_MAX, so one chunk cannot represent it.
+  // A guard here would be an assertion no input can fail.
   for (const [index, chunk] of manifest.chunks.entries()) {
     if (chunk.len > CHUNK_MAX) throw new ManifestError("chunk_len_ceiling");
     // Zero is a real length exactly once: the single chunk of an empty file.

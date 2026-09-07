@@ -254,6 +254,32 @@ test("a tombstone record carrying a live manifest is refused, and deletes nothin
   assertRefused(outcome, fileId, "record_deleted");
 });
 
+test("a tombstone that still carries chunks or a size is refused, and deletes nothing", async () => {
+  // Both sides agree the file is deleted, so the record/manifest tombstone
+  // check passes; the SHAPE is what is wrong. A tombstone with chunks would
+  // buy fetches for a file that does not exist, and a tombstone with a size
+  // would count against a budget for nothing.
+  const fileId = "f".repeat(32);
+  const withChunks = await hostile({
+    fileId,
+    manifest: manifest({ deleted: true, size: 4, chunks: [{ sid: sid(1), cid: sid(9), len: 4 }] }),
+    sids: [sid(1)],
+    bytes: 4,
+    deleted: true,
+  });
+  assertRefused(withChunks, fileId, "chunk_count");
+  // A size with no chunks is caught one check earlier, by the length sum:
+  // the shape check above is the one that a tombstone WITH chunks needs.
+  const withSize = await hostile({
+    fileId,
+    manifest: manifest({ deleted: true, size: 41, chunks: [] }),
+    sids: [],
+    bytes: 41,
+    deleted: true,
+  });
+  assertRefused(withSize, fileId, "chunk_len_sum");
+});
+
 test("a live record carrying a tombstone manifest is refused, and deletes nothing", async () => {
   const fileId = "28".repeat(16);
   const outcome = await hostile({
