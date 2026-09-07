@@ -488,6 +488,19 @@ for the dashboard paths, service-token policy for `/v1/*` -- and
 request-id headers mandatory on every request and refuses one that lacks
 them. `docs/platform-onboarding.md` lists the platform-repository changes.
 
+Every other deployment differs from it in two values and nothing else, the
+terminator and the edge mode:
+
+| Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
+| --- | --- | --- | --- | --- |
+| Reference (pie5) | `cloudflare` | Cloudflare Tunnel, Access in front | the edge's own headers, required on every request | the deployment; `docs/validation.md` V1-V14 |
+| Compose (any network, no provider) | `none` | Caddy, `deploy/compose` | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
+
+The Compose row is the one a stranger can run: a private name, a certificate
+authority Caddy generates, nothing reachable from the internet, and no
+account with any provider. `README.md`, "Any network, no provider", is its
+install path.
+
 ## 11. Phases
 
 1. **v0.1.x — MVP:** core primitives, server (storage, journal, API, feed,

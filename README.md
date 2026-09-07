@@ -87,6 +87,95 @@ the sensitive volume it is.
 
 `GET /readyz` answers `{"ready":true}` once the server is serving.
 
+### 1b. Any network, no provider: Compose with Caddy
+
+Step 1 assumes you already have a TLS terminator. If you have none -- a LAN, a
+Pi or a NUC at home, no account with anybody -- `deploy/compose` is the whole
+deployment: the same digest-pinned server with **no published port at all**,
+and a terminator of your own in front of it.
+
+Verify the signature exactly as in step 1, then, from a checkout of this
+repository:
+
+```sh
+OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
+  OBSYNC_HOST=sync.example.org \
+  docker compose -f deploy/compose/docker-compose.yml up -d
+```
+
+`OBSYNC_HOST` is the name your devices will use, and it needs no public
+existence at all: a name in your own DNS, a router entry, or a hosts file is
+enough, because it only has to resolve on the networks you sync from -- your
+LAN, or a VPN back to it. What it DOES need is HTTPS, without exception:
+Obsidian on iOS and Android refuses plain HTTP and the plugin speaks nothing
+else. Two ways to get a certificate a phone will accept for a private name,
+neither of which exposes this server to the internet:
+
+- **the private authority below**, exported once and installed on each
+  device. This is what the compose file does out of the box, and it is the
+  route with no prerequisites of any kind.
+- **a public certificate issued over DNS-01**, where the challenge is
+  answered by a DNS record instead of by a connection, so the name may resolve
+  only on your own network. Caddy answers DNS-01 only in a build carrying your
+  DNS provider's module, which the stock image pinned here does not have: that
+  is a deliberate substitution of the `caddy` image, not something this file
+  does for you.
+
+A public hostname, a reachable port 80 and 443, or a tunnel provider are one
+optional way to reach this server from outside your own network. None of them
+is a requirement, and nothing below assumes them.
+
+`deploy/compose/docker-compose.yml` gives the server
+`OBSYNC_EDGE=none` and trusts forwarded addresses only from the compose
+network's own range, which is written in that file beside the network it
+belongs to. Ports 80 and 443 on this host are the only ones opened.
+
+The setup token is read the same way as in step 1, from the container compose
+created:
+
+```sh
+docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
+```
+
+`scripts/ci/compose-smoke.sh` brings this exact file up on every pull request
+and proves the path end to end: TLS through the proxy, `/readyz` truthful, no
+published port, the token readable, both containers hardened.
+
+#### Trust the certificate authority, once per device
+
+`deploy/compose/Caddyfile` issues certificates from an authority Caddy
+generates on first start, so nothing needs to be reachable from the internet
+and you need no domain. The price is that each device must be told to trust
+that authority once -- the Obsidian plugin speaks HTTPS only, and on phones
+there is no "continue anyway". Export the root certificate:
+
+```sh
+docker cp obsync-caddy-1:/data/caddy/pki/authorities/local/root.crt - \
+  | tar -xO > obsync-root.crt
+```
+
+Copy `obsync-root.crt` to each device and install it:
+
+- **macOS:** `sudo security add-trusted-cert -d -r trustRoot -k
+  /Library/Keychains/System.keychain obsync-root.crt`
+- **Windows** (an Administrator prompt): `certutil -addstore -f Root
+  obsync-root.crt`
+- **Linux** (Debian, Ubuntu): `sudo cp obsync-root.crt
+  /usr/local/share/ca-certificates/obsync-root.crt`, then `sudo
+  update-ca-certificates`. On Fedora and its relatives the directory is
+  `/etc/pki/ca-trust/source/anchors/` and the command is `update-ca-trust`.
+- **iOS and iPadOS:** mail or AirDrop the file to the device, open it, then
+  Settings, Profile Downloaded, Install. Trust is a SECOND step and Obsidian
+  fails without it: Settings, General, About, Certificate Trust Settings,
+  and turn the certificate on.
+- **Android:** Settings, Security, Encryption & credentials, Install a
+  certificate, CA certificate. Android keeps user-installed authorities
+  separate from the system ones and an app may decline to trust them; if
+  Obsidian on Android refuses to connect, that is what happened, and the
+  answer is the public-ACME block documented in
+  `deploy/compose/Caddyfile` -- a real domain, ports 80 and 443 reachable,
+  and a certificate every device already trusts. Nothing else changes.
+
 ### 2. Set up this computer (the first device)
 
 1. Download `obsync-plugin-v0.1.0.zip` from the matching GitHub Release and
