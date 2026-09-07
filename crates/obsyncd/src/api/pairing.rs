@@ -17,7 +17,7 @@ use crate::types::DeviceId;
 
 use super::edge::ClientInfo;
 use super::render::{self, b, n, s};
-use super::{ApiError, App, auth, rand};
+use super::{ApiError, App, auth, devices, rand};
 
 /// A pairing is claimable for ten minutes and no longer
 /// (`docs/architecture.md` 4.2).
@@ -365,19 +365,18 @@ pub fn claim(
     // cannot both pass `begin_claim`.
     let mut pairings = app.pairings.lock().expect("pairings");
     pairings.begin_claim(id, &enroll, now)?;
-    let record = app.store.create_device(NewDevice {
-        name: name.clone(),
-        platform: platform.clone(),
-        app_version: app_version.clone(),
-        policy: DevicePolicy {
-            per_file_max_bytes: 0,
-            total_budget_bytes: 0,
+    let (record, secret) = devices::enrol(
+        app,
+        NewDevice {
+            name: name.clone(),
+            platform: platform.clone(),
+            app_version: app_version.clone(),
+            policy: DevicePolicy {
+                per_file_max_bytes: 0,
+                total_budget_bytes: 0,
+            },
         },
-    })?;
-    let secret = app
-        .store
-        .device_secret(&record.device_id)
-        .ok_or_else(|| ApiError::new(500, "device_secret_missing", "device secret unavailable"))?;
+    )?;
     pairings.finish_claim(
         id,
         Claimant {
@@ -393,7 +392,7 @@ pub fn claim(
         201,
         &obj(vec![
             ("device_id", s(&record.device_id.to_string())),
-            ("device_secret", s(&obsync_core::hex::encode(&secret))),
+            ("device_secret", s(&secret)),
         ]),
     ))
 }

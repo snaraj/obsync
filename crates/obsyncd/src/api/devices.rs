@@ -2,10 +2,11 @@
 //! (`docs/protocol.md`, "Devices").
 #![forbid(unsafe_code)]
 
+use obsync_core::hex;
 use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
-use crate::storage::types::DevicePolicy;
+use crate::storage::types::{DevicePolicy, DeviceRecord, NewDevice};
 
 use super::edge::ClientInfo;
 use super::render::{self};
@@ -24,6 +25,22 @@ pub fn list(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respons
 pub fn devices_body(app: &App) -> Value {
     let devices: Vec<Value> = app.store.devices().iter().map(render::device).collect();
     obj(vec![("devices", Value::Array(devices))])
+}
+
+/// Create a device and hand back its record with its secret as hex. The two
+/// callers are the first-device path of `POST /v1/setup` and a pairing claim;
+/// they are the only places the server ever states a device secret.
+///
+/// # Errors
+/// Whatever the store refuses with, or `500 device_secret_missing` if the
+/// secret cannot be read back.
+pub fn enrol(app: &App, new_device: NewDevice) -> Result<(DeviceRecord, String), ApiError> {
+    let record = app.store.create_device(new_device)?;
+    let secret = app
+        .store
+        .device_secret(&record.device_id)
+        .ok_or_else(|| ApiError::new(500, "device_secret_missing", "device secret unavailable"))?;
+    Ok((record, hex::encode(&secret)))
 }
 
 /// `PATCH /v1/devices/{id}`: rename a device or change its ceilings. Any

@@ -25,6 +25,15 @@ pub const EDGE_COUNTRY: &str = "cf-ipcountry";
 /// Standard forwarded-address header, trusted only from a configured proxy.
 pub const FORWARDED_FOR: &str = "x-forwarded-for";
 
+/// The configured mode as the dashboard displays it. The two names live here,
+/// beside the header names, so this file stays the one allowlisted place.
+pub fn mode_name(edge: Edge) -> &'static str {
+    match edge {
+        Edge::None => "none",
+        Edge::Cloudflare => "cloudflare",
+    }
+}
+
 /// What the server may say about who sent a request. Never persisted for an
 /// unauthenticated request and never part of a signed canonical string.
 #[derive(Clone, Debug, PartialEq, Eq)]

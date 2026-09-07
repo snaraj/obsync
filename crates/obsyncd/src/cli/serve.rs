@@ -167,10 +167,13 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
             |app| {
                 let started = app.log.start("gc", GC_BUDGET);
                 let at = Instant::now();
+                app.set_gc_running(true);
                 let summary = app.store.gc_run(UnixMs(app.clock.unix_ms()));
+                app.set_gc_running(false);
                 started.summary(&[
                     ("chunks_collected", &summary.chunks_collected.to_string()),
-                    ("bytes_freed", &summary.bytes_freed.to_string()),
+                    ("bytes_collected", &summary.bytes_collected.to_string()),
+                    ("chunks_retained", &summary.chunks_retained.to_string()),
                     ("duration_ms", &at.elapsed().as_millis().to_string()),
                     ("budget_ms", &GC_BUDGET.as_millis().to_string()),
                     (
@@ -263,7 +266,9 @@ fn scrub_thread(app: &Arc<App>) -> JoinHandle<()> {
             let pause = Duration::from_secs_f64(SCRUB_STEP_BYTES as f64 / rate as f64);
             while !app.shutdown.load(Ordering::SeqCst) {
                 let asked = app.take_scrub_request();
+                app.set_scrub_running(true);
                 let summary = app.store.scrub_step(SCRUB_STEP_BYTES);
+                app.set_scrub_running(false);
                 if summary.mismatches > 0 {
                     app.log.error(
                         "scrub_mismatch",

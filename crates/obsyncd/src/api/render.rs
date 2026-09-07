@@ -12,7 +12,7 @@ use obsync_core::json::{Value, obj, parse_limited};
 
 use crate::storage::types::{
     AccountRecord, Change, DevicePolicy, DeviceRecord, DomainRecord, FileRecord, FileSummary,
-    GcSummary, ScrubSummary, SeenEvent, SeenKind, VersionRecord, VolumeStatus,
+    GcSummary, QuarantineEntry, ScrubSummary, SeenEvent, SeenKind, VersionRecord, VolumeStatus,
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -206,26 +206,37 @@ pub fn volume(v: &VolumeStatus) -> Value {
     ])
 }
 
-/// The last garbage collection.
+/// The last garbage collection (`docs/protocol.md`, `<gc>`).
 pub fn gc(g: &GcSummary) -> Value {
     obj(vec![
-        ("ran_at", ms(g.ran_at)),
+        ("ts", ms(g.ts)),
         ("duration_ms", n(g.duration_ms)),
-        ("chunks_scanned", n(g.chunks_scanned)),
         ("chunks_collected", n(g.chunks_collected)),
-        ("bytes_freed", n(g.bytes_freed)),
+        ("bytes_collected", n(g.bytes_collected)),
+        ("chunks_retained", n(g.chunks_retained)),
     ])
 }
 
-/// The last scrub pass.
+/// The last scrub pass (`docs/protocol.md`, `<scrub>`).
 pub fn scrub(v: &ScrubSummary) -> Value {
     obj(vec![
-        ("ran_at", ms(v.ran_at)),
+        ("ts", ms(v.ts)),
         ("duration_ms", n(v.duration_ms)),
-        ("bytes_verified", n(v.bytes_verified)),
         ("chunks_verified", n(v.chunks_verified)),
+        ("bytes_verified", n(v.bytes_verified)),
         ("mismatches", n(v.mismatches)),
         ("quarantined", n(v.quarantined)),
+        ("complete_pass", b(v.complete_pass)),
+    ])
+}
+
+/// One quarantined chunk (`docs/protocol.md`, `GET /v1/admin/storage`).
+pub fn quarantined(q: &QuarantineEntry) -> Value {
+    obj(vec![
+        ("sid", s(&q.sid.to_string())),
+        ("ts", ms(q.ts)),
+        ("bytes", n(q.bytes)),
+        ("reason", s(&q.reason)),
     ])
 }
 

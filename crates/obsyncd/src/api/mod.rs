@@ -68,7 +68,7 @@ pub const CHANGES_MAX_LIMIT: u64 = 1000;
 /// Content-Security-Policy for dashboard (HTML, CSS, JavaScript) responses.
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 /// Decision lines kept in memory for `GET /v1/admin/logs`.
-pub const RECENT_LOG_LINES: usize = 512;
+pub const RECENT_LOG_LINES: usize = 1000;
 /// A device's `sign_in` seen event is journaled at most this often.
 pub const SIGN_IN_RECORD_INTERVAL_SECS: u64 = 900;
 /// How long a readiness probe result is reused before the volumes are
@@ -193,8 +193,8 @@ pub struct LogLine {
     pub method: String,
     /// Route template, never a vault path.
     pub path_class: &'static str,
-    /// Device id as claimed by the request, or `-`.
-    pub device: String,
+    /// Device id as claimed by the request, when it was well formed.
+    pub device: Option<String>,
     /// Response status.
     pub status: u16,
     /// Response body bytes.
@@ -238,6 +238,8 @@ pub struct App {
     ready: Mutex<ReadyCache>,
     gc_requested: AtomicBool,
     scrub_requested: AtomicBool,
+    gc_running: AtomicBool,
+    scrub_running: AtomicBool,
 }
 
 impl App {
@@ -271,7 +273,29 @@ impl App {
             }),
             gc_requested: AtomicBool::new(false),
             scrub_requested: AtomicBool::new(false),
+            gc_running: AtomicBool::new(false),
+            scrub_running: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a collection is running right now.
+    pub fn gc_running(&self) -> bool {
+        self.gc_running.load(Ordering::SeqCst)
+    }
+
+    /// Whether a scrub step is running right now.
+    pub fn scrub_running(&self) -> bool {
+        self.scrub_running.load(Ordering::SeqCst)
+    }
+
+    /// Mark a collection as running or finished; `serve` owns both calls.
+    pub fn set_gc_running(&self, running: bool) {
+        self.gc_running.store(running, Ordering::SeqCst);
+    }
+
+    /// Mark a scrub step as running or finished.
+    pub fn set_scrub_running(&self, running: bool) {
+        self.scrub_running.store(running, Ordering::SeqCst);
     }
 
     /// Ask the collector to run at its next tick, so `POST /v1/admin/gc/run`
@@ -318,13 +342,17 @@ impl App {
         (nonces, pairings, sessions)
     }
 
-    /// The last decisions, newest first, optionally one device only.
+    /// The last decisions, newest first, optionally only those whose device id
+    /// starts with `device`.
     pub fn recent_lines(&self, device: Option<&str>, limit: usize) -> Vec<LogLine> {
         let recent = self.recent.lock().expect("recent log");
         recent
             .iter()
             .rev()
-            .filter(|l| device.is_none_or(|d| l.device == d))
+            .filter(|l| {
+                device
+                    .is_none_or(|prefix| l.device.as_ref().is_some_and(|id| id.starts_with(prefix)))
+            })
             .take(limit)
             .cloned()
             .collect()
@@ -508,7 +536,7 @@ impl App {
         let fields: [(&str, &str); 7] = [
             ("method", line.method.as_str()),
             ("path_class", line.path_class),
-            ("device", line.device.as_str()),
+            ("device", line.device.as_deref().unwrap_or("-")),
             ("status", status.as_str()),
             ("bytes", bytes.as_str()),
             ("duration_ms", duration.as_str()),
@@ -529,12 +557,12 @@ pub fn handler(app: Arc<App>) -> Handler {
     Arc::new(move |req: &mut Request| app.handle(req))
 }
 
-/// The claimed device id, reduced to 32 lowercase hex characters or `-`. No
-/// header value reaches a log line unsanitized.
-fn device_field(req: &Request) -> String {
+/// The claimed device id, kept only when it is 32 lowercase hex characters.
+/// No header value reaches a log line unsanitized.
+fn device_field(req: &Request) -> Option<String> {
     match req.headers.get("x-obsync-device") {
-        Some(v) if is_hex(v, 32) => v.to_string(),
-        _ => "-".to_string(),
+        Some(v) if is_hex(v, 32) => Some(v.to_string()),
+        _ => None,
     }
 }
 

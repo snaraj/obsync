@@ -183,11 +183,11 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        // Wake the acceptor so it notices the flag.
+        // Wake the acceptor so it notices the flag. The thread is dropped
+        // rather than joined: a test must fail on its own assertion, never by
+        // hanging in cleanup on a server that did not stop.
         let _ = TcpStream::connect(self.addr);
-        if let Some(h) = self.server.take() {
-            let _ = h.join();
-        }
+        drop(self.server.take());
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -1373,9 +1373,51 @@ fn the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header()
         .header("Cookie", &cookie_header)
         .send(h.addr);
     assert_eq!(overview.status, 200, "{}", overview.text());
-    assert!(
-        overview.json().get("volumes").is_some(),
-        "the overview names every volume"
+    let v = overview.json();
+    for key in [
+        "account",
+        "edge",
+        "public_url",
+        "volumes",
+        "versions",
+        "activity",
+        "last_gc",
+        "last_scrub",
+    ] {
+        assert!(v.get(key).is_some(), "the overview must carry {key}");
+    }
+    assert_eq!(v.get("edge").and_then(Value::as_str), Some("none"));
+    let hours = v
+        .get("activity")
+        .and_then(|a| a.get("versions_per_hour"))
+        .and_then(Value::as_array)
+        .expect("versions_per_hour");
+    assert_eq!(hours.len(), 24, "24 hourly buckets");
+    let first = hours[0].get("hour").and_then(Value::as_u64).expect("hour");
+    let last = hours[23].get("hour").and_then(Value::as_u64).expect("hour");
+    assert_eq!(last - first, 23 * 3600, "oldest first, one hour apart");
+
+    let storage = Req::get("/v1/admin/storage")
+        .header("Cookie", &cookie_header)
+        .send(h.addr);
+    assert_eq!(storage.status, 200, "{}", storage.text());
+    let sv = storage.json();
+    for key in [
+        "volumes",
+        "retention",
+        "watermark",
+        "gc",
+        "scrub",
+        "quarantine",
+    ] {
+        assert!(sv.get(key).is_some(), "the storage view must carry {key}");
+    }
+    assert_eq!(
+        sv.get("gc")
+            .and_then(|g| g.get("state"))
+            .and_then(Value::as_str),
+        Some("idle"),
+        "nothing is collecting in a test server with no background threads"
     );
 
     let devices = Req::get("/v1/admin/devices")
@@ -1462,7 +1504,7 @@ fn the_request_log_keeps_a_route_template_and_never_a_vault_path() {
         .find(|l| l.path_class == "/v1/chunks/{sid}")
         .expect("the chunk line");
     assert_eq!(chunk_line.decision, "unknown_chunk");
-    assert_eq!(chunk_line.device, cred.id);
+    assert_eq!(chunk_line.device.as_deref(), Some(cred.id.as_str()));
     assert!(chunk_line.duration_ms < 5_000);
     for line in &lines {
         assert!(
@@ -1484,8 +1526,12 @@ fn a_header_value_cannot_forge_the_device_field_of_a_log_line() {
     assert_eq!(res.status, 401);
     let lines = h.app.recent_lines(None, 4);
     assert_eq!(
-        lines[0].device, "-",
+        lines[0].device, None,
         "a value that is not 32 hex characters is dropped"
+    );
+    assert!(
+        h.app.recent_lines(Some("abc"), 4).is_empty(),
+        "a device filter matches nothing when no line names a device"
     );
 }
 

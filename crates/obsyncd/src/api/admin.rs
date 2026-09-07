@@ -15,7 +15,7 @@ use obsync_core::json::{Value, obj};
 
 use crate::types::Seq;
 
-use super::edge::ClientInfo;
+use super::edge::{self, ClientInfo};
 use super::render::{self, n, s};
 use super::{ApiError, App, auth, domains, rand};
 
@@ -29,8 +29,9 @@ pub const CSRF_HEADER: &str = "x-obsync-csrf";
 pub const SESSION_TTL_SECS: u64 = 12 * 3600;
 /// How long a one-time login link lives (`docs/protocol.md`).
 pub const LOGIN_LINK_TTL_SECS: u64 = 300;
-/// Most log lines one `GET /v1/admin/logs` call returns.
-pub const LOGS_MAX_LIMIT: u64 = 512;
+/// Most log lines one `GET /v1/admin/logs` call returns
+/// (`docs/protocol.md`).
+pub const LOGS_MAX_LIMIT: u64 = 500;
 
 /// One signed-in dashboard session.
 #[derive(Clone, Debug)]
@@ -244,7 +245,7 @@ pub fn logout(app: &App, req: &mut Request) -> Result<Response, ApiError> {
         .header("Set-Cookie", &expired_cookie(CSRF_COOKIE)))
 }
 
-/// `GET /v1/admin/overview`.
+/// `GET /v1/admin/overview` (`docs/protocol.md`, "Dashboard (admin) API").
 ///
 /// # Errors
 /// `401 no_session`.
@@ -254,22 +255,30 @@ pub fn overview(app: &App, req: &mut Request) -> Result<Response, ApiError> {
         Some(a) => render::account(&a),
         None => Value::Null,
     };
-    let head = app.store.head_seq();
     let volumes: Vec<Value> = app.store.volumes().iter().map(render::volume).collect();
+    let public_url = if app.cfg.public_url.is_empty() {
+        Value::Null
+    } else {
+        s(&app.cfg.public_url)
+    };
+    let (versions, files) = totals(app);
     Ok(Response::json(
         200,
         &obj(vec![
             ("account", account),
+            ("edge", s(edge::mode_name(app.cfg.edge))),
+            ("public_url", public_url),
             ("volumes", Value::Array(volumes)),
             (
-                "activity",
-                obj(vec![
-                    ("head_seq", render::seq(head)),
-                    ("versions_last_24h", n(versions_last_24h(app))),
-                ]),
+                "versions",
+                obj(vec![("total", n(versions)), ("files", n(files))]),
             ),
-            ("gc", last_gc(app)),
-            ("scrub", last_scrub(app)),
+            (
+                "activity",
+                obj(vec![("versions_per_hour", versions_per_hour(app))]),
+            ),
+            ("last_gc", last_gc(app)),
+            ("last_scrub", last_scrub(app)),
         ]),
     ))
 }
@@ -310,19 +319,23 @@ pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiErr
     Ok(Response::empty(204))
 }
 
-/// `GET /v1/admin/storage`.
+/// `GET /v1/admin/storage` (`docs/protocol.md`, "Dashboard (admin) API").
 ///
 /// # Errors
 /// `401 no_session`.
 pub fn storage(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     session(app, req)?;
     let volumes: Vec<Value> = app.store.volumes().iter().map(render::volume).collect();
+    let quarantine: Vec<Value> = app
+        .store
+        .quarantine()
+        .iter()
+        .map(render::quarantined)
+        .collect();
     Ok(Response::json(
         200,
         &obj(vec![
             ("volumes", Value::Array(volumes)),
-            ("gc", last_gc(app)),
-            ("scrub", last_scrub(app)),
             (
                 "retention",
                 obj(vec![
@@ -331,9 +344,25 @@ pub fn storage(app: &App, req: &mut Request) -> Result<Response, ApiError> {
                 ]),
             ),
             (
-                "scrub_rate_bytes_per_sec",
-                n(app.cfg.scrub_rate_bytes_per_sec),
+                "watermark",
+                obj(vec![("spec", s(&app.cfg.free_watermark.to_string()))]),
             ),
+            (
+                "gc",
+                obj(vec![
+                    ("state", s(job_state(app.gc_running()))),
+                    ("last", last_gc(app)),
+                ]),
+            ),
+            (
+                "scrub",
+                obj(vec![
+                    ("state", s(job_state(app.scrub_running()))),
+                    ("rate_bytes_per_sec", n(app.cfg.scrub_rate_bytes_per_sec)),
+                    ("last", last_scrub(app)),
+                ]),
+            ),
+            ("quarantine", Value::Array(quarantine)),
         ]),
     ))
 }
@@ -400,7 +429,8 @@ pub fn escrow_clear(app: &App, req: &mut Request, id: &str) -> Result<Response, 
     Ok(Response::empty(204))
 }
 
-/// `GET /v1/admin/logs?device=<id>&limit=<n>`: the recent decision lines.
+/// `GET /v1/admin/logs?device=<id prefix>&limit=<n>`: the recent decision
+/// lines, newest first (`docs/protocol.md`).
 ///
 /// # Errors
 /// `400 bad_request`, `401 no_session`.
@@ -409,9 +439,11 @@ pub fn logs(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     let limit = req.query_param("limit").map(str::to_string);
     session(app, req)?;
     if let Some(d) = device.as_deref()
-        && !super::is_hex(d, 32)
+        && (d.is_empty() || d.len() > 32 || !d.bytes().all(|c| c.is_ascii_hexdigit()))
     {
-        return Err(ApiError::bad_request("device must be 32 hex characters"));
+        return Err(ApiError::bad_request(
+            "device must be a hex device-id prefix",
+        ));
     }
     let limit = match limit.as_deref() {
         Some(v) => v
@@ -429,7 +461,7 @@ pub fn logs(app: &App, req: &mut Request) -> Result<Response, ApiError> {
                 ("ts", n(l.ts)),
                 ("method", s(&l.method)),
                 ("path_class", s(l.path_class)),
-                ("device", s(&l.device)),
+                ("device", l.device.as_deref().map_or(Value::Null, s)),
                 ("status", n(u64::from(l.status))),
                 ("bytes", n(l.bytes)),
                 ("duration_ms", n(l.duration_ms)),
@@ -485,19 +517,53 @@ fn last_scrub(app: &App) -> Value {
         .map_or(Value::Null, render::scrub)
 }
 
-/// Versions journaled in the last day, from the tail of the feed.
-fn versions_last_24h(app: &App) -> u64 {
+/// Whether a background job is mid-run.
+fn job_state(running: bool) -> &'static str {
+    if running { "running" } else { "idle" }
+}
+
+/// Retained version and file totals, as the index already counts them. The
+/// dashboard must never pay a walk of the vault for a page load, so this is
+/// the one place the API asks the store for its counters.
+fn totals(app: &App) -> (u64, u64) {
+    let counts = app.store.counts();
+    (counts.versions, counts.files)
+}
+
+/// Versions per hour for the last 24 hours, oldest first.
+///
+/// The window is the tail of the change feed, capped at
+/// [`super::CHANGES_MAX_LIMIT`] frames: a dashboard page load is bounded work
+/// however large the vault is, and a server busier than that reports the busy
+/// end of the window, which is the part the graph is for.
+fn versions_per_hour(app: &App) -> Value {
+    const HOURS: u64 = 24;
+    let now = app.clock.unix_secs();
+    let first_hour = (now / 3600).saturating_sub(HOURS - 1);
+    let mut counts = [0u64; HOURS as usize];
+
     let head = render::seq_u64(app.store.head_seq());
     let since = Seq(head.saturating_sub(super::CHANGES_MAX_LIMIT));
-    let cutoff = app.clock.unix_ms().saturating_sub(24 * 3600 * 1000);
-    match app.store.changes(since, super::CHANGES_MAX_LIMIT as usize) {
-        Ok(c) => c
-            .changes
-            .iter()
-            .filter(|ch| render::ms_u64(ch.ts) >= cutoff)
-            .count() as u64,
-        Err(_) => 0,
+    if let Ok(c) = app.store.changes(since, super::CHANGES_MAX_LIMIT as usize) {
+        for change in &c.changes {
+            let hour = render::ms_u64(change.ts) / 1000 / 3600;
+            if hour >= first_hour && hour < first_hour + HOURS {
+                counts[(hour - first_hour) as usize] += 1;
+            }
+        }
     }
+    Value::Array(
+        counts
+            .iter()
+            .enumerate()
+            .map(|(i, count)| {
+                obj(vec![
+                    ("hour", n((first_hour + i as u64) * 3600)),
+                    ("count", n(*count)),
+                ])
+            })
+            .collect(),
+    )
 }
 
 fn mint(bytes: usize) -> Result<String, ApiError> {
