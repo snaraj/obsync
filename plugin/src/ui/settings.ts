@@ -145,7 +145,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       let accountName = "obsync";
       new Setting(containerEl)
         .setName("First-time setup")
-        .setDesc("Paste the one-time setup token your server printed at first boot. This creates the account and enrolls this device.")
+        .setDesc("Paste the setup token your server wrote at first boot. It creates the account and enrolls this device, and it is not spent by doing so: it remains the dashboard's recovery sign-in, so keep it as carefully as the recovery phrase.")
         .addText((text) => text.setPlaceholder("setup token").onChange((value) => (token = value.trim())))
         .addText((text) => text.setPlaceholder("account name").setValue(accountName).onChange((value) => (accountName = value.trim())))
         .addButton((button) =>

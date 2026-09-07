@@ -76,9 +76,10 @@
         that is valid for five minutes and signs this browser in.
       </li>
       <li>
-        <strong>With the setup token.</strong> The server prints a one-time setup token on its
-        first boot. Open <code>/login?token=&lt;the token&gt;</code> on this host. This is the
-        recovery path for a deployment with no working device.
+        <strong>With the setup token.</strong> The server writes a setup token at first boot and
+        that token stays valid. Open <code>/login?token=&lt;the token&gt;</code> on this host. This
+        is the recovery path for a deployment with no working device, which is why the token is a
+        standing credential and not a spent one.
       </li>
     </ol>
     <p class="note">
