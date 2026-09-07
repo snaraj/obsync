@@ -23,11 +23,12 @@ const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * A throwaway directory where `obsidian` resolves to a stub, the way
- * Obsidian's own loader makes it resolve. Both `build/` and `dist/` are
- * copied in, so the compiled modules and the shipped bundle can be required
- * exactly as the app requires them.
+ * Obsidian's own loader makes it resolve. `build/` is always copied in;
+ * `dist/` only when asked, because `build.mjs` deletes and recreates `dist/`
+ * and the test runner runs test FILES in parallel — a sandbox that copied it
+ * unconditionally would race the bundle test's rebuild.
  */
-export function sandbox() {
+export function sandbox({ dist = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), "obsync-sandbox-"));
   mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
   writeFileSync(
@@ -55,7 +56,7 @@ module.exports = {
 `,
   );
   cpSync(join(PLUGIN_DIR, "build"), join(home, "build"), { recursive: true });
-  cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
+  if (dist) cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
   return { home, require: createRequire(join(home, "x.js")) };
 }
 
@@ -460,16 +461,33 @@ export class FakeTimers {
   /**
    * Advance the clock, fire what is due, and let the work it started finish.
    * Each round yields to the event loop, which is what WebCrypto's promises
-   * need: they resolve off the microtask queue, so one tick is not enough.
+   * need: a single push runs dozens of `crypto.subtle` calls and each one
+   * resolves a turn or more later.
+   *
+   * WAIT FOR THE OUTCOME, NOT FOR A NUMBER OF TURNS. `until` is polled after
+   * every round and ends the wait the moment it holds. A fixed round budget
+   * is a guess about how many turns a runtime needs, and that guess is
+   * version-dependent: the same suite settled in 40 rounds on Node 26 and
+   * needed several hundred on the pinned Node 24. Every wait for something
+   * to HAPPEN passes a predicate; the bounded fallback exists only for waits
+   * that are followed by an assertion that nothing happened.
    */
-  async run(advanceMs = 1000, rounds = 40) {
+  async run(advanceMs = 1000, until = null, maxRounds = 2000) {
     this.now += advanceMs;
+    const rounds = until ? maxRounds : 40;
     for (let round = 0; round < rounds; round++) {
       const due = this.entries.filter((entry) => entry.due <= this.now);
       this.entries = this.entries.filter((entry) => entry.due > this.now);
       for (const entry of due) entry.fn();
       await new Promise((resolve) => setImmediate(resolve));
+      if (until && until()) return true;
+      // A round that fired nothing means the work is either finished or
+      // waiting on a timer that has been re-armed — the growing-file guard
+      // re-arms every 400 ms. Step the clock so those come due, one
+      // `advanceMs` at a time, which keeps the hourly heartbeat out of reach.
+      if (due.length === 0) this.now += advanceMs;
     }
+    return until === null;
   }
 }
 

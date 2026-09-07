@@ -40,7 +40,7 @@ test("the bundler produces the same bytes every time", () => {
 
 test("Obsidian's load path finds the plugin class as the default export", () => {
   build();
-  const box = sandbox();
+  const box = sandbox({ dist: true });
   const exported = box.require(join(box.home, "plugin", "main.js"));
   assert.equal(typeof exported, "function", "the bundle exports a class");
   assert.equal(typeof exported.prototype.onload, "function");
@@ -72,8 +72,15 @@ test("the bundle carries the whole plugin and nothing from the build machine", (
     assert.ok(bundle.includes(`__modules[${JSON.stringify(id)}]`), `${id} is in the bundle`);
   }
   assert.ok(bundle.trimEnd().endsWith('module.exports = __load("./main").default;'));
-  assert.equal(bundle.includes("/Users/"), false, "no home directory leaked into the artifact");
-  assert.equal(bundle.includes(plugin), false, "no build path leaked into the artifact");
+  // Look for ABSOLUTE paths, not for the build directory's name: the plugin
+  // is built at `/src` inside the CI image, and the bundle legitimately
+  // documents `plugin/src`, so a substring test on the build path reports a
+  // leak that is not one. A path only leaks if it appears as an absolute
+  // path, which is what this matches.
+  const leaked = bundle.match(
+    /(?:^|[\s"`(=,;:])\/(?:Users|home|root|private|var|tmp|src|opt|mnt|data)\/[A-Za-z0-9._/-]+/g,
+  );
+  assert.deepEqual(leaked, null, `an absolute build path leaked into the artifact: ${leaked}`);
   for (const url of bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? []) {
     assert.ok(url === "https://" || url.includes("example."), `the bundle reaches for ${url}`);
   }

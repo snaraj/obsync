@@ -380,13 +380,13 @@ test("the engine queues, debounces and pushes what the watcher reports", async (
 
   host.seed("Existing.md", "already here", 1000);
   await engine.start();
-  await timers.run();
+  await timers.run(1000, () => state.fileByPath("Existing.md") !== undefined);
   assert.equal(server.heartbeats, 1);
   assert.equal(state.fileByPath("Existing.md") !== undefined, true, "startup reconciliation pushed it");
 
   host.seed("New.md", "typed just now", 2000);
   engine.changed("New.md");
-  await timers.run();
+  await timers.run(1000, () => state.fileByPath("New.md") !== undefined);
   assert.equal(state.fileByPath("New.md") !== undefined, true);
   assert.ok(statuses.includes("syncing"));
   assert.equal(statuses[statuses.length - 1], "idle");
@@ -422,12 +422,12 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   };
   host.seed("Copying.bin", "growing", 3000);
   engine.changed("Copying.bin");
-  for (let round = 0; round < 3; round++) await timers.run(1000);
+  await timers.run(1000, () => calls >= 4);
   assert.equal(state.fileByPath("Copying.bin"), undefined, "nothing torn was uploaded");
   assert.ok(calls >= 4, `the guard kept re-checking instead of pushing (${calls} stats)`);
 
   host.stat = realStat;
-  await timers.run();
+  await timers.run(1000, () => state.fileByPath("Copying.bin") !== undefined);
   assert.equal(state.fileByPath("Copying.bin") !== undefined, true, "it pushes once the file settles");
   engine.stop();
 });
@@ -449,6 +449,8 @@ test("a write made by the pull path does not bounce back up", async () => {
     domainId: KEYS.domainId,
     timers,
   });
+  // The vault is empty, so startup has nothing to push: this only lets the
+  // start-up timers fire before the pull below.
   await engine.start();
   await timers.run();
 
@@ -465,7 +467,7 @@ test("a write made by the pull path does not bounce back up", async () => {
 
   // Obsidian now reports the write the pull just made.
   engine.changed("Pulled.md");
-  await timers.run();
+  await timers.run(1000, () => host.logs.some((line) => line.includes("echo_suppressed")));
   assert.equal(server.journal.length, before, "no version was posted for our own write");
   assert.ok(host.logs.some((line) => line.includes("echo_suppressed")));
   engine.stop();
@@ -490,13 +492,13 @@ test("a rename keeps the file id and moves the path inside the manifest", async 
   });
   host.seed("Old name.md", "stable content", 1000);
   await engine.start();
-  await timers.run();
+  await timers.run(1000, () => state.fileByPath("Old name.md") !== undefined);
   const fileId = state.fileByPath("Old name.md").fileId;
 
   host.files.set("New name.md", host.files.get("Old name.md"));
   host.files.delete("Old name.md");
   engine.renamed("Old name.md", "New name.md");
-  await timers.run();
+  await timers.run(1000, () => (server.files.get(fileId)?.versions.length ?? 0) === 2);
 
   assert.equal(state.fileByPath("Old name.md"), undefined);
   assert.equal(state.fileByPath("New name.md").fileId, fileId, "the file kept its identity");
@@ -524,12 +526,12 @@ test("startup reconciliation tombstones a file deleted while Obsidian was closed
   });
   host.seed("Removed.md", "content", 1000);
   await engine.start();
-  await timers.run();
+  await timers.run(1000, () => server.journal.length === 1);
   assert.equal(server.journal.length, 1);
 
   host.files.delete("Removed.md");
   await engine.reconcile();
-  await timers.run();
+  await timers.run(1000, () => server.journal.length === 2);
   assert.equal(server.journal[server.journal.length - 1].deleted, true);
   assert.equal(state.fileByPath("Removed.md"), undefined);
   engine.stop();
