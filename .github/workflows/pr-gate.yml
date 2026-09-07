@@ -320,6 +320,18 @@ jobs:
         # wrote a readable 64-hex setup token to the journal volume. That path
         # was broken while every static assertion in this job was green.
         run: scripts/ci/image-smoke.sh "obsync-gate-full:${GITHUB_SHA}"
+      - name: Prove the provider-free install path actually serves
+        # The smoke above runs the image the way a deployer with a tunnel or a
+        # cluster runs it: plain HTTP on a published loopback port. That is the
+        # shape Obsidian on iOS and Android REFUSES, so it says nothing about
+        # the one deployment a stranger with a LAN and no accounts can finish.
+        # This brings `deploy/compose` up -- the server with no published port
+        # and its own digest-pinned TLS terminator -- and reaches `/readyz`
+        # through real TLS, then asserts the closed ports, the trusted proxy
+        # range, the setup token and both security contexts. Caddy is pulled
+        # anonymously by digest with three attempts, so a Docker Hub hiccup
+        # reads as a registry failure and never as an obsync defect.
+        run: scripts/ci/compose-smoke.sh "obsync-gate-full:${GITHUB_SHA}"
 
   gate:
     # The one aggregate context the ruleset requires, listing every job by

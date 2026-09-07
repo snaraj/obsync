@@ -32,7 +32,12 @@
 # nothing about a mount point the runtime uid cannot write. The three are the
 # one group here that `make check` does not chain -- `check` must stay
 # runnable with no container runtime -- so `make image` is where an author
-# reproduces them.
+# reproduces them. `compose-smoke.sh` is the fourth and runs the OTHER install
+# path README.md documents: the same image behind its own TLS terminator with
+# no published port at all. Neither smoke covers the other's shape -- one
+# publishes a loopback port and speaks plain HTTP, which is exactly what mobile
+# Obsidian refuses; the other is reachable only through the proxy -- so both
+# are pinned, and dropping either is a deployment nobody tests.
 #
 # TEXT IS NOT EXECUTION. This script used to answer "does the file contain this
 # command" with `grep -qF`. An adversarial review answered yes while running
@@ -86,6 +91,7 @@ CANONICAL=(
   'docker build --target server --tag'
   'docker build --tag'
   'scripts/ci/image-smoke.sh'
+  'scripts/ci/compose-smoke.sh'
 )
 
 # The prerequisite list `check` must carry. Stated here so a target silently
