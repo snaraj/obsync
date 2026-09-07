@@ -709,30 +709,15 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
 }
 
 #[test]
-fn an_escrowed_domain_key_round_trips_and_can_be_withdrawn() {
-    let dir = TempDir::new("store-escrow");
+fn a_domain_is_declared_once_and_the_store_holds_no_key_for_it() {
+    let dir = TempDir::new("store-domains");
     let cfg = config(&dir);
     let setup = ready(&cfg);
     let domain = DomainId::new([4u8; 16]);
-    assert!(matches!(
-        setup.store.set_escrow(&domain, Some([1u8; 32])),
-        Err(StoreError::UnknownDomain)
-    ));
-
     setup.store.create_domain(domain).expect("domain");
     setup.store.create_domain(domain).expect("declaring twice");
     assert_eq!(setup.store.domains().len(), 1);
-    assert!(!setup.store.domains()[0].escrowed);
-    assert_eq!(setup.store.escrow_key(&domain), None);
-
-    let key = [0x5au8; 32];
-    setup.store.set_escrow(&domain, Some(key)).expect("escrow");
-    assert!(setup.store.domains()[0].escrowed);
-    assert_eq!(setup.store.escrow_key(&domain), Some(key));
-
-    setup.store.set_escrow(&domain, None).expect("withdraw");
-    assert!(!setup.store.domains()[0].escrowed);
-    assert_eq!(setup.store.escrow_key(&domain), None);
+    assert_eq!(setup.store.domains()[0].domain_id, domain);
 }
 
 #[test]
@@ -866,10 +851,6 @@ fn a_snapshot_replays_to_exactly_what_the_frames_alone_replay_to() {
         .store
         .create_domain(DomainId::new([4u8; 16]))
         .expect("domain");
-    setup
-        .store
-        .set_escrow(&DomainId::new([4u8; 16]), Some([9u8; 32]))
-        .expect("escrow");
     setup.store.snapshot().expect("snapshot");
     // Frames after the snapshot, so replay has to do both halves.
     setup

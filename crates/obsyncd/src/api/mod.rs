@@ -492,8 +492,6 @@ impl App {
             Route::AdminGcRun => admin::gc_run(self, req),
             Route::AdminScrubRun => admin::scrub_run(self, req),
             Route::AdminDomains => admin::domains(self, req),
-            Route::AdminEscrowSet(id) => admin::escrow_set(self, req, &id),
-            Route::AdminEscrowClear(id) => admin::escrow_clear(self, req, &id),
             Route::AdminLogs => admin::logs(self, req),
             Route::PluginManifest => plugin::manifest(self),
             Route::PluginBundle => plugin::bundle(self),
@@ -698,10 +696,6 @@ pub enum Route {
     AdminScrubRun,
     /// `GET /v1/admin/domains`
     AdminDomains,
-    /// `POST /v1/admin/domains/{id}/escrow`
-    AdminEscrowSet(String),
-    /// `DELETE /v1/admin/domains/{id}/escrow`
-    AdminEscrowClear(String),
     /// `GET /v1/admin/logs`
     AdminLogs,
     /// `GET /v1/plugin/manifest`
@@ -792,14 +786,6 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("POST", ["v1", "admin", "gc", "run"]) => (Route::AdminGcRun, "/v1/admin/gc/run"),
         ("POST", ["v1", "admin", "scrub", "run"]) => (Route::AdminScrubRun, "/v1/admin/scrub/run"),
         ("GET", ["v1", "admin", "domains"]) => (Route::AdminDomains, "/v1/admin/domains"),
-        ("POST", ["v1", "admin", "domains", id, "escrow"]) => (
-            Route::AdminEscrowSet((*id).to_string()),
-            "/v1/admin/domains/{id}/escrow",
-        ),
-        ("DELETE", ["v1", "admin", "domains", id, "escrow"]) => (
-            Route::AdminEscrowClear((*id).to_string()),
-            "/v1/admin/domains/{id}/escrow",
-        ),
         ("GET", ["v1", "admin", "logs"]) => (Route::AdminLogs, "/v1/admin/logs"),
 
         ("GET", ["v1", "plugin", "manifest"]) => (Route::PluginManifest, "/v1/plugin/manifest"),

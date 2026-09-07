@@ -237,7 +237,7 @@ test('routeFromHash: known routes, everything else is Overview', () => {
   for (const name of routes()) {
     assert.equal(routeFromHash(`#${name}`), name);
   }
-  assert.equal(routes().length, 7);
+  assert.equal(routes().length, 6);
   assert.equal(routeFromHash('#Devices'), 'devices');
   assert.equal(routeFromHash('#logs?device=ab'), 'logs');
   assert.equal(routeFromHash(''), 'overview');

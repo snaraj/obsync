@@ -122,14 +122,6 @@ fn feed_domain_and_admin_routes_resolve() {
     assert_eq!(route("POST", "/v1/admin/gc/run"), Route::AdminGcRun);
     assert_eq!(route("POST", "/v1/admin/scrub/run"), Route::AdminScrubRun);
     assert_eq!(route("GET", "/v1/admin/domains"), Route::AdminDomains);
-    assert_eq!(
-        route("POST", &format!("/v1/admin/domains/{ID}/escrow")),
-        Route::AdminEscrowSet(ID.to_string())
-    );
-    assert_eq!(
-        route("DELETE", &format!("/v1/admin/domains/{ID}/escrow")),
-        Route::AdminEscrowClear(ID.to_string())
-    );
     assert_eq!(route("GET", "/v1/admin/logs"), Route::AdminLogs);
 }
 
@@ -166,8 +158,8 @@ fn the_log_class_is_a_template_and_never_carries_an_id() {
         ),
         (
             "POST",
-            format!("/v1/admin/domains/{ID}/escrow"),
-            "/v1/admin/domains/{id}/escrow",
+            format!("/v1/devices/{ID}/revoke"),
+            "/v1/devices/{id}/revoke",
         ),
     ] {
         let c = class(method, &path);

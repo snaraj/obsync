@@ -58,8 +58,8 @@ never logged, to `v1/setup-token` on the journal volume. The token creates
 the account once, and it then remains the dashboard's recovery sign-in for
 the life of the server (`docs/architecture.md` section 4.5), so keep it
 with the same care as the recovery phrase: anyone holding it can sign in to
-the dashboard, revoke devices, and escrow folder keys. Read it without any
-helper image, from the container's own volume, running or stopped:
+the dashboard and revoke devices. Read it without any helper image, from the
+container's own volume, running or stopped:
 
 ```sh
 docker cp obsync:/data/journal/v1/setup-token - | tar -xO

@@ -149,11 +149,6 @@ const devices = [
   },
 ];
 
-const domains = [
-  { domain_id: 'd0000000000000000000000000000001', created: now() - 62 * 24 * HOUR, escrowed: false },
-  { domain_id: 'd0000000000000000000000000000002', created: now() - 30 * 24 * HOUR, escrowed: true },
-];
-
 const quarantine = [
   {
     sid: '9c1d'.padEnd(64, '0'),
@@ -356,7 +351,6 @@ const ADMIN = {
     scrub: { state: jobState(jobs.scrub), rate_bytes_per_sec: 4 * MiB, last: jobs.scrub.last },
     quarantine,
   }),
-  'GET /domains': () => ({ domains }),
   'GET /logs': (url) => adminLogs(url),
 };
 
@@ -373,22 +367,6 @@ function mutate(res, method, rest, sent) {
     const device = devices.find((d) => d.device_id === revoke[1]);
     if (!device) return fail(res, 404, 'unknown_device', 'No such device.');
     device.revoked = true;
-    seq += 1;
-    return empty(res, 204);
-  }
-
-  const escrow = rest.match(/^\/domains\/([^/]+)\/escrow$/);
-  if (escrow && (method === 'POST' || method === 'DELETE')) {
-    const domain = domains.find((d) => d.domain_id === escrow[1]);
-    if (!domain) return fail(res, 404, 'unknown_domain', 'No such domain.');
-    if (method === 'DELETE') {
-      domain.escrowed = false;
-    } else {
-      if (!/^[0-9a-f]{64}$/.test(String(sent.domain_key || ''))) {
-        return fail(res, 422, 'bad_key', 'A domain key is 64 lowercase hex characters.');
-      }
-      domain.escrowed = true;
-    }
     seq += 1;
     return empty(res, 204);
   }

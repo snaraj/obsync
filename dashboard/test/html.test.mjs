@@ -153,7 +153,7 @@ test('index.html: every form control has a label', () => {
   assert.deepEqual(controlsWithoutLabel(HTML), []);
   // The page really does have controls, so the check above had work to do.
   const controls = tags(HTML).filter((t) => ['input', 'select', 'textarea'].includes(t.name));
-  assert.equal(controls.length, 3);
+  assert.equal(controls.length, 1);
 });
 
 test('index.html: exactly the two asset paths the server serves', () => {
@@ -168,7 +168,7 @@ test('index.html: no off-origin reference beyond the SVG namespace', () => {
 });
 
 test('index.html: one section per route, plus sign-in', () => {
-  for (const name of ['overview', 'devices', 'pairing', 'storage', 'sharing', 'install', 'logs']) {
+  for (const name of ['overview', 'devices', 'pairing', 'storage', 'install', 'logs']) {
     assert.ok(HTML.includes(`id="page-${name}"`), `missing section for ${name}`);
     assert.ok(HTML.includes(`href="#${name}"`), `missing nav link for ${name}`);
   }
@@ -256,7 +256,7 @@ const missingMockRoutes = (appJs, mockJs) =>
 // The mock is only useful while it answers what the page actually asks for.
 test('dev/mock.mjs answers every endpoint app.js calls', () => {
   const markers = mockRouteMarkers(APP_JS);
-  assert.ok(markers.length >= 10, `expected the whole admin surface, found ${markers.join(', ')}`);
+  assert.ok(markers.length >= 9, `expected the whole admin surface, found ${markers.join(', ')}`);
   assert.deepEqual(missingMockRoutes(APP_JS, MOCK), []);
 });
 
@@ -277,14 +277,15 @@ test('app.js reads the pinned admin field names and none of the old ones', () =>
     'complete_pass',
     'rate_bytes_per_sec',
     'versions_per_hour',
-    'domain_key',
   ];
   // Comments stripped: the sentence explaining a field must not stand in for
   // the code reading it.
   const source = stripComments(`${APP_JS}${LIB_JS}`);
   assert.deepEqual(missingNames(source, pinned), []);
 
-  const superseded = ['bytes_freed', 'scrub.rate)', 'run.rate)', '{ key }'];
+  // `domain_key` was the one request body that handed the server a content
+  // key. It is gone from the protocol; the dashboard must never grow it back.
+  const superseded = ['bytes_freed', 'scrub.rate)', 'run.rate)', '{ key }', 'domain_key'];
   assert.deepEqual(presentNames(source, superseded), []);
 });
 
@@ -326,17 +327,15 @@ test('dev/mock.mjs sends the header set AGENTS.md pins', () => {
       "type.startsWith('text/html')",
       // Per response: Node ignores the server-wide property of this name.
       'res.sendDate = false',
-      // Refuses a mutation whose double-submit header does not match, and
-      // reads the escrow key under the name docs/protocol.md pins.
+      // Refuses a mutation whose double-submit header does not match.
       "req.headers['x-obsync-csrf']",
       'csrf_mismatch',
-      'sent.domain_key',
     ]),
     [],
   );
-  // The origin owns neither the clock nor the transport policy, and the
-  // escrow body's old field name is gone.
-  assert.deepEqual(presentNames(code, ['Strict-Transport-Security', 'sent.key']), []);
+  // The origin owns neither the clock nor the transport policy, and no
+  // request body it accepts names a key.
+  assert.deepEqual(presentNames(code, ['Strict-Transport-Security', '_key']), []);
 });
 
 /* ---- the checks themselves ---------------------------------------------- */

@@ -1,7 +1,7 @@
 //! Lowercase hexadecimal (RFC 4648 section 8, "base16"), encode and decode.
 //!
 //! The wire protocol is hex almost everywhere: device ids, nonces,
-//! signatures, storage ids, version ids and escrow keys are all lowercase
+//! signatures, storage ids and version ids are all lowercase
 //! hex (`docs/protocol.md`, "Authentication" and "Chunks"). Encoding emits
 //! lowercase only; decoding accepts either case, because an operator pasting
 //! a key from another tool should not be defeated by capitalisation.

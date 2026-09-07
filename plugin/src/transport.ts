@@ -410,7 +410,7 @@ export class Transport {
 
   // --- domains -----------------------------------------------------------
 
-  domains(): Promise<{ domains: { domain_id: string; escrowed: boolean; created: number }[] }> {
+  domains(): Promise<{ domains: { domain_id: string; created: number }[] }> {
     return this.json("GET", "/v1/domains", { auth: "device" });
   }
 

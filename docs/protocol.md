@@ -138,11 +138,12 @@ A **tombstone** is a version with `"deleted":true` and no sids.
   wait elapses, then returns whatever exists (possibly an empty list).
   `since` beyond `head_seq` → `416 seq_ahead`.
 
-## Domains (sharing)
+## Domains
 
-- `GET /v1/domains` → `{"domains":[{"domain_id","escrowed":false,
-  "created"}]}`. Domain membership of paths is client-side metadata; the
-  server tracks only ids and escrow state.
+- `GET /v1/domains` → `{"domains":[{"domain_id","created"}]}`. Domain
+  membership of paths is client-side metadata; the server tracks the id and
+  when it was declared, and holds no key for it. There is no request on this
+  API that hands the server a content key.
 - `POST /v1/domains` `{"domain_id":"<32hex>"}` → `201`.
 
 ## Dashboard (admin) API
@@ -172,9 +173,7 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",
   "last":<scrub>|null},"quarantine":[{"sid","ts","bytes","reason"}]}`.
 - `POST /v1/admin/gc/run`, `POST /v1/admin/scrub/run` → `202`.
-- `GET /v1/admin/domains`, `POST /v1/admin/domains/{id}/escrow`
-  `{"domain_key":"<64hex>"}` → `204`, `DELETE /v1/admin/domains/{id}/escrow`
-  → `204`.
+- `GET /v1/admin/domains` → the body `GET /v1/domains` returns.
 - `GET /v1/admin/logs?device=<id prefix>&limit=<n ≤ 500>` → `{"lines":
   [{"ts","method","path_class","device":"<id>"|null,"status","bytes",
   "duration_ms","decision"}]}` newest first: the pinned request log line

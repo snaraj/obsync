@@ -20,7 +20,7 @@ use obsync_core::crc32::crc32;
 use obsync_core::hex;
 use obsync_core::json::{self, Value};
 
-use crate::storage::index::{DeviceEntry, DomainEntry, FileEntry, Index};
+use crate::storage::index::{DeviceEntry, FileEntry, Index};
 use crate::storage::types::{
     DevicePolicy, DeviceRecord, DeviceState, DomainRecord, GcSummary, ScrubSummary, SeenEvent,
     SeenKind, StoreError, VersionRecord,
@@ -76,11 +76,6 @@ pub(crate) enum Frame {
     Domain {
         domain_id: DomainId,
         created: UnixMs,
-    },
-    /// A domain key was escrowed, or the escrow was withdrawn.
-    Escrow {
-        domain_id: DomainId,
-        wrapped: Option<[u8; 32]>,
     },
     /// A device was seen.
     Seen {
@@ -782,16 +777,6 @@ impl Record {
                 pairs.push(("domain", text(*domain_id)));
                 pairs.push(("created", num(created.0)));
             }
-            Frame::Escrow { domain_id, wrapped } => {
-                pairs.push(("domain", text(*domain_id)));
-                pairs.push((
-                    "wrapped",
-                    match wrapped {
-                        Some(bytes) => text(hex::encode(bytes)),
-                        None => Value::Null,
-                    },
-                ));
-            }
             Frame::Seen { device_id, event } => {
                 pairs.push(("device", text(*device_id)));
                 pairs.push(("event", seen_value(event)));
@@ -866,13 +851,6 @@ impl Record {
                 domain_id: field_id(&value, "domain")?,
                 created: UnixMs(field_num(&value, "created")?),
             },
-            "escrow" => Frame::Escrow {
-                domain_id: field_id(&value, "domain")?,
-                wrapped: match value.get("wrapped") {
-                    Some(v) if !v.is_null() => Some(field_bytes::<32>(&value, "wrapped")?),
-                    _ => None,
-                },
-            },
             "seen" => Frame::Seen {
                 device_id: field_id(&value, "device")?,
                 event: seen_from(field(&value, "event")?)?,
@@ -909,7 +887,6 @@ impl Frame {
             Frame::DeviceDelete { .. } => "device_delete",
             Frame::Version(_) => "version",
             Frame::Domain { .. } => "domain",
-            Frame::Escrow { .. } => "escrow",
             Frame::Seen { .. } => "seen",
             Frame::Gc { .. } => "gc",
             Frame::Scrub { .. } => "scrub",
@@ -961,17 +938,10 @@ fn snapshot_value(index: &Index) -> Value {
         index
             .domains
             .values()
-            .map(|entry| {
+            .map(|record| {
                 json::obj(vec![
-                    ("id", text(entry.record.domain_id)),
-                    ("created", num(entry.record.created.0)),
-                    (
-                        "wrapped",
-                        match &entry.wrapped {
-                            Some(bytes) => text(hex::encode(bytes)),
-                            None => Value::Null,
-                        },
-                    ),
+                    ("id", text(record.domain_id)),
+                    ("created", num(record.created.0)),
                 ])
             })
             .collect(),
@@ -1063,19 +1033,11 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
         .ok_or_else(|| StoreError::Corrupt("domains is not an array".to_string()))?
     {
         let domain_id: DomainId = field_id(domain, "id")?;
-        let wrapped = match domain.get("wrapped") {
-            Some(v) if !v.is_null() => Some(field_bytes::<32>(domain, "wrapped")?),
-            _ => None,
-        };
         index.domains.insert(
             domain_id,
-            DomainEntry {
-                record: DomainRecord {
-                    domain_id,
-                    escrowed: wrapped.is_some(),
-                    created: UnixMs(field_num(domain, "created")?),
-                },
-                wrapped,
+            DomainRecord {
+                domain_id,
+                created: UnixMs(field_num(domain, "created")?),
             },
         );
     }
@@ -1167,14 +1129,6 @@ mod tests {
             Frame::Domain {
                 domain_id: DomainId::new([5u8; 16]),
                 created: UnixMs(7),
-            },
-            Frame::Escrow {
-                domain_id: DomainId::new([5u8; 16]),
-                wrapped: Some([8u8; 32]),
-            },
-            Frame::Escrow {
-                domain_id: DomainId::new([5u8; 16]),
-                wrapped: None,
             },
             Frame::Seen {
                 device_id: device.device_id,

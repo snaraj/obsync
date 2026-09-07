@@ -282,13 +282,11 @@ pub struct Changes {
     pub changes: Vec<Change>,
 }
 
-/// A sharing domain. Membership of paths is client-side metadata.
+/// A key-scoping domain. Membership of paths is client-side metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DomainRecord {
     /// The domain.
     pub domain_id: DomainId,
-    /// Whether its key is escrowed on the server.
-    pub escrowed: bool,
     /// When it was created.
     pub created: UnixMs,
 }
