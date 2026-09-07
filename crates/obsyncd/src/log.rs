@@ -124,6 +124,14 @@ impl Val {
         Val(n.to_string())
     }
 
+    /// A file mode's permission bits, as four octal digits.
+    ///
+    /// A number, so a line that states the mode of a file states a fact read
+    /// off the volume rather than a word an author typed.
+    pub fn mode(bits: u32) -> Val {
+        Val(format!("{:04o}", bits & 0o7777))
+    }
+
     /// An HTTP status code.
     pub fn status(code: u16) -> Val {
         Val(code.to_string())

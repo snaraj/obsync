@@ -28,7 +28,7 @@ use obsync_core::json::{self, Value};
 
 use crate::config::Config;
 use crate::log::{Log, Val};
-use crate::storage::{Store, StoreError, load_or_create_server_key};
+use crate::storage::{Posture, Store, StoreError, load_or_create_server_key};
 use crate::types::{DomainId, Sid};
 
 /// What one export wrote.
@@ -74,7 +74,9 @@ pub fn run(
 
     let log = Log::new(cfg.log_level);
     let storage = cfg.storage();
-    let server_key = load_or_create_server_key(&storage.journal_dir, cfg.server_key, &log)?;
+    let posture = Posture::enforce(&storage, &log)?;
+    let server_key =
+        load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)?;
     let store = Store::open(&storage, server_key, log.clone())?;
     if !store.domain_exists(domain) {
         return Err(StoreError::UnknownDomain);

@@ -360,6 +360,51 @@ fn provider_check_flags_a_mutated_fixture() {
     assert_eq!(provider_hits(&format!("// {name}d tunnel")).len(), 2);
 }
 
+/// A file mode a log line states must be a number the code read off the
+/// volume, never a word an author typed. A typed mode is how a startup line
+/// comes to claim a protection a restored file does not have
+/// (`storage::posture`); `Val::mode` takes the bits that were read.
+///
+/// Assembled at runtime, so this file is not exempt from its own rule.
+fn typed_mode_hits(content: &str) -> Vec<String> {
+    let needle = format!("Val::wo{}(\"0", "rd");
+    content
+        .match_indices(&needle)
+        .map(|(at, _)| {
+            let end = (at + needle.len() + 3).min(content.len());
+            content[at..end].to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn no_log_line_states_a_mode_that_was_never_read() {
+    let root = repo_root();
+    for file in rust_sources(&root.join("crates/obsyncd/src")) {
+        assert_eq!(
+            typed_mode_hits(&read(&file)),
+            Vec::<String>::new(),
+            "{} states a mode as a typed word; log the bits Val::mode read \
+             back off the volume (requirement 12)",
+            relative(&file, &root)
+        );
+    }
+}
+
+#[test]
+fn typed_mode_check_flags_a_mutated_fixture() {
+    let word = format!("wo{}", "rd");
+    assert!(typed_mode_hits("(\"mode\", Val::mode(mode))").is_empty());
+    assert!(
+        typed_mode_hits(&format!("(\"decision\", Val::{word}(\"ok\"))")).is_empty(),
+        "a decision is a word; only a mode is a number"
+    );
+    assert_eq!(
+        typed_mode_hits(&format!("(\"mode\", Val::{word}(\"0600\"))")),
+        vec![format!("Val::{word}(\"0600")]
+    );
+}
+
 #[test]
 fn no_field_is_named_or_shaped_like_a_key_or_a_path() {
     let root = repo_root();

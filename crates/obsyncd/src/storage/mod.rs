@@ -24,6 +24,7 @@ mod blobs;
 mod gc;
 mod index;
 mod journal;
+pub mod posture;
 mod scrub;
 pub mod types;
 
@@ -32,9 +33,9 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
@@ -51,6 +52,7 @@ use self::blobs::Blobs;
 use self::index::Index;
 use self::journal::{Frame, Journal, Record};
 
+pub use self::posture::{Decision, Outcome, PathClass, Posture};
 pub use self::types::{
     AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DeviceState,
     FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome, ScrubSummary, SeenEvent,
@@ -1048,42 +1050,48 @@ fn dir_bytes(dir: &Path) -> u64 {
 /// The server key: the configured one, the one on the journal volume, or a
 /// fresh one written there with mode 0600 (AGENTS.md, security invariants).
 ///
-/// The key itself never reaches a log line: only where it came from does.
+/// Taking a [`Posture`] is the point: this file opens every stored device
+/// credential, so there is no way to reach it without having decided what
+/// the volume it rests on actually is. Whichever branch runs, the file is
+/// measured and then read, so a mode is never claimed for a file that was
+/// only written.
+///
+/// The key itself never reaches a log line: only where it came from, and the
+/// mode the volume was found to hold, do.
 pub fn load_or_create_server_key(
     journal_dir: &Path,
     configured: Option<[u8; 32]>,
+    posture: &Posture,
     log: &Log,
 ) -> Result<[u8; 32], StoreError> {
     if let Some(key) = configured {
         log.info("server_key", &[("source", Val::word("configured"))]);
         return Ok(key);
     }
-    let root = journal_dir.join("v1");
-    if !root.is_dir() {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&root)?;
-    }
-    let path = root.join("server.key");
-    if let Ok(text) = fs::read_to_string(&path) {
-        let key = hex::decode_array::<32>(text.trim()).map_err(|_| {
-            StoreError::Corrupt("the stored server key is not 64 hex characters".to_string())
-        })?;
-        log.info("server_key", &[("source", Val::word("volume"))]);
-        return Ok(key);
-    }
-    let key = random_bytes::<32>()?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    file.write_all(hex::encode(&key).as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    File::open(&root)?.sync_all()?;
-    log.info("server_key", &[("source", Val::word("generated"))]);
+    let path = PathClass::ServerKey.path(journal_dir);
+    let source = if fs::symlink_metadata(&path).is_ok() {
+        "volume"
+    } else {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(hex::encode(&random_bytes::<32>()?).as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        File::open(PathClass::JournalRoot.path(journal_dir))?.sync_all()?;
+        "generated"
+    };
+    let mode = posture.verify_present(PathClass::ServerKey, &path, log)?;
+    let text = fs::read_to_string(&path)?;
+    let key = hex::decode_array::<32>(text.trim()).map_err(|_| {
+        StoreError::Corrupt("the stored server key is not 64 hex characters".to_string())
+    })?;
+    log.info(
+        "server_key",
+        &[("source", Val::word(source)), ("mode", Val::mode(mode))],
+    );
     Ok(key)
 }
 
