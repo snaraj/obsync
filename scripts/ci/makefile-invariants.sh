@@ -38,7 +38,7 @@ CANONICAL=(
   'npm ci --ignore-scripts --no-audit --no-fund'
   'npm run build'
   'npm test'
-  'node --test dashboard/test/'
+  'node --test dashboard/test/*.test.mjs'
   'helm lint chart'
   'helm template smoke chart --kube-version v1.36.0'
   'python3 -B scripts/ci/chart_pins.py all'

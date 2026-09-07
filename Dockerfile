@@ -37,9 +37,14 @@ RUN npm run build && npm test
 # image copies the same stage. Two artifacts, one source of truth.
 # ---------------------------------------------------------------------------
 FROM scratch AS bundle
+# All three come from `dist/`, which is what `plugin/build.mjs` actually wrote
+# and printed a SHA-256 for. Copying manifest.json and styles.css from the
+# repository root instead would be byte-identical today and one bundler change
+# away from not being, and the release evidence manifest records a digest over
+# these exact three files.
 COPY --from=plugin /src/plugin/dist/main.js /main.js
-COPY --from=plugin /src/plugin/manifest.json /manifest.json
-COPY --from=plugin /src/plugin/styles.css /styles.css
+COPY --from=plugin /src/plugin/dist/manifest.json /manifest.json
+COPY --from=plugin /src/plugin/dist/styles.css /styles.css
 
 # ---------------------------------------------------------------------------
 # server -- test once natively, then cross-compile one fully static binary.

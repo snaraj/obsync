@@ -172,7 +172,11 @@ jobs:
           npm run build
           npm test
       - name: Test the dashboard
-        run: node --test dashboard/test/
+        # The GLOB, not the directory: on the pinned Node 24.19.0 a
+        # directory argument is run as a module rather than searched, so
+        # `node --test dashboard/test/` fails with MODULE_NOT_FOUND.
+        # Verified inside the pinned node:24.19.0-trixie-slim image.
+        run: node --test dashboard/test/*.test.mjs
       - name: Pin the Makefile and CI to one battery
         run: ./scripts/ci/makefile-invariants.sh
 
