@@ -100,6 +100,7 @@ repository:
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   OBSYNC_HOST=sync.example.org \
+  OBSYNC_BIND_ADDRESS=192.168.1.10 \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
@@ -109,7 +110,8 @@ enough, because it only has to resolve on the networks you sync from -- your
 LAN, or a VPN back to it. What it DOES need is HTTPS, without exception:
 Obsidian on iOS and Android refuses plain HTTP and the plugin speaks nothing
 else. Two ways to get a certificate a phone will accept for a private name,
-neither of which exposes this server to the internet:
+neither of which needs this server reachable from the internet -- what it IS
+reachable from is `OBSYNC_BIND_ADDRESS` below, not either of these:
 
 - **the private authority below**, exported once and installed on each
   device. This is what the compose file does out of the box, and it is the
@@ -125,10 +127,27 @@ A public hostname, a reachable port 80 and 443, or a tunnel provider are one
 optional way to reach this server from outside your own network. None of them
 is a requirement, and nothing below assumes them.
 
+`OBSYNC_BIND_ADDRESS` is the host address ports 80 and 443 are published
+on, and it is the answer to a question the two certificate options above do
+not touch. The private name and the certificate authority decide what this
+service is CALLED and which devices TRUST it; the bind address decides who
+can OPEN it, and nothing else does -- a client from anywhere can pick the
+name itself and skip certificate verification entirely. So state the
+interface: `192.168.1.10`, this host's own address on your LAN, reaches it
+from that network and no further; `127.0.0.1` reaches it only from this
+machine, which is what you want when a VPN terminates here or another
+reverse proxy sits in front. Neither value puts this server anywhere beyond
+the interface you named. `0.0.0.0` publishes on every interface this host
+has, and that IS the decision to expose it -- a legitimate one behind a
+firewall or a NAT you control, and then the firewall is yours to get right.
+Compose refuses to start until you have chosen, because there is no value
+here that is safe for everybody.
+
 `deploy/compose/docker-compose.yml` gives the server
 `OBSYNC_EDGE=none` and trusts forwarded addresses only from the compose
 network's own range, which is written in that file beside the network it
-belongs to. Ports 80 and 443 on this host are the only ones opened.
+belongs to. Ports 80 and 443 on the address you chose are the only ones
+opened.
 
 The setup token is read the same way as in step 1, from the container compose
 created:
@@ -138,8 +157,10 @@ docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
 `scripts/ci/compose-smoke.sh` brings this exact file up on every pull request
-and proves the path end to end: TLS through the proxy, `/readyz` truthful, no
-published port, the token readable, both containers hardened.
+and proves the path end to end: the bind address required before anything
+starts, TLS through the proxy, `/readyz` truthful, the server itself with no
+published port, 80 and 443 published on the chosen address and on nothing
+else, the token readable, both containers hardened.
 
 #### Trust the certificate authority, once per device
 

@@ -68,13 +68,16 @@ readiness for the scenarios it covers:
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
 | Reference (pie5) | Cloudflare Tunnel with Access, `OBSYNC_EDGE=cloudflare` | private, owner-only | the deployment itself; V1-V14 by hand |
-| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, no public exposure | `scripts/ci/compose-smoke.sh`, on every pull request |
+| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
 
 The Compose path is the no-provider route: it needs no account with anybody
 and nothing reachable from the internet, and unlike the reference deployment
-its serving path is re-proven on every pull request rather than by hand. V15
-is where a person confirms on real devices what that smoke proves on a
-runner.
+its serving path is re-proven on every pull request rather than by hand. Its
+"no public exposure" is an assertion and not a hope: the smoke reads back the
+`HostIp` Docker published 80 and 443 on and refuses any address but the one
+`OBSYNC_BIND_ADDRESS` selected, and refuses the compose file itself if that
+variable is optional. V15 is where a person confirms on real devices what
+that smoke proves on a runner.
 
 Every run records device models, OS versions, app versions, the server
 commit, and timings in `docs/validation-runs/<date>.md`. Captures for the

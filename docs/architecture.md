@@ -604,11 +604,15 @@ terminator and the edge mode:
 | Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
 | --- | --- | --- | --- | --- |
 | Reference (pie5) | `cloudflare` | Cloudflare Tunnel, Access in front | the edge's own headers, required on every request | the deployment; `docs/validation.md` V1-V14 |
-| Compose (any network, no provider) | `none` | Caddy, `deploy/compose` | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
+| Compose (any network, no provider) | `none` | Caddy, `deploy/compose`, reachable only on the bind address you choose | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
 
 The Compose row is the one a stranger can run: a private name, a certificate
-authority Caddy generates, nothing reachable from the internet, and no
-account with any provider. `README.md`, "Any network, no provider", is its
+authority Caddy generates, and no account with any provider. Reachability is
+the deployer's own decision and is made once, in `OBSYNC_BIND_ADDRESS`: the
+name and the certificate authority settle what the service is called and
+which devices trust it, while the host address 80 and 443 are published on
+settles who can open them. The compose file requires that variable and
+defaults it to nothing. `README.md`, "Any network, no provider", is its
 install path.
 
 ## 11. Phases

@@ -102,6 +102,19 @@ preference:
      that same command: a compose invocation with no pinned image inherits
      whatever the reader's shell happens to hold.
 
+ 11. the compose path names the interface it is published on -- every
+     `docker compose up` and `run` in README.md must also carry an
+     `OBSYNC_BIND_ADDRESS=` assignment on that command, and its value may
+     never be `0.0.0.0`. A port mapping with no host address publishes on
+     every address the host has, and a private DNS name with a private
+     certificate authority controls what the service is CALLED and who
+     TRUSTS it, never who can reach it: a client anywhere can choose the
+     name itself and skip verification. The documented command is therefore
+     the place the choice is made, and `0.0.0.0` -- a real option, and the
+     one that exposes the deployment wherever the host is reachable -- is
+     not the one a reader copies out of an install guide. The PROSE may name
+     it, and does; only a command may not carry it.
+
 FAIL-CLOSED PARSING, OVER EXECUTABLE STRUCTURE. The first version of this file
 judged text: it split a line on shell operators and searched the result with
 regular expressions. An adversarial review walked straight through it with two
@@ -264,6 +277,12 @@ COMPOSE_VALUE_FLAGS = frozenset(
 # take mounts and are held to the journal-volume rule as well.
 COMPOSE_MOUNTING_VERBS = frozenset({"run", "create"})
 COMPOSE_PINNED_VERBS = frozenset({"up", "run"})
+# Rule 11: the host address the compose path publishes 80 and 443 on, and the
+# one value for it that is an exposure decision rather than a choice of
+# interface. `deploy/compose/docker-compose.yml` requires the variable with no
+# default; this is the other half, so the documented command answers it.
+BIND_ADDRESS_VARIABLE = "OBSYNC_BIND_ADDRESS"
+EVERY_INTERFACE = "0.0.0.0"
 VOLUME_FLAGS = frozenset({"-v", "--volume", "--mount"})
 
 
@@ -669,11 +688,30 @@ def _compose_command_refusals(name: str, text: str) -> list[str]:
                     )
                 if name_of_verb not in COMPOSE_PINNED_VERBS:
                     continue
-                supplied = _assignments(words).get("OBSYNC_IMAGE", "")
+                assigned = _assignments(words)
+                supplied = assigned.get("OBSYNC_IMAGE", "")
                 if not supplied.startswith(SERVER_IMAGE_PREFIX):
                     found.append(
                         f"{name}: `docker compose {name_of_verb}` is not pinned to an "
                         f"OBSYNC_IMAGE={SERVER_IMAGE_PREFIX}… reference: "
+                        f"{' '.join(command)}"
+                    )
+                # Rule 11. Absent and `0.0.0.0` are separate refusals because
+                # they are separate mistakes: the first publishes on every
+                # interface because nobody chose, the second because somebody
+                # copied a line that chose it for them.
+                if BIND_ADDRESS_VARIABLE not in assigned:
+                    found.append(
+                        f"{name}: `docker compose {name_of_verb}` carries no "
+                        f"{BIND_ADDRESS_VARIABLE}= assignment, so the host address "
+                        f"80 and 443 are published on is whatever the reader's "
+                        f"shell holds: {' '.join(command)}"
+                    )
+                elif assigned[BIND_ADDRESS_VARIABLE] == EVERY_INTERFACE:
+                    found.append(
+                        f"{name}: `docker compose {name_of_verb}` publishes on "
+                        f"{EVERY_INTERFACE}, every address this host has, which is an "
+                        f"exposure decision and not a documented default: "
                         f"{' '.join(command)}"
                     )
     return found
@@ -959,6 +997,7 @@ QUICK_START_READ = f"docker cp obsync{TOKEN_PATH} - | tar -xO"
 
 # The compose path's own two lines, named once for the same reason.
 COMPOSE_UP_IMAGE = f"OBSYNC_IMAGE={SERVER_IMAGE_PREFIX}<digest>"
+COMPOSE_UP_BIND = f"{BIND_ADDRESS_VARIABLE}=192.168.1.10"
 COMPOSE_SERVICE_IMAGE = f"image: {COMPOSE_IMAGE}"
 # A syntactically perfect digest that is not this project's image, and one that
 # is. Both are refused in the compose file, for different reasons.
@@ -1324,6 +1363,31 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def test_a_compose_up_with_no_pinned_image_is_refused(self):
         found = self.mutate(README_NAME, COMPOSE_UP_IMAGE, "OBSYNC_LOG=info")
         self.kills(found, "is not pinned to an")
+
+    # ---- rule 11: the interface the compose path is published on -----------
+
+    def test_a_compose_up_with_no_bind_address_is_refused(self):
+        found = self.mutate(README_NAME, f"  {COMPOSE_UP_BIND} \\\n", "")
+        self.kills(found, f"carries no {BIND_ADDRESS_VARIABLE}=")
+
+    def test_a_compose_up_published_on_every_interface_is_refused(self):
+        found = self.mutate(
+            README_NAME, COMPOSE_UP_BIND, f"{BIND_ADDRESS_VARIABLE}={EVERY_INTERFACE}"
+        )
+        self.kills(found, f"publishes on {EVERY_INTERFACE}")
+
+    def test_naming_every_interface_in_prose_is_not_refused(self):
+        # Rule 11's positive control, and the reason the rule reads COMMANDS:
+        # the README has to be able to say what `0.0.0.0` means and when it is
+        # the right answer, which it does. Only a line a reader can paste is
+        # refused, so a second mention in prose adds no refusal at all.
+        found = self.mutate(
+            README_NAME,
+            "Compose refuses to start until you have chosen",
+            f"A bind of {EVERY_INTERFACE} is that exposure decision. "
+            "Compose refuses to start until you have chosen",
+        )
+        self.assertEqual(found, self.before)
 
     def test_a_compose_down_is_not_refused(self):
         # Rule 10's positive control: the verbs that start nothing are free, so
