@@ -93,7 +93,7 @@ id_type!(
     16
 );
 id_type!(
-    /// Domain (sharing unit) identifier chosen by a device.
+    /// Domain (key-scoping unit) identifier chosen by a device.
     DomainId,
     16
 );
