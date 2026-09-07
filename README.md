@@ -25,16 +25,27 @@ account with anyone but yourself.
 
 The server speaks plain HTTP on port 8080 and must sit behind a TLS
 terminator (a tunnel or a reverse proxy): Obsidian on iOS and Android refuses
-plain HTTP. Any host with Docker:
+plain HTTP.
+
+Deploy by digest, never by tag. Every Release is signed keyless by this
+repository's publisher and carries `obsync-vX.Y.Z-release-manifest.json`,
+which names the image digest, the chart digest, and the plugin bundle's
+SHA-256. Verify the signature with cosign, read the digest from the verified
+payload (it must match the manifest on the Release page), and run exactly
+that digest:
 
 ```sh
+cosign verify ghcr.io/snaraj/obsync:v0.1.0 \
+  --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
 docker volume create obsync-blobs
 docker volume create obsync-journal
 docker run -d --name obsync -p 127.0.0.1:8080:8080 \
   -v obsync-blobs:/data/blobs -v obsync-journal:/data/journal \
   -e OBSYNC_BLOBS_CAPACITY=250GiB -e OBSYNC_JOURNAL_CAPACITY=4GiB \
   -e OBSYNC_PUBLIC_URL=https://sync.example.org \
-  ghcr.io/snaraj/obsync:v0.1.0
+  ghcr.io/snaraj/obsync@sha256:<the digest cosign just verified>
 ```
 
 On Kubernetes, install the chart with your storage classes, claim sizes, and
@@ -42,13 +53,22 @@ a Secret for `OBSYNC_SERVER_KEY`; the reference deployment (a Raspberry Pi
 behind a Cloudflare Tunnel with Cloudflare Access in front) is described in
 `docs/platform-onboarding.md` and `docs/architecture.md` section 10.
 
-At first boot the server mints a one-time setup token. It is never logged; it
-is written with mode 0600 to `v1/setup-token` on the journal volume. Read it
-from the volume, for example with a throwaway container:
+At first boot the server mints a setup token and writes it, mode 0600 and
+never logged, to `v1/setup-token` on the journal volume. The token creates
+the account once, and it then remains the dashboard's recovery sign-in for
+the life of the server (`docs/architecture.md` section 4.5), so keep it
+with the same care as the recovery phrase: anyone holding it can sign in to
+the dashboard, revoke devices, and escrow folder keys. Read it without any
+helper image, from the container's own volume, running or stopped:
 
 ```sh
-docker run --rm -v obsync-journal:/j docker.io/library/busybox cat /j/v1/setup-token
+docker cp obsync:/data/journal/v1/setup-token - | tar -xO
 ```
+
+On Kubernetes, read `v1/setup-token` from the journal volume on the node
+that holds it. The journal volume also carries the journal itself and, when
+`OBSYNC_SERVER_KEY` is not supplied, the generated server key: back it up as
+the sensitive volume it is.
 
 `GET /readyz` answers `{"ready":true}` once the server is serving.
 

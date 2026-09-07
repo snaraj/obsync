@@ -8,7 +8,7 @@ per-app Cloudflare Tunnel. Items below are platform-lane work and are
 tracked as platform issues; nothing here is done from this repository.
 
 1. **ADR revision:** ADR 0015 admits exactly two per-site Tunnels. Add a
-   third per-app Tunnel (`obsync`) with one hostname rule and the terminal
+   third per-app Tunnel (`obsidian`) with one hostname rule and the terminal
    404 rule; same shape, its own token, DNS record, connector Deployment,
    and NetworkPolicy in `cloudflare-public`.
 2. **Hostname:** one proxied CNAME on an existing Free zone (proposed
