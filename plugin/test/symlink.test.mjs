@@ -20,11 +20,13 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -216,6 +218,158 @@ test("a path with a symlink component is not syncable in the other direction eit
   );
 });
 
+/**
+ * Swap the vault's `Notes` directory for something else, mid-syscall.
+ *
+ * This is the shape the third review found: every no-follow walk passes,
+ * and then the NAME `Notes` is made to mean a different directory before
+ * the syscall the walk was meant to protect. A descriptor and a `lstat` of
+ * the same name still agree afterwards — both resolve through the swapped
+ * parent — so only the identity of the directory chain can see it.
+ */
+/**
+ * An `open` that swaps the parent at the named moment and records every byte
+ * the writer then sends. The bytes are the point: the temp file's creation
+ * through a swapped parent cannot be prevented without `openat`, but writing
+ * vault plaintext into it can be, and that is what the binding after the
+ * open is for.
+ */
+function swappingOpen(flags, swapper, wrote) {
+  return async (path, opening) => {
+    if (opening === flags) swapper.swap();
+    const handle = await realFsPromises.open(path, opening);
+    if (opening !== flags) return handle;
+    return {
+      read: (...args) => handle.read(...args),
+      write: async (bytes) => {
+        wrote.push(bytes.length);
+        return handle.write(bytes);
+      },
+      stat: () => handle.stat(),
+      close: () => handle.close(),
+    };
+  };
+}
+
+function parentSwap(root, replace) {
+  let done = false;
+  return {
+    done: () => done,
+    swap: () => {
+      if (done) return;
+      done = true;
+      renameSync(join(root, "Notes"), join(root, "Notes.aside"));
+      replace();
+    },
+  };
+}
+
+test("the reviewer's case: a parent swapped inside the open writes nothing outside", async () => {
+  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  let swapper = null;
+  const wrote = [];
+  const { root, logs, context, publish, applyChange } = await vault({
+    fs: { promises: { ...realFsPromises, open: swappingOpen("wx", { swap: () => swapper.swap() }, wrote) } },
+  });
+  mkdirSync(join(root, "Notes"));
+  swapper = parentSwap(root, () => symlinkSync(outsideDir, join(root, "Notes"), "dir"));
+
+  assert.equal(await applyChange(context, await publish("Notes/from-remote.md")), "refused");
+
+  assert.equal(swapper.done(), true, "the swap really happened");
+  assert.deepEqual(wrote, [], "not one byte of the vault was written through the swapped parent");
+  assert.deepEqual(readdirSync(outsideDir), [], "and no file was left outside the vault");
+  assert.ok(refusals(logs).length === 1, logs.join(" | "));
+});
+
+test("a parent swapped for a different real directory is refused by identity alone", async () => {
+  const other = mkdtempSync(join(tmpdir(), "obsync-other-"));
+  let swapper = null;
+  const wrote = [];
+  const { root, logs, context, publish, applyChange } = await vault({
+    fs: { promises: { ...realFsPromises, open: swappingOpen("wx", { swap: () => swapper.swap() }, wrote) } },
+  });
+  mkdirSync(join(root, "Notes"));
+  // Nothing here is a symlink and nothing leaves the vault: the ONLY thing
+  // wrong is that `Notes` is no longer the directory that was walked.
+  swapper = parentSwap(root, () => renameSync(other, join(root, "Notes")));
+
+  assert.equal(await applyChange(context, await publish("Notes/from-remote.md")), "refused");
+
+  assert.equal(swapper.done(), true, "the swap really happened");
+  assert.deepEqual(wrote, [], "not one byte was written into the directory that took its place");
+  assert.deepEqual(readdirSync(join(root, "Notes")), [], "and nothing was left in it");
+  assert.ok(
+    refusals(logs).some((line) => line.includes("reason=chain_changed")),
+    logs.join(" | "),
+  );
+});
+
+test("a parent swapped inside a read is refused before a byte is returned", async () => {
+  const other = mkdtempSync(join(tmpdir(), "obsync-other-"));
+  let swapper = null;
+  const { root, host } = await vault({
+    fs: {
+      promises: {
+        ...realFsPromises,
+        open: async (path, flags) => {
+          if (flags === "r") swapper.swap();
+          return realFsPromises.open(path, flags);
+        },
+      },
+    },
+  });
+  mkdirSync(join(root, "Notes"));
+  writeFileSync(join(root, "Notes", "note.md"), "ours\n");
+  // The replacement directory carries a HARD LINK to the very file we are
+  // reading, so the descriptor comparison is satisfied and the chain
+  // identity is the only thing left that can refuse.
+  swapper = parentSwap(root, () => {
+    linkSync(join(root, "Notes.aside", "note.md"), join(other, "note.md"));
+    renameSync(other, join(root, "Notes"));
+  });
+
+  await assert.rejects(
+    () => host.read("Notes/note.md"),
+    (error) => {
+      assert.equal(error.refusal, "chain_changed", "the chain binding is what refused");
+      return true;
+    },
+  );
+  assert.equal(swapper.done(), true, "the swap really happened");
+});
+
+test("a parent swapped around the rename is refused, hard link and all", async () => {
+  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  let swapper = null;
+  const { root, logs, context, publish, applyChange } = await vault({
+    fs: {
+      promises: {
+        ...realFsPromises,
+        rename: async (from, to) => {
+          await realFsPromises.rename(from, to);
+          // The file landed where it belonged; the parent is swapped only
+          // then, and a hard link gives the outside name our own inode, so
+          // that comparing inodes alone would be satisfied.
+          const name = to.slice(to.lastIndexOf("/") + 1);
+          if (!swapper.done()) {
+            swapper.swap();
+            linkSync(join(root, "Notes.aside", name), join(outsideDir, name));
+          }
+        },
+      },
+    },
+  });
+  mkdirSync(join(root, "Notes"));
+  swapper = parentSwap(root, () => symlinkSync(outsideDir, join(root, "Notes"), "dir"));
+
+  assert.equal(await applyChange(context, await publish("Notes/from-remote.md")), "refused");
+
+  assert.equal(swapper.done(), true, "the swap really happened");
+  assert.deepEqual(readdirSync(outsideDir), [], "the link we created outside is gone again");
+  assert.ok(refusals(logs).length === 1, logs.join(" | "));
+});
+
 test("a target swapped for a symlink after the rename is refused, and the plant removed", async () => {
   const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
   const secret = join(outsideDir, "secret.md");
@@ -278,6 +432,12 @@ test("a temp file swapped for a symlink between the open and the write is refuse
     },
   );
   assert.equal(readFileSync(secret, "utf8"), "outside\n", "the outside file is untouched");
-  assert.deepEqual(readdirSync(root), [], "the planted link was removed and nothing landed");
+  // The plant is LEFT WHERE IT IS: the temp is unlinked only while its name
+  // still means our own file, because acting on a name whose meaning has
+  // changed is the move this guard exists to refuse. Nothing was written
+  // through it, and every later operation refuses it as a symlink.
+  const left = readdirSync(root);
+  assert.equal(left.length, 1, `nothing landed; only the plant remains: ${left.join(", ")}`);
+  assert.equal(lstatSync(join(root, left[0])).isSymbolicLink(), true, "and it is the plant, not our file");
   assert.equal(logs.length, 0, "the writer refuses before it logs a write");
 });

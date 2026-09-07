@@ -41,10 +41,36 @@
  * they skip hidden folders, and lifting that is a later opt-in with its own
  * design, not a setting.
  *
+ * A WALK IS ONLY TRUE WHEN IT WAS TAKEN. The components it approved are
+ * names, and a name can be made to mean a different directory a syscall
+ * later: rename `Notes` aside, put a symlink to somewhere else in its place,
+ * and the very next `open` creates the file there — with the descriptor and
+ * a `lstat` of the same name agreeing perfectly, because both now resolve
+ * through the swapped parent. `walkVaultPath` therefore records the CHAIN —
+ * the vault root and every directory below it, by device and inode — and
+ * `chainRefusal` re-checks it after the operation and before the result is
+ * used. Identity of the file is not identity of the path to it.
+ *
+ * THE RESIDUAL WINDOW, STATED PRECISELY. Node exposes no `openat` and no
+ * directory-relative open, so the plugin cannot hold a directory descriptor
+ * and open through it; every operation goes through a pathname the kernel
+ * resolves afresh. Binding the chain across the open closes the window
+ * between the walk and the open — the case this was written for — and
+ * binding it again across the rename closes the window around the rename.
+ * What CANNOT be closed by construction is the instant between a binding
+ * and the syscall it guards: an attacker who is already running on the
+ * device and can win that race can still redirect a write. That attacker is
+ * outside the threat model by design (`docs/threat-model.md`: protecting a
+ * device against its own operating system is a stated non-goal), and what
+ * IS defended is the case the model does cover — another paired device
+ * choosing the path, and anything that got a symlink into the vault before
+ * the operation began.
+ *
  * PLATFORM. The string rule is identical on desktop and mobile. The root
- * proof and the component walk apply wherever Node's filesystem is used,
- * which is desktop only; mobile reaches the vault exclusively through
- * Obsidian's adapter, which is confined to the vault by the host app.
+ * proof, the component walk and the chain binding apply wherever Node's
+ * filesystem is used, which is desktop only; mobile reaches the vault
+ * exclusively through Obsidian's adapter, which is confined to the vault by
+ * the host app.
  */
 
 export type VaultPathRefusal =
@@ -63,7 +89,8 @@ export type VaultPathRefusal =
   | "not_a_directory"
   | "not_a_file"
   | "temp_identity"
-  | "target_identity";
+  | "target_identity"
+  | "chain_changed";
 
 /** Control characters, including NUL, which truncates a path at the syscall. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -138,6 +165,8 @@ export interface PathStat {
   isSymbolicLink(): boolean;
   readonly dev: number;
   readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
 }
 
 /** The filesystem seam: a `lstat` that never follows a link, `null` if absent. */
@@ -148,11 +177,20 @@ export interface PathWalker {
 /** What the walk found at the last component. */
 export type FinalComponent = "absent" | "file" | "directory" | "other";
 
+/** One directory on the way down, by the identity only the kernel assigns. */
+export interface ChainLink {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
 export interface WalkResult {
   target: string;
   final: FinalComponent;
   /** The final component's identity, for a caller that must prove it later. */
   stat: PathStat | null;
+  /** The vault root and every directory below it that this path passed through. */
+  chain: ChainLink[];
 }
 
 /**
@@ -180,23 +218,55 @@ export async function walkVaultPath(
   const rootStat = await walker.lstat(base);
   if (rootStat === null || !rootStat.isDirectory()) throw new VaultPathError("not_a_directory");
   if (rootStat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+  const chain: ChainLink[] = [{ path: base, dev: rootStat.dev, ino: rootStat.ino }];
   const segments = path.split("/");
   let at = base;
   for (let index = 0; index < segments.length; index++) {
     at = node.resolve(at, segments[index] as string);
     const stat = await walker.lstat(at);
-    if (stat === null) return { target, final: "absent", stat: null };
+    if (stat === null) return { target, final: "absent", stat: null, chain };
     if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component");
     const last = index === segments.length - 1;
     if (!last) {
       if (!stat.isDirectory()) throw new VaultPathError("not_a_directory");
+      chain.push({ path: at, dev: stat.dev, ino: stat.ino });
       continue;
     }
-    if (stat.isDirectory()) return { target, final: "directory", stat };
-    return { target, final: stat.isFile() ? "file" : "other", stat };
+    if (stat.isDirectory()) {
+      chain.push({ path: at, dev: stat.dev, ino: stat.ino });
+      return { target, final: "directory", stat, chain };
+    }
+    return { target, final: stat.isFile() ? "file" : "other", stat, chain };
   }
   // Unreachable: `vaultTarget` already refused a path with no components.
   throw new VaultPathError("empty");
+}
+
+/**
+ * Is the chain still the chain the walk saw? Every link must be the same
+ * directory BY INODE, not by name: a name can be made to mean a different
+ * directory between two syscalls, and that is the whole attack this answers.
+ * `null` when nothing moved, otherwise the refusal to raise.
+ *
+ * A caller binds a chain by walking, doing its one operation, and asking
+ * this again before it trusts the result. Inode identity of the FILE is not
+ * enough on its own: a file reached through a swapped parent has whatever
+ * inode that parent's directory entry points at, including a hard link to
+ * the caller's own file.
+ */
+export async function chainRefusal(
+  chain: ChainLink[],
+  walker: PathWalker,
+): Promise<VaultPathRefusal | null> {
+  for (const link of chain) {
+    const stat = await walker.lstat(link.path);
+    // Most specific cause first: a link in place of a directory is a
+    // different fact from a directory that is simply not the one we walked.
+    if (stat !== null && stat.isSymbolicLink()) return "symlink_component";
+    if (stat === null || !stat.isDirectory()) return "not_a_directory";
+    if (stat.dev !== link.dev || stat.ino !== link.ino) return "chain_changed";
+  }
+  return null;
 }
 
 /** Do two no-follow stats describe the same file? */

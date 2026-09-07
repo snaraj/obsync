@@ -23,16 +23,28 @@
  * not expose a base path) takes the adapter path automatically; there is no
  * setting for it.
  *
- * PATH CONFINEMENT, in three layers (`vaultPath.ts`). Every method here puts
+ * PATH CONFINEMENT, in four layers (`vaultPath.ts`). Every method here puts
  * its path through the string rule; the desktop branch then proves the
- * resolved absolute target is strictly below the vault root; and before any
+ * resolved absolute target is strictly below the vault root; before any
  * `open`, `mkdir`, `rename` or `unlink` it stats every component from the
  * root down without following links, so a symlinked folder inside the vault
- * cannot carry a write outside it. A symlinked folder is therefore not
- * synced at all in v0.1, in either direction. The temp file is opened
- * exclusive-create and its descriptor is compared with the name before the
- * first byte and again after the rename, because a check on a NAME is only
- * true until someone changes what the name means.
+ * cannot carry a write outside it; and it RE-CHECKS that chain by device and
+ * inode after the syscall, because the walk approved names and a name can be
+ * made to mean a different directory a syscall later. The temp file is
+ * opened exclusive-create and its descriptor is compared with the name
+ * before the first byte and again after the rename. A symlinked folder is
+ * not synced at all in v0.1, in either direction.
+ *
+ * WHAT THAT DOES AND DOES NOT COVER. Node has no `openat`, so every syscall
+ * re-resolves a pathname and the plugin cannot hold a directory open and
+ * work through it. Binding the chain across the open and across the rename
+ * closes the window between the walk and each syscall — the case the third
+ * review found, where the parent was swapped for a link to somewhere else
+ * between them. The instant between a binding and the syscall it guards
+ * cannot be closed by construction; an attacker already running on the
+ * device who can win that race is outside the threat model, where
+ * protecting a device against its own operating system is a stated non-goal
+ * (`docs/threat-model.md`).
  *
  * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
  * The plugin compares versions and tells the user; the trusted source of
@@ -58,6 +70,7 @@ import {
   VaultPathError,
   WalkResult,
   assertVaultPath,
+  chainRefusal,
   isVaultPath,
   sameFile,
   walkVaultPath,
@@ -244,22 +257,60 @@ export class ObsidianHost implements VaultHost {
     return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
   }
 
+  /**
+   * On desktop the walk itself is the answer: it already stat-ed the file
+   * without following a link, so asking the name a second time would only
+   * add a lookup to race.
+   */
   async stat(path: string): Promise<VaultStat | null> {
     assertVaultPath(path);
     const desktop = this.desktop;
-    if (desktop !== null && (await this.confine(desktop, path, ["absent", "file"])).final === "absent") {
-      return null;
+    if (desktop !== null) {
+      const found = await this.confine(desktop, path, ["absent", "file"]);
+      if (found.final === "absent" || found.stat === null) return null;
+      return { path, mtime: Math.round(found.stat.mtimeMs), size: found.stat.size };
     }
     const stat = await this.plugin.app.vault.adapter.stat(path);
     if (!stat || stat.type !== "file") return null;
     return { path, mtime: stat.mtime, size: stat.size };
   }
 
+  /**
+   * Open a vault file for reading and prove, AFTER the open, that the name
+   * still means the file the walk approved and that every directory on the
+   * way to it is still the same directory. The caller closes the handle.
+   */
+  private async openBound(desktop: DesktopVault, path: string): Promise<NodeFileHandle> {
+    const found = await this.confine(desktop, path, ["file"]);
+    const handle = await desktop.fs.promises.open(found.target, "r");
+    const refusal = await chainRefusal(found.chain, walker(desktop.fs));
+    if (refusal !== null || !sameFile(found.stat, await handle.stat())) {
+      await handle.close();
+      throw new VaultPathError(refusal ?? "target_identity");
+    }
+    return handle;
+  }
+
   async read(path: string): Promise<Bytes> {
     assertVaultPath(path);
     const desktop = this.desktop;
-    if (desktop !== null) await this.confine(desktop, path, ["file"]);
-    return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
+    if (desktop === null) {
+      return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
+    }
+    const handle = await this.openBound(desktop, path);
+    try {
+      const size = (await handle.stat()).size;
+      const buffer = new Uint8Array(size);
+      let filled = 0;
+      while (filled < size) {
+        const { bytesRead } = await handle.read(buffer, filled, size - filled, filled);
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      return buffer.subarray(0, filled) as Bytes;
+    } finally {
+      await handle.close();
+    }
   }
 
   /**
@@ -279,15 +330,13 @@ export class ObsidianHost implements VaultHost {
         },
       };
     }
-    const fs = desktop.fs;
     return {
       size,
-      // The walk runs per window rather than once: a file that becomes a
-      // symlink between two windows is refused at the next one, and a few
-      // `lstat` calls beside an 8 MiB read cost nothing.
+      // The walk and the binding run per window rather than once: a file or
+      // a folder that changes between two windows is refused at the next
+      // one, and a few `lstat` calls beside an 8 MiB read cost nothing.
       read: async (offset, length) => {
-        const { target } = await this.confine(desktop, path, ["file"]);
-        const handle = await fs.promises.open(target, "r");
+        const handle = await this.openBound(desktop, path);
         try {
           const buffer = new Uint8Array(length);
           let filled = 0;
@@ -362,65 +411,92 @@ export class ObsidianHost implements VaultHost {
       await fs.promises.mkdir(before.target, { recursive: true });
       await this.confine(desktop, folder, ["directory"]);
     }
-    const { target } = await this.confine(desktop, path, ["absent", "file"]);
+    const { target, chain } = await this.confine(desktop, path, ["absent", "file"]);
     const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
     const handle = await fs.promises.open(temp, "wx");
     let open = true;
     const opened = await handle.stat();
-    const proveTemp = async (): Promise<void> => {
-      if (sameFile(opened, await walker(fs).lstat(temp))) return;
+
+    /** Close, and remove the temp ONLY while its name still means our file. */
+    const discard = async (): Promise<void> => {
       if (open) await handle.close();
       open = false;
-      await fs.promises.unlink(temp).catch(() => undefined);
-      throw new VaultPathError("temp_identity");
+      if (sameFile(opened, await walker(fs).lstat(temp))) {
+        await fs.promises.unlink(temp).catch(() => undefined);
+      }
     };
-    await proveTemp();
+    /**
+     * The binding: the chain that was walked must still be the same
+     * directories, and the temp name must still mean the file we hold open.
+     * Run after the open and before the first byte, and again before the
+     * rename, because either syscall can be raced by a swapped parent.
+     */
+    const bind = async (): Promise<void> => {
+      const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
+      const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
+      if (!swapped) return;
+      await discard();
+      throw new VaultPathError(refusal ?? "temp_identity");
+    };
+    await bind();
     return {
       write: async (bytes) => {
         await handle.write(bytes);
       },
       commit: async (mtime) => {
-        await proveTemp();
+        await bind();
         await handle.close();
         open = false;
         const seconds = mtime / 1000;
         await fs.promises.utimes(temp, seconds, seconds);
         await fs.promises.rename(temp, target);
+        // The rename is the moment the file takes its real name, so the
+        // chain is checked again here: a parent swapped after the last
+        // binding would otherwise leave our own inode sitting outside the
+        // vault, reachable under a vault path.
+        const refusal = await chainRefusal(chain, walker(fs));
         const landed = await walker(fs).lstat(target);
-        if (!sameFile(opened, landed)) {
-          // Only a plant is removed. A regular file that is not ours is a
-          // file the user may own, and deleting it would be the attack.
-          if (landed !== null && landed.isSymbolicLink()) {
+        if (refusal !== null || !sameFile(opened, landed)) {
+          // Remove what we put there, or a link planted in its place, and
+          // nothing else: a regular file that is not ours may be the user's.
+          if (sameFile(opened, landed) || (landed !== null && landed.isSymbolicLink())) {
             await fs.promises.unlink(target).catch(() => undefined);
           }
-          throw new VaultPathError("target_identity");
+          throw new VaultPathError(refusal ?? "target_identity");
         }
-        const stat = await fs.promises.stat(target);
-        return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+        const ours = landed as PathStat;
+        return { path, mtime: Math.round(ours.mtimeMs), size: ours.size };
       },
-      abort: async () => {
-        if (open) await handle.close();
-        open = false;
-        // The temp name is ours, created exclusively a moment ago: whatever
-        // carries it now is either our file or a plant, never a user's.
-        await fs.promises.unlink(temp).catch(() => undefined);
-      },
+      abort: discard,
     };
   }
 
-  /** Obsidian's own vault-rooted delete; both path rules are applied first. */
+  /**
+   * Obsidian's own vault-rooted delete; both path rules are applied first,
+   * and on desktop the chain is checked again afterwards. A delete that went
+   * somewhere else leaves the file we identified still sitting there, so
+   * finding it afterwards is the signal that the name moved under us.
+   */
   async trash(path: string): Promise<void> {
     assertVaultPath(path);
     const desktop = this.desktop;
-    if (desktop !== null && (await this.confine(desktop, path, ["absent", "file"])).final === "absent") {
-      return;
+    let found: WalkResult | null = null;
+    if (desktop !== null) {
+      found = await this.confine(desktop, path, ["absent", "file"]);
+      if (found.final === "absent") return;
     }
     const file = this.plugin.app.vault.getAbstractFileByPath(path);
     if (file) {
       await this.plugin.app.vault.trash(file, true);
-      return;
+    } else {
+      await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
     }
-    await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
+    if (desktop === null || found === null) return;
+    const refusal = await chainRefusal(found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    if (sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
+      throw new VaultPathError("target_identity");
+    }
   }
 
   notify(message: string): void {
