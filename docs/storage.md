@@ -47,10 +47,13 @@ code change.
 
 ## Journal frames
 
-`account`, `device` (create, update, activate, revoke, delete, wrap), `version`, `domain`,
-`gc` (a list of sids collected), `scrub` (a summary), `seen`
-(device sign-in and edit events, retention-bounded). Pairings live in
-memory only. Frames carry `account_id`.
+`account`, `device` (create, update, activate, revoke, delete, wrap),
+`version` (which carries its file's `domain_id`, so replay reaches the same
+domain the post named), `gc` (a list of sids collected), `scrub` (a
+summary), `seen` (device sign-in and edit events, retention-bounded). There
+is no `domain` frame: a domain exists because a file record names it
+(`docs/architecture.md` 5.1 item 4). Pairings live in memory only. Frames
+carry `account_id`.
 
 ## Integrity
 
@@ -92,9 +95,11 @@ space fails readiness, never corrupts.
 - **Replica server (v0.3):** a second `obsyncd` in replica mode follows the
   primary's change feed and fetches chunks, giving a warm copy on another
   node. Promotion is an operator action.
-- **Export (v0.1):** `obsyncd export` writes plaintext for a domain with a
-  supplied key; `obsyncd check` verifies every blob and journal frame and
-  prints a report. Both are the offline recovery path.
+- **Export (v0.1):** `obsyncd export --domain` writes that domain's stored
+  CIPHERTEXT, which the operator decrypts on a device holding the key; the
+  server implements no AES and never could write plaintext
+  (`docs/architecture.md` 3 and 5.1). `obsyncd check` verifies every blob
+  and journal frame and prints a report. Both are the offline recovery path.
 
 Backups are the operator's decision; the layout is plain files so any
 file-level backup tool captures a consistent state after a snapshot.
