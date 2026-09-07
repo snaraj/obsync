@@ -322,6 +322,8 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_BLOBS_DIR` | `/data/blobs` | Chunk volume |
 | `OBSYNC_JOURNAL_DIR` | `/data/journal` | Journal, index snapshots, server key |
 | `OBSYNC_BLOBS_MIRRORS` | empty | Comma-separated extra blob volumes |
+| `OBSYNC_BLOBS_CAPACITY` / `OBSYNC_JOURNAL_CAPACITY` | required | Declared volume capacity (the claim size); free space = capacity − tracked usage, since std has no statvfs |
+| `OBSYNC_BLOBS_CLASS` / `OBSYNC_JOURNAL_CLASS` | `host` | Display label for the volume's StorageClass in the dashboard |
 | `OBSYNC_DASHBOARD_DIR` | `/opt/obsync/dashboard` | Dashboard static files |
 | `OBSYNC_PLUGIN_DIR` | `/opt/obsync/plugin` | Plugin bundle (`main.js`, `manifest.json`, `styles.css`) |
 | `OBSYNC_EDGE` | `none` | `none` or `cloudflare` |

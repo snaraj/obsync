@@ -142,19 +142,31 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   token=…","expires"}`; single use, 5 minutes.
 - `GET /login?token=…` → sets the session cookie, redirects to `/`.
 - `POST /v1/admin/logout` → `204`.
-- `GET /v1/admin/overview` → account, storage per volume `{"role":"blobs|
-  journal|mirror","path_class":"<StorageClass or 'host'>","bytes_total",
-  "bytes_used","bytes_free","watermark_bytes"}`, activity, last GC and
-  scrub summaries.
+- `GET /v1/admin/overview` → `{"account":{…as GET /v1/account},
+  "edge":"none|cloudflare","public_url":"…"|null,"volumes":[<volume>…],
+  "versions":{"total":<n>,"files":<n>},"activity":{"versions_per_hour":
+  [{"hour":<unix_s>,"count":<n>}]} (24 entries, oldest first),
+  "last_gc":<gc>|null,"last_scrub":<scrub>|null}` where `<volume>` =
+  `{"role":"blobs|journal|mirror","path_class":"<StorageClass label or
+  'host'>","bytes_total","bytes_used","bytes_free","watermark_bytes"}`,
+  `<gc>` = `{"ts","duration_ms","chunks_collected","bytes_collected",
+  "chunks_retained"}`, `<scrub>` = `{"ts","duration_ms","chunks_verified",
+  "bytes_verified","mismatches","quarantined":<count>,"complete_pass"}`.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
 - `POST /v1/admin/devices/{id}/revoke` → `204`.
-- `GET /v1/admin/storage` → GC and scrub state, quarantine list, retention.
+- `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
+  "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",
+  "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",
+  "last":<scrub>|null},"quarantine":[{"sid","ts","bytes","reason"}]}`.
 - `POST /v1/admin/gc/run`, `POST /v1/admin/scrub/run` → `202`.
 - `GET /v1/admin/domains`, `POST /v1/admin/domains/{id}/escrow`
   `{"key":"<64hex>"}` → `204`, `DELETE /v1/admin/domains/{id}/escrow` →
   `204`.
-- `GET /v1/admin/logs?device=<id>&limit=<n>` → recent decision lines.
+- `GET /v1/admin/logs?device=<id prefix>&limit=<n ≤ 500>` → `{"lines":
+  [{"ts","method","path_class","device":"<id>"|null,"status","bytes",
+  "duration_ms","decision"}]}` newest first: the pinned request log line
+  as JSON.
 
 ## Plugin distribution
 
