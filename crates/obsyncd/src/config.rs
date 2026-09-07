@@ -513,11 +513,15 @@ impl Config {
                 ("scrub_rate", Val::bytes(self.scrub_rate_bytes_per_sec)),
                 ("max_connections", Val::count(self.max_connections as u64)),
                 (
+                    // A configuration statement, not provenance: `volume` means
+                    // the key lives on the journal volume (minted at first boot
+                    // if absent); the storage layer logs where it actually came
+                    // from on the next line.
                     "server_key",
                     Val::word(if self.server_key.is_some() {
                         "configured"
                     } else {
-                        "generated"
+                        "volume"
                     }),
                 ),
                 ("log_level", Val::word(self.log_level.as_str())),
@@ -961,6 +965,16 @@ mod tests {
         let line = log.captured();
         assert!(!line.contains("00112233"), "{line}");
         assert!(line.contains("server_key=configured"), "{line}");
+
+        // Unset: the key lives on the volume, and the line says so rather than
+        // claiming a generation that a restored volume would make false.
+        let mut unset = cfg.clone();
+        unset.server_key = None;
+        let log = Log::buffered(LogLevel::Info);
+        unset.log_startup(&log);
+        let line = log.captured();
+        assert!(line.contains("server_key=volume"), "{line}");
+        assert!(!line.contains("generated"), "{line}");
         assert!(line.contains("blobs_capacity=268435456000"), "{line}");
         assert!(!line.contains("/data/blobs"), "{line}");
     }
