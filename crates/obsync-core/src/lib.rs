@@ -13,5 +13,6 @@ pub mod ct;
 pub mod hex;
 pub mod hkdf;
 pub mod hmac;
+pub mod http;
 pub mod json;
 pub mod sha256;
