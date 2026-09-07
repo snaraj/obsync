@@ -49,6 +49,16 @@ chart: ## Helm lint, render, and the rendered pins
 contracts: ## Repository contract suites
 	python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
 
+# BOTH scans decide this target. The working-tree scan used to end in `;`, so a
+# `leaks found` verdict on it was discarded and `make secrets` -- and therefore
+# `make check` -- exited on the RANGE scan alone. That is a secret scan that
+# cannot fail on anything already written to disk, which is the half a leak
+# arrives through first. `&&` is the whole fix and `.gitleaks.toml` is the other
+# half: the git-ignored mirrors it now allowlists are what made the dir scan
+# noisy enough to be worth silencing in the first place. `--verbose` is the
+# third: without it gitleaks prints `leaks found: 1` and stops, so the failure
+# named a count and not a file (requirement 12). The secret itself stays
+# redacted.
 secrets: ## Pinned gitleaks over the working tree and the outgoing range
 	@version="$$(awk -F= '/^GITLEAKS_VERSION=/{print substr($$2, 2)}' scripts/ci/install-tools.sh)"; \
 	command -v gitleaks >/dev/null || { \
@@ -60,12 +70,12 @@ secrets: ## Pinned gitleaks over the working tree and the outgoing range
 	  printf 'gitleaks %s is installed but this repository pins %s (scripts/ci/install-tools.sh).\n' "$$installed" "$$version" >&2; \
 	  exit 1; \
 	}; \
-	gitleaks dir --no-banner --redact .; \
+	gitleaks dir --no-banner --redact --verbose . && \
 	if git rev-parse --verify --quiet "$(BASE)" >/dev/null; then \
-	  gitleaks git --no-banner --redact --max-target-megabytes=2 --log-opts="$(BASE)..HEAD" .; \
+	  gitleaks git --no-banner --redact --max-target-megabytes=2 --verbose --log-opts="$(BASE)..HEAD" .; \
 	else \
 	  printf 'no %s to measure against; scanning the complete history instead\n' "$(BASE)" >&2; \
-	  gitleaks git --no-banner --redact --max-target-megabytes=2 .; \
+	  gitleaks git --no-banner --redact --max-target-megabytes=2 --verbose .; \
 	fi
 
 build: ## Release binary for the host

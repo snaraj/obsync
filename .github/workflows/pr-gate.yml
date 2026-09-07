@@ -123,9 +123,9 @@ jobs:
           --ignore-unfixed=false --timeout 10m
           --cache-dir "${RUNNER_TEMP}/trivy-source-cache" .
       - name: Scan full history for secrets
-        run: gitleaks git --no-banner --redact --max-target-megabytes=2 .
+        run: gitleaks git --no-banner --redact --max-target-megabytes=2 --verbose .
       - name: Scan working tree for secrets
-        run: gitleaks dir --no-banner --redact .
+        run: gitleaks dir --no-banner --redact --verbose .
 
   application:
     runs-on: ubuntu-24.04

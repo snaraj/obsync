@@ -38,3 +38,32 @@ useDefault = true
 [[allowlists]]
 description = "Sentinel-derived cross-implementation crypto vectors, regenerable from plugin/test/fixtures/generate.mjs; the root input is the byte sequence 00..1f and every other value derives from it."
 paths = ['''^plugin/test/fixtures/crypto\.json$''']
+
+# The git-ignored MIRRORS. `gitleaks dir` walks the working tree, which on a
+# developer's machine and inside a lane's worktree contains three directories
+# that are copies of files this scan already reads at their real paths:
+#
+#   .worktrees/          other lanes' checkouts of THIS repository (AGENTS.md,
+#                        "Parallel agents in one checkout"). Every file in one
+#                        is a tracked file of this repository, scanned above at
+#                        its own path -- but the allowlist above anchors on
+#                        `^plugin/…`, which no longer matches under a
+#                        `.worktrees/<lane>/` prefix, so the same reviewed
+#                        vector file was reported again per lane.
+#   target/              cargo's build directory: compiled test binaries with
+#                        the same sentinel vectors linked into them.
+#   plugin/node_modules/ npm's install of the one pinned devDependency.
+#
+# None of the three is tracked, shipped, or reachable by `gitleaks git`, which
+# reads blobs from history and never sees them. Allowlisting them narrows the
+# scan to nothing that can leave this machine, and it is what lets the
+# working-tree scan be FAIL-CLOSED in the Makefile: before this, the dir scan
+# reported 18 findings from lane worktrees on a clean tree, which is precisely
+# the noise that makes a real finding invisible.
+[[allowlists]]
+description = "Git-ignored mirrors of files scanned elsewhere: other lanes' worktrees, the cargo build directory, and the npm install. None is tracked or shipped."
+paths = [
+  '''(^|/)\.worktrees/''',
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+]
