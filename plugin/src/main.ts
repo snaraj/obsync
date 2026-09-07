@@ -59,7 +59,7 @@ import { State } from "./state";
 import { DeviceRecord, Transport } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
-import { newDomainId, newVaultKey } from "./pairing";
+import { newVaultKey } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import {
@@ -631,7 +631,6 @@ export default class ObsyncPlugin extends Plugin {
       state: this.state,
       transport: this.transport,
       host: this.host,
-      domainId: this.defaultDomainId(),
       onStatus: (status) => this.setStatus(status),
     });
     try {
@@ -732,24 +731,15 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
-  defaultDomainId(): string {
-    for (const [id, prefix] of Object.entries(this.state.data.domains)) {
-      if (prefix === "") return id;
-    }
-    const first = Object.keys(this.state.data.domains)[0];
-    return first ?? "";
-  }
-
-  /** Adopt a vault key (new, or restored from a phrase) and start syncing. */
+  /**
+   * Adopt a vault key (new, or restored from a phrase) and start syncing.
+   *
+   * No domain is declared here: the engine reads the vault's domain map at
+   * every start and writes one for a vault that has none, so the domain a
+   * path belongs to has exactly one source (`docs/architecture.md` 5.1).
+   */
   async adoptVaultKey(vrk: string): Promise<void> {
     this.state.data.vrk = vrk;
-    if (this.defaultDomainId() === "") {
-      const domainId = newDomainId();
-      this.state.data.domains[domainId] = "";
-      await this.transport.createDomain(domainId).catch((error: unknown) => {
-        this.log(`domain decision=deferred reason=${error instanceof Error ? error.message : String(error)}`);
-      });
-    }
     await this.state.save();
     await this.startEngine();
   }

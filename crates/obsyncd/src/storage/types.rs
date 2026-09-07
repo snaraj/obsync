@@ -187,6 +187,12 @@ pub struct SeenEvent {
 pub struct VersionRecord {
     /// The file this version belongs to.
     pub file_id: FileId,
+    /// The key-scoping domain the file is in, in clear
+    /// (`docs/architecture.md` 5.1 item 4). A random id: it names no path and
+    /// opens nothing, and it is what a per-domain grant will be checked
+    /// against. Every version of a file repeats its file's domain; the store
+    /// refuses one that does not.
+    pub domain_id: DomainId,
     /// `SHA-256(file_id || sorted parents || manifest_ct || sids)`.
     pub version_id: VersionId,
     /// The versions this one supersedes.
@@ -216,6 +222,9 @@ pub struct NewVersion {
     pub account_id: AccountId,
     /// The file.
     pub file_id: FileId,
+    /// The domain the device says the file is in. Fixed by the file's first
+    /// version; a later version naming another domain is refused.
+    pub domain_id: DomainId,
     /// The version id the device computed; the server recomputes and compares.
     pub version_id: VersionId,
     /// The versions this one supersedes.
@@ -239,6 +248,8 @@ pub struct NewVersion {
 pub struct FileRecord {
     /// The file.
     pub file_id: FileId,
+    /// The domain this file is in, set by its first version and immutable.
+    pub domain_id: DomainId,
     /// Current heads: one when the file agrees, more when it conflicts.
     pub heads: Vec<VersionId>,
     /// Whether the file has more than one head.
@@ -252,6 +263,8 @@ pub struct FileRecord {
 pub struct FileSummary {
     /// The file.
     pub file_id: FileId,
+    /// The domain this file is in.
+    pub domain_id: DomainId,
     /// Current heads.
     pub heads: Vec<VersionId>,
     /// Whether the file has more than one head.
@@ -280,15 +293,6 @@ pub struct Changes {
     pub head_seq: Seq,
     /// The changes, in sequence order.
     pub changes: Vec<Change>,
-}
-
-/// A key-scoping domain. Membership of paths is client-side metadata.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DomainRecord {
-    /// The domain.
-    pub domain_id: DomainId,
-    /// When it was created.
-    pub created: UnixMs,
 }
 
 /// One volume's usage against its declared capacity.
@@ -425,8 +429,15 @@ pub enum StoreError {
     DevicePending,
     /// No such file.
     UnknownFile,
-    /// No such domain.
+    /// No such domain: no file the store holds is in it.
     UnknownDomain,
+    /// A version named a domain other than its file's own.
+    DomainMismatch {
+        /// The domain the file's first version fixed.
+        expected: DomainId,
+        /// What this version named.
+        actual: DomainId,
+    },
     /// No such version.
     UnknownVersion,
     /// Setup has not run.
@@ -472,6 +483,12 @@ impl fmt::Display for StoreError {
             StoreError::DevicePending => f.write_str("device pending approval"),
             StoreError::UnknownFile => f.write_str("unknown file"),
             StoreError::UnknownDomain => f.write_str("unknown domain"),
+            StoreError::DomainMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "domain mismatch: file is in {expected}, version named {actual}"
+                )
+            }
             StoreError::UnknownVersion => f.write_str("unknown version"),
             StoreError::NotSetUp => f.write_str("not set up"),
             StoreError::AlreadySetUp => f.write_str("already set up"),
@@ -507,6 +524,7 @@ impl StoreError {
             StoreError::DevicePending => "device_pending",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",
+            StoreError::DomainMismatch { .. } => "domain_mismatch",
             StoreError::UnknownVersion => "unknown_version",
             StoreError::NotSetUp => "not_set_up",
             StoreError::AlreadySetUp => "already_set_up",

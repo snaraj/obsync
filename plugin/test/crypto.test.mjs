@@ -26,6 +26,8 @@ const fixtures = JSON.parse(readFileSync(join(here, "fixtures", "crypto.json"), 
 
 const bytes = (hex) => Uint8Array.from(Buffer.from(hex, "hex"));
 const utf8 = (text) => new TextEncoder().encode(text);
+/** The two domains the fixtures carry: the manifest key is per domain. */
+const [d0, d1] = fixtures.domains;
 
 test("hex round-trips and refuses malformed input", () => {
   const value = Uint8Array.from([0x00, 0x0f, 0xa0, 0xff]);
@@ -105,16 +107,131 @@ test("constant-time comparison answers correctly", () => {
 
 test("key derivation reproduces the fixtures", async () => {
   const vrk = bytes(fixtures.vrk);
-  assert.equal(c.hex(await c.deriveDomainKey(vrk, fixtures.domain_id)), fixtures.domain_key);
-  assert.equal(c.hex(await c.deriveManifestKey(vrk)), fixtures.manifest_key);
+  for (const d of fixtures.domains) {
+    assert.equal(c.hex(await c.deriveDomainKey(vrk, d.domain_id)), d.domain_key, d.domain_id);
+    assert.equal(
+      c.hex(await c.deriveManifestKey(bytes(d.domain_key), d.domain_id)),
+      d.manifest_key,
+      d.domain_id,
+    );
+  }
   assert.equal(
     c.hex(await c.pairingKey(bytes(fixtures.pairing.pairing_secret), fixtures.pairing.pairing_id)),
     fixtures.pairing.key,
   );
 });
 
+test("the manifest key is scoped to one domain, and is no longer vault-wide", async () => {
+  const vrk = bytes(fixtures.vrk);
+  assert.equal(fixtures.domains.length, 2, "one domain cannot show that a key is scoped");
+  assert.notEqual(d0.manifest_key, d1.manifest_key, "two domains, two manifest keys");
+  assert.notEqual(d0.domain_key, d1.domain_key);
+
+  // The derivation that v0.1.0 replaced: `HKDF(VRK, "obsync/v1/manifest", "")`.
+  // A holder of THAT key could read every filename in the vault, which is why
+  // it is gone (`docs/architecture.md` 5.1).
+  const vaultWide = c.hex(await c.hkdf(vrk, utf8("obsync/v1/manifest"), new Uint8Array(0), 32));
+  for (const d of fixtures.domains) assert.notEqual(vaultWide, d.manifest_key, d.domain_id);
+
+  // And the scoping is the INFO, not just the ikm: the same domain key with a
+  // different domain id derives a different manifest key. Compared live on
+  // both sides, so dropping the info entirely cannot pass this by matching
+  // neither frozen value.
+  assert.notEqual(
+    c.hex(await c.deriveManifestKey(bytes(d0.domain_key), d1.domain_id)),
+    c.hex(await c.deriveManifestKey(bytes(d0.domain_key), d0.domain_id)),
+    "the domain id is the info, not decoration",
+  );
+
+  // Node's HKDF as an independent oracle for the new ladder.
+  assert.equal(
+    d0.manifest_key,
+    Buffer.from(
+      hkdfSync("sha256", bytes(d0.domain_key), utf8("obsync/v1/manifest"), utf8(d0.domain_id), 32),
+    ).toString("hex"),
+  );
+});
+
+test("a manifest sealed in one domain does not open in another, or with the old key", async () => {
+  const vrk = bytes(fixtures.vrk);
+  const f = fixtures.manifest;
+  const a = bytes(d0.manifest_key);
+  const b = bytes(d1.manifest_key);
+  const sealed = await c.encryptManifest(a, f.file_id, f.content_version_id, f.json);
+
+  assert.equal(
+    await c.decryptManifest(a, f.file_id, f.content_version_id, sealed.nonce, sealed.ciphertext),
+    f.json,
+  );
+  await assert.rejects(
+    () => c.decryptManifest(b, f.file_id, f.content_version_id, sealed.nonce, sealed.ciphertext),
+    "the other domain's manifest key must not open it",
+  );
+  const vaultWide = await c.hkdf(vrk, utf8("obsync/v1/manifest"), new Uint8Array(0), 32);
+  await assert.rejects(
+    () =>
+      c.decryptManifest(vaultWide, f.file_id, f.content_version_id, sealed.nonce, sealed.ciphertext),
+    "the retired vault-wide key must not open it either",
+  );
+});
+
+test("the domain-map key, its reserved ids and its sealed bytes reproduce the fixtures", async () => {
+  const vrk = bytes(fixtures.vrk);
+  const m = fixtures.domain_map;
+  const mapKey = await c.deriveDomainMapKey(vrk);
+  assert.equal(c.hex(mapKey), m.key);
+
+  // Derived from VRK and from nothing a recipient holds: no domain key opens
+  // the map, and the map key opens no domain's manifests.
+  for (const d of fixtures.domains) {
+    assert.notEqual(m.key, d.domain_key);
+    assert.notEqual(m.key, d.manifest_key);
+  }
+
+  const ids = await c.domainMapIds(mapKey);
+  assert.deepEqual(ids, { fileId: m.file_id, domainId: m.domain_id });
+  // One MAC split in two: 16 bytes each, and the halves are not the same id.
+  const mac = createHmac("sha256", mapKey).update(utf8("obsync/v1/domain-map")).digest("hex");
+  assert.equal(mac, m.file_id + m.domain_id);
+  assert.notEqual(m.file_id, m.domain_id);
+
+  assert.equal(await c.contentVersionId(m.file_id, [], []), m.content_version_id);
+  const sealed = await c.encryptDomainMap(mapKey, m.file_id, m.content_version_id, m.json);
+  assert.equal(c.hex(sealed.nonce), m.nonce);
+  assert.equal(c.hex(sealed.ciphertext), m.ciphertext_hex);
+  assert.equal(
+    await c.decryptDomainMap(mapKey, m.file_id, m.content_version_id, sealed.nonce, sealed.ciphertext),
+    m.json,
+  );
+});
+
+test("the domain map's nonce is derived, so identical writes collide instead of forking", async () => {
+  const m = fixtures.domain_map;
+  const mapKey = bytes(m.key);
+  const again = await c.encryptDomainMap(mapKey, m.file_id, m.content_version_id, m.json);
+  assert.equal(c.hex(again.nonce), m.nonce, "the same map sealed twice is the same bytes");
+  assert.equal(c.hex(again.ciphertext), m.ciphertext_hex);
+
+  // A different plaintext, or a different binder, moves the nonce: the key
+  // and nonce repeat only for a message identical in BOTH.
+  const other = await c.encryptDomainMap(mapKey, m.file_id, m.content_version_id, `${m.json} `);
+  assert.notEqual(c.hex(other.nonce), m.nonce);
+  const binder = await c.contentVersionId(m.file_id, [fixtures.manifest.parents[0]], []);
+  const rebound = await c.encryptDomainMap(mapKey, m.file_id, binder, m.json);
+  assert.notEqual(c.hex(rebound.nonce), m.nonce);
+
+  // Wrong key, wrong file id, wrong binder: all three refuse.
+  const wrong = bytes(d0.manifest_key);
+  const ct = bytes(m.ciphertext_hex);
+  await assert.rejects(() => c.decryptDomainMap(wrong, m.file_id, m.content_version_id, bytes(m.nonce), ct));
+  await assert.rejects(() =>
+    c.decryptDomainMap(mapKey, fixtures.manifest.file_id, m.content_version_id, bytes(m.nonce), ct),
+  );
+  await assert.rejects(() => c.decryptDomainMap(mapKey, m.file_id, binder, bytes(m.nonce), ct));
+});
+
 test("chunk encryption reproduces the fixtures and node:crypto agrees", async () => {
-  const domainKey = bytes(fixtures.domain_key);
+  const domainKey = bytes(d0.domain_key);
   for (const vector of fixtures.chunks) {
     const plaintext =
       vector.plaintext_hex === null
@@ -155,7 +272,7 @@ test("chunk encryption reproduces the fixtures and node:crypto agrees", async ()
 });
 
 test("chunk decryption refuses a wrong cid and a tampered ciphertext", async () => {
-  const domainKey = bytes(fixtures.domain_key);
+  const domainKey = bytes(d0.domain_key);
   const plaintext = utf8("obsync fixture chunk\n");
   const { ciphertext } = await c.encryptChunk(domainKey, plaintext);
   const cid = await c.chunkCid(domainKey, plaintext);
@@ -168,7 +285,7 @@ test("chunk decryption refuses a wrong cid and a tampered ciphertext", async () 
   tampered[3] ^= 0x40;
   await assert.rejects(() => c.decryptChunk(domainKey, cid, tampered));
 
-  const wrongDomain = bytes(fixtures.manifest_key);
+  const wrongDomain = bytes(d0.manifest_key);
   await assert.rejects(() => c.decryptChunk(wrongDomain, cid, ciphertext));
 });
 
@@ -177,7 +294,7 @@ test("a chunk whose cid lies about its plaintext is refused, though it decrypts"
   // domain key — a compromised or buggy device — can produce a chunk that
   // authenticates perfectly under a cid that is not the MAC of its contents.
   // AES-GCM cannot catch that; recomputing `cid` does.
-  const domainKey = bytes(fixtures.domain_key);
+  const domainKey = bytes(d0.domain_key);
   const plaintext = utf8("honest bytes\n");
   const forgedCid = bytes("11".repeat(32));
   const chunkKey = Buffer.from(hkdfSync("sha256", domainKey, utf8("obsync/v1/chunk"), forgedCid, 32));
@@ -198,7 +315,7 @@ test("a chunk whose cid lies about its plaintext is refused, though it decrypts"
 });
 
 test("identical plaintext deduplicates, different plaintext does not", async () => {
-  const domainKey = bytes(fixtures.domain_key);
+  const domainKey = bytes(d0.domain_key);
   const one = await c.encryptChunk(domainKey, utf8("same bytes"));
   const two = await c.encryptChunk(domainKey, utf8("same bytes"));
   const other = await c.encryptChunk(domainKey, utf8("same byteS"));
@@ -208,7 +325,7 @@ test("identical plaintext deduplicates, different plaintext does not", async () 
 });
 
 test("manifest encryption binds file id, parents and chunk list", async () => {
-  const manifestKey = bytes(fixtures.manifest_key);
+  const manifestKey = bytes(d0.manifest_key);
   const f = fixtures.manifest;
 
   assert.equal(await c.contentVersionId(f.file_id, f.parents, f.sids), f.content_version_id);
@@ -253,7 +370,7 @@ test("manifest encryption binds file id, parents and chunk list", async () => {
 });
 
 test("manifest nonces are fresh per encryption", async () => {
-  const manifestKey = bytes(fixtures.manifest_key);
+  const manifestKey = bytes(d0.manifest_key);
   const first = await c.encryptManifest(manifestKey, fixtures.manifest.file_id, fixtures.manifest.content_version_id, "{}");
   const second = await c.encryptManifest(manifestKey, fixtures.manifest.file_id, fixtures.manifest.content_version_id, "{}");
   assert.equal(first.nonce.length, 12);
@@ -319,7 +436,7 @@ test("random bytes are the requested length and not constant", () => {
 });
 
 test("manifest decryption survives a full encrypt/decrypt cycle", async () => {
-  const manifestKey = bytes(fixtures.manifest_key);
+  const manifestKey = bytes(d0.manifest_key);
   const json = JSON.stringify({ v: 1, path: "A folder/A note.md", size: 3, deleted: false });
   const fileId = fixtures.manifest.file_id;
   const binder = await c.contentVersionId(fileId, [], []);

@@ -25,6 +25,13 @@ const chunker = require("../../build/chunker.js");
 /** 00 01 02 … 1f: obviously a sentinel, never a key. */
 const VRK = Uint8Array.from({ length: 32 }, (_, i) => i);
 const DOMAIN_ID = "0123456789abcdef0123456789abcdef";
+/**
+ * A SECOND domain, because the manifest key is now per domain
+ * (`docs/architecture.md` 5.1 item 2). One domain cannot show that the
+ * derivation is scoped; two can, and the plugin test proves the two manifest
+ * keys differ as well as matching these bytes.
+ */
+const SECOND_DOMAIN_ID = "9876543210abcdef9876543210abcdef";
 const FILE_ID = "00112233445566778899aabbccddeeff";
 const DEVICE_SECRET = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 ^ i);
 const PAIRING_SECRET = Uint8Array.from({ length: 16 }, (_, i) => 0x10 + i);
@@ -56,9 +63,35 @@ export const PLAINTEXTS = [
   { name: "block", bytes: Uint8Array.from({ length: 4096 }, (_, i) => i % 251), spec: "byte[i] = i % 251, 4096 bytes" },
 ];
 
+/** One domain's whole key ladder, as both implementations must derive it. */
+async function domainVectors(domainId) {
+  const domainKey = await crypto_.deriveDomainKey(VRK, domainId);
+  return {
+    domain_id: domainId,
+    domain_key: crypto_.hex(domainKey),
+    manifest_key: crypto_.hex(await crypto_.deriveManifestKey(domainKey, domainId)),
+  };
+}
+
 export async function build() {
+  const domains = [await domainVectors(DOMAIN_ID), await domainVectors(SECOND_DOMAIN_ID)];
   const domainKey = await crypto_.deriveDomainKey(VRK, DOMAIN_ID);
-  const manifestKey = await crypto_.deriveManifestKey(VRK);
+  const manifestKey = await crypto_.deriveManifestKey(domainKey, DOMAIN_ID);
+
+  // The owner-only domain map: its key, its two reserved identifiers, and one
+  // sealed sample. The sample pins the DERIVED nonce, which is what makes two
+  // devices writing the same map collide harmlessly instead of conflicting.
+  const mapKey = await crypto_.deriveDomainMapKey(VRK);
+  const mapIds = await crypto_.domainMapIds(mapKey);
+  const mapJson = JSON.stringify({
+    v: 1,
+    domains: [
+      { id: DOMAIN_ID, paths: [""] },
+      { id: SECOND_DOMAIN_ID, paths: ["Fixtures/Shared"] },
+    ],
+  });
+  const mapBinder = await crypto_.contentVersionId(mapIds.fileId, [], []);
+  const mapSealed = await crypto_.encryptDomainMap(mapKey, mapIds.fileId, mapBinder, mapJson);
 
   const chunks = [];
   for (const { name, bytes, spec } of PLAINTEXTS) {
@@ -115,9 +148,16 @@ export async function build() {
   return {
     note: "obsync v1 device-cryptography vectors. Inputs are sentinels, not keys. Regenerate with plugin/test/fixtures/generate.mjs.",
     vrk: crypto_.hex(VRK),
-    domain_id: DOMAIN_ID,
-    domain_key: crypto_.hex(domainKey),
-    manifest_key: crypto_.hex(manifestKey),
+    domains,
+    domain_map: {
+      key: crypto_.hex(mapKey),
+      file_id: mapIds.fileId,
+      domain_id: mapIds.domainId,
+      json: mapJson,
+      content_version_id: mapBinder,
+      nonce: crypto_.hex(mapSealed.nonce),
+      ciphertext_hex: crypto_.hex(mapSealed.ciphertext),
+    },
     chunks,
     manifest: {
       file_id: FILE_ID,
@@ -163,5 +203,8 @@ export async function build() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const fixtures = await build();
   await writeFile(join(here, "crypto.json"), `${JSON.stringify(fixtures, null, 2)}\n`);
-  console.log(`wrote crypto.json chunks=${fixtures.chunks.length} cdc_chunks=${fixtures.chunker.lengths.length}`);
+  console.log(
+    `wrote crypto.json domains=${fixtures.domains.length} chunks=${fixtures.chunks.length} ` +
+      `cdc_chunks=${fixtures.chunker.lengths.length}`,
+  );
 }

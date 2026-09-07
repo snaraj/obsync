@@ -156,10 +156,7 @@ export class PairCreateModal extends Modal {
               try {
                 const vrk = this.plugin.state.data.vrk;
                 if (!vrk) throw new Error("this device holds no vault key");
-                const sealed = await sealEnvelope(secret, pairingId, {
-                  vrk,
-                  domains: this.plugin.state.data.domains,
-                });
+                const sealed = await sealEnvelope(secret, pairingId, { vrk });
                 await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce);
                 new Notice("obsync: the new device is paired.");
                 this.close();
@@ -243,7 +240,6 @@ export class PairClaimModal extends Modal {
         const sealed = await this.plugin.transport.pairingEnvelope(parsed.pairingId);
         const envelope = await openEnvelope(parsed.pairingSecret, parsed.pairingId, sealed.envelope, sealed.nonce);
         this.plugin.state.data.vrk = envelope.vrk;
-        this.plugin.state.data.domains = envelope.domains;
         await this.plugin.state.save();
         await this.plugin.restartEngine();
         new Notice("obsync: this device is paired. The first sync is running.");

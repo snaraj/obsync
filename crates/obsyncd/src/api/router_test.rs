@@ -107,8 +107,6 @@ fn file_and_version_routes_resolve() {
 #[test]
 fn feed_domain_and_admin_routes_resolve() {
     assert_eq!(route("GET", "/v1/changes"), Route::Changes);
-    assert_eq!(route("GET", "/v1/domains"), Route::DomainsList);
-    assert_eq!(route("POST", "/v1/domains"), Route::DomainCreate);
     assert_eq!(route("POST", "/v1/dashboard/login-link"), Route::LoginLink);
     assert_eq!(route("GET", "/login"), Route::Login);
     assert_eq!(route("POST", "/v1/admin/logout"), Route::Logout);
@@ -121,7 +119,6 @@ fn feed_domain_and_admin_routes_resolve() {
     assert_eq!(route("GET", "/v1/admin/storage"), Route::AdminStorage);
     assert_eq!(route("POST", "/v1/admin/gc/run"), Route::AdminGcRun);
     assert_eq!(route("POST", "/v1/admin/scrub/run"), Route::AdminScrubRun);
-    assert_eq!(route("GET", "/v1/admin/domains"), Route::AdminDomains);
     assert_eq!(route("GET", "/v1/admin/logs"), Route::AdminLogs);
 }
 

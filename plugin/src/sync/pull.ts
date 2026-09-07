@@ -244,6 +244,16 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
  * Apply one change-feed record.
  */
 export async function applyChange(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
+  // The owner-only domain map rides the same feed under a reserved file id
+  // (`domainmap.ts`). It is not a vault file: it has no path, it is sealed
+  // under `K_map` rather than a manifest key, and the engine already read it
+  // at start. Skipping it by id — before anything tries to decrypt it with
+  // the wrong key — is what keeps it out of the vault and out of the log as
+  // a false integrity failure.
+  if (change.file_id === context.mapFileId) {
+    context.host.log(`pull path_class=domainmap decision=skipped seq=${change.seq}`);
+    return "skipped";
+  }
   if (context.authored.has(change.version_id)) {
     context.authored.delete(change.version_id);
     return "echo";

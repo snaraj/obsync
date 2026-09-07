@@ -146,6 +146,70 @@ mod tests {
         assert_ne!(a, hkdf_sha256(b"ikn", b"salt", b"obsync/v1/wrap", 32));
     }
 
+    /// The obsync key ladder, against the device's own fixtures.
+    ///
+    /// Every constant is copied from `plugin/test/fixtures/crypto.json`,
+    /// which WebCrypto produced (`plugin/test/fixtures/generate.mjs`). They
+    /// are sentinels, not keys: the vault root key is the bytes 00..1f. If
+    /// the two implementations ever disagree about a derivation, this says
+    /// which one.
+    #[test]
+    fn the_obsync_key_ladder_matches_the_device_fixtures() {
+        // `fixtures.vrk`.
+        let vrk = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        // `fixtures.domains`: two domains, because the manifest key is
+        // per domain (docs/architecture.md 5.1 item 2) and one domain cannot
+        // show that a derivation is scoped.
+        let domains = [
+            (
+                "0123456789abcdef0123456789abcdef",
+                "2bd601764fb316a2f879e4f1800451f4c45793662f912bb8833fb2752a4d9cb2",
+                "f4b619032eb0e359ee58e62be58d89de09519b4900f1962b41b38326af98c8be",
+            ),
+            (
+                "9876543210abcdef9876543210abcdef",
+                "1e62c3f2592eb4c5baecebf072c62a2b1fda02ff43498762388efc0081f71843",
+                "b3413fa6a04e8d753711247b7b8273253d25212f2a08366678d5528aead8df7a",
+            ),
+        ];
+        for (domain_id, domain_key, manifest_key) in domains {
+            // `K_d = HKDF(VRK, "obsync/v1/domain", utf8(domain_id))`.
+            let derived = hkdf_sha256(&vrk, b"obsync/v1/domain", domain_id.as_bytes(), 32);
+            assert_eq!(hex::encode(&derived), domain_key, "domain key {domain_id}");
+            // `K_m,d = HKDF(K_d, "obsync/v1/manifest", utf8(domain_id))`.
+            assert_eq!(
+                hex::encode(&hkdf_sha256(
+                    &derived,
+                    b"obsync/v1/manifest",
+                    domain_id.as_bytes(),
+                    32
+                )),
+                manifest_key,
+                "manifest key {domain_id}"
+            );
+        }
+        assert_ne!(domains[0].2, domains[1].2, "two domains, two manifest keys");
+
+        // The derivation v0.1.0 replaced. A holder of THIS key could read
+        // every filename in the vault, which is why it is gone; it must match
+        // no domain's manifest key.
+        let vault_wide = hex::encode(&hkdf_sha256(&vrk, b"obsync/v1/manifest", b"", 32));
+        for (id, _, manifest_key) in domains {
+            assert_ne!(vault_wide, manifest_key, "the retired key survives in {id}");
+        }
+
+        // `K_map = HKDF(VRK, "obsync/v1/domainmap", "")` and the reserved
+        // identifiers `HMAC(K_map, "obsync/v1/domain-map")` splits into.
+        let map_key = hkdf_sha256(&vrk, b"obsync/v1/domainmap", b"", 32);
+        assert_eq!(
+            hex::encode(&map_key),
+            "4c6b13640dd3457fb76a915ae4bf6015c8d008c9f47d8b63f6d6d452bd2ae3cf"
+        );
+        let ids = hmac_sha256(&map_key, b"obsync/v1/domain-map");
+        assert_eq!(hex::encode(&ids[..16]), "ea593f6cc8f60f4411b8d92e18e86870");
+        assert_eq!(hex::encode(&ids[16..]), "7d350c7c44b09468d62b64d44acee182");
+    }
+
     #[test]
     fn the_maximum_output_is_produced() {
         assert_eq!(

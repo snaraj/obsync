@@ -84,6 +84,9 @@ fn put(setup: &Setup, body: &[u8]) -> Sid {
     sid
 }
 
+/// The domain every test file is in unless it says otherwise.
+const DOMAIN: DomainId = DomainId::new([4u8; 16]);
+
 /// A version whose id the server will accept, distinguished by `tag`.
 fn version(
     setup: &Setup,
@@ -98,6 +101,7 @@ fn version(
     NewVersion {
         account_id: setup.account,
         file_id: file,
+        domain_id: DOMAIN,
         version_id,
         parents: parents.to_vec(),
         sids: sids.to_vec(),
@@ -121,11 +125,10 @@ fn fingerprint(store: &Store) -> String {
         .map(|summary| format!("{:?}", store.file(&summary.file_id)))
         .collect();
     format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}",
         store.account(),
         store.devices(),
         detail,
-        store.domains(),
         store.head_seq(),
         store.last_gc(),
     )
@@ -709,15 +712,78 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
 }
 
 #[test]
-fn a_domain_is_declared_once_and_the_store_holds_no_key_for_it() {
+fn a_file_is_in_one_domain_for_life_and_the_store_holds_no_key_for_it() {
     let dir = TempDir::new("store-domains");
     let cfg = config(&dir);
     let setup = ready(&cfg);
-    let domain = DomainId::new([4u8; 16]);
-    setup.store.create_domain(domain).expect("domain");
-    setup.store.create_domain(domain).expect("declaring twice");
-    assert_eq!(setup.store.domains().len(), 1);
-    assert_eq!(setup.store.domains()[0].domain_id, domain);
+    let sid = put(&setup, b"ciphertext-sentinel");
+
+    // A domain exists because a file is in it: nothing declares one, and the
+    // store holds no key for it (`docs/architecture.md` 5.1 item 4).
+    assert!(!setup.store.domain_exists(&DOMAIN));
+    let first = version(&setup, file(1), "one", &[], &[sid], false);
+    let head = first.version_id;
+    setup.store.append_version(first).expect("first version");
+    assert!(setup.store.domain_exists(&DOMAIN));
+    assert_eq!(
+        setup.store.file(&file(1)).expect("the file").domain_id,
+        DOMAIN
+    );
+    let (page, _) = setup.store.files_page(None, 10);
+    assert_eq!(page[0].domain_id, DOMAIN);
+
+    // A later version may not move the file into another domain: a grant a
+    // recipient holds must not be widened or redirected by a version post.
+    let other = DomainId::new([9u8; 16]);
+    let mut moved = version(&setup, file(1), "two", &[head], &[sid], false);
+    moved.domain_id = other;
+    let refused = setup
+        .store
+        .append_version(moved)
+        .expect_err("a file never changes domain");
+    assert!(
+        matches!(
+            refused,
+            StoreError::DomainMismatch { expected, actual } if expected == DOMAIN && actual == other
+        ),
+        "{refused}"
+    );
+    assert!(!setup.store.domain_exists(&other));
+
+    // The refusal is the store's, not a rendering: the head did not move.
+    assert_eq!(setup.store.file(&file(1)).expect("the file").heads, [head]);
+}
+
+#[test]
+fn a_file_domain_survives_replay_from_frames_and_from_a_snapshot() {
+    let dir = TempDir::new("store-domain-replay");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let mut second = version(&setup, file(2), "two", &[], &[sid], false);
+    second.domain_id = DomainId::new([7u8; 16]);
+    let second_domain = second.domain_id;
+    setup
+        .store
+        .append_version(version(&setup, file(1), "one", &[], &[sid], false))
+        .expect("file one");
+    setup.store.append_version(second).expect("file two");
+    drop(setup);
+
+    // From the frames alone.
+    let replayed = Store::open(&cfg, [3u8; 32], Log::new(LogLevel::Error)).expect("reopen");
+    assert_eq!(replayed.file(&file(1)).expect("one").domain_id, DOMAIN);
+    assert_eq!(
+        replayed.file(&file(2)).expect("two").domain_id,
+        second_domain
+    );
+    // And through a snapshot, which carries the domain per file.
+    replayed.snapshot().expect("snapshot");
+    drop(replayed);
+    let loaded = Store::open(&cfg, [3u8; 32], Log::new(LogLevel::Error)).expect("reopen snapshot");
+    assert_eq!(loaded.file(&file(1)).expect("one").domain_id, DOMAIN);
+    assert_eq!(loaded.file(&file(2)).expect("two").domain_id, second_domain);
+    assert!(loaded.domain_exists(&second_domain));
 }
 
 #[test]
@@ -824,6 +890,7 @@ fn a_crash_mid_journal_costs_only_the_torn_frame() {
         .append_version(NewVersion {
             account_id: account,
             file_id,
+            domain_id: DOMAIN,
             version_id,
             parents: Vec::new(),
             sids: vec![sid],
@@ -847,10 +914,6 @@ fn a_snapshot_replays_to_exactly_what_the_frames_alone_replay_to() {
     setup.store.append_version(root.clone()).expect("root");
     let child = version(&setup, file(1), "two", &[root.version_id], &[sid], false);
     setup.store.append_version(child).expect("child");
-    setup
-        .store
-        .create_domain(DomainId::new([4u8; 16]))
-        .expect("domain");
     setup.store.snapshot().expect("snapshot");
     // Frames after the snapshot, so replay has to do both halves.
     setup

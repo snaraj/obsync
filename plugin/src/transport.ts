@@ -98,6 +98,14 @@ export interface VersionPost {
   parents: string[];
   sids: string[];
   bytes: number;
+  /**
+   * The domain the file belongs to, in clear (`docs/architecture.md` 5.1
+   * item 4). A random id that means nothing without the owner-only map, and
+   * the label phase-2 authorization will filter the feed and chunk access
+   * with. The server records it on the file's first version and refuses a
+   * later version that names a different one.
+   */
+  domain_id: string;
   manifest_ct: string;
   manifest_nonce: string;
   deleted: boolean;
@@ -406,16 +414,6 @@ export class Transport {
     return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, {
       auth: "device",
     });
-  }
-
-  // --- domains -----------------------------------------------------------
-
-  domains(): Promise<{ domains: { domain_id: string; created: number }[] }> {
-    return this.json("GET", "/v1/domains", { auth: "device" });
-  }
-
-  createDomain(domainId: string): Promise<void> {
-    return this.json("POST", "/v1/domains", { auth: "device", json: { domain_id: domainId } });
   }
 
   // --- dashboard and plugin distribution ---------------------------------

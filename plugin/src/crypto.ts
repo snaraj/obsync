@@ -42,6 +42,8 @@ const TEXT_DECODER = new TextDecoder();
 export const LABEL = {
   domain: "obsync/v1/domain",
   manifest: "obsync/v1/manifest",
+  domainMap: "obsync/v1/domainmap",
+  domainMapId: "obsync/v1/domain-map",
   chunk: "obsync/v1/chunk",
   nonce: "obsync/v1/nonce",
   pair: "obsync/v1/pair",
@@ -245,9 +247,47 @@ export function deriveDomainKey(vrk: Bytes, domainId: string): Promise<Bytes> {
   return hkdf(vrk, utf8(LABEL.domain), utf8(domainId), KEY_BYTES);
 }
 
-/** `K_m = HKDF(VRK, salt="obsync/v1/manifest", info="")`. */
-export function deriveManifestKey(vrk: Bytes): Promise<Bytes> {
-  return hkdf(vrk, utf8(LABEL.manifest), new Uint8Array(0), KEY_BYTES);
+/**
+ * `K_m,d = HKDF(K_d, salt="obsync/v1/manifest", info=utf8(domain_id))`:
+ * the manifest key of ONE domain (`docs/architecture.md` 5.1 item 2).
+ *
+ * It derives from the domain key, not from `VRK`, and that is the whole
+ * point. A holder of `K_d` reads that domain's file names and its chunks and
+ * can derive neither for a domain it was not given; a vault-wide manifest key
+ * would have handed over every filename in the vault with the first share.
+ * v0.1 grants nobody anything, but the format is what the genesis release
+ * writes, so it is decided here rather than migrated later.
+ */
+export function deriveManifestKey(domainKey: Bytes, domainId: string): Promise<Bytes> {
+  return hkdf(domainKey, utf8(LABEL.manifest), utf8(domainId), KEY_BYTES);
+}
+
+/**
+ * `K_map = HKDF(VRK, salt="obsync/v1/domainmap", info="")`: the key of the
+ * path-to-domain map (`docs/architecture.md` 5.1 item 3).
+ *
+ * It derives from `VRK` and from nothing a recipient could ever be given, so
+ * the map that says which paths live in which domain is readable by the owner
+ * alone. It is also the AEAD key of the map object itself: the map is one
+ * encrypted blob, not a file with chunks, so no second derivation exists.
+ */
+export function deriveDomainMapKey(vrk: Bytes): Promise<Bytes> {
+  return hkdf(vrk, utf8(LABEL.domainMap), new Uint8Array(0), KEY_BYTES);
+}
+
+/**
+ * The map object's two reserved identifiers, from one
+ * `HMAC(K_map, "obsync/v1/domain-map")`: the first 16 bytes are its file id
+ * and the last 16 are the domain id its file record carries.
+ *
+ * One MAC and a split rather than two derivations, because the two ids are
+ * used together and never apart. Both are unguessable without `VRK`, and both
+ * are server-visible: to the server the map is one more opaque file, which is
+ * exactly what lets it travel through the ordinary file mechanism.
+ */
+export async function domainMapIds(mapKey: Bytes): Promise<{ fileId: string; domainId: string }> {
+  const mac = await hmacSha256(mapKey, utf8(LABEL.domainMapId));
+  return { fileId: hex(mac.subarray(0, 16) as Bytes), domainId: hex(mac.subarray(16, 32) as Bytes) };
 }
 
 /** `K_pair = HKDF(PS, salt="obsync/v1/pair", info=utf8(pairing_id))`. */
@@ -309,8 +349,8 @@ function manifestAad(fileId: string, versionId: string): Bytes {
 }
 
 /**
- * Encrypt a file manifest under `K_m` with a fresh random 12-byte nonce and
- * `aad = file_id || version_id`.
+ * Encrypt a file manifest under `K_m,d`, the manifest key of the file's own
+ * domain, with a fresh random 12-byte nonce and `aad = file_id || version_id`.
  *
  * `versionId` is the CONTENT version id (`contentVersionId`), not the
  * protocol `version_id` of `versionId()`: the protocol id hashes
@@ -343,6 +383,42 @@ export async function decryptManifest(
   return fromUtf8(
     await aesGcmDecrypt(manifestKey, nonce, ciphertext, manifestAad(fileId, versionId)),
   );
+}
+
+/**
+ * Seal the domain map into the slot a manifest occupies, under `K_map` and
+ * the same AAD (`docs/architecture.md` 5.1 item 3).
+ *
+ * THE NONCE IS DERIVED, not random: `HKDF(K_map, "obsync/v1/nonce",
+ * SHA-256(aad || plaintext))[0..12]`. Two devices that write the same map at
+ * the same moment then produce the same bytes and the same version id and
+ * collide harmlessly, exactly as two devices producing the same chunk do
+ * (`encryptChunk`). Deriving from the AAD as well as the plaintext is what
+ * keeps that safe: a key and nonce repeat only for a message identical in
+ * both, and two different messages under one key and nonce would leak the
+ * GCM authentication key.
+ */
+export async function encryptDomainMap(
+  mapKey: Bytes,
+  fileId: string,
+  versionId: string,
+  json: string,
+): Promise<{ nonce: Bytes; ciphertext: Bytes }> {
+  const aad = manifestAad(fileId, versionId);
+  const plaintext = utf8(json);
+  const nonce = await hkdf(mapKey, utf8(LABEL.nonce), await sha256(concat(aad, plaintext)), NONCE_BYTES);
+  return { nonce, ciphertext: await aesGcmEncrypt(mapKey, nonce, plaintext, aad) };
+}
+
+/** Inverse of `encryptDomainMap`. A wrong key or a wrong binder fails here. */
+export async function decryptDomainMap(
+  mapKey: Bytes,
+  fileId: string,
+  versionId: string,
+  nonce: Bytes,
+  ciphertext: Bytes,
+): Promise<string> {
+  return fromUtf8(await aesGcmDecrypt(mapKey, nonce, ciphertext, manifestAad(fileId, versionId)));
 }
 
 function sortedParentBytes(parents: string[]): Bytes {

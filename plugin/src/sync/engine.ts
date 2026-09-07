@@ -31,6 +31,16 @@
 
 import { ByteSource } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
+import {
+  DomainMap,
+  DomainMapError,
+  DomainMapKeys,
+  defaultDomainMap,
+  domainMapKeys,
+  loadDomainMap,
+  saveDomainMap,
+  soleDomain,
+} from "../domainmap";
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, vaultPathRefusal } from "../vaultPath";
@@ -77,8 +87,11 @@ export interface SyncContext {
   readonly transport: Transport;
   readonly host: VaultHost;
   readonly domainKey: Bytes;
+  /** The manifest key of THIS domain, `HKDF(K_d, "obsync/v1/manifest", id)`. */
   readonly manifestKey: Bytes;
   readonly domainId: string;
+  /** The reserved file id the owner-only domain map occupies, never a vault file. */
+  readonly mapFileId: string;
   readonly deviceId: string;
   readonly concurrency: number;
   /** Version ids this device posted, awaiting their echo on the feed. */
@@ -107,7 +120,6 @@ export interface EngineOptions {
   state: State;
   transport: Transport;
   host: VaultHost;
-  domainId: string;
   now?: () => number;
   timers?: Timers;
   onStatus?: (status: EngineStatus) => void;
@@ -145,21 +157,58 @@ export class SyncEngine {
     this.nowFn = options.now ?? (() => Date.now());
   }
 
+  /**
+   * Read the vault's domain map, or write one for a vault that has none.
+   *
+   * The map on the server is the authority (`docs/architecture.md` 5.1 item
+   * 3): a device that guessed which domain a path belongs to would encrypt
+   * it under a key no other device derives. A map that cannot be read, or
+   * that declares a domain layout this version cannot honour, therefore
+   * stops the engine instead of starting a partial sync.
+   */
+  private async openMap(keys: DomainMapKeys): Promise<DomainMap> {
+    const host = this.options.host;
+    const existing = await loadDomainMap(this.options.transport, keys);
+    if (existing) {
+      host.log(`domainmap decision=loaded domains=${existing.domains.length}`);
+      return existing;
+    }
+    const created = defaultDomainMap();
+    await saveDomainMap(this.options.transport, keys, created);
+    host.log("domainmap decision=created domains=1");
+    return created;
+  }
+
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
   async start(): Promise<void> {
-    const { state, transport, host, domainId } = this.options;
+    const { state, transport, host } = this.options;
     const vrk = state.data.vrk;
     const deviceId = state.data.deviceId;
     if (vrk === null || deviceId === null) throw new Error("engine: this device is not paired");
     const key = unhex(vrk);
+    const mapKeys = await domainMapKeys(key);
+    const map = await this.openMap(mapKeys);
+    const domainId = soleDomain(map);
+    if (domainId === null) {
+      // v0.1 derives one domain key per engine, so a vault split across
+      // domains is one this version cannot write correctly. Refusing is the
+      // fail-closed answer; syncing the part it understands is not.
+      host.notify(
+        "obsync: this vault's domain map declares more than one sharing domain, " +
+          "which this version cannot sync. Nothing was read or written.",
+      );
+      throw new DomainMapError("more_than_one_domain");
+    }
+    const domainKey = await deriveDomainKey(key, domainId);
     const deviceNames = new Map<string, string>();
     this.contextValue = {
       state,
       transport,
       host,
-      domainKey: await deriveDomainKey(key, domainId),
-      manifestKey: await deriveManifestKey(key),
+      domainKey,
+      manifestKey: await deriveManifestKey(domainKey, domainId),
       domainId,
+      mapFileId: mapKeys.fileId,
       deviceId,
       concurrency: host.isMobile ? 2 : 4,
       authored: new Set<string>(),

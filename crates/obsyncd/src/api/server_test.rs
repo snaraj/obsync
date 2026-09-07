@@ -1155,6 +1155,9 @@ fn a_batch_get_returns_one_part_per_sid_and_marks_what_is_missing() {
     );
 }
 
+/// The domain every test version names unless it is testing the field itself.
+const TEST_DOMAIN: &str = "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d";
+
 /// Post a version, letting the server tell us the id it recomputes.
 fn post_version(
     h: &Harness,
@@ -1176,7 +1179,7 @@ fn post_version(
         .join(",");
     let body = |version_id: &str| {
         format!(
-            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
+            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
         )
     };
     let probe = Req::post(&format!("/v1/files/{file_id}/versions"))
@@ -1196,6 +1199,130 @@ fn post_version(
         .body(&body(&expected))
         .sign(cred, NOW)
         .send(h.addr)
+}
+
+/// Post one version with an arbitrary `domain_id`, letting the server name
+/// the version id it recomputes. Returns the refusal, or the acceptance.
+fn post_in_domain(h: &Harness, cred: &Cred, file_id: &str, parents: &[&str], domain: &str) -> Res {
+    let parents_json = parents
+        .iter()
+        .map(|p| format!("\"{p}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let domain_field = if domain.is_empty() {
+        String::new()
+    } else {
+        format!(r#""domain_id":"{domain}","#)
+    };
+    let body = |version_id: &str| {
+        format!(
+            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[],"bytes":0,{domain_field}"manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
+        )
+    };
+    let probe = Req::post(&format!("/v1/files/{file_id}/versions"))
+        .body(&body(&"00".repeat(32)))
+        .sign(cred, NOW)
+        .send(h.addr);
+    if probe.status != 422 {
+        return probe;
+    }
+    let expected = probe
+        .json()
+        .get("expected")
+        .and_then(Value::as_str)
+        .expect("the mismatch names the expected id")
+        .to_string();
+    Req::post(&format!("/v1/files/{file_id}/versions"))
+        .body(&body(&expected))
+        .sign(cred, NOW)
+        .send(h.addr)
+}
+
+/// `docs/architecture.md` 5.1 item 4: the one clear field sharing added.
+#[test]
+fn a_version_names_its_domain_and_a_file_never_changes_it() {
+    let h = Harness::start("version-domains");
+    let cred = h.setup_account();
+    let file_id = "cd".repeat(16);
+    let other = "7e".repeat(16);
+
+    // Required, not defaulted: a version with no domain could not be
+    // authorized per domain later, and a default would be a guess.
+    let absent = post_in_domain(&h, &cred, &file_id, &[], "");
+    assert_eq!(absent.status, 400, "{}", absent.text());
+    assert_eq!(absent.code(), "bad_request");
+    let malformed = post_in_domain(&h, &cred, &file_id, &[], "not-a-domain");
+    assert_eq!(malformed.status, 400, "{}", malformed.text());
+
+    let first = post_in_domain(&h, &cred, &file_id, &[], TEST_DOMAIN);
+    assert_eq!(first.status, 201, "{}", first.text());
+    let head = first
+        .json()
+        .get("heads")
+        .and_then(Value::as_array)
+        .expect("heads")[0]
+        .as_str()
+        .expect("head")
+        .to_string();
+
+    // The file record and the change feed both state the domain in clear, so
+    // a per-domain grant has something to be checked against.
+    let file = Req::get(&format!("/v1/files/{file_id}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    let file_body = file.json();
+    assert_eq!(
+        file_body.get("domain_id").and_then(Value::as_str),
+        Some(TEST_DOMAIN)
+    );
+    // The whole shape, so the domain is the ONLY clear field sharing added.
+    assert_eq!(
+        object_keys(&file_body),
+        vec![
+            "conflicted".to_string(),
+            "domain_id".to_string(),
+            "file_id".to_string(),
+            "heads".to_string(),
+            "versions".to_string(),
+        ],
+        "a file record is ids, graph shape and ciphertext: nothing else"
+    );
+    let page = Req::get("/v1/files").sign(&cred, NOW).send(h.addr);
+    let page_body = page.json();
+    let listed = page_body
+        .get("files")
+        .and_then(Value::as_array)
+        .expect("files");
+    assert_eq!(
+        listed[0].get("domain_id").and_then(Value::as_str),
+        Some(TEST_DOMAIN)
+    );
+    let feed = Req::get("/v1/changes?since=0&wait=0")
+        .sign(&cred, NOW)
+        .send(h.addr);
+    let feed_body = feed.json();
+    let changes = feed_body
+        .get("changes")
+        .and_then(Value::as_array)
+        .expect("changes");
+    assert_eq!(
+        changes[0].get("domain_id").and_then(Value::as_str),
+        Some(TEST_DOMAIN),
+        "the feed carries the domain: a feed entry arrives without its file"
+    );
+
+    // A later version may not move the file into another domain.
+    let moved = post_in_domain(&h, &cred, &file_id, &[head.as_str()], &other);
+    assert_eq!(moved.status, 409, "{}", moved.text());
+    assert_eq!(moved.code(), "domain_mismatch");
+    let unchanged = Req::get(&format!("/v1/files/{file_id}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(
+        unchanged.json().get("domain_id").and_then(Value::as_str),
+        Some(TEST_DOMAIN),
+        "the refusal left the file where it was"
+    );
 }
 
 #[test]
@@ -1341,7 +1468,7 @@ fn a_version_id_the_server_does_not_recompute_is_refused_and_named() {
     let file_id = "1a".repeat(16);
     let res = Req::post(&format!("/v1/files/{file_id}/versions"))
         .body(&format!(
-            r#"{{"version_id":"{}","parents":[],"sids":["{sid}"],"bytes":19,"manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#,
+            r#"{{"version_id":"{}","parents":[],"sids":["{sid}"],"bytes":19,"domain_id":"{TEST_DOMAIN}","manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#,
             "00".repeat(32)
         ))
         .sign(&cred, NOW)
@@ -1415,7 +1542,7 @@ fn the_change_feed_long_polls_and_wakes_on_a_concurrent_post() {
         let parents_json = String::new();
         let body = |version_id: &str| {
             format!(
-                r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":["{sid}"],"bytes":15,"manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
+                r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":["{sid}"],"bytes":15,"domain_id":"{TEST_DOMAIN}","manifest_ct":"bWFuaWZlc3Q=","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
             )
         };
         let file = "ef".repeat(16);
@@ -1556,7 +1683,7 @@ fn object_keys(value: &Value) -> Vec<String> {
 }
 
 #[test]
-fn a_device_is_renamed_and_domains_are_created() {
+fn a_device_is_renamed_and_a_control_character_in_a_name_is_refused() {
     let h = Harness::start("devices-domains");
     let cred = h.setup_account();
     let renamed = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
@@ -1576,29 +1703,6 @@ fn a_device_is_renamed_and_domains_are_created() {
     assert_eq!(
         injected.status, 400,
         "a control character in a name is refused"
-    );
-
-    let domain = "3f".repeat(16);
-    let created = Req::post("/v1/domains")
-        .body(&format!(r#"{{"domain_id":"{domain}"}}"#))
-        .sign(&cred, NOW)
-        .send(h.addr);
-    assert_eq!(created.status, 201, "{}", created.text());
-    let list = Req::get("/v1/domains").sign(&cred, NOW).send(h.addr);
-    let listed = list.json();
-    let listed = listed
-        .get("domains")
-        .and_then(Value::as_array)
-        .expect("domains");
-    assert_eq!(listed.len(), 1);
-    assert_eq!(
-        listed[0].get("domain_id").and_then(Value::as_str),
-        Some(domain.as_str())
-    );
-    assert_eq!(
-        object_keys(&listed[0]),
-        vec!["created".to_string(), "domain_id".to_string()],
-        "a domain is an id and a time: the server holds nothing else about it"
     );
 }
 
@@ -1796,21 +1900,14 @@ fn the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header()
         .send(h.addr);
     assert_eq!(devices.status, 200, "{}", devices.text());
 
-    let admin_domains = Req::get("/v1/admin/domains")
-        .header("Cookie", &cookie_header)
-        .send(h.addr);
-    assert_eq!(admin_domains.status, 200, "{}", admin_domains.text());
-    let admin_body = admin_domains.json();
-    let admin_listed = admin_body
-        .get("domains")
-        .and_then(Value::as_array)
-        .expect("the admin listing still reports domains");
-    for entry in admin_listed {
-        assert_eq!(
-            object_keys(entry),
-            vec!["created".to_string(), "domain_id".to_string()],
-            "no dashboard view reports, or offers, a content key"
-        );
+    // The domain listings are gone with the ledger they read: a domain is a
+    // field on a file record now (`docs/architecture.md` 5.1 item 4), and an
+    // endpoint nothing calls is surface nobody needs.
+    for target in ["/v1/admin/domains", "/v1/domains"] {
+        let gone = Req::get(target)
+            .header("Cookie", &cookie_header)
+            .send(h.addr);
+        assert_eq!(gone.status, 404, "{target} still answers: {}", gone.text());
     }
 
     let no_csrf = Req::post("/v1/admin/gc/run")
@@ -1971,6 +2068,8 @@ mod fixtures {
 
     /// `manifest.file_id`.
     const FILE_ID: &str = "00112233445566778899aabbccddeeff";
+    /// The domain the fixture's file is in; the server stores it in clear.
+    const DOMAIN: &str = "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d";
     /// `manifest.parents`, in the fixture's order, which is not sorted: the
     /// version id is defined over the SORTED parents, so posting them this way
     /// proves both sides sort before hashing.
@@ -1979,11 +2078,11 @@ mod fixtures {
         "1111111111111111111111111111111111111111111111111111111111111111",
     ];
     /// `manifest.nonce`.
-    const MANIFEST_NONCE: &str = "af8f7850cc3281008d3ed87d";
+    const MANIFEST_NONCE: &str = "6e4f64716e3a362133f3ce72";
     /// `manifest.version_id`, which the server must recompute exactly.
-    const VERSION_ID: &str = "45758781d82fec7f11f800ba0c86f69efca54a4ca0f74c4bace7011e78cdfc53";
+    const VERSION_ID: &str = "3fedb9beb13176dfa5f97036b3af9ae967c080f9b906de15d73be8354776efa3";
     /// `manifest.ciphertext_hex`.
-    const MANIFEST_CT: &str = "d36c265d3fcbac0176ee10d5b3d255cacea4051280c117c563c009ccde49ec75172b09d188807244936e6ed28f9e4f66686555e2f26bc19259e0a231973cfec9f474aa72e9f3d654643738e6196565723ee8006b60c7ef9486eab6eda5faf82c78c684bb95f804466dd96a0dff53236f4635d03696d8b3255746a434dee565da29bf7beac6b90acf452de86cde4c22a5e6ba0aeabb127e516644bf2894b15da0b5b568647239993b900285ba3e8fb0fc95f59fded9bd54fa5999dab08432b625fd2b71a89f7c3c3945fe3d436427c76d4e07a62c4d5574e4e0938c2ffa2dc3df3154198b44b389a848f6a24c703cdd6bf0fffacef274e0253cd6c4161a12446437bc4de0dab9190ce1167335e76903ec02e0bb4698b2f48d2e1e840be9c04b59cd3fac71234dfe9fa0bab116b1a22d97fdc6a69e26ebea2861e19673a4cf11ae43ffd0ebf5cbb52935713816d8c09d715516ca9c64c3eb1633c73c16a1680459d737621e46a829dfb0e9527830c745aed3c0783705b807010b51a35c06dc3fe6ba";
+    const MANIFEST_CT: &str = "955f1c043d515403a11098b8581f6924eabc13709f71844b93c44c285a6623a2700f1e325f759b3b9bab208ab5251cb1834bfb4e554981dbd7a90a08de755f97014d5a8f72be28e8d2052cbb87d2eec1505acef36c365bd925c6ad222d37b42c6c6aa2daaf28ffe72cb410d8b1df698127b3f5b87d1481d89b9fab37ef392284261ed6c968fd79561f89f7e76dce83ca05ab1345a25d616544e0303fbc0307737ff68978fdee9919f3aca45a3066786c1fe65eb8b99570dde772e938a8f0d8f62cdc26d0b0ca0feeb8c69bfff88bbc2254387400f53e929233d80bb408cc99694e64ae1d814cc18bb4e4e9804217fa14d8d2bf6684d4a89ef894139f9cdae3be8ee3fb264e71a7ef41773e388307ec9213b4a7fbf4d48227d5da4193416c5b511fdf426badf5dea45eca8fc65cfa6e37921fe75736e741b0e208cd39e7e58cf6ea55e92c788a89a3122f0901be54c3562b1125452424a29bdc2f08d965f4f7da03d67ec8607cc3be9e4cd066577f2bd9f3f3f7d31a7b041d7bacfdc7c5d8ea41c9";
 
     /// `signature.*`: one signed request, end to end.
     const SIG_SECRET: &str = "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
@@ -2030,9 +2129,10 @@ mod fixtures {
             .collect::<Vec<_>>()
             .join(",");
         let manifest_ct = base64::encode(&hex::decode(MANIFEST_CT).expect("fixture manifest"));
+        let domain = DOMAIN;
         Req::post(&format!("/v1/files/{FILE_ID}/versions"))
             .body(&format!(
-                r#"{{"version_id":"{version_id}","parents":[{parents}],"sids":["{NOTE_SID}","{BLOCK_SID}"],"bytes":4117,"manifest_ct":"{manifest_ct}","manifest_nonce":"{MANIFEST_NONCE}","deleted":false}}"#
+                r#"{{"version_id":"{version_id}","parents":[{parents}],"sids":["{NOTE_SID}","{BLOCK_SID}"],"bytes":4117,"domain_id":"{domain}","manifest_ct":"{manifest_ct}","manifest_nonce":"{MANIFEST_NONCE}","deleted":false}}"#
             ))
             .sign(cred, NOW)
             .send(h.addr)

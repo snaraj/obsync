@@ -236,6 +236,10 @@ export async function postManifest(
     parents,
     sids,
     bytes,
+    // The one new clear field: which domain the file is in, so phase-2
+    // authorization has something to filter on (`docs/architecture.md` 5.1
+    // item 4). It is a random id; without the owner-only map it names no path.
+    domain_id: context.domainId,
     manifest_ct: base64(ciphertext),
     manifest_nonce: hex(nonce),
     deleted: manifest.deleted,

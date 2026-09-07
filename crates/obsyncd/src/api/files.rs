@@ -44,6 +44,10 @@ pub fn post_version(
     let body = render::parse_json(&authed.body)?;
 
     let version_id: VersionId = render::version_id(render::field_str(&body, "version_id")?)?;
+    // Required, not optional: a version with no domain could not be
+    // authorized per domain later, and a default would be a guess about
+    // which grant it falls under (`docs/architecture.md` 5.1 item 4).
+    let domain_id = render::domain_id(render::field_str(&body, "domain_id")?)?;
     let parents: Vec<VersionId> =
         render::field_hex_array(&body, "parents", 64, VERSION_MAX_PARENTS)?
             .iter()
@@ -82,6 +86,7 @@ pub fn post_version(
     let outcome = app.store.append_version(NewVersion {
         account_id: app.account_id()?,
         file_id,
+        domain_id,
         version_id,
         parents,
         sids,

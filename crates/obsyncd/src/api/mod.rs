@@ -13,7 +13,6 @@ pub mod auth;
 pub mod changes;
 pub mod chunks;
 pub mod devices;
-pub mod domains;
 pub mod edge;
 pub mod files;
 pub mod pairing;
@@ -179,6 +178,11 @@ impl From<StoreError> for ApiError {
             }
             StoreError::UnknownFile => ApiError::new(404, code, "no such file"),
             StoreError::UnknownDomain => ApiError::new(404, code, "no such domain"),
+            StoreError::DomainMismatch { .. } => ApiError::new(
+                409,
+                code,
+                "this file is in another domain; a file never changes domain",
+            ),
             StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
             StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
             StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
@@ -480,8 +484,6 @@ impl App {
             }
             Route::FilesPage => files::page(self, req, client),
             Route::Changes => changes::feed(self, req, client),
-            Route::DomainsList => domains::list(self, req, client),
-            Route::DomainCreate => domains::create(self, req, client),
             Route::LoginLink => admin::login_link(self, req, client),
             Route::Login => admin::login(self, req),
             Route::Logout => admin::logout(self, req),
@@ -491,7 +493,6 @@ impl App {
             Route::AdminStorage => admin::storage(self, req),
             Route::AdminGcRun => admin::gc_run(self, req),
             Route::AdminScrubRun => admin::scrub_run(self, req),
-            Route::AdminDomains => admin::domains(self, req),
             Route::AdminLogs => admin::logs(self, req),
             Route::PluginManifest => plugin::manifest(self),
             Route::PluginBundle => plugin::bundle(self),
@@ -672,10 +673,6 @@ pub enum Route {
     FilesPage,
     /// `GET /v1/changes`
     Changes,
-    /// `GET /v1/domains`
-    DomainsList,
-    /// `POST /v1/domains`
-    DomainCreate,
     /// `POST /v1/dashboard/login-link`
     LoginLink,
     /// `GET /login`
@@ -694,8 +691,6 @@ pub enum Route {
     AdminGcRun,
     /// `POST /v1/admin/scrub/run`
     AdminScrubRun,
-    /// `GET /v1/admin/domains`
-    AdminDomains,
     /// `GET /v1/admin/logs`
     AdminLogs,
     /// `GET /v1/plugin/manifest`
@@ -768,9 +763,6 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
 
         ("GET", ["v1", "changes"]) => (Route::Changes, "/v1/changes"),
 
-        ("GET", ["v1", "domains"]) => (Route::DomainsList, "/v1/domains"),
-        ("POST", ["v1", "domains"]) => (Route::DomainCreate, "/v1/domains"),
-
         ("POST", ["v1", "dashboard", "login-link"]) => {
             (Route::LoginLink, "/v1/dashboard/login-link")
         }
@@ -785,7 +777,6 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("GET", ["v1", "admin", "storage"]) => (Route::AdminStorage, "/v1/admin/storage"),
         ("POST", ["v1", "admin", "gc", "run"]) => (Route::AdminGcRun, "/v1/admin/gc/run"),
         ("POST", ["v1", "admin", "scrub", "run"]) => (Route::AdminScrubRun, "/v1/admin/scrub/run"),
-        ("GET", ["v1", "admin", "domains"]) => (Route::AdminDomains, "/v1/admin/domains"),
         ("GET", ["v1", "admin", "logs"]) => (Route::AdminLogs, "/v1/admin/logs"),
 
         ("GET", ["v1", "plugin", "manifest"]) => (Route::PluginManifest, "/v1/plugin/manifest"),
