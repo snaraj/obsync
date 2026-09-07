@@ -241,6 +241,57 @@ def require_appended_changelog(base_text: str, head_text: str) -> None:
         raise ContractError(f"changelog dropped released heading(s): {', '.join(missing)}")
 
 
+def _lock_version(path: str, text: str) -> Version:
+    """The version ONE lock file declares, read the way that file declares it.
+
+    Factored out of `validate_snapshot` because the genesis walk needs to ask
+    the same question of a lock file in isolation -- at the commit that
+    introduced it, before its six siblings necessarily exist.
+    """
+    if path == "VERSION":
+        return Version.parse(text)
+
+    if path == "Cargo.toml":
+        try:
+            cargo = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ContractError("Cargo.toml is not valid TOML") from exc
+        workspace = cargo.get("workspace")
+        package = workspace.get("package") if isinstance(workspace, dict) else None
+        if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+            raise ContractError("Cargo.toml has no [workspace.package] version string")
+        return Version.parse(package["version"])
+
+    if path == "chart/Chart.yaml":
+        # Two of the seven locks live in this one file, so their agreement is
+        # this file's own business and is checked here rather than twice
+        # against VERSION.
+        version = Version.parse(_top_level_scalar(text, "version"))
+        if Version.parse(_top_level_scalar(text, "appVersion")) != version:
+            raise ContractError("chart appVersion does not equal chart version")
+        return version
+
+    if path == "chart/values.yaml":
+        tag = _direct_child_scalar(text, "image", "tag")
+        if not tag.startswith("v"):
+            raise ContractError("chart image tag must be vX.Y.Z")
+        return Version.parse(tag[1:])
+
+    if path == "plugin/manifest.json":
+        try:
+            manifest = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ContractError("plugin/manifest.json is not valid JSON") from exc
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
+            raise ContractError("plugin/manifest.json has no version string")
+        return Version.parse(manifest["version"])
+
+    if path == "CHANGELOG.md":
+        return parse_changelog(text)[0][0]
+
+    raise ContractError(f"{path} is not a release lock")
+
+
 def validate_snapshot(files: Mapping[str, str]) -> ReleaseIntent:
     """Prove all seven locks agree on one version, in one committed tree."""
     missing = sorted(set(RELEASE_LOCK_PATHS).difference(files))
@@ -248,43 +299,18 @@ def validate_snapshot(files: Mapping[str, str]) -> ReleaseIntent:
         raise ContractError(f"release snapshot is missing: {', '.join(missing)}")
 
     version = Version.parse(files["VERSION"])
+    for path in RELEASE_LOCK_PATHS:
+        observed = _lock_version(path, files[path])
+        if observed != version:
+            raise ContractError(f"{path} declares {observed}, not VERSION {version}")
 
-    try:
-        cargo = tomllib.loads(files["Cargo.toml"])
-    except tomllib.TOMLDecodeError as exc:
-        raise ContractError("Cargo.toml is not valid TOML") from exc
-    workspace = cargo.get("workspace")
-    package = workspace.get("package") if isinstance(workspace, dict) else None
-    if not isinstance(package, dict) or not isinstance(package.get("version"), str):
-        raise ContractError("Cargo.toml has no [workspace.package] version string")
-    if Version.parse(package["version"]) != version:
-        raise ContractError("Cargo.toml workspace version does not equal VERSION")
-
-    chart = files["chart/Chart.yaml"]
-    if Version.parse(_top_level_scalar(chart, "version")) != version:
-        raise ContractError("chart version does not equal VERSION")
-    if Version.parse(_top_level_scalar(chart, "appVersion")) != version:
-        raise ContractError("chart appVersion does not equal VERSION")
-
-    if _direct_child_scalar(files["chart/values.yaml"], "image", "tag") != version.tag:
-        raise ContractError("chart image tag does not equal v<VERSION>")
-
-    try:
-        manifest = json.loads(files["plugin/manifest.json"])
-    except json.JSONDecodeError as exc:
-        raise ContractError("plugin/manifest.json is not valid JSON") from exc
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
-        raise ContractError("plugin/manifest.json has no version string")
-    if Version.parse(manifest["version"]) != version:
-        raise ContractError("plugin manifest version does not equal VERSION")
-
-    headings = parse_changelog(files["CHANGELOG.md"])
-    if headings[0][0] != version:
-        raise ContractError(
-            f"changelog's topmost heading is {headings[0][0]}, not the released version {version}"
-        )
-    if sum(1 for entry, _stamp in headings if entry == version) != 1:
-        raise ContractError("changelog must carry exactly one heading for the released version")
+    # No separate "exactly one heading for this version" check: `_lock_version`
+    # reads the TOPMOST heading and the loop above requires it to equal
+    # VERSION, so zero is unrepresentable; and `parse_changelog` requires the
+    # ladder to descend strictly, so a second heading for the same version --
+    # adjacent or not -- breaks the descent somewhere and is unrepresentable
+    # too. A check no input can fail is decoration, and decoration beside real
+    # checks teaches a reader to trust the wrong thing.
     return ReleaseIntent(source_sha="", version=version)
 
 
@@ -377,6 +403,14 @@ def _version_at(repository: Path, revision: str) -> Version | None:
     return Version.parse(completed.stdout)
 
 
+def _locks_present(repository: Path, revision: str) -> set[str]:
+    """Which of the release locks exist at one revision."""
+    listed = _git(
+        repository, "ls-tree", "-r", "--name-only", revision, "--", *RELEASE_LOCK_PATHS
+    )
+    return set(listed.splitlines()) & set(RELEASE_LOCK_PATHS)
+
+
 def _linear_commits(repository: Path, base_sha: str, head_sha: str) -> list[str]:
     """Every commit in one contiguous, merge-free base..head range."""
     _git(repository, "merge-base", "--is-ancestor", base_sha, head_sha)
@@ -439,6 +473,67 @@ def _monotonic_transitions(
     return transitions
 
 
+def walk_genesis(
+    repository: Path, base_sha: str, head_sha: str, commits: list[str]
+) -> Version:
+    """THE ONE RANGE whose base predates every release lock.
+
+    A repository born from GitHub's own root commit carries README.md and
+    LICENSE and nothing else, so `_monotonic_transitions` -- which needs a
+    VERSION at the base to advance from -- can never classify the first range
+    and the first release could never happen. This is the narrow answer, and
+    every clause of it is a refusal:
+
+      * the head must carry ALL seven locks, agreeing on one version, through
+        the same `validate_snapshot` every other range uses;
+      * every commit that INTRODUCES a lock must introduce it at that same
+        version, so a range cannot assemble the locks out of disagreeing
+        pieces and only reconcile them at the tip;
+      * no commit may REMOVE a lock, so a lock cannot be deleted and re-added
+        to dodge the introduction check.
+
+    Anything else from a lock-less base denies -- including a documentation
+    range, which is deliberate: the first merge into a fresh repository is the
+    one that creates the release machinery, and a no-artifact verdict there
+    would retain a version that does not exist yet.
+
+    This rule is UNREACHABLE the moment `main` carries a single lock, so it
+    governs exactly one range in the life of the repository and cannot be
+    reached again by deleting locks (that is the removal refusal above,
+    applied to a base that already has them by the ordinary rules).
+    """
+    head_locks = _locks_present(repository, head_sha)
+    missing = sorted(set(RELEASE_LOCK_PATHS) - head_locks)
+    if missing:
+        raise ContractError(
+            "genesis range (the base carries no release lock): the head must introduce "
+            f"all seven locks; absent at head: {', '.join(missing)}"
+        )
+    version = validate_snapshot(
+        {path: _git_file(repository, head_sha, path) for path in RELEASE_LOCK_PATHS}
+    ).version
+
+    present = _locks_present(repository, base_sha)
+    if present:
+        raise ContractError("genesis range base carries release locks; this is not genesis")
+    for commit in commits:
+        observed = _locks_present(repository, commit)
+        removed = sorted(present - observed)
+        if removed:
+            raise ContractError(
+                f"genesis range: commit {commit} removes release lock(s) {', '.join(removed)}"
+            )
+        for path in sorted(observed - present):
+            introduced = _lock_version(path, _git_file(repository, commit, path))
+            if introduced != version:
+                raise ContractError(
+                    f"genesis range: commit {commit} introduces {path} at {introduced}, "
+                    f"but the range releases {version}"
+                )
+        present = observed
+    return version
+
+
 def _validated_history_transitions(
     repository: Path, head_sha: str
 ) -> list[tuple[str, str, Version]]:
@@ -450,9 +545,26 @@ def _validated_history_transitions(
     )
     if baseline_index is None:
         raise ContractError("release history contains no VERSION baseline")
-    return _monotonic_transitions(
+    transitions = _monotonic_transitions(
         repository, history[baseline_index], history[baseline_index + 1 :]
     )
+    # The genesis boundary, prepended when the mainline still carries the
+    # lock-less prefix the repository was born with. Without it the first
+    # release has no boundary to recover and `release-window` -- which the
+    # orchestrator calls to bind the version and tag -- would deny v0.1.0
+    # forever. It is bounded to the prefix BEFORE VERSION first appears, so it
+    # adds nothing once ordinary boundaries exist and cannot be re-entered.
+    lockless = [
+        index
+        for index in range(baseline_index)
+        if not _locks_present(repository, history[index])
+    ]
+    if lockless:
+        genesis_version = _version_at(repository, history[baseline_index])
+        if genesis_version is None:  # pragma: no cover - baseline_index selected on this
+            raise ContractError("release history baseline lost its VERSION")
+        return [(history[lockless[-1]], history[baseline_index], genesis_version)] + transitions
+    return transitions
 
 
 def is_documentation_path(path: str) -> bool:
@@ -516,6 +628,27 @@ def classify_transition(
     if _git(repository, "rev-parse", f"{head_sha}^{{commit}}") != head_sha:
         raise ContractError("head SHA did not resolve exactly")
     commits = _linear_commits(repository, base_sha, head_sha)
+    # GENESIS, and only genesis: a base carrying NONE of the seven locks is the
+    # one state the ordinary rules cannot classify, because they advance a
+    # version the base does not have. A base carrying ANY lock takes the
+    # unchanged path below.
+    if not _locks_present(repository, base_sha):
+        # `first_parent` is deliberately not consulted here, and this is why:
+        # the ordinary path uses it to cross-check the range's boundary against
+        # the whole mainline, because a range can sit anywhere in a long
+        # history. A genesis range cannot. Its base carries no lock, so every
+        # lock in existence was introduced inside the range and `walk_genesis`
+        # has already checked each one at the commit that introduced it. A
+        # cross-check here could never fail, and a guard that cannot fail is
+        # decoration standing next to guards that can.
+        version = walk_genesis(repository, base_sha, head_sha, commits)
+        return {
+            "class": "artifact",
+            "base_sha": base_sha,
+            "source_sha": head_sha,
+            "version": str(version),
+            "tag": version.tag,
+        }
     offending: list[str] = []
     previous = base_sha
     for commit in commits:

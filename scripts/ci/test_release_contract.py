@@ -133,6 +133,12 @@ class TheSevenLocks(unittest.TestCase):
             "chart appVersion": {
                 "chart/Chart.yaml": "apiVersion: v2\nname: obsync\nversion: 0.1.4\nappVersion: \"0.1.5\"\n"
             },
+            "image tag prefix": {
+                "chart/values.yaml": (
+                    "image:\n  repository: ghcr.io/snaraj/obsync\n"
+                    f"  tag: x0.1.4\n  digest: {SENTINEL}\n"
+                )
+            },
             "image tag": {
                 "chart/values.yaml": (
                     "image:\n  repository: ghcr.io/snaraj/obsync\n"
@@ -323,6 +329,167 @@ class TheClassifier(GitFixture):
             {**locks("0.1.2", ["0.1.1", "0.1.0"]), "src.rs": "b\n"}, "two"
         )
         self.assertEqual(self.classify(first, second, first_parent=True)["tag"], "v0.1.2")
+
+
+class GenesisFixture(unittest.TestCase):
+    """A repository born the way GitHub creates one: README.md and LICENSE."""
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.repository = Repository(Path(self._directory.name))
+        self.root = self.repository.root
+        self.base = self.repository.commit(
+            {"README.md": "# obsync\n", "LICENSE": "MIT\n"}, "Initial commit"
+        )
+
+    def classify(self, head: str, first_parent: bool = False) -> dict:
+        return contract.classify_transition(
+            self.root, self.base, head, first_parent=first_parent
+        )
+
+
+class TheGenesisRange(GenesisFixture):
+    def test_the_root_commit_carries_no_release_lock(self):
+        # The premise. If this ever stops holding the rule below is dead code.
+        self.assertEqual(contract._locks_present(self.root, self.base), set())
+
+    def test_a_complete_first_release_classifies_artifact(self):
+        head = self.repository.commit(
+            {**locks("0.1.0"), "crates/obsyncd/src/main.rs": "fn main() {}\n"}, "bootstrap"
+        )
+        verdict = self.classify(head)
+        self.assertEqual(verdict["class"], "artifact")
+        self.assertEqual(verdict["tag"], "v0.1.0")
+        self.assertEqual(verdict["base_sha"], self.base)
+        self.assertEqual(verdict["source_sha"], head)
+
+    def test_the_post_merge_classification_agrees(self):
+        # release-after-main re-derives with --first-parent, so v0.1.0 only
+        # gets its Release if the genesis rule survives that path too.
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "fn main() {}\n"}, "bootstrap")
+        self.assertEqual(self.classify(head, first_parent=True)["tag"], "v0.1.0")
+
+    def test_the_publisher_can_recover_the_genesis_window(self):
+        # `release-window` binds the version and tag the publisher tags with.
+        # Without a genesis boundary in the mainline it denies v0.1.0 forever.
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "x\n"}, "bootstrap")
+        window = contract.discover_transition_window(self.root, head)
+        self.assertEqual(window.base_sha, self.base)
+        self.assertEqual(window.intent.tag, "v0.1.0")
+
+    def test_a_linear_multi_commit_genesis_range_is_one_release(self):
+        # The composed train is a linear chain, so the locks arrive across
+        # several commits rather than all at once.
+        self.repository.commit({"Cargo.toml": locks("0.1.0")["Cargo.toml"]}, "workspace")
+        self.repository.commit(
+            {"chart/Chart.yaml": locks("0.1.0")["chart/Chart.yaml"]}, "chart"
+        )
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "x\n"}, "the rest")
+        self.assertEqual(self.classify(head, first_parent=True)["tag"], "v0.1.0")
+        self.assertEqual(
+            contract.discover_transition_window(self.root, head).intent.tag, "v0.1.0"
+        )
+
+    def test_one_lock_missing_at_head_denies_by_name(self):
+        for absent in contract.RELEASE_LOCK_PATHS:
+            with self.subTest(absent=absent):
+                snapshot = {key: value for key, value in locks("0.1.0").items() if key != absent}
+                head = self.repository.commit({**snapshot, "src.rs": "x\n"}, "partial")
+                with self.assertRaises(contract.ContractError) as refusal:
+                    self.classify(head)
+                self.assertIn("genesis range", str(refusal.exception))
+                self.assertIn(absent, str(refusal.exception))
+                self.repository.git("reset", "-q", "--hard", self.base)
+                self.repository.git("clean", "-qfd")
+
+    def test_locks_disagreeing_at_head_deny(self):
+        snapshot = {**locks("0.1.0"), "plugin/manifest.json": locks("0.1.1")["plugin/manifest.json"]}
+        head = self.repository.commit({**snapshot, "src.rs": "x\n"}, "disagreeing")
+        with self.assertRaises(contract.ContractError):
+            self.classify(head)
+
+    def test_a_lock_edited_after_it_was_introduced_denies(self):
+        # The per-commit walk only ever looks at INTRODUCTIONS, so a lock
+        # introduced correctly and then edited later in the range is invisible
+        # to it. Only the head snapshot sees that, which is why genesis runs
+        # the same validate_snapshot every other range runs rather than
+        # trusting its own walk.
+        self.repository.commit({**locks("0.1.0"), "src.rs": "a\n"}, "all seven at 0.1.0")
+        head = self.repository.commit(
+            {"plugin/manifest.json": locks("0.1.1")["plugin/manifest.json"]}, "edit one lock"
+        )
+        with self.assertRaises(contract.ContractError):
+            self.classify(head)
+
+    def test_a_middle_commit_introducing_a_lock_at_another_version_denies(self):
+        # The head is perfectly consistent; only the INTRODUCTION disagrees.
+        # Without the per-commit check this range would classify artifact.
+        self.repository.commit({"VERSION": "0.9.9\n"}, "wrong version first")
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "x\n"}, "reconciled at the tip")
+        with self.assertRaises(contract.ContractError) as refusal:
+            self.classify(head)
+        self.assertIn("genesis range", str(refusal.exception))
+        self.assertIn("0.9.9", str(refusal.exception))
+
+    def test_removing_a_lock_inside_the_range_denies(self):
+        # A removal is how an author could otherwise dodge the introduction
+        # check: introduce at the wrong version, delete, re-introduce.
+        self.repository.commit({"VERSION": "0.1.0\n"}, "introduce")
+        self.repository.git("rm", "-q", "VERSION")
+        self.repository.git("commit", "-q", "-m", "remove\n\n- Opus5")
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "x\n"}, "re-introduce")
+        with self.assertRaises(contract.ContractError) as refusal:
+            self.classify(head)
+        self.assertIn("removes release lock", str(refusal.exception))
+
+    def test_a_documentation_only_range_from_a_lock_less_base_denies(self):
+        # Deliberate: a no-artifact verdict here would retain a version that
+        # does not exist yet.
+        head = self.repository.commit({"docs/design.md": "notes\n"}, "docs")
+        with self.assertRaises(contract.ContractError) as refusal:
+            self.classify(head)
+        self.assertIn("genesis range", str(refusal.exception))
+
+    def test_a_base_carrying_one_lock_takes_the_ordinary_rules(self):
+        # Genesis is unreachable the moment main carries a lock. A base with
+        # only VERSION is NOT genesis, so it denies exactly as it does today --
+        # and the message must be the ordinary one, not the genesis one.
+        base = self.repository.commit({"VERSION": "0.1.0\n"}, "only VERSION")
+        head = self.repository.commit({"src.rs": "fn main() {}\n"}, "code, no bump")
+        with self.assertRaises(contract.ContractError) as refusal:
+            contract.classify_transition(self.root, base, head, first_parent=False)
+        self.assertNotIn("genesis", str(refusal.exception))
+        self.assertIn("without one exact release patch", str(refusal.exception))
+
+    def test_the_second_release_uses_the_ordinary_rules_again(self):
+        # The lock-less root is still in the mainline forever, so the genesis
+        # boundary must not keep winning: 0.1.1 has to advance from 0.1.0.
+        first = self.repository.commit({**locks("0.1.0"), "src.rs": "a\n"}, "bootstrap")
+        second = self.repository.commit(
+            {**locks("0.1.1", ["0.1.0"]), "src.rs": "b\n"}, "next"
+        )
+        verdict = contract.classify_transition(
+            self.root, first, second, first_parent=True
+        )
+        self.assertEqual(verdict["tag"], "v0.1.1")
+        window = contract.discover_transition_window(self.root, second)
+        self.assertEqual((window.base_sha, window.intent.tag), (first, "v0.1.1"))
+
+    def test_a_skipped_patch_after_genesis_still_denies(self):
+        self.repository.commit({**locks("0.1.0"), "src.rs": "a\n"}, "bootstrap")
+        skipped = self.repository.commit({**locks("0.1.2", ["0.1.0"]), "src.rs": "b\n"}, "skip")
+        with self.assertRaises(contract.ContractError):
+            contract.discover_transition_window(self.root, skipped)
+
+    def test_walk_genesis_refuses_a_base_that_carries_a_lock(self):
+        # Called directly it must not accept what the classifier would never
+        # route to it; a helper that trusts its caller is a helper waiting to
+        # be called by a second one.
+        base = self.repository.commit({"VERSION": "0.1.0\n"}, "only VERSION")
+        head = self.repository.commit({**locks("0.1.0"), "src.rs": "x\n"}, "rest")
+        with self.assertRaises(contract.ContractError):
+            contract.walk_genesis(self.root, base, head, [head])
 
 
 class ChartDigestSubstitution(unittest.TestCase):

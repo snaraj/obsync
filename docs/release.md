@@ -17,6 +17,15 @@ allowlist changed, and every lock advanced exactly one patch) or
 `no-artifact` (every commit confined to root `AGENTS.md`, `README.md`,
 `.gitignore`, and Markdown under `docs/`; no lock touched).
 
+**Genesis.** A range whose base carries NONE of the seven locks — the state a
+repository born from GitHub's own root commit is in, which the one-patch rule
+cannot classify because there is no version to advance — is `artifact` only if
+the head carries all seven locks agreeing on one version, every commit that
+introduces a lock introduces it at that same version, and no commit removes
+one; anything else from a lock-less base denies by name. A base carrying any
+lock takes the ordinary rules unchanged, so genesis governs exactly one range
+and is unreachable once `main` has a `VERSION`.
+
 ## Publisher
 
 `release-after-main.yml` (holds `actions: write`, `contents: read`; cannot
