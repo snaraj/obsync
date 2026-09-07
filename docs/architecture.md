@@ -228,16 +228,34 @@ CSRF header. Phase 2 adds passkeys (WebAuthn): the server gains ECDSA P-256
 verification and a CBOR/COSE subset in `obsync-core`, verify-only, tested
 against the WebAuthn test vectors. YubiKeys are passkeys.
 
-## 5. Sharing, manual access, other workloads
+## 5. Sharing (phase 2)
 
-- **Share a folder with a cluster app:** declare the folder a domain; export
-  its `K_d` from a paired device; hand the consuming workload `K_d` plus a
-  read-only device credential scoped to that domain. The consumer decrypts
-  locally. The server still sees ciphertext.
-- **Manual access on the host:** `obsyncd export --domain <id> --key <hex>
-  --out <dir>` reconstructs plaintext from the volumes with a key the
-  operator supplies. It is the same binary and touches the server's data
-  read-only.
+**v0.1 ships owner-only sync.** Every paired device is the owner. There is
+no recipient role, no domain-scoped or read-only credential, and the change
+feed a device follows is unfiltered: a device that can authenticate sees
+every version in the account. Domains exist as the key-scoping unit and v0.1
+uses exactly one. Nothing in the API, the plugin, or the dashboard grants
+anyone but the owner access to anything, and no wording in this repository
+should suggest otherwise.
+
+**Manual access on the host** is the only access path beyond a paired
+device: `obsyncd export --domain <id> --key <hex> --out <dir>` reconstructs
+the stored ciphertext from the volumes, and the operator decrypts it on a
+device that holds the key. It is the same binary and touches the server's
+data read-only.
+
+**Phase 2 adds recipients**, and ships only when both of these hold:
+
+1. A recipient cannot read unshared content or filenames, cannot enumerate
+   unrelated files, cannot write through a read-only grant, cannot acquire
+   owner privileges.
+2. The wire format for separate sharing scopes is defined and reviewed
+   before any recipient identity exists: a path-to-domain map encrypted
+   under an owner-only key, a per-domain manifest key, single-file domains,
+   move semantics between domains, and revocation as rotation, which cannot
+   recall copies already taken.
+
+Until both hold, sharing is a design note and not a feature.
 
 ## 6. Sync engine
 
@@ -395,6 +413,7 @@ Cloudflare Tunnel (`obsidian`) for one hostname (`obsidian.naranjo.online`) with
    three device validation, first benchmark table.
 2. **v0.2.x:** X25519 pairing, passkeys, signed plugin updates against a
    pinned key, Cloudflare Access JWT verification from a mounted JWKS,
-   `VRK` rotation, QR pairing codes.
+   `VRK` rotation, QR pairing codes, and recipients under the section 5
+   acceptance criteria.
 3. **v0.3.x:** replica server mode, size padding option, text compression
    opt-in, multi-account.

@@ -23,6 +23,11 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 
 ## Deliberate non-goals
 
+- Recipients and multi-user access: out of scope in v0.1; the server is
+  owner-only. Every paired device is the owner, so no adversary row below
+  describes a second person with partial access, because v0.1 cannot
+  express one. The acceptance criteria that gate phase 2 are in
+  `docs/architecture.md` section 5.
 - Hiding file counts, sizes, timing, and version-graph shape from the
   server. Size padding is a v0.3 option.
 - Recovering a vault after every device and the recovery phrase are lost.

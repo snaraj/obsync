@@ -113,11 +113,15 @@ the sensitive volume it is.
 On any paired computer, run **Open dashboard**: it mints a one-time sign-in
 link to the dashboard, where you see every device (type, address, country,
 last sign-in, last edit), storage per volume, scrub and garbage-collection
-state, sharing, and the install files with their hashes. Revoke a lost device
-there or from the **Devices** list in the plugin settings.
+state, and the install files with their hashes. Revoke a lost device there or
+from the **Devices** list in the plugin settings.
 
 ### What syncs and what does not (v0.1)
 
+- obsync syncs one person's vault across their own devices. Every device you
+  pair is you, and v0.1 has no second person in it: giving anyone else
+  access to part of a vault is phase 2 work, gated on the acceptance
+  criteria in `docs/architecture.md` section 5.
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
 - On phones, files above **Largest file to download** (512 MiB by default)
