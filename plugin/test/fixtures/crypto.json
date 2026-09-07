@@ -1,0 +1,102 @@
+{
+  "note": "obsync v1 device-cryptography vectors. Inputs are sentinels, not keys. Regenerate with plugin/test/fixtures/generate.mjs.",
+  "vrk": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "domain_id": "0123456789abcdef0123456789abcdef",
+  "domain_key": "2bd601764fb316a2f879e4f1800451f4c45793662f912bb8833fb2752a4d9cb2",
+  "manifest_key": "ce77236b8eea385d69442361f1322dc8093154afcbe0b1e3838d0151d78bb42b",
+  "chunks": [
+    {
+      "name": "empty",
+      "plaintext_hex": "",
+      "plaintext_spec": null,
+      "plaintext_len": 0,
+      "cid": "01299741c222df91054e55e727913d631c43cdc0e2c6e2ec7ef08b7346439444",
+      "chunk_key": "f3141cb808dd9d1193beba82be37caa80d61739b9ce9ad9edd143003cd872b26",
+      "nonce": "1fad5bd7ff6f6c1a38a25c38",
+      "sid": "ead932adc0bbf82605eb060a45a087574f3d69807adb22afc8bf8e74ce0a0e7a",
+      "ciphertext_hex": "ec74e5ea67d61137275881869f9c910c",
+      "ciphertext_len": 16
+    },
+    {
+      "name": "note",
+      "plaintext_hex": "6f6273796e632066697874757265206368756e6b0a",
+      "plaintext_spec": null,
+      "plaintext_len": 21,
+      "cid": "a17f69373cfad791f6c8cf8af77aabf7e36f880ba0b0eb940812196a794dcc2c",
+      "chunk_key": "2cc718c75e2ae0eef237de52f1b9ede33fd239c8f597511a6b2fb96c62b5876f",
+      "nonce": "7c76208bb1f5579987d86390",
+      "sid": "5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489",
+      "ciphertext_hex": "953b20c79168e9dc9d7534a7e0edf0d592417844d6babe6f825733e88bc58fd3017786e53c",
+      "ciphertext_len": 37
+    },
+    {
+      "name": "block",
+      "plaintext_hex": null,
+      "plaintext_spec": "byte[i] = i % 251, 4096 bytes",
+      "plaintext_len": 4096,
+      "cid": "422ee629780d6a386fa2e0c2da30d3312a7caa612545d7bfd7fa623473be062a",
+      "chunk_key": "7ce0ffd3099cbdd1bd4eb465bf9ce458ff89cf5a1c8bc6df27b8d1f8f4565838",
+      "nonce": "eb3b5a64312dc34f33487d50",
+      "sid": "e9d4c94493314f600c42b93cd02b8b6583f601a48f73ebffa9b414e9d4140221",
+      "ciphertext_hex": null,
+      "ciphertext_len": 4112
+    }
+  ],
+  "manifest": {
+    "file_id": "00112233445566778899aabbccddeeff",
+    "parents": [
+      "2222222222222222222222222222222222222222222222222222222222222222",
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "sids": [
+      "5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489",
+      "e9d4c94493314f600c42b93cd02b8b6583f601a48f73ebffa9b414e9d4140221"
+    ],
+    "content_version_id": "2b1143f624f840b4b6e95ba3038cae16ee393dffbbfaafb401d7a3624bb9156e",
+    "json": "{\"v\":1,\"path\":\"Fixtures/Note.md\",\"size\":21,\"mtime\":1757200000000,\"domain\":\"0123456789abcdef0123456789abcdef\",\"chunks\":[{\"sid\":\"5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489\",\"cid\":\"a17f69373cfad791f6c8cf8af77aabf7e36f880ba0b0eb940812196a794dcc2c\",\"len\":21}],\"sha256\":\"8d567684153d1263a27824459eec8583aa15078469c5907d016384d25911b3e5\",\"deleted\":false}",
+    "nonce": "af8f7850cc3281008d3ed87d",
+    "ciphertext_hex": "d36c265d3fcbac0176ee10d5b3d255cacea4051280c117c563c009ccde49ec75172b09d188807244936e6ed28f9e4f66686555e2f26bc19259e0a231973cfec9f474aa72e9f3d654643738e6196565723ee8006b60c7ef9486eab6eda5faf82c78c684bb95f804466dd96a0dff53236f4635d03696d8b3255746a434dee565da29bf7beac6b90acf452de86cde4c22a5e6ba0aeabb127e516644bf2894b15da0b5b568647239993b900285ba3e8fb0fc95f59fded9bd54fa5999dab08432b625fd2b71a89f7c3c3945fe3d436427c76d4e07a62c4d5574e4e0938c2ffa2dc3df3154198b44b389a848f6a24c703cdd6bf0fffacef274e0253cd6c4161a12446437bc4de0dab9190ce1167335e76903ec02e0bb4698b2f48d2e1e840be9c04b59cd3fac71234dfe9fa0bab116b1a22d97fdc6a69e26ebea2861e19673a4cf11ae43ffd0ebf5cbb52935713816d8c09d715516ca9c64c3eb1633c73c16a1680459d737621e46a829dfb0e9527830c745aed3c0783705b807010b51a35c06dc3fe6ba",
+    "version_id": "45758781d82fec7f11f800ba0c86f69efca54a4ca0f74c4bace7011e78cdfc53"
+  },
+  "signature": {
+    "device_secret": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "method": "POST",
+    "target": "/v1/files/00112233445566778899aabbccddeeff/versions",
+    "ts": 1757200000,
+    "nonce": "8d2f0a1b4c6e7f90a1b2c3d4e5f60718",
+    "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "sig": "6418a21e8d1e507aadf70f197f71a64900da961926f52f6da1a3428be844ce40"
+  },
+  "pairing": {
+    "pairing_secret": "101112131415161718191a1b1c1d1e1f",
+    "pairing_id": "fedcba9876543210fedcba9876543210",
+    "key": "e0b3e98e7a708bf8fd1a1cf57514047859cef64c456ce92d62dd0bc5fe03bfe0"
+  },
+  "chunker": {
+    "seed": "obsync/v1/gear",
+    "gear_first_8": [
+      3934986617,
+      544816491,
+      3988624564,
+      2355706491,
+      2118523742,
+      4110939775,
+      2524768132,
+      1142123642
+    ],
+    "gear_sha256": "f4eec6b74dbcd8d34044f7ed429a9f9fc4235411f979964e9b756a635a66eb5d",
+    "stream": {
+      "generator": "xorshift32",
+      "seed": 745153,
+      "size": 25165824
+    },
+    "lengths": [
+      4140191,
+      2829087,
+      2327268,
+      8388608,
+      3870949,
+      3609721
+    ]
+  }
+}
