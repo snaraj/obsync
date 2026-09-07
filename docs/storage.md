@@ -74,9 +74,12 @@ everything younger than `OBSYNC_RETENTION_DAYS`. GC runs hourly, logs a
 
 ## Free-space watermark and quota
 
-Writes are refused with `507` when free space on the blob volume is below
-the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when the account's
-quota is exceeded. The dashboard shows both thresholds and the current
+Free space is declared capacity minus tracked usage: the standard library
+exposes no filesystem statistics, so `OBSYNC_BLOBS_CAPACITY` and
+`OBSYNC_JOURNAL_CAPACITY` are required and the chart sets them from the
+claim sizes. Writes are refused with `507` when free space on the blob
+volume is below the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when
+the account's quota is exceeded. The dashboard shows both thresholds and the current
 values. The journal volume has its own watermark; running out of journal
 space fails readiness, never corrupts.
 
