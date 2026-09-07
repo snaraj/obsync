@@ -35,6 +35,39 @@ pub fn eq(a: &[u8], b: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    /// AGENTS.md, "Testing doctrine": constant-time comparison ships a test
+    /// that proves early exit is impossible BY CONSTRUCTION. No behavioural
+    /// test can see a timing leak — a function that returns early still
+    /// returns the right answer — so this one reads the function's own
+    /// source, embedded at compile time, and pins its shape. A future edit
+    /// that adds a fast path has to delete this test to land, which is the
+    /// point.
+    #[test]
+    fn eq_has_one_exit_one_accumulator_and_no_branch_on_data() {
+        let source = include_str!("ct.rs");
+        let from = source
+            .find("pub fn eq(a: &[u8], b: &[u8]) -> bool {")
+            .expect("eq is defined in this file");
+        let body = &source[from..];
+        let body = &body[..body.find("\n}\n").expect("eq's body ends here")];
+
+        for forbidden in ["return", "break", "continue", "?", " if ", "match "] {
+            assert!(
+                !body.contains(forbidden),
+                "eq must not contain {forbidden:?}: it would be an exit or a \
+                 branch that can depend on a byte value"
+            );
+        }
+        assert_eq!(body.matches("let mut acc").count(), 1, "one accumulator");
+        assert_eq!(body.matches("acc |=").count(), 1, "accumulated with |=");
+        assert_eq!(
+            body.matches("acc").count(),
+            3,
+            "acc appears exactly three times: declared, or-ed into, tested \
+             once at the end. A fourth use is a second decision"
+        );
+    }
+
     #[test]
     fn equal_slices() {
         assert!(eq(b"", b""));
