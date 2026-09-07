@@ -47,7 +47,13 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
    v0.2).
 2. Single copy on one node (owner-accepted; mirrors and replicas are the
    path).
-3. Homegrown primitives: mitigated by published test vectors,
+3. Desktop vault-boundary races: the plugin binds every path component with
+   no-follow stats before and after each open and rename, which closes a
+   swap between the walk and the open; Node's filesystem API has no
+   directory-relative opens, so a local attacker who can race the write
+   itself is not defended against (a device's own operating system is a
+   non-goal above).
+4. Homegrown primitives: mitigated by published test vectors,
    differential tests against the host's OpenSSL in CI, a verify-only
    asymmetric surface, and constant-time construction by design; a
    dedicated security review is required before any primitive changes.
