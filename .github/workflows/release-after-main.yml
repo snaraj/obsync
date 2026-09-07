@@ -1,0 +1,204 @@
+name: Release after main CI
+
+# GitHub does not recursively trigger a push workflow for a tag created with
+# GITHUB_TOKEN. This success-only workflow_run verifies the completed main SHA
+# and explicitly dispatches the protected-main publisher with the authoritative
+# completed-run id. It has no tag, registry, package, or Release mutation
+# permission: those stay behind the publisher's own read-only authorization
+# job. Distinct main SHAs share no concurrency group, so a rapid later merge
+# cannot replace an earlier pending run.
+on:
+  workflow_run:
+    workflows: [PR gate]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: release-after-main-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the exact completed main SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify the completed range from its authorized gate verdict
+        # A documentation-only merge changes no artifact, so there is nothing
+        # to version, sign, scan, or release. The gate that validated the exact
+        # pushed range published its verdict as a run artifact on the run this
+        # event names. This step re-derives the class from git rather than
+        # believing the verdict's label -- but the re-derivation is
+        # PARAMETERISED by the verdict's claimed base, so it is not independent
+        # of the verdict, and saying otherwise would be false. What makes a
+        # no-artifact outcome trustworthy is the anchor below, on a base the
+        # verdict cannot choose: the head of the newest EARLIER successful
+        # protected-main gate run, straight from the Actions record. Every
+        # other outcome -- absent verdict, foreign class, mismatch -- fails
+        # this job red. There is no third path.
+        id: classify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPLETED_SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          event_sha="$(python3 -B scripts/ci/release_contract.py workflow-run \
+            --event "${GITHUB_EVENT_PATH}" --repository "${GITHUB_REPOSITORY}")"
+          test "${event_sha}" = "${COMPLETED_SHA}"
+          test "$(git rev-parse HEAD)" = "${COMPLETED_SHA}"
+          [[ "${MAIN_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          artifacts_json="${RUNNER_TEMP}/gate-artifacts.json"
+          # Run-scoped listing, deliberately: there is no per-attempt artifacts
+          # endpoint. Re-attempt safety does not need one, because the gate
+          # uploads with overwrite, so one run holds exactly one
+          # transition-verdict artifact and the exactly-one assertion below
+          # fails closed if that ever stops being true.
+          gh api --method GET --paginate --slurp \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${MAIN_RUN_ID}/artifacts?per_page=100" \
+            > "${artifacts_json}"
+          artifact_id="$(jq -er \
+            '[.[].artifacts[] | select(.name == "transition-verdict" and .expired == false)]
+             | if length == 1 then .[0].id else error("expected exactly one transition-verdict artifact") end' \
+            "${artifacts_json}")"
+          archive="${RUNNER_TEMP}/transition-verdict.zip"
+          curl --silent --show-error --location --fail \
+            --proto '=https' --tlsv1.2 \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "${archive}" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"
+          verdict_dir="${RUNNER_TEMP}/transition-verdict"
+          mkdir -p "${verdict_dir}"
+          unzip -q -o "${archive}" -d "${verdict_dir}"
+          verdict="${verdict_dir}/transition-verdict.json"
+          test "$(find "${verdict_dir}" -type f | wc -l)" -eq 1
+          test -s "${verdict}"
+          claimed_class="$(jq -er '.class' "${verdict}")"
+          claimed_base="$(jq -er '.base_sha' "${verdict}")"
+          test "$(jq -er '.source_sha' "${verdict}")" = "${COMPLETED_SHA}"
+          [[ "${claimed_base}" =~ ^[0-9a-f]{40}$ ]]
+          rederived="$(python3 -B scripts/ci/release_contract.py transition \
+            --repository . --base "${claimed_base}" --head "${COMPLETED_SHA}" \
+            --first-parent)"
+          test "$(jq -er '.class' <<<"${rederived}")" = "${claimed_class}"
+          case "${claimed_class}" in
+            artifact) ;;
+            no-artifact)
+              retained_tag="$(jq -er '.tag' <<<"${rederived}")"
+              [[ "${retained_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+              # THE ANCHOR THE VERDICT CANNOT CHOOSE. A verdict naming a base
+              # INSIDE this push would make a genuine artifact merge re-derive
+              # as documentation, skipping a release silently -- the wrong
+              # failure direction for requirement 10. So classify again from
+              # the head of the newest EARLIER successful protected-main gate
+              # run, taken from the Actions record. This repository merges by
+              # squash or rebase into a linear main, so that head IS the
+              # boundary of the previous gated push and needs no walk to
+              # recover; a documentation-only push changes no lock, so all six
+              # lock files must also be byte-identical across it.
+              previous_json="${RUNNER_TEMP}/previous-main-runs.json"
+              gh api --method GET \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/pr-gate.yml/runs?branch=main&event=push&status=success&per_page=100" \
+                > "${previous_json}"
+              # No earlier successful main run -- a fresh repository, or one
+              # whose run records aged out of retention -- denies. The anchor
+              # is unavailable, so the class is unprovable.
+              previous_head="$(jq -er --argjson current "${MAIN_RUN_ID}" \
+                '[.workflow_runs[]
+                  | select(.id < $current and .head_branch == "main"
+                           and .event == "push" and .conclusion == "success")]
+                 | if length == 0 then error("no earlier successful protected-main gate run")
+                   else (max_by(.id) | .head_sha) end' \
+                "${previous_json}")"
+              [[ "${previous_head}" =~ ^[0-9a-f]{40}$ ]]
+              test "${previous_head}" != "${COMPLETED_SHA}"
+              git merge-base --is-ancestor "${previous_head}" "${COMPLETED_SHA}"
+              for lock in VERSION Cargo.toml chart/Chart.yaml chart/values.yaml plugin/manifest.json CHANGELOG.md; do
+                if ! git diff --quiet "${previous_head}" "${COMPLETED_SHA}" -- "${lock}"; then
+                  printf 'DENY: %s changed since the last gated main head %s; this is not a documentation-only push\n' \
+                    "${lock}" "${previous_head}" >&2
+                  exit 1
+                fi
+              done
+              anchored="$(python3 -B scripts/ci/release_contract.py transition \
+                --repository . --base "${previous_head}" --head "${COMPLETED_SHA}" \
+                --first-parent)"
+              test "$(jq -er '.class' <<<"${anchored}")" = no-artifact
+              test "$(jq -er '.tag' <<<"${anchored}")" = "${retained_tag}"
+              printf 'NO-ARTIFACT: %s is documentation-only; no tag, no Release, publisher not dispatched.\n' \
+                "${COMPLETED_SHA}"
+              printf '## No-artifact merge\n\nCommit %s changed documentation surfaces only; the retained version stays %s and the publisher was not dispatched.\n' \
+                "${COMPLETED_SHA}" "${retained_tag}" >> "${GITHUB_STEP_SUMMARY}"
+              ;;
+            *)
+              # UNREACHABLE TODAY, and deliberately kept. classify_transition
+              # emits exactly two verdicts, so a foreign claimed class can
+              # never equal the re-derived one and the equality test above
+              # already denied one line earlier. This branch exists so that if
+              # the classifier ever gains a third verdict, an unhandled value
+              # fails loudly here instead of falling through with exit 0.
+              printf 'DENY: unknown transition class %s\n' "${claimed_class}" >&2
+              exit 1
+              ;;
+          esac
+          printf 'class=%s\n' "${claimed_class}" >> "${GITHUB_OUTPUT}"
+      - name: Bind event, source, and exact next patch
+        if: steps.classify.outputs.class == 'artifact'
+        id: release
+        env:
+          COMPLETED_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAIN_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          event_sha="$(python3 -B scripts/ci/release_contract.py workflow-run \
+            --event "${GITHUB_EVENT_PATH}" --repository "${GITHUB_REPOSITORY}")"
+          test "${event_sha}" = "${COMPLETED_SHA}"
+          jobs_json="${RUNNER_TEMP}/orchestrator-main-jobs.json"
+          gh api --method GET \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${MAIN_RUN_ID}/jobs?filter=latest&per_page=100" > "${jobs_json}"
+          test "$(python3 -B scripts/ci/release_contract.py main-jobs-record \
+            --jobs-json "${jobs_json}" --run-id "${MAIN_RUN_ID}" \
+            --source-sha "${COMPLETED_SHA}")" = "${COMPLETED_SHA}"
+          test "$(git rev-parse HEAD)" = "${COMPLETED_SHA}"
+          intent="$(python3 -B scripts/ci/release_contract.py release-window \
+            --repository . --head "${COMPLETED_SHA}")"
+          source_sha="$(jq -er '.source_sha' <<<"${intent}")"
+          version="$(jq -er '.version' <<<"${intent}")"
+          test "${source_sha}" = "${COMPLETED_SHA}"
+          test "$(jq -er '.tag' <<<"${intent}")" = "v${version}"
+          printf 'source_sha=%s\nversion=%s\n' "${source_sha}" "${version}" >> "${GITHUB_OUTPUT}"
+      - name: Dispatch the successful-main-bound publisher explicitly
+        if: steps.classify.outputs.class == 'artifact'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          MAIN_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-publisher.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f source_sha="${SOURCE_SHA}" \
+            -f main_run_id="${MAIN_RUN_ID}"

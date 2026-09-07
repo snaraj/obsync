@@ -1,0 +1,171 @@
+name: Release alias audit
+
+# Weekly, READ-ONLY revalidation of the newest published Release. Publication
+# proved these facts once; this workflow proves they are still true -- that no
+# alias was re-pointed, no signature revoked, no asset replaced, and that
+# today's vulnerability database still clears the shipped image. It holds no
+# write permission anywhere, so a failure here is a report and never a repair.
+on:
+  schedule:
+    - cron: '17 8 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-alias-audit-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out protected main with complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Re-bind the latest Release, aliases, signatures, assets, and scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/snaraj/obsync
+          CHART: ghcr.io/snaraj/charts/obsync
+        run: |
+          set -euo pipefail
+          api_version='2026-03-10'
+          release_json="${RUNNER_TEMP}/audit-release.json"
+          manifest="${RUNNER_TEMP}/audit-release-manifest.json"
+          bundle="${RUNNER_TEMP}/audit-plugin-bundle.zip"
+          notes="${RUNNER_TEMP}/audit-release-notes.md"
+          main_run_json="${RUNNER_TEMP}/audit-main-run.json"
+          ref_json="${RUNNER_TEMP}/audit-tag-ref.json"
+          tag_json="${RUNNER_TEMP}/audit-tag-object.json"
+
+          download_asset() {
+            local name="$1" output="$2" url
+            url="$(jq -er --arg name "${name}" \
+              '.assets[] | select(.name == $name) | .url' "${release_json}")"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --tlsv1.2 --output "${output}" \
+              --header 'Accept: application/octet-stream' \
+              --header "X-GitHub-Api-Version: ${api_version}" \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              "${url}"
+          }
+
+          gh api --method GET \
+            --header 'Accept: application/vnd.github+json' \
+            --header "X-GitHub-Api-Version: ${api_version}" \
+            "repos/${GITHUB_REPOSITORY}/releases/latest" > "${release_json}"
+          tag="$(jq -er '.tag_name | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' "${release_json}")"
+          download_asset "obsync-${tag}-release-manifest.json" "${manifest}"
+          download_asset "obsync-plugin-${tag}.zip" "${bundle}"
+
+          repository="$(jq -er '.repository' "${manifest}")"
+          source_sha="$(jq -er '.source_sha' "${manifest}")"
+          main_run_id="$(jq -er '.main_run_id' "${manifest}")"
+          version="$(jq -er '.release.version' "${manifest}")"
+          image_digest="$(jq -er '.artifacts.image.digest' "${manifest}")"
+          chart_digest="$(jq -er '.artifacts.chart.digest' "${manifest}")"
+          plugin_digest="$(jq -er '.artifacts.plugin_bundle.digest' "${manifest}")"
+          test "${repository}" = "${GITHUB_REPOSITORY}"
+          test "${tag}" = "v${version}"
+          # The asset the Release serves TODAY must still hash to the digest the
+          # sealed manifest recorded at publication.
+          test "sha256:$(sha256sum "${bundle}" | awk '{print $1}')" = "${plugin_digest}"
+
+          contract=(--repository "${repository}" --source-sha "${source_sha}"
+                    --main-run-id "${main_run_id}" --version "${version}"
+                    --image "${IMAGE}" --image-digest "${image_digest}"
+                    --chart "${CHART}" --chart-digest "${chart_digest}"
+                    --plugin-digest "${plugin_digest}")
+          python3 -B scripts/ci/release_contract.py manifest-record \
+            --manifest "${manifest}" "${contract[@]}"
+          python3 -B scripts/ci/release_contract.py release-notes \
+            --manifest "${manifest}" --output "${notes}" "${contract[@]}"
+          python3 -B scripts/ci/release_contract.py release-record \
+            --release-json "${release_json}" --tag "${tag}" \
+            --title "obsync ${tag}" --body "${notes}" \
+            --manifest "${manifest}" --plugin-digest "${plugin_digest}"
+
+          gh api --method GET \
+            --header 'Accept: application/vnd.github+json' \
+            --header "X-GitHub-Api-Version: ${api_version}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${main_run_id}" > "${main_run_json}"
+          test "$(python3 -B scripts/ci/release_contract.py main-run-record \
+            --run-json "${main_run_json}" --run-id "${main_run_id}" \
+            --repository "${GITHUB_REPOSITORY}" --source-sha "${source_sha}")" = "${source_sha}"
+          git cat-file -e "${source_sha}^{commit}"
+          git merge-base --is-ancestor "${source_sha}" HEAD
+
+          gh api --method GET \
+            --header 'Accept: application/vnd.github+json' \
+            --header "X-GitHub-Api-Version: ${api_version}" \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" > "${ref_json}"
+          tag_object="$(jq -er '.object.sha' "${ref_json}")"
+          gh api --method GET \
+            --header 'Accept: application/vnd.github+json' \
+            --header "X-GitHub-Api-Version: ${api_version}" \
+            "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" > "${tag_json}"
+          python3 -B scripts/ci/release_contract.py tag-record \
+            --ref-json "${ref_json}" --tag-json "${tag_json}" \
+            --tag "${tag}" --source-sha "${source_sha}" \
+            --message "Release ${tag} from ${source_sha}" \
+            --tagger-name 'github-actions[bot]' \
+            --tagger-email '41898282+github-actions[bot]@users.noreply.github.com' \
+            --tagger-date "$(git show -s --format=%cI "${source_sha}")"
+
+          # THE ALIAS RE-BIND. A public tag is mutable; a digest is not. The
+          # audit exists because the two can be pulled apart after publication,
+          # so it re-resolves each alias and requires it to still name the
+          # digest the sealed manifest recorded.
+          credentials="${RUNNER_TEMP}/audit-ghcr.netrc"
+          trap 'rm -f -- "${credentials}"' EXIT
+          umask 077
+          printf 'machine ghcr.io\nlogin %s\npassword %s\n' \
+            "${GITHUB_ACTOR}" "${GHCR_PASSWORD}" > "${credentials}"
+          alias_digest() {
+            local repository="$1" reference="$2" accept="$3" token
+            token="$(curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --tlsv1.2 --netrc-file "${credentials}" \
+              --get --data-urlencode "scope=repository:${repository}:pull" \
+              'https://ghcr.io/token' | jq -er '.token // .access_token')"
+            curl --fail-with-body --silent --show-error --location --head \
+              --proto '=https' --tlsv1.2 \
+              --header "Authorization: Bearer ${token}" \
+              --header "Accept: ${accept}" \
+              "https://ghcr.io/v2/${repository}/manifests/${reference}" \
+              | awk 'tolower($1) == "docker-content-digest:" {gsub("\r", "", $2); print $2}' \
+              | tail -n 1
+          }
+          test "$(alias_digest "${IMAGE#ghcr.io/}" "${tag}" \
+            'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json')" \
+            = "${image_digest}"
+          test "$(alias_digest "${CHART#ghcr.io/}" "${version}" \
+            'application/vnd.oci.image.manifest.v1+json')" = "${chart_digest}"
+
+          identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/release-publisher.yml@refs/heads/main"
+          cosign verify \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "${IMAGE}@${image_digest}" >/dev/null
+          cosign verify \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "${CHART}@${chart_digest}" >/dev/null
+
+          trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+            --ignore-unfixed=false --timeout 10m \
+            --cache-dir "${RUNNER_TEMP}/trivy-audit-cache" \
+            "${IMAGE}@${image_digest}"
+
+          printf '## Release audit %s\n\nImage %s\nChart %s\nPlugin %s\n\nAliases, signatures, assets, tag, and scan all revalidated.\n' \
+            "${tag}" "${image_digest}" "${chart_digest}" "${plugin_digest}" >> "${GITHUB_STEP_SUMMARY}"

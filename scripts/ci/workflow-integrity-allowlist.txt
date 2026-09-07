@@ -1,0 +1,47 @@
+# Lift mechanism for scripts/ci/test_workflow_integrity.py
+#
+# That gate refuses four constructs in `.github/workflows/`: an unpinned or
+# uncommented `uses:` (`action-pin`), a workflow or job with no `permissions:`
+# (`permissions`), any appearance of `pull_request_target`
+# (`pull-request-target`), and a checkout that keeps its credential
+# (`persist-credentials`). Each RULE refusal lifts here, one line, with a
+# written reason, and the refusal prints the exact line to paste. Widening this
+# file is a normal part of development -- a one-line change in one PR -- not a
+# security event.
+#
+# Format, one entry per line:
+#
+#     <workflow file> | <rule> | <where> | <reason>
+#
+# `<where>` locates the construct:
+#     action-pin           the `uses:` reference itself
+#     permissions          `<workflow>` for the top-level block, or the job name
+#     pull-request-target  `<file>`
+#     persist-credentials  `job/step name`
+# Steps are located by NAME, never by index: inserting a step above one must
+# not invalidate its entry, and an index is exactly the brittle inventory pin
+# this gate refuses to become.
+#
+# Every field is required. A blank reason is a hard error.
+#
+# The gate REFUSES A STALE ENTRY, so this file ratchets shut rather than
+# accumulating excuses: an entry whose refusal no longer occurs fails the
+# suite until it is removed.
+#
+# READER REFUSALS DO NOT LIFT HERE. The gate produces two kinds of red. A RULE
+# refusal is a verdict about a value the reader RESOLVED, and lifts through one
+# entry below. A READER refusal is raised by scripts/ci/miniyaml.py while the
+# file is being resolved, before any rule consults this file: it prints no lift
+# line, and pasting an entry changes nothing. That is correct rather than a
+# gap -- an entry waives a verdict about a resolved value, and there is no
+# verdict to waive when nothing resolved. The remedies, in order: write the
+# construct in a shape the reader models (block style, quoted scalars), or
+# widen the reader in one reviewed edit to miniyaml.py, which is a gate change
+# and is reviewed like one.
+#
+# EMPTY BY DESIGN. Every workflow in this repository passes all four rules at
+# the head that introduced this gate: every third-party action is pinned to a
+# full commit SHA with its version comment, every workflow and every job
+# declares its own permissions, no workflow names `pull_request_target`, and
+# every checkout sets `persist-credentials: false`. An empty allowlist is the
+# honest record of that -- nothing was waived to reach green.

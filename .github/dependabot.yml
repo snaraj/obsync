@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Two ecosystems, and only two. AGENTS.md requirement 5 makes the Rust
+  # workspace, the plugin, and the dashboard dependency-free by construction --
+  # there is no Cargo manifest with [dependencies], no runtime npm dependency,
+  # and no framework -- so a `cargo` or `npm` ecosystem here would have nothing
+  # to update and would be a standing invitation to acquire one. What DOES
+  # drift is the CI supply chain: the actions the workflows pin by SHA, and the
+  # base images the Dockerfile pins by digest.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

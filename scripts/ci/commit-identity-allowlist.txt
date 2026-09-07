@@ -1,0 +1,38 @@
+# Lift mechanism for scripts/ci/commit_identity_contract.py
+#
+# That gate walks the commit range a push or pull request actually contributes
+# and refuses three constructs: an author or committer email that is not the
+# sanctioned noreply identity (`identity`), a `Co-authored-by:`,
+# `Claude-Session:`, or `Signed-off-by:` trailer in the message body
+# (`trailer`), and a message whose last non-blank line is not one of the
+# AGENTS.md roster signatures (`signature`). All three lift here, one line,
+# with a written reason.
+#
+# Format, one entry per line:
+#
+#     <40-lowercase-hex sha> | <rule> | <reason>
+#
+# `<rule>` is one of: identity, trailer, signature.
+#
+# Entries are keyed by SHA and RULE, never by address. That is deliberate and
+# it is the same rule the failure messages follow: this gate exists to keep a
+# personal address out of the permanently public record, so it must not write
+# one into a tracked file in the course of exempting it. Requirement 11
+# sanctions exactly one address in this repository; recording any other here --
+# even to document a violation -- would be the very disclosure the gate
+# prevents. The SHA is sufficient to identify the commit, and `git log -1 <sha>`
+# shows an investigator the rest locally.
+#
+# Abbreviated SHAs are refused: an abbreviation can become ambiguous as history
+# grows, and an exemption that starts matching a second commit is an exemption
+# nobody wrote.
+#
+# EMPTY BY DESIGN, AND WORTH KEEPING THAT WAY. This repository was bootstrapped
+# under the gate rather than retrofitted with it: every commit reachable from
+# `main` carries the sanctioned identity in both fields, no trailer of any kind,
+# and a roster signature as its last line. An empty allowlist is the honest
+# record of that -- nothing was waived to reach green.
+#
+# The gate is RANGE-scoped, so under normal operation a pull request walks only
+# its own commits and a main push only the merge. Entries here would matter only
+# for a range that reaches back over a commit nobody can now fix.

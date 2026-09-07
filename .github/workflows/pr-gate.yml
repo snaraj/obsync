@@ -1,0 +1,228 @@
+name: PR gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # PR synchronizations may cancel an older run for the same PR. Every main
+  # push instead uses its unique run id, so a later merge can never erase the
+  # successful-CI event that publishes an earlier merge.
+  group: pr-gate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # AGENTS.md requirement 9: the ratchet-only Rust line coverage floor,
+  # measured by scripts/ci/coverage.sh with the pinned llvm-tools component and
+  # no crate. It is 0 because no server code exists yet: the FIRST server PR
+  # sets it to its measured value, and afterwards the floor only rises.
+  # Lowering it weakens an enforced check and is out of policy. This number and
+  # the one AGENTS.md records are ONE fact about ONE measurement: move them
+  # together, or they become two claims that can disagree.
+  RUST_COVERAGE_FLOOR: '0'
+
+jobs:
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test the hostile contract suites
+        run: python3 -B -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Enforce the commit identity, trailer, and signature contract
+        # `gitleaks git` and `gitleaks dir` both read BLOB content, so commit
+        # AUTHOR/COMMITTER identity and message bodies have no coverage from
+        # either scan. This step closes that gap for the range this event
+        # actually contributes -- never all of history, which would
+        # re-litigate the root commit on every run.
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
+            base_sha="${PR_BASE_SHA}"
+            head_sha="${PR_HEAD_SHA}"
+          elif [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF}" = refs/heads/main ]; then
+            base_sha="${PUSH_BASE_SHA}"
+            head_sha="${PUSH_HEAD_SHA}"
+            test "${head_sha}" = "${GITHUB_SHA}"
+          else
+            printf 'unsupported identity-gate event %s on %s\n' "${GITHUB_EVENT_NAME}" "${GITHUB_REF}" >&2
+            exit 1
+          fi
+          python3 -B scripts/ci/commit_identity_contract.py \
+            --repository . --base "${base_sha}" --head "${head_sha}"
+      - name: Enforce one exact patch from the protected base
+        # The seven lockstep locks (docs/release.md), walked over every commit
+        # in the range this event contributes. Two verdicts and no flag.
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
+            base_sha="${PR_BASE_SHA}"
+            head_sha="${PR_HEAD_SHA}"
+            first_parent=()
+          elif [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF}" = refs/heads/main ]; then
+            base_sha="${PUSH_BASE_SHA}"
+            head_sha="${PUSH_HEAD_SHA}"
+            test "${head_sha}" = "${GITHUB_SHA}"
+            first_parent=(--first-parent)
+          else
+            printf 'unsupported release-gate event %s on %s\n' "${GITHUB_EVENT_NAME}" "${GITHUB_REF}" >&2
+            exit 1
+          fi
+          verdict="${RUNNER_TEMP}/transition-verdict.json"
+          python3 -B scripts/ci/release_contract.py transition \
+            --repository . --base "${base_sha}" --head "${head_sha}" \
+            "${first_parent[@]}" | tee "${verdict}"
+          jq -er 'if .class == "artifact" or .class == "no-artifact" then .class else error("unknown transition class") end' \
+            "${verdict}"
+      - name: Publish the transition verdict for the release orchestrator
+        # The orchestrator must learn WHICH range this push validated -- the
+        # push base is unrecoverable from git alone once later merges land --
+        # so the gate's own verdict rides as a run artifact bound to this exact
+        # run id. The artifact supplies the RANGE; the orchestrator re-derives
+        # the classification over it from git and anchors a no-artifact verdict
+        # on a base the verdict cannot choose.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: transition-verdict
+          path: ${{ runner.temp }}/transition-verdict.json
+          if-no-files-found: error
+          # A run re-attempt re-uploads under the same immutable name; without
+          # overwrite the collision fails the gate and strands the merged SHA.
+          overwrite: true
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Validate workflows
+        run: actionlint
+      - name: Reject high or critical source vulnerabilities
+        run: >-
+          trivy fs --scanners vuln
+          --severity HIGH,CRITICAL --exit-code 1
+          --ignore-unfixed=false --timeout 10m
+          --cache-dir "${RUNNER_TEMP}/trivy-source-cache" .
+      - name: Scan full history for secrets
+        run: gitleaks git --no-banner --redact --max-target-megabytes=2 .
+      - name: Scan working tree for secrets
+        run: gitleaks dir --no-banner --redact .
+
+  application:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.19.0'
+          check-latest: false
+      - name: Verify the pinned toolchain exactly
+        # rust-toolchain.toml is the single Rust pin (1.98.0 with rustfmt,
+        # clippy, llvm-tools); `rustup toolchain install` with no argument
+        # installs exactly what that file names. The assertions below prove the
+        # runner is running THAT toolchain and THAT Node, so a silently
+        # upgraded runner image fails here instead of somewhere subtler.
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          test "$(rustc --version | awk '{print $2}')" = "1.98.0"
+          test "$(cargo --version | awk '{print $2}')" = "1.98.0"
+          test "$(node --version)" = "v24.19.0"
+          test "$(npm --version)" = "11.17.0"
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Lint Rust, warnings are errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test the Rust workspace
+        run: cargo test --workspace
+      - name: Enforce the Rust coverage floor
+        run: ./scripts/ci/coverage.sh
+      - name: Build and test the plugin
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          test -f package-lock.json
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm test
+      - name: Test the dashboard
+        run: node --test dashboard/test/
+      - name: Pin the Makefile and CI to one battery
+        run: ./scripts/ci/makefile-invariants.sh
+
+  chart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Lint and render the chart
+        run: |
+          set -euo pipefail
+          helm lint chart
+          # The chart requires the platform's Kubernetes target (>=1.36);
+          # helm template defaults to older capabilities without this flag.
+          helm template smoke chart --kube-version v1.36.0 >/dev/null
+      - name: Prove the rendered ingress, storage, and security pins
+        run: python3 -B scripts/ci/chart_pins.py all
+
+  gate:
+    # The one aggregate context the ruleset requires, listing every job by
+    # name. It exists so a job that stops running -- renamed, conditioned out,
+    # or removed -- turns the gate red instead of quietly leaving a required
+    # check that never reports. `needs` alone is not enough: a skipped
+    # dependency leaves this job skipped, and a skipped required check can
+    # satisfy a ruleset, so each result is asserted explicitly.
+    if: always()
+    needs: [security, application, chart]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every gate job to have succeeded
+        env:
+          SECURITY: ${{ needs.security.result }}
+          APPLICATION: ${{ needs.application.result }}
+          CHART: ${{ needs.chart.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}"; do
+            printf '%-12s %s\n' "${entry%%=*}" "${entry#*=}"
+            if [ "${entry#*=}" != success ]; then
+              failed=1
+            fi
+          done
+          test "${failed}" -eq 0
