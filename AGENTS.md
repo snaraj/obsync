@@ -406,8 +406,18 @@ signature and nothing after it.
   deployment) or is generated once at first boot with mode 0600.
 - Every write to a blob or journal is fsynced (file and directory) before
   the response that acknowledges it.
-- The dashboard sets a strict CSP, `HttpOnly`/`SameSite=Strict` session
-  cookies, and a double-submit CSRF header; it serves no inline script.
+- Every response carries `Cache-Control: no-store`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, and `X-Obsync-Seq`; every HTML response
+  adds `Content-Security-Policy: default-src 'self'; script-src 'self';
+  style-src 'self'; img-src 'self' data:; connect-src 'self';
+  frame-ancestors 'none'; base-uri 'none'; form-action 'self'`. The
+  framework's own refusals (400, 408, 431, 501, 505, 503, 500) are bare
+  status lines with `Connection: close` and no body. The origin never
+  emits `Strict-Transport-Security` or `Date`: the terminator owns the
+  first and the second is a clock dependency with no consumer.
+- The dashboard sets `HttpOnly`/`SameSite=Strict` session cookies and a
+  double-submit CSRF header; it serves no inline script.
 - Nothing listens except the one configured HTTP port and the health
   endpoints on it.
 - The container runs as non-root with a read-only root filesystem, no
