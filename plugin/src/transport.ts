@@ -87,6 +87,19 @@ export interface ChangeRecord {
   conflicted: boolean;
 }
 
+/** One version as `GET /v1/files/{id}` renders it: no file id, no feed seq,
+ * no head or conflict flags. Those live on the file object around it, which is
+ * why a version cannot be spread into a `ChangeRecord` without adding them. */
+export type VersionRecord = Omit<ChangeRecord, "seq" | "file_id" | "heads" | "conflicted">;
+
+export interface FileRecord {
+  file_id: string;
+  domain_id: string;
+  heads: string[];
+  conflicted: boolean;
+  versions: VersionRecord[];
+}
+
 export interface ChangesPage {
   seq: number;
   head_seq: number;
@@ -403,7 +416,7 @@ export class Transport {
     return this.json("POST", `/v1/files/${fileId}/versions`, { auth: "device", json: version });
   }
 
-  getFile(fileId: string): Promise<{ file_id: string; heads: string[]; conflicted: boolean; versions: ChangeRecord[] }> {
+  getFile(fileId: string): Promise<FileRecord> {
     return this.json("GET", `/v1/files/${fileId}`, { auth: "device" });
   }
 

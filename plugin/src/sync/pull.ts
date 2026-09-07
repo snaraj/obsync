@@ -334,7 +334,8 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   const file = await context.transport.getFile(fileId);
   const head = file.versions.find((version) => version.version_id === (file.heads[0] ?? ""));
   if (!head) throw new Error("remote-only: the file has no readable head");
-  const manifest = await decryptRecordManifest(context, head);
+  // The manifest AAD binds the file id; a version record carries none.
+  const manifest = await decryptRecordManifest(context, { ...head, file_id: fileId });
   await materialise(context, manifest);
   const stat = await context.host.stat(manifest.path);
   context.state.setFile(manifest.path, {
@@ -397,7 +398,10 @@ async function reconcile(
   if (mergeable) {
     const baseRecord = file.versions.find((version) => version.version_id === baseId);
     if (baseRecord) {
-      const baseManifest = await decryptRecordManifest(context, baseRecord);
+      const baseManifest = await decryptRecordManifest(context, {
+        ...baseRecord,
+        file_id: change.file_id,
+      });
       const base = await assembleBytes(context, baseManifest);
       const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();

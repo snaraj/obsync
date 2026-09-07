@@ -374,7 +374,8 @@ export class FakeServer {
         domain_id: file.domain_id,
         heads: file.heads,
         conflicted: file.heads.length > 1,
-        versions: file.versions.map((version) => ({ ...version, file_id: fileGet[1] })),
+        // Exactly what the server renders: versions carry no file id.
+        versions: file.versions,
       });
     }
 

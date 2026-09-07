@@ -445,6 +445,10 @@ export class SyncEngine {
       if (!version) continue;
       const change: ChangeRecord = {
         ...version,
+        // A version record names no file: the server renders `file_id` on
+        // the file object, not on each of its versions, and the change
+        // feed is the only place both travel together.
+        file_id: fileId,
         seq: context.state.data.lastSeq,
         heads: file.heads,
         conflicted: true,
