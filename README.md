@@ -24,8 +24,22 @@ account with anyone but yourself.
 ### 1. Run the server
 
 The server speaks plain HTTP on port 8080 and must sit behind a TLS
-terminator (a tunnel or a reverse proxy): Obsidian on iOS and Android refuses
-plain HTTP.
+terminator: Obsidian on iOS and Android refuses plain HTTP. Which terminator
+is your choice, and it is the one deployment decision that changes who else
+is on the path:
+
+| Where you put it | Good for | Notes |
+| --- | --- | --- |
+| LAN or VPN, with a certificate your devices trust | everything, and the right place for a bulk first sync | HTTPS is required on mobile, so the trusted certificate is not optional |
+| An HTTPS reverse proxy on hardware you own | a permanent public endpoint | you own the terminator, so you own its terms |
+| A tunnel provider on a public hostname | reaching the server with no inbound port | read the provider's terms on sustained large transfers, and do the bulk first sync on the LAN |
+
+A tunnel is one supported transport, not the foundation. Whatever terminates
+TLS reads your credentials -- the device secret at pairing, the dashboard
+session cookie -- and never your notes: every chunk and manifest is encrypted
+on the device, and no key that decrypts them ever crosses the wire
+(`docs/architecture.md` section 2.1). "Files of any size" is a promise about
+this server; a provider on the path has its own terms.
 
 Deploy by digest, never by tag. Every Release is signed keyless by this
 repository's publisher and carries `obsync-vX.Y.Z-release-manifest.json`,

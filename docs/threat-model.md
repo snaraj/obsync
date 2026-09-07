@@ -14,7 +14,7 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 | Adversary | Can see or do | Cannot |
 | --- | --- | --- |
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
-| TLS terminator / edge operator | request metadata, ciphertext, device secret once at pairing (v1) | read content, names, or keys; replace plugin code (the plugin never installs served code; updates come from the signed Release) |
+| TLS terminator / edge operator | request metadata, ciphertext, and every credential in clear: the device secret once at pairing (v1), the dashboard session cookie, the recovery sign-in link | read content, names, or keys; replace plugin code (the plugin never installs served code; updates come from the signed Release) |
 | Server operator or stolen volumes | ciphertext, sizes, version graph, device activity | decrypt anything; device secrets are wrapped under the server key |
 | Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves |
@@ -48,8 +48,11 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 
 ## Residual risks recorded for v1
 
-1. Device secret crosses the terminator at pairing (fixed by X25519 in
-   v0.2).
+1. Every credential crosses the TLS terminator in clear: the device secret
+   once at pairing (fixed by X25519 in v0.2) and the dashboard session cookie
+   and recovery link for as long as sessions exist. The terminator is in the
+   trust base for credentials and out of it for content
+   (`docs/architecture.md` 2.1, choice 1).
 2. Single copy on one node (owner-accepted; mirrors and replicas are the
    path).
 3. Desktop vault-boundary races: the plugin binds every path component with
@@ -58,7 +61,16 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
    directory-relative opens, so a local attacker who can race the write
    itself is not defended against (a device's own operating system is a
    non-goal above).
-4. Homegrown primitives: mitigated by published test vectors,
+4. The hop from the TLS terminator to this process is plain HTTP. What
+   bounds it is reachability -- a default-deny network policy and a
+   restricted pod-security level -- and not encryption; a sidecar terminator
+   would make it loopback (`docs/architecture.md` 2.1, choice 2).
+5. On a public hostname behind a tunnel provider, that provider's terms and
+   not this server bound a sustained bulk transfer. The any-size promise is
+   the server's; the transport is the deployer's, and a bulk first sync
+   belongs on a LAN or VPN where one exists (`docs/architecture.md` 2.1,
+   choice 3).
+6. Homegrown primitives: mitigated by published test vectors,
    differential tests against the host's OpenSSL in CI, a verify-only
    asymmetric surface, and constant-time construction by design; a
    dedicated security review is required before any primitive changes.

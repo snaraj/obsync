@@ -41,10 +41,81 @@ There is no mode, flag, or endpoint that hands the server a content key:
 access for anything but a paired device is solved with keys held elsewhere,
 never with plaintext on the server (section 5).
 
-**What the edge sees.** On the reference deployment the TLS terminator is
-Cloudflare's edge. It sees request metadata and the ciphertext bodies, like
-any HTTPS terminator would, and it sees the device secret once at pairing
-(section 4.4 records the phase-2 fix). It never sees vault content.
+**What the edge sees** is stated in full in 2.1 below, with the two other
+trust choices this deployment makes.
+
+### 2.1 Three trust choices, stated (2026-09-07)
+
+Decisions, not oversights. Each says what this process sees, what it never
+sees, and what somebody else is trusted with. All three are application-level
+facts: what the cluster or the edge is configured to do belongs to whoever
+runs it, and is not restated here as if this repository controlled it.
+
+**1. Credentials cross the TLS terminator. Content never does.** Whatever
+terminates TLS in front of this server -- a tunnel connector, a reverse
+proxy, an ingress controller -- reads every request in clear after
+termination. That is the device secret the server issues once at pairing
+(section 4.4) and every credential-bearing request afterwards: the dashboard
+session cookie, the CSRF value, the recovery sign-in link from section 4.5,
+and each request's HMAC. The terminator is therefore inside the trust base
+for CREDENTIALS and outside it for CONTENT. Chunk and manifest bodies are
+ciphertext it cannot read, and no key that would decrypt them travels the
+wire in either direction, so a terminator that recorded everything still
+holds no vault content. The phase-2 X25519 pairing agreement (section 4.4)
+is the fix for the pairing half and is first in line: after it the terminator
+sees only public values there. Nothing removes a terminator from the session
+path; reading cookies is what terminating TLS means.
+
+Strip the terminator entirely and the server's own authentication still
+holds: every device request carries an HMAC over method, path, query,
+timestamp, nonce and body hash, with a +/-300 s window and a 600 s nonce
+cache, so a recorded request cannot be replayed and an altered one cannot be
+presented. What plain HTTP loses is confidentiality of the metadata and of
+the credential itself, never request integrity and never content. This cuts
+the other way too, and it is the reason the private deployment is not a soft
+one: **being on the LAN or the VPN grants nothing to this application.**
+Reaching the port is not authorisation. Every request is still authenticated
+per approved device, and a device that has not been paired and approved --
+however local it is -- can do nothing but be refused.
+
+**2. The hop from that terminator to this process is plain HTTP.** The server
+listens on plain HTTP and never links TLS (requirement 7), so on the
+reference deployment the connector-to-pod hop is unencrypted. What limits who
+can reach it is a default-deny NetworkPolicy admitting exactly one peer and a
+restricted Pod Security level, which withholds the capabilities a
+neighbouring pod would need to read another pod's traffic. That is
+reachability control, and calling it encryption would be the untrue sentence
+this section exists to avoid. The options, with what each costs:
+
+| Option | Cost | What it buys |
+| --- | --- | --- |
+| Plain hop, network-restricted (today) | none | nothing on the wire; rests on the cluster's isolation being what it claims |
+| A TLS terminator as a sidecar in the same pod | one more container, and its certificates | the hop becomes loopback inside one pod, so no network path carries it |
+| A service mesh | a mesh, and everything it brings | mutual TLS between every workload, of which this is one |
+
+Choosing among them is a cluster decision. The application-level fact is
+fixed: this process never encrypts that hop and never claims to.
+
+**3. Transport is the deployer's choice; the size promise is the server's.**
+"Files of any size" is a promise about this server. No code path carries a
+per-file or per-vault limit, and the only refusals are the free-space
+watermark and the account quota, both explicit, both HTTP 507 (requirement
+8). It is not a promise about somebody else's network. A public hostname
+served through a tunnel provider on a free plan is subject to that provider's
+terms, which commonly discourage sustained large non-HTML transfers, and the
+first sync of a vault with video in it is exactly that. The deployment
+choices, and what each is for:
+
+| Deployment | Good for | Notes |
+| --- | --- | --- |
+| LAN or VPN, with a certificate the devices trust | everything, and the only sound place for a bulk first sync | mobile Obsidian requires HTTPS, so the trusted certificate is required, not optional |
+| An HTTPS reverse proxy on hardware the deployer owns | a permanent public endpoint | the deployer owns the terminator, so the deployer owns its terms |
+| A tunnel provider on a public hostname | reaching the server with no inbound port | read the provider's terms; move a bulk first sync onto the LAN |
+
+The reference deployment uses the first (section 10): private connectivity,
+no public hostname, and therefore no third party on the path at all. A tunnel
+is one supported transport, never the foundation: none of the three changes
+what the server does, only who else is on the path.
 
 ## 3. Cryptography
 
