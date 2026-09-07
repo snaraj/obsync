@@ -82,12 +82,18 @@ mod tests {
 
         // Real delivery: without a working handler this signal ends the test
         // process, so a silent no-op cannot pass.
-        let pid = std::process::id().to_string();
-        let status = Command::new("/bin/kill")
-            .args(["-TERM", &pid])
+        //
+        // The signal is sent through the shell's own `kill` builtin rather
+        // than a `kill(1)` binary. POSIX requires every shell to provide it,
+        // while the binary lives in a package the slim image the release
+        // Dockerfile tests in does not install; asking for it there is how
+        // this test used to fail inside the image and pass on a laptop.
+        let pid = std::process::id();
+        let status = Command::new("sh")
+            .args(["-c", &format!("kill -s TERM {pid}")])
             .status()
-            .expect("kill runs");
-        assert!(status.success(), "kill -TERM failed");
+            .expect("the shell runs");
+        assert!(status.success(), "kill -s TERM failed");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while !first.load(Ordering::SeqCst) && Instant::now() < deadline {

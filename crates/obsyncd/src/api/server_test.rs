@@ -409,22 +409,32 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
 
 #[test]
 fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
-    use std::fs::{Permissions, set_permissions};
-    use std::os::unix::fs::PermissionsExt;
-
     let h = Harness::start("readyz");
     assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
 
     // A volume that stops taking writes makes readiness false over the wire.
+    // The volume is stashed and a regular FILE put where it belongs, so the
+    // probe's create under it fails with ENOTDIR. Permissions would not do:
+    // the in-image test stage runs as root, and root ignores a mode that says
+    // read-only, which is exactly how this test used to pass on a laptop and
+    // fail inside the release image.
+    let blobs = h.dir.join("blobs");
+    let stashed = h.dir.join("blobs-stashed");
+    std::fs::rename(&blobs, &stashed).expect("stash the volume");
+    std::fs::write(&blobs, b"not a directory\n").expect("occupy the mount point");
     // The clock moves past the probe cache so the verdict is re-measured
     // rather than remembered.
-    let blobs = h.dir.join("blobs");
-    set_permissions(&blobs, Permissions::from_mode(0o500)).expect("make read-only");
     h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
     let refused = Req::get("/readyz").send(h.addr);
-    set_permissions(&blobs, Permissions::from_mode(0o700)).expect("restore");
+    std::fs::remove_file(&blobs).expect("free the mount point");
+    std::fs::rename(&stashed, &blobs).expect("restore");
     assert_eq!(refused.status, 503, "{}", refused.text());
     assert_eq!(refused.code(), "not_ready");
+    assert_eq!(
+        refused.json().get("detail").and_then(Value::as_str),
+        Some("blobs volume is not writable"),
+        "the refusal names the probe that failed, not the shutdown flag"
+    );
 
     // And a shutdown makes it false immediately, before the listener stops:
     // the probe answers from the flag, not from the volumes.
