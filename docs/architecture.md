@@ -159,11 +159,15 @@ Obsidian has no identity API, so "signed in" means "this device is paired."
 
 ### 4.1 First device
 
-`obsyncd` prints a one-time setup token at first boot. The first plugin
-instance consumes it: `POST /v1/setup` creates the account AND enrols that
+`obsyncd` mints a setup token at first boot and writes it, mode 0600 and
+never logged, to `v1/setup-token` on the journal volume. The first plugin
+instance presents it: `POST /v1/setup` creates the account AND enrols that
 device, returning its device credential, because every later enrolment
 goes through pairing and pairing needs an already-paired device. The
-plugin then generates `VRK` locally. The user is shown the
+plugin then generates `VRK` locally. The token is consumed for setup once,
+but it is not discarded: it remains the dashboard's recovery sign-in for
+the life of the server (§4.5), so its custody equals the recovery
+phrase's. The user is shown the
 recovery phrase (the `VRK` as 24 words from a fixed 2048-word list, with a
 checksum) once and must confirm it. Without any paired device and without
 that phrase the vault is unrecoverable by design.
@@ -213,8 +217,10 @@ terminator sees only public values.
 
 ### 4.5 Dashboard sign-in
 
-v1: a paired device mints a one-time dashboard link (`POST
-/v1/dashboard/login-link`); the setup token doubles as a recovery login.
+v1: a paired device mints a single-use dashboard link (`POST
+/v1/dashboard/login-link`). The setup token from §4.1 remains the recovery
+sign-in, valid for the life of the server and stored only on the journal
+volume.
 Sessions are `HttpOnly`, `SameSite=Strict` cookies with a double-submit
 CSRF header. Phase 2 adds passkeys (WebAuthn): the server gains ECDSA P-256
 verification and a CBOR/COSE subset in `obsync-core`, verify-only, tested
