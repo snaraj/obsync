@@ -43,7 +43,7 @@ chart renders.
    `matchOIDCIdentity`; HelmRelease shaped like the sites (`maxHistory: 2`,
    `driftDetection`, rollback remediation, `deploymentReady: true`).
 5. **Storage:** two static local PersistentVolumes on `local-pie-ssd` under
-   `/mnt/local-pie-ssd/obsidian/{blobs,journal}` (250 GiB and 4 GiB), node
+   `/mnt/local-pie-ssd/obsidian/obsync-{blobs,journal}` (250 GiB and 4 GiB), node
    affinity to the node, `Retain`; pre-bound to the claims the chart creates,
    which are `obsync-blobs` and `obsync-journal` in namespace `obsidian`.
    Every object this chart renders is named for the application, `obsync`,

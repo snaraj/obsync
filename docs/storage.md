@@ -112,7 +112,7 @@ this repository.
 
 ## Reference deployment
 
-Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/{blobs,
+Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/obsync-{blobs,
 journal}` on class `local-pie-ssd`, `Retain`, `WaitForFirstConsumer`,
 `ReadWriteOnce`, node-affine to the single node, claimed by `obsync-blobs`
 and `obsync-journal` in namespace `obsidian`. The claim names come from the
