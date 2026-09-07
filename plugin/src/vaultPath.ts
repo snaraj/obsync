@@ -28,8 +28,23 @@
  * It takes the resolver as a parameter because Node's `path` exists only on
  * desktop; `main.ts` passes it, and nothing under `plugin/src` imports Node.
  *
- * PLATFORM. Identical on desktop and mobile; the extra root proof applies
- * wherever Node's filesystem is used, which is desktop only.
+ * A STRING PROOF IS NOT A FILESYSTEM PROOF. `path.resolve` is lexical: it
+ * knows nothing about what the components ARE. A directory symlink already
+ * inside the vault — `Linked` → somewhere else — passes every string check
+ * and then `mkdir`, `open` and `rename` follow it, which is how a manifest
+ * for `Linked/from-remote.md` wrote outside the vault. `walkVaultPath`
+ * therefore stats every component from the vault root down WITHOUT following
+ * links: each one must be a real directory, never a symlink, and the final
+ * component must be absent, a regular file, or a real directory as the
+ * operation requires. SYMLINKED FOLDERS ARE NOT SYNCED IN v0.1, in either
+ * direction: the watcher and startup reconciliation skip them the same way
+ * they skip hidden folders, and lifting that is a later opt-in with its own
+ * design, not a setting.
+ *
+ * PLATFORM. The string rule is identical on desktop and mobile. The root
+ * proof and the component walk apply wherever Node's filesystem is used,
+ * which is desktop only; mobile reaches the vault exclusively through
+ * Obsidian's adapter, which is confined to the vault by the host app.
  */
 
 export type VaultPathRefusal =
@@ -43,7 +58,12 @@ export type VaultPathRefusal =
   | "dot_segment"
   | "blank_segment"
   | "hidden_segment"
-  | "outside_root";
+  | "outside_root"
+  | "symlink_component"
+  | "not_a_directory"
+  | "not_a_file"
+  | "temp_identity"
+  | "target_identity";
 
 /** Control characters, including NUL, which truncates a path at the syscall. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -109,4 +129,86 @@ export function vaultTarget(root: string, path: string, node: PathResolver): str
     throw new VaultPathError("outside_root");
   }
   return target;
+}
+
+/** What a no-follow stat says about one path component. */
+export interface PathStat {
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  readonly dev: number;
+  readonly ino: number;
+}
+
+/** The filesystem seam: a `lstat` that never follows a link, `null` if absent. */
+export interface PathWalker {
+  lstat(path: string): Promise<PathStat | null>;
+}
+
+/** What the walk found at the last component. */
+export type FinalComponent = "absent" | "file" | "directory" | "other";
+
+export interface WalkResult {
+  target: string;
+  final: FinalComponent;
+  /** The final component's identity, for a caller that must prove it later. */
+  stat: PathStat | null;
+}
+
+/**
+ * The filesystem layer of confinement: `vaultTarget` first, then one
+ * no-follow stat per component from the vault root down.
+ *
+ * Every component that exists must be a real directory and must not be a
+ * symlink; the last one may also be absent or a regular file, and the caller
+ * decides which of those its operation allows. A component that is absent
+ * ends the walk — nothing below an absent directory can exist — so a create
+ * is free to make what is missing and walk again.
+ *
+ * This is the check the string proof cannot make: `path.resolve` collapses
+ * `..` in the STRING, while the kernel resolves symlinks in the FILESYSTEM,
+ * and only one of those two decides where a write lands.
+ */
+export async function walkVaultPath(
+  root: string,
+  path: string,
+  node: PathResolver,
+  walker: PathWalker,
+): Promise<WalkResult> {
+  const target = vaultTarget(root, path, node);
+  const base = node.resolve(root);
+  const rootStat = await walker.lstat(base);
+  if (rootStat === null || !rootStat.isDirectory()) throw new VaultPathError("not_a_directory");
+  if (rootStat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+  const segments = path.split("/");
+  let at = base;
+  for (let index = 0; index < segments.length; index++) {
+    at = node.resolve(at, segments[index] as string);
+    const stat = await walker.lstat(at);
+    if (stat === null) return { target, final: "absent", stat: null };
+    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+    const last = index === segments.length - 1;
+    if (!last) {
+      if (!stat.isDirectory()) throw new VaultPathError("not_a_directory");
+      continue;
+    }
+    if (stat.isDirectory()) return { target, final: "directory", stat };
+    return { target, final: stat.isFile() ? "file" : "other", stat };
+  }
+  // Unreachable: `vaultTarget` already refused a path with no components.
+  throw new VaultPathError("empty");
+}
+
+/** Do two no-follow stats describe the same file? */
+export function sameFile(a: PathStat | null, b: PathStat | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.isFile() &&
+    b.isFile() &&
+    !a.isSymbolicLink() &&
+    !b.isSymbolicLink() &&
+    a.dev === b.dev &&
+    a.ino === b.ino
+  );
 }

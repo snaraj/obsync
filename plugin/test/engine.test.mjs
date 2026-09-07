@@ -677,6 +677,42 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
   engine.stop();
 });
 
+test("a path the host cannot sync is skipped by the watcher and by reconciliation", async () => {
+  const { host, server, state } = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state,
+    transport: new Transport({
+      request: server.request,
+      serverUrl: () => state.data.serverUrl,
+      device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+      edgeHeaders: () => [],
+      now: () => host.clock,
+      sleep: async () => undefined,
+    }),
+    host,
+    domainId: KEYS.domainId,
+    timers,
+  });
+  // What the desktop host reports for a path under a symlinked folder: the
+  // string is a fine vault path, the filesystem says otherwise.
+  host.seed("Linked/note.md", "through a symlink", 1000);
+  host.unsyncable.add("Linked/note.md");
+  host.seed("Notes/ok.md", "an ordinary note", 1000);
+
+  await engine.start();
+  await timers.run(1000, () => state.fileByPath("Notes/ok.md") !== undefined);
+  assert.equal(state.fileByPath("Linked/note.md"), undefined, "reconciliation left it alone");
+  assert.equal(server.journal.length, 1, "only the ordinary note was posted");
+  assert.ok(host.logs.some((line) => line.includes("reconcile decision=queued") && line.includes("skipped=1")));
+
+  engine.changed("Linked/note.md");
+  await timers.run(1000);
+  assert.equal(server.journal.length, 1, "the watcher did not push it either");
+  assert.equal(state.fileByPath("Linked/note.md"), undefined);
+  engine.stop();
+});
+
 test("startup reconciliation tombstones a file deleted while Obsidian was closed", async () => {
   const { host, server, state } = await rig();
   const timers = new FakeTimers();

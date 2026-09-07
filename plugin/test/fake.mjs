@@ -69,6 +69,8 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 /** A vault of files in memory, with the `VaultHost` surface the engine needs. */
 export class FakeHost {
   constructor({ isMobile = false, platform = "linux", appVersion = "0.1.0", deviceName = "test-device" } = {}) {
+    /** Paths the host refuses to sync at all, as a symlinked folder is. */
+    this.unsyncable = new Set();
     this.isMobile = isMobile;
     this.platform = platform;
     this.appVersion = appVersion;
@@ -97,6 +99,11 @@ export class FakeHost {
       mtime: file.mtime,
       size: file.bytes.length,
     }));
+  }
+
+  /** The real host refuses a path with a symlink component; this one is told. */
+  async syncable(path) {
+    return !this.unsyncable.has(path);
   }
 
   async stat(path) {

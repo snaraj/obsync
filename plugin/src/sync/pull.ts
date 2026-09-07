@@ -15,9 +15,12 @@
  * checks each field's type and puts `path` through the one vault-path rule
  * (`vaultPath.ts`), so a compromised paired device cannot name
  * `../../outside-the-vault.md`, an absolute path, or `.obsidian/**` and have
- * the writer land bytes there. A refused version is logged with its file id,
- * skipped without a single write, reported to the user once per file, and
- * the feed moves on — one hostile version cannot wedge sync.
+ * the writer land bytes there. The host refuses on the same terms when the
+ * FILESYSTEM disagrees with the string — a symlinked folder, a temp file
+ * swapped under the writer — and both arrive here as one decision: a refusal
+ * logged with its file id, skipped without a single write, reported to the
+ * user once per file, and the feed moves on, because a hostile version that
+ * could wedge the feed could stop sync for the whole vault.
  *
  * ECHOES. A write this device made comes back down the feed. It is dropped
  * twice over: by `version_id` (the ids this device authored) and by the
@@ -55,7 +58,7 @@ import {
 } from "../crypto";
 import { ChangeRecord } from "../transport";
 import { admissionReason, admit } from "../policy";
-import { assertVaultPath, isVaultPath, vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, assertVaultPath, isVaultPath, vaultPathRefusal } from "../vaultPath";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
 
@@ -223,14 +226,14 @@ async function firstChunk(context: SyncContext, manifest: Manifest): Promise<Byt
  * never recorded, and never retried: the feed advances past it, because a
  * hostile device that could wedge the feed could stop sync for the vault.
  */
-function refuse(context: SyncContext, change: ChangeRecord, error: ManifestError): ApplyResult {
+function refuse(context: SyncContext, change: ChangeRecord, reason: string): ApplyResult {
   context.host.log(
-    `pull path_class=manifest decision=refused reason=${error.reason} file=${change.file_id} seq=${change.seq}`,
+    `pull path_class=manifest decision=refused reason=${reason} file=${change.file_id} seq=${change.seq}`,
   );
   if (!context.refused.has(change.file_id)) {
     context.refused.add(change.file_id);
     context.host.notify(
-      `obsync refused a change from another device: it does not name a plain file inside this vault (${error.reason}). ` +
+      `obsync refused a change from another device: it does not name a plain file inside this vault (${reason}). ` +
         `Nothing was written. File id ${change.file_id}.`,
     );
   }
@@ -246,14 +249,21 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     return "echo";
   }
   if (change.device_id === context.deviceId) return "echo";
-
-  let manifest: Manifest;
   try {
-    manifest = await decryptRecordManifest(context, change);
+    return await applyVersion(context, change);
   } catch (error) {
-    if (!(error instanceof ManifestError)) throw error;
-    return refuse(context, change, error);
+    // Both refusals are the same decision to the user: this version does not
+    // name a file this device may write, by its text (`ManifestError`) or by
+    // what the filesystem says its path IS (`VaultPathError` — a symlinked
+    // folder, a raced temp file). Skip the version, keep the feed moving.
+    if (error instanceof ManifestError) return refuse(context, change, error.reason);
+    if (error instanceof VaultPathError) return refuse(context, change, error.refusal);
+    throw error;
   }
+}
+
+async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
+  const manifest = await decryptRecordManifest(context, change);
   const localPath = context.state.pathByFileId(change.file_id);
   const local = localPath === undefined ? undefined : context.state.fileByPath(localPath);
 

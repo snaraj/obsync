@@ -23,12 +23,16 @@
  * not expose a base path) takes the adapter path automatically; there is no
  * setting for it.
  *
- * PATH CONFINEMENT. Every method here takes a vault path from the engine and
- * puts it through `vaultPath.ts` first; the desktop branch additionally
- * resolves the absolute target and proves it is strictly below the vault
- * root before it opens, renames or unlinks anything. The two layers are
- * deliberately redundant: the string rule states what a vault path IS, and
- * the root proof holds even for a caller that forgot to ask.
+ * PATH CONFINEMENT, in three layers (`vaultPath.ts`). Every method here puts
+ * its path through the string rule; the desktop branch then proves the
+ * resolved absolute target is strictly below the vault root; and before any
+ * `open`, `mkdir`, `rename` or `unlink` it stats every component from the
+ * root down without following links, so a symlinked folder inside the vault
+ * cannot carry a write outside it. A symlinked folder is therefore not
+ * synced at all in v0.1, in either direction. The temp file is opened
+ * exclusive-create and its descriptor is compared with the name before the
+ * first byte and again after the rename, because a check on a NAME is only
+ * true until someone changes what the name means.
  *
  * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
  * The plugin compares versions and tells the user; the trusted source of
@@ -46,13 +50,26 @@ import { fetchRemoteOnly } from "./sync/pull";
 import { newDomainId, newVaultKey } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
-import { PathResolver, assertVaultPath, isVaultPath, vaultTarget } from "./vaultPath";
+import {
+  FinalComponent,
+  PathResolver,
+  PathStat,
+  PathWalker,
+  VaultPathError,
+  WalkResult,
+  assertVaultPath,
+  isVaultPath,
+  sameFile,
+  walkVaultPath,
+} from "./vaultPath";
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
-// rather than as `any`: only these five calls are used, and only on desktop.
+// rather than as `any`: only these calls are used, and only on desktop.
 interface NodeFileHandle {
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   write(buffer: Uint8Array): Promise<{ bytesWritten: number }>;
+  /** `fstat`: the identity of the OPEN file, which no later swap can change. */
+  stat(): Promise<PathStat>;
   close(): Promise<void>;
 }
 interface NodeFs {
@@ -63,6 +80,8 @@ interface NodeFs {
     unlink(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
+    /** No-follow stat. Rejects when the path does not exist. */
+    lstat(path: string): Promise<PathStat>;
   };
 }
 declare const require: (id: string) => unknown;
@@ -78,10 +97,29 @@ function nodeModule<T>(id: string): T | null {
 }
 
 /** What the desktop path needs: the filesystem, the resolver, the vault root. */
-interface DesktopVault {
+export interface DesktopVault {
   fs: NodeFs;
   path: PathResolver;
   base: string;
+}
+
+/**
+ * Node's `lstat` as the walker's seam: absent is `null`, everything else is
+ * the caller's problem. `ENOTDIR` counts as absent because it is what a
+ * lookup THROUGH a non-directory reports, which is the same "nothing here".
+ */
+function walker(fs: NodeFs): PathWalker {
+  return {
+    lstat: async (path) => {
+      try {
+        return await fs.promises.lstat(path);
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return null;
+        throw error;
+      }
+    },
+  };
 }
 
 /** The GitHub Release that carries a version's plugin bundle and its hashes. */
@@ -119,12 +157,65 @@ export function isNewer(candidate: string, current: string): boolean {
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
 
-  constructor(private readonly plugin: ObsyncPlugin) {
+  /**
+   * `desktop` is the filesystem seam. It is discovered from Electron in the
+   * app; a test passes its own so the desktop path can be run against a real
+   * temporary vault, and against a hostile filesystem that swaps a file
+   * under the writer between two checks.
+   */
+  constructor(
+    private readonly plugin: ObsyncPlugin,
+    desktop?: DesktopVault | null,
+  ) {
+    if (desktop !== undefined) {
+      this.desktop = desktop;
+      return;
+    }
     const fs = nodeModule<NodeFs>("fs");
     const path = nodeModule<PathResolver>("path");
     const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
     const base = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
     this.desktop = fs !== null && path !== null && base !== null ? { fs, path, base } : null;
+  }
+
+  /**
+   * The one filesystem gate: the string rule, the root proof, then a
+   * no-follow stat of every component (`vaultPath.ts`). `expect` says what
+   * the last component may be; anything else is refused before the operation
+   * runs, so no `open`, `mkdir`, `rename` or `unlink` ever follows a link.
+   */
+  private async confine(
+    desktop: DesktopVault,
+    path: string,
+    expect: FinalComponent[],
+  ): Promise<WalkResult> {
+    assertVaultPath(path);
+    const found = await walkVaultPath(desktop.base, path, desktop.path, walker(desktop.fs));
+    if (!expect.includes(found.final)) {
+      // The refusal names what the operation needed, not what it found.
+      throw new VaultPathError(expect.includes("directory") ? "not_a_directory" : "not_a_file");
+    }
+    return found;
+  }
+
+  /**
+   * May this device sync this path at all? Desktop refuses a path with a
+   * symlink component — a symlinked folder is out of sync in v0.1, in both
+   * directions — and says so once per event. Mobile reaches the vault only
+   * through Obsidian's adapter, which the host app confines, so there is
+   * nothing here to walk.
+   */
+  async syncable(path: string): Promise<boolean> {
+    const desktop = this.desktop;
+    if (desktop === null) return isVaultPath(path);
+    try {
+      await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+      return true;
+    } catch (error) {
+      if (!(error instanceof VaultPathError)) throw error;
+      this.plugin.log(`host path_class=file decision=not_synced reason=${error.refusal}`);
+      return false;
+    }
   }
 
   get isMobile(): boolean {
@@ -155,6 +246,10 @@ export class ObsidianHost implements VaultHost {
 
   async stat(path: string): Promise<VaultStat | null> {
     assertVaultPath(path);
+    const desktop = this.desktop;
+    if (desktop !== null && (await this.confine(desktop, path, ["absent", "file"])).final === "absent") {
+      return null;
+    }
     const stat = await this.plugin.app.vault.adapter.stat(path);
     if (!stat || stat.type !== "file") return null;
     return { path, mtime: stat.mtime, size: stat.size };
@@ -162,6 +257,8 @@ export class ObsidianHost implements VaultHost {
 
   async read(path: string): Promise<Bytes> {
     assertVaultPath(path);
+    const desktop = this.desktop;
+    if (desktop !== null) await this.confine(desktop, path, ["file"]);
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
   }
 
@@ -183,10 +280,13 @@ export class ObsidianHost implements VaultHost {
       };
     }
     const fs = desktop.fs;
-    const target = vaultTarget(desktop.base, path, desktop.path);
     return {
       size,
+      // The walk runs per window rather than once: a file that becomes a
+      // symlink between two windows is refused at the next one, and a few
+      // `lstat` calls beside an 8 MiB read cost nothing.
       read: async (offset, length) => {
+        const { target } = await this.confine(desktop, path, ["file"]);
         const handle = await fs.promises.open(target, "r");
         try {
           const buffer = new Uint8Array(length);
@@ -212,40 +312,9 @@ export class ObsidianHost implements VaultHost {
    */
   async writer(path: string): Promise<VaultWriter> {
     assertVaultPath(path);
-    const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
     const desktop = this.desktop;
-    if (desktop !== null) {
-      const fs = desktop.fs;
-      // Both the file and its folder are proven to be below the vault root
-      // before a directory is created or a byte is opened.
-      const target = vaultTarget(desktop.base, path, desktop.path);
-      if (folder !== "") {
-        await fs.promises.mkdir(vaultTarget(desktop.base, folder, desktop.path), { recursive: true });
-      }
-      const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
-      const handle = await fs.promises.open(temp, "w");
-      let open = true;
-      return {
-        write: async (bytes) => {
-          await handle.write(bytes);
-        },
-        commit: async (mtime) => {
-          await handle.close();
-          open = false;
-          const seconds = mtime / 1000;
-          await fs.promises.utimes(temp, seconds, seconds);
-          await fs.promises.rename(temp, target);
-          const stat = await fs.promises.stat(target);
-          return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
-        },
-        abort: async () => {
-          if (open) await handle.close();
-          // The temp file sits beside a proven target, so this unlink is
-          // confined by the same proof.
-          await fs.promises.unlink(temp).catch(() => undefined);
-        },
-      };
-    }
+    if (desktop !== null) return this.desktopWriter(desktop, path);
+    const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
     const parts: Bytes[] = [];
     const adapter = this.plugin.app.vault.adapter;
     return {
@@ -272,9 +341,80 @@ export class ObsidianHost implements VaultHost {
     };
   }
 
-  /** Obsidian's own vault-rooted delete; the path rule is applied first. */
+  /**
+   * The desktop write, confined at every step.
+   *
+   * The folder chain is walked before `mkdir` (so nothing is created through
+   * a link) and walked again after it (so what was created is what we now
+   * hold). The temp file is opened EXCLUSIVE-CREATE, which cannot follow a
+   * symlink and cannot open something that already exists, and its
+   * descriptor is then compared with a no-follow stat of the name: the
+   * descriptor is the identity nothing can change, so if the name no longer
+   * means the same file, someone raced us and the write is refused. The same
+   * comparison runs after the rename, because the rename is the moment the
+   * file becomes visible under its real name.
+   */
+  private async desktopWriter(desktop: DesktopVault, path: string): Promise<VaultWriter> {
+    const fs = desktop.fs;
+    const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+    if (folder !== "") {
+      const before = await this.confine(desktop, folder, ["absent", "directory"]);
+      await fs.promises.mkdir(before.target, { recursive: true });
+      await this.confine(desktop, folder, ["directory"]);
+    }
+    const { target } = await this.confine(desktop, path, ["absent", "file"]);
+    const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
+    const handle = await fs.promises.open(temp, "wx");
+    let open = true;
+    const opened = await handle.stat();
+    const proveTemp = async (): Promise<void> => {
+      if (sameFile(opened, await walker(fs).lstat(temp))) return;
+      if (open) await handle.close();
+      open = false;
+      await fs.promises.unlink(temp).catch(() => undefined);
+      throw new VaultPathError("temp_identity");
+    };
+    await proveTemp();
+    return {
+      write: async (bytes) => {
+        await handle.write(bytes);
+      },
+      commit: async (mtime) => {
+        await proveTemp();
+        await handle.close();
+        open = false;
+        const seconds = mtime / 1000;
+        await fs.promises.utimes(temp, seconds, seconds);
+        await fs.promises.rename(temp, target);
+        const landed = await walker(fs).lstat(target);
+        if (!sameFile(opened, landed)) {
+          // Only a plant is removed. A regular file that is not ours is a
+          // file the user may own, and deleting it would be the attack.
+          if (landed !== null && landed.isSymbolicLink()) {
+            await fs.promises.unlink(target).catch(() => undefined);
+          }
+          throw new VaultPathError("target_identity");
+        }
+        const stat = await fs.promises.stat(target);
+        return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+      },
+      abort: async () => {
+        if (open) await handle.close();
+        open = false;
+        // The temp name is ours, created exclusively a moment ago: whatever
+        // carries it now is either our file or a plant, never a user's.
+        await fs.promises.unlink(temp).catch(() => undefined);
+      },
+    };
+  }
+
+  /** Obsidian's own vault-rooted delete; both path rules are applied first. */
   async trash(path: string): Promise<void> {
     assertVaultPath(path);
+    const desktop = this.desktop;
+    if (desktop !== null && (await this.confine(desktop, path, ["absent", "file"])).final === "absent") {
+      return;
+    }
     const file = this.plugin.app.vault.getAbstractFileByPath(path);
     if (file) {
       await this.plugin.app.vault.trash(file, true);

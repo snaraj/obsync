@@ -33,7 +33,7 @@ import { ByteSource } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
-import { vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, vaultPathRefusal } from "../vaultPath";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
 
@@ -57,6 +57,12 @@ export interface VaultHost {
   readonly appVersion: string;
   readonly deviceName: string;
   list(): Promise<VaultStat[]>;
+  /**
+   * May this device sync this path at all? The string rule is not enough on
+   * desktop: a symlinked folder is excluded in both directions in v0.1, and
+   * only the host can see the filesystem (`vaultPath.ts`).
+   */
+  syncable(path: string): Promise<boolean>;
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
@@ -280,6 +286,21 @@ export class SyncEngine {
     this.pending.delete(path);
     if (!this.running) return;
     const context = this.need();
+    // The filesystem gate, which the synchronous watcher entry points cannot
+    // run: a path whose components include a symlink is not synced, and the
+    // host says so once. Anything else that goes wrong while settling is
+    // logged rather than thrown into a timer callback.
+    try {
+      if (!(await context.host.syncable(path))) return;
+      await this.settleTracked(context, path, tries);
+    } catch (error) {
+      context.host.log(
+        `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async settleTracked(context: SyncContext, path: string, tries: number): Promise<void> {
     const first = await context.host.stat(path);
     if (!first) {
       this.deletions.add(path);
@@ -347,6 +368,13 @@ export class SyncEngine {
       context.authored.add(outcome.versionId);
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
+      // A path this device may not sync is a decision, not a failure: it is
+      // logged and dropped, and the status bar stays quiet. Every other
+      // failure is the user's business.
+      if (error instanceof VaultPathError) {
+        context.host.log(`push path_class=file decision=not_synced reason=${error.refusal}`);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       context.host.log(`push path_class=file decision=failed reason=${message}`);
       this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
@@ -420,7 +448,7 @@ export class SyncEngine {
     let queued = 0;
     let skipped = 0;
     for (const file of await context.host.list()) {
-      if (!this.tracked(file.path, "reconcile")) {
+      if (!this.tracked(file.path, "reconcile") || !(await context.host.syncable(file.path))) {
         skipped++;
         continue;
       }
@@ -432,7 +460,7 @@ export class SyncEngine {
     }
     for (const path of Object.keys(context.state.data.files)) {
       if (seen.has(path)) continue;
-      if (!this.tracked(path, "reconcile_state")) {
+      if (!this.tracked(path, "reconcile_state") || !(await context.host.syncable(path))) {
         skipped++;
         continue;
       }
