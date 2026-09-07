@@ -28,7 +28,7 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import { Bytes, hex, randomBytes, sha256, unhex, utf8 } from "./crypto";
 import { ByteSource, bytesSource } from "./chunker";
 import { State } from "./state";
-import { Transport } from "./transport";
+import { DeviceRecord, Transport } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { newDomainId, newVaultKey } from "./pairing";
@@ -398,9 +398,62 @@ export default class ObsyncPlugin extends Plugin {
     return "linux";
   }
 
+  /**
+   * The name this device answers to in the dashboard's device table and in
+   * another device's conflict copies. It is the name the user gave it, or a
+   * platform-and-id default until they give it one.
+   */
   deviceName(): string {
+    const chosen = this.state.data.deviceName;
+    return chosen !== null && chosen.trim() !== "" ? chosen.trim() : this.defaultDeviceName();
+  }
+
+  /** The name a device answers to before anyone renames it. */
+  defaultDeviceName(): string {
     const id = this.state.data.deviceId;
     return id === null ? this.platformName() : `${this.platformName()}-${id.slice(0, 4)}`;
+  }
+
+  /**
+   * Send this device's name and its two ceilings to the server, so the
+   * dashboard's device table shows what this device will actually hold
+   * (`docs/architecture.md` section 8), and keep both locally.
+   */
+  async saveDeviceSettings(name: string): Promise<void> {
+    const deviceId = this.state.data.deviceId;
+    if (deviceId === null) throw new Error("this device is not paired yet");
+    const trimmed = name.trim();
+    // An emptied field means "go back to the default", not "keep whatever
+    // name I had": the fallback is the DERIVED name, never the stored one.
+    await this.transport.patchDevice(deviceId, {
+      name: trimmed === "" ? this.defaultDeviceName() : trimmed,
+      policy: this.state.data.policy,
+    });
+    this.state.data.deviceName = trimmed === "" ? null : trimmed;
+    await this.state.save();
+    this.log(`device decision=updated name_len=${trimmed.length}`);
+  }
+
+  /** Every device paired to this vault, for the settings tab's device list. */
+  async listDevices(): Promise<DeviceRecord[]> {
+    return (await this.transport.devices()).devices;
+  }
+
+  /**
+   * Revoke a device: from this moment the server refuses everything it
+   * sends (`docs/architecture.md` section 4.3). The server refuses to let
+   * the only device revoke itself, and that refusal is surfaced verbatim
+   * rather than swallowed — a user who has just locked themselves out
+   * deserves to know why it did not happen.
+   */
+  async revokeDevice(deviceId: string): Promise<void> {
+    await this.transport.revokeDevice(deviceId);
+    this.log(`device decision=revoked self=${deviceId === this.state.data.deviceId}`);
+    if (deviceId === this.state.data.deviceId) {
+      this.engine?.stop();
+      this.engine = null;
+      this.setStatus({ kind: "error", message: "this device was revoked" });
+    }
   }
 
   defaultDomainId(): string {
@@ -431,19 +484,15 @@ export default class ObsyncPlugin extends Plugin {
    */
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
     try {
-      const result = await this.transport.setup(setupToken, accountName);
-      if (result.device_id && result.device_secret) {
-        this.state.data.deviceId = result.device_id;
-        this.state.data.deviceSecret = result.device_secret;
-        await this.state.save();
-        new Notice("obsync: account created and this device enrolled.");
-      } else {
-        new Notice(
-          "obsync: the account exists, but the server issued no device credential. Pair this device with a code from the dashboard.",
-          10000,
-        );
-        return;
-      }
+      const result = await this.transport.setup(setupToken, accountName, {
+        name: this.deviceName(),
+        platform: this.platformName(),
+        app_version: this.manifest.version,
+      });
+      this.state.data.deviceId = result.device_id;
+      this.state.data.deviceSecret = result.device_secret;
+      await this.state.save();
+      new Notice("obsync: account created and this device enrolled.");
       if (this.state.data.vrk === null) {
         await this.adoptVaultKey(hex(newVaultKey()));
         new RecoveryPhraseModal(this.app, this, true).open();

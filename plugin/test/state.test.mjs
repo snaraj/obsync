@@ -46,6 +46,7 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
     {
       vrk: "aa".repeat(32),
       deviceId: 5,
+      deviceName: { not: "a name" },
       serverUrl: "https://example.invalid",
       lastSeq: "nine",
       edgeHeaders: [{ name: "X-A", value: "1" }, { name: 7 }, "nope"],
@@ -62,6 +63,7 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
   );
   assert.equal(mixed.vrk, "aa".repeat(32));
   assert.equal(mixed.deviceId, null, "a non-string device id is dropped");
+  assert.equal(mixed.deviceName, null, "a non-string device name is dropped");
   assert.equal(mixed.lastSeq, 0, "a non-numeric sequence resets");
   assert.deepEqual(mixed.edgeHeaders, [{ name: "X-A", value: "1" }]);
   assert.deepEqual(Object.keys(mixed.files), ["good"]);

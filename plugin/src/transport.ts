@@ -269,20 +269,19 @@ export class Transport {
   // --- setup and account -------------------------------------------------
 
   /**
-   * First boot. The one-time setup token creates the account AND enrols the
-   * calling device: `docs/protocol.md` documents only `{account_id}` in the
-   * response, but nothing else can give the first device a credential —
-   * every pairing endpoint requires one already. The device credential is
-   * therefore read optionally, and `main.ts` says so plainly when a server
-   * omits it, rather than pretending setup succeeded.
+   * First boot: the one-time setup token creates the account AND enrols this
+   * device in one step, because every later enrolment goes through pairing
+   * and pairing needs an already-paired device (`docs/protocol.md`, setup).
+   * The token is the credential, so the call is unsigned.
    */
   setup(
     setupToken: string,
     accountName: string,
-  ): Promise<{ account_id: string; device_id?: string; device_secret?: string }> {
+    device: { name: string; platform: string; app_version: string },
+  ): Promise<PairingCredential & { account_id: string }> {
     return this.json("POST", "/v1/setup", {
       auth: "none",
-      json: { setup_token: setupToken, account_name: accountName },
+      json: { setup_token: setupToken, account_name: accountName, device },
     });
   }
 
@@ -398,15 +397,6 @@ export class Transport {
     return this.json("GET", `/v1/files/${fileId}`, { auth: "device" });
   }
 
-  getVersion(fileId: string, versionId: string): Promise<ChangeRecord> {
-    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device" });
-  }
-
-  listFiles(after: string | null, limit: number): Promise<{ files: { file_id: string; heads: string[]; conflicted: boolean; latest_ts: number }[]; next: string | null }> {
-    const query = `?limit=${limit}` + (after ? `&after=${after}` : "");
-    return this.json("GET", `/v1/files${query}`, { auth: "device" });
-  }
-
   // --- change feed -------------------------------------------------------
 
   changes(since: number, wait: number, limit = 1000): Promise<ChangesPage> {
@@ -414,21 +404,6 @@ export class Transport {
     return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, {
       auth: "device",
     });
-  }
-
-  /**
-   * The long-poll loop: pages from `since` while `running()` holds. The
-   * caller applies each page and decides what `since` means next; a
-   * `416 seq_ahead` propagates so the engine can resynchronise from zero
-   * (the server's journal was restored behind our sequence).
-   */
-  async *changeFeed(since: number, running: () => boolean): AsyncGenerator<ChangesPage> {
-    let cursor = since;
-    while (running()) {
-      const page = await this.changes(cursor, MAX_WAIT_SECONDS);
-      cursor = page.seq;
-      yield page;
-    }
   }
 
   // --- domains -----------------------------------------------------------

@@ -51,6 +51,8 @@ export interface ObsyncData {
   vrk: string | null;
   deviceId: string | null;
   deviceSecret: string | null;
+  /** What this device calls itself, as renamed here or on another device. */
+  deviceName: string | null;
   serverUrl: string;
   /** Optional service-token headers required by an access-controlled edge. */
   edgeHeaders: EdgeHeader[];
@@ -70,6 +72,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     vrk: null,
     deviceId: null,
     deviceSecret: null,
+    deviceName: null,
     serverUrl: "",
     edgeHeaders: [],
     lastSeq: 0,
@@ -103,6 +106,7 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   data.vrk = typeof loaded["vrk"] === "string" ? loaded["vrk"] : null;
   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;
   data.deviceSecret = typeof loaded["deviceSecret"] === "string" ? loaded["deviceSecret"] : null;
+  data.deviceName = typeof loaded["deviceName"] === "string" ? loaded["deviceName"] : null;
   data.serverUrl = str(loaded["serverUrl"], "");
   data.lastSeq = num(loaded["lastSeq"], 0);
   const headers = loaded["edgeHeaders"];

@@ -13,10 +13,10 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { sandbox } from "./fake.mjs";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -37,39 +37,6 @@ test("the bundler produces the same bytes every time", () => {
   assert.match(first, /manifest\.json bytes=\d+ sha256=[0-9a-f]{64}/);
   assert.match(first, /styles\.css bytes=\d+ sha256=[0-9a-f]{64}/);
 });
-
-/** A throwaway directory where `obsidian` resolves to a stub, as Obsidian's own loader makes it resolve. */
-function sandbox() {
-  const home = mkdtempSync(join(tmpdir(), "obsync-bundle-"));
-  mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
-  writeFileSync(
-    join(home, "node_modules", "obsidian", "package.json"),
-    JSON.stringify({ name: "obsidian", version: "0.0.0", main: "index.js" }),
-  );
-  // The smallest stub that satisfies module-scope evaluation.
-  writeFileSync(
-    join(home, "node_modules", "obsidian", "index.js"),
-    `class Component {}
-class Plugin extends Component {}
-class Modal { constructor(app) { this.app = app; } }
-class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
-class Setting { constructor(el) { this.el = el; } }
-class Notice { constructor(message) { this.message = message; } hide() {} }
-class TFile {}
-class TFolder {}
-class TAbstractFile {}
-module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile,
-  Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
-  requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
-  normalizePath: (p) => p,
-};
-`,
-  );
-  cpSync(join(plugin, "dist"), join(home, "plugin"), { recursive: true });
-  cpSync(join(plugin, "build"), join(home, "build"), { recursive: true });
-  return { home, require: createRequire(join(home, "x.js")) };
-}
 
 test("Obsidian's load path finds the plugin class as the default export", () => {
   build();

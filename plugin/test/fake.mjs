@@ -11,10 +11,53 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
+const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * A throwaway directory where `obsidian` resolves to a stub, the way
+ * Obsidian's own loader makes it resolve. Both `build/` and `dist/` are
+ * copied in, so the compiled modules and the shipped bundle can be required
+ * exactly as the app requires them.
+ */
+export function sandbox() {
+  const home = mkdtempSync(join(tmpdir(), "obsync-sandbox-"));
+  mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
+  writeFileSync(
+    join(home, "node_modules", "obsidian", "package.json"),
+    JSON.stringify({ name: "obsidian", version: "0.0.0", main: "index.js" }),
+  );
+  // The smallest stub that satisfies module-scope evaluation.
+  writeFileSync(
+    join(home, "node_modules", "obsidian", "index.js"),
+    `class Component {}
+class Plugin extends Component {}
+class Modal { constructor(app) { this.app = app; } }
+class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
+class Setting { constructor(el) { this.el = el; } }
+class Notice { constructor(message) { this.message = message; } hide() {} }
+class TFile {}
+class TFolder {}
+class TAbstractFile {}
+module.exports = {
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile,
+  Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
+  requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
+  normalizePath: (p) => p,
+};
+`,
+  );
+  cpSync(join(PLUGIN_DIR, "build"), join(home, "build"), { recursive: true });
+  cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
+  return { home, require: createRequire(join(home, "x.js")) };
+}
 
 const enc = (text) => new TextEncoder().encode(text);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -118,7 +161,17 @@ export class FakeServer {
     this.files = new Map();
     this.journal = [];
     this.seq = 0;
-    this.devices = [{ device_id: deviceId, name: "test-device", platform: "linux", app_version: "0.1.0", last_seen: 0, revoked: false }];
+    this.devices = [
+      {
+        device_id: deviceId,
+        name: "test-device",
+        platform: "linux",
+        app_version: "0.1.0",
+        last_seen: 0,
+        revoked: false,
+        policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 },
+      },
+    ];
     this.requests = [];
     this.unsigned = [];
     this.feedWaiters = [];
@@ -195,6 +248,28 @@ export class FakeServer {
     }
     if (path === "/v1/devices") return this.json(200, { devices: this.devices });
     if (path === "/v1/domains" && request.method === "POST") return this.json(201, {});
+
+    const devicePatch = /^\/v1\/devices\/([0-9a-f]{32})$/.exec(path);
+    if (devicePatch && request.method === "PATCH") {
+      const device = this.devices.find((candidate) => candidate.device_id === devicePatch[1]);
+      if (!device) return this.error(404, "unknown_device");
+      const patch = json();
+      if (typeof patch.name === "string") device.name = patch.name;
+      if (patch.policy) device.policy = patch.policy;
+      return this.json(200, device);
+    }
+
+    const deviceRevoke = /^\/v1\/devices\/([0-9a-f]{32})\/revoke$/.exec(path);
+    if (deviceRevoke && request.method === "POST") {
+      const device = this.devices.find((candidate) => candidate.device_id === deviceRevoke[1]);
+      if (!device) return this.error(404, "unknown_device");
+      const live = this.devices.filter((candidate) => !candidate.revoked);
+      if (device.device_id === request.headers["X-Obsync-Device"] && live.length === 1) {
+        return this.error(409, "only_device", "the only device cannot revoke itself");
+      }
+      device.revoked = true;
+      return this.json(204, {});
+    }
 
     if (path === "/v1/chunks/exists") {
       const { sids } = json();

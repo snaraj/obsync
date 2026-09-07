@@ -36,6 +36,41 @@ function fail(error: unknown): void {
 }
 
 /**
+ * Ask before something irreversible. Revocation is one-way — the server
+ * drops the device's wrapped secret — so it is never one stray tap away.
+ */
+export class ConfirmModal extends Modal {
+  constructor(
+    app: App,
+    private readonly heading: string,
+    private readonly detail: string,
+    private readonly confirmed: () => void,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.setTitle(this.heading);
+    this.contentEl.createEl("p", { text: this.detail });
+    new Setting(this.contentEl)
+      .addButton((button) =>
+        button
+          .setButtonText("Revoke")
+          .setWarning()
+          .onClick(() => {
+            this.close();
+            this.confirmed();
+          }),
+      )
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/**
  * Creator side of pairing. Mints the pairing, keeps `PS` on this device,
  * polls for a claimant, and seals the vault key only after the user has
  * approved the claimant by name and platform.

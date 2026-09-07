@@ -115,14 +115,25 @@ test("the signature covers the query string and the exact chunk body", async () 
 
 test("only the three unauthenticated endpoints go unsigned", async () => {
   const { transport, sent } = harness([
-    { status: 201, text: "{}" },
+    { status: 201, text: JSON.stringify({ account_id: "a", device_id: DEVICE_ID, device_secret: DEVICE_SECRET_HEX }) },
     { status: 201, text: JSON.stringify({ device_id: DEVICE_ID, device_secret: DEVICE_SECRET_HEX }) },
     { status: 200, text: JSON.stringify({ version: "0.1.0", bundle_sha256: "", styles_sha256: "" }) },
     { status: 200, text: "bundle" },
     { status: 200, text: "css" },
     { status: 200, text: JSON.stringify({ devices: [] }) },
   ]);
-  await transport.setup("token", "account");
+  const enrolled = await transport.setup("token", "account", {
+    name: "first-device",
+    platform: "linux",
+    app_version: "0.1.0",
+  });
+  assert.equal(enrolled.device_id, DEVICE_ID, "setup enrols the first device");
+  assert.equal(enrolled.device_secret, DEVICE_SECRET_HEX);
+  assert.deepEqual(JSON.parse(sent[0].body), {
+    setup_token: "token",
+    account_name: "account",
+    device: { name: "first-device", platform: "linux", app_version: "0.1.0" },
+  });
   await transport.pairingClaim("00".repeat(16), "11".repeat(32), { name: "n", platform: "linux", app_version: "0.1.0" });
   await transport.pluginManifest();
   await transport.pluginBundle();
@@ -276,20 +287,6 @@ test("a batched chunk fetch maps parts back to nulls for missing sids", async ()
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);
-});
-
-test("the change feed walks forward and stops when told", async () => {
-  const { transport } = harness([
-    { status: 200, text: JSON.stringify({ seq: 3, head_seq: 5, changes: [{ seq: 3 }] }) },
-    { status: 200, text: JSON.stringify({ seq: 5, head_seq: 5, changes: [{ seq: 5 }] }) },
-  ]);
-  const seen = [];
-  let rounds = 0;
-  for await (const page of transport.changeFeed(0, () => rounds < 2)) {
-    rounds++;
-    seen.push(page.seq);
-  }
-  assert.deepEqual(seen, [3, 5]);
 });
 
 test("body hashing is the protocol's, including the empty body", async () => {

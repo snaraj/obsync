@@ -1,6 +1,7 @@
 /**
- * The settings tab: server, this device, vault key, and the two device
- * ceilings with the platform facts that explain them.
+ * The settings tab: the server, this device (its name and its two ceilings,
+ * saved to the server together), every paired device with a revoke that asks
+ * first, and the vault key.
  *
  * Nothing here can turn a security property off. There is no "encrypt"
  * toggle, no "sign requests" toggle and no "verify" toggle, because those
@@ -23,7 +24,7 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes } from "../policy";
-import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
+import { ConfirmModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
 
 export class ObsyncSettingTab extends PluginSettingTab {
   constructor(
@@ -38,8 +39,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
     containerEl.empty();
     this.server(containerEl);
     this.device(containerEl);
+    this.devices(containerEl);
     this.vaultKey(containerEl);
-    this.ceilings(containerEl);
   }
 
   private server(containerEl: HTMLElement): void {
@@ -143,7 +144,130 @@ export class ObsyncSettingTab extends PluginSettingTab {
               void this.plugin.setUpAccount(token, accountName).then(() => this.display());
             }),
         );
+      return;
     }
+
+    let name = this.plugin.deviceName();
+    const policy = this.plugin.state.data.policy;
+    new Setting(containerEl)
+      .setName("Name")
+      .setDesc("How this device appears in the dashboard's device list and in another device's conflict copies.")
+      .addText((text) =>
+        text.setValue(name).onChange((value) => {
+          name = value;
+        }),
+      );
+    new Setting(containerEl)
+      .setName("Largest file to download")
+      .setDesc(
+        this.plugin.isMobile
+          ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay in the vault and appear under "Show remote-only files", where you can fetch one on demand. Currently ${formatBytes(policy.perFileMaxBytes)}.`
+          : `Desktop streams files in 8 MiB windows through the filesystem, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`,
+      )
+      .addText((text) =>
+        text.setValue(formatBytes(policy.perFileMaxBytes)).onChange((value) => {
+          const bytes = parseBytes(value);
+          if (bytes === null) return;
+          policy.perFileMaxBytes = bytes;
+        }),
+      );
+    new Setting(containerEl)
+      .setName("Total to keep on this device")
+      .setDesc(
+        `The vault may be larger than this device. Above this total, new files stay remote-only. 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`,
+      )
+      .addText((text) =>
+        text.setValue(formatBytes(policy.totalBudgetBytes)).onChange((value) => {
+          const bytes = parseBytes(value);
+          if (bytes === null) return;
+          policy.totalBudgetBytes = bytes;
+        }),
+      );
+    new Setting(containerEl)
+      .setDesc("The name and both ceilings are sent to the server together, so the dashboard shows what this device will actually hold.")
+      .addButton((button) =>
+        button
+          .setButtonText("Save to server")
+          .setCta()
+          .onClick(() => {
+            void (async () => {
+              try {
+                await this.plugin.saveDeviceSettings(name);
+                new Notice("obsync: this device's settings are saved.");
+                this.display();
+              } catch (error) {
+                new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+              }
+            })();
+          }),
+      );
+  }
+
+  /**
+   * Every device paired to this vault, with a revoke that asks first.
+   * Revocation is immediate and one-way: the server drops the device's
+   * wrapped secret and every request it makes from that moment fails
+   * (`docs/architecture.md` section 4.3).
+   */
+  private devices(containerEl: HTMLElement): void {
+    if (!this.plugin.state.paired) return;
+    new Setting(containerEl).setName("Devices").setHeading();
+    const list = containerEl.createDiv();
+    const render = (): void => {
+      list.empty();
+      const loading = list.createEl("p", { text: "Reading the device list…" });
+      void this.plugin
+        .listDevices()
+        .then((devices) => {
+          loading.remove();
+          for (const device of devices) {
+            const self = device.device_id === this.plugin.state.data.deviceId;
+            const setting = new Setting(list)
+              .setName(`${device.name}${self ? " (this device)" : ""}`)
+              .setDesc(
+                `${device.platform}, obsync ${device.app_version}` +
+                  (device.revoked ? " — revoked" : "") +
+                  (device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : ""),
+              );
+            if (device.revoked) continue;
+            setting.addButton((button) =>
+              button
+                .setButtonText("Revoke")
+                .setWarning()
+                .onClick(() => {
+                  new ConfirmModal(
+                    this.app,
+                    `Revoke ${device.name}?`,
+                    self
+                      ? "This device will stop syncing immediately and will need a new pairing code to come back. The vault key stays in this vault's plugin data."
+                      : `${device.name} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
+                    () => {
+                      void (async () => {
+                        try {
+                          await this.plugin.revokeDevice(device.device_id);
+                          new Notice(`obsync: ${device.name} is revoked.`);
+                          render();
+                        } catch (error) {
+                          new Notice(
+                            `obsync: ${device.name} was not revoked — ${error instanceof Error ? error.message : String(error)}`,
+                            10000,
+                          );
+                        }
+                      })();
+                    },
+                  ).open();
+                }),
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          loading.setText(
+            `The device list is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+    };
+    render();
+    new Setting(containerEl).addButton((button) => button.setButtonText("Refresh").onClick(render));
   }
 
   private vaultKey(containerEl: HTMLElement): void {
@@ -166,39 +290,6 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Restore or create").onClick(() => {
           new VaultKeyModal(this.app, this.plugin).open();
-        }),
-      );
-  }
-
-  private ceilings(containerEl: HTMLElement): void {
-    const policy = this.plugin.state.data.policy;
-    new Setting(containerEl).setName("This device's limits").setHeading();
-    new Setting(containerEl)
-      .setName("Largest file to download")
-      .setDesc(
-        this.plugin.isMobile
-          ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay in the vault and appear under "Show remote-only files", where you can fetch one on demand. Currently ${formatBytes(policy.perFileMaxBytes)}.`
-          : `Desktop streams files in 8 MiB windows through the filesystem, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`,
-      )
-      .addText((text) =>
-        text.setValue(formatBytes(policy.perFileMaxBytes)).onChange((value) => {
-          const bytes = parseBytes(value);
-          if (bytes === null) return;
-          policy.perFileMaxBytes = bytes;
-          void this.plugin.state.save();
-        }),
-      );
-    new Setting(containerEl)
-      .setName("Total to keep on this device")
-      .setDesc(
-        `The vault may be larger than this device. Above this total, new files stay remote-only. 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`,
-      )
-      .addText((text) =>
-        text.setValue(formatBytes(policy.totalBudgetBytes)).onChange((value) => {
-          const bytes = parseBytes(value);
-          if (bytes === null) return;
-          policy.totalBudgetBytes = bytes;
-          void this.plugin.state.save();
         }),
       );
   }
