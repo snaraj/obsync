@@ -67,6 +67,7 @@ readonly TOKEN_PATH='/data/journal/v1/setup-token'
 
 run_id="$$-${RANDOM}"
 container="obsync-smoke-${run_id}"
+restored="${container}-restored"
 blobs_volume="obsync-smoke-blobs-${run_id}"
 journal_volume="obsync-smoke-journal-${run_id}"
 started_at="$(date +%s)"
@@ -82,20 +83,23 @@ deny() {
   # The refusal is worth nothing without the server's own account of it, and
   # this is the one place that account exists: the container is about to be
   # removed by the trap.
-  if docker container inspect "${container}" >/dev/null 2>&1; then
-    printf 'image-smoke: --- container logs ---\n' >&2
-    docker logs "${container}" >&2 2>&1 || true
-    printf 'image-smoke: --- container state ---\n' >&2
-    docker container inspect --format \
-      'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' \
-      "${container}" >&2 || true
-  fi
+  local name
+  for name in "${container}" "${restored}"; do
+    if docker container inspect "${name}" >/dev/null 2>&1; then
+      printf 'image-smoke: --- container logs (%s) ---\n' "${name}" >&2
+      docker logs "${name}" >&2 2>&1 || true
+      printf 'image-smoke: --- container state (%s) ---\n' "${name}" >&2
+      docker container inspect --format \
+        'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' \
+        "${name}" >&2 || true
+    fi
+  done
   exit 1
 }
 
 cleanup() {
   local status=$?
-  docker rm --force "${container}" >/dev/null 2>&1 || true
+  docker rm --force "${container}" "${restored}" >/dev/null 2>&1 || true
   docker volume rm --force "${blobs_volume}" "${journal_volume}" >/dev/null 2>&1 || true
   return "${status}"
 }
@@ -205,6 +209,74 @@ case "${hardening}" in
   *) deny "the container did not run hardened: ${hardening}" ;;
 esac
 prove "hardening: the whole run was ${hardening}"
+
+# (6) A RESTORED volume. Everything above proved a fresh volume; a volume
+# restored from a backup, copied by hand, or bind-mounted arrives with
+# whatever modes the copy gave it, and the round-8 reviewer showed a server
+# that served a 0644 recovery credential while logging 0600. So: weaken what
+# the first start left behind -- the real key, the real token, the real
+# roots -- to exactly that shape, start the image a SECOND time on the same
+# volumes, and require every class repaired, said so in the log, and read
+# back at the required mode. Properties 1-5 keep their fresh-volume meaning
+# because this runs after them.
+#
+# The throwaway that weakens the files is the compose path's own pinned
+# terminator image: it has a shell and coreutils, it is already pulled by the
+# compose smoke in the same job, and it is pinned by digest there. The obsync
+# image is distroless and has neither.
+throwaway="$(awk '$1 == "image:" && $2 ~ /^docker\.io\/library\/caddy@sha256:/ { print $2; exit }' deploy/compose/docker-compose.yml)"
+[ -n "${throwaway}" ] \
+  || deny 'no digest-pinned throwaway image in deploy/compose/docker-compose.yml to weaken the volumes with'
+weakened="$(docker run --rm --user 0 \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  "${throwaway}" sh -c 'chmod 0755 /data/blobs/v1 /data/journal/v1 \
+    && chmod 0644 /data/journal/v1/server.key /data/journal/v1/setup-token \
+    && stat -c %a /data/blobs/v1 /data/journal/v1 /data/journal/v1/server.key /data/journal/v1/setup-token' \
+  | tr '\n' ' ')"
+[ "${weakened}" = '755 755 644 644 ' ] \
+  || deny "could not weaken the restored volumes to the reviewer's shape: got '${weakened}'"
+docker run --detach --name "${restored}" \
+  --publish '127.0.0.1::8080' \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  --env "OBSYNC_BLOBS_CAPACITY=${BLOBS_CAPACITY}" \
+  --env "OBSYNC_JOURNAL_CAPACITY=${JOURNAL_CAPACITY}" \
+  "${image}" >/dev/null
+restored_port="$(docker port "${restored}" 8080/tcp | head -n 1)" \
+  || deny 'the restored container published no port for 8080/tcp'
+ready=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  status="$(docker container inspect --format '{{.State.Status}}' "${restored}" 2>/dev/null || true)"
+  [ "${status}" = running ] \
+    || deny "the restored container stopped before it was ready (status=${status:-gone}); a weak mode should be repaired, never served"
+  body="$(curl --silent --show-error --max-time 2 "http://${restored_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    '{"ready":true'*) ready="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${ready}" ] \
+  || deny "no {\"ready\":true from the restored container within ${READY_BUDGET_SECONDS}s"
+restored_logs="$(docker logs "${restored}" 2>&1)"
+for class in blobs_root journal_root server_key setup_token; do
+  printf '%s\n' "${restored_logs}" | grep -q "event=posture path_class=${class} decision=repaired" \
+    || deny "the restored start did not log a repair for ${class}"
+done
+printf '%s\n' "${restored_logs}" | grep -q 'event=setup_token_ready.* mode=0600' \
+  || deny 'the restored start did not log the token at the mode it read back (0600)'
+repaired="$(docker run --rm --user 0 \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  "${throwaway}" stat -c %a /data/blobs/v1 /data/journal/v1 /data/journal/v1/server.key /data/journal/v1/setup-token \
+  | tr '\n' ' ')"
+[ "${repaired}" = '700 700 600 600 ' ] \
+  || deny "the restored volumes read '${repaired}' after the second start, not 700 700 600 600"
+docker stop --time 10 "${restored}" >/dev/null
+prove 'restored volume: a second start on weakened volumes repaired blobs_root, journal_root, server_key and setup_token to 700/700/600/600, logged each repair, and logged only the mode it read back'
 
 printf 'image-smoke: SUMMARY image=%s properties=%d duration=%ds decision=pass\n' \
   "${image}" "${proven}" "$(( $(date +%s) - started_at ))"
