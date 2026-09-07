@@ -172,6 +172,31 @@ test("chunk decryption refuses a wrong cid and a tampered ciphertext", async () 
   await assert.rejects(() => c.decryptChunk(wrongDomain, cid, ciphertext));
 });
 
+test("a chunk whose cid lies about its plaintext is refused, though it decrypts", async () => {
+  // The reachable case for the cid recomputation: a writer that HOLDS the
+  // domain key — a compromised or buggy device — can produce a chunk that
+  // authenticates perfectly under a cid that is not the MAC of its contents.
+  // AES-GCM cannot catch that; recomputing `cid` does.
+  const domainKey = bytes(fixtures.domain_key);
+  const plaintext = utf8("honest bytes\n");
+  const forgedCid = bytes("11".repeat(32));
+  const chunkKey = Buffer.from(hkdfSync("sha256", domainKey, utf8("obsync/v1/chunk"), forgedCid, 32));
+  const nonce = Buffer.from(hkdfSync("sha256", chunkKey, utf8("obsync/v1/nonce"), Buffer.alloc(0), 12));
+  const cipher = createCipheriv("aes-256-gcm", chunkKey, nonce);
+  cipher.setAAD(utf8("obsync/v1/chunk"));
+  const forged = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+
+  // It really does decrypt: the tag verifies under the forged cid's key.
+  const decipher = createDecipheriv("aes-256-gcm", chunkKey, nonce);
+  decipher.setAAD(utf8("obsync/v1/chunk"));
+  decipher.setAuthTag(forged.subarray(forged.length - 16));
+  assert.deepEqual(
+    Buffer.concat([decipher.update(forged.subarray(0, forged.length - 16)), decipher.final()]),
+    Buffer.from(plaintext),
+  );
+  await assert.rejects(() => c.decryptChunk(domainKey, forgedCid, new Uint8Array(forged)), /cid mismatch/);
+});
+
 test("identical plaintext deduplicates, different plaintext does not", async () => {
   const domainKey = bytes(fixtures.domain_key);
   const one = await c.encryptChunk(domainKey, utf8("same bytes"));

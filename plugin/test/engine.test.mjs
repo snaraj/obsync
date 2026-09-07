@@ -151,6 +151,33 @@ test("a pull refuses content whose plaintext hash does not match its manifest", 
   assert.equal(host.files.has("Notes/Tampered.md"), false, "nothing unverified reached the vault");
 });
 
+test("a manifest that lies about its plaintext hash is refused before the write", async () => {
+  const { host, server, context, keys: k } = await rig();
+  const content = enc("honest bytes\n");
+  const { cid, sid, ciphertext } = await c.encryptChunk(k.domainKey, content);
+  server.chunks.set(sid, ciphertext);
+  const frame = await server.publishManifest({
+    fileId: "17".repeat(16),
+    manifest: {
+      v: 1,
+      path: "Notes/Lying.md",
+      size: content.length,
+      mtime: 1757200001000,
+      domain: "0123456789abcdef0123456789abcdef",
+      chunks: [{ sid, cid: c.hex(cid), len: content.length }],
+      sha256: "00".repeat(32),
+      deleted: false,
+    },
+    sids: [sid],
+    parents: [],
+    deviceId: "ffffffffffffffffffffffffffffffff",
+    manifestKey: k.manifestKey,
+    bytes: content.length,
+  });
+  await assert.rejects(() => applyChange(context, frame), /plaintext hash mismatch/);
+  assert.equal(host.files.has("Notes/Lying.md"), false, "nothing unverified reached the vault");
+});
+
 test("our own versions are dropped on the way back down the feed", async () => {
   const { host, server, context } = await rig();
   host.seed("echo.md", "mine", 1000);
