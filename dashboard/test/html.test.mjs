@@ -111,6 +111,26 @@ function forbiddenPatterns(source, needles) {
   return needles.filter((needle) => source.includes(needle)).map((needle) => `forbidden: ${needle}`);
 }
 
+// A guard that reads field names out of the source must not be satisfied by
+// the comment that explains them. Stripping `//` to end of line is safe here
+// only because the test above proves no `://` survives in these files.
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '');
+}
+
+const missingNames = (source, names) => names.filter((name) => !source.includes(name));
+const presentNames = (source, names) => names.filter((name) => source.includes(name));
+
+function providerHits(sources, needles) {
+  const hits = [];
+  for (const [name, source] of Object.entries(sources)) {
+    for (const needle of needles) {
+      if (source.toLowerCase().includes(needle)) hits.push(`${name}: ${needle}`);
+    }
+  }
+  return hits;
+}
+
 /* ---- index.html --------------------------------------------------------- */
 
 test('index.html: no inline script', () => {
@@ -240,6 +260,53 @@ test('dev/mock.mjs answers every endpoint app.js calls', () => {
   assert.deepEqual(missingMockRoutes(APP_JS, MOCK), []);
 });
 
+// The <gc> and <scrub> summaries and the storage scrub object, field for
+// field, as docs/protocol.md pins them under "Dashboard (admin) API". The
+// second half is the half that matters: these are the names this lane read
+// before the contract was written down, and nothing else would notice them
+// coming back.
+test('app.js reads the pinned admin field names and none of the old ones', () => {
+  const pinned = [
+    'chunks_collected',
+    'bytes_collected',
+    'chunks_retained',
+    'chunks_verified',
+    'bytes_verified',
+    'mismatches',
+    'quarantined',
+    'complete_pass',
+    'rate_bytes_per_sec',
+    'versions_per_hour',
+  ];
+  // Comments stripped: the sentence explaining a field must not stand in for
+  // the code reading it.
+  const source = stripComments(`${APP_JS}${LIB_JS}`);
+  assert.deepEqual(missingNames(source, pinned), []);
+
+  const superseded = ['bytes_freed', 'scrub.rate)', 'run.rate)'];
+  assert.deepEqual(presentNames(source, superseded), []);
+});
+
+// AGENTS.md, "Deployment-provider contract": the server knows no provider by
+// name, and the dashboard holds itself to the same line. Needles are built by
+// concatenation so this scan does not match its own source.
+test('no file under dashboard/ names an ingress, edge, or access provider', () => {
+  const needles = ['cloud' + 'flare', 'tail' + 'scale', 'ng' + 'rok', 'fast' + 'ly', 'akam' + 'ai'];
+  const sources = {
+    'index.html': HTML,
+    'app.js': APP_JS,
+    'lib.js': LIB_JS,
+    'app.css': CSS,
+    'dev/mock.mjs': MOCK,
+    'test/html.test.mjs': read('test/html.test.mjs'),
+    'test/lib.test.mjs': read('test/lib.test.mjs'),
+  };
+  assert.deepEqual(providerHits(sources, needles), []);
+  // The page still shows the note; it keys on the mode not being the default.
+  assert.ok(APP_JS.includes("mode !== 'none'"));
+  assert.ok(MOCK.includes("process.env.OBSYNC_EDGE || 'none'"));
+});
+
 test('dev/mock.mjs sends the CSP the dashboard is written against', () => {
   assert.ok(MOCK.includes("default-src 'self'; script-src 'self'; style-src 'self'"));
   assert.ok(MOCK.includes("connect-src 'self'; frame-ancestors 'none'"));
@@ -277,6 +344,16 @@ test('the checks reject a hostile document', () => {
   assert.equal(forbiddenPatterns("el.style.width = '1px';", FORBIDDEN_JS).length, 1);
   assert.equal(forbiddenPatterns('fetch("https://evil.example")', FORBIDDEN_JS).length, 1);
   assert.equal(forbiddenPatterns('node.textContent = x;', FORBIDDEN_JS).length, 0);
+
+  assert.equal(stripComments('a // b\nc'), 'a \nc');
+  assert.equal(stripComments('a /* b\nc */ d'), 'a   d');
+  assert.deepEqual(missingNames('has a', ['a', 'b']), ['b']);
+  assert.deepEqual(presentNames('has a', ['a', 'b']), ['a']);
+  // Built by concatenation for the same reason the needles are: this file is
+  // one of the files the scan reads.
+  const needle = 'cloud' + 'flare';
+  assert.deepEqual(providerHits({ f: `runs on ${'Cloud' + 'Flare'}` }, [needle]), [`f: ${needle}`]);
+  assert.deepEqual(providerHits({ f: 'runs on its own' }, [needle]), []);
 
   assert.deepEqual(mockRouteMarkers("get(`${ADMIN}/nope`)"), ["'GET /nope'"]);
   assert.deepEqual(mockRouteMarkers("function runJob(a) {\n}\nget(`${ADMIN}/x`)"), ["'GET /x'"]);

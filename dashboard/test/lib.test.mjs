@@ -19,6 +19,7 @@ import {
   formatBytes,
   formatDuration,
   formatPolicyBytes,
+  formatRate,
   groupDigits,
   percentOf,
   platformGlyphId,
@@ -161,12 +162,33 @@ test('sparklinePath: negative and non-numeric samples floor at zero', () => {
   assert.equal(sparklinePath([null, 8], 100, 20), 'M0,20 L100,0');
 });
 
-test('versionsPerHour: accepts both shapes the admin API might send', () => {
-  assert.deepEqual(versionsPerHour({ versions_per_hour: [{ count: 3 }, { count: 0 }] }), [3, 0]);
-  assert.deepEqual(versionsPerHour([1, 2, 3]), [1, 2, 3]);
-  assert.deepEqual(versionsPerHour([{ count: -2 }, { count: 'x' }, null]), [0, 0, 0]);
+test('versionsPerHour: reads counts out of the shape docs/protocol.md pins', () => {
+  assert.deepEqual(versionsPerHour({ versions_per_hour: [{ hour: 1757200000, count: 3 }] }), [3]);
+  assert.deepEqual(
+    versionsPerHour({ versions_per_hour: [{ count: -2 }, { count: 'x' }, null] }),
+    [0, 0, 0],
+  );
   assert.deepEqual(versionsPerHour(undefined), []);
   assert.deepEqual(versionsPerHour({}), []);
+});
+
+test('versionsPerHour: a bare array is not the pinned shape and reads as empty', () => {
+  // The tolerance for a loose shape is gone now that the contract is written
+  // down: a server sending something else must fail visibly, not silently.
+  assert.deepEqual(versionsPerHour([1, 2, 3]), []);
+  assert.deepEqual(versionsPerHour({ versions_per_hour: { 0: 1 } }), []);
+  // Nor inside the envelope: an entry is an object with a count, not a bare
+  // number, so a server sending the wrong entry shape reads as zero.
+  assert.deepEqual(versionsPerHour({ versions_per_hour: [1, 2] }), [0, 0]);
+});
+
+test('formatRate: a throughput budget in binary units', () => {
+  assert.equal(formatRate(4 * MiB), '4.0 MiB/s');
+  assert.equal(formatRate(0), '0 B/s');
+  assert.equal(formatRate(1023), '1023 B/s');
+  assert.equal(formatRate(-1), DASH);
+  assert.equal(formatRate(undefined), DASH);
+  assert.equal(formatRate('4MiB/s'), DASH);
 });
 
 test('platformGlyphId: one symbol per protocol platform, generic fallback', () => {

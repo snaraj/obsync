@@ -121,7 +121,8 @@
           <dt>Ran</dt><dd data-f="ts" class="skel">&nbsp;</dd>
           <dt>Duration</dt><dd data-f="duration" class="num skel">&nbsp;</dd>
           <dt>Chunks collected</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
-          <dt>Bytes freed</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Bytes collected</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Chunks retained</dt><dd data-f="retained" class="num skel">&nbsp;</dd>
         </dl>
       </article>
 
@@ -131,7 +132,10 @@
           <dt>Ran</dt><dd data-f="ts" class="skel">&nbsp;</dd>
           <dt>Duration</dt><dd data-f="duration" class="num skel">&nbsp;</dd>
           <dt>Chunks verified</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Bytes verified</dt><dd data-f="bytesv" class="num skel">&nbsp;</dd>
+          <dt>Mismatches</dt><dd data-f="mismatches" class="num skel">&nbsp;</dd>
           <dt>Quarantined</dt><dd data-f="quarantined" class="num skel">&nbsp;</dd>
+          <dt>Coverage</dt><dd data-f="pass" class="skel">&nbsp;</dd>
         </dl>
       </article>
     </div>
@@ -226,7 +230,8 @@
           <dt>State</dt><dd data-f="state" class="skel">&nbsp;</dd>
           <dt>Last run</dt><dd data-f="ts" class="skel">&nbsp;</dd>
           <dt>Chunks collected</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
-          <dt>Bytes freed</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Bytes collected</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Chunks retained</dt><dd data-f="retained" class="num skel">&nbsp;</dd>
         </dl>
         <button type="button" id="run-gc">Run GC</button>
       </article>
@@ -238,6 +243,8 @@
           <dt>Rate</dt><dd data-f="rate" class="mono skel">&nbsp;</dd>
           <dt>Last run</dt><dd data-f="ts" class="skel">&nbsp;</dd>
           <dt>Chunks verified</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Mismatches</dt><dd data-f="mismatches" class="num skel">&nbsp;</dd>
+          <dt>Coverage</dt><dd data-f="pass" class="skel">&nbsp;</dd>
         </dl>
         <button type="button" id="run-scrub">Run scrub</button>
       </article>

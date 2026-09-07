@@ -150,20 +150,25 @@ export function sparklinePath(values, width, height) {
 }
 
 /**
- * Accepts either `{versions_per_hour: [...]}` or a bare array, and either
- * `{count}` entries or bare numbers, because the admin overview's activity
- * shape is not pinned in docs/protocol.md yet. Always returns numbers.
+ * The counts out of `overview.activity`, which docs/protocol.md pins as
+ * `{"versions_per_hour":[{"hour","count"}]}`, 24 entries oldest first. Only
+ * `count` is read: the sparkline's x axis is the hour's position, and the
+ * page labels the ends rather than the buckets.
  */
 export function versionsPerHour(activity) {
-  const raw = Array.isArray(activity)
-    ? activity
-    : activity && Array.isArray(activity.versions_per_hour)
-      ? activity.versions_per_hour
-      : [];
+  const raw = activity && Array.isArray(activity.versions_per_hour)
+    ? activity.versions_per_hour
+    : [];
   return raw.map((entry) => {
-    const v = typeof entry === 'number' ? entry : entry && entry.count;
+    const v = entry && entry.count;
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
   });
+}
+
+/** A throughput budget, e.g. the scrub's `rate_bytes_per_sec`. */
+export function formatRate(bytesPerSecond) {
+  const bytes = formatBytes(bytesPerSecond);
+  return bytes === DASH ? DASH : `${bytes}/s`;
 }
 
 const PLATFORMS = {

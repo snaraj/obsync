@@ -204,12 +204,16 @@ async function loadOverview() {
   applyEdge(data);
 }
 
+// Both summaries are `<gc>` and `<scrub>` from docs/protocol.md, and both
+// are null until the job has run once. A card that omits a field simply has
+// no node for it, so one renderer serves the overview and the storage card.
 function renderGc(root, run) {
   const has = run && typeof run === 'object';
   setTime(field(root, 'ts'), has ? run.ts : null);
   setText(field(root, 'duration'), has ? L.formatDuration(run.duration_ms) : L.DASH);
   setText(field(root, 'chunks'), has ? L.groupDigits(run.chunks_collected) : L.DASH);
-  setText(field(root, 'bytes'), has ? L.formatBytes(run.bytes_freed) : L.DASH);
+  setText(field(root, 'bytes'), has ? L.formatBytes(run.bytes_collected) : L.DASH);
+  setText(field(root, 'retained'), has ? L.groupDigits(run.chunks_retained) : L.DASH);
 }
 
 function renderScrub(root, run) {
@@ -217,7 +221,12 @@ function renderScrub(root, run) {
   setTime(field(root, 'ts'), has ? run.ts : null);
   setText(field(root, 'duration'), has ? L.formatDuration(run.duration_ms) : L.DASH);
   setText(field(root, 'chunks'), has ? L.groupDigits(run.chunks_verified) : L.DASH);
+  setText(field(root, 'bytesv'), has ? L.formatBytes(run.bytes_verified) : L.DASH);
+  setText(field(root, 'mismatches'), has ? L.groupDigits(run.mismatches) : L.DASH);
   setText(field(root, 'quarantined'), has ? L.groupDigits(run.quarantined) : L.DASH);
+  // `complete_pass` says whether the run covered every chunk or stopped
+  // partway through its budget; "partial" is normal, not a fault.
+  setText(field(root, 'pass'), has ? (run.complete_pass ? 'complete pass' : 'partial pass') : L.DASH);
 }
 
 /* ---- devices ------------------------------------------------------------ */
@@ -343,7 +352,7 @@ async function loadStorage() {
 
   const scrub = data.scrub && typeof data.scrub === 'object' ? data.scrub : {};
   setText(field(el('scrub-state'), 'state'), scrub.state);
-  setText(field(el('scrub-state'), 'rate'), scrub.rate);
+  setText(field(el('scrub-state'), 'rate'), L.formatRate(scrub.rate_bytes_per_sec));
   renderScrub(el('scrub-state'), scrub.last);
 
   const quarantine = Array.isArray(data.quarantine) ? data.quarantine : [];

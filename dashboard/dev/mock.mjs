@@ -26,6 +26,11 @@ const DASHBOARD = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT || 8090);
 
+// Defaults to the server's own default so no provider name appears anywhere
+// under dashboard/. Set OBSYNC_EDGE to a managed-edge value to exercise the
+// pairing page's service-token note.
+const EDGE = process.env.OBSYNC_EDGE || 'none';
+
 // The header set the real server sends. Kept here by hand; obsyncd's
 // dashboard handler is the authority, and this must be updated with it.
 const CSP =
@@ -167,8 +172,22 @@ const volumes = [
 ];
 
 const jobs = {
-  gc: { runningUntil: 0, last: { ts: now() - 47 * MINUTE, duration_ms: 1840, chunks_collected: 312, bytes_freed: 2.4 * GiB } },
-  scrub: { runningUntil: 0, last: { ts: now() - 5 * HOUR, duration_ms: 187000, chunks_verified: 41208, bytes_verified: 96 * GiB, quarantined: 1 } },
+  gc: {
+    runningUntil: 0,
+    last: { ts: now() - 47 * MINUTE, duration_ms: 1840, chunks_collected: 312, bytes_collected: 2.4 * GiB, chunks_retained: 40896 },
+  },
+  scrub: {
+    runningUntil: 0,
+    last: {
+      ts: now() - 5 * HOUR,
+      duration_ms: 187000,
+      chunks_verified: 41208,
+      bytes_verified: 96 * GiB,
+      mismatches: 1,
+      quarantined: 1,
+      complete_pass: true,
+    },
+  },
 };
 
 const DECISIONS = [
@@ -201,7 +220,10 @@ function activity() {
   // A plausible day: quiet overnight, busy in two working stretches.
   const shape = [0, 0, 0, 0, 1, 0, 2, 9, 24, 31, 18, 12, 7, 4, 16, 28, 22, 11, 6, 3, 1, 0, 0, 2];
   return {
-    versions_per_hour: shape.map((count, i) => ({ hour: now() - (23 - i) * HOUR, count })),
+    versions_per_hour: shape.map((count, i) => ({
+      hour: Math.floor((now() - (23 - i) * HOUR) / 1000),
+      count,
+    })),
   };
 }
 
@@ -296,7 +318,7 @@ const ADMIN = {
       used_bytes: 171 * GiB,
       device_count: devices.filter((d) => !d.revoked).length,
     },
-    edge: process.env.OBSYNC_EDGE || 'cloudflare',
+    edge: EDGE,
     public_url: 'https://obsync.example',
     volumes,
     versions: { total: 41208, files: 9134 },
@@ -310,7 +332,7 @@ const ADMIN = {
     retention: { days: 30, versions: 10 },
     watermark: { spec: '5%,2GiB' },
     gc: { state: jobState(jobs.gc), last: jobs.gc.last },
-    scrub: { state: jobState(jobs.scrub), rate: '4MiB/s', last: jobs.scrub.last },
+    scrub: { state: jobState(jobs.scrub), rate_bytes_per_sec: 4 * MiB, last: jobs.scrub.last },
     quarantine,
   }),
   'GET /domains': () => ({ domains }),
@@ -431,6 +453,6 @@ server.listen(PORT, HOST, () => {
     `obsync dashboard mock on http://${HOST}:${PORT}\n` +
       `  sign in:  http://${HOST}:${PORT}/login?token=dev\n` +
       `  signed out until you do; the page shows the sign-in explanation.\n` +
-      `  edge mode: ${process.env.OBSYNC_EDGE || 'cloudflare'} (set OBSYNC_EDGE=none to hide the edge note)\n`,
+      `  edge mode: ${EDGE} (OBSYNC_EDGE overrides; any value but "none" shows the pairing token note)\n`,
   );
 });
