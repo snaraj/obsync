@@ -111,7 +111,9 @@ mod tests {
     fn an_unloaded_dashboard_refuses_every_name() {
         let d = Dashboard::unavailable();
         assert!(d.is_empty());
-        let e = d.serve("index.html").expect_err("nothing loaded");
+        let Err(e) = d.serve("index.html") else {
+            panic!("an unloaded dashboard must not serve a file");
+        };
         assert_eq!(e.status, 404);
         assert_eq!(e.code, "dashboard_unavailable");
     }

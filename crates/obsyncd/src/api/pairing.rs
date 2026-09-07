@@ -16,7 +16,7 @@ use crate::storage::types::{DevicePolicy, NewDevice};
 use crate::types::DeviceId;
 
 use super::edge::ClientInfo;
-use super::render::{self, b, n, s};
+use super::render::{self, n, s};
 use super::{ApiError, App, auth, devices, rand};
 
 /// A pairing is claimable for ten minutes and no longer

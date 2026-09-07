@@ -108,13 +108,13 @@ pub fn derive_parts(
             })
         }
         Edge::None => {
-            if trusted.iter().any(|c| c.contains(&peer)) {
-                if let Some(addr) = last_untrusted_hop(forwarded, trusted) {
-                    return Ok(ClientInfo {
-                        address: addr,
-                        country: None,
-                    });
-                }
+            if trusted.iter().any(|c| c.contains(&peer))
+                && let Some(addr) = last_untrusted_hop(forwarded, trusted)
+            {
+                return Ok(ClientInfo {
+                    address: addr,
+                    country: None,
+                });
             }
             Ok(ClientInfo {
                 address: peer.to_string(),
