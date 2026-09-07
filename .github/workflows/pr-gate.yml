@@ -202,6 +202,116 @@ jobs:
       - name: Prove the rendered ingress, storage, and security pins
         run: python3 -B scripts/ci/chart_pins.py all
 
+  container:
+    # The image the release actually ships, built on every PR instead of first
+    # at release time. Without this job a Dockerfile stage that cannot build,
+    # an in-image test that needs the network, or a final image that stopped
+    # being nonroot reaches main green and fails the PUBLISHER -- after the
+    # merge, where nobody is holding the diff any more. The stages also re-run
+    # batteries the `application` job already ran, in a DIFFERENT environment:
+    # `cargo test --workspace --locked` and `npm run build && npm test` inside
+    # a container whose only input is the build context. A test that quietly
+    # depends on the runner's filesystem or process environment passes there
+    # and fails here, which is precisely how the two that do were found.
+    #
+    # NATIVE, ALWAYS. No `--platform`, no buildx builder, no QEMU: the runner
+    # is amd64 and this builds amd64, so a stage failure here is a stage
+    # failure and never an emulator's. The per-target arm64 image stays the
+    # publisher's concern (Dockerfile header; AGENTS.md, "Build, test, and
+    # release flows"), and the static-ELF step below compares the binary's
+    # architecture with the RUNNER's so a cross-build cannot arrive unnoticed.
+    #
+    # SECRETLESS. Nothing is pushed, no registry is logged into, and the job
+    # holds `contents: read`: there is no credential here to push with even if
+    # a step asked to.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        # Every base image is pulled anonymously by digest, so no credential is
+        # needed. An EMPTY DOCKER_CONFIG directory has no `credsStore` entry,
+        # which means no credential helper is consulted at all and a helper
+        # that cannot run can never become this job's failure. Exported through
+        # GITHUB_ENV rather than a job `env:` because `runner.temp` is not a
+        # context a job-level environment may read.
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the server stage natively
+        run: docker build --target server --tag "obsync-gate:${GITHUB_SHA}" .
+      - name: Prove the shipped binary is a static ELF for this runner
+        # distroless/static has no shell, so nothing can be asked INSIDE the
+        # image: `docker create` plus `docker cp` need no entrypoint, no shell
+        # and no run, and the classification happens on the runner. `file` is
+        # the whole verdict because `ldd` answers three different ways for a
+        # static, a static-pie and a dynamic binary, and only one of those
+        # three is a refusal.
+        run: |
+          set -euo pipefail
+          binary="${RUNNER_TEMP}/obsyncd"
+          container="$(docker create "obsync-gate:${GITHUB_SHA}")"
+          docker cp "${container}:/out/obsyncd" "${binary}"
+          docker rm --force "${container}" > /dev/null
+          description="$(file --brief "${binary}")"
+          printf 'obsyncd: %s\n' "${description}"
+          case "$(uname -m)" in
+            x86_64 | amd64) architecture='x86-64' ;;
+            aarch64 | arm64) architecture='ARM aarch64' ;;
+            *)
+              printf 'DENY: unsupported runner architecture %s\n' "$(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          case "${description}" in
+            *"dynamically linked"* | *interpreter*)
+              printf 'DENY: obsyncd is dynamically linked: %s\n' "${description}" >&2
+              exit 1
+              ;;
+          esac
+          case "${description}" in
+            *"ELF 64-bit LSB"*"${architecture}"*) ;;
+            *)
+              printf 'DENY: obsyncd is not a native %s ELF: %s\n' "${architecture}" "${description}" >&2
+              exit 1
+              ;;
+          esac
+          case "${description}" in
+            *"statically linked"* | *"static-pie linked"*) ;;
+            *)
+              printf 'DENY: obsyncd declares no static linkage: %s\n' "${description}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Build the full shipped image
+        # Reuses the server stage cached by the build above and adds the
+        # plugin, bundle and final stages, so the plugin's own npm install,
+        # build and tests inside the image, and the dashboard it serves, are
+        # exercised by the same job.
+        run: docker build --tag "obsync-gate-full:${GITHUB_SHA}" .
+      - name: Prove the image runs as nonroot with the shipped entrypoint
+        # AGENTS.md, "Security invariants": the container runs as non-root and
+        # has no shell. `USER nonroot` is the half of that a manifest cannot
+        # add back, so it is asserted on the bytes rather than on the chart.
+        run: |
+          set -euo pipefail
+          inspected="${RUNNER_TEMP}/obsync-image.json"
+          docker image inspect "obsync-gate-full:${GITHUB_SHA}" > "${inspected}"
+          jq -r '.[0].Config
+                 | "user=\(.User) entrypoint=\(.Entrypoint | tostring) cmd=\(.Cmd | tostring) ports=\(.ExposedPorts | keys | tostring)"' \
+            "${inspected}"
+          test "$(jq -r '.[0].Config.User' "${inspected}")" = nonroot
+          test "$(jq -c '.[0].Config.Entrypoint' "${inspected}")" = '["/usr/local/bin/obsyncd"]'
+          test "$(jq -c '.[0].Config.Cmd' "${inspected}")" = '["serve"]'
+          test "$(jq -c '.[0].Config.ExposedPorts | keys' "${inspected}")" = '["8080/tcp"]'
+
   gate:
     # The one aggregate context the ruleset requires, listing every job by
     # name. It exists so a job that stops running -- renamed, conditioned out,
@@ -210,7 +320,7 @@ jobs:
     # dependency leaves this job skipped, and a skipped required check can
     # satisfy a ruleset, so each result is asserted explicitly.
     if: always()
-    needs: [security, application, chart]
+    needs: [security, application, chart, container]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -220,10 +330,11 @@ jobs:
           SECURITY: ${{ needs.security.result }}
           APPLICATION: ${{ needs.application.result }}
           CHART: ${{ needs.chart.result }}
+          CONTAINER: ${{ needs.container.result }}
         run: |
           set -euo pipefail
           failed=0
-          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}"; do
+          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}" "container=${CONTAINER}"; do
             printf '%-12s %s\n' "${entry%%=*}" "${entry#*=}"
             if [ "${entry#*=}" != success ]; then
               failed=1

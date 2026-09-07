@@ -21,6 +21,15 @@
 # compiler and executing whatever install hooks a dependency tree carries
 # (requirement 5).
 #
+# The two `docker build` entries are the gate's `container` job and the
+# Makefile's `image` target, and they are TWO entries because they prove
+# different things: `--target server` stops at the stage that runs the Rust
+# battery inside the image and cross-links the static binary, while the
+# untargeted build adds the plugin, bundle and final stages. Either one alone
+# leaves half the Dockerfile unbuilt until release time. They are the one pair
+# here that `make check` does not chain -- `check` must stay runnable with no
+# container runtime -- so `make image` is where an author reproduces them.
+#
 # NON-VACUITY IS PROVEN, NOT ASSUMED. Assertion (d) deletes one canonical
 # command from a COPY of each file and requires the same check to fail. A gate
 # that had stopped being able to fail would fail here instead of passing
@@ -45,6 +54,8 @@ CANONICAL=(
   "python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'"
   'gitleaks dir --no-banner --redact'
   'gitleaks git --no-banner --redact --max-target-megabytes=2'
+  'docker build --target server --tag'
+  'docker build --tag'
 )
 
 # The prerequisite list `check` must carry. Stated here so a target silently

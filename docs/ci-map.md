@@ -3,7 +3,9 @@
 Dated 2026-09-07. What each job runs, what that proves, and the exact contexts
 the owner enters into the branch ruleset. `make check` runs the same battery
 locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever
-stop agreeing.
+stop agreeing. The one pair `check` does not chain is the `container` job's two
+`docker build` commands — `check` stays runnable with no container runtime —
+and `make image` reproduces them exactly.
 
 ## `pr-gate.yml` — pull requests, pushes to `main`, manual dispatch
 
@@ -24,9 +26,13 @@ stop agreeing.
 | `application` | `./scripts/ci/coverage.sh` against `RUST_COVERAGE_FLOOR` | Line coverage meets the ratchet-only floor (requirement 9), measured with the pinned `llvm-tools` component and no crate. The floor is ONE fact in three places -- AGENTS.md, the Makefile, and this workflow's env -- and `test_coverage_floor.py` fails the gate if they disagree, if any of the three stops declaring it, or if the step that consumes it is removed. |
 | `application` | `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build`, `npm test` in `plugin/` | The plugin builds from its lockfile with no install hook executed, and its tests pass under `node --test`. |
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
-| `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery, and the check can still fail (it deletes a canonical command from a copy of each file and requires the comparison to refuse it). |
+| `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery — plus the two `docker build` commands `make image` and the `container` job share — and the check can still fail (it deletes a canonical command from a copy of each file and requires the comparison to refuse it). |
 | `chart` | `helm lint chart`, `helm template smoke chart --kube-version v1.36.0` | The chart renders against the platform's Kubernetes target and satisfies its own required, closed `values.schema.json`. |
 | `chart` | `python3 -B scripts/ci/chart_pins.py all` | The three rendered pins below. |
+| `container` | `docker build --target server --tag obsync-gate:<sha> .` | The release stage builds, natively on the amd64 runner with no emulation, including the `cargo test --workspace --locked` battery that runs INSIDE the image and the musl cross-link. Nothing is pushed and no registry is logged into; `DOCKER_CONFIG` points at an empty directory so no credential helper is consulted for the anonymous digest-pinned base-image pulls. |
+| `container` | `docker create` + `docker cp` + `file` on `/out/obsyncd` | The shipped binary is a static ELF for the runner's OWN architecture — the property that lets the final image be distroless/static with no shell. Asked from outside because distroless has no shell to ask inside, and compared against `uname -m` so an emulated cross-build fails instead of passing. |
+| `container` | `docker build --tag obsync-gate-full:<sha> .` | The whole Dockerfile builds: the plugin stage's own `npm ci`/build/test inside the image, the bundle stage the Release asset is exported from, and the final image with the dashboard it serves. |
+| `container` | `docker image inspect` | The shipped image is `User=nonroot` with entrypoint `/usr/local/bin/obsyncd`, command `serve`, and one exposed port `8080/tcp` — the half of AGENTS.md's non-root invariant that lives in the bytes rather than in the chart. |
 | `gate` | asserts each job's result | One aggregate required context that names every job, so a job renamed, conditioned out, or removed turns the gate red instead of leaving a required check that never reports. |
 
 ### What the three chart pins prove
@@ -140,6 +146,7 @@ analyze (javascript-typescript, none)
 analyze (rust, none)
 application
 chart
+container
 gate
 security
 ```
@@ -153,4 +160,7 @@ third-party tool installed only through the checksum-verifying
 `scripts/ci/install-tools.sh`. `scripts/ci/test_workflow_integrity.py` refuses
 any workflow that breaks the pinning, permissions, `pull_request_target`, or
 `persist-credentials` rules, and its allowlist ratchets shut rather than
-accumulating excuses. No external service ever receives repository content.
+accumulating excuses. The `container` job builds and never publishes: no
+registry login, no push, no builder, an empty `DOCKER_CONFIG`, and
+`contents: read` — there is no credential in it to push with. No external
+service ever receives repository content.

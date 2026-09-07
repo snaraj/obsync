@@ -71,7 +71,18 @@ secrets: ## Pinned gitleaks over the working tree and the outgoing range
 build: ## Release binary for the host
 	cargo build --release --locked -p obsyncd
 
-image: ## Build the shipped image locally for this host architecture
+# The gate's `container` job, reproducible before the push: the same two native
+# builds in the same order, so the cached server stage serves the full image
+# exactly as it does in CI. Not a prerequisite of `check`, which must stay
+# runnable with no container runtime at all -- run this one when the Dockerfile,
+# the plugin build, or the dashboard changes.
+#
+# On a host whose Docker declares a `credsStore`, run it as
+# `DOCKER_CONFIG="$$(mktemp -d)" make image`: an empty configuration directory
+# is what keeps a credential helper out of anonymous, digest-pinned base-image
+# pulls, and is what the gate points DOCKER_CONFIG at.
+image: ## Build the release stages locally, exactly as the gate's container job does
+	docker build --target server --tag obsync-server:$$(cat VERSION) .
 	docker build --tag obsync:$$(cat VERSION) .
 
 release-check: ## Classify the outgoing range and walk the seven locks

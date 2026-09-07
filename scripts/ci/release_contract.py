@@ -59,6 +59,7 @@ GITHUB_API_VERSION = "2026-03-10"
 EXPECTED_MAIN_JOBS = {
     "application": "success",
     "chart": "success",
+    "container": "success",
     "gate": "success",
     "security": "success",
 }
@@ -71,6 +72,7 @@ REQUIRED_STATUS_CHECKS = (
     "analyze (rust, none)",
     "application",
     "chart",
+    "container",
     "gate",
     "security",
 )

@@ -32,6 +32,21 @@ IMAGE = contract.EXPECTED_IMAGE
 CHART = contract.EXPECTED_CHART
 
 
+def workflow(name: str) -> dict:
+    """One `.github/workflows` file, resolved structurally by `miniyaml`.
+
+    Never a line match: the whole point of reading the workflow here is that a
+    job the publisher authorizes against must be a job GitHub will actually
+    run, and a reader that refuses what it cannot model is the only way to say
+    that about YAML.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import miniyaml  # noqa: PLC0415
+
+    root = Path(__file__).resolve().parents[2]
+    return miniyaml.load_one((root / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+
+
 def locks(version: str, history: list[str] | None = None) -> dict[str, str]:
     """One consistent snapshot of all six lock files at `version`."""
     entries = [version] + list(history or [])
@@ -1106,28 +1121,87 @@ class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
         # The publisher authorizes against this inventory, so a job renamed or
         # added in pr-gate.yml without updating the contract must fail HERE
         # rather than at the next release.
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import miniyaml  # noqa: PLC0415
-
-        root = Path(__file__).resolve().parents[2]
-        workflow = miniyaml.load_one(
-            (root / ".github" / "workflows" / "pr-gate.yml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(set(workflow["jobs"]), set(contract.EXPECTED_MAIN_JOBS))
+        self.assertEqual(set(workflow("pr-gate.yml")["jobs"]), set(contract.EXPECTED_MAIN_JOBS))
 
     def test_the_codeql_matrix_names_the_expected_jobs(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import miniyaml  # noqa: PLC0415
-
-        root = Path(__file__).resolve().parents[2]
-        workflow = miniyaml.load_one(
-            (root / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
-        )
-        matrix = workflow["jobs"]["analyze"]["strategy"]["matrix"]["include"]
+        matrix = workflow("codeql.yml")["jobs"]["analyze"]["strategy"]["matrix"]["include"]
         rendered = {
             f"analyze ({entry['language']}, {entry['build-mode']})" for entry in matrix
         }
         self.assertEqual(rendered, set(contract.EXPECTED_CODEQL_JOBS))
+
+
+class TheImageBuildIsARequiredGateJob(unittest.TestCase):
+    """`container` builds the released image on every PR, and cannot be lost quietly.
+
+    The gate used to prove everything about this repository EXCEPT the artifact
+    it ships: nothing ran `docker build`, so a stage that could not build at
+    all -- or an in-image test that reached the network -- was discovered by
+    hand, or at release time, long after the merge that broke it.
+
+    There are three separate ways to lose that coverage again and each has its
+    own refusal below: the job deleted from the workflow, the job still running
+    but no longer required by the aggregate `gate` context, or the job dropped
+    from the inventory the publisher authorizes a release against. The set
+    equality in `TheRequiredCheckSetMatchesTheWorkflows` catches neither of the
+    last two, and catches the first only while the inventory still names it --
+    delete the job from BOTH and that assertion goes green on an empty
+    promise.
+    """
+
+    JOB = "container"
+
+    @staticmethod
+    def gate_jobs() -> dict:
+        return workflow("pr-gate.yml")["jobs"]
+
+    def test_the_workflow_declares_the_container_job(self):
+        self.assertIn(self.JOB, self.gate_jobs())
+
+    def test_the_container_job_is_in_the_publisher_inventory(self):
+        # `REQUIRED_STATUS_CHECKS` follows from the inventory by the set
+        # equality above, so naming the inventory here names both.
+        self.assertEqual(contract.EXPECTED_MAIN_JOBS.get(self.JOB), "success")
+
+    def test_the_aggregate_gate_requires_every_job_it_does_not_run(self):
+        # Derived from the workflow, not from a second hardcoded list: a job
+        # added later is required by the aggregate context or it is not a gate
+        # at all, and this refuses the second case without needing an edit.
+        jobs = self.gate_jobs()
+        self.assertEqual(set(jobs["gate"]["needs"]), set(jobs) - {"gate"})
+
+    def test_the_gate_step_asserts_the_result_of_every_job_it_needs(self):
+        # `needs` alone only orders the jobs. The gate's own comment says each
+        # result is asserted explicitly, because a skipped dependency leaves
+        # this job skipped and a skipped required check can satisfy a ruleset.
+        # So every needed job must reach the loop through its own variable.
+        gate = self.gate_jobs()["gate"]
+        step = gate["steps"][0]
+        for job in gate["needs"]:
+            with self.subTest(job=job):
+                expression = "${{ needs." + job + ".result }}"
+                variables = [
+                    name for name, value in step["env"].items() if value == expression
+                ]
+                self.assertEqual(len(variables), 1, f"{job} has no result variable")
+                self.assertIn(f'"{job}=${{{variables[0]}}}"', step["run"])
+
+    def test_the_container_job_builds_the_image_and_pushes_nothing(self):
+        # Vacuity: the three refusals above are equally satisfied by a job that
+        # runs `true`. This one pins what the job is FOR -- both builds, the
+        # release stage and the whole image -- and that it stays secretless:
+        # no push, no registry login, no builder that could emulate a foreign
+        # architecture, and a token that could not push if a step tried.
+        job = self.gate_jobs()[self.JOB]
+        body = "\n".join(
+            step["run"] for step in job["steps"] if isinstance(step.get("run"), str)
+        )
+        self.assertIn("docker build --target server --tag", body)
+        self.assertIn("docker build --tag", body)
+        for forbidden in ("docker push", "docker login", "--platform", "buildx"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body)
+        self.assertEqual(job["permissions"], {"contents": "read"})
 
 
 if __name__ == "__main__":
