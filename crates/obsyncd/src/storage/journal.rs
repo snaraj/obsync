@@ -22,8 +22,8 @@ use obsync_core::json::{self, Value};
 
 use crate::storage::index::{DeviceEntry, DomainEntry, FileEntry, Index};
 use crate::storage::types::{
-    DevicePolicy, DeviceRecord, DomainRecord, GcSummary, ScrubSummary, SeenEvent, SeenKind,
-    StoreError, VersionRecord,
+    DevicePolicy, DeviceRecord, DeviceState, DomainRecord, GcSummary, ScrubSummary, SeenEvent,
+    SeenKind, StoreError, VersionRecord,
 };
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -64,6 +64,8 @@ pub(crate) enum Frame {
         policy: Option<DevicePolicy>,
         app_version: Option<String>,
     },
+    /// A pairing's creator approved the claimant: it becomes active.
+    DeviceActivate { device_id: DeviceId },
     /// A device was revoked; its wrapped secret is destroyed.
     DeviceRevoke { device_id: DeviceId },
     /// A device was deleted (a rejected pairing).
@@ -636,7 +638,7 @@ fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
         ("country", opt_text(&record.country)),
         ("pfm", num(record.policy.per_file_max_bytes)),
         ("budget", num(record.policy.total_budget_bytes)),
-        ("revoked", Value::Bool(record.revoked)),
+        ("state", text(record.state.as_word())),
         ("wrapped", text(hex::encode(wrapped))),
     ])
 }
@@ -658,7 +660,8 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
             per_file_max_bytes: field_num(value, "pfm")?,
             total_budget_bytes: field_num(value, "budget")?,
         },
-        revoked: field_bool(value, "revoked")?,
+        state: DeviceState::parse(field_str(value, "state")?)
+            .ok_or_else(|| StoreError::Corrupt("field state is not a device state".to_string()))?,
     };
     Ok((record, field_bytes::<32>(value, "wrapped")?))
 }
@@ -769,7 +772,9 @@ impl Record {
                     },
                 ));
             }
-            Frame::DeviceRevoke { device_id } | Frame::DeviceDelete { device_id } => {
+            Frame::DeviceActivate { device_id }
+            | Frame::DeviceRevoke { device_id }
+            | Frame::DeviceDelete { device_id } => {
                 pairs.push(("device", text(*device_id)));
             }
             Frame::Version(version) => pairs.push(("version", version_value(version))),
@@ -847,6 +852,9 @@ impl Record {
                     _ => None,
                 },
             },
+            "device_activate" => Frame::DeviceActivate {
+                device_id: field_id(&value, "device")?,
+            },
             "device_revoke" => Frame::DeviceRevoke {
                 device_id: field_id(&value, "device")?,
             },
@@ -896,6 +904,7 @@ impl Frame {
             Frame::Account { .. } => "account",
             Frame::Device { .. } => "device",
             Frame::DeviceUpdate { .. } => "device_update",
+            Frame::DeviceActivate { .. } => "device_activate",
             Frame::DeviceRevoke { .. } => "device_revoke",
             Frame::DeviceDelete { .. } => "device_delete",
             Frame::Version(_) => "version",
@@ -1132,6 +1141,16 @@ mod tests {
                     total_budget_bytes: 7,
                 }),
                 app_version: Some("0.1.1".to_string()),
+            },
+            Frame::Device {
+                record: DeviceRecord {
+                    state: DeviceState::Pending,
+                    ..device.clone()
+                },
+                wrapped: [9u8; 32],
+            },
+            Frame::DeviceActivate {
+                device_id: device.device_id,
             },
             Frame::DeviceRevoke {
                 device_id: device.device_id,

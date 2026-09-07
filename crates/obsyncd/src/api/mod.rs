@@ -174,6 +174,9 @@ impl From<StoreError> for ApiError {
             }
             StoreError::UnknownDevice => ApiError::new(404, code, "no such device"),
             StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
+            StoreError::DevicePending => {
+                ApiError::new(403, code, "device is waiting for pairing approval")
+            }
             StoreError::UnknownFile => ApiError::new(404, code, "no such file"),
             StoreError::UnknownDomain => ApiError::new(404, code, "no such domain"),
             StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
@@ -337,11 +340,30 @@ impl App {
     }
 
     /// Drop expired nonces, pairings, and sessions. Returns the three counts.
+    ///
+    /// A pairing that expired while claimed but unapproved leaves a device
+    /// nobody ever approved. That device is deleted here, secret and all, so
+    /// a claim can never outlive the ten minutes that granted it
+    /// (`docs/architecture.md` 4.2). Each deletion is one log line
+    /// (requirement 12).
     pub fn sweep(&self, now: u64) -> (usize, usize, usize) {
         let nonces = self.nonces.lock().expect("nonce cache").sweep(now);
-        let pairings = self.pairings.lock().expect("pairings").sweep(now);
+        let swept = self.pairings.lock().expect("pairings").sweep(now);
+        for device in &swept.orphans {
+            let decision = match self.store.delete_device(device) {
+                Ok(()) => "deleted",
+                Err(e) => e.code(),
+            };
+            self.log.warn(
+                "pairing_expired",
+                &[
+                    ("device", Val::device(device)),
+                    ("decision", Val::word(decision)),
+                ],
+            );
+        }
         let sessions = self.sessions.lock().expect("sessions").sweep(now);
-        (nonces, pairings, sessions)
+        (nonces, swept.pairings, sessions)
     }
 
     /// The last decisions, newest first, optionally only those whose device id

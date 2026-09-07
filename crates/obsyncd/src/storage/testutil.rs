@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::storage::types::{DevicePolicy, DeviceRecord, VersionRecord};
+use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, VersionRecord};
 use crate::types::{AccountId, DeviceId, FileId, Seq, UnixMs, VersionId};
 
 /// A directory under `std::env::temp_dir()` removed when the test ends,
@@ -64,7 +64,7 @@ pub(crate) fn device_record() -> DeviceRecord {
             per_file_max_bytes: 0,
             total_budget_bytes: 0,
         },
-        revoked: false,
+        state: DeviceState::Active,
     }
 }
 

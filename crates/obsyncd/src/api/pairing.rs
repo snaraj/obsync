@@ -13,6 +13,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
+use crate::storage::types::DeviceState;
 use crate::types::DeviceId;
 
 use super::edge::ClientInfo;
@@ -22,6 +23,17 @@ use super::{ApiError, App, auth, devices, rand};
 /// A pairing is claimable for ten minutes and no longer
 /// (`docs/architecture.md` 4.2).
 pub const PAIRING_TTL_SECS: u64 = 600;
+
+/// What one [`PairingTable::sweep`] removed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    /// How many pairings were forgotten.
+    pub pairings: usize,
+    /// Devices those pairings claimed and nobody approved. The caller deletes
+    /// each one; leaving it would leave a live credential behind an expired
+    /// pairing.
+    pub orphans: Vec<DeviceId>,
+}
 
 /// Where a pairing is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,11 +140,28 @@ impl PairingTable {
         self.entries.is_empty()
     }
 
-    /// Forget pairings whose ten minutes have passed, returning how many went.
-    pub fn sweep(&mut self, now: u64) -> usize {
-        let before = self.entries.len();
-        self.entries.retain(|_, p| p.expires > now);
-        before - self.entries.len()
+    /// Forget pairings whose ten minutes have passed.
+    ///
+    /// An expired pairing that was claimed but never approved leaves a
+    /// device nobody approved. Its id comes back in [`Swept::orphans`] so the
+    /// caller deletes it: expiry must destroy the pending device and its
+    /// wrapped secret, or the claim would outlive the pairing that granted it
+    /// (`docs/architecture.md` 4.2).
+    pub fn sweep(&mut self, now: u64) -> Swept {
+        let mut swept = Swept::default();
+        self.entries.retain(|_, p| {
+            if p.expires > now {
+                return true;
+            }
+            swept.pairings += 1;
+            if p.state == State::Claimed
+                && let Some(claimant) = &p.claimant
+            {
+                swept.orphans.push(claimant.device_id);
+            }
+            false
+        });
+        swept
     }
 
     /// The creator's view.
@@ -205,7 +234,7 @@ impl PairingTable {
         envelope: &str,
         nonce: &str,
         now: u64,
-    ) -> Result<(), ApiError> {
+    ) -> Result<DeviceId, ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
         if &p.creator != actor {
             return Err(not_creator());
@@ -234,9 +263,14 @@ impl PairingTable {
                 ));
             }
         }
+        let claimant = p
+            .claimant
+            .as_ref()
+            .expect("a claimed pairing has one")
+            .device_id;
         p.envelope = Some((envelope.to_string(), nonce.to_string()));
         p.state = State::Approved;
-        Ok(())
+        Ok(claimant)
     }
 
     /// The creator rejects the claimant. Returns the device to delete.
@@ -359,7 +393,9 @@ pub fn claim(
     // cannot both pass `begin_claim`.
     let mut pairings = app.pairings.lock().expect("pairings");
     pairings.begin_claim(id, &enroll, now)?;
-    let (record, secret) = devices::enrol(app, enrolment)?;
+    // The claimant is PENDING: it holds a secret and no authority until the
+    // pairing's creator approves it (`docs/architecture.md` 4.2).
+    let (record, secret) = devices::enrol(app, enrolment, DeviceState::Pending)?;
     pairings.finish_claim(
         id,
         Claimant {
@@ -436,10 +472,21 @@ pub fn approve(
         return Err(ApiError::bad_request("nonce must be 24 hex characters"));
     }
     let now = app.clock.unix_secs();
-    app.pairings
+    let claimant = app
+        .pairings
         .lock()
         .expect("pairings")
         .approve(id, &authed.id, envelope, nonce, now)?;
+    // Approval is what grants authority. If the journal refuses, the device
+    // stays pending and the claimant gains nothing: the safe direction.
+    app.store.activate_device(&claimant)?;
+    app.log.info(
+        "pairing_approved",
+        &[
+            ("device", Val::device(&claimant)),
+            ("by_device", Val::device(&authed.id)),
+        ],
+    );
     Ok(Response::empty(204))
 }
 
@@ -469,6 +516,11 @@ pub fn reject(
 /// `GET /v1/pairing/{id}/envelope`: the claimant fetches the key envelope,
 /// exactly once.
 ///
+/// The one route a device still waiting for approval may reach, so it can
+/// poll for the approval that will activate it. It grants nothing on its
+/// own: only that pairing's claimant is served, and only after the creator
+/// approved (`docs/architecture.md` 4.2).
+///
 /// # Errors
 /// `404 unknown_pairing`, `403 not_claimant`, `409 not_approved`,
 /// `410 envelope_consumed`.
@@ -478,7 +530,7 @@ pub fn envelope(
     client: &ClientInfo,
     id: &str,
 ) -> Result<Response, ApiError> {
-    let authed = auth::device(app, req, client)?;
+    let authed = auth::device_claimant(app, req, client)?;
     let (envelope, nonce) = app
         .pairings
         .lock()
@@ -698,9 +750,66 @@ mod tests {
             .state_for("p1", &creator, NOW + PAIRING_TTL_SECS)
             .expect("state");
         assert_eq!(state, State::Expired);
-        assert_eq!(t.sweep(NOW + 1), 0, "a live pairing is kept");
-        assert_eq!(t.sweep(NOW + PAIRING_TTL_SECS), 1);
+        assert_eq!(t.sweep(NOW + 1), Swept::default(), "a live pairing is kept");
+        assert_eq!(
+            t.sweep(NOW + PAIRING_TTL_SECS),
+            Swept {
+                pairings: 1,
+                orphans: Vec::new()
+            },
+            "an unclaimed pairing leaves no device behind"
+        );
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn approve_names_the_device_to_activate() {
+        let (mut t, creator, claimant) = claimed();
+        assert_eq!(
+            t.approve("p1", &creator, "ct", "aa", NOW)
+                .expect("creator approves"),
+            claimant,
+            "the caller needs the id to activate exactly that device"
+        );
+    }
+
+    #[test]
+    fn an_expired_unapproved_pairing_hands_back_the_device_it_claimed() {
+        let (mut t, _, claimant) = claimed();
+        assert_eq!(
+            t.sweep(NOW + 1),
+            Swept::default(),
+            "still inside the ten minutes"
+        );
+        assert_eq!(
+            t.sweep(NOW + PAIRING_TTL_SECS),
+            Swept {
+                pairings: 1,
+                orphans: vec![claimant]
+            },
+            "an unapproved claim does not outlive its pairing"
+        );
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn an_expired_approved_pairing_hands_back_nothing() {
+        for consume in [false, true] {
+            let (mut t, creator, claimant) = claimed();
+            t.approve("p1", &creator, "ct", "aa", NOW)
+                .expect("approved");
+            if consume {
+                t.take_envelope("p1", &claimant).expect("fetched");
+            }
+            assert_eq!(
+                t.sweep(NOW + PAIRING_TTL_SECS),
+                Swept {
+                    pairings: 1,
+                    orphans: Vec::new()
+                },
+                "the device was activated at approval and stays (consumed: {consume})"
+            );
+        }
     }
 
     #[test]

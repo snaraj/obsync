@@ -64,6 +64,7 @@ fn ready(cfg: &StorageConfig) -> Setup {
             platform: "linux".to_string(),
             app_version: "0.1.0".to_string(),
             secret: [3u8; 32],
+            state: DeviceState::Active,
         })
         .expect("device pairs")
         .device_id;
@@ -379,6 +380,29 @@ fn a_version_needs_its_chunks_its_id_and_a_live_device() {
         .expect_err("an unknown device is refused");
     assert!(matches!(err, StoreError::UnknownDevice), "{err}");
 
+    // A device that claimed a pairing nobody approved writes nothing either,
+    // whether or not the caller remembered to authenticate it.
+    let pending = setup
+        .store
+        .create_device(NewDevice {
+            account_id: setup.account,
+            name: "phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [4u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("device claims")
+        .device_id;
+    let err = setup
+        .store
+        .append_version(NewVersion {
+            device_id: pending,
+            ..version(&setup, file(1), "a", &[], &[sid], false)
+        })
+        .expect_err("a pending device is refused");
+    assert!(matches!(err, StoreError::DevicePending), "{err}");
+
     setup.store.revoke_device(&setup.device).expect("revoke");
     let err = setup
         .store
@@ -531,6 +555,56 @@ fn a_long_poll_wakes_on_an_append_and_otherwise_times_out() {
 }
 
 #[test]
+fn a_pending_device_activates_once_and_never_after_revocation() {
+    let dir = TempDir::new("store-pending");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let account = store.setup("sentinel").expect("setup");
+    let id = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [0x5au8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("device claims")
+        .device_id;
+    assert_eq!(
+        store.device(&id).expect("device").state,
+        DeviceState::Pending
+    );
+    assert_eq!(
+        store.device_secret(&id),
+        Some([0x5au8; 32]),
+        "a pending device holds its secret: it fetches its own envelope with it"
+    );
+
+    store.activate_device(&id).expect("approval activates");
+    assert_eq!(
+        store.device(&id).expect("device").state,
+        DeviceState::Active
+    );
+    store
+        .activate_device(&id)
+        .expect("approving twice is a no-op");
+
+    store.revoke_device(&id).expect("revoke");
+    let err = store
+        .activate_device(&id)
+        .expect_err("a revoked device never comes back");
+    assert!(matches!(err, StoreError::DeviceRevoked), "{err}");
+    assert_eq!(store.device_secret(&id), None);
+
+    let unknown = DeviceId::new([0xfeu8; 16]);
+    assert!(matches!(
+        store.activate_device(&unknown),
+        Err(StoreError::UnknownDevice)
+    ));
+}
+
+#[test]
 fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
     let dir = TempDir::new("store-devices");
     let cfg = config(&dir);
@@ -544,6 +618,7 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
             platform: "macos".to_string(),
             app_version: "0.1.0".to_string(),
             secret,
+            state: DeviceState::Active,
         })
         .expect("device pairs");
     let id = record.device_id;
@@ -610,7 +685,7 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         Some([0u8; 32]),
         "the wrapped secret is destroyed, not just flagged"
     );
-    assert!(store.device(&id).expect("device").revoked);
+    assert!(store.device(&id).expect("device").revoked());
     assert_eq!(store.devices().len(), 1);
 
     store.delete_device(&id).expect("delete");

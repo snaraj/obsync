@@ -727,15 +727,20 @@ fn the_pairing_flow_runs_end_to_end() {
         Some("claimed")
     );
 
+    // The claimant is PENDING: the pairing poll is not its route, and the
+    // state gate answers before the creator check does.
     let wrong = Req::get(&format!("/v1/pairing/{id}"))
         .sign(&claimant, NOW)
         .send(h.addr);
     assert_eq!(wrong.status, 403);
-    assert_eq!(wrong.code(), "not_creator");
+    assert_eq!(wrong.code(), "device_pending");
 
+    // Its own envelope IS its route, and it says "not yet" until approval,
+    // which is exactly what lets the claimant poll.
     let early = Req::get(&format!("/v1/pairing/{id}/envelope"))
         .sign(&claimant, NOW)
         .send(h.addr);
+    assert_eq!(early.status, 409, "{}", early.text());
     assert_eq!(early.code(), "not_approved");
 
     let approve = Req::post(&format!("/v1/pairing/{id}/approve"))
@@ -743,6 +748,14 @@ fn the_pairing_flow_runs_end_to_end() {
         .sign(&creator, NOW)
         .send(h.addr);
     assert_eq!(approve.status, 204, "{}", approve.text());
+
+    // Approval activated it, so the creator-only routes now refuse it for
+    // being the wrong actor rather than for being unapproved.
+    let wrong = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    assert_eq!(wrong.status, 403);
+    assert_eq!(wrong.code(), "not_creator");
 
     let fetch = Req::get(&format!("/v1/pairing/{id}/envelope"))
         .sign(&claimant, NOW)
@@ -761,12 +774,206 @@ fn the_pairing_flow_runs_end_to_end() {
 
     let devices = Req::get("/v1/devices").sign(&creator, NOW).send(h.addr);
     let list = devices.json();
+    let rows = list
+        .get("devices")
+        .and_then(Value::as_array)
+        .expect("devices");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(
+            row.get("state").and_then(Value::as_str),
+            Some("active"),
+            "both devices are approved by now"
+        );
+        assert_eq!(row.get("revoked").and_then(Value::as_bool), Some(false));
+    }
+}
+
+/// Open a pairing on `creator` and claim it, returning the pairing id and the
+/// claimant's credential. The claimant is PENDING: nobody has approved it.
+fn claim_pairing(h: &Harness, creator: &Cred) -> (String, Cred) {
+    let v = Req::post("/v1/pairing")
+        .sign(creator, NOW)
+        .send(h.addr)
+        .json();
+    let id = v
+        .get("pairing_id")
+        .and_then(Value::as_str)
+        .expect("pairing_id")
+        .to_string();
+    let token = v
+        .get("enroll_token")
+        .and_then(Value::as_str)
+        .expect("enroll_token")
+        .to_string();
+    let claimed = Req::post(&format!("/v1/pairing/{id}/claim"))
+        .body(&format!(
+            r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"0.1.0"}}"#
+        ))
+        .send(h.addr);
+    assert_eq!(claimed.status, 201, "{}", claimed.text());
+    (id, Cred::from_json(&claimed.json()))
+}
+
+/// Approve a claimed pairing as its creator.
+fn approve_pairing(h: &Harness, creator: &Cred, id: &str) {
+    let approve = Req::post(&format!("/v1/pairing/{id}/approve"))
+        .body(r#"{"envelope":"Y2lwaGVy","nonce":"0123456789abcdef01234567"}"#)
+        .sign(creator, NOW)
+        .send(h.addr);
+    assert_eq!(approve.status, 204, "{}", approve.text());
+}
+
+/// How many devices the creator's `GET /v1/devices` lists.
+fn device_count(h: &Harness, cred: &Cred) -> usize {
+    Req::get("/v1/devices")
+        .sign(cred, NOW)
+        .send(h.addr)
+        .json()
+        .get("devices")
+        .and_then(Value::as_array)
+        .expect("devices")
+        .len()
+}
+
+#[test]
+fn an_unapproved_claimant_holds_a_secret_and_no_authority() {
+    let h = Harness::start("pairing-pending");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+
+    // The two escalations the claim used to buy: a dashboard session for the
+    // whole account, and revoking the device that has not approved it yet.
+    let link = Req::post("/v1/dashboard/login-link")
+        .body("{}")
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&claimant, NOW)
+        .send(h.addr);
     assert_eq!(
-        list.get("devices")
-            .and_then(Value::as_array)
-            .expect("devices")
-            .len(),
-        2
+        (link.status, revoke.status),
+        (403, 403),
+        "login-link {} / revoke {}",
+        link.text(),
+        revoke.text()
+    );
+    assert_eq!(link.code(), "device_pending");
+    assert_eq!(revoke.code(), "device_pending");
+
+    // Every other authority-carrying route answers the same way; only the
+    // claimant's own envelope is reachable.
+    for res in [
+        Req::get("/v1/account").sign(&claimant, NOW).send(h.addr),
+        Req::get("/v1/devices").sign(&claimant, NOW).send(h.addr),
+        Req::get("/v1/changes?since=0")
+            .sign(&claimant, NOW)
+            .send(h.addr),
+        Req::post("/v1/devices/heartbeat")
+            .body(r#"{"app_version":"0.1.0"}"#)
+            .sign(&claimant, NOW)
+            .send(h.addr),
+        Req::post("/v1/pairing").sign(&claimant, NOW).send(h.addr),
+    ] {
+        assert_eq!(res.status, 403, "{}", res.text());
+        assert_eq!(res.code(), "device_pending");
+    }
+
+    // The creator sees it, truthfully, as pending and not revoked.
+    let rows = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let rows = rows.get("devices").and_then(Value::as_array).expect("rows");
+    let pending = rows
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("the claimant is listed");
+    assert_eq!(
+        pending.get("state").and_then(Value::as_str),
+        Some("pending")
+    );
+    assert_eq!(pending.get("revoked").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        pending.get("last_sign_in").cloned(),
+        Some(Value::Null),
+        "a pending device has signed in to nothing"
+    );
+
+    // Approval, and only approval, hands it authority.
+    approve_pairing(&h, &creator, &id);
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(after.status, 200, "{}", after.text());
+}
+
+#[test]
+fn a_pending_device_never_counts_as_the_second_device() {
+    let h = Harness::start("pairing-last-device");
+    let creator = h.setup_account();
+    let (id, _) = claim_pairing(&h, &creator);
+
+    let alone = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(alone.status, 409, "{}", alone.text());
+    assert_eq!(
+        alone.code(),
+        "last_device",
+        "an unapproved claimant cannot be the device that lets the last one go"
+    );
+
+    // Approved, it counts.
+    approve_pairing(&h, &creator, &id);
+    let now_allowed = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(now_allowed.status, 204, "{}", now_allowed.text());
+}
+
+#[test]
+fn an_expired_pairing_destroys_the_device_it_claimed() {
+    let h = Harness::start("pairing-expiry");
+    let creator = h.setup_account();
+    let (_, claimant) = claim_pairing(&h, &creator);
+    assert_eq!(device_count(&h, &creator), 2, "the claim created a device");
+
+    // The sweeper runs on its own thread in production; the harness drives it
+    // directly so the test does not sleep for ten minutes.
+    h.app.sweep(NOW + crate::api::pairing::PAIRING_TTL_SECS + 1);
+
+    assert_eq!(
+        device_count(&h, &creator),
+        1,
+        "the pending device goes with the pairing that granted it"
+    );
+    let after = Req::get("/v1/pairing/nope/envelope")
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    assert_eq!(
+        after.status,
+        401,
+        "a deleted device is indistinguishable from a bad signature: {}",
+        after.text()
+    );
+    assert_eq!(after.code(), "bad_signature");
+}
+
+#[test]
+fn an_approved_device_survives_its_pairing_expiring() {
+    let h = Harness::start("pairing-expiry-approved");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+
+    h.app.sweep(NOW + crate::api::pairing::PAIRING_TTL_SECS + 1);
+
+    assert_eq!(device_count(&h, &creator), 2);
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(
+        after.status,
+        200,
+        "expiry destroys unapproved claims only: {}",
+        after.text()
     );
 }
 
@@ -804,6 +1011,12 @@ fn rejecting_a_pairing_deletes_the_claimant_device() {
         401,
         "a rejected device is gone: {}",
         after.text()
+    );
+    assert_eq!(
+        after.code(),
+        "bad_signature",
+        "the row is deleted, so the refusal is the unknown-device one and \
+         names no state an attacker could enumerate"
     );
 
     let devices = Req::get("/v1/devices").sign(&creator, NOW).send(h.addr);
@@ -1270,6 +1483,11 @@ fn a_revoked_device_is_refused_from_that_moment() {
         ))
         .send(h.addr);
     let claimant = Cred::from_json(&claimed.json());
+    let approve = Req::post(&format!("/v1/pairing/{id}/approve"))
+        .body(r#"{"envelope":"Y2lwaGVy","nonce":"0123456789abcdef01234567"}"#)
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(approve.status, 204, "{}", approve.text());
     assert_eq!(
         Req::get("/v1/account")
             .sign(&claimant, NOW)

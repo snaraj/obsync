@@ -52,9 +52,9 @@ use self::index::Index;
 use self::journal::{Frame, Journal, Record};
 
 pub use self::types::{
-    AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DomainRecord,
-    FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome, ScrubSummary, SeenEvent,
-    SeenKind, StoreError, VersionRecord, VolumeStatus,
+    AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DeviceState,
+    DomainRecord, FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome,
+    ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
 };
 
 /// The domain separator device secrets and escrowed domain keys rest under
@@ -329,8 +329,13 @@ impl Store {
             .devices
             .get(&v.device_id)
             .ok_or(StoreError::UnknownDevice)?;
-        if device.record.revoked {
-            return Err(StoreError::DeviceRevoked);
+        // Only an active device writes. Authentication refuses a pending or
+        // revoked device first; this is the second wall, so a future caller
+        // that forgets the first cannot append on an unapproved credential.
+        match device.record.state {
+            DeviceState::Active => {}
+            DeviceState::Pending => return Err(StoreError::DevicePending),
+            DeviceState::Revoked => return Err(StoreError::DeviceRevoked),
         }
         if let Some(existing) = index.version(&v.file_id, &v.version_id) {
             let entry = index.files.get(&v.file_id).expect("the version's file");
@@ -479,7 +484,7 @@ impl Store {
             address: None,
             country: None,
             policy: DevicePolicy::default(),
-            revoked: false,
+            state: d.state,
         };
         let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
         let stored = record.clone();
@@ -487,8 +492,13 @@ impl Store {
             record: stored,
             wrapped,
         })?;
-        self.log
-            .info("device_created", &[("device", Val::device(&device_id))]);
+        self.log.info(
+            "device_created",
+            &[
+                ("device", Val::device(&device_id)),
+                ("state", Val::word(d.state.as_word())),
+            ],
+        );
         Ok(record)
     }
 
@@ -504,7 +514,7 @@ impl Store {
     pub fn device_secret(&self, id: &DeviceId) -> Option<[u8; 32]> {
         let index = self.index();
         let entry = index.devices.get(id)?;
-        if entry.record.revoked {
+        if entry.record.revoked() {
             return None;
         }
         Some(self.wrap(id.as_bytes(), &entry.wrapped))
@@ -541,6 +551,40 @@ impl Store {
         Ok(index.devices[id].record.clone())
     }
 
+    /// Activate a pending device: the pairing's creator approved it
+    /// (docs/architecture.md §4.2). Activating an already active device is a
+    /// no-op, so a repeated approval is harmless.
+    ///
+    /// # Errors
+    /// `UnknownDevice` when there is no such device, `DeviceRevoked` when it
+    /// is revoked: revocation destroys the wrapped secret and no approval
+    /// brings it back.
+    pub fn activate_device(&self, id: &DeviceId) -> Result<(), StoreError> {
+        let mut journal = self.journal();
+        let mut index = self.index();
+        let state = index
+            .devices
+            .get(id)
+            .map(|entry| entry.record.state)
+            .ok_or(StoreError::UnknownDevice)?;
+        match state {
+            DeviceState::Active => return Ok(()),
+            DeviceState::Revoked => return Err(StoreError::DeviceRevoked),
+            DeviceState::Pending => {}
+        }
+        append(&mut journal, &mut index, |_| Frame::DeviceActivate {
+            device_id: *id,
+        })?;
+        self.log.info(
+            "device_activated",
+            &[
+                ("device", Val::device(id)),
+                ("decision", Val::word("approved")),
+            ],
+        );
+        Ok(())
+    }
+
     /// Revoke a device: every later request from it fails.
     pub fn revoke_device(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
@@ -571,6 +615,13 @@ impl Store {
         append(&mut journal, &mut index, |_| Frame::DeviceDelete {
             device_id: *id,
         })?;
+        self.log.info(
+            "device_deleted",
+            &[
+                ("device", Val::device(id)),
+                ("decision", Val::word("deleted")),
+            ],
+        );
         Ok(())
     }
 

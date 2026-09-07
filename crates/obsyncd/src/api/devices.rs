@@ -7,7 +7,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
-use crate::storage::types::{DevicePolicy, DeviceRecord, NewDevice};
+use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, NewDevice};
 
 use super::edge::ClientInfo;
 use super::render::{self};
@@ -38,17 +38,24 @@ pub struct Enrolment {
     pub app_version: String,
 }
 
-/// Mint a device secret, create the device, and hand back its record with the
-/// secret as hex.
+/// Mint a device secret, create the device in `state`, and hand back its
+/// record with the secret as hex.
 ///
-/// The two callers are `POST /v1/setup` for device one and a pairing claim for
-/// every device after it; they are the only places the server ever states a
-/// device secret, and it goes to the device that will use it and nowhere else.
+/// The two callers are `POST /v1/setup` for device one, which is `Active`
+/// because there is nobody to approve it, and a pairing claim for every
+/// device after it, which is `Pending` until the pairing's creator approves
+/// (`docs/architecture.md` 4.2). They are the only places the server ever
+/// states a device secret, and it goes to the device that will use it and
+/// nowhere else.
 ///
 /// # Errors
 /// `500 no_randomness` when the CSPRNG is unavailable, `409 not_set_up` before
 /// setup, or whatever the store refuses with.
-pub fn enrol(app: &App, e: Enrolment) -> Result<(DeviceRecord, String), ApiError> {
+pub fn enrol(
+    app: &App,
+    e: Enrolment,
+    state: DeviceState,
+) -> Result<(DeviceRecord, String), ApiError> {
     let account_id = app.account_id()?;
     let mut secret = [0u8; 32];
     rand::fill(&mut secret)
@@ -59,6 +66,7 @@ pub fn enrol(app: &App, e: Enrolment) -> Result<(DeviceRecord, String), ApiError
         platform: e.platform,
         app_version: e.app_version,
         secret,
+        state,
     })?;
     Ok((record, hex::encode(&secret)))
 }
@@ -126,7 +134,9 @@ pub fn patch(
 ///
 /// # Errors
 /// `404 unknown_device`, `409 last_device` when a device tries to revoke
-/// itself while it is the only one, plus the authentication refusals.
+/// itself while it is the only ACTIVE one, plus the authentication refusals.
+/// A device still waiting for pairing approval is not a way out of that
+/// refusal: it holds no vault key and cannot pair a replacement.
 pub fn revoke(
     app: &App,
     req: &mut Request,
@@ -135,7 +145,7 @@ pub fn revoke(
 ) -> Result<Response, ApiError> {
     let authed = auth::device(app, req, client)?;
     let target = render::device_id(id)?;
-    let live = app.store.devices().iter().filter(|d| !d.revoked).count();
+    let live = app.store.devices().iter().filter(|d| d.active()).count();
     if target == authed.id && live <= 1 {
         return Err(ApiError::new(
             409,

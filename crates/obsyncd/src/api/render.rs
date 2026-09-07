@@ -90,7 +90,10 @@ pub fn device(d: &DeviceRecord) -> Value {
         ("address", maybe(d.address.as_deref(), s)),
         ("country", maybe(d.country.as_deref(), s)),
         ("policy", policy(&d.policy)),
-        ("revoked", b(d.revoked)),
+        // `state` is the truth; `revoked` stays because the dashboard and the
+        // plugin read it and a pending device is not a revoked one.
+        ("state", s(d.state.as_word())),
+        ("revoked", b(d.revoked())),
     ])
 }
 

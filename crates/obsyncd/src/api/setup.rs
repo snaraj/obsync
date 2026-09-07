@@ -7,6 +7,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::obj;
 
 use crate::log::Val;
+use crate::storage::types::DeviceState;
 
 use super::edge::ClientInfo;
 use super::render::{self, s};
@@ -61,7 +62,9 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     }
 
     let account_id = app.store.setup(&account_name)?;
-    let (record, secret) = devices::enrol(app, enrolment)?;
+    // Device one is active on creation: pairing approval needs an approver,
+    // and at setup there is none (`docs/architecture.md` 4.1).
+    let (record, secret) = devices::enrol(app, enrolment, DeviceState::Active)?;
     app.log.info(
         "account_created",
         &[

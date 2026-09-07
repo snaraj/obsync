@@ -14,7 +14,7 @@ use obsync_core::http::Request;
 use obsync_core::{ct, hmac, sha256};
 
 use crate::log::Val;
-use crate::storage::types::{DeviceRecord, SeenEvent, SeenKind};
+use crate::storage::types::{DeviceRecord, DeviceState, SeenEvent, SeenKind};
 use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
@@ -165,6 +165,22 @@ pub struct Authed {
     pub body: Vec<u8>,
 }
 
+/// Which device states an endpoint admits.
+///
+/// `Active` is the answer everywhere but one route. The exception is the
+/// claimant's own envelope fetch, the single step a device takes between
+/// claiming a pairing and being approved (`docs/architecture.md` 4.2): it
+/// carries no authority of its own, because [`super::pairing::PairingTable`]
+/// still refuses anyone but that pairing's claimant and still answers `409
+/// not_approved` until the creator approves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admit {
+    /// Only an approved device.
+    ActiveOnly,
+    /// An approved device, or the claimant polling for its envelope.
+    ActiveOrPending,
+}
+
 /// What the body hash of the canonical string is.
 enum BodyHash<'a> {
     /// Buffer the body under the JSON ceiling and hash it.
@@ -178,9 +194,22 @@ enum BodyHash<'a> {
 /// # Errors
 /// The refusals of `docs/protocol.md`: `401 missing_auth`, `401
 /// bad_signature`, `401 stale_timestamp`, `401 replayed_nonce`, `403
-/// device_revoked`.
+/// device_revoked`, `403 device_pending`.
 pub fn device(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Authed, ApiError> {
-    authenticate(app, req, client, &BodyHash::Buffer)
+    authenticate(app, req, client, &BodyHash::Buffer, Admit::ActiveOnly)
+}
+
+/// Authenticate the one request a device may make before it is approved: the
+/// fetch of its own pairing envelope. Every other route takes [`device`].
+///
+/// # Errors
+/// As [`device`], except that a pending device is admitted here.
+pub fn device_claimant(
+    app: &App,
+    req: &mut Request,
+    client: &ClientInfo,
+) -> Result<Authed, ApiError> {
+    authenticate(app, req, client, &BodyHash::Buffer, Admit::ActiveOrPending)
 }
 
 /// Authenticate a chunk upload: the body hash is the sid in the path, so the
@@ -194,7 +223,7 @@ pub fn device_chunk(
     client: &ClientInfo,
     sid: &str,
 ) -> Result<Authed, ApiError> {
-    authenticate(app, req, client, &BodyHash::Sid(sid))
+    authenticate(app, req, client, &BodyHash::Sid(sid), Admit::ActiveOnly)
 }
 
 fn authenticate(
@@ -202,6 +231,7 @@ fn authenticate(
     req: &mut Request,
     client: &ClientInfo,
     body_hash: &BodyHash<'_>,
+    admit: Admit,
 ) -> Result<Authed, ApiError> {
     let missing = || {
         ApiError::new(
@@ -242,8 +272,22 @@ fn authenticate(
     let ts: u64 = ts_hex.parse().map_err(|_| bad())?;
 
     let record = app.store.device(&id).ok_or_else(bad)?;
-    if record.revoked {
-        return Err(ApiError::new(403, "device_revoked", "device is revoked"));
+    match record.state {
+        DeviceState::Active => {}
+        DeviceState::Revoked => {
+            return Err(ApiError::new(403, "device_revoked", "device is revoked"));
+        }
+        // A claimed device holds a secret and no authority. Only the
+        // envelope fetch admits it; everything else is refused here, so a
+        // route added later is refused by default rather than by memory.
+        DeviceState::Pending if admit == Admit::ActiveOnly => {
+            return Err(ApiError::new(
+                403,
+                "device_pending",
+                "device is waiting for pairing approval",
+            ));
+        }
+        DeviceState::Pending => {}
     }
     let secret = app.store.device_secret(&id).ok_or_else(bad)?;
 
@@ -273,7 +317,11 @@ fn authenticate(
         .expect("nonce cache")
         .remember(&device_hex, &nonce, now)?;
 
-    record_sign_in(app, &id, client, now);
+    // A sign-in is an ACTIVE device's first authenticated request. A pending
+    // device polling for its envelope has not signed in to anything.
+    if record.active() {
+        record_sign_in(app, &id, client, now);
+    }
     Ok(Authed {
         device: record,
         id,

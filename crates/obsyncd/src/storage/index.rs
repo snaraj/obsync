@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 
 use crate::storage::journal::{Frame, Record};
 use crate::storage::types::{
-    AccountRecord, Change, Changes, DeviceRecord, DomainRecord, FileRecord, FileSummary, GcSummary,
-    ScrubSummary, SeenEvent, StoreError, VersionRecord,
+    AccountRecord, Change, Changes, DeviceRecord, DeviceState, DomainRecord, FileRecord,
+    FileSummary, GcSummary, ScrubSummary, SeenEvent, StoreError, VersionRecord,
 };
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -126,9 +126,19 @@ impl Index {
                     }
                 }
             }
+            Frame::DeviceActivate { device_id } => {
+                if let Some(entry) = self.devices.get_mut(device_id)
+                    && entry.record.state == DeviceState::Pending
+                {
+                    // Pending is the only state activation may leave: a
+                    // revoked device whose wrapped secret is already zeroed
+                    // must never come back as a live credential.
+                    entry.record.state = DeviceState::Active;
+                }
+            }
             Frame::DeviceRevoke { device_id } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {
-                    entry.record.revoked = true;
+                    entry.record.state = DeviceState::Revoked;
                     // The wrapped secret is destroyed, not just flagged: a
                     // revoked device's requests can never be authenticated
                     // again, even by a later bug (docs/architecture.md §4.3).
@@ -599,10 +609,39 @@ mod tests {
         ));
         assert_eq!(index.devices[&id].wrapped, [7u8; 32]);
         index.apply(&record(2, Frame::DeviceRevoke { device_id: id }));
-        assert!(index.devices[&id].record.revoked);
+        assert!(index.devices[&id].record.revoked());
         assert_eq!(index.devices[&id].wrapped, [0u8; 32], "the secret is gone");
         index.apply(&record(3, Frame::DeviceDelete { device_id: id }));
         assert!(!index.devices.contains_key(&id));
+    }
+
+    #[test]
+    fn approval_activates_a_pending_device_and_never_a_revoked_one() {
+        let mut index = Index::default();
+        let device = DeviceRecord {
+            state: DeviceState::Pending,
+            ..device_record()
+        };
+        let id = device.device_id;
+        index.apply(&record(
+            1,
+            Frame::Device {
+                record: device,
+                wrapped: [7u8; 32],
+            },
+        ));
+        assert_eq!(index.devices[&id].record.state, DeviceState::Pending);
+        index.apply(&record(2, Frame::DeviceActivate { device_id: id }));
+        assert_eq!(index.devices[&id].record.state, DeviceState::Active);
+
+        index.apply(&record(3, Frame::DeviceRevoke { device_id: id }));
+        index.apply(&record(4, Frame::DeviceActivate { device_id: id }));
+        assert_eq!(
+            index.devices[&id].record.state,
+            DeviceState::Revoked,
+            "activation must never bring a revoked device back"
+        );
+        assert_eq!(index.devices[&id].wrapped, [0u8; 32]);
     }
 
     #[test]
