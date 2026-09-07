@@ -165,8 +165,8 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   "last":<scrub>|null},"quarantine":[{"sid","ts","bytes","reason"}]}`.
 - `POST /v1/admin/gc/run`, `POST /v1/admin/scrub/run` → `202`.
 - `GET /v1/admin/domains`, `POST /v1/admin/domains/{id}/escrow`
-  `{"key":"<64hex>"}` → `204`, `DELETE /v1/admin/domains/{id}/escrow` →
-  `204`.
+  `{"domain_key":"<64hex>"}` → `204`, `DELETE /v1/admin/domains/{id}/escrow`
+  → `204`.
 - `GET /v1/admin/logs?device=<id prefix>&limit=<n ≤ 500>` → `{"lines":
   [{"ts","method","path_class","device":"<id>"|null,"status","bytes",
   "duration_ms","decision"}]}` newest first: the pinned request log line

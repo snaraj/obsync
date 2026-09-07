@@ -109,8 +109,10 @@ Numbered for citation, repo-scoped, none negotiable in code:
    coverage floor `RUST_COVERAGE_FLOOR` (measured with the pinned
    `llvm-tools` component, no crate) and the plugin test floor. The first
    server PR sets each floor at its measured value; afterwards floors only
-   rise. The floor is ONE fact recorded in this file, the Quality-gates
-   section, and `pr-gate.yml`, and the three move together.
+   rise. The floor is ONE fact recorded in this file, the Makefile, and
+   `pr-gate.yml`, and the three move together. Current
+   `RUST_COVERAGE_FLOOR`: 89 (measured 89.80 % on the composed bootstrap
+   wave, 2026-09-07).
 10. **Every artifact merge releases after the gate; deploy remains
     separate.** Every PR whose range touches any artifact surface advances
     exactly one patch from its current protected base in ALL lockstep locks:
