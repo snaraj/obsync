@@ -418,7 +418,9 @@ function submitEscrow(event) {
   const domain = el('escrow-domain').value.trim();
   const key = el('escrow-key').value.trim();
   guard(async () => {
-    await request('POST', `${ADMIN}/domains/${encodeURIComponent(domain)}/escrow`, { key });
+    await request('POST', `${ADMIN}/domains/${encodeURIComponent(domain)}/escrow`, {
+      domain_key: key,
+    });
     el('escrow-form').reset();
     say(`Key escrowed for ${domain}. The server can now read that folder.`);
     await loadDomains();

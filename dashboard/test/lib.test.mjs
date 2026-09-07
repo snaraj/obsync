@@ -277,6 +277,48 @@ const DEVICES = [
   { device_id: 'c'.repeat(32), platform: 'ios', last_seen: 1757199900000 },
 ];
 
+// What the server sends for a device that has just been paired: explicit
+// nulls, not absent fields (docs/protocol.md, `GET /v1/admin/devices`).
+const FRESH = {
+  device_id: 'e'.repeat(32),
+  name: 'Bench',
+  platform: 'linux',
+  app_version: '0.1.0',
+  created: 1757199990000,
+  last_sign_in: null,
+  last_seen: null,
+  last_edit: null,
+  address: null,
+  country: null,
+  policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
+  revoked: false,
+};
+
+test('buildDeviceRows: a freshly paired device renders its nulls, not "undefined"', () => {
+  const [row] = buildDeviceRows([FRESH]);
+  assert.equal(row.lastSignIn, null);
+  assert.equal(row.lastSeen, null);
+  assert.equal(row.lastEdit, null);
+  assert.equal(row.address, DASH);
+  assert.equal(row.country, DASH);
+  // and those nulls read as "never" wherever the page prints a time.
+  for (const ts of [row.lastSignIn, row.lastSeen, row.lastEdit]) {
+    assert.equal(relativeTime(ts, 1757200000000), 'never');
+    assert.equal(absoluteTime(ts), 'never');
+  }
+  assert.equal(row.name, 'Bench');
+  assert.equal(row.created, 1757199990000);
+  assert.equal(row.perFile, 'Unlimited');
+});
+
+test('buildDeviceRows: a device with nothing to sort on still sorts before a revoked one', () => {
+  const rows = buildDeviceRows([DEVICES[0], FRESH]);
+  assert.deepEqual(
+    rows.map((r) => r.name),
+    ['Bench', 'Old iPad'],
+  );
+});
+
 test('buildDeviceRows: shapes rows and puts revoked devices last', () => {
   const rows = buildDeviceRows(DEVICES);
   assert.deepEqual(

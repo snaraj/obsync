@@ -31,11 +31,13 @@ const PORT = Number(process.env.PORT || 8090);
 // pairing page's service-token note.
 const EDGE = process.env.OBSYNC_EDGE || 'none';
 
-// The header set the real server sends. Kept here by hand; obsyncd's
-// dashboard handler is the authority, and this must be updated with it.
+// The header set the real server sends, per AGENTS.md, "Security invariants
+// beyond the numbered requirements". Kept here by hand; obsyncd's dashboard
+// handler is the authority, and this must be updated with it. The CSP rides
+// HTML responses only; the rest ride every response.
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-  "connect-src 'self'; frame-ancestors 'none'";
+  "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 const FILES = {
   '/': ['index.html', 'text/html; charset=utf-8'],
@@ -112,6 +114,23 @@ const devices = [
     policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
     revoked: false,
     history: [{ ts: now() - 2 * 24 * HOUR, event: 'sign_in', address: '198.51.100.77', country: 'ZZ' }],
+  },
+  {
+    // Just paired, nothing has happened on it yet: the server sends null for
+    // every event stamp and for the address it has not seen a request from.
+    device_id: '4f2a00000000000000000000000000e5',
+    name: 'Bench',
+    platform: 'linux',
+    app_version: '0.1.0',
+    created: now() - 3 * MINUTE,
+    last_sign_in: null,
+    last_seen: null,
+    last_edit: null,
+    address: null,
+    country: null,
+    policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
+    revoked: false,
+    history: [],
   },
   {
     device_id: '4f2a00000000000000000000000000d4',
@@ -244,9 +263,9 @@ function cookies(req) {
 
 function head(extra = {}) {
   return {
-    'Content-Security-Policy': CSP,
     'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'same-origin',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
     'Cache-Control': 'no-store',
     'X-Obsync-Seq': String(seq),
     ...extra,
@@ -283,7 +302,9 @@ async function body(req) {
 
 async function serveFile(res, name, type) {
   const text = await readFile(path.join(DASHBOARD, name), 'utf8');
-  res.writeHead(200, head({ 'Content-Type': type }));
+  const extra = { 'Content-Type': type };
+  if (type.startsWith('text/html')) extra['Content-Security-Policy'] = CSP;
+  res.writeHead(200, head(extra));
   res.end(text);
 }
 
@@ -363,7 +384,7 @@ function mutate(res, method, rest, sent) {
     if (method === 'DELETE') {
       domain.escrowed = false;
     } else {
-      if (!/^[0-9a-f]{64}$/.test(String(sent.key || ''))) {
+      if (!/^[0-9a-f]{64}$/.test(String(sent.domain_key || ''))) {
         return fail(res, 422, 'bad_key', 'A domain key is 64 lowercase hex characters.');
       }
       domain.escrowed = true;
@@ -402,6 +423,11 @@ const PLUGIN = {
 /* ---- the server ---------------------------------------------------------- */
 
 const server = createServer(async (req, res) => {
+  // The origin emits no `Date`: a clock dependency with no consumer. This is
+  // set per response because Node honours `res.sendDate`, not the server-wide
+  // property of the same name (verified on Node v26.8.1).
+  res.sendDate = false;
+
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const route = url.pathname;
   const method = req.method || 'GET';

@@ -277,13 +277,14 @@ test('app.js reads the pinned admin field names and none of the old ones', () =>
     'complete_pass',
     'rate_bytes_per_sec',
     'versions_per_hour',
+    'domain_key',
   ];
   // Comments stripped: the sentence explaining a field must not stand in for
   // the code reading it.
   const source = stripComments(`${APP_JS}${LIB_JS}`);
   assert.deepEqual(missingNames(source, pinned), []);
 
-  const superseded = ['bytes_freed', 'scrub.rate)', 'run.rate)'];
+  const superseded = ['bytes_freed', 'scrub.rate)', 'run.rate)', '{ key }'];
   assert.deepEqual(presentNames(source, superseded), []);
 });
 
@@ -307,12 +308,35 @@ test('no file under dashboard/ names an ingress, edge, or access provider', () =
   assert.ok(MOCK.includes("process.env.OBSYNC_EDGE || 'none'"));
 });
 
-test('dev/mock.mjs sends the CSP the dashboard is written against', () => {
-  assert.ok(MOCK.includes("default-src 'self'; script-src 'self'; style-src 'self'"));
-  assert.ok(MOCK.includes("connect-src 'self'; frame-ancestors 'none'"));
-  // and refuses a mutation whose double-submit header does not match.
-  assert.ok(MOCK.includes("req.headers['x-obsync-csrf']"));
-  assert.ok(MOCK.includes('csrf_mismatch'));
+test('dev/mock.mjs sends the header set AGENTS.md pins', () => {
+  // Comment-stripped, so the sentence explaining a header cannot stand in
+  // for the code sending it, and so a comment naming a header the origin
+  // must NOT send does not read as the origin sending it.
+  const code = stripComments(MOCK);
+  assert.deepEqual(
+    missingNames(code, [
+      "default-src 'self'; script-src 'self'; style-src 'self'",
+      "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "'X-Content-Type-Options': 'nosniff'",
+      "'X-Frame-Options': 'DENY'",
+      "'Referrer-Policy': 'no-referrer'",
+      "'Cache-Control': 'no-store'",
+      "'X-Obsync-Seq'",
+      // The CSP rides HTML responses only; the rest ride everything.
+      "type.startsWith('text/html')",
+      // Per response: Node ignores the server-wide property of this name.
+      'res.sendDate = false',
+      // Refuses a mutation whose double-submit header does not match, and
+      // reads the escrow key under the name docs/protocol.md pins.
+      "req.headers['x-obsync-csrf']",
+      'csrf_mismatch',
+      'sent.domain_key',
+    ]),
+    [],
+  );
+  // The origin owns neither the clock nor the transport policy, and the
+  // escrow body's old field name is gone.
+  assert.deepEqual(presentNames(code, ['Strict-Transport-Security', 'sent.key']), []);
 });
 
 /* ---- the checks themselves ---------------------------------------------- */
