@@ -16,12 +16,14 @@ knew the difference. Prose that is a security control needs a control.
 WHAT IS REFUSED, and why each one is the security property rather than a style
 preference:
 
-  1. digest-only runs -- every `docker run` in either document must run
-     `ghcr.io/snaraj/obsync@sha256:…`. A tag is a mutable pointer: the
-     signature the reader just checked says nothing about what the tag will
-     resolve to a second later, so a tag run silently discards the entire
-     verification step above it. The same rule refuses a HELPER image by
-     construction, because a helper is a `docker run` of something else.
+  1. digest-only runs -- every command that starts a container in either
+     document (`docker run`, `docker container run`, `docker create`,
+     `docker container create`) must run `ghcr.io/snaraj/obsync@sha256:…`. A
+     tag is a mutable pointer: the signature the reader just checked says
+     nothing about what the tag will resolve to a second later, so a tag run
+     silently discards the entire verification step above it. The same rule
+     refuses a HELPER image by construction, because a helper is one of those
+     commands naming something else.
 
   2. the two cosign flags, verbatim -- `cosign verify` without
      `--certificate-identity` and `--certificate-oidc-issuer` accepts a
@@ -31,13 +33,21 @@ preference:
      attacker who can publish would want the reader to paste.
 
   3. the tokenless token read -- the README's `docker cp <name>:… - | tar -xO`
-     must survive. It reads the credential through the daemon, with no second
-     image, no network, and no write access to the journal volume.
+     must survive as something the reader can RUN: a top-level, unconditional
+     pipeline of exactly that copy and that extraction. It reads the
+     credential through the daemon, with no second image, no network, and no
+     write access to the journal volume. Text that merely contains it does not
+     count; `false && docker cp …` and `sh -c 'docker cp …'` are both a quick
+     start that no longer reads the token.
 
-  4. no journal volume anywhere else -- `-v obsync-journal:` may appear only
-     in the server's own digest-pinned run line. That volume holds the
-     generated server key and the setup token; mounting it into anything else
-     is the helper-container hole re-opened under a different name.
+  4. no journal volume anywhere else -- the name `obsync-journal` may stand in
+     exactly two commands: `docker volume create obsync-journal`, and the
+     server's own digest-pinned run. In any other command ANY token carrying
+     that name is refused -- `-v obsync-journal:/j`, `-v=…`, `--volume …`,
+     `--volume=…`, `--mount type=volume,source=…`, `--mount=…`, and every
+     spelling nobody has written yet. That volume holds the generated server
+     key and the setup token; handing it to anything else is the
+     helper-container hole re-opened under a different name.
 
   5. no "one-time" near "setup token" -- in EITHER document, in the same
      sentence. The word tells the reader the credential is spent after first
@@ -51,13 +61,30 @@ preference:
      recovery sign-in. Refusing the wrong word (rule 5) without requiring the
      right sentence leaves "delete the paragraph" as a way to go green.
 
-FAIL-CLOSED PARSING. The image of a `docker run` is found by walking its flags,
-and a flag not in `VALUE_FLAGS` is treated as a boolean. A future flag that
-takes a SEPARATE value would therefore make its value look like the image and
-this suite would refuse the line. That direction is deliberate: the refusal
-names the flag and the fix is one entry in `VALUE_FLAGS`, whereas guessing the
-other way would let a helper run past. A fenced block that will not tokenize is
-refused too, if it mentions `docker run` or `cosign verify` at all.
+FAIL-CLOSED PARSING, OVER EXECUTABLE STRUCTURE. The first version of this file
+judged text: it split a line on shell operators and searched the result with
+regular expressions. An adversarial review walked straight through it with two
+lines of ordinary shell -- the promised read behind a `false &&` that never
+runs it, and a long-form `docker container run` handing a third-party image the
+journal volume through `--mount` -- and every rule stayed green. So each fenced
+line is now tokenized into what a shell would RUN: pipelines, the operator
+before each one, and the commands inside each one, with `NAME=value` prefixes
+and the `sudo`/`env`/`exec`/`command`/`nohup`/`time`/`nice` wrappers stripped
+and `sh -c STRING` parsed recursively as its own line.
+
+Every command is judged wherever it stands, reachable or not, because a reader
+copies text out of a fenced block and pastes it. Reachability is recorded and
+decides exactly one thing: whether the safe read the quick start PROMISES is a
+command the reader can actually run.
+
+The image of a container-starting command is found by walking its flags, and a
+flag not in `VALUE_FLAGS` is treated as a boolean. A future flag that takes a
+SEPARATE value would therefore make its value look like the image and this
+suite would refuse the line. That direction is deliberate: the refusal names
+the flag and the fix is one entry in `VALUE_FLAGS`, whereas guessing the other
+way would let a helper run past. A line that will not tokenize -- an unbalanced
+quote, an operator this reader does not model -- is refused too, if it mentions
+`docker` or `cosign` at all.
 
 EVERY RULE HAS A NEGATIVE TEST. `MutatedDocumentsAreRefused` re-runs the same
 functions over the real text with one property broken -- in memory, never on
@@ -69,6 +96,7 @@ from __future__ import annotations
 import re
 import shlex
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -97,8 +125,9 @@ CERTIFICATE_ISSUER = (
 def flag_text(pair: tuple[str, str]) -> str:
     return f"{pair[0]} {pair[1]}"
 # `<name>` is the reader's own container name, so the name itself is free.
-TOKEN_READ = re.compile(r"docker cp \S+:/data/journal/v1/setup-token - \| tar -xO")
-JOURNAL_MOUNT = re.compile(r"(?:^|\s)(?:-v|--volume)[ =]obsync-journal:")
+TOKEN_PATH = ":/data/journal/v1/setup-token"
+SAFE_READ = f"docker cp <name>{TOKEN_PATH} - | tar -xO"
+JOURNAL_VOLUME = "obsync-journal"
 RECOVERY_SENTENCE = "remains the dashboard's recovery sign-in"
 # The same promise in architecture.md, which may or may not name the dashboard.
 ARCHITECTURE_RECOVERY = re.compile(r"remains the (?:dashboard's )?recovery sign-in")
@@ -119,9 +148,49 @@ VALUE_FLAGS = frozenset(
     }
 )
 
-# Segment separators inside one logical shell line. A pipeline or an `&&` chain
-# is several commands and each is judged on its own.
-SEGMENT = re.compile(r"\|\||&&|[|;]")
+# One logical line is a list of PIPELINES; each pipeline is a list of commands;
+# each pipeline records the operator that precedes it, because `false && cmd`
+# and `cmd` are not the same promise to a reader. These five are the only
+# operators this reader models: a run of punctuation that is not one of them
+# (`;;`, `|&`) raises rather than being read as a word.
+OPERATORS = frozenset({"|", "||", "&&", ";", "&"})
+PUNCTUATION = frozenset("|&;")
+# A pipeline preceded by nothing, `;` or `&` runs whatever happened before it.
+UNCONDITIONAL = frozenset({None, ";", "&"})
+
+# What a command may be WRAPPED in and still be that command. `FOO=1 docker run
+# …`, `sudo docker run …` and `sh -c 'docker run …'` each run docker, and the
+# reader who pastes any of them gets a container, so the contract judges the
+# command inside rather than the wrapper outside.
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+WRAPPERS = frozenset({"sudo", "env", "exec", "command", "nohup", "time", "nice"})
+SHELLS = frozenset({"sh", "bash", "zsh", "dash"})
+# The two programs this file has rules about; see `_strip_wrappers`.
+JUDGED = frozenset({"docker", "cosign"})
+
+# Every spelling that hands an image the mounts on its command line. `docker
+# container run` is the long form of `docker run`, and `create` is `run`
+# without the start -- the volume is attached either way.
+IMAGE_VERBS = (
+    ("docker", "container", "run"),
+    ("docker", "container", "create"),
+    ("docker", "run"),
+    ("docker", "create"),
+)
+VOLUME_CREATE = ("docker", "volume", "create")
+
+
+@dataclass(frozen=True)
+class Pipeline:
+    """What one pipeline runs, and what must succeed first for it to run."""
+
+    operator: str | None
+    commands: tuple[tuple[str, ...], ...]
+    nested: bool
+
+    @property
+    def unconditional(self) -> bool:
+        return self.operator in UNCONDITIONAL
 
 
 def section(text: str, heading: str) -> str:
@@ -161,8 +230,127 @@ def logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _segments(line: str) -> list[str]:
-    return [part.strip() for part in SEGMENT.split(line) if part.strip()]
+def _tokens(line: str) -> list[str]:
+    """Shell words and operators, with `--flag=value` and a digest kept whole."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars="|&;")
+    lexer.whitespace_split = True
+    # `#` is NOT a comment to this reader. A commented-out
+    # `-v obsync-journal:/j` is still a line a reader can uncomment and paste,
+    # and dropping it here would make rule 4 quieter than the regex it replaced.
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _split(line: str) -> list[tuple[str | None, list[tuple[str, ...]]]]:
+    """(preceding operator, commands) for every pipeline in one logical line."""
+    found: list[tuple[str | None, list[tuple[str, ...]]]] = []
+    operator: str | None = None
+    commands: list[tuple[str, ...]] = []
+    words: list[str] = []
+    # The trailing `;` is a sentinel that closes the last pipeline; without it
+    # the final command would be parsed and then dropped.
+    for token in [*_tokens(line), ";"]:
+        if token not in OPERATORS:
+            if token and set(token) <= PUNCTUATION:
+                raise ValueError(f"unmodelled shell operator {token!r}")
+            words.append(token)
+            continue
+        if words:
+            commands.append(tuple(words))
+            words = []
+        if token == "|":
+            continue
+        if commands:
+            found.append((operator, commands))
+            commands = []
+        operator = token
+    return found
+
+
+def executable(line: str, nested: bool = False) -> list[Pipeline]:
+    """Every command one logical line runs: wrappers off, `sh -c` recursed."""
+    found: list[Pipeline] = []
+    for operator, commands in _split(line):
+        effective: list[tuple[str, ...]] = []
+        for words in commands:
+            command, script = _strip_wrappers(words)
+            if command:
+                effective.append(command)
+            for inner in (script or "").splitlines():
+                found.extend(executable(inner, nested=True))
+        found.append(Pipeline(operator, tuple(effective), nested))
+    return found
+
+
+def _strip_wrappers(words: tuple[str, ...]) -> tuple[tuple[str, ...], str | None]:
+    """The command a wrapped word list runs, and the script of `sh -c STRING`."""
+    index = 0
+    wrapped = False
+    while index < len(words):
+        if ASSIGNMENT.match(words[index]):
+            index += 1
+            continue
+        if words[index] in WRAPPERS:
+            wrapped = True
+            index += 1
+            while index < len(words) and words[index].startswith("-"):
+                index += 1
+            continue
+        break
+    command = tuple(words[index:])
+    if wrapped and command and command[0] not in JUDGED and command[0] not in SHELLS:
+        # A wrapper option that takes a SEPARATE value (`sudo -u root docker
+        # run …`) leaves its value standing where the command name should be.
+        # Re-anchor on the program this file judges rather than lose the
+        # command: the direction is always MORE commands judged, never fewer.
+        for position, word in enumerate(command):
+            if word in JUDGED:
+                command = command[position:]
+                break
+    if command and command[0] in SHELLS:
+        return command, _script_of(command)
+    return command, None
+
+
+def _script_of(command: tuple[str, ...]) -> str | None:
+    """The STRING of `sh -c STRING`, whatever letters the flag bundles (`-lc`)."""
+    for index, word in enumerate(command[1:], start=1):
+        if not word.startswith("-"):
+            return None
+        if "c" in word.lstrip("-"):
+            return command[index + 1] if index + 1 < len(command) else None
+    return None
+
+
+def _reads_the_token(quick_start: str) -> bool:
+    """A REACHABLE, top-level `docker cp <name>:…/setup-token - | tar -xO`.
+
+    Structure, not substring. `false && docker cp …` carries the promised text
+    and never runs it, and `sh -c '…'` runs it one level down where a reader
+    following the prose is not looking. The shape that passes is exactly two
+    commands -- the copy and the extraction -- in an unconditional pipeline of
+    the quick start itself.
+    """
+    for line in logical_lines(quick_start):
+        try:
+            parsed = executable(line)
+        except ValueError:
+            continue
+        for pipeline in parsed:
+            if pipeline.nested or not pipeline.unconditional:
+                continue
+            if len(pipeline.commands) != 2:
+                continue
+            read, extract = pipeline.commands
+            if (
+                len(read) == 4
+                and read[:2] == ("docker", "cp")
+                and read[2].endswith(TOKEN_PATH)
+                and read[3] == "-"
+                and extract == ("tar", "-xO")
+            ):
+                return True
+    return False
 
 
 def _image_of(tokens: list[str]) -> str | None:
@@ -190,10 +378,10 @@ def refusals(documents: dict[str, str]) -> list[str]:
     if not quick_start:
         found.append("README.md has no `## Get syncing` section")
     else:
-        if not TOKEN_READ.search(quick_start):
+        if not _reads_the_token(quick_start):
             found.append(
                 "README.md: the quick start no longer reads the setup token with "
-                "`docker cp <name>:/data/journal/v1/setup-token - | tar -xO`"
+                f"`{SAFE_READ}`"
             )
         if RECOVERY_SENTENCE not in quick_start:
             found.append(
@@ -209,48 +397,64 @@ def refusals(documents: dict[str, str]) -> list[str]:
 def _command_refusals(name: str, text: str) -> list[str]:
     found: list[str] = []
     for line in logical_lines(text):
-        for segment in _segments(line):
-            try:
-                tokens = shlex.split(segment)
-            except ValueError:
-                if "docker run" in segment or "cosign verify" in segment:
-                    found.append(f"{name}: unparseable command: {segment}")
-                continue
-            if tokens[:2] == ["docker", "run"]:
-                image = _image_of(tokens[2:])
-                if image is None or not image.startswith(SERVER_IMAGE_PREFIX):
-                    found.append(
-                        f"{name}: `docker run` runs {image!r}, not "
-                        f"{SERVER_IMAGE_PREFIX}… (a tag or a helper image)"
-                    )
-                # A journal mount inside THIS segment is the server's own run
-                # line and is the one place it is allowed. A mount anywhere
-                # else in the pipeline is a different segment and is judged as
-                # one below; there is no third case, so there is no branch for
-                # one.
-                continue
-            if JOURNAL_MOUNT.search(segment):
-                found.append(
-                    f"{name}: `obsync-journal:` is mounted by a command that is not "
-                    f"the server's own digest-pinned run: {segment}"
-                )
-            if tokens[:2] == ["cosign", "verify"]:
-                for pair in (CERTIFICATE_IDENTITY, CERTIFICATE_ISSUER):
-                    if not _has_flag(tokens, pair):
-                        found.append(
-                            f"{name}: `cosign verify` is missing "
-                            f"`{flag_text(pair)}`"
-                        )
+        try:
+            parsed = executable(line)
+        except ValueError:
+            # A line this reader cannot resolve, that mentions either program
+            # it judges, is refused rather than skipped: an unreadable line is
+            # exactly where a helper run would be hidden.
+            if "docker" in line or "cosign" in line:
+                found.append(f"{name}: unparseable command: {line}")
+            continue
+        for pipeline in parsed:
+            for command in pipeline.commands:
+                found.extend(_one_command(name, command))
     return found
 
 
-def _has_flag(tokens: list[str], pair: tuple[str, str]) -> bool:
+def _started_image(command: tuple[str, ...]) -> tuple[str, str | None] | None:
+    """(the verb, the image) when this command starts a container from one."""
+    for verb in IMAGE_VERBS:
+        if command[: len(verb)] == verb:
+            return " ".join(verb), _image_of(list(command[len(verb) :]))
+    return None
+
+
+def _one_command(name: str, command: tuple[str, ...]) -> list[str]:
+    """The three command rules, applied to one command wherever it stands."""
+    found: list[str] = []
+    started = _started_image(command)
+    server = started is not None and (started[1] or "").startswith(SERVER_IMAGE_PREFIX)
+    if started is not None and not server:
+        found.append(
+            f"{name}: `{started[0]}` runs {started[1]!r}, not "
+            f"{SERVER_IMAGE_PREFIX}… (a tag or a helper image)"
+        )
+    for word in command:
+        if server or JOURNAL_VOLUME not in word:
+            continue
+        if command[: len(VOLUME_CREATE)] == VOLUME_CREATE and word == JOURNAL_VOLUME:
+            continue
+        found.append(
+            f"{name}: `{JOURNAL_VOLUME}` is named by a command that is not the "
+            f"server's own digest-pinned run: {' '.join(command)}"
+        )
+    if command[:2] == ("cosign", "verify"):
+        for pair in (CERTIFICATE_IDENTITY, CERTIFICATE_ISSUER):
+            if not _has_flag(command, pair):
+                found.append(
+                    f"{name}: `cosign verify` is missing `{flag_text(pair)}`"
+                )
+    return found
+
+
+def _has_flag(tokens: tuple[str, ...], pair: tuple[str, str]) -> bool:
     """`--flag value` or `--flag=value`, both as WHOLE tokens."""
     flag, value = pair
     for index, token in enumerate(tokens):
         if token == f"{flag}={value}":
             return True
-        if token == flag and tokens[index + 1 : index + 2] == [value]:
+        if token == flag and tokens[index + 1 : index + 2] == (value,):
             return True
     return False
 
@@ -342,7 +546,7 @@ class TheOnboardingPathHoldsItsRepairedShape(unittest.TestCase):
 
     def test_the_quick_start_reads_the_token_without_a_helper(self):
         quick_start = section(documents()["README.md"], "## Get syncing")
-        self.assertRegex(quick_start, TOKEN_READ)
+        self.assertTrue(_reads_the_token(quick_start), SAFE_READ)
 
     def test_the_quick_start_calls_the_token_a_standing_credential(self):
         quick_start = section(documents()["README.md"], "## Get syncing")
@@ -372,6 +576,32 @@ class TheParserFindsWhatItClaimsTo(unittest.TestCase):
         self.assertIsNotNone(image)
         self.assertTrue(image.startswith(SERVER_IMAGE_PREFIX), image)
 
+    def test_a_line_is_read_as_the_shell_would_run_it(self):
+        # Structure, not text: two pipelines, the second one CONDITIONAL, and
+        # neither the wrapper nor the assignment is the command.
+        parsed = executable(
+            f"false && sudo FOO=1 docker cp obsync{TOKEN_PATH} - | tar -xO"
+        )
+        self.assertEqual([pipeline.operator for pipeline in parsed], [None, "&&"])
+        self.assertFalse(parsed[1].unconditional)
+        self.assertEqual(
+            parsed[1].commands,
+            (
+                ("docker", "cp", f"obsync{TOKEN_PATH}", "-"),
+                ("tar", "-xO"),
+            ),
+        )
+
+    def test_a_shell_string_is_parsed_as_a_line_of_its_own(self):
+        parsed = executable("sh -lc 'docker run --rm busybox'")
+        self.assertEqual(
+            [(pipeline.nested, pipeline.commands) for pipeline in parsed],
+            [
+                (True, (("docker", "run", "--rm", "busybox"),)),
+                (False, (("sh", "-lc", "docker run --rm busybox"),)),
+            ],
+        )
+
     def test_a_semicolon_does_not_end_a_sentence(self):
         # The rule is "the same sentence", and a semicolon joins clauses into
         # one. Splitting on it would be a quiet weakening of rule 5.
@@ -379,6 +609,10 @@ class TheParserFindsWhatItClaimsTo(unittest.TestCase):
 
 
 
+
+# The quick start's own token read, as committed. Every mutation below either
+# replaces this line or hangs a hostile one off it, so it is named once.
+QUICK_START_READ = f"docker cp obsync{TOKEN_PATH} - | tar -xO"
 
 # The wording docs/architecture.md section 4.1 must carry, as a FIXTURE. The
 # architecture rules are proven against this rather than against the file on
@@ -450,7 +684,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def test_a_helper_container_on_the_journal_volume_is_refused(self):
         found = self.mutate(
             "README.md",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO",
+            QUICK_START_READ,
             "docker run --rm -v obsync-journal:/j docker.io/library/busybox "
             "cat /j/v1/setup-token",
         )
@@ -462,8 +696,8 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # that holds the server key.
         found = self.mutate(
             "README.md",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO\n"
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\n"
             "cat x | docker run --rm -v obsync-journal:/j:ro busybox cat /j/x",
         )
         self.kills(found, "a tag or a helper image")
@@ -474,11 +708,103 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # volume.
         found = self.mutate(
             "README.md",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO\n"
-            "docker create -v obsync-journal:/j scratch",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\ndocker create -v obsync-journal:/j scratch",
         )
-        self.kills(found, "is mounted by a command that is not")
+        self.kills(found, "is named by a command that is not")
+
+    def test_the_round_five_reviewer_bypass_is_refused(self):
+        # The exact two lines an adversarial reviewer wrote to leave all 174
+        # tests green: the promised read behind a `false &&` that never runs
+        # it, and a long-form `docker container run` handing a third-party
+        # image the journal volume through `--mount`. Three properties break
+        # at once, and each is named separately so a partial repair cannot
+        # pass this test.
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"false && {QUICK_START_READ}\n"
+            "docker container run --rm --mount "
+            "type=volume,source=obsync-journal,target=/j "
+            "docker.io/library/busybox cat /j/v1/setup-token",
+        )
+        self.kills(found, "no longer reads the setup token")
+        self.kills(found, "a tag or a helper image")
+        self.kills(found, "is named by a command that is not")
+
+    def test_a_read_the_reader_cannot_reach_is_refused(self):
+        found = self.mutate(
+            "README.md", QUICK_START_READ, f"true || {QUICK_START_READ}"
+        )
+        self.kills(found, "no longer reads the setup token")
+
+    def test_a_read_buried_in_a_shell_string_is_refused(self):
+        # One level down is not the quick start: the reader is told to paste a
+        # command, and `sh -c '…'` is a different command that happens to
+        # contain it.
+        found = self.mutate(
+            "README.md", QUICK_START_READ, f"sh -c '{QUICK_START_READ}'"
+        )
+        self.kills(found, "no longer reads the setup token")
+
+    def test_a_helper_run_under_a_wrapper_is_refused(self):
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\n"
+            "sudo docker run --rm -v obsync-journal:/j busybox cat /j/x",
+        )
+        self.kills(found, "a tag or a helper image")
+
+    def test_a_helper_run_behind_an_assignment_is_refused(self):
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\nFOO=1 docker run --rm busybox",
+        )
+        self.kills(found, "a tag or a helper image")
+
+    def test_a_helper_run_inside_a_shell_string_is_refused(self):
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f'{QUICK_START_READ}\nsh -c "docker run --rm --mount '
+            'type=volume,src=obsync-journal,target=/j busybox"',
+        )
+        # Both rules must reach INSIDE the string: the journal name is visible
+        # in the outer `sh -c` token either way, but the helper image is only
+        # visible once the string is parsed as a line of its own.
+        self.kills(found, "is named by a command that is not")
+        self.kills(found, "a tag or a helper image")
+
+    def test_a_journal_mount_written_as_mount_equals_is_refused(self):
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\ndocker create "
+            "--mount=type=volume,source=obsync-journal,target=/j scratch",
+        )
+        self.kills(found, "is named by a command that is not")
+
+    def test_a_journal_mount_written_as_v_equals_is_refused(self):
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\ndocker container create "
+            "-v=obsync-journal:/j scratch",
+        )
+        self.kills(found, "is named by a command that is not")
+
+    def test_creating_the_journal_volume_is_not_refused(self):
+        # Rule 4's positive control. The one shape allowed to name the volume
+        # outside the server's own run still passes, so the rule above refuses
+        # a HELPER rather than the word.
+        found = self.mutate(
+            "README.md",
+            QUICK_START_READ,
+            f"{QUICK_START_READ}\ndocker volume create obsync-journal",
+        )
+        self.assertEqual(found, self.before)
 
     def test_dropping_the_certificate_identity_is_refused(self):
         found = self.mutate(
@@ -511,7 +837,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def test_losing_the_tokenless_token_read_is_refused(self):
         found = self.mutate(
             "README.md",
-            "docker cp obsync:/data/journal/v1/setup-token - | tar -xO",
+            QUICK_START_READ,
             "look in the journal volume",
         )
         self.kills(found, "no longer reads the setup token")
