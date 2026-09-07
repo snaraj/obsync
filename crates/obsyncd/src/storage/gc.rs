@@ -214,6 +214,42 @@ mod tests {
     }
 
     #[test]
+    fn an_old_head_survives_retention_and_keeps_its_chunk() {
+        // A conflicted file: one head is old and far outside the version cap.
+        // Retention may never prune a head, or the file loses its current
+        // state while the server still calls it a head.
+        let mut index = Index::default();
+        let mut orphan = version_record(file(1), version(9), &[], Seq(1));
+        orphan.sids = vec![sid(9)];
+        orphan.ts = UnixMs(NOW.0 - 90 * DAY_MS);
+        index.apply(&Record {
+            seq: Seq(1),
+            account_id: None,
+            frame: Frame::Version(orphan),
+        });
+        index.add_chunk(sid(9), 10, UnixMs(NOW.0 - NEWBORN_MS - 1));
+        chain(&mut index, 3, 90 * DAY_MS);
+
+        let entry = index.files.get(&file(1)).expect("file");
+        assert_eq!(entry.heads, vec![version(9), version(3)], "two heads");
+
+        let decided = plan(&index, &cfg(30, 1), NOW);
+        assert!(
+            !decided
+                .pruned
+                .iter()
+                .any(|(_, version_id)| *version_id == version(9)),
+            "the old head is not prunable: {:?}",
+            decided.pruned
+        );
+        assert!(
+            !decided.collect.contains(&sid(9)),
+            "and neither is the chunk it names"
+        );
+        assert_eq!(decided.pruned.len(), 2, "only versions 1 and 2 go");
+    }
+
+    #[test]
     fn a_chunk_shared_with_a_retained_version_survives() {
         let mut index = Index::default();
         for n in 1..=3u8 {

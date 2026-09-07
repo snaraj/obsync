@@ -486,6 +486,14 @@ mod tests {
             "{err}"
         );
         assert!(!store.path(&sid).exists(), "no file is published");
+        let tmp: Vec<_> = fs::read_dir(dir.path().join("blobs/v1/tmp"))
+            .expect("tmp dir")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert!(
+            tmp.is_empty(),
+            "a refusal leaves no temp file either: {tmp:?}"
+        );
         let (leftovers, _) = Blobs::open(&dir.path().join("blobs"), &[]).expect("reopen");
         let (chunks, strays) = leftovers.scan().expect("scan");
         assert_eq!(chunks.len(), 0, "nothing survived the refusals");
