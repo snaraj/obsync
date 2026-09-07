@@ -1680,3 +1680,119 @@ fn a_temporary_volume_is_the_only_place_the_test_writes() {
     assert!(Path::new(&dir).is_dir());
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+/// Cross-implementation vectors: the server must agree with the device.
+///
+/// Every constant below is copied from `plugin/test/fixtures/crypto.json` on
+/// the plugin lane, which generates them with WebCrypto. They are sentinels,
+/// not keys. If the two implementations ever disagree about a storage id, a
+/// version id, or a request signature, one of these fails and says which.
+mod fixtures {
+    use super::{Harness, NOW, Req, Res, Value};
+    use obsync_core::{base64, hex, hmac, sha256};
+
+    /// `chunks[0]`, the empty plaintext.
+    const EMPTY_CIPHERTEXT: &str = "ec74e5ea67d61137275881869f9c910c";
+    /// `chunks[0].sid`.
+    const EMPTY_SID: &str = "ead932adc0bbf82605eb060a45a087574f3d69807adb22afc8bf8e74ce0a0e7a";
+    /// `chunks[1]`, a short note.
+    const NOTE_CIPHERTEXT: &str =
+        "953b20c79168e9dc9d7534a7e0edf0d592417844d6babe6f825733e88bc58fd3017786e53c";
+    /// `chunks[1].sid`.
+    const NOTE_SID: &str = "5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489";
+    /// `chunks[2].sid`; that case's ciphertext is not in the fixture.
+    const BLOCK_SID: &str = "e9d4c94493314f600c42b93cd02b8b6583f601a48f73ebffa9b414e9d4140221";
+
+    /// `manifest.file_id`.
+    const FILE_ID: &str = "00112233445566778899aabbccddeeff";
+    /// `manifest.parents`, in the fixture's order, which is not sorted: the
+    /// version id is defined over the SORTED parents, so posting them this way
+    /// proves both sides sort before hashing.
+    const PARENTS: [&str; 2] = [
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    ];
+    /// `manifest.nonce`.
+    const MANIFEST_NONCE: &str = "af8f7850cc3281008d3ed87d";
+    /// `manifest.version_id`, which the server must recompute exactly.
+    const VERSION_ID: &str = "45758781d82fec7f11f800ba0c86f69efca54a4ca0f74c4bace7011e78cdfc53";
+    /// `manifest.ciphertext_hex`.
+    const MANIFEST_CT: &str = "d36c265d3fcbac0176ee10d5b3d255cacea4051280c117c563c009ccde49ec75172b09d188807244936e6ed28f9e4f66686555e2f26bc19259e0a231973cfec9f474aa72e9f3d654643738e6196565723ee8006b60c7ef9486eab6eda5faf82c78c684bb95f804466dd96a0dff53236f4635d03696d8b3255746a434dee565da29bf7beac6b90acf452de86cde4c22a5e6ba0aeabb127e516644bf2894b15da0b5b568647239993b900285ba3e8fb0fc95f59fded9bd54fa5999dab08432b625fd2b71a89f7c3c3945fe3d436427c76d4e07a62c4d5574e4e0938c2ffa2dc3df3154198b44b389a848f6a24c703cdd6bf0fffacef274e0253cd6c4161a12446437bc4de0dab9190ce1167335e76903ec02e0bb4698b2f48d2e1e840be9c04b59cd3fac71234dfe9fa0bab116b1a22d97fdc6a69e26ebea2861e19673a4cf11ae43ffd0ebf5cbb52935713816d8c09d715516ca9c64c3eb1633c73c16a1680459d737621e46a829dfb0e9527830c745aed3c0783705b807010b51a35c06dc3fe6ba";
+
+    /// `signature.*`: one signed request, end to end.
+    const SIG_SECRET: &str = "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
+    const SIG_TARGET: &str = "/v1/files/00112233445566778899aabbccddeeff/versions";
+    const SIG_TS: &str = "1757200000";
+    const SIG_NONCE: &str = "8d2f0a1b4c6e7f90a1b2c3d4e5f60718";
+    const SIG_BODY_HASH: &str = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+    const SIG: &str = "6418a21e8d1e507aadf70f197f71a64900da961926f52f6da1a3428be844ce40";
+
+    #[test]
+    fn every_fixture_sid_is_the_sha256_of_its_ciphertext() {
+        for (ciphertext, sid) in [(EMPTY_CIPHERTEXT, EMPTY_SID), (NOTE_CIPHERTEXT, NOTE_SID)] {
+            let bytes = hex::decode(ciphertext).expect("fixture ciphertext");
+            assert_eq!(
+                hex::encode(&sha256::sha256(&bytes)),
+                sid,
+                "the storage id the device computed is not this server's"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fixture_request_signature_verifies_with_this_server_canonical_string() {
+        let secret = hex::decode_array::<32>(SIG_SECRET).expect("fixture secret");
+        let canonical =
+            crate::api::auth::canonical("POST", SIG_TARGET, SIG_TS, SIG_NONCE, SIG_BODY_HASH);
+        assert_eq!(
+            hex::encode(&hmac::hmac_sha256(&secret, canonical.as_bytes())),
+            SIG,
+            "the device and the server disagree about what is signed"
+        );
+        assert!(crate::api::auth::verify(&secret, &canonical, SIG));
+        assert!(
+            !crate::api::auth::verify(&secret, &canonical.replace("POST", "PUT"), SIG),
+            "and the method is inside the signature"
+        );
+    }
+
+    /// Post the fixture's version with the id given, over the wire.
+    fn post(h: &Harness, cred: &super::Cred, version_id: &str) -> Res {
+        let parents = PARENTS
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let manifest_ct = base64::encode(&hex::decode(MANIFEST_CT).expect("fixture manifest"));
+        Req::post(&format!("/v1/files/{FILE_ID}/versions"))
+            .body(&format!(
+                r#"{{"version_id":"{version_id}","parents":[{parents}],"sids":["{NOTE_SID}","{BLOCK_SID}"],"bytes":4117,"manifest_ct":"{manifest_ct}","manifest_nonce":"{MANIFEST_NONCE}","deleted":false}}"#
+            ))
+            .sign(cred, NOW)
+            .send(h.addr)
+    }
+
+    #[test]
+    fn the_server_recomputes_the_version_id_the_device_computed() {
+        let h = Harness::start("fixture-version");
+        let cred = h.setup_account();
+
+        // A deliberately wrong id: the refusal names what the server computed
+        // from the same file id, parents, manifest, and sids.
+        let refused = post(&h, &cred, &"00".repeat(32));
+        assert_eq!(refused.status, 422, "{}", refused.text());
+        assert_eq!(refused.code(), "version_id_mismatch");
+        let body = refused.json();
+        assert_eq!(
+            body.get("expected").and_then(Value::as_str),
+            Some(VERSION_ID),
+            "the server's version id differs from the device's"
+        );
+
+        // With the fixture's own id the post gets past the identity check and
+        // stops on the chunks, which this test never uploaded.
+        let accepted = post(&h, &cred, VERSION_ID);
+        assert_eq!(accepted.status, 409, "{}", accepted.text());
+        assert_eq!(accepted.code(), "missing_chunks");
+    }
+}
