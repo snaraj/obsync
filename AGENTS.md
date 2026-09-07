@@ -3,9 +3,9 @@
 This is the CANONICAL, vendor-agnostic agent contract for this repository:
 any frontier model, or hurried human, must be able to operate here cold from
 this document alone. Tool-specific entrypoints (CLAUDE.md) only import it.
-Sibling repositories (naranjo.online, lidersea.com, platform) share these
-conventions by deliberate copy, never by reference: nothing here depends on
-them.
+Sibling repositories (the owner's two site repositories and the platform
+repository) share these conventions by deliberate copy, never by reference:
+nothing here depends on them.
 
 ## Cold start — first-session checklist
 
@@ -32,9 +32,10 @@ encrypted manifests on local volumes, serves a sync API, a dashboard, and its
 own plugin bundle; plus an Obsidian plugin that encrypts on the device and
 talks to that server on every Obsidian platform. Files of any size follow one
 path, bounded only by the backing volume. The reference deployment is a
-single-node Kubernetes cluster on a Raspberry Pi behind a Cloudflare Tunnel
-with Cloudflare Access, delivered by the same signed-image, digest-pinned
-release path as naranjo.online. The product is meant to be trusted and run
+single-node Kubernetes cluster on a Raspberry Pi behind a tunnel provider
+with an access policy in front, delivered by the same signed-image,
+digest-pinned release path as the owner's existing sites. The product is
+meant to be trusted and run
 by strangers, so every deployment concern is a configuration value and every
 security property is true by construction, not by setting.
 

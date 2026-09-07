@@ -49,9 +49,10 @@ docker run -d --name obsync -p 127.0.0.1:8080:8080 \
 ```
 
 On Kubernetes, install the chart with your storage classes, claim sizes, and
-a Secret for `OBSYNC_SERVER_KEY`; the reference deployment (a Raspberry Pi
-behind a Cloudflare Tunnel with Cloudflare Access in front) is described in
-`docs/platform-onboarding.md` and `docs/architecture.md` section 10.
+a Secret for `OBSYNC_SERVER_KEY`; the reference deployment (a single-node
+cluster on a Raspberry Pi, reached over private connectivity with no public
+hostname) is described in `docs/platform-onboarding.md` and
+`docs/architecture.md` section 10.
 
 At first boot the server mints a setup token and writes it, mode 0600 and
 never logged, to `v1/setup-token` on the journal volume. The token creates

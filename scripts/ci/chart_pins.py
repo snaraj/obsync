@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,16 @@ NAMESPACE = "pin-namespace"
 BLOBS_MOUNT = "/data/blobs"
 JOURNAL_MOUNT = "/data/journal"
 MIRROR_ROOT = "/data/mirrors"
+
+# The operating documents that tell an operator which claims to provision.
+# They are read against the RENDER, never the other way round: the chart is
+# what Kubernetes obeys, so a name only the prose believes in is the prose's
+# defect. The pattern is deliberately loose -- any backticked `<word>-blobs`
+# or `<word>-journal` -- so a WRONG name is caught rather than merely a
+# missing one. A volume pre-bound to a claim nobody creates binds to nothing,
+# and the workload then waits forever on storage that exists.
+CLAIM_DOCUMENTS = (Path("docs/storage.md"), Path("docs/platform-onboarding.md"))
+CLAIM_IN_PROSE = re.compile(r"`([a-z0-9][a-z0-9-]*-(?:blobs|journal))`")
 
 
 class PinError(AssertionError):
@@ -193,6 +204,11 @@ def _volume_claims(volume: dict[str, Any]) -> str:
     return claim["claimName"]
 
 
+def _unknown_claim_names(text: str, known: set[str]) -> list[str]:
+    """Claim names a document states that the chart does not create."""
+    return sorted({name for name in CLAIM_IN_PROSE.findall(text) if name not in known})
+
+
 def _assert_claim(claim: dict[str, Any], *, name: str, spec: dict[str, Any]) -> None:
     equals(claim["metadata"]["name"], name, f"the {name} claim name")
     equals(claim["spec"]["accessModes"], ["ReadWriteOnce"], f"the {name} access modes")
@@ -324,6 +340,35 @@ def pin_storage() -> None:
     # claim nobody provisioned.
     refuse("storage.mirrors[0].name=spare", because="a mirror with no class, size, or capacity")
     print("chart-pins storage: (e) a half-specified mirror is refused by the schema")
+
+    # (f) The operating documents name the claims this chart actually creates.
+    # They named `obsidian-blobs` and `obsidian-journal` -- the NAMESPACE with
+    # the role appended -- while the chart creates `obsync-blobs` and
+    # `obsync-journal`, because every object it renders is named for the
+    # application. A platform lane following the document would have
+    # provisioned two volumes pre-bound to claims that never appear.
+    known = set(claims)
+    for document in CLAIM_DOCUMENTS:
+        text = document.read_text(encoding="utf-8")
+        unknown = _unknown_claim_names(text, known)
+        if unknown:
+            raise PinError(
+                f"{document} names claim(s) {unknown}, which this chart does not "
+                f"create; it creates {sorted(known)}"
+            )
+    storage_doc = CLAIM_DOCUMENTS[0].read_text(encoding="utf-8")
+    for name in sorted(known):
+        if f"`{name}`" not in storage_doc:
+            raise PinError(f"{CLAIM_DOCUMENTS[0]} does not name the {name} claim")
+    # Non-vacuity, proven against the real text: rename one claim in a copy of
+    # the document and require the same function to refuse it. Derived from the
+    # render, so this cannot rot into a check for a literal nobody uses.
+    sample = sorted(known)[0]
+    role = sample.rsplit("-", 1)[1]
+    mutated = storage_doc.replace(f"`{sample}`", f"`stale-{role}`")
+    if _unknown_claim_names(mutated, known) != [f"stale-{role}"]:
+        raise PinError("the document check can no longer fail: it would pass a wrong claim name")
+    print("chart-pins storage: (f) the operating documents name the claims the chart creates")
 
 
 def pin_security() -> None:

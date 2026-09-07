@@ -25,6 +25,27 @@ def policy(*ingress: dict) -> dict:
 
 
 class ExtractionRefusesWhatCountingWouldPass(unittest.TestCase):
+    def test_a_document_naming_a_claim_the_chart_does_not_create_is_refused(self):
+        # The defect this catches shipped: prose that named the claims after
+        # the NAMESPACE while the chart names them after the application. A
+        # missing-name check alone would have passed it, because the prose did
+        # name two claims -- they were simply the wrong two.
+        known = {"obsync-blobs", "obsync-journal"}
+        clean = "claimed by `obsync-blobs` and `obsync-journal` in namespace `obsidian`."
+        self.assertEqual(chart_pins._unknown_claim_names(clean, known), [])
+        wrong = "claimed by `obsidian-blobs` and `obsidian-journal`."
+        self.assertEqual(
+            chart_pins._unknown_claim_names(wrong, known),
+            ["obsidian-blobs", "obsidian-journal"],
+        )
+        # A mirror claim the chart can render is not a defect; unbackticked
+        # prose is not a claim name.
+        self.assertEqual(
+            chart_pins._unknown_claim_names("`obsync-mirror-spare`", known | {"obsync-mirror-spare"}),
+            [],
+        )
+        self.assertEqual(chart_pins._unknown_claim_names("the obsidian-blobs volume", known), [])
+
     def test_a_second_policy_document_is_refused(self):
         # Ingress rules are ADDITIVE across policies, so a second document --
         # in the same file or a new template -- admits a peer that reading only
