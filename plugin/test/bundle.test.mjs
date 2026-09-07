@@ -1,0 +1,143 @@
+/**
+ * The artifact itself: `dist/main.js` is what Obsidian loads, so it is tested
+ * as Obsidian loads it — required as CommonJS with `obsidian` resolved to a
+ * stub, expecting the Plugin subclass as the default export.
+ *
+ * Also pinned here: the bundle is deterministic (the release evidence
+ * manifest names its SHA-256), it carries no path from the build machine
+ * (AGENTS.md requirement 11), and it names no ingress or access provider
+ * (the provider-neutrality contract).
+ */
+
+import { strict as assert } from "node:assert";
+import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const require = createRequire(import.meta.url);
+const plugin = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function build() {
+  return execFileSync(process.execPath, ["build.mjs"], { cwd: plugin, encoding: "utf8" });
+}
+
+test("the bundler produces the same bytes every time", () => {
+  const first = build();
+  const one = readFileSync(join(plugin, "dist", "main.js"));
+  const second = build();
+  const two = readFileSync(join(plugin, "dist", "main.js"));
+  assert.equal(createHash("sha256").update(one).digest("hex"), createHash("sha256").update(two).digest("hex"));
+  assert.equal(first, second, "the reported hashes are stable too");
+  assert.match(first, /main\.js bytes=\d+ sha256=[0-9a-f]{64}/);
+  assert.match(first, /manifest\.json bytes=\d+ sha256=[0-9a-f]{64}/);
+  assert.match(first, /styles\.css bytes=\d+ sha256=[0-9a-f]{64}/);
+});
+
+/** A throwaway directory where `obsidian` resolves to a stub, as Obsidian's own loader makes it resolve. */
+function sandbox() {
+  const home = mkdtempSync(join(tmpdir(), "obsync-bundle-"));
+  mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
+  writeFileSync(
+    join(home, "node_modules", "obsidian", "package.json"),
+    JSON.stringify({ name: "obsidian", version: "0.0.0", main: "index.js" }),
+  );
+  // The smallest stub that satisfies module-scope evaluation.
+  writeFileSync(
+    join(home, "node_modules", "obsidian", "index.js"),
+    `class Component {}
+class Plugin extends Component {}
+class Modal { constructor(app) { this.app = app; } }
+class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
+class Setting { constructor(el) { this.el = el; } }
+class Notice { constructor(message) { this.message = message; } hide() {} }
+class TFile {}
+class TFolder {}
+class TAbstractFile {}
+module.exports = {
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile,
+  Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
+  requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
+  normalizePath: (p) => p,
+};
+`,
+  );
+  cpSync(join(plugin, "dist"), join(home, "plugin"), { recursive: true });
+  cpSync(join(plugin, "build"), join(home, "build"), { recursive: true });
+  return { home, require: createRequire(join(home, "x.js")) };
+}
+
+test("Obsidian's load path finds the plugin class as the default export", () => {
+  build();
+  const box = sandbox();
+  const exported = box.require(join(box.home, "plugin", "main.js"));
+  assert.equal(typeof exported, "function", "the bundle exports a class");
+  assert.equal(typeof exported.prototype.onload, "function");
+  assert.equal(typeof exported.prototype.onunload, "function");
+  assert.equal(typeof exported.prototype.statusText, "function");
+  const obsidian = box.require("obsidian");
+  assert.ok(exported.prototype instanceof obsidian.Component, "it extends Obsidian's Plugin");
+});
+
+test("the bundle carries the whole plugin and nothing from the build machine", () => {
+  build();
+  const bundle = readFileSync(join(plugin, "dist", "main.js"), "utf8");
+  for (const id of [
+    "./main",
+    "./crypto",
+    "./chunker",
+    "./state",
+    "./transport",
+    "./policy",
+    "./pairing",
+    "./wordlist",
+    "./sync/engine",
+    "./sync/push",
+    "./sync/pull",
+    "./sync/conflict",
+    "./ui/settings",
+    "./ui/modals",
+  ]) {
+    assert.ok(bundle.includes(`__modules[${JSON.stringify(id)}]`), `${id} is in the bundle`);
+  }
+  assert.ok(bundle.trimEnd().endsWith('module.exports = __load("./main").default;'));
+  assert.equal(bundle.includes("/Users/"), false, "no home directory leaked into the artifact");
+  assert.equal(bundle.includes(plugin), false, "no build path leaked into the artifact");
+  for (const url of bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? []) {
+    assert.ok(url === "https://" || url.includes("example."), `the bundle reaches for ${url}`);
+  }
+});
+
+test("no ingress, tunnel or access provider is named in the shipped code", () => {
+  const bundle = readFileSync(join(plugin, "dist", "main.js"), "utf8").toLowerCase();
+  for (const provider of ["cloudflare", "cf-access", "tailscale", "ngrok", "fastly", "akamai", "route53"]) {
+    assert.equal(bundle.includes(provider), false, `the bundle names ${provider}`);
+  }
+});
+
+test("the manifest ships the values Obsidian and the release path expect", () => {
+  const manifest = JSON.parse(readFileSync(join(plugin, "dist", "manifest.json"), "utf8"));
+  assert.equal(manifest.id, "obsync");
+  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.isDesktopOnly, false, "the plugin runs on mobile");
+  assert.ok(manifest.minAppVersion);
+  const styles = readFileSync(join(plugin, "dist", "styles.css"), "utf8");
+  assert.ok(styles.includes(".obsync-code"));
+});
+
+test("version comparison only offers a genuine upgrade", () => {
+  build();
+  const box = sandbox();
+  const { isNewer } = box.require(join(box.home, "build", "main.js"));
+  assert.equal(isNewer("0.1.1", "0.1.0"), true);
+  assert.equal(isNewer("0.2.0", "0.1.9"), true);
+  assert.equal(isNewer("1.0.0", "0.9.9"), true);
+  assert.equal(isNewer("0.1.0", "0.1.0"), false);
+  assert.equal(isNewer("0.0.9", "0.1.0"), false);
+  assert.equal(isNewer("banana", "0.1.0"), false);
+  assert.equal(isNewer("0.1.10", "0.1.9"), true);
+});
