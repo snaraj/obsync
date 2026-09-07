@@ -115,9 +115,7 @@ pub fn run() -> i32 {
 
     let dashboard = Dashboard::load(&cfg.dashboard_dir, &log);
     let plugin = PluginDist::load(&cfg.plugin_dir, &log);
-    let listen = server
-        .local_addr()
-        .map_or_else(|_| cfg.listen.clone(), |a| a.to_string());
+    let listen = server.local_addr().to_string();
     let app = Arc::new(App::new(
         cfg,
         store,

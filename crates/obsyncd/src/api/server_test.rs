@@ -146,7 +146,7 @@ impl Harness {
         );
 
         let server = Server::bind("127.0.0.1:0", Limits::default()).expect("bind");
-        let addr = server.local_addr().expect("local addr");
+        let addr = server.local_addr();
         let serve_app = Arc::clone(&app);
         let serve_shutdown = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
