@@ -57,6 +57,27 @@ spec:
               value: /data/journal
             - name: OBSYNC_BLOBS_MIRRORS
               value: {{ include "obsync.mirrorPaths" . | quote }}
+            {{- /* The standard library exposes no statvfs, so free space is
+            capacity MINUS tracked usage and the capacity has to be declared
+            (docs/architecture.md section 9). It is rendered from the CLAIM
+            SIZE, not from the provisioned volume capacity, and the difference
+            matters in exactly one direction: a volume grown to 500Gi behind a
+            claim still requesting 250Gi can only ever hand this pod 250Gi, so
+            telling the server the larger number would make the free-space
+            watermark fire late -- the failure that ends in a full disk. The
+            annotation on the claim records the provisioned capacity for the
+            operator; this variable records what the claim guarantees. */}}
+            - name: OBSYNC_BLOBS_CAPACITY
+              value: {{ .Values.storage.blobs.size | quote }}
+            - name: OBSYNC_JOURNAL_CAPACITY
+              value: {{ .Values.storage.journal.size | quote }}
+            {{- /* Display labels only: the dashboard names the class an
+            operator provisioned, and the server assumes nothing whatever about
+            what is behind the path (docs/storage.md). */}}
+            - name: OBSYNC_BLOBS_CLASS
+              value: {{ .Values.storage.blobs.className | quote }}
+            - name: OBSYNC_JOURNAL_CLASS
+              value: {{ .Values.storage.journal.className | quote }}
             - name: OBSYNC_DASHBOARD_DIR
               value: /opt/obsync/dashboard
             - name: OBSYNC_PLUGIN_DIR

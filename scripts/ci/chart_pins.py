@@ -268,10 +268,32 @@ def pin_storage() -> None:
     )
     print("chart-pins storage: (c) a mirror renders as a third claim and reaches the process")
 
-    # (d) A half-specified mirror must fail the render rather than mounting a
+    # (d) The free-space math has no statvfs to fall back on, so the declared
+    # capacity IS the guarantee. It must be the CLAIM SIZE and never the
+    # provisioned volume capacity: a grown volume behind an un-resized claim
+    # would make the watermark fire late, which is the failure that fills a
+    # disk. Asserting it against the render is what stops that being one
+    # careless values reference away.
+    default = {
+        entry["name"]: entry.get("value")
+        for entry in only(documents, "Deployment")["spec"]["template"]["spec"]["containers"][0][
+            "env"
+        ]
+        if "value" in entry
+    }
+    for variable, expected in (
+        ("OBSYNC_BLOBS_CAPACITY", configured["storage"]["blobs"]["size"]),
+        ("OBSYNC_JOURNAL_CAPACITY", configured["storage"]["journal"]["size"]),
+        ("OBSYNC_BLOBS_CLASS", configured["storage"]["blobs"]["className"]),
+        ("OBSYNC_JOURNAL_CLASS", configured["storage"]["journal"]["className"]),
+    ):
+        equals(default[variable], str(expected), f"the rendered {variable}")
+    print("chart-pins storage: (d) declared capacity is the claim size, and the class is labelled")
+
+    # (e) A half-specified mirror must fail the render rather than mounting a
     # claim nobody provisioned.
     refuse("storage.mirrors[0].name=spare", because="a mirror with no class, size, or capacity")
-    print("chart-pins storage: (d) a half-specified mirror is refused by the schema")
+    print("chart-pins storage: (e) a half-specified mirror is refused by the schema")
 
 
 def pin_security() -> None:

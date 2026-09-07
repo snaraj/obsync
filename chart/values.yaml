@@ -82,11 +82,20 @@ serverKeySecret:
 # or NAS-backed class is a values change and never a code change.
 #
 #   size     the claim's requested storage, what `kubectl get pvc` reports.
+#            It is ALSO what the server is told through OBSYNC_*_CAPACITY,
+#            because the standard library exposes no statvfs and free space is
+#            therefore capacity minus tracked usage: what the claim guarantees
+#            is the only number that cannot over-state what this pod can write.
 #   capacity the capacity the operator provisioned on the volume this claim
 #            binds to. Recorded as an annotation on the claim so growth (250Gi
 #            -> 500Gi) is ONE values edit that states both the claim and the
 #            volume it must fit, instead of two facts in two repositories that
-#            can disagree silently.
+#            can disagree silently. It is deliberately NOT what the server is
+#            told: a grown volume behind an un-resized claim would make the
+#            free-space watermark fire late.
+#   className the StorageClass, used for the claim and as the dashboard's
+#            display label (OBSYNC_*_CLASS). The server assumes nothing about
+#            what is behind the path beyond a POSIX directory honouring fsync.
 storage:
   blobs:
     className: local-pie-ssd
