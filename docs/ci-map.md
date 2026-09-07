@@ -6,7 +6,10 @@ locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever
 stop agreeing. The one group `check` does not chain is the `container` job's
 two `docker build` commands and the image smoke that follows them — `check`
 stays runnable with no container runtime — and `make image` reproduces all
-three exactly.
+three exactly. On a host whose Docker declares a credential helper,
+`make image-isolated` is the same build with an empty `DOCKER_CONFIG`, which is
+what the gate uses; it carries the caller's current daemon endpoint in so
+emptying the configuration cannot also drop the context that names the socket.
 
 ## `pr-gate.yml` — pull requests, pushes to `main`, manual dispatch
 

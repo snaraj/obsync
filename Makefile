@@ -3,7 +3,7 @@
 # canonical command below must also appear in .github/workflows/pr-gate.yml, so
 # "it passed locally" and "it passed in CI" cannot come to mean different
 # things.
-.PHONY: help check fmt lint test coverage plugin dashboard chart contracts secrets build image release-check
+.PHONY: help check fmt lint test coverage plugin dashboard chart contracts secrets build image image-isolated release-check
 
 # Requirement 9's ratchet-only floor, set at the first measured value on the
 # composed bootstrap wave (89.80 %, 2026-09-07). The same number lives in
@@ -83,14 +83,25 @@ build: ## Release binary for the host
 # start and the one shape that catches a mount point the runtime uid cannot
 # write. Both builds can be green while that path cannot complete once.
 #
-# On a host whose Docker declares a `credsStore`, run it as
-# `DOCKER_CONFIG="$$(mktemp -d)" make image`: an empty configuration directory
-# is what keeps a credential helper out of anonymous, digest-pinned base-image
-# pulls, and is what the gate points DOCKER_CONFIG at.
+# On a host whose Docker declares a `credsStore`, run `make image-isolated`:
+# an empty configuration directory is what keeps a credential helper out of
+# anonymous, digest-pinned base-image pulls, and is what the gate points
+# DOCKER_CONFIG at.
 image: ## Build the release stages locally, exactly as the gate's container job does
 	docker build --target server --tag obsync-server:$$(cat VERSION) .
 	docker build --tag obsync:$$(cat VERSION) .
 	./scripts/ci/image-smoke.sh obsync:$$(cat VERSION)
+
+# Emptying DOCKER_CONFIG also drops the CONTEXT it selects, and on Docker
+# Desktop the context is the only thing that names the daemon socket: an
+# emptied configuration falls back to /var/run/docker.sock, which that
+# installation does not create, so the isolated build fails on a machine whose
+# daemon is healthy. Resolve the endpoint FIRST, under the caller's real
+# configuration, and carry it in explicitly. An endpoint the caller already
+# chose wins.
+image-isolated: ## make image with an empty Docker config, keeping this daemon
+	DOCKER_HOST="$${DOCKER_HOST:-$$(docker context inspect -f '{{.Endpoints.docker.Host}}')}" \
+	DOCKER_CONFIG="$$(mktemp -d)" $(MAKE) image
 
 release-check: ## Classify the outgoing range and walk the seven locks
 	python3 -B scripts/ci/release_contract.py transition --repository . \
