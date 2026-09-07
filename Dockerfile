@@ -91,6 +91,38 @@ RUN set -eux; \
     /out/obsyncd --version || true
 
 # ---------------------------------------------------------------------------
+# datadirs -- the two volume mount points, made to exist BEFORE anything is
+# mounted over them.
+#
+# Docker initialises a fresh named volume from whatever the image has at the
+# mount point: the directory's ownership and mode are copied out to the new
+# volume, and when the image has no such directory the daemon creates it
+# root-owned 0755. The final image runs as `nonroot` (uid 65532) and cannot
+# chown anything -- it has no shell and no capabilities -- so an image without
+# these two directories hands its own runtime user a pair of unwritable
+# volumes. The README's Docker quick start hit exactly that: the server
+# refused at first boot with `event=server_key_failed decision=exit
+# refusal=io_error` before it could write its key or mint the setup token.
+#
+# So they are built HERE, in a stage that still has a shell, and copied into
+# the final image with the runtime uid. The stage is `server` rather than a
+# fifth base image: nothing is downloaded for it, and the mode is decided in
+# one place while the COPY below decides the ownership.
+#
+# NO `VOLUME` DECLARATION, DELIBERATELY. Naming these paths in a `VOLUME`
+# instruction would make `docker run` without `-v` succeed by silently
+# attaching two ANONYMOUS volumes -- writable even under `--read-only`, since
+# a mount is not the root filesystem -- and the operator would mint a setup
+# token, sync a vault, and lose all of it to the next `docker rm`. Without the
+# declaration that same command refuses out loud on the read-only root
+# filesystem, with the same one-line refusal above, which is the behaviour
+# requirement 12 asks for. `VOLUME` is also inert on Kubernetes, where the
+# chart's `fsGroup: 65532` is what makes the claims writable.
+# ---------------------------------------------------------------------------
+FROM server AS datadirs
+RUN install -d -m 0700 /skeleton/data /skeleton/data/blobs /skeleton/data/journal
+
+# ---------------------------------------------------------------------------
 # The shipped image: one static binary, the dashboard it serves, and the plugin
 # bundle it hands to devices. No package manager, no source tree, no compiler,
 # no shell -- so requirement 5's "the container runs as non-root with a
@@ -98,6 +130,7 @@ RUN set -eux; \
 # these bytes rather than of the manifest that runs them.
 # ---------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
+COPY --from=datadirs --chown=65532:65532 /skeleton/ /
 COPY --from=server --chown=65532:65532 /out/obsyncd /usr/local/bin/obsyncd
 COPY --from=bundle --chown=65532:65532 / /opt/obsync/plugin/
 COPY --chown=65532:65532 dashboard/ /opt/obsync/dashboard/

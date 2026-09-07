@@ -73,9 +73,15 @@ build: ## Release binary for the host
 
 # The gate's `container` job, reproducible before the push: the same two native
 # builds in the same order, so the cached server stage serves the full image
-# exactly as it does in CI. Not a prerequisite of `check`, which must stay
-# runnable with no container runtime at all -- run this one when the Dockerfile,
-# the plugin build, or the dashboard changes.
+# exactly as it does in CI, then the same smoke against the image that build
+# just produced. Not a prerequisite of `check`, which must stay runnable with
+# no container runtime at all -- run this one when the Dockerfile, the plugin
+# build, or the dashboard changes.
+#
+# The smoke is where "the image builds" becomes "the image serves": it runs the
+# built bytes with two FRESH named volumes, which is the README's own quick
+# start and the one shape that catches a mount point the runtime uid cannot
+# write. Both builds can be green while that path cannot complete once.
 #
 # On a host whose Docker declares a `credsStore`, run it as
 # `DOCKER_CONFIG="$$(mktemp -d)" make image`: an empty configuration directory
@@ -84,6 +90,7 @@ build: ## Release binary for the host
 image: ## Build the release stages locally, exactly as the gate's container job does
 	docker build --target server --tag obsync-server:$$(cat VERSION) .
 	docker build --tag obsync:$$(cat VERSION) .
+	./scripts/ci/image-smoke.sh obsync:$$(cat VERSION)
 
 release-check: ## Classify the outgoing range and walk the seven locks
 	python3 -B scripts/ci/release_contract.py transition --repository . \

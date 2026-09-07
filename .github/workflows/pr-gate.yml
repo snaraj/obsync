@@ -311,6 +311,15 @@ jobs:
           test "$(jq -c '.[0].Config.Entrypoint' "${inspected}")" = '["/usr/local/bin/obsyncd"]'
           test "$(jq -c '.[0].Config.Cmd' "${inspected}")" = '["serve"]'
           test "$(jq -c '.[0].Config.ExposedPorts | keys' "${inspected}")" = '["8080/tcp"]'
+      - name: Prove the shipped image actually serves
+        # Everything above proves the image BUILDS and that its config SAYS
+        # nonroot. Neither requires it to work. This runs the bytes that were
+        # just built the way README.md tells a stranger to run them -- two
+        # FRESH named volumes, --read-only, no capabilities, no new privileges
+        # -- and proves the server reaches ready, stays up as uid 65532, and
+        # wrote a readable 64-hex setup token to the journal volume. That path
+        # was broken while every static assertion in this job was green.
+        run: scripts/ci/image-smoke.sh "obsync-gate-full:${GITHUB_SHA}"
 
   gate:
     # The one aggregate context the ruleset requires, listing every job by

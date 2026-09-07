@@ -26,9 +26,13 @@
 # different things: `--target server` stops at the stage that runs the Rust
 # battery inside the image and cross-links the static binary, while the
 # untargeted build adds the plugin, bundle and final stages. Either one alone
-# leaves half the Dockerfile unbuilt until release time. They are the one pair
-# here that `make check` does not chain -- `check` must stay runnable with no
-# container runtime -- so `make image` is where an author reproduces them.
+# leaves half the Dockerfile unbuilt until release time. `image-smoke.sh` is
+# the third of that group and the only one that RUNS the result: both builds
+# were green on an image that exited at first boot, because a build proves
+# nothing about a mount point the runtime uid cannot write. The three are the
+# one group here that `make check` does not chain -- `check` must stay
+# runnable with no container runtime -- so `make image` is where an author
+# reproduces them.
 #
 # NON-VACUITY IS PROVEN, NOT ASSUMED. Assertion (d) deletes one canonical
 # command from a COPY of each file and requires the same check to fail. A gate
@@ -56,6 +60,7 @@ CANONICAL=(
   'gitleaks git --no-banner --redact --max-target-megabytes=2'
   'docker build --target server --tag'
   'docker build --tag'
+  'scripts/ci/image-smoke.sh'
 )
 
 # The prerequisite list `check` must carry. Stated here so a target silently
