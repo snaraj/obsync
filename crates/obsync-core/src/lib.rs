@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod base32;
+pub mod base64;
 pub mod crc32;
 pub mod ct;
 pub mod hex;
