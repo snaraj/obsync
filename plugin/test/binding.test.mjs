@@ -485,3 +485,59 @@ test("an on-demand fetch binds the manifest to the file's own domain", async () 
   assert.equal(host.text("Attachments/held.bin"), "this payload is larger than sixteen bytes");
   assert.equal(state.data.remoteOnly[fileId], undefined);
 });
+
+test("a merge base above one chunk keeps both sides instead of holding it whole", async () => {
+  const { host, server, state, context, keys: k } = await rig();
+  const fileId = "33".repeat(16);
+  const path = "Notes/Ancestor.md";
+  // A version graph another device shaped: a multi-chunk ANCESTOR under a
+  // small, perfectly mergeable head. Nothing here is malformed -- the base
+  // record and its manifest agree on every field -- it is simply too big to
+  // assemble in memory, which is the one thing `isMergeableText` never sees.
+  const base = await server.publishManifest({
+    fileId,
+    manifest: manifest({
+      path,
+      size: CHUNK_MAX + CHUNK_MIN,
+      chunks: [
+        { sid: sid(1), cid: sid(9), len: CHUNK_MAX },
+        { sid: sid(2), cid: sid(8), len: CHUNK_MIN },
+      ],
+    }),
+    sids: [sid(1), sid(2)],
+    parents: [],
+    deviceId: OTHER_DEVICE,
+    manifestKey: k.manifestKey,
+    bytes: CHUNK_MAX + CHUNK_MIN,
+  });
+  const mine = await server.publish({
+    fileId,
+    path,
+    bytes: enc("my line\n"),
+    mtime: 1757200002000,
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+    parents: [base.version_id],
+  });
+  const theirs = await server.publish({
+    fileId,
+    path,
+    bytes: enc("their line\n"),
+    mtime: 1757200003000,
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+    parents: [base.version_id],
+  });
+  host.seed(path, "my line\n", 2000);
+  state.setFile(path, { fileId, versionId: mine.version_id, mtime: 2000, size: 8, sha256: "" });
+
+  assert.equal(await applyChange(context, theirs), "conflict_copy");
+  assert.equal(host.text(path), "my line\n", "our edit is untouched");
+  const copy = [...host.files.keys()].find((name) => name.includes("conflict from"));
+  assert.equal(host.text(copy), "their line\n");
+  assert.ok(
+    host.logs.some((line) => line.includes(`reason=base_above_one_chunk bytes=${CHUNK_MAX + CHUNK_MIN}`)),
+    `the refusal to merge names its reason and its size: ${host.logs.join(" | ")}`,
+  );
+  assert.equal(fetchSizes(server.requests).length, 1, "only their one chunk was ever fetched");
+});

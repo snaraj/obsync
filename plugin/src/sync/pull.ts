@@ -513,6 +513,16 @@ async function reconcile(
         file_id: change.file_id,
         domain_id: file.domain_id,
       });
+      // A merge input is held whole in memory, so it must be one chunk on
+      // BOTH sides. Their head was checked above; the ancestor is checked
+      // here, because the version graph is another device's to shape and a
+      // 20 GB ancestor of a 200-byte note is a graph it may legally post.
+      if (baseManifest.chunks.length !== 1) {
+        context.host.log(
+          `pull decision=conflict_copy reason=base_above_one_chunk bytes=${baseManifest.size} file=${change.file_id}`,
+        );
+        return await keepBoth(context, change, theirManifest);
+      }
       const base = await assembleBytes(context, baseManifest);
       const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();
@@ -532,6 +542,15 @@ async function reconcile(
     }
   }
 
+  return await keepBoth(context, change, theirManifest);
+}
+
+/** Write the foreign head beside ours under a named copy, and say so. */
+async function keepBoth(
+  context: SyncContext,
+  change: ChangeRecord,
+  theirManifest: Manifest,
+): Promise<ApplyResult> {
   const copyPath = conflictCopyPath(
     theirManifest.path,
     context.deviceNameFor(change.device_id),
