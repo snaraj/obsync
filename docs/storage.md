@@ -109,7 +109,10 @@ this repository.
 
 Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/{blobs,
 journal}` on class `local-pie-ssd`, `Retain`, `WaitForFirstConsumer`,
-`ReadWriteOnce`, node-affine to the single node, claimed by
-`obsidian-blobs` and `obsidian-journal` in namespace `obsidian`. Growth to 500
-GiB is a PV capacity edit and a claim resize. The platform's storage
+`ReadWriteOnce`, node-affine to the single node, claimed by `obsync-blobs`
+and `obsync-journal` in namespace `obsidian`. The claim names come from the
+chart, which names every object for the application (`obsync`) and never for
+the namespace it happens to be installed into; `scripts/ci/chart_pins.py`
+refuses a name here that the render does not create. Growth to 500 GiB is a
+PV capacity edit and a claim resize. The platform's storage
 exposure policy already admits this class, provisioner, and root.

@@ -396,14 +396,26 @@ Environment only, so containers and charts need no config file:
 
 ## 10. Reference deployment (pie5)
 
-Namespace `obsidian` (owner ruling 2026-09-07); one Deployment (single replica, `Recreate`), one
-Service on 8080, one default-deny NetworkPolicy admitting ingress only from
-the tunnel connector; two static local PersistentVolumes on `local-pie-ssd`
-(blobs 250 GiB, journal 4 GiB), growable to 500 GiB; `OBSYNC_SERVER_KEY`
-from a SOPS-managed Secret; `OBSYNC_EDGE=cloudflare`; a third per-app
-Cloudflare Tunnel (`obsidian`) for one hostname (`obsidian.naranjo.online`) with Cloudflare Access in front
-(identity policy for the dashboard, service-token policy for `/v1/*`).
-`docs/platform-onboarding.md` lists the platform-repository changes.
+**Private and owner-only** (owner ruling 2026-09-07). A single-node cluster
+reached over private connectivity, LAN or VPN: no public hostname, no public
+access application, no public route. A tunnel provider is an option this
+deployment has not taken.
+
+Namespace `obsidian`; one Deployment (single replica, `Recreate`), one
+Service on 8080, one default-deny NetworkPolicy admitting ingress from one
+peer only; two static local PersistentVolumes on `local-pie-ssd` (blobs 250
+GiB, journal 4 GiB), growable to 500 GiB; `OBSYNC_SERVER_KEY` from a
+SOPS-managed Secret. Edge mode follows the posture: `OBSYNC_EDGE=none` while
+nothing but private connectivity reaches it, so a forwarded address is
+trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
+
+Publishing a hostname later is a configuration change, not a redesign: a
+per-app Cloudflare Tunnel for one hostname (`sync.example.org` standing in
+for the deployer's own) with Cloudflare Access in front -- identity policy
+for the dashboard paths, service-token policy for `/v1/*` -- and
+`OBSYNC_EDGE=cloudflare`, which makes the edge's connecting-address and
+request-id headers mandatory on every request and refuses one that lacks
+them. `docs/platform-onboarding.md` lists the platform-repository changes.
 
 ## 11. Phases
 
