@@ -471,12 +471,29 @@ export class FakeServer {
     return this.publishManifest({ fileId, manifest, sids: [], parents, deviceId, manifestKey, bytes: 0 });
   }
 
-  async publishManifest({ fileId, manifest, sids, parents, deviceId, manifestKey, bytes }) {
+  /**
+   * Land a version whose RECORD fields may be stated separately from the
+   * manifest's. Honest traffic leaves them alone and they follow the
+   * manifest, which is what every other test uses; a hostile test forges
+   * exactly one of them, which is the only way to build a validly encrypted
+   * manifest that disagrees with the record it rides in.
+   */
+  async publishManifest({
+    fileId,
+    manifest,
+    sids,
+    parents,
+    deviceId,
+    manifestKey,
+    bytes,
+    domainId = manifest.domain,
+    deleted = manifest.deleted,
+  }) {
     const binder = await c.contentVersionId(fileId, parents, sids);
     const sealed = await c.encryptManifest(manifestKey, fileId, binder, JSON.stringify(manifest));
     const manifestCt = c.base64(sealed.ciphertext);
     const versionId = await c.versionId(fileId, parents, sealed.ciphertext, sids);
-    const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: manifest.domain };
+    const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: domainId };
     this.files.set(fileId, file);
     const sameHeads = file.heads.length === parents.length && file.heads.every((head) => parents.includes(head));
     file.heads = sameHeads ? [versionId] : [...file.heads, versionId];
@@ -487,8 +504,8 @@ export class FakeServer {
       bytes,
       manifest_ct: manifestCt,
       manifest_nonce: c.hex(sealed.nonce),
-      domain_id: manifest.domain,
-      deleted: manifest.deleted,
+      domain_id: domainId,
+      deleted,
       device_id: deviceId,
       ts: manifest.mtime,
       seq: ++this.seq,
@@ -616,6 +633,51 @@ export async function fakeState(isMobile = false) {
   state.data.deviceSecret = KEYS.deviceSecret;
   state.data.serverUrl = "https://sync.example.invalid";
   return { state, saved: () => stored };
+}
+
+/**
+ * One paired device, one seeded domain map, one live `SyncContext`: what
+ * every engine-level test starts from. It lives here rather than in a test
+ * file because more than one suite drives the same rig.
+ */
+export async function rig({ isMobile = false, policy } = {}) {
+  const { Transport } = require("../build/transport.js");
+  const host = new FakeHost({ isMobile });
+  const server = new FakeServer();
+  const { state } = await fakeState(isMobile);
+  if (policy) state.data.policy = policy;
+  const transport = new Transport({
+    request: server.request,
+    serverUrl: () => state.data.serverUrl,
+    device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => host.clock,
+    sleep: async () => undefined,
+    maxAttempts: 2,
+    log: (line) => host.logs.push(line),
+  });
+  const k = await keys();
+  // Every real vault has a domain map before it syncs anything; a rig that
+  // started without one would be testing a vault that cannot exist.
+  await server.seedDomainMap(k.map, KEYS.domainId);
+  const context = {
+    state,
+    transport,
+    host,
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+    domainId: KEYS.domainId,
+    mapFileId: k.map.fileId,
+    deviceId: KEYS.deviceId,
+    concurrency: isMobile ? 2 : 4,
+    authored: new Set(),
+    written: new Set(),
+    refused: new Set(),
+    deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
+    now: () => host.clock,
+    deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
+  };
+  return { host, server, state, transport, context, keys: k };
 }
 
 export async function keys() {

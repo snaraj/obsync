@@ -22,6 +22,20 @@
  * user once per file, and the feed moves on, because a hostile version that
  * could wedge the feed could stop sync for the whole vault.
  *
+ * BOUND TO THE RECORD. Shape is not agreement. The record a manifest rides
+ * in is the authenticated statement of what the version IS -- its ordered
+ * chunk list, its byte count, its domain, its tombstone bit -- and it is what
+ * the server accounts, retains and (in phase 2) authorizes on. The manifest
+ * is ciphertext another device wrote. `bindManifestToRecord` therefore
+ * refuses, before the first chunk request and before any vault operation,
+ * every manifest that disagrees with its record on any of those fields, and
+ * every chunk list that does not obey the chunker's own bounds. Without it a
+ * validly encrypted manifest could declare `size: 1` over a 41-byte chunk and
+ * walk straight through this device's per-file ceiling, or declare zero-length
+ * chunks and turn one 32 MiB batch into 512 MiB of bodies in flight. Declared
+ * lengths are checked again against the bytes themselves as each chunk
+ * decrypts, so nothing unverified is written even if the two agreed.
+ *
  * ECHOES. A write this device made comes back down the feed. It is dropped
  * twice over: by `version_id` (the ids this device authored) and by the
  * `(path, mtime, size)` of the writes this device made, which is what stops
@@ -43,7 +57,7 @@
  */
 
 import type { SyncContext } from "./engine";
-import { CHUNK_MAX } from "../chunker";
+import { CHUNK_MAX, CHUNK_MIN } from "../chunker";
 import {
   Bytes,
   contentVersionId,
@@ -62,9 +76,15 @@ import { VaultPathError, assertVaultPath, isVaultPath, vaultPathRefusal } from "
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
 
-/** Cap on one batched chunk fetch: 64 sids, and never more than 32 MiB in flight. */
-const BATCH_SIDS = 64;
+/**
+ * One batched chunk fetch. The bound is MEMORY, and it is computed from the
+ * chunk ceiling, never from the lengths a manifest declares: a declared length
+ * is a number another device chose, so budgeting by it would let a chunk list
+ * of zeros pull 64 maximum-size chunks into one 32 MiB budget. The wire cap is
+ * 64 sids (`transport.ts`); this one is lower and is the one that holds.
+ */
 const BATCH_BYTES = 32 << 20;
+const BATCH_SIDS = Math.max(1, Math.floor(BATCH_BYTES / CHUNK_MAX));
 
 export type ApplyResult =
   | "echo"
@@ -131,9 +151,86 @@ export function parseManifest(json: string): Manifest {
   return value as unknown as Manifest;
 }
 
+/**
+ * The authenticated half of a version: what the server recorded, accounts
+ * for, and hands every other device. A feed entry carries its own domain; a
+ * version read from `GET /v1/files/{id}` takes the file's, which is where the
+ * server states it once (`docs/protocol.md`, "Files and versions").
+ */
+export type BoundRecord = Pick<ChangeRecord, "domain_id" | "sids" | "bytes" | "deleted">;
+
+/**
+ * Bind a decrypted manifest to the record it rode in, field by field, before
+ * policy, download, or a single vault operation.
+ *
+ * Decryption proves only that a device holding the vault key wrote these
+ * bytes. The record is the authority for what the version IS: the server
+ * retains it, counts it against the account, and will authorize on its domain
+ * in phase 2. Every field the two both carry must therefore say the same
+ * thing, and the ones only the manifest carries -- the per-chunk lengths --
+ * must add up to the byte count the record states and stay inside the
+ * chunker's bounds. A compromised paired device that could move any of these
+ * numbers could make this device exceed its own ceiling, hold far more in
+ * memory than one batch allows, or fetch chunks the record never named.
+ *
+ * Every refusal names one reason and nothing is written: `applyChange` turns
+ * it into the same single notice a hostile path gets.
+ */
+export function bindManifestToRecord(
+  record: BoundRecord,
+  manifest: Manifest,
+  engineDomain: string,
+): void {
+  // (b) One domain per engine in v0.1 (`engine.ts` refuses a map with more).
+  // A record outside it is not this engine's to write, and a manifest naming
+  // a domain other than its record's is describing a different file.
+  if (record.domain_id !== engineDomain) throw new ManifestError("record_domain");
+  if (manifest.domain !== record.domain_id) throw new ManifestError("manifest_domain");
+
+  // (a) The chunk list the server holds, in order. The fetch list and the
+  // record's retention must be the same list, or one of them is a lie.
+  if (manifest.chunks.length !== record.sids.length) throw new ManifestError("record_sid_count");
+  for (const [index, sid] of record.sids.entries()) {
+    if ((manifest.chunks[index] as ManifestChunk).sid !== sid) throw new ManifestError("record_sid_order");
+  }
+
+  // (c) A tombstone deletes a file; a version writes one. Disagreement here
+  // is a delete that lands as a write, or a write that lands as a delete.
+  if (manifest.deleted !== record.deleted) throw new ManifestError("record_deleted");
+
+  // (d) The size every ceiling and every buffer is measured against, pinned
+  // to the record AND to the chunk lengths that will actually be fetched.
+  if (manifest.size !== record.bytes) throw new ManifestError("record_bytes");
+  let declared = 0;
+  for (const chunk of manifest.chunks) declared += chunk.len;
+  if (declared !== manifest.size) throw new ManifestError("chunk_len_sum");
+
+  // (e) The chunk list against the chunker's own bounds (`chunker.ts`, whose
+  // constants a second implementation must match): a tombstone has no chunks,
+  // a file of at most CHUNK_MAX is exactly one chunk, and above that every
+  // chunk but the last fills a CHUNK_MIN..CHUNK_MAX window. Those bounds are
+  // what keep a chunk list SHORT: without them a 32 MiB file could declare 32
+  // million one-byte chunks, sum correctly, and buy 500 000 fetches.
+  const count = manifest.chunks.length;
+  if (manifest.deleted) {
+    if (count !== 0 || manifest.size !== 0) throw new ManifestError("chunk_count");
+  } else if (manifest.size <= CHUNK_MAX) {
+    if (count !== 1) throw new ManifestError("chunk_count");
+  } else if (count < 2) {
+    throw new ManifestError("chunk_count");
+  }
+  for (const [index, chunk] of manifest.chunks.entries()) {
+    if (chunk.len > CHUNK_MAX) throw new ManifestError("chunk_len_ceiling");
+    // Zero is a real length exactly once: the single chunk of an empty file.
+    // Anywhere else it is a fetch bought for nothing.
+    if (chunk.len === 0 && manifest.size !== 0) throw new ManifestError("chunk_len_zero");
+    if (index < count - 1 && chunk.len < CHUNK_MIN) throw new ManifestError("chunk_len_short");
+  }
+}
+
 export async function decryptRecordManifest(
   context: SyncContext,
-  record: Pick<ChangeRecord, "file_id" | "parents" | "sids" | "manifest_ct" | "manifest_nonce">,
+  record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
 ): Promise<Manifest> {
   const binder = await contentVersionId(record.file_id, record.parents, record.sids);
   const json = await decryptManifest(
@@ -143,25 +240,30 @@ export async function decryptRecordManifest(
     unhex(record.manifest_nonce),
     unbase64(record.manifest_ct),
   );
-  return parseManifest(json);
+  const manifest = parseManifest(json);
+  // The one choke point: every path that decrypts a manifest from a record
+  // -- the feed, an on-demand fetch, a conflict head, a merge base -- comes
+  // through here, so none of them can forget to bind it.
+  bindManifestToRecord(record, manifest, context.domainId);
+  return manifest;
 }
 
-/** Fetch, decrypt and verify every chunk of a manifest, in file order. */
+/**
+ * Fetch, decrypt and verify every chunk of a manifest, in file order.
+ *
+ * The declared lengths were bound to the record before the first fetch; here
+ * the same numbers are proved against the BYTES, as each chunk decrypts and
+ * before any of them reaches a writer. That is also the whole-file check:
+ * binding pinned the sum of the declared lengths to `size`, so once every
+ * chunk matches its own the assembled total matches `size` too. Comparing the
+ * total afterwards would be an assertion no input could fail, and it would
+ * fail LATER than this one, after the bytes had been written.
+ */
 async function* chunkPlaintexts(context: SyncContext, manifest: Manifest): AsyncGenerator<Bytes> {
   let index = 0;
   while (index < manifest.chunks.length) {
-    const batch: ManifestChunk[] = [];
-    let bytes = 0;
-    while (
-      index < manifest.chunks.length &&
-      batch.length < BATCH_SIDS &&
-      (batch.length === 0 || bytes + (manifest.chunks[index] as ManifestChunk).len <= BATCH_BYTES)
-    ) {
-      const chunk = manifest.chunks[index] as ManifestChunk;
-      batch.push(chunk);
-      bytes += chunk.len;
-      index++;
-    }
+    const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
+    index += batch.length;
     const bodies =
       batch.length === 1
         ? [await context.transport.getChunk((batch[0] as ManifestChunk).sid)]
@@ -170,7 +272,9 @@ async function* chunkPlaintexts(context: SyncContext, manifest: Manifest): Async
       const body = bodies[i];
       const chunk = batch[i] as ManifestChunk;
       if (!body) throw new Error(`pull: chunk ${chunk.sid} is missing on the server`);
-      yield await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+      const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+      if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
+      yield plaintext;
     }
   }
 }
@@ -334,8 +438,14 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   const file = await context.transport.getFile(fileId);
   const head = file.versions.find((version) => version.version_id === (file.heads[0] ?? ""));
   if (!head) throw new Error("remote-only: the file has no readable head");
-  // The manifest AAD binds the file id; a version record carries none.
-  const manifest = await decryptRecordManifest(context, { ...head, file_id: fileId });
+  // The manifest AAD binds the file id; a version record carries none. Nor
+  // does it carry a domain: the server states that once, on the file, so the
+  // binding takes it from there.
+  const manifest = await decryptRecordManifest(context, {
+    ...head,
+    file_id: fileId,
+    domain_id: file.domain_id,
+  });
   await materialise(context, manifest);
   const stat = await context.host.stat(manifest.path);
   context.state.setFile(manifest.path, {
@@ -401,6 +511,7 @@ async function reconcile(
       const baseManifest = await decryptRecordManifest(context, {
         ...baseRecord,
         file_id: change.file_id,
+        domain_id: file.domain_id,
       });
       const base = await assembleBytes(context, baseManifest);
       const theirs = await assembleBytes(context, theirManifest);

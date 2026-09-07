@@ -74,6 +74,12 @@ export interface TransportOptions {
 export interface ChangeRecord {
   seq: number;
   file_id: string;
+  /**
+   * The domain the file is in, in clear. A feed entry arrives without its
+   * file, so it carries its own (`docs/protocol.md`, "Change feed"); the
+   * pull path binds the decrypted manifest's `domain` to it.
+   */
+  domain_id: string;
   version_id: string;
   parents: string[];
   sids: string[];
@@ -88,9 +94,11 @@ export interface ChangeRecord {
 }
 
 /** One version as `GET /v1/files/{id}` renders it: no file id, no feed seq,
- * no head or conflict flags. Those live on the file object around it, which is
- * why a version cannot be spread into a `ChangeRecord` without adding them. */
-export type VersionRecord = Omit<ChangeRecord, "seq" | "file_id" | "heads" | "conflicted">;
+ * no domain, no head or conflict flags. Those live on the file object around
+ * it, which is why a version cannot be spread into a `ChangeRecord` without
+ * adding them -- the domain above all, because the pull path binds the
+ * manifest to it. */
+export type VersionRecord = Omit<ChangeRecord, "seq" | "file_id" | "domain_id" | "heads" | "conflicted">;
 
 export interface FileRecord {
   file_id: string;

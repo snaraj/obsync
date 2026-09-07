@@ -484,6 +484,23 @@ returns immediately when a new frame lands.
    by descriptor before writing and after the rename. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
+
+   The record is the authority for what a version IS, and the manifest is
+   bound to it field by field before policy, download, or a write. Decryption
+   proves only that a device holding the vault key wrote the manifest; the
+   record around it is what the server accounts, retains and will authorize
+   on (3.4, 5.1). So the plugin refuses, before the first chunk request, any
+   manifest whose ordered chunk sids are not exactly the record's `sids`,
+   whose `domain` is not the record's `domain_id` and this engine's sole
+   domain, whose `deleted` bit differs from the record's, or whose `size` is
+   not both the record's `bytes` and the exact sum of its declared chunk
+   lengths; and any chunk list that the chunker (3.3) could not have produced
+   — a length above `CHUNK_MAX`, a zero length in a non-empty file, a
+   non-final chunk below `CHUNK_MIN`, or a count that contradicts the size.
+   Each declared length is then proved against the bytes as its chunk
+   decrypts, so nothing unverified is written even when record and manifest
+   agree, and one batched fetch is bounded by the chunk ceiling times the
+   batch size rather than by lengths another device declared.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge; a clean merge posts a new version
    with both heads as parents. Anything else (binary, no ancestor,

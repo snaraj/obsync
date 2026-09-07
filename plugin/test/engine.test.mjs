@@ -10,7 +10,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeHost, FakeServer, FakeTimers, KEYS, fakeState, keys } from "./fake.mjs";
+import { FakeTimers, KEYS, keys, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -55,45 +55,6 @@ async function postedPaths(server, k) {
     paths.push(JSON.parse(json).path);
   }
   return paths;
-}
-
-async function rig({ isMobile = false, policy } = {}) {
-  const host = new FakeHost({ isMobile });
-  const server = new FakeServer();
-  const { state } = await fakeState(isMobile);
-  if (policy) state.data.policy = policy;
-  const transport = new Transport({
-    request: server.request,
-    serverUrl: () => state.data.serverUrl,
-    device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
-    edgeHeaders: () => [],
-    now: () => host.clock,
-    sleep: async () => undefined,
-    maxAttempts: 2,
-    log: (line) => host.logs.push(line),
-  });
-  const k = await keys();
-  // Every real vault has a domain map before it syncs anything; a rig that
-  // started without one would be testing a vault that cannot exist.
-  await server.seedDomainMap(k.map, KEYS.domainId);
-  const context = {
-    state,
-    transport,
-    host,
-    domainKey: k.domainKey,
-    manifestKey: k.manifestKey,
-    domainId: KEYS.domainId,
-    mapFileId: k.map.fileId,
-    deviceId: KEYS.deviceId,
-    concurrency: isMobile ? 2 : 4,
-    authored: new Set(),
-    written: new Set(),
-    refused: new Set(),
-    deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
-    now: () => host.clock,
-    deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
-  };
-  return { host, server, state, transport, context, keys: k };
 }
 
 test("a push uploads ciphertext and posts a version the server recomputes", async () => {
