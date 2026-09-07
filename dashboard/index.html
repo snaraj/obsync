@@ -51,7 +51,6 @@
     <a href="#devices" data-route="devices">Devices</a>
     <a href="#pairing" data-route="pairing">Pairing</a>
     <a href="#storage" data-route="storage">Storage</a>
-    <a href="#sharing" data-route="sharing">Sharing</a>
     <a href="#install" data-route="install">Install</a>
     <a href="#logs" data-route="logs">Logs</a>
   </nav>
@@ -270,59 +269,6 @@
     <p id="quarantine-empty" class="empty" hidden>No chunk has ever failed a scrub.</p>
   </section>
 
-  <section id="page-sharing" class="page" hidden aria-labelledby="sharing-h">
-    <h1 id="sharing-h">Sharing</h1>
-    <p class="note">
-      A domain is a set of paths that share one key. Devices hold that key; the server does not,
-      unless you escrow it below.
-    </p>
-    <div class="scroller">
-      <table class="grid" id="domains-table">
-        <caption class="visually-hidden">Domains and their escrow state</caption>
-        <thead>
-          <tr>
-            <th scope="col">Domain id</th>
-            <th scope="col">Created</th>
-            <th scope="col">Escrow</th>
-            <th scope="col"><span class="visually-hidden">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody id="domains-body"></tbody>
-      </table>
-    </div>
-    <p id="domains-empty" class="empty" hidden>No domain exists yet. The default vault domain appears once a device syncs.</p>
-
-    <h2>Escrow a domain key</h2>
-    <div class="warn">
-      <p>
-        <strong>Read this before you use the form.</strong> Escrow hands the server a domain's key.
-        From that moment the server can decrypt every file in that folder and serve it as plaintext
-        to any signed-in dashboard user and to any mount that asks. This is the one place where the
-        blind-server property is deliberately given up, and it stays given up for that folder until
-        the key is revoked. A stolen disk plus an escrowed key is a readable vault. Escrow a domain
-        only when a workload on this server genuinely has to read it, and never the domain that
-        covers the whole vault.
-      </p>
-    </div>
-    <form id="escrow-form" class="form">
-      <p class="field">
-        <label for="escrow-domain">Domain id</label>
-        <input type="text" id="escrow-domain" name="domain" class="mono" required
-               pattern="[0-9a-f]{32}" maxlength="32" autocomplete="off" spellcheck="false"
-               placeholder="32 hex characters">
-      </p>
-      <p class="field">
-        <label for="escrow-key">Domain key</label>
-        <input type="text" id="escrow-key" name="key" class="mono" required
-               pattern="[0-9a-f]{64}" maxlength="64" autocomplete="off" spellcheck="false"
-               placeholder="64 hex characters">
-      </p>
-      <p class="field">
-        <button type="submit" id="escrow-submit" class="danger">Escrow this domain</button>
-      </p>
-    </form>
-  </section>
-
   <section id="page-install" class="page" hidden aria-labelledby="install-h">
     <h1 id="install-h">Install</h1>
     <p>
@@ -481,17 +427,6 @@
     <td data-label="Quarantined" data-f="ts"></td>
     <td data-label="Size" class="num" data-f="bytes"></td>
     <td data-label="Reason" data-f="reason"></td>
-  </tr>
-</template>
-
-<template id="tpl-domain">
-  <tr>
-    <th scope="row" data-label="Domain id" class="mono" data-f="id"></th>
-    <td data-label="Created" data-f="created"></td>
-    <td data-label="Escrow"><span data-f="escrow" class="tag"></span></td>
-    <td data-label="Actions" class="actions">
-      <button type="button" class="danger" data-f="revoke" hidden>Revoke escrow</button>
-    </td>
   </tr>
 </template>
 

@@ -130,6 +130,85 @@ fn blind_server_hits(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// Quoted member names ending in the key suffix, with the quotes proving the
+/// name is a WIRE field rather than a Rust identifier: `"domain_key"` is a
+/// field a handler could read out of a body, `let server_key` is not.
+///
+/// [`blind_server_field_names`] refuses the bare name; this refuses every
+/// name built around it, which is how the one field this repository ever
+/// accepted (a 32-byte domain key, posted deliberately) was spelled.
+fn key_field_hits(content: &str) -> Vec<String> {
+    let needle = format!("_{}\"", word("ke|y"));
+    let bytes = content.as_bytes();
+    let mut hits = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = content[from..].find(&needle) {
+        let at = from + offset;
+        let mut start = at;
+        while start > 0 && is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start > 0 && bytes[start - 1] == b'"' {
+            hits.push(content[start..at + needle.len() - 1].to_string());
+        }
+        from = at + needle.len();
+    }
+    hits
+}
+
+/// The capability v0.1 refuses to have: handing the server a content key on
+/// request. Assembled at runtime so this file is not exempt from its own rule.
+fn withheld_capability() -> String {
+    word("esc|row")
+}
+
+/// Whether a document names that capability, in any case.
+fn names_withheld_capability(content: &str) -> bool {
+    content
+        .to_ascii_lowercase()
+        .contains(&withheld_capability())
+}
+
+/// Every text file under a product surface: the extensions this repository
+/// writes, with build output and vendored declarations skipped.
+///
+/// A surface that is not there is empty, not a panic. This test also runs
+/// inside the image build, whose context copies the workspace and nothing
+/// else (`.dockerignore` excludes `docs/`, and the Dockerfile's server stage
+/// copies only `crates/`), so a build context with no `dashboard/` has no
+/// dashboard to be wrong about. The caller's floor on `crates/` is what stops
+/// that becoming a pass on a walk that read nothing.
+fn product_sources(dir: &Path) -> Vec<PathBuf> {
+    const TEXT: [&str; 12] = [
+        "rs", "md", "html", "css", "js", "mjs", "ts", "json", "toml", "txt", "yaml", "yml",
+    ];
+    const SKIP: [&str; 3] = ["target", "node_modules", "vendor"];
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            if path
+                .file_name()
+                .is_some_and(|n| SKIP.iter().any(|s| n == *s))
+            {
+                continue;
+            }
+            out.extend(product_sources(&path));
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| TEXT.contains(&e))
+        {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Log helper parameters that would let a caller log a path or key as text.
 fn sighted_log_params(content: &str) -> Vec<String> {
     let mut hits = Vec::new();
@@ -305,6 +384,90 @@ fn blind_server_check_flags_a_mutated_fixture() {
     assert_eq!(
         blind_server_hits("log.info(\"put\", &[(\"key\", k)])"),
         vec!["\"key\"".to_string()]
+    );
+}
+
+#[test]
+fn no_handler_reads_or_writes_a_field_whose_name_ends_in_the_key_suffix() {
+    let root = repo_root();
+    let api = root.join("crates/obsyncd/src/api");
+    let files = rust_sources(&api);
+    assert!(files.len() > 5, "the API scan found no files");
+    for file in files {
+        assert_eq!(
+            key_field_hits(&read(&file)),
+            Vec::<String>::new(),
+            "{} names a wire field shaped like a content key: the server is \
+             blind and has no request that hands it one (requirement 6)",
+            relative(&file, &root)
+        );
+    }
+}
+
+#[test]
+fn key_field_check_flags_a_mutated_fixture() {
+    let suffix = word("ke|y");
+    assert!(key_field_hits("field_str(&body, \"domain_id\")").is_empty());
+    assert!(
+        key_field_hits(&format!("let server_{suffix} = load();")).is_empty(),
+        "a Rust identifier is not a wire field"
+    );
+    assert!(
+        key_field_hits(&format!("log.info(\"{suffix}\", &[])")).is_empty(),
+        "the bare name is blind_server_hits's job, not this one"
+    );
+    assert_eq!(
+        key_field_hits(&format!("field_str(&body, \"domain_{suffix}\")")),
+        vec![format!("domain_{suffix}")]
+    );
+    assert_eq!(
+        key_field_hits(&format!("obj(vec![(\"wrapped_{suffix}\", v)])")),
+        vec![format!("wrapped_{suffix}")]
+    );
+}
+
+#[test]
+fn no_product_surface_names_the_capability_v0_1_refuses_to_have() {
+    let root = repo_root();
+    // `crates/` is present wherever this test runs, the image build included,
+    // so it carries the non-vacuity floor. The other four surfaces are scanned
+    // when present: see `product_sources`.
+    let mut files = product_sources(&root.join("crates"));
+    assert!(
+        files.len() > 40,
+        "the workspace scan found {} files: it is not reading the tree",
+        files.len()
+    );
+    for surface in ["dashboard", "plugin/src", "docs"] {
+        files.extend(product_sources(&root.join(surface)));
+    }
+    let readme = root.join("README.md");
+    if readme.is_file() {
+        files.push(readme);
+    }
+    for file in files {
+        assert!(
+            !names_withheld_capability(&read(&file)),
+            "{} names the one capability v0.1 refuses to have. The server \
+             never holds a content key, so the word describes nothing this \
+             repository does; delete the mention rather than the property.",
+            relative(&file, &root)
+        );
+    }
+}
+
+#[test]
+fn withheld_capability_check_flags_a_mutated_fixture() {
+    let token = withheld_capability();
+    assert!(!names_withheld_capability(
+        "the server holds no content key at all"
+    ));
+    assert!(names_withheld_capability(&format!(
+        "// {token} the domain key"
+    )));
+    assert!(
+        names_withheld_capability(&format!("// {} the domain key", token.to_uppercase())),
+        "the scan is case-insensitive"
     );
 }
 

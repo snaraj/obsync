@@ -161,7 +161,6 @@ input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
   color: var(--ink-2); font-size: 0.76rem;
 }
 .tag { color: var(--ink-2); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.tag.on { color: var(--warn); }
 .device.off .devname .strong { color: var(--ink-2); text-decoration: line-through; }
 .device.off .tag { color: var(--danger); }
 

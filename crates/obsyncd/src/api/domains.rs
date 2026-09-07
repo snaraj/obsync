@@ -1,8 +1,8 @@
-//! Domains (`docs/protocol.md`, "Domains (sharing)").
+//! Domains (`docs/protocol.md`, "Domains").
 //!
-//! A domain is the unit of sharing and escrow. The server tracks the id and
-//! whether a key is escrowed; which paths belong to a domain is client-side
-//! metadata it never sees (`docs/architecture.md` 3.1).
+//! A domain is the key-scoping unit; v0.1 uses exactly one. The server tracks
+//! the id and when it was declared, and never the key: which paths belong to a
+//! domain is client-side metadata it never sees (`docs/architecture.md` 3.1).
 #![forbid(unsafe_code)]
 
 use obsync_core::http::{Request, Response};

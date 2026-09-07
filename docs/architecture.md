@@ -37,8 +37,9 @@ or which plaintext two chunks share.
 it on hardware they do not fully control, and it must match a privacy-first,
 zero-trust operator. A server-readable mode would be simpler to integrate
 and impossible to make safe against a stolen disk or a curious co-tenant.
-Sharing with other cluster workloads and manual access on the host are
-therefore solved with keys, not with plaintext on the server (section 5).
+There is no mode, flag, or endpoint that hands the server a content key:
+access for anything but a paired device is solved with keys held elsewhere,
+never with plaintext on the server (section 5).
 
 **What the edge sees.** On the reference deployment the TLS terminator is
 Cloudflare's edge. It sees request metadata and the ciphertext bodies, like
@@ -58,7 +59,7 @@ vectors. The server performs no AES and no asymmetric operation in v1.
 | Key | Size | Where it lives | Derived how |
 | --- | --- | --- | --- |
 | Vault root key `VRK` | 32 B random | Every paired device; recovery phrase | Created by the first device |
-| Domain key `K_d` | 32 B | Devices; optionally escrowed for sharing | `HKDF(VRK, salt="obsync/v1/domain", info=domain_id)` |
+| Domain key `K_d` | 32 B | Devices only; never sent to the server | `HKDF(VRK, salt="obsync/v1/domain", info=domain_id)` |
 | Manifest key `K_m` | 32 B | Devices | `HKDF(VRK, salt="obsync/v1/manifest", info="")` |
 | Chunk key `K_c` | 32 B | Transient on the device | `HKDF(K_d, salt="obsync/v1/chunk", info=cid)` |
 | Device secret | 32 B | The device; wrapped at rest on the server | Issued by the server at pairing |
@@ -67,7 +68,8 @@ vectors. The server performs no AES and no asymmetric operation in v1.
 A **domain** is a set of paths that share `K_d`. The default vault has one
 domain covering everything. The user may declare a folder as its own domain
 (random `domain_id`, recorded in the encrypted vault metadata); that is the
-unit of sharing and escrow. Renaming the folder updates metadata, not keys.
+unit key derivation scopes to. Renaming the folder updates metadata, not
+keys. v0.1 uses exactly one domain (section 5).
 
 ### 3.2 Chunk encryption (deterministic, deduplicating, blind)
 
@@ -232,11 +234,6 @@ against the WebAuthn test vectors. YubiKeys are passkeys.
   its `K_d` from a paired device; hand the consuming workload `K_d` plus a
   read-only device credential scoped to that domain. The consumer decrypts
   locally. The server still sees ciphertext.
-- **Escrow a folder to the server** (optional, explicit, per domain): post
-  `K_d` to `POST /v1/admin/domains/{id}/escrow`. The server can then serve
-  that domain's files decrypted to authenticated dashboard users and to
-  mounts. The dashboard lists every escrowed domain in red; revocation
-  removes the key and the capability.
 - **Manual access on the host:** `obsyncd export --domain <id> --key <hex>
   --out <dir>` reconstructs plaintext from the volumes with a key the
   operator supplies. It is the same binary and touches the server's data
@@ -345,7 +342,6 @@ JSON under `/v1/admin/*` behind the dashboard session. Pages:
   last seen, last edit at, connecting address and country; revoke.
 - **Pairing:** the instructions; codes are minted on devices.
 - **Storage:** usage, watermark, retention, scrub status and quarantine.
-- **Sharing:** domains, escrow state, revoke.
 - **Install:** plugin download and per-platform install steps.
 - **Logs:** the last decisions, filtered by device.
 

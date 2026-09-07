@@ -33,10 +33,6 @@ pub const LOGIN_LINK_TTL_SECS: u64 = 300;
 /// Most log lines one `GET /v1/admin/logs` call returns
 /// (`docs/protocol.md`).
 pub const LOGS_MAX_LIMIT: u64 = 500;
-/// The escrow body's one field (`docs/protocol.md`): the domain key, handed
-/// to the server deliberately, which is the single documented exception to
-/// the blind-server default (`docs/architecture.md` 5).
-pub const ESCROW_FIELD: &str = "domain_key";
 
 /// One signed-in dashboard session.
 #[derive(Clone, Debug)]
@@ -400,39 +396,6 @@ pub fn scrub_run(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 pub fn domains(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     session(app, req)?;
     Ok(Response::json(200, &domains::domains_body(app)))
-}
-
-/// `POST /v1/admin/domains/{id}/escrow`: hand the server a domain key, which
-/// is the one deliberate exception to the blind-server default and is shown in
-/// red in the dashboard (`docs/architecture.md` 5).
-///
-/// # Errors
-/// `400 bad_request`, `401 no_session`, `403 csrf_failed`.
-pub fn escrow_set(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
-    mutating_session(app, req)?;
-    let domain = render::domain_id(id)?;
-    let body = render::json_body(req)?;
-    let hex = render::field_str(&body, ESCROW_FIELD)?;
-    let material = obsync_core::hex::decode_array::<32>(hex)
-        .map_err(|_| ApiError::bad_request("the escrowed value must be 64 hex characters"))?;
-    app.store.set_escrow(&domain, Some(material))?;
-    app.log
-        .warn("domain_escrow_set", &[("domain", Val::domain(&domain))]);
-    Ok(Response::empty(204))
-}
-
-/// `DELETE /v1/admin/domains/{id}/escrow`: drop the escrowed key and the
-/// capability it gave.
-///
-/// # Errors
-/// `400 bad_request`, `401 no_session`, `403 csrf_failed`.
-pub fn escrow_clear(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
-    mutating_session(app, req)?;
-    let domain = render::domain_id(id)?;
-    app.store.set_escrow(&domain, None)?;
-    app.log
-        .warn("domain_escrow_cleared", &[("domain", Val::domain(&domain))]);
-    Ok(Response::empty(204))
 }
 
 /// `GET /v1/admin/logs?device=<id prefix>&limit=<n>`: the recent decision

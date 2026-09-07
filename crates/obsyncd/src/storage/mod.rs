@@ -57,7 +57,7 @@ pub use self::types::{
     ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
 };
 
-/// The domain separator device secrets and escrowed domain keys rest under
+/// The domain separator device secrets rest under
 /// (docs/architecture.md §3.6).
 const WRAP_SALT: &[u8] = b"obsync/v1/wrap";
 
@@ -161,7 +161,7 @@ impl Store {
         self.journal.lock().expect("journal lock")
     }
 
-    /// The one-time pad a device secret or escrowed key rests under.
+    /// The one-time pad a device secret rests under.
     ///
     /// XOR with an HKDF output: applying it twice returns the original, so
     /// this is both the wrap and the unwrap.
@@ -652,7 +652,7 @@ impl Store {
 
     /// Every domain, in id order.
     pub fn domains(&self) -> Vec<DomainRecord> {
-        self.index().domains.values().map(|e| e.record).collect()
+        self.index().domains.values().copied().collect()
     }
 
     /// Declare a domain. Declaring one twice changes nothing.
@@ -667,41 +667,6 @@ impl Store {
             created: UnixMs::now(),
         })?;
         Ok(())
-    }
-
-    /// Escrow a domain key, or withdraw the escrow with `None`.
-    ///
-    /// An escrowed key rests wrapped exactly as a device secret does, so a
-    /// stolen journal without the server key still yields nothing.
-    pub fn set_escrow(&self, id: &DomainId, key: Option<[u8; 32]>) -> Result<(), StoreError> {
-        let mut journal = self.journal();
-        let mut index = self.index();
-        if !index.domains.contains_key(id) {
-            return Err(StoreError::UnknownDomain);
-        }
-        let wrapped = key.map(|key| self.wrap(id.as_bytes(), &key));
-        append(&mut journal, &mut index, |_| Frame::Escrow {
-            domain_id: *id,
-            wrapped,
-        })?;
-        self.log.info(
-            "escrow",
-            &[
-                ("domain", Val::domain(id)),
-                (
-                    "decision",
-                    Val::word(if key.is_some() { "stored" } else { "withdrawn" }),
-                ),
-            ],
-        );
-        Ok(())
-    }
-
-    /// An escrowed domain key, unwrapped.
-    pub fn escrow_key(&self, id: &DomainId) -> Option<[u8; 32]> {
-        let index = self.index();
-        let wrapped = index.domains.get(id)?.wrapped?;
-        Some(self.wrap(id.as_bytes(), &wrapped))
     }
 
     // -- volumes, collection, integrity ------------------------------------

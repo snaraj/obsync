@@ -215,7 +215,7 @@ export function csrfToken(cookieString) {
   return '';
 }
 
-const ROUTES = ['overview', 'devices', 'pairing', 'storage', 'sharing', 'install', 'logs'];
+const ROUTES = ['overview', 'devices', 'pairing', 'storage', 'install', 'logs'];
 
 /** Hash routing. Anything unknown, empty, or hostile lands on Overview. */
 export function routeFromHash(hash) {

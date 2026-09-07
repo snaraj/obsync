@@ -93,7 +93,7 @@ export function newVaultKey(): Bytes {
   return randomBytes(VRK_BYTES);
 }
 
-/** A fresh domain id: 16 random bytes as hex, the unit of sharing and escrow. */
+/** A fresh domain id: 16 random bytes as hex, the unit key derivation scopes to. */
 export function newDomainId(): string {
   return hex(randomBytes(16));
 }

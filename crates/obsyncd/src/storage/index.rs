@@ -38,13 +38,6 @@ pub(crate) struct FileEntry {
     pub(crate) versions: Vec<VersionRecord>,
 }
 
-/// A domain and, when escrowed, its wrapped domain key.
-#[derive(Clone, Debug)]
-pub(crate) struct DomainEntry {
-    pub(crate) record: DomainRecord,
-    pub(crate) wrapped: Option<[u8; 32]>,
-}
-
 /// What the store knows about one stored chunk.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChunkMeta {
@@ -62,7 +55,7 @@ pub(crate) struct Index {
     pub(crate) account: Option<AccountRecord>,
     pub(crate) devices: BTreeMap<DeviceId, DeviceEntry>,
     pub(crate) files: BTreeMap<FileId, FileEntry>,
-    pub(crate) domains: BTreeMap<DomainId, DomainEntry>,
+    pub(crate) domains: BTreeMap<DomainId, DomainRecord>,
     pub(crate) chunks: BTreeMap<Sid, ChunkMeta>,
     /// Version frames in journal order: the change feed.
     pub(crate) feed: Vec<(Seq, FileId, VersionId)>,
@@ -150,20 +143,10 @@ impl Index {
             }
             Frame::Version(version) => self.apply_version(version.clone()),
             Frame::Domain { domain_id, created } => {
-                self.domains.entry(*domain_id).or_insert(DomainEntry {
-                    record: DomainRecord {
-                        domain_id: *domain_id,
-                        escrowed: false,
-                        created: *created,
-                    },
-                    wrapped: None,
+                self.domains.entry(*domain_id).or_insert(DomainRecord {
+                    domain_id: *domain_id,
+                    created: *created,
                 });
-            }
-            Frame::Escrow { domain_id, wrapped } => {
-                if let Some(entry) = self.domains.get_mut(domain_id) {
-                    entry.wrapped = *wrapped;
-                    entry.record.escrowed = wrapped.is_some();
-                }
             }
             Frame::Seen { device_id, event } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {

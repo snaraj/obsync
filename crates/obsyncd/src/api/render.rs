@@ -191,7 +191,6 @@ pub fn change(c: &Change) -> Value {
 pub fn domain(d: &DomainRecord) -> Value {
     obj(vec![
         ("domain_id", s(&d.domain_id.to_string())),
-        ("escrowed", b(d.escrowed)),
         ("created", ms(d.created)),
     ])
 }

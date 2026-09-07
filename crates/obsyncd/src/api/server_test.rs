@@ -1541,6 +1541,20 @@ fn a_device_reports_its_ceilings_by_heartbeat() {
     );
 }
 
+/// Every member name of a JSON object, sorted: what a response says about a
+/// record, exhaustively, so a field ADDED to it is a failure and not a
+/// silently accepted extra.
+fn object_keys(value: &Value) -> Vec<String> {
+    let mut names: Vec<String> = value
+        .as_object()
+        .expect("an object")
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn a_device_is_renamed_and_domains_are_created() {
     let h = Harness::start("devices-domains");
@@ -1571,13 +1585,20 @@ fn a_device_is_renamed_and_domains_are_created() {
         .send(h.addr);
     assert_eq!(created.status, 201, "{}", created.text());
     let list = Req::get("/v1/domains").sign(&cred, NOW).send(h.addr);
+    let listed = list.json();
+    let listed = listed
+        .get("domains")
+        .and_then(Value::as_array)
+        .expect("domains");
+    assert_eq!(listed.len(), 1);
     assert_eq!(
-        list.json()
-            .get("domains")
-            .and_then(Value::as_array)
-            .expect("domains")
-            .len(),
-        1
+        listed[0].get("domain_id").and_then(Value::as_str),
+        Some(domain.as_str())
+    );
+    assert_eq!(
+        object_keys(&listed[0]),
+        vec!["created".to_string(), "domain_id".to_string()],
+        "a domain is an id and a time: the server holds nothing else about it"
     );
 }
 
@@ -1657,154 +1678,6 @@ fn the_dashboard_serves_its_files_with_the_strict_policy() {
     let res = Req::get("/").send(bare.addr);
     assert_eq!(res.status, 404);
     assert_eq!(res.code(), "dashboard_unavailable");
-}
-
-/// Sign in to the dashboard and return the cookie header and CSRF value a
-/// mutation needs.
-fn dashboard_session(h: &Harness, cred: &Cred) -> (String, String) {
-    let link = Req::post("/v1/dashboard/login-link")
-        .sign(cred, NOW)
-        .send(h.addr);
-    assert_eq!(link.status, 200, "{}", link.text());
-    let url = link
-        .json()
-        .get("url")
-        .and_then(Value::as_str)
-        .expect("url")
-        .to_string();
-    let token = url
-        .split("token=")
-        .nth(1)
-        .expect("token in the url")
-        .to_string();
-
-    let login = Req::get(&format!("/login?token={token}")).send(h.addr);
-    assert_eq!(login.status, 302, "{}", login.text());
-    let cookies = login.headers_all("set-cookie");
-    let session = cookies
-        .iter()
-        .find(|c| c.starts_with("obsync_session="))
-        .expect("session cookie")
-        .split(';')
-        .next()
-        .expect("pair")
-        .to_string();
-    let csrf_pair = cookies
-        .iter()
-        .find(|c| c.starts_with("obsync_csrf="))
-        .expect("csrf cookie")
-        .split(';')
-        .next()
-        .expect("pair")
-        .to_string();
-    let csrf = csrf_pair.split('=').nth(1).expect("value").to_string();
-    (format!("{session}; {csrf_pair}"), csrf)
-}
-
-#[test]
-fn escrowing_a_domain_key_is_deliberate_authenticated_and_reversible() {
-    let h = Harness::start_with(
-        "escrow",
-        Setup {
-            dashboard: true,
-            ..Setup::default()
-        },
-    );
-    let cred = h.setup_account();
-    let domain = "3f".repeat(16);
-    let created = Req::post("/v1/domains")
-        .body(&format!(r#"{{"domain_id":"{domain}"}}"#))
-        .sign(&cred, NOW)
-        .send(h.addr);
-    assert_eq!(created.status, 201, "{}", created.text());
-
-    let (cookie, csrf) = dashboard_session(&h, &cred);
-    let path = format!("/v1/admin/domains/{domain}/escrow");
-    let key = "7c".repeat(32);
-    let body = format!(r#"{{"domain_key":"{key}"}}"#);
-
-    // A session alone is not enough: the escrow endpoint is a mutation.
-    let no_csrf = Req::post(&path)
-        .body(&body)
-        .header("Cookie", &cookie)
-        .send(h.addr);
-    assert_eq!(no_csrf.status, 403, "{}", no_csrf.text());
-    assert_eq!(no_csrf.code(), "csrf_failed");
-
-    // And a device credential is not a dashboard session.
-    let device_signed = Req::post(&path).body(&body).sign(&cred, NOW).send(h.addr);
-    assert_eq!(device_signed.status, 401);
-    assert_eq!(device_signed.code(), "no_session");
-
-    // The value must be 32 bytes of hex, under the name the protocol gives
-    // it: a valid value under another name is still refused.
-    let wrong_name = format!(r#"{{"escrow":"{key}"}}"#);
-    for bad in [
-        r#"{"domain_key":"abc"}"#,
-        r#"{"domain_key":"zz"}"#,
-        wrong_name.as_str(),
-        "{}",
-    ] {
-        let refused = Req::post(&path)
-            .body(bad)
-            .header("Cookie", &cookie)
-            .header("X-Obsync-Csrf", &csrf)
-            .send(h.addr);
-        assert_eq!(
-            refused.status,
-            400,
-            "{bad} was accepted: {}",
-            refused.text()
-        );
-    }
-    assert!(
-        !escrowed(&h, &cred, &domain),
-        "nothing refused left a key behind"
-    );
-
-    let set = Req::post(&path)
-        .body(&body)
-        .header("Cookie", &cookie)
-        .header("X-Obsync-Csrf", &csrf)
-        .send(h.addr);
-    assert_eq!(set.status, 204, "{}", set.text());
-    assert!(
-        escrowed(&h, &cred, &domain),
-        "the dashboard shows it in red"
-    );
-
-    let cleared = Req::new("DELETE", &path)
-        .header("Cookie", &cookie)
-        .header("X-Obsync-Csrf", &csrf)
-        .send(h.addr);
-    assert_eq!(cleared.status, 204, "{}", cleared.text());
-    assert!(
-        !escrowed(&h, &cred, &domain),
-        "revocation removes the key and the capability it gave"
-    );
-
-    let unknown = Req::new(
-        "DELETE",
-        &format!("/v1/admin/domains/{}/escrow", "11".repeat(16)),
-    )
-    .header("Cookie", &cookie)
-    .header("X-Obsync-Csrf", &csrf)
-    .send(h.addr);
-    assert_eq!(unknown.status, 404, "{}", unknown.text());
-    assert_eq!(unknown.code(), "unknown_domain");
-}
-
-/// Whether `GET /v1/domains` reports this domain as escrowed.
-fn escrowed(h: &Harness, cred: &Cred, domain: &str) -> bool {
-    let res = Req::get("/v1/domains").sign(cred, NOW).send(h.addr);
-    assert_eq!(res.status, 200, "{}", res.text());
-    let body = res.json();
-    body.get("domains")
-        .and_then(Value::as_array)
-        .expect("domains")
-        .iter()
-        .filter(|d| d.get("domain_id").and_then(Value::as_str) == Some(domain))
-        .any(|d| d.get("escrowed").and_then(Value::as_bool) == Some(true))
 }
 
 #[test]
@@ -1922,6 +1795,23 @@ fn the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header()
         .header("Cookie", &cookie_header)
         .send(h.addr);
     assert_eq!(devices.status, 200, "{}", devices.text());
+
+    let admin_domains = Req::get("/v1/admin/domains")
+        .header("Cookie", &cookie_header)
+        .send(h.addr);
+    assert_eq!(admin_domains.status, 200, "{}", admin_domains.text());
+    let admin_body = admin_domains.json();
+    let admin_listed = admin_body
+        .get("domains")
+        .and_then(Value::as_array)
+        .expect("the admin listing still reports domains");
+    for entry in admin_listed {
+        assert_eq!(
+            object_keys(entry),
+            vec!["created".to_string(), "domain_id".to_string()],
+            "no dashboard view reports, or offers, a content key"
+        );
+    }
 
     let no_csrf = Req::post("/v1/admin/gc/run")
         .header("Cookie", &cookie_header)

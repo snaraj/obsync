@@ -381,52 +381,6 @@ function runJob(button, path, started) {
   });
 }
 
-/* ---- sharing ------------------------------------------------------------ */
-
-async function loadDomains() {
-  const body = el('domains-body');
-  skeleton(body, 4, 2);
-  const data = await get(`${ADMIN}/domains`);
-  const domains = Array.isArray(data.domains) ? data.domains : [];
-  body.replaceChildren();
-  el('domains-empty').hidden = domains.length > 0;
-  for (const domain of domains) {
-    const node = clone('tpl-domain');
-    setText(field(node, 'id'), domain.domain_id);
-    setTime(field(node, 'created'), domain.created);
-    const escrowed = domain.escrowed === true;
-    const tag = field(node, 'escrow');
-    setText(tag, escrowed ? 'escrowed — server can read' : 'device keys only');
-    if (escrowed) tag.classList.add('on');
-    const revoke = field(node, 'revoke');
-    revoke.hidden = !escrowed;
-    if (escrowed) {
-      revoke.addEventListener('click', () => {
-        guard(async () => {
-          await request('DELETE', `${ADMIN}/domains/${encodeURIComponent(domain.domain_id)}/escrow`);
-          say(`Escrow revoked for ${domain.domain_id}. The server can no longer read that folder.`);
-          await loadDomains();
-        });
-      });
-    }
-    body.append(node);
-  }
-}
-
-function submitEscrow(event) {
-  event.preventDefault();
-  const domain = el('escrow-domain').value.trim();
-  const key = el('escrow-key').value.trim();
-  guard(async () => {
-    await request('POST', `${ADMIN}/domains/${encodeURIComponent(domain)}/escrow`, {
-      domain_key: key,
-    });
-    el('escrow-form').reset();
-    say(`Key escrowed for ${domain}. The server can now read that folder.`);
-    await loadDomains();
-  });
-}
-
 /* ---- install ------------------------------------------------------------ */
 
 async function loadPlugin() {
@@ -477,7 +431,6 @@ const LOADERS = {
   devices: loadDevices,
   pairing: loadPairing,
   storage: loadStorage,
-  sharing: loadDomains,
   install: loadPlugin,
   logs: loadLogs,
 };
@@ -553,7 +506,6 @@ el('run-gc').addEventListener('click', () =>
 el('run-scrub').addEventListener('click', () =>
   runJob(el('run-scrub'), `${ADMIN}/scrub/run`, 'Scrub started. It runs at the configured rate and logs a summary.'));
 
-el('escrow-form').addEventListener('submit', submitEscrow);
 el('log-filter').addEventListener('input', renderLogs);
 window.addEventListener('hashchange', route);
 
