@@ -34,12 +34,31 @@
 # runnable with no container runtime -- so `make image` is where an author
 # reproduces them.
 #
-# NON-VACUITY IS PROVEN, NOT ASSUMED. Assertion (d) deletes one canonical
-# command from a COPY of each file and requires the same check to fail. A gate
-# that had stopped being able to fail would fail here instead of passing
-# silently forever.
+# TEXT IS NOT EXECUTION. This script used to answer "does the file contain this
+# command" with `grep -qF`. An adversarial review answered yes while running
+# nothing: `true # ./scripts/ci/image-smoke.sh obsync:$(cat VERSION)` in the
+# recipe and `run: true # scripts/ci/image-smoke.sh "obsync-gate-full:…"` in
+# the workflow both passed every pin, actionlint included, with the one check
+# that had just caught a deployment-blocking defect switched off. So both sides
+# are now read for what they RUN. The Makefile side is its TAB-indented recipe
+# lines, backslash continuations joined, Make's `@-+` prefixes and shell
+# comments stripped -- a column-0 comment is not a recipe line and can never
+# count. The workflow side is every step `run:` value that
+# scripts/ci/workflow_runs.py resolves through the repository's fail-closed
+# YAML reader. Both are split into shell segments on `&&`, `||`, `|` and `;`,
+# lose leading bare `NAME=value` assignments and the grammar words that stand
+# before a command without changing it, and a canonical command must STAND AT
+# THE HEAD of some segment. `cd plugin && npm ci …` still counts. `true # …`,
+# `echo '…'` and a comment do not.
+#
+# NON-VACUITY IS PROVEN, NOT ASSUMED. Assertion (d) mutates a COPY of each file
+# seven ways -- one deletion and two neutralizations per file, plus a comment
+# that keeps the command's text and drops its execution -- and requires the
+# same check to refuse every one. A gate that had stopped being able to fail
+# would fail here instead of passing silently forever.
 set -euo pipefail
 
+here="$(cd "$(dirname "$0")" && pwd)"
 makefile="${MAKEFILE_PATH:-Makefile}"
 workflow="${WORKFLOW_PATH:-.github/workflows/pr-gate.yml}"
 
@@ -73,13 +92,68 @@ fail() {
   exit 1
 }
 
+makefile_segments() {
+  # Every executable shell segment of every recipe line in $1, one per line.
+  awk '
+    /^\t/ {
+      line = substr($0, 2)
+      if (line ~ /\\$/) {
+        pending = pending substr(line, 1, length(line) - 1) " "
+        next
+      }
+      emit(pending line)
+      pending = ""
+      next
+    }
+    { pending = "" }
+    END { if (pending != "") emit(pending) }
+    function emit(line,   count, parts, position, segment, previous) {
+      sub(/^[ \t]*[-@+]*[ \t]*/, "", line)
+      sub(/(^|[ \t])#.*$/, "", line)
+      gsub(/\|\||&&|[|;]/, "\n", line)
+      count = split(line, parts, "\n")
+      for (position = 1; position <= count; position++) {
+        segment = parts[position]
+        do {
+          previous = segment
+          sub(/^[ \t]+/, "", segment)
+          sub(/^[A-Za-z_][A-Za-z0-9_]*=[^ \t'"'"'"]*[ \t]+/, "", segment)
+          sub(/^(then|else|elif|do|\{|\()[ \t]+/, "", segment)
+        } while (segment != previous)
+        sub(/[ \t]+$/, "", segment)
+        if (segment != "") print segment
+      }
+    }
+  ' "$1"
+}
+
+workflow_segments() {
+  python3 -B "${here}/workflow_runs.py" "$1"
+}
+
+runs_command() {
+  # 0 when some segment in $1 STARTS WITH the command $2. A leading `./` is not
+  # part of the decision: `./scripts/ci/image-smoke.sh` and
+  # `scripts/ci/image-smoke.sh` are the same program run the same way.
+  local segments="$1" command="${2#./}" segment
+  while IFS= read -r segment; do
+    segment="${segment#./}"
+    if [ "${segment#"${command}"}" != "${segment}" ]; then
+      return 0
+    fi
+  done <<< "${segments}"
+  return 1
+}
+
 battery_holds() {
-  # 0 when every canonical command appears in BOTH files, 1 otherwise. Quiet:
-  # assertion (d) calls it expecting failure.
-  local makefile_path="$1" workflow_path="$2" command
+  # 0 when every canonical command heads a segment in BOTH files, 1 otherwise.
+  # Quiet: assertion (d) calls it expecting failure.
+  local makefile_path="$1" workflow_path="$2" command recipes runs
+  recipes="$(makefile_segments "${makefile_path}")" || return 1
+  runs="$(workflow_segments "${workflow_path}" 2>/dev/null)" || return 1
   for command in "${CANONICAL[@]}"; do
-    grep -qF -- "${command}" "${makefile_path}" || return 1
-    grep -qF -- "${command}" "${workflow_path}" || return 1
+    runs_command "${recipes}" "${command}" || return 1
+    runs_command "${runs}" "${command}" || return 1
   done
   return 0
 }
@@ -87,14 +161,16 @@ battery_holds() {
 [ -f "${makefile}" ] || fail "no ${makefile} in $(pwd)"
 [ -f "${workflow}" ] || fail "no ${workflow} in $(pwd)"
 
-# (a) Every canonical command is in both files.
+# (a) Every canonical command is RUN by both files.
+recipes="$(makefile_segments "${makefile}")" || fail "cannot read ${makefile}'s recipes"
+runs="$(workflow_segments "${workflow}")" || fail "cannot resolve ${workflow}"
 for command in "${CANONICAL[@]}"; do
-  grep -qF -- "${command}" "${makefile}" \
+  runs_command "${recipes}" "${command}" \
     || fail "the Makefile no longer runs: ${command}"
-  grep -qF -- "${command}" "${workflow}" \
+  runs_command "${runs}" "${command}" \
     || fail "${workflow} no longer runs: ${command}"
 done
-printf 'makefile-invariants: (a) all %d canonical commands appear in both %s and %s\n' \
+printf 'makefile-invariants: (a) all %d canonical commands are run by both %s and %s\n' \
   "${#CANONICAL[@]}" "${makefile}" "${workflow}"
 
 # (b) `make check` still chains every target that carries one of them.
@@ -112,21 +188,53 @@ if ! make -f "${makefile}" help >/dev/null 2>&1; then
 fi
 printf 'makefile-invariants: (c) the Makefile parses and make help runs (non-vacuous)\n'
 
-# (d) The check can fail. Remove one canonical command from a COPY of each file
-# and require the same comparison to refuse it.
+# (d) The check can fail. Break one canonical command on a COPY of each file --
+# by deletion, and by every way of naming it without running it -- and require
+# the same comparison to refuse each one.
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/makefile-invariants.XXXXXX")"
 trap 'rm -rf -- "${scratch}"' EXIT
 probe='cargo clippy --workspace --all-targets -- -D warnings'
-grep -vF -- "${probe}" "${makefile}" > "${scratch}/Makefile"
+block='npm run build'
+tab="$(printf '\t')"
+
+rewrite() {
+  # Copy $1 to $2, replacing the first line that contains $3 with $4.
+  awk -v needle="$3" -v replacement="$4" \
+    '!replaced && index($0, needle) { print replacement; replaced = 1; next } { print }' \
+    "$1" > "$2"
+}
+
+refuses() {
+  # $1 names the mutant; the copies in ${scratch} are judged as a pair.
+  if battery_holds "${scratch}/Makefile" "${scratch}/workflow.yml"; then
+    fail "$1 still passed; this gate cannot fail"
+  fi
+}
+
 cp "${workflow}" "${scratch}/workflow.yml"
-if battery_holds "${scratch}/Makefile" "${scratch}/workflow.yml"; then
-  fail "a Makefile with '${probe}' deleted still passed; this gate cannot fail"
-fi
+grep -vF -- "${probe}" "${makefile}" > "${scratch}/Makefile"
+refuses "a Makefile with '${probe}' deleted"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}true # ${probe}"
+refuses "a Makefile whose recipe reads 'true # ${probe}'"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}echo '${probe}'"
+refuses "a Makefile whose recipe only echoes '${probe}'"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "# ${probe}"
+refuses "a Makefile naming '${probe}' in a comment instead of a recipe"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}true # disabled; ${probe}"
+refuses "a Makefile whose recipe hides '${probe}' in a comment carrying a ';'"
+
 cp "${makefile}" "${scratch}/Makefile"
 grep -vF -- "${probe}" "${workflow}" > "${scratch}/workflow.yml"
-if battery_holds "${scratch}/Makefile" "${scratch}/workflow.yml"; then
-  fail "a workflow with '${probe}' deleted still passed; this gate cannot fail"
-fi
-printf 'makefile-invariants: (d) deleting one canonical command from either file is refused\n'
+refuses "a workflow with '${probe}' deleted"
+rewrite "${workflow}" "${scratch}/workflow.yml" "run: ${probe}" \
+  "        run: true # ${probe}"
+refuses "a workflow step whose run value reads 'true # ${probe}'"
+rewrite "${workflow}" "${scratch}/workflow.yml" "          ${block}" \
+  "          # ${block}"
+refuses "a workflow block scalar with '${block}' commented out"
+rewrite "${workflow}" "${scratch}/workflow.yml" "          ${block}" \
+  "          true # disabled; ${block}"
+refuses "a workflow block scalar hiding '${block}' in a comment carrying a ';'"
+printf 'makefile-invariants: (d) deleting, commenting or neutralizing one canonical command in either file is refused\n'
 
 printf 'makefile-invariants: the Makefile and the PR gate run one battery\n'
