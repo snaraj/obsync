@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "src",
+    "outDir": "build",
+    "baseUrl": ".",
+    "paths": { "obsidian": ["./vendor/obsidian/obsidian.d.ts"] },
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}

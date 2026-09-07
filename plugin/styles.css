@@ -1,0 +1,33 @@
+/* obsync. Four classes, no layout opinions beyond fitting a 390 px phone. */
+
+.obsync-code {
+  user-select: all;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.obsync-phrase {
+  user-select: all;
+  white-space: pre-wrap;
+  columns: 2;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+}
+
+.obsync-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+}
+
+.obsync-table td {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow-wrap: anywhere;
+}
