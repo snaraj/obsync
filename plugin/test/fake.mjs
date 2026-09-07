@@ -447,6 +447,18 @@ export class FakeServer {
   }
 }
 
+/** How long a wait for an OUTCOME may take in real time before it gives up. */
+const WAIT_BUDGET_MS = 10000;
+/** How long a wait for NOTHING watches, in real time, before it is satisfied. */
+const QUIET_MS = 250;
+/**
+ * Virtual steps a wait may take. Both bounds keep the one-hour heartbeat out
+ * of reach of any wait (1800 s and 40 s of virtual time), so what a wait does
+ * to the virtual clock never depends on how fast the machine is.
+ */
+const MAX_ADVANCES = 1800;
+const QUIET_ADVANCES = 40;
+
 /**
  * Timers on a virtual clock: nothing fires until the test advances time, so a
  * 500 ms debounce and a one-hour heartbeat cannot be confused for each other.
@@ -469,35 +481,61 @@ export class FakeTimers {
   }
 
   /**
-   * Advance the clock, fire what is due, and let the work it started finish.
-   * Each round yields to the event loop, which is what WebCrypto's promises
-   * need: a single push runs dozens of `crypto.subtle` calls and each one
-   * resolves a turn or more later.
+   * Advance the virtual clock, fire what is due, and let the work it started
+   * finish. A single push runs dozens of `crypto.subtle` calls, and WebCrypto
+   * resolves on the libuv threadpool, so the work this waits for is not on
+   * this thread at all.
    *
-   * WAIT FOR THE OUTCOME, NOT FOR A NUMBER OF TURNS. `until` is polled after
-   * every round and ends the wait the moment it holds. A fixed round budget
-   * is a guess about how many turns a runtime needs, and that guess is
-   * version-dependent: the same suite settled in 40 rounds on Node 26 and
-   * needed several hundred on the pinned Node 24. Every wait for something
-   * to HAPPEN passes a predicate; the bounded fallback exists only for waits
-   * that are followed by an assertion that nothing happened.
+   * WAIT ON THE OUTCOME AND A WALL CLOCK, NEVER ON A NUMBER OF ROUNDS. A
+   * round budget is a guess about how many event-loop turns a runtime needs,
+   * and that guess is a function of MACHINE LOAD: when the threadpool is
+   * starved (a coverage build, a container build, anything), the same work
+   * takes the same wall time but many more idle turns, so a round cap can be
+   * exhausted with the work still in flight. Every wait for something to
+   * HAPPEN therefore polls a predicate until it holds or `budgetMs` of real
+   * time passes, and an exhausted budget throws rather than returning
+   * quietly into a mystery assertion.
+   *
+   * A round that fires nothing means the work is either finished or waiting
+   * on a re-armed timer (the growing-file guard re-arms every 400 ms), so the
+   * virtual clock steps one `advanceMs`. Those steps stay BOUNDED — the wall
+   * clock governs waiting, the virtual clock governs firing — so a slow
+   * machine cannot walk virtual time into the hourly heartbeat.
+   *
+   * A wait with no predicate is the other kind: it precedes an assertion that
+   * nothing happened, and it drains for a real quiet window so that claim is
+   * about a real interval rather than about a turn count.
    */
-  async run(advanceMs = 1000, until = null, maxRounds = 2000) {
+  async run(advanceMs = 1000, until = null, budgetMs = WAIT_BUDGET_MS) {
     this.now += advanceMs;
-    const rounds = until ? maxRounds : 40;
-    for (let round = 0; round < rounds; round++) {
+    const deadline = Date.now() + (until ? budgetMs : QUIET_MS);
+    const advanceLimit = until ? MAX_ADVANCES : QUIET_ADVANCES;
+    let advances = 0;
+    for (;;) {
       const due = this.entries.filter((entry) => entry.due <= this.now);
       this.entries = this.entries.filter((entry) => entry.due > this.now);
       for (const entry of due) entry.fn();
-      await new Promise((resolve) => setImmediate(resolve));
-      if (until && until()) return true;
-      // A round that fired nothing means the work is either finished or
-      // waiting on a timer that has been re-armed — the growing-file guard
-      // re-arms every 400 ms. Step the clock so those come due, one
-      // `advanceMs` at a time, which keeps the hourly heartbeat out of reach.
-      if (due.length === 0) this.now += advanceMs;
+      if (due.length > 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      } else {
+        // Nothing was due, so what we are waiting for is a promise, most of
+        // it off-thread. Yield the CPU instead of spinning on it: that is
+        // what makes this wait independent of how busy the machine is.
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (advances < advanceLimit) {
+          this.now += advanceMs;
+          advances++;
+        }
+      }
+      if (until) {
+        if (until()) return true;
+        if (Date.now() >= deadline) {
+          throw new Error(`fake timers: waited ${budgetMs} ms of real time and the condition never held`);
+        }
+      } else if (Date.now() >= deadline) {
+        return true;
+      }
     }
-    return until === null;
   }
 }
 

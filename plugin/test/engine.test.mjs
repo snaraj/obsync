@@ -14,12 +14,47 @@ import { FakeHost, FakeServer, FakeTimers, KEYS, fakeState, keys } from "./fake.
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
-const { SyncEngine } = require("../build/sync/engine.js");
+const { SyncEngine, HEARTBEAT_MS } = require("../build/sync/engine.js");
 const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
 const c = require("../build/crypto.js");
 
 const enc = (text) => new TextEncoder().encode(text);
+
+/**
+ * What the server can READ of a request body: every field except the AES-GCM
+ * ciphertext, which is opaque to it by construction.
+ *
+ * Scanning the ciphertext for a short word is not a test, it is a coin toss:
+ * `manifest_ct` is base64 of a fresh random-nonce encryption, so a three
+ * letter word like `vrk` turns up in it about once every 540 posted versions
+ * (measured: 37 hits in 20 000 encryptions of one manifest). That is what
+ * made this suite flake. The claim worth pinning is about the CLEAR fields —
+ * ids, sizes, hashes — and it is exact.
+ */
+function clearFields(json) {
+  if (json === null) return "";
+  const parsed = JSON.parse(json);
+  delete parsed.manifest_ct;
+  return JSON.stringify(parsed);
+}
+
+/** Every manifest the server holds, decrypted the way another device reads it. */
+async function postedPaths(server, k) {
+  const paths = [];
+  for (const frame of server.journal) {
+    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
+    const json = await c.decryptManifest(
+      k.manifestKey,
+      frame.file_id,
+      binder,
+      Uint8Array.from(Buffer.from(frame.manifest_nonce, "hex")),
+      c.unbase64(frame.manifest_ct),
+    );
+    paths.push(JSON.parse(json).path);
+  }
+  return paths;
+}
 
 async function rig({ isMobile = false, policy } = {}) {
   const host = new FakeHost({ isMobile });
@@ -57,7 +92,7 @@ async function rig({ isMobile = false, policy } = {}) {
 }
 
 test("a push uploads ciphertext and posts a version the server recomputes", async () => {
-  const { host, server, state, context } = await rig();
+  const { host, server, state, context, keys: k } = await rig();
   host.seed("Notes/Ideas.md", "# Ideas\nthe plaintext marker\n", 1000);
   const outcome = await pushFile(context, "Notes/Ideas.md");
 
@@ -68,16 +103,19 @@ test("a push uploads ciphertext and posts a version the server recomputes", asyn
   assert.equal(record.versionId, outcome.versionId);
   assert.equal(record.size, 29);
 
-  // Blind server: no chunk body, and no JSON field, carries the plaintext or
-  // the path.
+  // Blind server: no chunk body, and no readable JSON field, carries the
+  // plaintext or the path.
   for (const chunk of server.chunks.values()) {
     assert.equal(Buffer.from(chunk).includes("plaintext marker"), false);
   }
   for (const request of server.requests) {
-    if (request.json === null) continue;
-    assert.equal(request.json.includes("Ideas"), false, request.target);
-    assert.equal(request.json.includes("Notes/"), false, request.target);
+    const clear = clearFields(request.json);
+    assert.equal(clear.includes("Ideas"), false, request.target);
+    assert.equal(clear.includes("Notes/"), false, request.target);
   }
+  // And the path really is inside the ciphertext: the claim above is about
+  // what the server can read, not about the path having gone missing.
+  assert.deepEqual(await postedPaths(server, k), ["Notes/Ideas.md"]);
 });
 
 test("pushing an unchanged file posts nothing", async () => {
@@ -472,6 +510,26 @@ test("the common ancestor walk finds the shared base, or nothing", () => {
   assert.equal(commonAncestor([{ version_id: "x", parents: [] }, { version_id: "y", parents: [] }], "x", "y"), null);
 });
 
+test("a wait for an outcome gives up on a wall clock and says so", async () => {
+  const timers = new FakeTimers();
+  const started = Date.now();
+  await assert.rejects(
+    () => timers.run(1000, () => false, 50),
+    /waited 50 ms of real time and the condition never held/,
+    "an exhausted wait is a clear failure, not a quiet false",
+  );
+  assert.ok(Date.now() - started >= 50, "it waited the budget it was given");
+});
+
+test("a wait for nothing drains a real window without walking the clock into the heartbeat", async () => {
+  const timers = new FakeTimers();
+  let fired = 0;
+  timers.set(() => fired++, HEARTBEAT_MS);
+  await timers.run(1000);
+  assert.equal(fired, 0, "an hour of virtual time never elapsed");
+  assert.ok(timers.now <= 41 * 1000, `the virtual clock stayed bounded (${timers.now} ms)`);
+});
+
 test("the engine queues, debounces and pushes what the watcher reports", async () => {
   const { host, server, state } = await rig();
   const timers = new FakeTimers();
@@ -624,7 +682,7 @@ test("a rename keeps the file id and moves the path inside the manifest", async 
 });
 
 test("a rename whose target is hidden is not synced, and neither is the plugin's own state", async () => {
-  const { host, server, state } = await rig();
+  const { host, server, state, keys: k } = await rig();
   const timers = new FakeTimers();
   const engine = new SyncEngine({
     state,
@@ -665,8 +723,13 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
     host.logs.some((line) => line.includes("decision=not_synced reason=hidden_segment event=rename_to")),
     host.logs.join(" | "),
   );
+  // The plugin's own data file holds the vault key, so what matters is that
+  // it was never posted. Both halves of that are exact: no manifest the
+  // server holds names a hidden path, and no field the server can read
+  // carries the key itself (64 hex characters, not a three-letter word).
+  assert.deepEqual(await postedPaths(server, k), ["Notes/Secret.md"], "only the ordinary note was posted");
   for (const request of server.requests) {
-    assert.equal(request.json === null || !request.json.includes("vrk"), true, request.target);
+    assert.equal(clearFields(request.json).includes(KEYS.vrk), false, request.target);
   }
 
   // Startup reconciliation walks the same gate: the hidden files it sees are
