@@ -690,6 +690,8 @@ impl Store {
     /// under the index lock, so a chunk cannot be re-registered by a
     /// concurrent upload between the decision and the unlink.
     pub fn gc_run(&self, now: UnixMs) -> GcSummary {
+        // Budget zero: collection is bounded by what retention releases, not
+        // by bytes, and the SUMMARY line carries the duration it took.
         let started = self.log.start("gc", 0);
         let mut journal = self.journal();
         let mut index = self.index();
@@ -857,6 +859,7 @@ impl Store {
 
     /// Write an index snapshot so the next start replays less.
     pub fn snapshot(&self) -> Result<(), StoreError> {
+        // Budget zero: a snapshot is as large as the index is.
         let started = self.log.start("snapshot", 0);
         let mut journal = self.journal();
         let index = self.index();

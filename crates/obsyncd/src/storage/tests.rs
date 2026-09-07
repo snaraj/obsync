@@ -131,6 +131,18 @@ fn fingerprint(store: &Store) -> String {
 }
 
 #[test]
+fn the_store_and_the_log_are_shareable_across_request_threads() {
+    // One store serves every connection thread (docs/architecture.md §9:
+    // one thread per connection), so this is a compile-time contract, not a
+    // hope. It fails to build, not at runtime, if either stops holding.
+    fn shareable<T: Send + Sync>() {}
+    shareable::<Store>();
+    shareable::<Log>();
+    fn cloneable<T: Clone>() {}
+    cloneable::<Log>();
+}
+
+#[test]
 fn setup_runs_once_and_the_account_reports_real_usage() {
     let dir = TempDir::new("store-setup");
     let cfg = config(&dir);
