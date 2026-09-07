@@ -52,6 +52,20 @@ jobs:
         run: |
           helm template smoke chart \\
             --kube-version v1.36.0 >/dev/null
+      - name: Unreachable shell
+        run: |
+          false && node --test dashboard/test/*.test.mjs
+          true || python3 -B scripts/ci/chart_pins.py all
+      - name: Conditioned step
+        if: false
+        run: helm lint chart
+  two:
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Conditioned job
+        run: gitleaks dir --no-banner --redact .
 """
 
 
@@ -64,11 +78,42 @@ class ResolvesWhatTheStepsRun(unittest.TestCase):
         ]
 
     def test_a_step_that_runs_no_string_contributes_nothing(self):
-        # Five steps, three commands. The `uses:` step is not a command, and
-        # neither is `run: true # …`: the reader strips the comment and
-        # resolves the bare `true` as a BOOLEAN, which is not a shell command
-        # and must not be read as one.
-        self.assertEqual(len(workflow_runs.run_values(STEPS)), 3)
+        # Eight steps across two jobs, four commands. The `uses:` step is not a
+        # command; `run: true # …` is not one either, because the reader strips
+        # the comment and resolves the bare `true` as a BOOLEAN; and the two
+        # conditioned ones are excluded below.
+        self.assertEqual(len(workflow_runs.run_values(STEPS)), 4)
+
+    def test_a_conditioned_step_contributes_nothing(self):
+        # `if: false` on a step is this repository's neutralization written in
+        # the workflow's own language.
+        self.assertIn("run: helm lint chart", STEPS)
+        self.assertNotIn("helm lint chart", self.segments())
+
+    def test_a_conditioned_job_contributes_nothing(self):
+        self.assertIn("run: gitleaks dir --no-banner --redact .", STEPS)
+        self.assertEqual(
+            [
+                segment
+                for segment in self.segments()
+                if segment.startswith("gitleaks dir")
+            ],
+            [],
+        )
+
+    def test_a_segment_the_line_cannot_reach_is_not_a_command(self):
+        # `false && cmd` never runs cmd and `true || cmd` never runs cmd, which
+        # is exactly how an adversarial review beat the sibling contract.
+        segments = self.segments()
+        self.assertIn("false", segments)
+        self.assertEqual(
+            [
+                segment
+                for segment in segments
+                if segment.startswith(("node --test", "python3 -B"))
+            ],
+            [],
+        )
 
     def test_a_single_line_run_is_one_segment(self):
         self.assertIn("cargo test --workspace", self.segments())

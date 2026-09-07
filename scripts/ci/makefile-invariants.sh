@@ -49,13 +49,19 @@
 # lose leading bare `NAME=value` assignments and the grammar words that stand
 # before a command without changing it, and a canonical command must STAND AT
 # THE HEAD of some segment. `cd plugin && npm ci …` still counts. `true # …`,
-# `echo '…'` and a comment do not.
+# `echo '…'` and a comment do not, and neither does a segment the line cannot
+# reach: one behind `||`, or one joined by `&&` after a bare `false` or `!`.
+# The same review that beat the text search beat a sibling contract with
+# `false && …`. On the workflow side a step or job carrying an `if:` is skipped
+# whole for the same reason: `if: false` on the smoke step is that same
+# neutralization written in YAML.
 #
 # NON-VACUITY IS PROVEN, NOT ASSUMED. Assertion (d) mutates a COPY of each file
-# seven ways -- one deletion and two neutralizations per file, plus a comment
-# that keeps the command's text and drops its execution -- and requires the
-# same check to refuse every one. A gate that had stopped being able to fail
-# would fail here instead of passing silently forever.
+# thirteen ways -- deleting a canonical command, moving it into a comment,
+# neutralizing it with `true #` or `echo`, hiding it in a comment that carries
+# a `;`, and putting it behind a `false &&`, a `||`, or an `if:` -- and
+# requires the same check to refuse every one. A gate that had stopped being
+# able to fail would fail here instead of passing silently forever.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -107,13 +113,21 @@ makefile_segments() {
     }
     { pending = "" }
     END { if (pending != "") emit(pending) }
-    function emit(line,   count, parts, position, segment, previous) {
+    function emit(line,   segment, operator, following, dead, previous) {
       sub(/^[ \t]*[-@+]*[ \t]*/, "", line)
       sub(/(^|[ \t])#.*$/, "", line)
-      gsub(/\|\||&&|[|;]/, "\n", line)
-      count = split(line, parts, "\n")
-      for (position = 1; position <= count; position++) {
-        segment = parts[position]
+      operator = ""
+      dead = 0
+      while (1) {
+        if (match(line, /\|\||&&|[|;]/)) {
+          segment = substr(line, 1, RSTART - 1)
+          following = substr(line, RSTART, RLENGTH)
+          line = substr(line, RSTART + RLENGTH)
+        } else {
+          segment = line
+          following = ""
+          line = ""
+        }
         do {
           previous = segment
           sub(/^[ \t]+/, "", segment)
@@ -121,7 +135,11 @@ makefile_segments() {
           sub(/^(then|else|elif|do|\{|\()[ \t]+/, "", segment)
         } while (segment != previous)
         sub(/[ \t]+$/, "", segment)
-        if (segment != "") print segment
+        if (operator == "" || operator == ";" || operator == "|") dead = 0
+        if (segment != "" && dead == 0 && operator != "||") print segment
+        if (segment == "false" || segment == "!") dead = 1
+        if (following == "") break
+        operator = following
       }
     }
   ' "$1"
@@ -222,6 +240,10 @@ rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "# ${probe}"
 refuses "a Makefile naming '${probe}' in a comment instead of a recipe"
 rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}true # disabled; ${probe}"
 refuses "a Makefile whose recipe hides '${probe}' in a comment carrying a ';'"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}false && ${probe}"
+refuses "a Makefile whose recipe reaches '${probe}' only after a false"
+rewrite "${makefile}" "${scratch}/Makefile" "${probe}" "${tab}true || ${probe}"
+refuses "a Makefile whose recipe reaches '${probe}' only through a '||'"
 
 cp "${makefile}" "${scratch}/Makefile"
 grep -vF -- "${probe}" "${workflow}" > "${scratch}/workflow.yml"
@@ -235,6 +257,12 @@ refuses "a workflow block scalar with '${block}' commented out"
 rewrite "${workflow}" "${scratch}/workflow.yml" "          ${block}" \
   "          true # disabled; ${block}"
 refuses "a workflow block scalar hiding '${block}' in a comment carrying a ';'"
+rewrite "${workflow}" "${scratch}/workflow.yml" "          ${block}" \
+  "          false && ${block}"
+refuses "a workflow block scalar reaching '${block}' only after a false"
+rewrite "${workflow}" "${scratch}/workflow.yml" "run: ${probe}" \
+  "        if: false\n        run: ${probe}"
+refuses "a workflow step that runs '${probe}' only when a condition holds"
 printf 'makefile-invariants: (d) deleting, commenting or neutralizing one canonical command in either file is refused\n'
 
 printf 'makefile-invariants: the Makefile and the PR gate run one battery\n'
