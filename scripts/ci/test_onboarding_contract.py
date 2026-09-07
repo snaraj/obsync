@@ -1376,6 +1376,16 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         )
         self.kills(found, f"publishes on {EVERY_INTERFACE}")
 
+    def test_an_unrelated_assignment_prefix_is_not_refused(self):
+        # Rule 11 reads the prefix it names and walks past every other one, so
+        # a reader who also moves the host ports still satisfies it. Without
+        # this the rule could be an accident of the command being exactly two
+        # assignments long.
+        found = self.mutate(
+            README_NAME, COMPOSE_UP_BIND, f"OBSYNC_HTTPS_PORT=8443 \\\n  {COMPOSE_UP_BIND}"
+        )
+        self.assertEqual(found, self.before)
+
     def test_naming_every_interface_in_prose_is_not_refused(self):
         # Rule 11's positive control, and the reason the rule reads COMMANDS:
         # the README has to be able to say what `0.0.0.0` means and when it is

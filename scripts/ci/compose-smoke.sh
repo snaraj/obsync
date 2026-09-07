@@ -20,21 +20,30 @@
 #                     has, and a private name and a private certificate
 #                     authority decide naming and trust, never reachability.
 #                     This is the step that keeps the choice explicit.
-#   2. TLS through the proxy  `GET /readyz` answers `{"ready":true` over HTTPS,
+#   2. published      rendered with only the bind address supplied, the file
+#      defaults      publishes host ports exactly 80 and 443 against container
+#                     ports 80 and 443, on the address that variable carries.
+#                     The host ports are a variable so this smoke can publish a
+#                     HIGH pair -- a privileged port bound to a SPECIFIC host
+#                     address is unavailable to an unprivileged Docker Desktop,
+#                     and the gate must run on the machine an author uses. That
+#                     variable is exactly the way the shipped default could be
+#                     lost, so it is read back here.
+#   3. TLS through the proxy  `GET /readyz` answers `{"ready":true` over HTTPS,
 #                     validated against the root certificate exported from the
 #                     caddy container, with `--resolve` so no DNS anywhere is
 #                     involved. This is the README's own path: export the root,
 #                     trust it, connect by name.
-#   3. origin bytes   that answer carries the server's own `X-Obsync-Seq` and
+#   4. origin bytes   that answer carries the server's own `X-Obsync-Seq` and
 #                     the proxy's `Via`, so the 200 is obsync's and not
 #                     Caddy's. A terminator that answered by itself would pass
-#                     property 2 and fail here.
-#   4. proxied only   the obsync container publishes NO port: its
+#                     property 3 and fail here.
+#   5. proxied only   the obsync container publishes NO port: its
 #                     `HostConfig.PortBindings` is empty and `docker port`
 #                     prints nothing, while `8080/tcp` is exposed and bound to
-#                     nothing. The request in property 2 therefore reached the
+#                     nothing. The request in property 3 therefore reached the
 #                     server across the compose network and no other way.
-#   5. bound where    the caddy container's `HostConfig.PortBindings` holds
+#   6. bound where    the caddy container's `HostConfig.PortBindings` holds
 #      we chose       exactly `80/tcp` and `443/tcp`, and the `HostIp` on
 #                     BOTH is the address this run selected. A bare or
 #                     `0.0.0.0` host address is refused BY PORT: that is the
@@ -42,14 +51,14 @@
 #                     publishes this deployment on every interface, and
 #                     property 1 alone cannot see it because a deployer may
 #                     still answer `0.0.0.0`.
-#   6. trusted range  the server's `OBSYNC_TRUSTED_PROXY_CIDRS` equals the
+#   7. trusted range  the server's `OBSYNC_TRUSTED_PROXY_CIDRS` equals the
 #                     subnet DOCKER actually allocated for this network, and
 #                     the caddy container's address on it falls inside that
 #                     range -- so the forwarded address the server accepts
 #                     comes from the proxy and from nothing else. This is what
 #                     `0.0.0.0/0` in that variable would silently destroy, and
 #                     a stale CIDR in the compose file fails here.
-#   7. the server saw it  obsync's OWN log carries the `event=request
+#   8. the server saw it  obsync's OWN log carries the `event=request
 #                     path_class=/readyz status=200` line for that request.
 #                     RESIDUAL, stated rather than overclaimed: this server
 #                     does not log the client address (`api/mod.rs::emit`), so
@@ -57,10 +66,10 @@
 #                     unit tests in `crates/obsyncd/src/api/edge.rs` and what
 #                     is proven here is that the request arrived, through the
 #                     proxy, from inside the trusted range.
-#   8. setup token    the documented `docker cp … | tar -xO` reads 64 lowercase
+#   9. setup token    the documented `docker cp … | tar -xO` reads 64 lowercase
 #                     hex from the compose-managed container, so the credential
 #                     the first device needs is reachable on this path too.
-#   9. hardening      both containers ran with the security context the compose
+#  10. hardening      both containers ran with the security context the compose
 #                     file declares, read back from Docker's record rather than
 #                     from the file: obsync read-only, no capabilities, no new
 #                     privileges, uid 65532; caddy read-only, no new
@@ -70,7 +79,7 @@
 #
 # The three steps that carry the deployment between those -- the preflight,
 # the terminator pull and `compose up` -- log and time themselves the same way,
-# so the numbers in the output run 1 to 12 and every one of them names its own
+# so the numbers in the output run 1 to 13 and every one of them names its own
 # decision.
 #
 # It BUILDS NOTHING. The obsync image reference is the argument, so `make
@@ -79,9 +88,11 @@
 # compose file itself, retried three times with backoff because a Docker Hub
 # hiccup on a runner must read as a pull failure and never as a product defect.
 #
-# Requires: docker (with the compose plugin), curl, tar, awk. Ports 80 and 443
-# on the host's loopback address, which is what the deployment itself needs on
-# whichever address it is told to publish.
+# Requires: docker (with the compose plugin), curl, tar, awk, and the two
+# unprivileged host ports below on loopback. It needs NO privileged port: the
+# deployment's own defaults are 80 and 443 and property 2 reads them back, but
+# publishing them on one chosen address is a capability an unprivileged Docker
+# Desktop does not have, and a gate an author cannot run is not a gate.
 set -euo pipefail
 
 usage() {
@@ -107,6 +118,15 @@ readonly TOKEN_PATH='/data/journal/v1/setup-token'
 # because a test ran. The deployment's own value is the deployer's choice; that
 # it is a CHOICE at all is what properties 1 and 5 below assert.
 readonly BIND_ADDRESS='127.0.0.1'
+# The HOST ports this run publishes on. High, so no privileged bind is needed
+# anywhere; the CONTAINER ports stay 80 and 443, which is what every assertion
+# below reads, and property 2 proves the file still DEFAULTS to 80 and 443.
+readonly HTTP_PORT=18080
+readonly HTTPS_PORT=18443
+# A documentation address (RFC 5737), used once to render the file's defaults:
+# different from the address this run publishes on, so the render is shown to
+# follow the variable rather than to agree with it by accident.
+readonly PROBE_ADDRESS='203.0.113.9'
 # Requirement 12: every wait names the budget it is measured against.
 readonly READY_BUDGET_SECONDS=120
 readonly PULL_ATTEMPTS=3
@@ -159,11 +179,14 @@ trap cleanup EXIT
 export OBSYNC_IMAGE="${image}"
 export OBSYNC_HOST="${HOST}"
 export OBSYNC_BIND_ADDRESS="${BIND_ADDRESS}"
+export OBSYNC_HTTP_PORT="${HTTP_PORT}"
+export OBSYNC_HTTPS_PORT="${HTTPS_PORT}"
 export OBSYNC_BLOBS_CAPACITY="${BLOBS_CAPACITY}"
 export OBSYNC_JOURNAL_CAPACITY="${JOURNAL_CAPACITY}"
 
-printf 'compose-smoke: START image=%s host=%s bind=%s project=%s ready_budget=%ds\n' \
-  "${image}" "${HOST}" "${BIND_ADDRESS}" "${project}" "${READY_BUDGET_SECONDS}"
+printf 'compose-smoke: START image=%s host=%s bind=%s:%d,%d project=%s ready_budget=%ds\n' \
+  "${image}" "${HOST}" "${BIND_ADDRESS}" "${HTTP_PORT}" "${HTTPS_PORT}" \
+  "${project}" "${READY_BUDGET_SECONDS}"
 
 [ -f "${COMPOSE_FILE}" ] || deny "no compose file at ${COMPOSE_FILE}"
 docker compose version >/dev/null 2>&1 \
@@ -174,12 +197,12 @@ docker image inspect "${image}" >/dev/null 2>&1 \
 # A privileged port already in use would surface as an opaque compose failure
 # ("port is already allocated") halfway through. Say it here instead, before
 # anything is created. bash's own /dev/tcp is used so no netcat is required.
-for port in 80 443; do
+for port in "${HTTP_PORT}" "${HTTPS_PORT}"; do
   if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
-    deny "something is already listening on 127.0.0.1:${port}; the deployment needs both 80 and 443"
+    deny "something is already listening on 127.0.0.1:${port}; this run publishes ${HTTP_PORT} and ${HTTPS_PORT}"
   fi
 done
-prove 'preflight: the compose file, the docker compose plugin, the image, and ports 80 and 443'
+prove "preflight: the compose file, the docker compose plugin, the image, and ports ${HTTP_PORT} and ${HTTPS_PORT}"
 
 # (1) The bind address is REQUIRED, and the message the deployer is refused
 # with comes out of the compose file itself, so this step and the deployment
@@ -201,6 +224,31 @@ fi
 grep -qF -- "${bind_message}" "${scratch}/unbound.log" \
   || deny "compose refused without OBSYNC_BIND_ADDRESS but not with the compose file's own message: $(tr '\n' ' ' < "${scratch}/unbound.log")"
 prove "bind address: both mappings require OBSYNC_BIND_ADDRESS and compose refuses without it -- ${bind_message}"
+
+# (2) The DEFAULTS a deployer who sets nothing but the bind address gets. Read
+# out of the rendered model rather than the text, so this is the effective
+# value and not a hopeful grep, and rendered with the two port variables
+# REMOVED from the environment so the run's own 18080/18443 cannot answer for
+# them. The awk collapses the ports block into `target->published@host_ip`
+# pairs in the order the file lists them.
+rendered_defaults="$(env -u OBSYNC_HTTP_PORT -u OBSYNC_HTTPS_PORT \
+  OBSYNC_BIND_ADDRESS="${PROBE_ADDRESS}" \
+  docker compose --project-name "${project}" --file "${COMPOSE_FILE}" config 2>/dev/null \
+  | awk '
+      /^    ports:$/ { in_ports = 1; next }
+      in_ports && /^    [a-z_]+:/ { in_ports = 0 }
+      in_ports && $1 == "target:" { target = $2 }
+      in_ports && $1 == "host_ip:" { ip = $2 }
+      in_ports && $1 == "published:" {
+        gsub(/"/, "", $2)
+        printf "%s%s->%s@%s", separator, target, $2, ip
+        separator = " "
+      }
+    ')"
+readonly SHIPPED_DEFAULTS="80->80@${PROBE_ADDRESS} 443->443@${PROBE_ADDRESS}"
+[ "${rendered_defaults}" = "${SHIPPED_DEFAULTS}" ] \
+  || deny "with only a bind address supplied this file publishes ${rendered_defaults:-nothing}, not ${SHIPPED_DEFAULTS}"
+prove "published defaults: ${rendered_defaults}"
 
 # The Caddy digest comes from the COMPOSE FILE, so this pull and the deployment
 # can never fetch two different things, and a tag reintroduced there is a
@@ -237,7 +285,7 @@ compose up --detach >"${scratch}/up.log" 2>&1 || {
   # deployment deliberately no longer uses. Name that, because the daemon's own
   # sentence reads like an obsync defect and is not one.
   if grep -qF 'not allowed as current user' "${scratch}/up.log"; then
-    deny "this Docker will not publish a privileged port on a specific host address as the current user, and the deployment publishes ${BIND_ADDRESS}:80 and ${BIND_ADDRESS}:443 on purpose. On Docker Desktop that is Settings > Advanced > Enable privileged port mapping; it is a host capability and not an obsync failure"
+    deny "this Docker will not publish ${BIND_ADDRESS}:${HTTP_PORT} or ${BIND_ADDRESS}:${HTTPS_PORT} as the current user. A privileged host port bound to a SPECIFIC address needs Docker Desktop's Settings > Advanced > Enable privileged port mapping; this run publishes an unprivileged pair for that reason, so something else on this host is the likelier cause. It is a host capability and not an obsync failure"
   fi
   deny 'docker compose up failed'
 }
@@ -247,7 +295,7 @@ caddy_container="$(compose ps --quiet caddy)"
 [ -n "${caddy_container}" ] || deny 'compose created no caddy container'
 prove "up: project ${project} created both services"
 
-# (2) TLS through the proxy, within the stated budget. The root certificate is
+# (3) TLS through the proxy, within the stated budget. The root certificate is
 # exported the same way the README tells a deployer to export it, which is also
 # the first thing that can only work once Caddy has generated its authority.
 root_certificate="${scratch}/root.crt"
@@ -265,9 +313,9 @@ for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
   if [ -s "${root_certificate}" ]; then
     body="$(curl --silent --show-error --max-time 3 \
       --cacert "${root_certificate}" \
-      --resolve "${HOST}:443:127.0.0.1" \
+      --resolve "${HOST}:${HTTPS_PORT}:127.0.0.1" \
       --dump-header "${scratch}/headers.txt" \
-      "https://${HOST}/readyz" 2>/dev/null || true)"
+      "https://${HOST}:${HTTPS_PORT}/readyz" 2>/dev/null || true)"
     case "${body}" in
       '{"ready":true'*)
         ready="${body}"
@@ -278,10 +326,10 @@ for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
   sleep 1
 done
 [ -n "${ready}" ] \
-  || deny "no {\"ready\":true from https://${HOST}/readyz through the proxy within ${READY_BUDGET_SECONDS}s"
-prove "TLS through the proxy: https://${HOST}/readyz answered ${ready} against the exported root"
+  || deny "no {\"ready\":true from https://${HOST}:${HTTPS_PORT}/readyz through the proxy within ${READY_BUDGET_SECONDS}s"
+prove "TLS through the proxy: https://${HOST}:${HTTPS_PORT}/readyz answered ${ready} against the exported root"
 
-# (3) The bytes are the origin's. Header names are lowercased for HTTP/2, so
+# (4) The bytes are the origin's. Header names are lowercased for HTTP/2, so
 # the comparison is made on a lowercased copy.
 [ -s "${scratch}/headers.txt" ] || deny 'the proxied response carried no headers to read'
 headers="$(tr 'A-Z' 'a-z' < "${scratch}/headers.txt")"
@@ -295,7 +343,7 @@ case "${headers}" in
 esac
 prove 'origin bytes: the proxied 200 carries obsync X-Obsync-Seq and the proxy Via'
 
-# (4) The origin publishes nothing. Read from Docker's record, so a `ports:`
+# (5) The origin publishes nothing. Read from Docker's record, so a `ports:`
 # entry added to the obsync service fails here rather than in someone's audit.
 bindings="$(docker container inspect --format '{{.HostConfig.PortBindings}}' "${obsync_container}")"
 [ "${bindings}" = 'map[]' ] \
@@ -308,9 +356,10 @@ exposed="$(docker container inspect --format '{{.NetworkSettings.Ports}}' "${obs
   || deny "the obsync container's port map is ${exposed}, not 8080/tcp bound to nothing"
 prove 'proxied only: the obsync container publishes no port; 8080/tcp is exposed and bound to nothing'
 
-# (5) The terminator is published where this run said, and nowhere else. Read
+# (6) The terminator is published where this run said, and nowhere else. Read
 # from Docker's own record: this is the fact `docker compose config` cannot
-# report and a `0.0.0.0` answer to property 1 would sail past.
+# report and a `0.0.0.0` answer to property 1 would sail past. The keys are
+# CONTAINER ports, so they are 80 and 443 whatever host ports this run chose.
 # `awk NF` drops the empty line docker's own trailing newline leaves behind,
 # and `sort` makes the comparison independent of map order.
 caddy_ports="$(docker container inspect \
@@ -339,7 +388,7 @@ for port in 80 443; do
 done
 prove "bound where we chose: caddy publishes 80/tcp and 443/tcp on ${BIND_ADDRESS} and on no other address"
 
-# (6) The trusted range is this network's range, and the proxy is inside it.
+# (7) The trusted range is this network's range, and the proxy is inside it.
 network="$(docker container inspect \
   --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' \
   "${obsync_container}")"
@@ -366,7 +415,7 @@ awk -v ip="${proxy_address}" -v cidr="${trusted}" 'BEGIN {
 }' || deny "the proxy address ${proxy_address} is outside the trusted range ${trusted}"
 prove "trusted range: ${trusted} is the allocated subnet of ${network} and holds the proxy at ${proxy_address}"
 
-# (7) The server's own account of the request that arrived through the proxy.
+# (8) The server's own account of the request that arrived through the proxy.
 request_line="$(docker logs "${obsync_container}" 2>&1 \
   | grep -F 'event=request' | grep -F 'path_class=/readyz' | grep -F 'status=200' \
   | tail -n 1 || true)"
@@ -374,7 +423,7 @@ request_line="$(docker logs "${obsync_container}" 2>&1 \
   || deny 'the obsync log carries no served /readyz request; the proxied 200 did not come from this server'
 prove "the server saw it: ${request_line}"
 
-# (8) The setup token, read the documented way from the compose-managed
+# (9) The setup token, read the documented way from the compose-managed
 # container: no helper image, no network, no write access to the journal.
 hex='^[0-9a-f]{64}$'
 token="$(docker cp "${obsync_container}:${TOKEN_PATH}" - | tar -xO | tr -d '[:space:]')" \
@@ -383,7 +432,7 @@ printf '%s' "${token}" | grep -Eq "${hex}" \
   || deny "the setup token is not 64 lowercase hex characters (${#token} characters read)"
 prove "setup token: ${TOKEN_PATH} read from the compose container is 64 lowercase hex characters"
 
-# (9) The security context both containers actually ran with.
+# (10) The security context both containers actually ran with.
 obsync_hardening="$(docker container inspect --format \
   'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} capadd={{.HostConfig.CapAdd}} secopt={{.HostConfig.SecurityOpt}} user={{.Config.User}}' \
   "${obsync_container}")"
