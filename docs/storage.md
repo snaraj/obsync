@@ -47,7 +47,7 @@ code change.
 
 ## Journal frames
 
-`account`, `device` (create, update, revoke, wrap), `version`, `domain`,
+`account`, `device` (create, update, activate, revoke, delete, wrap), `version`, `domain`,
 `escrow`, `gc` (a list of sids collected), `scrub` (a summary), `seen`
 (device sign-in and edit events, retention-bounded). Pairings live in
 memory only. Frames carry `account_id`.
