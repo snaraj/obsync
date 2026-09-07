@@ -405,6 +405,50 @@ fn typed_mode_check_flags_a_mutated_fixture() {
     );
 }
 
+/// The two credential files are reached only through `Posture`: opened on a
+/// handle, measured on it, read or written and read back through it. The two
+/// files that use them therefore hold no filesystem call by name outside
+/// their tests, so a re-read by name cannot creep back in beside the measured
+/// one (`docs/storage.md`, "Volume posture", step 5).
+#[test]
+fn credentials_are_reached_only_through_a_measured_handle() {
+    let root = repo_root();
+    for file in [
+        "crates/obsyncd/src/cli/serve.rs",
+        "crates/obsyncd/src/storage/mod.rs",
+    ] {
+        let text = read(&root.join(file));
+        let source = text.split("#[cfg(test)]").next().unwrap_or_default();
+        for call in BY_NAME {
+            assert!(
+                !source.contains(call),
+                "{file} reaches the filesystem by name with `{call}`; go through Posture"
+            );
+        }
+    }
+}
+
+/// Filesystem calls that take a name and decide nothing about what it is.
+const BY_NAME: [&str; 6] = [
+    "fs::read_to_string(",
+    "fs::read(",
+    "fs::write(",
+    "fs::metadata(",
+    "fs::symlink_metadata(",
+    "OpenOptions::new()",
+];
+
+#[test]
+fn by_name_check_flags_a_mutated_fixture() {
+    let planted = format!("let text = std::fs::read_to_{}(&path)?;", "string");
+    assert!(BY_NAME.iter().any(|call| planted.contains(call)));
+    assert!(
+        !BY_NAME
+            .iter()
+            .any(|call| "posture.open_credential(class, &path, log)?".contains(call))
+    );
+}
+
 #[test]
 fn no_field_is_named_or_shaped_like_a_key_or_a_path() {
     let root = repo_root();

@@ -1315,8 +1315,9 @@ fn every_measured_file_is_owned_by_the_user_this_process_runs_as() {
 }
 
 /// Defence in depth: the pass runs at the top of a start, and the function
-/// that actually reads the wrapping material measures it again, so a volume
-/// that changes underneath the start is caught where it is used.
+/// that actually reads the wrapping material measures it again, on the
+/// handle it then reads through, so a volume that changes underneath the
+/// start is caught where it is used.
 #[test]
 fn the_wrapping_material_is_measured_where_it_is_read_not_only_where_the_pass_looked() {
     let dir = TempDir::new("posture-toctou");
@@ -1342,31 +1343,6 @@ fn the_wrapping_material_is_measured_where_it_is_read_not_only_where_the_pass_lo
             .contains("event=server_key source=volume mode=0600"),
         "{}",
         log.captured()
-    );
-}
-
-#[test]
-fn a_credential_file_that_is_not_there_after_it_was_written_refuses() {
-    let dir = TempDir::new("posture-vanished");
-    let cfg = config(&dir);
-    let log = Log::buffered(LogLevel::Debug);
-    let posture = Posture::enforce(&cfg, &log).expect("an empty volume is created correctly");
-    let err = posture
-        .verify_present(
-            PathClass::SetupToken,
-            &PathClass::SetupToken.path(&cfg.journal_dir),
-            &log,
-        )
-        .expect_err("a credential file that vanished is not one to carry on from");
-    assert!(
-        matches!(
-            err,
-            StoreError::Posture {
-                reason: "absent_after_write",
-                ..
-            }
-        ),
-        "{err}"
     );
 }
 

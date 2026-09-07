@@ -7,12 +7,12 @@
 #![forbid(unsafe_code)]
 
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant};
 
+use obsync_core::hex;
 use obsync_core::http::{Limits, Server};
 
 use crate::api::{self, App};
@@ -304,11 +304,14 @@ fn nap(app: &Arc<App>, total: Duration) {
 /// restarts: `docs/architecture.md` 4.5 makes it the dashboard's recovery
 /// login as well as the first-boot credential. Because it stands until it is
 /// used, a restored or bind-mounted volume that hands it over widely is a
-/// standing way in; the posture pass has already refused a link, a wrong
-/// type, or a foreign owner here and corrected a mode, so nothing below is
-/// read or written through a location whose posture is unknown.
+/// standing way in. The file is opened on a measured handle — a link, a
+/// wrong type, a foreign owner, or an inode shared with the server key is
+/// refused there, and a mode is corrected there — and it is read, or
+/// written and read back, through that same handle: whoever can rename the
+/// journal root aside after the measurement changes what the name says, not
+/// what this handle is.
 ///
-/// The mode on the line is read back off the volume after the token is in
+/// The mode on the line is read back off the handle after the token is in
 /// place, so the line cannot claim a protection the file does not have.
 ///
 /// The line says where the token is, never what it is. Not even a prefix
@@ -321,19 +324,29 @@ fn setup_token(
     posture: &Posture,
     log: &Log,
 ) -> Result<Option<String>, StoreError> {
-    let file = PathClass::SetupToken.path(&cfg.journal_dir);
-    let existing = std::fs::read_to_string(&file)
-        .ok()
-        .map(|v| v.trim().to_string());
-    let token = match existing {
-        Some(v) if v.len() == TOKEN_HEX_LEN => v,
-        _ => {
+    let path = PathClass::SetupToken.path(&cfg.journal_dir);
+    let (token, mode) = match posture.open_credential(PathClass::SetupToken, &path, log)? {
+        Some(mut standing) => {
+            let text = standing.read_to_string()?;
+            let token = text.trim();
+            // A token file that is not a token is not a first boot. It is
+            // named to the operator and overwritten by nobody: whatever
+            // stands under this name is left exactly as it was found.
+            hex::decode_array::<32>(token).map_err(|_| {
+                StoreError::Corrupt("the stored setup token is not 64 hex characters".to_string())
+            })?;
+            (token.to_string(), standing.mode())
+        }
+        None => {
             let minted = rand::hex_token(32)?;
-            write_private(&file, &minted)?;
-            minted
+            let mut file = Posture::create(PathClass::SetupToken, &path)?;
+            file.write_all(minted.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            let written = posture.adopt(PathClass::SetupToken, file, log)?;
+            (minted, written.mode())
         }
     };
-    let mode = posture.verify_present(PathClass::SetupToken, &file, log)?;
     log.info(
         "setup_token_ready",
         &[
@@ -352,27 +365,12 @@ fn setup_token(
     Ok(Some(token))
 }
 
-/// Write a credential file readable only by the server's own user.
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut f = options.open(path)?;
-    f.write_all(contents.as_bytes())?;
-    f.write_all(b"\n")?;
-    f.sync_all()?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use crate::cli::testutil::config;
     use crate::log::LogLevel;
@@ -465,6 +463,34 @@ mod tests {
             !again.captured().contains("decision=repaired"),
             "{}",
             again.captured()
+        );
+    }
+
+    #[test]
+    fn a_token_file_that_is_not_a_token_is_refused_and_left_exactly_as_found() {
+        let dir = TempDir::new("serve-token-junk");
+        let cfg = config(&dir);
+        // Whatever stands under the name — a hard link to another of this
+        // server's files, a half-written restore — is not a first boot.
+        let file = PathClass::SetupToken.path(&cfg.journal_dir);
+        fs::create_dir_all(PathClass::JournalRoot.path(&cfg.journal_dir)).expect("journal root");
+        fs::write(&file, "not a token\n").expect("junk under the name");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).expect("0600");
+
+        let log = Log::buffered(LogLevel::Debug);
+        let (posture, store) = start(&cfg, &log);
+        let err = setup_token(&cfg, &store, &posture, &log)
+            .expect_err("a token file that is not a token is not minted over");
+        assert!(matches!(err, StoreError::Corrupt(_)), "{err}");
+        assert_eq!(
+            fs::read_to_string(&file).expect("still there"),
+            "not a token\n",
+            "nothing is written through a name that holds something else"
+        );
+        assert!(
+            !log.captured().contains("setup_token_ready"),
+            "{}",
+            log.captured()
         );
     }
 

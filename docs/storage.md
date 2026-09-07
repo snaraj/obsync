@@ -45,24 +45,47 @@ credential.
 
 `serve`, `check`, and `export` therefore run one pass over four classes —
 `blobs_root` (the primary and each mirror), `journal_root`, `server_key`,
-`setup_token` — before anything is read or written through them:
+`setup_token` — before anything is read or written through them. Every
+decision is made on an open handle, never on a name:
 
-1. **Type.** Read with `symlink_metadata`, so a link is seen rather than
-   followed. A link, a directory where a file belongs, or a file where a root
-   belongs refuses the start.
-2. **Owner.** The file's user must be the user the process runs as, learned
-   from a file the process creates on the journal volume and then removes.
-   The process cannot `chown`, and whoever does own a file can widen it again,
-   so a foreign owner is a refusal and never a correction.
-3. **Mode.** Roots must be exactly 0700 and credential files exactly 0600.
-   Anything else is corrected with one `chmod` and then RE-READ: a mode that
-   was set is not a mode that stuck. A correction the volume ignored, or one
-   it refused, refuses the start.
+1. **Look, open, compare.** The name is looked at once without following
+   a link (`lstat`): a link, a type the server never stores, or a foreign
+   owner is refused before anything is opened. The name is then opened
+   read-only and non-blocking (a fifo answers instead of waiting for a
+   writer), and the handle must be the inode that look saw, or the pass
+   refuses (`swapped`): whatever the name is made to say between the look
+   and the open, what the server holds is the file it looked at. The one
+   thing the look leaves standing that cannot be opened — a file of the
+   server's own user at a mode that shuts its user out — is corrected by
+   name only so that a handle can be reached at all. Every decision from
+   here on is made on that handle. No `O_NOFOLLOW` is involved: its value
+   differs between architectures, and the identity check does not.
+2. **Type.** On the handle. A directory where a file belongs, a file where
+   a root belongs, or anything the server never stores refuses the start.
+3. **Owner.** On the handle. The file's user must be the user the process
+   runs as, learned from a file the process creates on the journal volume
+   and then removes. The process cannot `chown`, and whoever does own a
+   file can widen it again, so a foreign owner is a refusal and never a
+   correction.
+4. **Mode.** On the handle. Roots must be exactly 0700 and credential files
+   exactly 0600. Anything else is corrected with one `fchmod` and then
+   RE-READ off the same handle: a mode that was set is not a mode that
+   stuck. A correction the volume ignored, or one it refused, refuses the
+   start.
+5. **Read through the handle.** `server.key` and `setup-token` are read
+   through the handle they were measured on, and a file the server has just
+   written is measured on the handle it was written through and read back
+   through it. No name is consulted again after a measurement, so whoever
+   can rename the journal root aside after the pass changes what the name
+   says and not what the server reads. Two credential classes that resolve
+   to one inode (a hard link) are refused, and a `setup-token` that does not
+   hold 64 hex characters is refused rather than minted over: a file that is
+   not a token is not a first boot.
 
 Each decision is one line — `event=posture path_class=<class>
 decision=<ok|repaired|refused> …` — and a correction states `from` and `to`
 in octal. The modes on the `server_key` and `setup_token_ready` lines are the
-modes read back off the volume, so a startup line cannot claim a protection a
+modes read back off the handle, so a startup line cannot claim a protection a
 file does not have. No line carries a filesystem location or any file content.
 
 `obsyncd check` runs the identical pass, and its policy is **repair and
@@ -80,8 +103,18 @@ The volume mount points themselves (`OBSYNC_BLOBS_DIR`, `OBSYNC_JOURNAL_DIR`)
 are the platform's to own: on the reference deployment they are mount points
 the server neither creates nor owns, and refusing their mode would refuse a
 correct deployment. They are not the control. The `v1` root inside each is
-0700 and owned by the server, which is what stops another account on the host
-from reaching anything below it.
+0700 and owned by the server, and every credential is read through a
+measured handle, which together is what stops another account on the host
+from reaching or substituting anything below. What a mount point does
+decide is who may rename `v1` away: an account that can write the journal
+mount point can make the next start look like a first boot (a fresh root, a
+fresh key, a fresh token; the renamed tree keeps its data). That is denial
+of service, not disclosure, and the server says so once per start with
+`event=mount_posture mount=journal reason=writable_by_others` when the
+journal mount point is writable by group or others without the sticky bit.
+The condition an operator holds it to: owned by root or the server's user,
+and not writable by any other account (a sticky bit satisfies this, since
+only the entry's owner may then rename it).
 
 ## Durability rules
 

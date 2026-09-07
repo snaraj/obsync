@@ -33,9 +33,8 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
@@ -1069,28 +1068,26 @@ pub fn load_or_create_server_key(
         return Ok(key);
     }
     let path = PathClass::ServerKey.path(journal_dir);
-    let source = if fs::symlink_metadata(&path).is_ok() {
-        "volume"
-    } else {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(hex::encode(&random_bytes::<32>()?).as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        File::open(PathClass::JournalRoot.path(journal_dir))?.sync_all()?;
-        "generated"
+    let (source, mut key_file) = match posture.open_credential(PathClass::ServerKey, &path, log)? {
+        Some(standing) => ("volume", standing),
+        None => {
+            let mut file = Posture::create(PathClass::ServerKey, &path)?;
+            file.write_all(hex::encode(&random_bytes::<32>()?).as_bytes())?;
+            file.sync_all()?;
+            File::open(PathClass::JournalRoot.path(journal_dir))?.sync_all()?;
+            ("generated", posture.adopt(PathClass::ServerKey, file, log)?)
+        }
     };
-    let mode = posture.verify_present(PathClass::ServerKey, &path, log)?;
-    let text = fs::read_to_string(&path)?;
+    let text = key_file.read_to_string()?;
     let key = hex::decode_array::<32>(text.trim()).map_err(|_| {
         StoreError::Corrupt("the stored server key is not 64 hex characters".to_string())
     })?;
     log.info(
         "server_key",
-        &[("source", Val::word(source)), ("mode", Val::mode(mode))],
+        &[
+            ("source", Val::word(source)),
+            ("mode", Val::mode(key_file.mode())),
+        ],
     );
     Ok(key)
 }
