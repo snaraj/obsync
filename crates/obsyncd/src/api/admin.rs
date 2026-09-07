@@ -33,13 +33,10 @@ pub const LOGIN_LINK_TTL_SECS: u64 = 300;
 /// Most log lines one `GET /v1/admin/logs` call returns
 /// (`docs/protocol.md`).
 pub const LOGS_MAX_LIMIT: u64 = 500;
-/// The escrow body's one field, which carries the domain key as hex.
-///
-/// Written in two pieces because `doctrine_test` refuses that word as a
-/// quoted literal anywhere under `crates/obsyncd/src` — a rule this endpoint
-/// is the one documented exception to (`docs/architecture.md` 5). If the
-/// protocol ever renames the field, this concatenation goes away with it.
-pub const ESCROW_FIELD: &str = concat!("k", "ey");
+/// The escrow body's one field (`docs/protocol.md`): the domain key, handed
+/// to the server deliberately, which is the single documented exception to
+/// the blind-server default (`docs/architecture.md` 5).
+pub const ESCROW_FIELD: &str = "domain_key";
 
 /// One signed-in dashboard session.
 #[derive(Clone, Debug)]
