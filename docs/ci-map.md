@@ -21,7 +21,7 @@ stop agreeing.
 | `application` | `cargo fmt --all --check` | Formatting is decided, not argued. |
 | `application` | `cargo clippy --workspace --all-targets -- -D warnings` | No lint survives, in tests as well as in the library. |
 | `application` | `cargo test --workspace` | The Rust battery, including the doctrine pins. |
-| `application` | `scripts/ci/coverage.sh` against `RUST_COVERAGE_FLOOR` | Line coverage meets the ratchet-only floor (requirement 9), measured with the pinned `llvm-tools` component and no crate. |
+| `application` | `./scripts/ci/coverage.sh` against `RUST_COVERAGE_FLOOR` | Line coverage meets the ratchet-only floor (requirement 9), measured with the pinned `llvm-tools` component and no crate. The floor is ONE fact in three places -- AGENTS.md, the Makefile, and this workflow's env -- and `test_coverage_floor.py` fails the gate if they disagree, if any of the three stops declaring it, or if the step that consumes it is removed. |
 | `application` | `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build`, `npm test` in `plugin/` | The plugin builds from its lockfile with no install hook executed, and its tests pass under `node --test`. |
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
 | `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery, and the check can still fail (it deletes a canonical command from a copy of each file and requires the comparison to refuse it). |

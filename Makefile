@@ -5,10 +5,11 @@
 # things.
 .PHONY: help check fmt lint test coverage plugin dashboard chart contracts secrets build image release-check
 
-# Requirement 9's ratchet-only floor. It is 0 until the first server PR
-# measures it; the same number lives in pr-gate.yml's workflow env, and the two
-# move together.
-RUST_COVERAGE_FLOOR ?= 0
+# Requirement 9's ratchet-only floor, set at the first measured value on the
+# composed bootstrap wave (89.80 %, 2026-09-07). The same number lives in
+# AGENTS.md and in pr-gate.yml's workflow env; the three move together, and
+# scripts/ci/test_coverage_floor.py fails the gate if they disagree.
+RUST_COVERAGE_FLOOR ?= 89
 # The base an outgoing range is measured against. Overridable so a lane working
 # from a declared predecessor branch can scan and classify its own range.
 BASE ?= origin/main

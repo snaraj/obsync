@@ -34,7 +34,7 @@ CANONICAL=(
   'cargo fmt --all --check'
   'cargo clippy --workspace --all-targets -- -D warnings'
   'cargo test --workspace'
-  'scripts/ci/coverage.sh'
+  './scripts/ci/coverage.sh'
   'npm ci --ignore-scripts --no-audit --no-fund'
   'npm run build'
   'npm test'

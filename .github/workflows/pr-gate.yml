@@ -18,12 +18,12 @@ concurrency:
 env:
   # AGENTS.md requirement 9: the ratchet-only Rust line coverage floor,
   # measured by scripts/ci/coverage.sh with the pinned llvm-tools component and
-  # no crate. It is 0 because no server code exists yet: the FIRST server PR
-  # sets it to its measured value, and afterwards the floor only rises.
-  # Lowering it weakens an enforced check and is out of policy. This number and
-  # the one AGENTS.md records are ONE fact about ONE measurement: move them
-  # together, or they become two claims that can disagree.
-  RUST_COVERAGE_FLOOR: '0'
+  # no crate. 89, set at the first measured value on the composed bootstrap
+  # wave (89.80 %, 2026-09-07). Raise it as coverage grows; lowering it weakens
+  # an enforced check and is out of policy. This number, the Makefile's, and
+  # AGENTS.md's are ONE fact about ONE measurement, and
+  # scripts/ci/test_coverage_floor.py fails the gate if the three disagree.
+  RUST_COVERAGE_FLOOR: '89'
 
 jobs:
   security:
