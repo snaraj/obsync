@@ -31,6 +31,18 @@ Two entry points, both used by `.github/workflows/release-publisher.yml`:
              statement, SLSA v1, subject exactly the index digest, bound to
              exactly one expected platform; the platform set is complete.
 
+Two facts about cosign (v3.1.3, pinned by scripts/ci/install-tools.sh) that
+this module and the workflow depend on, both proven on v0.1.2's real predicate
+with a local `cosign attest --no-upload --bundle` and never assumed again:
+`cosign attest` wraps the predicate in an in-toto Statement v0.1 (not v1), and
+the named `--type slsaprovenance1` re-serialises the predicate through cosign's
+typed SLSA struct, which DROPS `runDetails.metadata.buildkit_metadata` and
+with it the layer groups. The publisher therefore attests with the URI form,
+`--type https://slsa.dev/provenance/v1`, which embeds the predicate verbatim
+under the same predicate type; the consumer's `--type slsaprovenance1` on
+verification matches that predicate type unchanged. v0.1.2's publisher run
+refused its own attestation on both counts, which is the step doing its job.
+
 Standard library only. Refusals are `Refusal` exceptions with one sentence.
 """
 
@@ -44,7 +56,7 @@ import sys
 from pathlib import Path
 
 PAYLOAD_TYPE = "application/vnd.in-toto+json"
-STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+STATEMENT_TYPES = {"https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement/v1"}
 PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 BUILD_TYPE = "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
 INDEX_TYPES = {
@@ -162,8 +174,8 @@ def parse_statement(line: str) -> dict:
         statement = json.loads(base64.b64decode(envelope.get("payload", ""), validate=True))
     except (ValueError, TypeError) as error:
         raise Refusal(f"attestation payload is not a base64 JSON statement: {error}") from None
-    if not isinstance(statement, dict) or statement.get("_type") != STATEMENT_TYPE:
-        raise Refusal("attestation is not an in-toto v1 statement")
+    if not isinstance(statement, dict) or statement.get("_type") not in STATEMENT_TYPES:
+        raise Refusal("attestation is not an in-toto statement")
     if statement.get("predicateType") != PREDICATE_TYPE:
         raise Refusal("attestation is not SLSA v1 provenance")
     return statement

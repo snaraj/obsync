@@ -90,7 +90,7 @@ def _platform_predicate(platform: str, **kw) -> dict:
     return _predicate([(_d("stage" + platform),), _layers(platform)], **kw)
 
 
-def _statement(predicate: dict, subjects=(_d("index"),), statement_type=pc.STATEMENT_TYPE,
+def _statement(predicate: dict, subjects=(_d("index"),), statement_type="https://in-toto.io/Statement/v0.1",
                predicate_type=pc.PREDICATE_TYPE) -> dict:
     return {"_type": statement_type, "predicateType": predicate_type, "predicate": predicate,
             "subject": [{"name": IMAGE, "digest": {"sha256": s.split(":", 1)[1]}} for s in subjects]}
@@ -148,8 +148,11 @@ class VerifyTests(unittest.TestCase):
     def test_foreign_envelope_statement_and_predicate_types_are_refused(self):
         with self.assertRaisesRegex(pc.Refusal, "payload type is not in-toto"):
             _verify([_line(_statement(_platform_predicate("linux/amd64")), payload_type="application/json")])
-        with self.assertRaisesRegex(pc.Refusal, "not an in-toto v1 statement"):
-            _verify([_line(_statement(_platform_predicate("linux/amd64"), statement_type="https://in-toto.io/Statement/v0.1"))])
+        with self.assertRaisesRegex(pc.Refusal, "not an in-toto statement"):
+            _verify([_line(_statement(_platform_predicate("linux/amd64"), statement_type="https://in-toto.io/Statement/v2"))])
+        # cosign v3 emits Statement v0.1 (the fixture default); v1 is accepted too.
+        v1 = [_line(_statement(_platform_predicate(p), statement_type="https://in-toto.io/Statement/v1")) for p in PLATFORMS]
+        self.assertEqual(_verify(v1), {"linux/amd64": 1, "linux/arm64": 2})
         with self.assertRaisesRegex(pc.Refusal, "not SLSA v1 provenance"):
             _verify([_line(_statement(_platform_predicate("linux/amd64"), predicate_type="https://slsa.dev/provenance/v0.2"))])
 
@@ -293,7 +296,11 @@ class PublisherWiringTests(unittest.TestCase):
         for flag in ('--builder "${run_url}"', '--platform "${platform}"', '--file "${predicate}"',
                      '--index "${index}"', '--manifests "${manifests}"'):
             self.assertIn(flag, script)
-        self.assertIn('cosign attest --yes --new-bundle-format --type slsaprovenance1 --predicate "${predicate}" "${IMAGE}@${DIGEST}"', script)
+        # The URI form: the named `slsaprovenance1` type makes cosign re-serialise
+        # the predicate through its typed struct and drop BuildKit's layer
+        # metadata, which is the platform binding. Proven on v0.1.2's predicate.
+        self.assertIn('cosign attest --yes --new-bundle-format --type https://slsa.dev/provenance/v1 --predicate "${predicate}" "${IMAGE}@${DIGEST}"', script)
+        self.assertNotIn("attest --yes --new-bundle-format --type slsaprovenance1", script)
         self.assertLess(script.index("provenance_contract.py predicate"), script.index("cosign attest"))
 
     def test_the_platform_loops_match_the_build(self):
@@ -441,7 +448,7 @@ class PublisherStepExecutionTests(unittest.TestCase):
             attests = self._calls(env, "cosign attest")
             self.assertEqual(len(attests), 2)
             for line in attests:
-                self.assertIn(f"--type slsaprovenance1 --predicate {env['RUNNER_TEMP']}/provenance-linux-", line)
+                self.assertIn(f"--type https://slsa.dev/provenance/v1 --predicate {env['RUNNER_TEMP']}/provenance-linux-", line)
                 self.assertTrue(line.endswith(f"{IMAGE}@{INDEX_DIGEST}"))
 
     def test_the_attest_step_stops_before_cosign_when_a_predicate_is_refused(self):
