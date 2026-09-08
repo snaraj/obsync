@@ -465,7 +465,13 @@ Each version append is checked against the file's current heads: if the
 posted `parents` equal the current heads, the version becomes the sole
 head; otherwise it becomes an additional head and the file is marked
 `conflicted`. The server never resolves conflicts; it preserves every head
-and lets devices resolve.
+and lets devices resolve. It holds at most 64 heads per file, the same
+number of parents one version may declare, so the file a device is asked to
+resolve is always resolvable by one merge naming every head; the version
+that would leave a 65th is refused with `409 too_many_heads` and nothing
+already stored changes. Replay applies whatever the journal holds: the
+ceiling is a decision taken where a version is accepted, not a rule
+re-applied to history.
 
 The **change feed** is the journal's version and tombstone frames, in
 sequence order, exposed by `GET /v1/changes?since=<seq>&wait=<s>`.

@@ -20,6 +20,16 @@ use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, Vers
 /// this bounds memory when a device heartbeats far more often than expected.
 pub(crate) const SEEN_HISTORY: usize = 256;
 
+/// Most heads one file may hold.
+///
+/// Equal to the parents one version may declare
+/// (`api::files::VERSION_MAX_PARENTS`), so no conflict a file can reach is
+/// beyond one merge naming every head; a smaller number here would leave a
+/// file that only a chain of partial merges could resolve. Heads also ride in
+/// every file record and every change entry, so this is what bounds the head
+/// list a response carries (`docs/protocol.md`, "Limits and headers").
+pub const FILE_MAX_HEADS: usize = 64;
+
 /// A device, its wrapped secret, and its recent activity.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceEntry {
@@ -230,6 +240,27 @@ impl Index {
         self.feed
             .push((version.seq, version.file_id, version.version_id));
         entry.versions.push(version);
+    }
+
+    /// How many heads this file would hold if a version naming `parents`
+    /// were applied.
+    ///
+    /// The same arithmetic [`Index::apply_version`] performs: a version
+    /// replaces the heads it names and becomes one itself, so the answer is
+    /// the heads it does not name, plus itself. The store asks before it
+    /// writes the frame; replay never does, because the journal is the
+    /// source of truth and a frame it already holds is not a decision to
+    /// take again (`docs/architecture.md` 6.1).
+    pub(crate) fn heads_after(&self, file_id: &FileId, parents: &[VersionId]) -> usize {
+        let kept = match self.files.get(file_id) {
+            Some(entry) => entry
+                .heads
+                .iter()
+                .filter(|head| !parents.contains(head))
+                .count(),
+            None => 0,
+        };
+        kept + 1
     }
 
     /// Drop one version, and the file when its last version goes.

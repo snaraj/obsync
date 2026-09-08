@@ -52,6 +52,7 @@ use self::blobs::Blobs;
 use self::index::Index;
 use self::journal::{Frame, Journal, Record};
 
+pub use self::index::FILE_MAX_HEADS;
 pub use self::posture::{Decision, Outcome, PathClass, Posture};
 pub use self::types::{
     AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DeviceState,
@@ -385,6 +386,18 @@ impl Store {
             .collect();
         if !missing.is_empty() {
             return Err(StoreError::MissingChunks(missing));
+        }
+        // A version becomes a head, and every head rides in every response
+        // that names the file. The ceiling is decided here, in the function
+        // that would otherwise write the frame, so nothing already stored
+        // moves when it is reached: the refusal is the whole effect
+        // (`docs/protocol.md`, "Limits and headers").
+        let heads = index.heads_after(&v.file_id, &v.parents);
+        if heads > FILE_MAX_HEADS {
+            return Err(StoreError::TooManyHeads {
+                heads,
+                max: FILE_MAX_HEADS,
+            });
         }
         let now = UnixMs::now();
         let file_id = v.file_id;
@@ -1029,6 +1042,10 @@ fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
             ("actual", Val::bytes(*actual)),
         ],
         StoreError::MissingChunks(sids) => vec![("missing", Val::count(sids.len() as u64))],
+        StoreError::TooManyHeads { heads, max } => vec![
+            ("heads", Val::count(*heads as u64)),
+            ("max", Val::count(*max as u64)),
+        ],
         StoreError::SeqAhead { requested, head } => vec![
             ("requested", Val::seq(*requested)),
             ("head", Val::seq(*head)),

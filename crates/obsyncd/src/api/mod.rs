@@ -176,6 +176,14 @@ impl From<StoreError> for ApiError {
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")
             }
+            // The heads are already in the client's hands: every response
+            // that named this file carried them, so the way out is a merge
+            // naming them, not a retry.
+            StoreError::TooManyHeads { .. } => ApiError::new(
+                409,
+                code,
+                "the file holds every head one merge may name; merge them first",
+            ),
             StoreError::UnknownFile => ApiError::new(404, code, "no such file"),
             StoreError::UnknownDomain => ApiError::new(404, code, "no such domain"),
             StoreError::DomainMismatch { .. } => ApiError::new(

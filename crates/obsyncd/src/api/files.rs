@@ -25,7 +25,9 @@ pub const MANIFEST_CT_MAX: usize = 1024 * 1024;
 /// Most chunks one version may reference.
 pub const VERSION_MAX_SIDS: usize = 65_536;
 
-/// Most parents one version may declare.
+/// Most parents one version may declare. The ceiling on a file's heads
+/// (`storage::FILE_MAX_HEADS`) is the same number, and the test below pins
+/// it there.
 pub const VERSION_MAX_PARENTS: usize = 64;
 
 /// `POST /v1/files/{file_id}/versions`.
@@ -190,4 +192,19 @@ pub fn page(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respons
             ("next", next),
         ]),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::FILE_MAX_HEADS;
+
+    #[test]
+    fn one_merge_can_always_name_every_head_a_file_may_hold() {
+        // The two ceilings are one decision written twice. If a file could
+        // hold more heads than a version may declare parents, a conflicted
+        // file would need a chain of partial merges to converge, and the
+        // store would refuse the very version that was trying to resolve it.
+        assert_eq!(FILE_MAX_HEADS, VERSION_MAX_PARENTS);
+    }
 }

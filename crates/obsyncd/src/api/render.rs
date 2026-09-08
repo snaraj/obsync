@@ -443,4 +443,99 @@ mod tests {
         assert!(field_hex_array(&v, "sids", 64, 2).is_err());
         assert_eq!(field_hex_array(&v, "sids", 64, 8).expect("ok").len(), 3);
     }
+
+    /// The response bound `docs/protocol.md` states under "Limits and
+    /// headers", measured on the rendering rather than argued from it.
+    ///
+    /// Every ceiling below is a number in that document. The head list is the
+    /// part `FILE_MAX_HEADS` bounds; the rest of a record is bounded by the
+    /// per-version ceilings, and this is where a change to any of them stops
+    /// being invisible.
+    #[test]
+    fn a_head_list_a_version_and_a_full_page_stay_under_the_documented_ceilings() {
+        use crate::api::CHANGES_MAX_LIMIT;
+        use crate::api::files::{MANIFEST_CT_MAX, VERSION_MAX_SIDS};
+        use crate::config::Config;
+        use crate::storage::FILE_MAX_HEADS;
+
+        const HEADS_CEILING: usize = 8 * 1024;
+        const VERSION_CEILING: u64 = 6 * 1024 * 1024;
+        const RECORD_CEILING: u64 = 450 * 1024 * 1024;
+        const PAGE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
+
+        let heads: Vec<VersionId> = (0..FILE_MAX_HEADS)
+            .map(|n| VersionId::new([n as u8; 32]))
+            .collect();
+        let sids: Vec<Sid> = (0..VERSION_MAX_SIDS)
+            .map(|n| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = (n >> 8) as u8;
+                bytes[1] = n as u8;
+                Sid::new(bytes)
+            })
+            .collect();
+        // The ceiling is on the base64 the wire carries, and three bytes
+        // become four characters, so this is the largest manifest a version
+        // post can get past `files::post_version`.
+        let manifest_ct = vec![0xa5u8; MANIFEST_CT_MAX / 4 * 3];
+        // Every list at its ceiling at once: the widest version the server
+        // will ever have to render.
+        let worst = VersionRecord {
+            file_id: FileId::new([0x11; 16]),
+            domain_id: DomainId::new([0x22; 16]),
+            version_id: VersionId::new([0x33; 32]),
+            parents: heads.clone(),
+            sids,
+            bytes: u64::MAX,
+            manifest_ct,
+            manifest_nonce: [0x44; 12],
+            device_id: DeviceId::new([0x55; 16]),
+            ts: UnixMs(u64::MAX),
+            deleted: false,
+            seq: Seq(u64::MAX),
+        };
+
+        let bare = FileRecord {
+            file_id: worst.file_id,
+            domain_id: worst.domain_id,
+            heads: Vec::new(),
+            conflicted: false,
+            versions: Vec::new(),
+        };
+        let conflicted = FileRecord {
+            heads: heads.clone(),
+            conflicted: true,
+            ..bare.clone()
+        };
+        let heads_bytes = file(&conflicted).to_json().len() - file(&bare).to_json().len();
+        assert!(
+            heads_bytes <= HEADS_CEILING,
+            "a full head list renders as {heads_bytes} bytes"
+        );
+
+        let version_bytes = version(&worst).to_json().len() as u64;
+        assert!(
+            version_bytes <= VERSION_CEILING,
+            "the widest version renders as {version_bytes} bytes"
+        );
+        let entry = change(&Change {
+            version: worst,
+            heads,
+            conflicted: true,
+        });
+        let change_bytes = entry.to_json().len() as u64;
+        assert!(
+            change_bytes <= VERSION_CEILING,
+            "the widest change entry renders as {change_bytes} bytes"
+        );
+
+        // A file record holds retention's versions plus one per head.
+        let versions = u64::from(Config::default().retention_versions) + FILE_MAX_HEADS as u64;
+        let record = heads_bytes as u64 + versions * version_bytes;
+        assert!(record <= RECORD_CEILING, "a file record reaches {record}");
+
+        // A page holds as many entries as the feed's own ceiling allows.
+        let page = CHANGES_MAX_LIMIT * change_bytes;
+        assert!(page <= PAGE_CEILING, "a full changes page reaches {page}");
+    }
 }

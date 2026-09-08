@@ -494,6 +494,136 @@ fn heads_follow_the_graph_and_a_repost_is_a_no_op() {
     );
 }
 
+/// A version that names no parent replaces no head, so each one adds a head:
+/// the shortest path to the ceiling, and the shape a client that keeps
+/// posting without reconciling actually produces.
+fn head(setup: &Setup, tag: &str) -> NewVersion {
+    version(setup, file(1), tag, &[], &[], false)
+}
+
+#[test]
+fn a_file_stops_at_the_heads_one_merge_can_name_and_the_refusal_moves_nothing() {
+    let dir = TempDir::new("store-head-cap");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+
+    let mut heads = Vec::new();
+    for n in 0..FILE_MAX_HEADS {
+        let v = head(&setup, &format!("head-{n}"));
+        let outcome = setup.store.append_version(v.clone()).expect("a head lands");
+        assert_eq!(outcome.heads.len(), n + 1);
+        heads.push(v.version_id);
+    }
+    // Everything the store would serve for this file, before the refusal.
+    let before = format!("{:?}", setup.store.file(&file(1)));
+
+    let over = head(&setup, "one-too-many");
+    let err = setup
+        .store
+        .append_version(over.clone())
+        .expect_err("the head past the ceiling is refused");
+    assert!(
+        matches!(
+            err,
+            StoreError::TooManyHeads { heads, max }
+                if heads == FILE_MAX_HEADS + 1 && max == FILE_MAX_HEADS
+        ),
+        "{err}"
+    );
+    assert_eq!(
+        format!("{:?}", setup.store.file(&file(1))),
+        before,
+        "the refusal moves nothing already stored"
+    );
+    assert!(
+        setup.store.version(&file(1), &over.version_id).is_none(),
+        "and stores nothing new"
+    );
+
+    // The ceiling is exactly one merge's reach, which is the point of it:
+    // the file is still resolvable by a version naming every head.
+    let merge = version(&setup, file(1), "merge", &heads, &[], false);
+    let outcome = setup
+        .store
+        .append_version(merge.clone())
+        .expect("the merge lands");
+    assert_eq!(outcome.heads, vec![merge.version_id]);
+    assert!(!outcome.conflicted);
+}
+
+#[test]
+fn a_journal_that_already_holds_more_heads_than_the_ceiling_replays_unchanged() {
+    let dir = TempDir::new("store-head-legacy");
+    let cfg = config(&dir);
+    let (account, device, planted) = {
+        let setup = ready(&cfg);
+        for n in 0..FILE_MAX_HEADS {
+            setup
+                .store
+                .append_version(head(&setup, &format!("head-{n}")))
+                .expect("a head lands");
+        }
+        // The frame a store that never had this ceiling would have written.
+        // Replay is not a decision point: the journal is the source of truth,
+        // and a frame it already holds has already happened.
+        let manifest = b"sentinel-manifest-legacy".to_vec();
+        let planted = version_id_of(&file(1), &[], &manifest, &[]);
+        let seq = setup.store.head_seq().next();
+        let record = Record {
+            seq,
+            account_id: Some(setup.account),
+            frame: Frame::Version(VersionRecord {
+                file_id: file(1),
+                domain_id: DOMAIN,
+                version_id: planted,
+                parents: Vec::new(),
+                sids: Vec::new(),
+                bytes: 1,
+                manifest_ct: manifest,
+                manifest_nonce: [1u8; 12],
+                device_id: setup.device,
+                ts: UnixMs::now(),
+                deleted: false,
+                seq,
+            }),
+        };
+        let (account, device) = (setup.account, setup.device);
+        // The store goes first: the journal has exactly one writer.
+        drop(setup);
+        let mut journal = Journal::open(&cfg.journal_dir).expect("the journal opens");
+        journal.append(&record).expect("the frame lands");
+        (account, device, planted)
+    };
+
+    let setup = Setup {
+        store: open(&cfg),
+        account,
+        device,
+    };
+    let stored = setup.store.file(&file(1)).expect("file");
+    assert_eq!(
+        stored.heads.len(),
+        FILE_MAX_HEADS + 1,
+        "replay applies every frame the journal holds"
+    );
+    assert!(stored.heads.contains(&planted), "including the planted one");
+
+    // Only what a client posts from here is refused, and it is refused
+    // against the number the journal actually left behind.
+    let err = setup
+        .store
+        .append_version(head(&setup, "after-replay"))
+        .expect_err("a further head is refused");
+    assert!(
+        matches!(
+            err,
+            StoreError::TooManyHeads { heads, max }
+                if heads == FILE_MAX_HEADS + 2 && max == FILE_MAX_HEADS
+        ),
+        "{err}"
+    );
+}
+
 #[test]
 fn the_feed_pages_and_a_cursor_past_the_head_is_refused() {
     let dir = TempDir::new("store-feed");
