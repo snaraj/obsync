@@ -405,6 +405,10 @@ pub enum StoreError {
         /// The quota.
         quota: u64,
     },
+    /// Another `obsyncd` holds the journal: a second pod on the node, or a
+    /// `check` while `serve` runs. The journal has one writer, and this
+    /// is what makes that true.
+    Locked,
     /// A version referenced chunks the server does not hold.
     MissingChunks(Vec<Sid>),
     /// The posted version id is not the server's recomputation.
@@ -501,6 +505,7 @@ impl fmt::Display for StoreError {
             StoreError::NotSetUp => f.write_str("not set up"),
             StoreError::AlreadySetUp => f.write_str("already set up"),
             StoreError::Io(e) => write!(f, "io error: {:?}", e.kind()),
+            StoreError::Locked => write!(f, "the journal is held by another obsyncd process"),
             StoreError::Posture { class, reason } => {
                 write!(f, "unsafe posture on the {class}: {reason}")
             }
@@ -540,6 +545,7 @@ impl StoreError {
             StoreError::NotSetUp => "not_set_up",
             StoreError::AlreadySetUp => "already_set_up",
             StoreError::Io(_) => "io_error",
+            StoreError::Locked => "journal_locked",
             StoreError::Posture { .. } => "unsafe_posture",
             StoreError::Corrupt(_) => "corrupt",
         }

@@ -14,7 +14,10 @@ facts in two repositories that can silently disagree.
 ReadWriteOnce, on every claim: the journal has exactly one writer and every
 acknowledged write is fsynced through it, so a mode that admitted a second
 node's pod would be describing a durability property this workload does not
-have.
+have. ReadWriteOnce excludes other nodes and nothing else; a second pod on
+the same node is excluded by the server's own lock on the journal root
+(docs/storage.md, "One writer"), and ReadWriteOncePod is not available on the
+non-CSI local class.
 */}}
 {{- $volumes := list (dict "name" "obsync-blobs" "role" "blobs" "spec" .Values.storage.blobs) (dict "name" "obsync-journal" "role" "journal" "spec" .Values.storage.journal) -}}
 {{- range .Values.storage.mirrors -}}

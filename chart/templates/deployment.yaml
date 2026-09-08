@@ -11,10 +11,13 @@ spec:
   replicas: 1
   revisionHistoryLimit: 3
   strategy:
-    {{- /* The volumes are ReadWriteOnce and the journal has exactly one
-    writer, so a surge pod could neither bind them nor be allowed to. Recreate
-    stops the old pod before the new one starts, which is the only correct
-    rollout for this workload rather than a tuning preference. */}}
+    {{- /* The journal has exactly one writer, and ReadWriteOnce does not
+    make that true: it keeps other NODES off a volume, and a surge pod on the
+    same node would mount it too. The server's own exclusive lock on the
+    journal root refuses a second process (docs/storage.md, "One writer"),
+    and Recreate stops the old pod before the new one starts so a rollout
+    never even asks. One replica and Recreate are the rendered half of that
+    boundary, not a tuning preference. */}}
     type: Recreate
   selector:
     matchLabels:

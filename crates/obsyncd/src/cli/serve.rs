@@ -453,6 +453,8 @@ mod tests {
             log.captured()
         );
         // A second start reads the same one and says nothing about repairs.
+        // The first store goes first: the journal has one writer.
+        drop(store);
         let again = Log::buffered(LogLevel::Debug);
         let (posture, store) = start(&cfg, &again);
         assert_eq!(

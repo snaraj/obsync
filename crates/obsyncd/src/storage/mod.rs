@@ -33,8 +33,9 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
@@ -88,6 +89,9 @@ pub struct Store {
     cfg: StorageConfig,
     server_key: [u8; 32],
     log: Log,
+    /// The exclusive lock on the journal, held for the life of the store.
+    /// Dropping the store releases it.
+    _lock: File,
     blobs: Blobs,
     journal: Mutex<Journal>,
     index: Mutex<Index>,
@@ -114,6 +118,7 @@ impl Store {
         _posture: &Posture,
         log: Log,
     ) -> Result<Store, StoreError> {
+        let lock = hold_journal(&cfg.journal_dir, &log)?;
         let started = log.start("store_open", cfg.journal_capacity);
         let mirror_paths: Vec<PathBuf> = cfg.mirrors.iter().map(|m| m.path.clone()).collect();
         let (blobs, leftovers) = Blobs::open(&cfg.blobs_dir, &mirror_paths)?;
@@ -158,6 +163,7 @@ impl Store {
             cfg: cfg.clone(),
             server_key,
             log,
+            _lock: lock,
             blobs,
             journal: Mutex::new(journal),
             index: Mutex::new(index),
@@ -1055,6 +1061,44 @@ fn dir_bytes(dir: &Path) -> u64 {
         }
     }
     total
+}
+
+/// The name of the lock file on the journal root.
+const LOCK_FILE: &str = "lock";
+
+/// Hold the journal for this process alone: an exclusive advisory lock on
+/// `v1/lock` of the journal volume, kept for the life of the store.
+///
+/// `ReadWriteOnce` keeps other nodes off a volume and nothing more: a
+/// second pod on the same node mounts it too, and a second server on the
+/// same journal is a second writer of frames that assume exactly one. The
+/// lock is what makes "one writer" true. A second `obsyncd` on these
+/// volumes — a second pod, or a `check` or `export` while `serve` runs —
+/// refuses to start rather than share the journal, with one line saying
+/// so. The lock goes with the process, so a crash leaves nothing to clean.
+fn hold_journal(journal_dir: &Path, log: &Log) -> Result<File, StoreError> {
+    let path = PathClass::JournalRoot.path(journal_dir).join(LOCK_FILE);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => {
+            log.error(
+                "store_open",
+                &[
+                    ("decision", Val::word("refused")),
+                    ("reason", Val::word("journal_locked")),
+                ],
+            );
+            Err(StoreError::Locked)
+        }
+        Err(TryLockError::Error(e)) => Err(e.into()),
+    }
 }
 
 /// The server key: the configured one, the one on the journal volume, or a

@@ -642,7 +642,9 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
     let wrapped = store.wrapped_secret(&id).expect("wrapped");
     assert_ne!(wrapped, secret, "the journal never holds the plain secret");
 
-    // A different server key cannot unwrap it.
+    // A different server key cannot unwrap it. The first store goes first:
+    // the journal has one writer.
+    drop(store);
     let other = open_with(&cfg, [8u8; 32], Log::buffered(LogLevel::Error));
     assert_ne!(
         other.device_secret(&id),
@@ -650,6 +652,7 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         "the secret is bound to the server key"
     );
     drop(other);
+    let store = open(&cfg);
 
     let updated = store
         .update_device(
@@ -1356,6 +1359,39 @@ fn the_wrapping_material_is_measured_where_it_is_read_not_only_where_the_pass_lo
         "{}",
         log.captured()
     );
+}
+
+/// `ReadWriteOnce` keeps other nodes off a volume; a second pod on the same
+/// node, or a `check` while `serve` runs, is a second process on the same
+/// journal. One writer is made true by the lock, not by the access mode.
+#[test]
+fn a_second_process_on_the_same_journal_refuses_to_start() {
+    let dir = TempDir::new("store-lock");
+    let cfg = config(&dir);
+    let first = open(&cfg);
+
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).expect("the pass runs beside a live store");
+    let err = match Store::open(&cfg, [7u8; 32], &posture, log.clone()) {
+        Ok(_) => panic!("the journal has one writer, and it is the first store"),
+        Err(e) => e,
+    };
+    assert!(matches!(err, StoreError::Locked), "{err}");
+    assert!(
+        log.captured()
+            .contains("event=store_open decision=refused reason=journal_locked"),
+        "{}",
+        log.captured()
+    );
+    assert!(
+        !log.captured().contains("event=store_open") || !log.captured().contains("frames="),
+        "nothing was replayed by the refused open: {}",
+        log.captured()
+    );
+
+    // The lock goes with the store that held it.
+    drop(first);
+    Store::open(&cfg, [7u8; 32], &posture, log).expect("the journal is free again");
 }
 
 /// The round-10 schedule: a protected journal holding an account, the

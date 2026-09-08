@@ -68,6 +68,8 @@ readonly TOKEN_PATH='/data/journal/v1/setup-token'
 run_id="$$-${RANDOM}"
 container="obsync-smoke-${run_id}"
 restored="${container}-restored"
+holder="${container}-holder"
+second="${container}-second"
 blobs_volume="obsync-smoke-blobs-${run_id}"
 journal_volume="obsync-smoke-journal-${run_id}"
 started_at="$(date +%s)"
@@ -99,7 +101,7 @@ deny() {
 
 cleanup() {
   local status=$?
-  docker rm --force "${container}" "${restored}" >/dev/null 2>&1 || true
+  docker rm --force "${container}" "${restored}" "${holder}" "${second}" >/dev/null 2>&1 || true
   docker volume rm --force "${blobs_volume}" "${journal_volume}" >/dev/null 2>&1 || true
   return "${status}"
 }
@@ -277,6 +279,63 @@ repaired="$(docker run --rm --user 0 \
   || deny "the restored volumes read '${repaired}' after the second start, not 700 700 600 600"
 docker stop --time 10 "${restored}" >/dev/null
 prove 'restored volume: a second start on weakened volumes repaired blobs_root, journal_root, server_key and setup_token to 700/700/600/600, logged each repair, and logged only the mode it read back'
+
+# ONE WRITER. ReadWriteOnce keeps other NODES off a volume and nothing more:
+# a second container on the same host mounts the same volumes without
+# complaint. The server's own exclusive lock on the journal root is what
+# makes "one writer" true, so a second server on these volumes must refuse to
+# start, say why, and leave the first one serving.
+docker run --detach --name "${holder}" \
+  --publish '127.0.0.1::8080' \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  --env "OBSYNC_BLOBS_CAPACITY=${BLOBS_CAPACITY}" \
+  --env "OBSYNC_JOURNAL_CAPACITY=${JOURNAL_CAPACITY}" \
+  "${image}" >/dev/null
+holder_port="$(docker port "${holder}" 8080/tcp | head -n 1)" \
+  || deny 'the first server published no port for 8080/tcp'
+ready=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  body="$(curl --silent --show-error --max-time 2 "http://${holder_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    '{"ready":true'*) ready="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${ready}" ] \
+  || deny "no {\"ready\":true from the first server within ${READY_BUDGET_SECONDS}s"
+docker run --detach --name "${second}" \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  --env "OBSYNC_BLOBS_CAPACITY=${BLOBS_CAPACITY}" \
+  --env "OBSYNC_JOURNAL_CAPACITY=${JOURNAL_CAPACITY}" \
+  "${image}" >/dev/null
+status=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  status="$(docker container inspect --format '{{.State.Status}}' "${second}" 2>/dev/null || true)"
+  [ "${status}" = exited ] && break
+  sleep 1
+done
+[ "${status}" = exited ] \
+  || deny "the second server on the same volumes is '${status:-gone}' after ${READY_BUDGET_SECONDS}s; one writer means it must refuse to start"
+second_code="$(docker container inspect --format '{{.State.ExitCode}}' "${second}")"
+[ "${second_code}" != 0 ] \
+  || deny 'the second server on the same volumes exited 0; a refusal is not a clean start'
+docker logs "${second}" 2>&1 | grep -q 'event=store_open decision=refused reason=journal_locked' \
+  || deny 'the second server did not say why it refused (event=store_open decision=refused reason=journal_locked)'
+body="$(curl --silent --show-error --max-time 2 "http://${holder_port}/readyz" 2>/dev/null || true)"
+case "${body}" in
+  '{"ready":true'*) ;;
+  *) deny "the first server stopped answering while the second was refused: '${body}'" ;;
+esac
+docker stop --time 10 "${holder}" >/dev/null
+prove 'one writer: a second container on the same volumes refused to start with reason=journal_locked, exited non-zero, and the first kept serving'
 
 printf 'image-smoke: SUMMARY image=%s properties=%d duration=%ds decision=pass\n' \
   "${image}" "${proven}" "$(( $(date +%s) - started_at ))"

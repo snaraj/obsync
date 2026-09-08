@@ -126,6 +126,25 @@ again below the roots and logs one `repaired` line per affected class per
 start: that is the pass working, not a fault. The mount point itself becomes
 writable by the server's own group, which the mount classes accept.
 
+## One writer
+
+The journal has exactly one writer, and the access mode is not what makes
+that true. `ReadWriteOnce` keeps other nodes off a volume and nothing more:
+Kubernetes lets a second pod on the same node mount it, and this is a
+single-node cluster. So `obsyncd` holds an exclusive advisory lock on
+`v1/lock` of the journal volume for the life of the store, taken before a
+byte of the journal is read: a second `obsyncd` on the same volumes — a
+second pod, a rolling surge, a `check` or `export` while `serve` runs —
+refuses to start with `event=store_open decision=refused reason=journal_locked`
+rather than share the journal. The lock goes with the process, so a crash
+leaves nothing to clean, and a stopped server frees it at once. Run `check`
+and `export` with the server stopped. The chart's `replicas: 1` and
+`strategy: Recreate` are the rendered half of the same boundary, so a rollout
+never asks for a second writer; `ReadWriteOncePod` is not available on the
+non-CSI local class and is not relied on. The image smoke's seventh property
+starts a second container on the same volumes while the first serves and
+requires the refusal.
+
 ## Durability rules
 
 1. Chunk write: stream to `tmp`, hashing; on completion `fsync(file)`,
@@ -209,8 +228,9 @@ this repository.
 
 Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/obsync-{blobs,
 journal}` on class `local-pie-ssd`, `Retain`, `WaitForFirstConsumer`,
-`ReadWriteOnce`, node-affine to the single node, claimed by `obsync-blobs`
-and `obsync-journal` in namespace `obsidian`. The claim names come from the
+`ReadWriteOnce` (which excludes other nodes; the one-writer boundary on the
+node is the server's own lock, above), node-affine to the single node,
+claimed by `obsync-blobs` and `obsync-journal` in namespace `obsidian`. The claim names come from the
 chart, which names every object for the application (`obsync`) and never for
 the namespace it happens to be installed into; `scripts/ci/chart_pins.py`
 refuses a name here that the render does not create. Growth to 500 GiB is a
