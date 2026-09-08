@@ -4,7 +4,16 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.3 - Unreleased
+## 0.1.4 - Unreleased
+
+- The chart's `deploymentReady` gates the replica count instead of only
+  annotating it. False, the shipped default, renders every object with
+  zero application replicas, so the claims can bind their volumes and the
+  TLS proxy can resolve the Service while no Pod waits on a volume or a
+  Secret that does not exist yet; true is a scale from zero to one. The
+  chart pins render both values and refuse a non-boolean.
+
+## 0.1.3 - 2026-09-08
 
 - The publisher attests with the URI form of the provenance type
   (`--type https://slsa.dev/provenance/v1`): the named `slsaprovenance1`
