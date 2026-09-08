@@ -695,6 +695,33 @@ mod tests {
     }
 
     #[test]
+    fn a_link_where_the_durable_state_belongs_refuses_the_start() {
+        let dir = volume("nonce-link");
+        let log = Log::buffered(LogLevel::Debug);
+        // The shape a restored volume can arrive in: the name pointing at
+        // another file this server may write. An append through it would put
+        // nonce lines inside that file.
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "sentinel\n").expect("the target");
+        std::os::unix::fs::symlink(&target, log_file(&dir)).expect("the link is planted");
+
+        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, &log) else {
+            panic!("a link is never followed");
+        };
+        assert_eq!(e.code(), "corrupt");
+        assert!(
+            log.captured().contains("reason=not_a_regular_file"),
+            "{}",
+            log.captured()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("still there"),
+            "sentinel\n",
+            "and nothing is written through it"
+        );
+    }
+
+    #[test]
     fn the_ceiling_still_refuses_after_a_reload() {
         let dir = volume("nonce-ceiling");
         let log = Log::buffered(LogLevel::Debug);

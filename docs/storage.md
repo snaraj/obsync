@@ -139,6 +139,10 @@ modes read back off the handle, so a startup line cannot claim a protection a
 file does not have. No line carries a filesystem location or any file content.
 
 `v1/nonces` is not one of the six classes and adds no line to the report.
+The one thing measured about it is that the name is not a link and not
+another type: a restored volume can arrive with it pointing at a file the
+server may write, and an append through it would put nonce lines inside
+that file. A start refuses one and says why.
 It holds no credential: a device id and a nonce are public request values
 that open nothing and are only ever compared, so it is server state like the
 journal segments beside it, created 0600 under the same measured 0700 root.

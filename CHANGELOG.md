@@ -24,7 +24,8 @@ advances exactly one patch (AGENTS.md, requirement 10).
   request is answered, and a start loads back what the 600 s window still
   covers. The file is rewritten once it passes twice the cache's ceiling, a
   torn final line costs only itself, and a volume that will not take the
-  record refuses the request with `503 nonce_log_unavailable`.
+  record refuses the request with `503 nonce_log_unavailable`, and a link
+  standing where that file belongs refuses the start.
 - Pending devices are reconciled against the pairing table on every start.
   A pairing lives in memory and the device a claim creates is journaled, so
   a restart used to leave an unapproved claimant nobody could approve and
