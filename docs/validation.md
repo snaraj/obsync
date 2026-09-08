@@ -67,7 +67,7 @@ readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Reference (pie5) | Cloudflare Tunnel with Access, `OBSYNC_EDGE=cloudflare` | private, owner-only | the deployment itself; V1-V14 by hand |
+| Reference (pie5) | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. The deployment's own tuple (proxy, route, certificate) lives in the platform runbook, not here | private, owner-only: the LAN, or the owner's private route back to it; no public application, no access broker | the deployment itself; V1-V14 by hand |
 | Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
 
 The Compose path is the no-provider route: it needs no account with anybody
