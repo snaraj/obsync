@@ -321,29 +321,52 @@ pub struct Posture {
 }
 
 impl Posture {
-    /// Decide the posture of both volume roots, every mirror root, and both
-    /// credential files, creating a root that is not there at 0700.
+    /// Decide the posture of every configured volume directory, both volume
+    /// roots, every mirror root, and both credential files, creating what is
+    /// not there at 0700.
+    ///
+    /// Nothing is written through a configured path before that path has
+    /// been validated (absolute, normal, free of links) and the directories
+    /// that exist on it have been judged. The one write before the judging
+    /// is the probe that learns which user this is, in the deepest
+    /// directory that already exists on the validated journal path, removed
+    /// at once.
     ///
     /// # Errors
     /// The first class that cannot be made safe, after its refusal line.
     pub fn enforce(cfg: &StorageConfig, log: &Log) -> Result<Posture, StoreError> {
-        let journal_root = PathClass::JournalRoot.path(&cfg.journal_dir);
-        make_root(&journal_root)?;
-        // The probe below creates a file, so what is standing here has to be
-        // a directory this process owns before it runs.
-        kind_of(PathClass::JournalRoot, read_facts(&journal_root)?, log)?;
+        let mut volumes: Vec<(PathClass, &Path)> = vec![
+            (PathClass::JournalMount, cfg.journal_dir.as_path()),
+            (PathClass::BlobsMount, cfg.blobs_dir.as_path()),
+        ];
+        volumes.extend(
+            cfg.mirrors
+                .iter()
+                .map(|mirror| (PathClass::BlobsMount, mirror.path.as_path())),
+        );
+        // 1. Every path, before a byte is written through any of them.
+        let mut existing = Vec::with_capacity(volumes.len());
+        for (class, dir) in &volumes {
+            existing.push(validate_path(*class, dir, log)?);
+        }
+        // 2. Who this process is.
+        let uid = process_user(PathClass::JournalMount, &existing[0], log)?;
         let mut posture = Posture {
-            uid: process_user(&journal_root)?,
+            uid,
             outcomes: Vec::new(),
             opened: RefCell::new(Vec::new()),
         };
-        // Who may rename a root away is decided before any root is trusted
-        // by name.
-        posture.mount(PathClass::JournalMount, &cfg.journal_dir, log)?;
-        posture.mount(PathClass::BlobsMount, &cfg.blobs_dir, log)?;
-        for mirror in &cfg.mirrors {
-            posture.mount(PathClass::BlobsMount, &mirror.path, log)?;
+        // 3. What exists is judged before anything is created under it.
+        for ((class, dir), deepest) in volumes.iter().zip(&existing) {
+            posture.judge_existing(*class, dir, deepest, log)?;
         }
+        // 4. Only now is the layout completed, and each whole chain reported.
+        for (class, dir) in &volumes {
+            make_root(dir)?;
+            posture.mount(*class, dir, log)?;
+        }
+        let journal_root = PathClass::JournalRoot.path(&cfg.journal_dir);
+        make_root(&journal_root)?;
         let mut roots = vec![PathClass::BlobsRoot.path(&cfg.blobs_dir)];
         roots.extend(
             cfg.mirrors
@@ -437,23 +460,19 @@ impl Posture {
         Ok(())
     }
 
-    /// Decide who may rename the root a configured volume directory holds:
+    /// Report who may rename the root a configured volume directory holds:
     /// every directory from that one up to the filesystem root, on a path
-    /// that is its own resolved form. A configured directory that is not
-    /// there is created first, at 0700, as a root is.
+    /// that is its own resolved form, once the layout is complete.
     ///
     /// # Errors
     /// A refusal naming the reason and how many directories up it was found.
     fn mount(&mut self, class: PathClass, dir: &Path, log: &Log) -> Result<(), StoreError> {
-        // A first start on an empty layout: the configured directory is
-        // created as the roots are, and then judged like any other.
-        make_root(dir)?;
         // The configured path must be its own resolved form: absolute, no
-        // `.` or `..`, and no link anywhere in it. A link is re-pointed by
-        // its owner, and a link inside another link's target is one no walk
-        // of the written path would see; what is judged, and what the store
-        // then works under by name, is the resolved directory and nothing
-        // that could resolve differently later.
+        // `.` or `..`, and no link anywhere in it. `validate_path` refused
+        // any link before a byte was written; this is the same fact read
+        // back off the completed layout, so what is judged, and what the
+        // store then works under by name, is the resolved directory and
+        // nothing that could resolve differently later.
         let real = fs::canonicalize(dir).map_err(|_| refuse_at(class, "unresolvable", 0, log))?;
         if real != dir {
             return Err(refuse_at(class, "not_canonical", 0, log));
@@ -466,6 +485,57 @@ impl Posture {
             class,
             decision: Decision::Ok { mode },
         });
+        Ok(())
+    }
+
+    /// Judge the directories that already exist on a validated volume path,
+    /// before anything is created beneath them, and require that the
+    /// deepest of them can be written by this server when there is
+    /// something left to create.
+    ///
+    /// A chain that would be refused once complete is refused now, so a
+    /// refused start leaves nothing behind. And a volume presented by a
+    /// storage class as a root-owned directory holding no root of the
+    /// server's is refused as `unwritable` with the reason stated, rather
+    /// than failing on the first `mkdir`: the server takes ownership of
+    /// nothing, and the operator prepares the directory for it
+    /// (`docs/storage.md`, "Volume posture").
+    fn judge_existing(
+        &self,
+        class: PathClass,
+        dir: &Path,
+        deepest: &Path,
+        log: &Log,
+    ) -> Result<(), StoreError> {
+        let holders =
+            walk(deepest).map_err(|(reason, depth)| refuse_at(class, reason, depth, log))?;
+        // Depths are counted from the configured directory, so a refusal
+        // says the same thing whether or not the tail existed yet.
+        let offset = u32::try_from(
+            dir.ancestors()
+                .count()
+                .saturating_sub(deepest.ancestors().count()),
+        )
+        .unwrap_or(u32::MAX);
+        let holders: Vec<Holder> = holders
+            .into_iter()
+            .map(|h| Holder {
+                depth: h.depth.saturating_add(offset),
+                ..h
+            })
+            .collect();
+        judge(&holders, self.uid)
+            .map_err(|(reason, depth)| refuse_at(class, reason, depth, log))?;
+        let root = dir.join(ROOT_DIR);
+        let complete = deepest == dir && fs::symlink_metadata(&root).is_ok();
+        if !complete {
+            let first = holders
+                .first()
+                .ok_or_else(|| refuse_at(class, "unresolvable", 0, log))?;
+            if first.uid != self.uid || first.mode & 0o200 == 0 {
+                return Err(refuse_at(class, "unwritable", first.depth, log));
+            }
+        }
         Ok(())
     }
 
@@ -694,7 +764,9 @@ fn walk(dir: &Path) -> Result<Vec<Holder>, (&'static str, u32)> {
 }
 
 /// Decide whether anyone but root and this server can rename what these
-/// holders hold, and return the configured directory's own permission bits.
+/// holders hold, and return the permission bits of the first holder: the
+/// configured directory once the layout is complete, or the deepest
+/// directory that exists before it is.
 ///
 /// A directory hands rename authority over its entries to whoever may
 /// write it: its owner (who can also widen it), so the owner must be root
@@ -706,7 +778,6 @@ fn walk(dir: &Path) -> Result<Vec<Holder>, (&'static str, u32)> {
 /// are already root or this server, so a sticky directory holds its
 /// entries safely whatever its write bits say.
 fn judge(holders: &[Holder], uid: u32) -> Result<u32, (&'static str, u32)> {
-    let mut mode = None;
     for h in holders {
         if h.kind != Kind::Dir {
             return Err(("not_a_directory", h.depth));
@@ -723,11 +794,52 @@ fn judge(holders: &[Holder], uid: u32) -> Result<u32, (&'static str, u32)> {
                 return Err(("writable_by_group", h.depth));
             }
         }
-        if h.depth == 0 {
-            mode = Some(h.mode & MODE_MASK);
+    }
+    holders
+        .first()
+        .map(|h| h.mode & MODE_MASK)
+        .ok_or(("unresolvable", 0))
+}
+
+/// Validate a configured volume path before anything is written through
+/// it: absolute, made only of plain names, and free of links down to the
+/// last name that exists. Returns the deepest directory that exists on it,
+/// which is where the tail (if any) will be created and where the probe
+/// may write.
+///
+/// A link is re-pointed by its owner, and a link inside another link's
+/// target is one no walk of the written path would see, so no link is
+/// followed at all: a path with one is refused as `not_canonical` before
+/// the pass has touched anything behind it.
+fn validate_path(class: PathClass, dir: &Path, log: &Log) -> Result<PathBuf, StoreError> {
+    use std::path::Component;
+    let normal = dir.is_absolute()
+        && dir
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    if !normal {
+        return Err(refuse_at(class, "not_canonical", 0, log));
+    }
+    let names: Vec<&Path> = dir.ancestors().collect();
+    let total = names.len();
+    let mut deepest = PathBuf::from("/");
+    // From the filesystem root down, so a link is met before anything
+    // below it is looked at.
+    for (index, name) in names.iter().rev().enumerate() {
+        let depth = u32::try_from(total - 1 - index).unwrap_or(u32::MAX);
+        match fs::symlink_metadata(name) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(refuse_at(class, "not_canonical", depth, log));
+            }
+            Ok(meta) if !meta.file_type().is_dir() => {
+                return Err(refuse_at(class, "not_a_directory", depth, log));
+            }
+            Ok(_) => deepest = name.to_path_buf(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(_) => return Err(refuse_at(class, "unreadable", depth, log)),
         }
     }
-    mode.ok_or(("unresolvable", 0))
+    Ok(deepest)
 }
 
 /// Create a volume root at 0700 when it is not there.
@@ -747,27 +859,61 @@ fn make_root(root: &Path) -> Result<(), StoreError> {
 }
 
 /// The user this process runs as, learned from the filesystem: it creates
-/// a file on the journal volume and asks who owns it.
+/// a file in `dir` and asks who owns it.
 ///
 /// `geteuid` is a foreign call, and requirement 5 allows exactly one file to
 /// make those. The probe pays for itself twice over: it also proves the
-/// journal volume is writable, which is the first thing any start needs.
-fn process_user(journal_root: &Path) -> Result<u32, StoreError> {
-    let probe = journal_root.join(PROBE);
-    // A pass that died mid-probe leaves one behind; removing a link removes
-    // the link and not what it points at.
-    let _ = fs::remove_file(&probe);
-    let file = OpenOptions::new()
+/// directory is writable, which is the first thing any start needs, and a
+/// directory this server cannot write is refused as `unwritable` here
+/// rather than on the first `mkdir`. The name is unique to this process
+/// and moment, so nothing that already stands under a probe's name is ever
+/// removed; a probe a crash left behind is swept once its owner is known.
+fn process_user(class: PathClass, dir: &Path, log: &Log) -> Result<u32, StoreError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let probe = dir.join(format!("{PROBE}-{}-{nanos}", std::process::id()));
+    let file = match OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(FILE_MODE)
-        .open(&probe)?;
+        .open(&probe)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(refuse_at(class, "unwritable", 0, log));
+        }
+        Err(e) => return Err(e.into()),
+    };
     // From the open handle, so the answer is about the file that was created
     // and not about whatever now holds the name.
     let uid = file.metadata()?.uid();
     drop(file);
     fs::remove_file(&probe)?;
+    sweep_probes(dir, uid);
     Ok(uid)
+}
+
+/// Remove probes a crashed pass left behind: regular files of this user's
+/// under the probe prefix. Nothing else under that prefix is touched.
+fn sweep_probes(dir: &Path, uid: u32) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let stale = name.to_str().is_some_and(|n| n.starts_with(PROBE));
+        if !stale {
+            continue;
+        }
+        if let Ok(meta) = fs::symlink_metadata(entry.path())
+            && meta.file_type().is_file()
+            && meta.uid() == uid
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1321,9 +1467,11 @@ mod tests {
             ),
             "{err}"
         );
+        // The walk goes from the filesystem root down, so the outer link, two
+        // names up from the configured directory, is the one it meets first.
         assert!(
             log.captured().contains(
-                "event=posture path_class=journal_mount decision=refused reason=not_canonical depth=0"
+                "event=posture path_class=journal_mount decision=refused reason=not_canonical depth=2"
             ),
             "{}",
             log.captured()
@@ -1336,6 +1484,172 @@ mod tests {
         Posture::enforce(&cfg, &log).expect("its own resolved form");
     }
 
+    /// The round-12 probe: a journal configured through a link, whose target
+    /// already holds a root and a probe file. The refusal must come before a
+    /// byte is written or removed behind the link.
+    #[test]
+    fn a_refused_path_leaves_what_stands_behind_it_untouched() {
+        let dir = TempDir::new("posture-untouched");
+        let target = dir.path().join("target");
+        let target_root = target.join("journal").join(ROOT_DIR);
+        fs::create_dir_all(&target_root).expect("the target's root");
+        let planted = target_root.join(PROBE);
+        fs::write(&planted, "planted").expect("a file under the probe's own name");
+        let link = dir.path().join("link");
+        symlink(&target, &link).expect("the link");
+        let before: Vec<String> = fs::read_dir(&target_root)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+
+        let mut cfg = crate::cli::testutil::config(&dir).storage();
+        cfg.journal_dir = link.join("journal");
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg, &log).expect_err("a path through a link is refused");
+        assert!(
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "journal_mount",
+                    reason: "not_canonical"
+                }
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&planted).expect("still there"),
+            "planted",
+            "nothing under the probe's name was removed"
+        );
+        let after: Vec<String> = fs::read_dir(&target_root)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(after, before, "nothing was created behind the link either");
+        assert!(
+            !cfg.blobs_dir.exists(),
+            "the blobs directory was not created before the journal path was refused"
+        );
+    }
+
+    /// A chain that would be refused once complete is refused before
+    /// anything is created under it, so a refused start leaves nothing.
+    #[test]
+    fn a_refused_chain_creates_nothing_beneath_it() {
+        let dir = TempDir::new("posture-residue");
+        let parent = dir.path().join("open");
+        fs::create_dir(&parent).expect("the parent");
+        fs::set_permissions(&parent, Permissions::from_mode(0o777)).expect("anyone may write it");
+        let mut cfg = crate::cli::testutil::config(&dir).storage();
+        cfg.journal_dir = parent.join("journal");
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg, &log).expect_err("a parent anyone may write");
+        assert!(
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "journal_mount",
+                    reason: "writable_by_others"
+                }
+            ),
+            "{err}"
+        );
+        assert!(
+            log.captured().contains("reason=writable_by_others depth=1"),
+            "the refusal names the parent, one up from the configured directory: {}",
+            log.captured()
+        );
+        assert!(!cfg.journal_dir.exists(), "the tail was never created");
+        let left: Vec<_> = fs::read_dir(&parent).expect("readable").flatten().collect();
+        assert!(left.is_empty(), "no probe was left behind either");
+        fs::set_permissions(&parent, Permissions::from_mode(0o700)).expect("closed for cleanup");
+    }
+
+    /// A volume a storage class presents as a directory this server cannot
+    /// write, holding no root of the server's: refused with the reason,
+    /// not on the first `mkdir`.
+    #[test]
+    fn a_volume_directory_this_server_cannot_write_and_that_holds_no_root_is_refused_as_unwritable()
+    {
+        let dir = TempDir::new("posture-unwritable");
+        let mut cfg = crate::cli::testutil::config(&dir).storage();
+        fs::create_dir(&cfg.journal_dir).expect("the mount point");
+        fs::set_permissions(&cfg.journal_dir, Permissions::from_mode(0o500))
+            .expect("closed to its owner");
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg, &log).expect_err("nothing can be created here");
+        assert!(
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "journal_mount",
+                    reason: "unwritable"
+                }
+            ),
+            "{err}"
+        );
+        assert!(
+            log.captured().contains(
+                "event=posture path_class=journal_mount decision=refused reason=unwritable depth=0"
+            ),
+            "{}",
+            log.captured()
+        );
+        fs::set_permissions(&cfg.journal_dir, Permissions::from_mode(0o700)).expect("open again");
+        cfg.mirrors.clear();
+        Posture::enforce(&cfg, &Log::buffered(LogLevel::Debug))
+            .expect("prepared for the server, it starts");
+
+        // The blobs directory has no probe to fail first: only the judgment
+        // of what exists can refuse it.
+        fs::remove_dir_all(&cfg.blobs_dir).expect("start over");
+        fs::create_dir(&cfg.blobs_dir).expect("the blobs mount point");
+        fs::set_permissions(&cfg.blobs_dir, Permissions::from_mode(0o500))
+            .expect("closed to its owner");
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg, &log).expect_err("nothing can be created here either");
+        assert!(
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "blobs_mount",
+                    reason: "unwritable"
+                }
+            ),
+            "{err}"
+        );
+        assert!(
+            !cfg.blobs_dir.join(ROOT_DIR).exists(),
+            "and no root was attempted under it"
+        );
+        fs::set_permissions(&cfg.blobs_dir, Permissions::from_mode(0o700))
+            .expect("open for cleanup");
+    }
+
+    #[test]
+    fn a_probe_a_crash_left_behind_is_swept_and_nothing_else_under_the_prefix_is() {
+        let dir = TempDir::new("posture-sweep");
+        let cfg = crate::cli::testutil::config(&dir).storage();
+        let stale = dir.path().join(format!("{PROBE}-stale"));
+        fs::write(&stale, "").expect("a probe from a dead pass");
+        let not_ours = dir.path().join(format!("{PROBE}-dir"));
+        fs::create_dir(&not_ours).expect("a directory under the prefix");
+        let linked = dir.path().join(format!("{PROBE}-link"));
+        symlink(&not_ours, &linked).expect("a link under the prefix");
+        Posture::enforce(&cfg, &Log::buffered(LogLevel::Debug)).expect("the pass runs");
+        assert!(!stale.exists(), "the stale probe file is swept");
+        assert!(
+            fs::symlink_metadata(&linked).is_ok(),
+            "a link under the prefix is not a probe and stays"
+        );
+        assert!(
+            not_ours.is_dir(),
+            "a directory under the prefix is not a probe and stays"
+        );
+    }
+
     #[test]
     fn a_configured_directory_written_with_dots_is_refused_as_not_its_own_resolved_form() {
         let dir = TempDir::new("posture-dots");
@@ -1343,6 +1657,10 @@ mod tests {
         cfg.journal_dir = dir.path().join("journal").join("..").join("journal");
         let log = Log::buffered(LogLevel::Debug);
         let err = Posture::enforce(&cfg, &log).expect_err("`..` is not a resolved form");
+        assert!(
+            !dir.path().join("journal").exists() && !cfg.blobs_dir.exists(),
+            "refused before anything was created through the dotted path"
+        );
         assert!(
             matches!(
                 err,

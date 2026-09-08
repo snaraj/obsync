@@ -51,30 +51,49 @@ before anything is read or written through them, and a store cannot be
 opened without the completed pass in hand. Every decision is made on an
 open handle or on a directory chain, never on a bare name:
 
-1. **Who may rename a root away** (`*_mount`). Everything below a root
-   works by name, and a name is only as good as the directories that hold
-   it: whoever can rename `v1` away can put another tree under the name
-   after the pass, and a later snapshot would write that tree's state into
-   the protected root. So every directory from the filesystem root down to
-   each configured volume directory must be owned by root or by the
-   server's user (`foreign_owner`), and must not be writable by others
+1. **Who may rename a root away** (`*_mount`), decided before a byte is
+   written. Everything below a root works by name, and a name is only as
+   good as the directories that hold it: whoever can rename `v1` away can
+   put another tree under the name after the pass, and a later snapshot
+   would write that tree's state into the protected root. So every
+   configured volume path is validated first — absolute, made only of
+   plain names, and free of links down to the last name that exists
+   (`not_canonical`), because a link is re-pointed by its owner and a link
+   nested inside another link's target is one no walk of the written path
+   would see; nothing behind a refused path is read, created, or removed.
+   Then every directory that already exists on the path, from the
+   filesystem root down, must be owned by root or by the server's user
+   (`foreign_owner`), and must not be writable by others
    (`writable_by_others`) or by its group (`writable_by_group`): a group
    number says nothing about who is in the group, and `fsGroup` exists to
    share one. The sticky bit satisfies the write conditions, since it
    narrows rename to the entry's owner, the directory's owner, and root,
-   all of which are already root or the server. The configured path must
-   be its own resolved form — absolute, no `.` or `..`, no link anywhere in
-   it (`not_canonical`) — because a link is re-pointed by its owner, and a
-   link nested inside another link's target is one no walk of the written
-   path would see; name the volume by its real path. A refusal states how
-   many directories up it was found (`depth=0` is the configured directory
-   itself); it never states a location. These directories are the
-   platform's to create, and this is the condition the platform holds them
-   to: a named volume and a `hostPath` the operator created for the
-   server's user pass; a bind mount of a directory another account owns,
-   or one a group may write, is refused with one line, and the fix is to
-   give the directory to root or to the server's user and close it, never
-   to widen the pass.
+   all of which are already root or the server. A chain that would be
+   refused once complete is refused before anything is created beneath
+   it, so a refused start leaves nothing behind; the one write before the
+   judging is the probe that learns which user the server is, a uniquely
+   named empty file in the deepest existing directory of the journal path,
+   removed at once. A refusal states how many directories up it was found
+   (`depth=0` is the configured directory itself); it never states a
+   location.
+
+   **The provisioning precondition.** The server takes ownership of
+   nothing. When there is anything left to create — the configured
+   directory's tail, or `v1` inside it — the deepest directory that exists
+   must be owned by the server's user and writable by it, or the start is
+   refused as `unwritable`. A named Docker volume satisfies this (the mount
+   point is copied from the image, owned by the server's user), and so does
+   a `hostPath` or static local volume the operator created for that user
+   (`65532:65532`, mode `0700`). A dynamic provisioner that presents a
+   root-owned `0755` volume root, or a world-writable one, does not: prepare
+   the backing directory once as the node administrator (`chown
+   65532:65532` and `chmod 0700`), then start the server. A volume that
+   already holds the server's `v1` under a root-owned mount point is
+   accepted, since nothing needs creating. The fix for a refusal is always
+   to give the directory to root or to the server's user and close it,
+   never to widen the pass. The image smoke's eighth property presents
+   root-owned `0755` volumes holding no root and requires the `unwritable`
+   refusal.
 2. **Look, open, compare** (roots and credential files). The name is
    looked at once without following a link (`lstat`): a link, a type the
    server never stores, or a foreign owner is refused before anything is
@@ -142,7 +161,16 @@ byte of the journal is read: a second `obsyncd` on the same volumes — a
 second pod, a rolling surge, a `check` or `export` while `serve` runs —
 refuses to start with `event=store_open decision=refused reason=journal_locked`
 rather than share the journal. The lock goes with the process, so a crash
-leaves nothing to clean, and a stopped server frees it at once. Run `check`
+leaves nothing to clean, and a stopped server frees it at once. It is an
+advisory lock, and its boundary is stated exactly: it refuses cooperative
+duplicate starts of this server. A process running as the server's own
+user is the server by every test the filesystem offers — owning `v1` is
+the authority to rename it and lock a fresh `v1/lock` on a new inode — so
+an arbitrary Pod that could mount the claim and run as that user is not
+excluded by any file mode; keeping such a Pod off the claim is the
+platform's admission decision (who may create Pods mounting these claims),
+together with the chart's `replicas: 1` and `strategy: Recreate`. The
+volume-directory conditions above constrain other accounts, not that one. Run `check`
 and `export` with the server stopped. The chart's `replicas: 1` and
 `strategy: Recreate` are the rendered half of the same boundary, so a rollout
 never asks for a second writer; `ReadWriteOncePod` is not available on the

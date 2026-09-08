@@ -70,6 +70,7 @@ container="obsync-smoke-${run_id}"
 restored="${container}-restored"
 holder="${container}-holder"
 second="${container}-second"
+unprepared="${container}-unprepared"
 blobs_volume="obsync-smoke-blobs-${run_id}"
 journal_volume="obsync-smoke-journal-${run_id}"
 started_at="$(date +%s)"
@@ -101,7 +102,7 @@ deny() {
 
 cleanup() {
   local status=$?
-  docker rm --force "${container}" "${restored}" "${holder}" "${second}" >/dev/null 2>&1 || true
+  docker rm --force "${container}" "${restored}" "${holder}" "${second}" "${unprepared}" >/dev/null 2>&1 || true
   docker volume rm --force "${blobs_volume}" "${journal_volume}" >/dev/null 2>&1 || true
   return "${status}"
 }
@@ -336,6 +337,50 @@ case "${body}" in
 esac
 docker stop --time 10 "${holder}" >/dev/null
 prove 'one writer: a second container on the same volumes refused to start with reason=journal_locked, exited non-zero, and the first kept serving'
+
+# THE PROVISIONING PRECONDITION. A storage class that presents a root-owned
+# 0755 volume root holding no root of the server's is the shape a dynamic
+# provisioner hands a non-root workload. The server takes ownership of
+# nothing: it must refuse with the reason, not fail on the first mkdir, so
+# the operator prepares the directory once and knows why.
+docker run --rm --user 0 \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  "${throwaway}" sh -c 'rm -rf /data/blobs/v1 /data/journal/v1 \
+    && mkdir /data/blobs/lost+found /data/journal/lost+found \
+    && chown 0:0 /data/blobs /data/journal /data/blobs/lost+found /data/journal/lost+found \
+    && chmod 0755 /data/blobs /data/journal' \
+  || deny 'could not present the volumes as a root-owned 0755 provisioner would'
+# The lost+found directories keep the volumes non-empty on purpose: Docker
+# copies the image's directory, ownership included, into an EMPTY named
+# volume at mount time, which would quietly re-prepare them.
+docker run --detach --name "${unprepared}" \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  --env "OBSYNC_BLOBS_CAPACITY=${BLOBS_CAPACITY}" \
+  --env "OBSYNC_JOURNAL_CAPACITY=${JOURNAL_CAPACITY}" \
+  "${image}" >/dev/null
+status=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  status="$(docker container inspect --format '{{.State.Status}}' "${unprepared}" 2>/dev/null || true)"
+  [ "${status}" = exited ] && break
+  sleep 1
+done
+[ "${status}" = exited ] \
+  || deny "the server on unprepared volumes is '${status:-gone}' after ${READY_BUDGET_SECONDS}s; it must refuse to start"
+[ "$(docker container inspect --format '{{.State.ExitCode}}' "${unprepared}")" != 0 ] \
+  || deny 'the server on unprepared volumes exited 0; a refusal is not a clean start'
+docker logs "${unprepared}" 2>&1 | grep -q 'event=posture path_class=journal_mount decision=refused reason=unwritable' \
+  || deny 'the server on unprepared volumes did not say why it refused (journal_mount unwritable)'
+docker run --rm --user 0 \
+  --volume "${blobs_volume}:/data/blobs" \
+  --volume "${journal_volume}:/data/journal" \
+  "${throwaway}" sh -c 'test ! -e /data/journal/v1 && test ! -e /data/blobs/v1' \
+  || deny 'the refused start created a root on the unprepared volumes'
+prove 'provisioning precondition: root-owned 0755 volumes holding no root are refused with reason=unwritable, exit non-zero, and nothing is created'
 
 printf 'image-smoke: SUMMARY image=%s properties=%d duration=%ds decision=pass\n' \
   "${image}" "${proven}" "$(( $(date +%s) - started_at ))"

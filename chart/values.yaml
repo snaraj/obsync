@@ -93,6 +93,12 @@ serverKeySecret:
 #            can disagree silently. It is deliberately NOT what the server is
 #            told: a grown volume behind an un-resized claim would make the
 #            free-space watermark fire late.
+#   The volume a class presents must be owned by uid 65532 and writable by
+#   it, or already hold the server's v1; the server refuses to start otherwise
+#   (reason=unwritable) and takes ownership of nothing. Prepare a root-owned
+#   or world-writable backing directory once as the node administrator
+#   (chown 65532:65532, chmod 0700). No fsGroup is set: a group-writable
+#   volume is refused (docs/storage.md, "Volume posture").
 #   className the StorageClass, used for the claim and as the dashboard's
 #            display label (OBSYNC_*_CLASS). The server assumes nothing about
 #            what is behind the path beyond a POSIX directory honouring fsync.

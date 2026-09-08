@@ -66,7 +66,7 @@ On Kubernetes, install the chart with your storage classes, claim sizes, and
 a Secret for `OBSYNC_SERVER_KEY`; the reference deployment (a single-node
 cluster on a Raspberry Pi, reached over private connectivity with no public
 hostname) is described in `docs/platform-onboarding.md` and
-`docs/architecture.md` section 10.
+`docs/architecture.md` section 10. The server takes ownership of nothing: each volume must be presented owned by uid 65532 and writable by it, or already hold the server's `v1`, or the start is refused with `reason=unwritable`. Static local volumes and `hostPath` directories: create them as `65532:65532`, mode `0700`, with root-owned, closed parents and no symlink on the path. A dynamic provisioner that presents a root-owned or world-writable volume root: prepare the backing directory once as the node administrator (`chown 65532:65532` and `chmod 0700`), then start. The chart sets no `fsGroup`, because a group-writable volume is refused (`docs/storage.md`, "Volume posture").
 
 At first boot the server mints a setup token and writes it, mode 0600 and
 never logged, to `v1/setup-token` on the journal volume. The token creates
