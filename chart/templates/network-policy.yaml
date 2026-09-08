@@ -1,0 +1,48 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: obsync
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "obsync.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "obsync.selectorLabels" . | nindent 6 }}
+  {{- /* Both directions are declared, which is what makes the empty egress
+  list below a DENY rather than an omission: a policyTypes list naming only
+  Ingress leaves egress untouched by this policy entirely. */}}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- /* EXACTLY ONE peer, named by every fact it takes to name one
+    connector: namespace + app name + instance. The peer namespace is shared by
+    several connectors that publish the same app label and differ only by
+    instance, so dropping the instance line would admit all of them -- a policy
+    that reads narrow and behaves wide. The identity is injected from values
+    (the deployment-provider binding point), so this template names no
+    provider, and the schema requires the instance non-empty, so it cannot
+    render unpinned. `scripts/ci/chart_pins.py ingress` proves the rendered
+    result structurally rather than by counting lines. */}}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.ingress.peerNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Values.ingress.peerAppName }}
+              app.kubernetes.io/instance: {{ .Values.ingress.peerInstance }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+  {{- /* NO OUTBOUND CONNECTION, and this list is empty by construction rather
+  than by current configuration. obsync is a blind server (requirement 6): it
+  stores ciphertext its clients push and serves it back, and there is no
+  upstream it could legitimately fetch from -- no telemetry, no CDN, no
+  third-party runtime dependency (requirement 1). Every capability that could
+  need egress is a values change plus a template change plus a review, which is
+  the point: the day one appears it arrives as an exact allow-list, never as a
+  widening of something already open. `helm template` renders `egress: []` and
+  the pin refuses any rule appearing here. */}}
+  egress: []

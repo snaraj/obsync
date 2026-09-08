@@ -1,0 +1,2 @@
+# tsc output; `dist/` and `node_modules/` are ignored at the repository root.
+build/

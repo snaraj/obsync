@@ -1,0 +1,59 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 9 * * 6'
+
+permissions: {}
+
+# Cancellation is for superseded PR runs and nothing else. The group falls back
+# to `github.sha` off a pull request, so two main PUSHES never share a group and
+# cannot cancel each other -- but the weekly SCHEDULE resolves to the default
+# branch's head SHA, which IS the group of a push run still analysing that same
+# commit, and would cancel it. release-publisher.yml authorizes against a CodeQL
+# run matching event=push, head_branch=main, that exact head_sha, and
+# conclusion=success. A cancelled push run has conclusion `cancelled`, and no
+# second push-event run for that SHA can ever exist, so one such cancellation
+# would make that version permanently unreleasable. Hence the guard.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `rust` IS a built-in CodeQL language at the pinned action version:
+          # src/languages/builtin.json at cdf488f (v4.37.9) lists actions, cpp,
+          # csharp, go, java, javascript, python, ruby, rust, swift. It analyses
+          # in build-mode `none` -- the extractor reads the source tree, and no
+          # cargo invocation happens here, which is also why this job needs no
+          # Rust toolchain step. `javascript-typescript` is the alias for
+          # `javascript` in the same file and covers plugin/src, the dashboard,
+          # and plugin/build.mjs.
+          - language: rust
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

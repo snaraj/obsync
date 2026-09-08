@@ -1,0 +1,152 @@
+# obsync chart defaults.
+#
+# Every deployment concern is a value here (AGENTS.md "Purpose and
+# architecture"), and every security property is true in the templates rather
+# than switched on from this file (requirement 4): nothing below can disable a
+# probe, a capability drop, a read-only root filesystem, or the default-deny
+# NetworkPolicy. What a value CAN do is name where this deployment's storage,
+# edge, secret, and ingress peer are.
+#
+# `values.schema.json` is required, closed (`additionalProperties: false`), and
+# refuses a half-specified deployment rather than rendering a guess.
+
+# The platform's discovery gate, exactly as the sibling charts use it: the
+# reconciler sets it true once the namespace, volumes, and Secret exist. A
+# chart installed before that renders a Deployment annotated not-ready rather
+# than a pod that crash-loops on a missing volume.
+deploymentReady: false
+
+image:
+  repository: ghcr.io/snaraj/obsync
+  # The published release tag, carried IN FRONT OF the digest so the rendered
+  # reference reads repository:tag@digest. Kubernetes resolves the digest and
+  # ignores the tag; the tag is what an operator reads in `kubectl describe
+  # pod`. It is one of the seven lockstep locks (requirement 10), so a chart
+  # claiming one release can never ship the tag of another.
+  tag: v0.1.0
+  # Fail-closed sentinel, and it stays that way in git: a syntactically valid
+  # digest no registry can resolve, so a chart deployed with this value fails
+  # at pull time instead of resolving something unverified. The publisher
+  # substitutes the real index digest on the runner AFTER the HIGH/CRITICAL
+  # scan and the cosign signature have accepted it, and BEFORE it packages the
+  # chart, so only the PUBLISHED artifact ever carries a resolved digest.
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+# THE deployment-provider binding point -- the only sanctioned place in this
+# repository for a provider name (`TestProviderNeutrality` pins zero provider
+# names under crates/ and plugin/src/). The server speaks plain HTTP and knows
+# no ingress, DNS, edge, or access provider; which stack may reach it is
+# injected here, so a provider swap is a values override, never a code edit.
+#
+# All three fields are load-bearing. The peer namespace is shared by several
+# connectors that publish the SAME app label and are told apart ONLY by their
+# instance label, so a namespace+app selector would admit every connector
+# deployed there instead of this workload's own. The schema requires the
+# instance non-empty: an unpinned peer selector must fail to render, never
+# render wide.
+ingress:
+  peerNamespace: cloudflare-public
+  peerAppName: cloudflare-public
+  peerInstance: obsync-tunnel
+
+# Provider behaviour selection (AGENTS.md "Deployment-provider contract").
+# `cloudflare` makes the server require the edge's connecting-address and
+# request-id headers on every request and refuse requests that lack them;
+# `none` makes it trust only trustedProxyCidrs for forwarded addresses. The
+# reference deployment overrides this to `cloudflare`; the shipped default is
+# the one that assumes least about what is in front of the process.
+edge:
+  mode: none
+
+# Forwarded-address trust in `none` mode. Empty means the peer address is the
+# only address the server will believe.
+trustedProxyCidrs: []
+
+# Shown on the pairing and install pages. Empty until an operator names the
+# hostname their edge publishes; it is never derived from a request header.
+publicUrl: ""
+
+# The server key (docs/storage.md). It is always a Secret reference and never a
+# literal: requirement 11 keeps credentials out of this repository, and the
+# reference deployment supplies a SOPS-managed Secret under these names.
+serverKeySecret:
+  name: obsync-server-key
+  key: OBSYNC_SERVER_KEY
+
+# docs/storage.md is the contract. The server assumes nothing about the class
+# behind a path -- only a POSIX directory that honours fsync -- so a future HDD
+# or NAS-backed class is a values change and never a code change.
+#
+#   size     the claim's requested storage, what `kubectl get pvc` reports.
+#            It is ALSO what the server is told through OBSYNC_*_CAPACITY,
+#            because the standard library exposes no statvfs and free space is
+#            therefore capacity minus tracked usage: what the claim guarantees
+#            is the only number that cannot over-state what this pod can write.
+#   capacity the capacity the operator provisioned on the volume this claim
+#            binds to. Recorded as an annotation on the claim so growth (250Gi
+#            -> 500Gi) is ONE values edit that states both the claim and the
+#            volume it must fit, instead of two facts in two repositories that
+#            can disagree silently. It is deliberately NOT what the server is
+#            told: a grown volume behind an un-resized claim would make the
+#            free-space watermark fire late.
+#   The volume a class presents must be owned by uid 65532 and writable by
+#   it, or already hold the server's v1; the server refuses to start otherwise
+#   (reason=unwritable) and takes ownership of nothing. Prepare a root-owned
+#   or world-writable backing directory once as the node administrator
+#   (chown 65532:65532, chmod 0700). No fsGroup is set: a group-writable
+#   volume is refused (docs/storage.md, "Volume posture").
+#   className the StorageClass, used for the claim and as the dashboard's
+#            display label (OBSYNC_*_CLASS). The server assumes nothing about
+#            what is behind the path beyond a POSIX directory honouring fsync.
+storage:
+  blobs:
+    className: local-pie-ssd
+    size: 250Gi
+    capacity: 250Gi
+  journal:
+    className: local-pie-ssd
+    size: 4Gi
+    capacity: 4Gi
+  # Optional extra blob copies (docs/storage.md, "Replication"): every chunk
+  # write goes to the primary and each mirror before the response. Empty is the
+  # shipped default -- a second copy is an operator decision that needs a second
+  # provisioned volume, and a chart that mounted one nobody provisioned would
+  # leave the pod Pending.
+  mirrors: []
+
+# docs/storage.md, "Garbage collection". Retention keeps at least `versions`
+# versions per file and everything younger than `days`.
+retention:
+  days: 30
+  versions: 10
+
+# The background integrity budget (docs/storage.md, "Integrity"). It bounds the
+# scrub thread; it never disables it.
+scrubRate: 4MiB/s
+
+# docs/platform-onboarding.md item 8: the measured envelope on the Pi.
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    # Quoted: a Kubernetes quantity is a string, and an unquoted 2 is a YAML
+    # integer the schema (and the API server) refuse.
+    cpu: "2"
+    memory: 1Gi
+
+# Stated here so an operator reads the deployed posture off one file, and
+# CONSTRAINED by the schema to the only admissible values: every field is a
+# `const`, so an override can restate the posture and can never weaken it
+# (requirement 4). `scripts/ci/chart_pins.py security` proves the rendered
+# result independently of this file.
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  seccompProfile: RuntimeDefault
+  dropCapabilities: ALL

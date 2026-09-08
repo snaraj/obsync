@@ -1,0 +1,78 @@
+# Threat model
+
+Dated 2026-09-07. Assets, adversaries, what holds, what does not.
+
+## Assets
+
+1. Vault plaintext and file names.
+2. The vault root key and domain keys.
+3. Device secrets (API access).
+4. Availability and integrity of the stored history.
+
+## Adversaries and outcomes
+
+| Adversary | Can see or do | Cannot |
+| --- | --- | --- |
+| Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
+| TLS terminator / edge operator | request metadata, ciphertext, and every credential in clear: the device secret once at pairing (v1), the dashboard session cookie, the recovery sign-in link | read content, names, or keys; replace plugin code (the plugin never installs served code; updates come from the signed Release) |
+| Server operator or stolen volumes | ciphertext, sizes, version graph, device activity | decrypt anything; device secrets are wrapped under the server key |
+| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
+| Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves; outlive its pairing (expiry destroys it, and so does the next start, since pairings do not survive one) |
+| Other cluster tenant, or another account on the host | nothing (default-deny NetworkPolicy, non-root pod, volume roots 0700 and credential files 0600, measured and corrected on every start, `docs/storage.md`) | reach the API or the volumes, or read the recovery login or the wrapping key off a restored or bind-mounted volume |
+| Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, `docs/protocol.md`) |
+
+## Deliberate non-goals
+
+- Recipients and multi-user access: out of scope in v0.1; the server is
+  owner-only. Every paired device is the owner, so no adversary row below
+  describes a second person with partial access, because v0.1 cannot
+  express one. The acceptance criteria that gate phase 2 are in
+  `docs/architecture.md` section 5.
+- Hiding file counts, sizes, timing, and version-graph shape from the
+  server. Size padding is a v0.3 option.
+- Recovering a vault after every device and the recovery phrase are lost.
+- Protecting a device against its own operating system.
+
+## Controls by requirement
+
+- Content confidentiality: AES-256-GCM per chunk with per-chunk derived
+  keys; manifests under a separate key; paths only inside manifests.
+- Request integrity and authenticity: HMAC over method, path, timestamp,
+  nonce, body hash; a ±300 s window and a 600 s nonce cache that rests on the
+  journal volume, so the window a captured request has to beat is not
+  reopened by a restart.
+- Storage integrity: sid verification on write, scrub on read schedule,
+  plaintext hash verified by the client before any vault write.
+- Availability: fsync-before-ack, watermark refusals, retention and
+  automatic GC, health probes that tell the truth.
+- Least privilege: non-root, read-only root filesystem, one listener,
+  default-deny network, digest-pinned signed images.
+
+## Residual risks recorded for v1
+
+1. Every credential crosses the TLS terminator in clear: the device secret
+   once at pairing (fixed by X25519 in v0.2) and the dashboard session cookie
+   and recovery link for as long as sessions exist. The terminator is in the
+   trust base for credentials and out of it for content
+   (`docs/architecture.md` 2.1, choice 1).
+2. Single copy on one node (owner-accepted; mirrors and replicas are the
+   path).
+3. Desktop vault-boundary races: the plugin binds every path component with
+   no-follow stats before and after each open and rename, which closes a
+   swap between the walk and the open; Node's filesystem API has no
+   directory-relative opens, so a local attacker who can race the write
+   itself is not defended against (a device's own operating system is a
+   non-goal above).
+4. The hop from the TLS terminator to this process is plain HTTP. What
+   bounds it is reachability -- a default-deny network policy and a
+   restricted pod-security level -- and not encryption; a sidecar terminator
+   would make it loopback (`docs/architecture.md` 2.1, choice 2).
+5. On a public hostname behind a tunnel provider, that provider's terms and
+   not this server bound a sustained bulk transfer. The any-size promise is
+   the server's; the transport is the deployer's, and a bulk first sync
+   belongs on a LAN or VPN where one exists (`docs/architecture.md` 2.1,
+   choice 3).
+6. Homegrown primitives: mitigated by published test vectors,
+   differential tests against the host's OpenSSL in CI, a verify-only
+   asymmetric surface, and constant-time construction by design; a
+   dedicated security review is required before any primitive changes.

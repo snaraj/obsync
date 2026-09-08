@@ -1,0 +1,445 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="same-origin">
+<title>obsync</title>
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <!-- Abstract device marks. No vendor logo is drawn or implied. -->
+  <symbol id="g-ios" viewBox="0 0 16 16">
+    <rect x="4.5" y="1.5" width="7" height="13" rx="1.5"></rect>
+    <line x1="6.5" y1="12.5" x2="9.5" y2="12.5"></line>
+  </symbol>
+  <symbol id="g-ipados" viewBox="0 0 16 16">
+    <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"></rect>
+    <line x1="6.5" y1="11.5" x2="9.5" y2="11.5"></line>
+  </symbol>
+  <symbol id="g-android" viewBox="0 0 16 16">
+    <rect x="4.5" y="3.5" width="7" height="11" rx="1.5"></rect>
+    <line x1="5.5" y1="1.5" x2="6.5" y2="3.5"></line>
+    <line x1="10.5" y1="1.5" x2="9.5" y2="3.5"></line>
+  </symbol>
+  <symbol id="g-macos" viewBox="0 0 16 16">
+    <rect x="3.5" y="3.5" width="9" height="7" rx="1"></rect>
+    <line x1="1.5" y1="12.5" x2="14.5" y2="12.5"></line>
+  </symbol>
+  <symbol id="g-windows" viewBox="0 0 16 16">
+    <rect x="2.5" y="2.5" width="5" height="5"></rect>
+    <rect x="8.5" y="2.5" width="5" height="5"></rect>
+    <rect x="2.5" y="8.5" width="5" height="5"></rect>
+    <rect x="8.5" y="8.5" width="5" height="5"></rect>
+  </symbol>
+  <symbol id="g-linux" viewBox="0 0 16 16">
+    <rect x="1.5" y="3.5" width="13" height="9" rx="1"></rect>
+    <polyline points="4,6.5 6.5,8 4,9.5"></polyline>
+    <line x1="8" y1="10" x2="11.5" y2="10"></line>
+  </symbol>
+  <symbol id="g-device" viewBox="0 0 16 16">
+    <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"></rect>
+    <circle cx="8" cy="8" r="1.25"></circle>
+  </symbol>
+</svg>
+
+<header class="topbar">
+  <p class="brand">obsync</p>
+  <nav class="tabs" aria-label="Dashboard sections">
+    <a href="#overview" data-route="overview">Overview</a>
+    <a href="#devices" data-route="devices">Devices</a>
+    <a href="#pairing" data-route="pairing">Pairing</a>
+    <a href="#storage" data-route="storage">Storage</a>
+    <a href="#install" data-route="install">Install</a>
+    <a href="#logs" data-route="logs">Logs</a>
+  </nav>
+  <button type="button" id="signout" class="ghost">Sign out</button>
+</header>
+
+<div id="banner" class="banner" role="alert" hidden>
+  <p id="banner-text">Something went wrong.</p>
+  <button type="button" id="banner-retry">Retry</button>
+</div>
+<p id="status" class="status" role="status" aria-live="polite"></p>
+
+<main id="main">
+
+  <section id="page-signin" class="page" hidden aria-labelledby="signin-h">
+    <h1 id="signin-h">Sign in</h1>
+    <p>This dashboard is signed out. There are two ways in, both starting somewhere else:</p>
+    <ol class="prose">
+      <li>
+        <strong>From a paired device.</strong> Open Obsidian on a device that already syncs,
+        go to the obsync plugin, and choose <em>Open dashboard</em>. It mints a one-time link
+        that is valid for five minutes and signs this browser in.
+      </li>
+      <li>
+        <strong>With the setup token.</strong> The server writes a setup token at first boot and
+        that token stays valid. Open <code>/login?token=&lt;the token&gt;</code> on this host. This
+        is the recovery path for a deployment with no working device, which is why the token is a
+        standing credential and not a spent one.
+      </li>
+    </ol>
+    <p class="note">
+      The dashboard holds no vault key. It can never read a file, approve a device, or recover a
+      vault; those all happen on a paired device.
+    </p>
+  </section>
+
+  <section id="page-overview" class="page" hidden aria-labelledby="overview-h">
+    <h1 id="overview-h">Overview</h1>
+
+    <div class="cards">
+      <article class="card">
+        <h2>Account</h2>
+        <dl class="kv">
+          <dt>Name</dt><dd id="acc-name" class="skel">&nbsp;</dd>
+          <dt>Account id</dt><dd id="acc-id" class="mono skel">&nbsp;</dd>
+          <dt>Created</dt><dd id="acc-created" class="skel">&nbsp;</dd>
+          <dt>Devices</dt><dd id="acc-devices" class="num skel">&nbsp;</dd>
+          <dt>Used</dt><dd id="acc-used" class="num skel">&nbsp;</dd>
+          <dt>Quota</dt><dd id="acc-quota" class="num skel">&nbsp;</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Sync activity</h2>
+        <p id="act-summary" class="skel">&nbsp;</p>
+        <p id="act-total" class="note skel">&nbsp;</p>
+        <svg id="spark" class="spark" viewBox="0 0 240 48" preserveAspectRatio="none"
+             role="img" aria-labelledby="spark-title">
+          <title id="spark-title">Versions per hour over the last 24 hours</title>
+          <path id="spark-path" class="spark-line" d=""></path>
+        </svg>
+        <p class="axis"><span>24 h ago</span><span id="spark-peak">&nbsp;</span><span>now</span></p>
+      </article>
+
+      <article class="card">
+        <h2>Last garbage collection</h2>
+        <dl class="kv" id="gc-summary">
+          <dt>Ran</dt><dd data-f="ts" class="skel">&nbsp;</dd>
+          <dt>Duration</dt><dd data-f="duration" class="num skel">&nbsp;</dd>
+          <dt>Chunks collected</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Bytes collected</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Chunks retained</dt><dd data-f="retained" class="num skel">&nbsp;</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Last scrub</h2>
+        <dl class="kv" id="scrub-summary">
+          <dt>Ran</dt><dd data-f="ts" class="skel">&nbsp;</dd>
+          <dt>Duration</dt><dd data-f="duration" class="num skel">&nbsp;</dd>
+          <dt>Chunks verified</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Bytes verified</dt><dd data-f="bytesv" class="num skel">&nbsp;</dd>
+          <dt>Mismatches</dt><dd data-f="mismatches" class="num skel">&nbsp;</dd>
+          <dt>Quarantined</dt><dd data-f="quarantined" class="num skel">&nbsp;</dd>
+          <dt>Coverage</dt><dd data-f="pass" class="skel">&nbsp;</dd>
+        </dl>
+      </article>
+    </div>
+
+    <h2>Storage</h2>
+    <div id="overview-volumes" class="volumes"></div>
+  </section>
+
+  <section id="page-devices" class="page" hidden aria-labelledby="devices-h">
+    <h1 id="devices-h">Devices</h1>
+    <p class="note">
+      Every paired device syncs the whole vault under its own ceilings. Revoking one drops its
+      wrapped secret: its next request fails and no other device is affected.
+    </p>
+    <div class="scroller">
+      <table class="grid" id="devices-table">
+        <caption class="visually-hidden">Paired devices</caption>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">App</th>
+            <th scope="col">First paired</th>
+            <th scope="col">Last sign-in</th>
+            <th scope="col">Last seen</th>
+            <th scope="col">Last edit</th>
+            <th scope="col">Address</th>
+            <th scope="col">Country</th>
+            <th scope="col">Per file</th>
+            <th scope="col">Budget</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="devices-body"></tbody>
+      </table>
+    </div>
+    <p id="devices-empty" class="empty" hidden>No device is paired yet. The Pairing page has the steps.</p>
+  </section>
+
+  <section id="page-pairing" class="page" hidden aria-labelledby="pairing-h">
+    <h1 id="pairing-h">Pairing</h1>
+    <p class="note">
+      Pairing codes are minted on a device, never here. The dashboard holds no vault key, so it
+      cannot approve a device: approval always happens in Obsidian on a device that already syncs.
+    </p>
+    <ol class="prose">
+      <li>On a paired device, open the obsync plugin and choose <em>Pair a new device</em>. It
+        shows one code, as text, as a copy button, and as a link. The code expires in 10 minutes.</li>
+      <li>On the new device, install the plugin (see <a href="#install">Install</a>), open obsync,
+        and paste the code.</li>
+      <li>Back on the first device, approve <em>&lt;name&gt; on &lt;platform&gt;</em>. The vault key
+        travels device to device, encrypted under a secret that never reaches the server.</li>
+      <li>The new device starts syncing. It appears in <a href="#devices">Devices</a> within a minute.</li>
+    </ol>
+    <h2>Public address</h2>
+    <p>Devices need this URL. It is whatever the operator set as the server's public address.</p>
+    <p class="copyrow">
+      <code id="public-url" class="mono">not configured</code>
+      <button type="button" id="copy-url">Copy</button>
+    </p>
+    <div id="edge-note" class="warn" hidden>
+      <h2>This deployment sits behind a managed edge</h2>
+      <p>
+        Edge mode is <code id="edge-mode" class="mono"></code>. Every request to
+        <code>/v1/*</code> must carry the edge's connecting-address and request-id headers, and the
+        edge's access policy in front of the API is a service-token policy. Issue a service token
+        there and configure it on the device before pairing, or the server refuses the request with
+        <code>421 edge_required</code> and pairing never starts.
+      </p>
+    </div>
+  </section>
+
+  <section id="page-storage" class="page" hidden aria-labelledby="storage-h">
+    <h1 id="storage-h">Storage</h1>
+    <h2>Volumes</h2>
+    <div id="storage-volumes" class="volumes"></div>
+
+    <div class="cards">
+      <article class="card">
+        <h2>Retention</h2>
+        <dl class="kv">
+          <dt>Versions kept</dt><dd id="ret-versions" class="num skel">&nbsp;</dd>
+          <dt>Days kept</dt><dd id="ret-days" class="num skel">&nbsp;</dd>
+          <dt>Free-space watermark</dt><dd id="ret-watermark" class="mono skel">&nbsp;</dd>
+        </dl>
+        <p class="note">Writes are refused with <code>507</code> below the watermark. Nothing is
+          overwritten and nothing is lost; the device retries.</p>
+      </article>
+
+      <article class="card">
+        <h2>Garbage collection</h2>
+        <dl class="kv" id="gc-state">
+          <dt>State</dt><dd data-f="state" class="skel">&nbsp;</dd>
+          <dt>Last run</dt><dd data-f="ts" class="skel">&nbsp;</dd>
+          <dt>Chunks collected</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Bytes collected</dt><dd data-f="bytes" class="num skel">&nbsp;</dd>
+          <dt>Chunks retained</dt><dd data-f="retained" class="num skel">&nbsp;</dd>
+        </dl>
+        <button type="button" id="run-gc">Run GC</button>
+      </article>
+
+      <article class="card">
+        <h2>Scrub</h2>
+        <dl class="kv" id="scrub-state">
+          <dt>State</dt><dd data-f="state" class="skel">&nbsp;</dd>
+          <dt>Rate</dt><dd data-f="rate" class="mono skel">&nbsp;</dd>
+          <dt>Last run</dt><dd data-f="ts" class="skel">&nbsp;</dd>
+          <dt>Chunks verified</dt><dd data-f="chunks" class="num skel">&nbsp;</dd>
+          <dt>Mismatches</dt><dd data-f="mismatches" class="num skel">&nbsp;</dd>
+          <dt>Coverage</dt><dd data-f="pass" class="skel">&nbsp;</dd>
+        </dl>
+        <button type="button" id="run-scrub">Run scrub</button>
+      </article>
+    </div>
+
+    <h2>Quarantine</h2>
+    <p class="note">A chunk whose stored bytes stopped matching its storage id. It is moved aside,
+      never served, and replaced the moment a device re-uploads it.</p>
+    <div class="scroller">
+      <table class="grid" id="quarantine-table">
+        <caption class="visually-hidden">Quarantined chunks</caption>
+        <thead>
+          <tr>
+            <th scope="col">Storage id</th>
+            <th scope="col">Quarantined</th>
+            <th scope="col">Size</th>
+            <th scope="col">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="quarantine-body"></tbody>
+      </table>
+    </div>
+    <p id="quarantine-empty" class="empty" hidden>No chunk has ever failed a scrub.</p>
+  </section>
+
+  <section id="page-install" class="page" hidden aria-labelledby="install-h">
+    <h1 id="install-h">Install</h1>
+    <p>
+      The first install on a device is manual by design, and so is every update: the plugin tells
+      you when this server runs a newer version, and you install the matching GitHub Release the
+      same way. Community-plugin restricted mode must be off in Obsidian.
+    </p>
+    <h2>Files</h2>
+    <p class="note">A convenience copy served by this server, built from the same commit as the
+      running binary. The trusted source is the GitHub Release: compare each SHA-256 below with the
+      Release's evidence manifest before installing.</p>
+    <div class="scroller">
+      <table class="grid" id="plugin-table">
+        <caption class="visually-hidden">Plugin files and their hashes</caption>
+        <thead>
+          <tr>
+            <th scope="col">File</th>
+            <th scope="col">Download</th>
+            <th scope="col">SHA-256</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row"><code>main.js</code></th>
+            <td><a href="/v1/plugin/bundle" download="main.js">Download bundle</a></td>
+            <td><code id="sha-bundle" class="mono skel">&nbsp;</code></td>
+          </tr>
+          <tr>
+            <th scope="row"><code>styles.css</code></th>
+            <td><a href="/v1/plugin/styles" download="styles.css">Download styles</a></td>
+            <td><code id="sha-styles" class="mono skel">&nbsp;</code></td>
+          </tr>
+          <tr>
+            <th scope="row"><code>manifest.json</code></th>
+            <td><a href="/v1/plugin/manifest" download="manifest.json">Download manifest</a></td>
+            <td><code id="plugin-version" class="mono skel">&nbsp;</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Steps</h2>
+    <p>Put all three files in <code>&lt;vault&gt;/.obsidian/plugins/obsync/</code>.</p>
+    <h3>macOS, Windows, Linux</h3>
+    <ol class="prose">
+      <li>Download the three files above.</li>
+      <li>In Finder or Explorer, open the vault folder, then <code>.obsidian</code>, then
+        <code>plugins</code>. Create a folder called <code>obsync</code> if it is not there.</li>
+      <li>Copy the three files in.</li>
+      <li>In Obsidian: Settings → Community plugins → enable <em>obsync</em>.</li>
+    </ol>
+    <h3>iOS and iPadOS</h3>
+    <ol class="prose">
+      <li>Download the three files in Safari; they land in Files.</li>
+      <li>Files → On My iPhone (or iPad) → Obsidian → your vault → <code>.obsidian</code> (hidden
+        folders are visible in Files) → <code>plugins</code> → create <code>obsync</code>.</li>
+      <li>Paste the three files in, then restart Obsidian and enable the plugin.</li>
+    </ol>
+    <h3>Android</h3>
+    <ol class="prose">
+      <li>Download the three files.</li>
+      <li>With any file manager, open the vault folder and use the same
+        <code>.obsidian/plugins/obsync/</code> layout.</li>
+      <li>Restart Obsidian and enable the plugin.</li>
+    </ol>
+    <p class="note">Then open the plugin, paste a pairing code from an already-paired device, and
+      approve it there. A brand-new vault instead runs setup with the server's setup token.</p>
+  </section>
+
+  <section id="page-logs" class="page" hidden aria-labelledby="logs-h">
+    <h1 id="logs-h">Logs</h1>
+    <p class="note">One line per decision, newest first. Paths are classes, never vault paths, and
+      no line carries key material: the server has none to log.</p>
+    <p class="field">
+      <label for="log-filter">Filter by device id prefix</label>
+      <input type="search" id="log-filter" class="mono" autocomplete="off" spellcheck="false"
+             placeholder="e.g. 4f2a">
+    </p>
+    <ol id="log-list" class="log"></ol>
+    <p id="logs-empty" class="empty" hidden>No decision matches that device id.</p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <p>obsync dashboard · local origin only · <span id="foot-seq" class="mono">seq —</span></p>
+</footer>
+
+<template id="tpl-volume">
+  <article class="card volume">
+    <h3><span data-f="role"></span> <span data-f="class" class="pill mono"></span></h3>
+    <svg class="bar" viewBox="0 0 100 10" preserveAspectRatio="none" role="img">
+      <title data-f="bartitle"></title>
+      <rect class="bar-track" x="0" y="0" width="100" height="10"></rect>
+      <rect class="bar-fill" data-f="fill" x="0" y="0" width="0" height="10"></rect>
+      <line class="bar-mark" data-f="mark" x1="0" y1="0" x2="0" y2="10"></line>
+    </svg>
+    <p class="volume-line"><span data-f="used"></span> used of <span data-f="total"></span>
+      · <span data-f="free"></span> free</p>
+    <p class="note" data-f="watermark"></p>
+  </article>
+</template>
+
+<template id="tpl-device">
+  <tr class="device">
+    <th scope="row" data-label="Device">
+      <span class="devname">
+        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <use data-f="glyph" href=""></use>
+        </svg>
+        <span>
+          <span data-f="name" class="strong"></span>
+          <span data-f="platform" class="sub"></span>
+          <span data-f="revoked" class="tag" hidden>revoked</span>
+        </span>
+      </span>
+    </th>
+    <td data-label="App" class="mono" data-f="app"></td>
+    <td data-label="First paired" data-f="created"></td>
+    <td data-label="Last sign-in" data-f="signin"></td>
+    <td data-label="Last seen" data-f="seen"></td>
+    <td data-label="Last edit" data-f="edit"></td>
+    <td data-label="Address" class="mono" data-f="address"></td>
+    <td data-label="Country" data-f="country"></td>
+    <td data-label="Per file" class="num" data-f="perfile"></td>
+    <td data-label="Budget" class="num" data-f="budget"></td>
+    <td data-label="Actions" class="actions">
+      <button type="button" class="ghost" data-f="history-toggle" aria-expanded="false">History</button>
+      <button type="button" class="danger" data-f="revoke-open">Revoke</button>
+      <span class="confirm" data-f="confirm" hidden>
+        <span data-f="confirm-text"></span>
+        <button type="button" class="danger" data-f="revoke-do">Confirm revoke</button>
+        <button type="button" class="ghost" data-f="revoke-cancel">Cancel</button>
+      </span>
+    </td>
+  </tr>
+</template>
+
+<template id="tpl-history">
+  <tr class="history" hidden>
+    <td colspan="11">
+      <ol class="events" data-f="events"></ol>
+      <p class="empty" data-f="empty" hidden>No history within the retention window.</p>
+    </td>
+  </tr>
+</template>
+
+<template id="tpl-event">
+  <li><time data-f="ts"></time> <span data-f="event" class="strong"></span>
+    <span data-f="where" class="mono"></span></li>
+</template>
+
+<template id="tpl-quarantine">
+  <tr>
+    <th scope="row" data-label="Storage id" class="mono" data-f="sid"></th>
+    <td data-label="Quarantined" data-f="ts"></td>
+    <td data-label="Size" class="num" data-f="bytes"></td>
+    <td data-label="Reason" data-f="reason"></td>
+  </tr>
+</template>
+
+<template id="tpl-logline">
+  <li>
+    <time data-f="ts" class="mono"></time>
+    <span data-f="status" class="mono"></span>
+    <span data-f="method" class="mono"></span>
+    <span data-f="path" class="mono"></span>
+    <span data-f="device" class="mono sub"></span>
+    <span data-f="bytes" class="mono sub"></span>
+    <span data-f="duration" class="mono sub"></span>
+    <span data-f="decision" class="mono strong"></span>
+  </li>
+</template>

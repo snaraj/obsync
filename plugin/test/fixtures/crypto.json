@@ -1,0 +1,120 @@
+{
+  "note": "obsync v1 device-cryptography vectors. Inputs are sentinels, not keys. Regenerate with plugin/test/fixtures/generate.mjs.",
+  "vrk": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "domains": [
+    {
+      "domain_id": "0123456789abcdef0123456789abcdef",
+      "domain_key": "2bd601764fb316a2f879e4f1800451f4c45793662f912bb8833fb2752a4d9cb2",
+      "manifest_key": "f4b619032eb0e359ee58e62be58d89de09519b4900f1962b41b38326af98c8be"
+    },
+    {
+      "domain_id": "9876543210abcdef9876543210abcdef",
+      "domain_key": "1e62c3f2592eb4c5baecebf072c62a2b1fda02ff43498762388efc0081f71843",
+      "manifest_key": "b3413fa6a04e8d753711247b7b8273253d25212f2a08366678d5528aead8df7a"
+    }
+  ],
+  "domain_map": {
+    "key": "4c6b13640dd3457fb76a915ae4bf6015c8d008c9f47d8b63f6d6d452bd2ae3cf",
+    "file_id": "ea593f6cc8f60f4411b8d92e18e86870",
+    "domain_id": "7d350c7c44b09468d62b64d44acee182",
+    "json": "{\"v\":1,\"domains\":[{\"id\":\"0123456789abcdef0123456789abcdef\",\"paths\":[\"\"]},{\"id\":\"9876543210abcdef9876543210abcdef\",\"paths\":[\"Fixtures/Shared\"]}]}",
+    "content_version_id": "da4a2974dd64e842424fa653a96a5b168c720fc80c51da21865b2783105c8c1a",
+    "nonce": "0adbf7487f34db1a24e2a017",
+    "ciphertext_hex": "66532cc3355e8374137c5b13d4e92b1dcbf8eefd23b9432d4380998582af28bfe7de4dfe325d8348a475249358433049b98e2b6140745fcb16dbf739b7bf33e3c490b1895e43e33cb1b71604a60ff0866c8a8af22385f1e261f4e47ede0136c8d157454a78892ffae6adb3643e2e389ca0c3a90bf44da9fb55dd1a0dd380a96a4b12525a961d4cbdac2ea966cbfdbbfe7a35c61af4f570a155af4c2264bf8747"
+  },
+  "chunks": [
+    {
+      "name": "empty",
+      "plaintext_hex": "",
+      "plaintext_spec": null,
+      "plaintext_len": 0,
+      "cid": "01299741c222df91054e55e727913d631c43cdc0e2c6e2ec7ef08b7346439444",
+      "chunk_key": "f3141cb808dd9d1193beba82be37caa80d61739b9ce9ad9edd143003cd872b26",
+      "nonce": "1fad5bd7ff6f6c1a38a25c38",
+      "sid": "ead932adc0bbf82605eb060a45a087574f3d69807adb22afc8bf8e74ce0a0e7a",
+      "ciphertext_hex": "ec74e5ea67d61137275881869f9c910c",
+      "ciphertext_len": 16
+    },
+    {
+      "name": "note",
+      "plaintext_hex": "6f6273796e632066697874757265206368756e6b0a",
+      "plaintext_spec": null,
+      "plaintext_len": 21,
+      "cid": "a17f69373cfad791f6c8cf8af77aabf7e36f880ba0b0eb940812196a794dcc2c",
+      "chunk_key": "2cc718c75e2ae0eef237de52f1b9ede33fd239c8f597511a6b2fb96c62b5876f",
+      "nonce": "7c76208bb1f5579987d86390",
+      "sid": "5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489",
+      "ciphertext_hex": "953b20c79168e9dc9d7534a7e0edf0d592417844d6babe6f825733e88bc58fd3017786e53c",
+      "ciphertext_len": 37
+    },
+    {
+      "name": "block",
+      "plaintext_hex": null,
+      "plaintext_spec": "byte[i] = i % 251, 4096 bytes",
+      "plaintext_len": 4096,
+      "cid": "422ee629780d6a386fa2e0c2da30d3312a7caa612545d7bfd7fa623473be062a",
+      "chunk_key": "7ce0ffd3099cbdd1bd4eb465bf9ce458ff89cf5a1c8bc6df27b8d1f8f4565838",
+      "nonce": "eb3b5a64312dc34f33487d50",
+      "sid": "e9d4c94493314f600c42b93cd02b8b6583f601a48f73ebffa9b414e9d4140221",
+      "ciphertext_hex": null,
+      "ciphertext_len": 4112
+    }
+  ],
+  "manifest": {
+    "file_id": "00112233445566778899aabbccddeeff",
+    "parents": [
+      "2222222222222222222222222222222222222222222222222222222222222222",
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "sids": [
+      "5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489",
+      "e9d4c94493314f600c42b93cd02b8b6583f601a48f73ebffa9b414e9d4140221"
+    ],
+    "content_version_id": "2b1143f624f840b4b6e95ba3038cae16ee393dffbbfaafb401d7a3624bb9156e",
+    "json": "{\"v\":1,\"path\":\"Fixtures/Note.md\",\"size\":21,\"mtime\":1757200000000,\"domain\":\"0123456789abcdef0123456789abcdef\",\"chunks\":[{\"sid\":\"5ad111d7a6cea2721e00bd11da5705aa41c3250ee7d8282a838537fbef793489\",\"cid\":\"a17f69373cfad791f6c8cf8af77aabf7e36f880ba0b0eb940812196a794dcc2c\",\"len\":21}],\"sha256\":\"8d567684153d1263a27824459eec8583aa15078469c5907d016384d25911b3e5\",\"deleted\":false}",
+    "nonce": "6e4f64716e3a362133f3ce72",
+    "ciphertext_hex": "955f1c043d515403a11098b8581f6924eabc13709f71844b93c44c285a6623a2700f1e325f759b3b9bab208ab5251cb1834bfb4e554981dbd7a90a08de755f97014d5a8f72be28e8d2052cbb87d2eec1505acef36c365bd925c6ad222d37b42c6c6aa2daaf28ffe72cb410d8b1df698127b3f5b87d1481d89b9fab37ef392284261ed6c968fd79561f89f7e76dce83ca05ab1345a25d616544e0303fbc0307737ff68978fdee9919f3aca45a3066786c1fe65eb8b99570dde772e938a8f0d8f62cdc26d0b0ca0feeb8c69bfff88bbc2254387400f53e929233d80bb408cc99694e64ae1d814cc18bb4e4e9804217fa14d8d2bf6684d4a89ef894139f9cdae3be8ee3fb264e71a7ef41773e388307ec9213b4a7fbf4d48227d5da4193416c5b511fdf426badf5dea45eca8fc65cfa6e37921fe75736e741b0e208cd39e7e58cf6ea55e92c788a89a3122f0901be54c3562b1125452424a29bdc2f08d965f4f7da03d67ec8607cc3be9e4cd066577f2bd9f3f3f7d31a7b041d7bacfdc7c5d8ea41c9",
+    "version_id": "3fedb9beb13176dfa5f97036b3af9ae967c080f9b906de15d73be8354776efa3"
+  },
+  "signature": {
+    "device_secret": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "method": "POST",
+    "target": "/v1/files/00112233445566778899aabbccddeeff/versions",
+    "ts": 1757200000,
+    "nonce": "8d2f0a1b4c6e7f90a1b2c3d4e5f60718",
+    "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "sig": "6418a21e8d1e507aadf70f197f71a64900da961926f52f6da1a3428be844ce40"
+  },
+  "pairing": {
+    "pairing_secret": "101112131415161718191a1b1c1d1e1f",
+    "pairing_id": "fedcba9876543210fedcba9876543210",
+    "key": "e0b3e98e7a708bf8fd1a1cf57514047859cef64c456ce92d62dd0bc5fe03bfe0"
+  },
+  "chunker": {
+    "seed": "obsync/v1/gear",
+    "gear_first_8": [
+      3934986617,
+      544816491,
+      3988624564,
+      2355706491,
+      2118523742,
+      4110939775,
+      2524768132,
+      1142123642
+    ],
+    "gear_sha256": "f4eec6b74dbcd8d34044f7ed429a9f9fc4235411f979964e9b756a635a66eb5d",
+    "stream": {
+      "generator": "xorshift32",
+      "seed": 745153,
+      "size": 25165824
+    },
+    "lengths": [
+      4140191,
+      2829087,
+      2327268,
+      8388608,
+      3870949,
+      3609721
+    ]
+  }
+}

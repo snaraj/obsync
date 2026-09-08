@@ -1,0 +1,48 @@
+# Keep the build context to the sources the Dockerfile actually copies, and
+# keep every credential-shaped path out of it whether or not one exists today.
+.git
+.github
+.worktrees
+.claude
+target
+plugin/node_modules
+plugin/dist
+# `plugin/build.mjs` walks plugin/build/ recursively and concatenates every .js
+# it finds, so a stale local tsc output in the context would silently inject
+# dead modules into the bundle and break the reproducible digest the release
+# evidence manifest records. It is generated inside the image; never shipped in.
+plugin/build
+# The dashboard ships as-is, minus the two directories that are not the
+# dashboard: `dev/` is a mock server for local development and `test/` is its
+# suite. Neither belongs in an image whose whole argument is that it contains
+# only what the server serves. Excluding them here rather than naming each
+# shipped file in the Dockerfile means a new stylesheet or script ships
+# automatically while a second mock server never can.
+dashboard/dev
+dashboard/test
+bench/results
+docs
+chart
+scripts
+# deploy/ is the Compose deployment: a file the OPERATOR runs beside the image,
+# never anything the image contains. Excluded for the same reason as chart/.
+deploy
+*.log
+**/.DS_Store
+**/__pycache__
+**/.env
+**/.env.*
+**/.npmrc
+**/.ssh
+**/*.agekey
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/known_hosts*
+**/*credential*
+**/keys.txt
+**/kubeconfig*
+**/*.kubeconfig

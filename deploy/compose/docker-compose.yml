@@ -1,0 +1,151 @@
+# obsync on any network, with no provider: the server and its own TLS
+# terminator, on hardware the deployer already owns.
+#
+# WHY THIS FILE EXISTS. AGENTS.md requirement 7 says the server listens on
+# plain HTTP and is ALWAYS deployed behind a TLS terminator, and requirement 1
+# says every Cloudflare feature the reference deployment uses is optional for
+# everybody else. Until this file existed, the only terminator this repository
+# actually described was a tunnel from one provider: a stranger with a LAN and
+# no account anywhere was told that "any reverse proxy" would do and left to
+# find out alone. Caddy is a DEPLOYMENT COMPONENT here, pinned by digest like
+# every other image this project deploys, and nothing under `crates/` or
+# `plugin/` knows it exists (requirement 5).
+#
+# WHAT IT IS PROVEN BY. `scripts/ci/compose-smoke.sh` brings this exact file
+# up in the PR gate and in `make image`, reaches `/readyz` THROUGH Caddy over
+# real TLS, and asserts the hardening, the closed ports and the setup token.
+# The path is tested, not promised.
+#
+#   OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
+#   OBSYNC_HOST=sync.example.org \
+#   OBSYNC_BIND_ADDRESS=192.168.1.10 \
+#   docker compose -f deploy/compose/docker-compose.yml up -d
+#
+# THE TRUSTED PROXY RANGE IS THIS FILE'S OWN NETWORK. `OBSYNC_EDGE=none` makes
+# the server trust a forwarded client address only from an address inside
+# `OBSYNC_TRUSTED_PROXY_CIDRS`, so that value must be the network Caddy
+# actually reaches it from -- never `0.0.0.0/0`, which would let any client
+# name its own address. It is stated once, below, as the `ipam` subnet, and
+# repeated once as the server's trust list; the smoke asserts the two agree
+# with what Docker allocated. If that subnet overlaps something already on the
+# host, Docker refuses to create the network with a visible error: change BOTH
+# lines together.
+name: obsync
+
+services:
+  obsync:
+    # The only image this project publishes, by digest, supplied by the
+    # deployer -- the same bytes `cosign verify` was run against in README.md.
+    # A tag here would silently discard that verification, so the reference is
+    # never written in this file.
+    image: ${OBSYNC_IMAGE}
+    restart: unless-stopped
+    # AGENTS.md, "Security invariants": non-root, read-only root filesystem, no
+    # capabilities. 65532 is the uid the image's own /data directories are
+    # owned by; the chart's securityContext says the same thing in YAML.
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OBSYNC_EDGE: none
+      OBSYNC_TRUSTED_PROXY_CIDRS: 172.31.255.240/28
+      OBSYNC_PUBLIC_URL: https://${OBSYNC_HOST:?set it to the hostname you reach obsync at}
+      OBSYNC_BLOBS_CAPACITY: ${OBSYNC_BLOBS_CAPACITY:-250GiB}
+      OBSYNC_JOURNAL_CAPACITY: ${OBSYNC_JOURNAL_CAPACITY:-4GiB}
+    volumes:
+      - obsync-blobs:/data/blobs
+      - obsync-journal:/data/journal
+    # NO `ports:`. The server is reachable only from this network, which is
+    # what makes the terminator unavoidable rather than merely recommended.
+    networks:
+      - obsync
+
+  caddy:
+    # caddy 2.10.2, docker.io/library/caddy, by multi-architecture index
+    # digest: amd64 for a CI runner and a NUC, arm64 for a Pi. Never a tag.
+    image: docker.io/library/caddy@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    # The ONE capability, and the reason it is not `cap_drop: ALL` alone: this
+    # image's process binds 80 and 443 inside the container, and dropping every
+    # capability takes the privileged-port bind away from root as well. It is
+    # the narrowest capability that exists for that, it grants nothing else,
+    # and `no-new-privileges` still forbids acquiring any other.
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    # THE BIND ADDRESS IS THE REACHABILITY DECISION, and it has no default
+    # here because there is no answer that is right for everybody. A mapping
+    # written `80:80` omits the host address, and Docker then publishes on
+    # EVERY address this host has: a name in private DNS and a private
+    # certificate authority decide what the service is CALLED and who TRUSTS
+    # it, and neither of them decides who can reach it. So the deployer states
+    # the interface, and compose refuses to start until they have:
+    #
+    #   127.0.0.1  reached over a VPN that terminates on this host, or by a
+    #              reverse proxy running beside it. Nothing off this host can
+    #              open the port at all.
+    #   a LAN address of this host (`192.168.1.10`): the phones and laptops
+    #              on that network reach it, and so does anything ROUTED to
+    #              that address -- a VPN into the LAN, a forwarded subnet, a
+    #              port forward. A bind address limits the destination
+    #              interface, not the source; the router's forwarding rules
+    #              and a host firewall are what limit sources, and they are
+    #              the deployer's.
+    #   0.0.0.0    every interface, which is a decision to expose this service
+    #              wherever this host is reachable. It is a legitimate choice
+    #              behind a firewall or a NAT the deployer controls, and the
+    #              firewall or NAT is then theirs to get right; it is never
+    #              what happens because nobody chose.
+    #
+    # The two numbers after it are HOST ports, and they are the part most
+    # deployers leave alone: change them only if something else on this host
+    # already listens on 80 or 443. The CONTAINER ports stay
+    # 80 and 443, so Caddy's own configuration, the certificate and the name it
+    # is issued for do not change with them -- a device then reaches this
+    # deployment at `https://name:<that https port>`. The smoke publishes a
+    # high pair for exactly this reason: proving the binding must not require a
+    # privileged port on every machine that runs the gate.
+    ports:
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:${OBSYNC_HTTP_PORT:-80}:80"
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:${OBSYNC_HTTPS_PORT:-443}:443"
+    environment:
+      OBSYNC_HOST: ${OBSYNC_HOST:?set it to the hostname you reach obsync at}
+    volumes:
+      # Read-only: the configuration is the deployer's, not the container's.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The certificate authority and the issued certificates. Back this up or
+      # accept a new local root after a rebuild; with public ACME it is the
+      # account key. Never world-readable.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - obsync
+    networks:
+      - obsync
+
+networks:
+  obsync:
+    driver: bridge
+    ipam:
+      config:
+        # Stated, not inferred: this is the value `OBSYNC_TRUSTED_PROXY_CIDRS`
+        # above must equal. High in the 172.16/12 space so Docker's own
+        # sequential default pool reaches it last.
+        - subnet: 172.31.255.240/28
+
+volumes:
+  # The two volumes AGENTS.md, "Security invariants" and docs/storage.md
+  # describe. `obsync-journal` holds the journal, the setup token and, unless
+  # `OBSYNC_SERVER_KEY` is supplied, the generated server key: treat it as the
+  # sensitive volume it is and never mount it into anything else.
+  obsync-blobs:
+  obsync-journal:
+  caddy-data:
+  caddy-config:

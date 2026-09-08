@@ -1,0 +1,59 @@
+# The TLS terminator obsync requires (AGENTS.md requirement 7). It is a
+# DEPLOYMENT component: no code in this repository links, implements, or knows
+# about TLS, and nothing here is a dependency of the server or the plugin.
+#
+# TWO WAYS TO GET A CERTIFICATE, and the choice is only about who vouches for
+# it. Obsidian on iOS and Android refuses plain HTTP, so one of them is
+# mandatory; nothing else in the deployment changes between them.
+#
+#   internal (below, the default)  A certificate authority Caddy generates on
+#     first start and keeps on the `caddy-data` volume. Needs no port open to
+#     the internet, no domain you own, no account with anybody -- a LAN name or
+#     a name you resolve yourself is enough. The price is that every device
+#     must be told to trust that authority once; README.md, "Any network, no
+#     provider", has the five platforms' steps.
+#
+#   public ACME (the commented block)  A certificate every device already
+#     trusts, issued by Let's Encrypt on the strength of reaching this server.
+#     Needs a real domain whose DNS points here AND ports 80 and 443 reachable
+#     from the internet. Uncomment it, delete the `tls internal` block, and put
+#     an address you read on the `tls` line so expiry warnings arrive.
+#
+#     For a PRIVATE name -- one that resolves only on your LAN or VPN -- the
+#     same public authority will issue over the DNS-01 challenge, which is
+#     answered by a DNS record rather than by a connection, so nothing here
+#     becomes reachable from the internet. Caddy answers DNS-01 only in a build
+#     carrying your DNS provider's module, which the image pinned in
+#     docker-compose.yml does not have; that route means substituting a
+#     different, still digest-pinned, caddy image on purpose.
+#
+# `{$OBSYNC_HOST}` is the hostname from the environment: the same value the
+# compose file gives the server as `OBSYNC_PUBLIC_URL`, so a mismatch between
+# the certificate and the URL devices are configured with cannot happen.
+
+{
+	# Do not try to add the generated root to the CONTAINER's trust store.
+	# Nothing inside this container makes a TLS connection to obsync, the root
+	# filesystem is read-only by design, and without this line every start logs
+	# an alarming `failed to install root certificate` error for an operation
+	# that had no purpose here. The devices are where that root has to be
+	# trusted, and README.md says how per platform.
+	skip_install_trust
+}
+
+{$OBSYNC_HOST} {
+	tls internal
+	# The server is `obsync:8080` on the compose network and nowhere else: it
+	# publishes no port, so this is its only reachable address. Caddy adds
+	# X-Forwarded-For, -Proto and -Host, which the server trusts ONLY from
+	# `OBSYNC_TRUSTED_PROXY_CIDRS` -- this network -- and from nowhere else.
+	reverse_proxy obsync:8080
+}
+
+# Public ACME, for a deployment whose ports 80 and 443 are reachable from the
+# internet and whose name resolves publicly:
+#
+# {$OBSYNC_HOST} {
+# 	tls you@example.org
+# 	reverse_proxy obsync:8080
+# }

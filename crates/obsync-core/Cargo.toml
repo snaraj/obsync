@@ -1,0 +1,13 @@
+[package]
+name = "obsync-core"
+description = "Homegrown primitives for obsync: SHA-256, HMAC, HKDF, CRC-32, encodings, JSON, HTTP/1.1. Standard library only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lib]
+path = "src/lib.rs"

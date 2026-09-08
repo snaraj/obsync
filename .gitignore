@@ -1,0 +1,11 @@
+# Build outputs and local artifacts
+/target/
+plugin/dist/
+plugin/node_modules/
+bench/results/
+.DS_Store
+__pycache__/
+
+# Agent worktrees (AGENTS.md, "Parallel agents in one checkout")
+.worktrees/
+.claude/worktrees/

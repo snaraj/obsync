@@ -1,0 +1,47 @@
+{{- /*
+The two volumes docs/storage.md defines, plus any operator-declared mirror.
+The chart creates CLAIMS only, never PersistentVolumes: the release identity is
+a least-privilege reconciler that deliberately holds no cluster-scoped
+PersistentVolume authority, and provisioning the volumes is the platform lane's
+own step (docs/platform-onboarding.md item 5).
+
+`className` and `size` come from values, so a future HDD or NAS-backed class is
+a values change and never a code change. `capacity` is what the operator
+provisioned on the volume this claim binds to; it rides as an annotation so a
+250Gi -> 500Gi growth is ONE values edit that states both facts instead of two
+facts in two repositories that can silently disagree.
+
+ReadWriteOnce, on every claim: the journal has exactly one writer and every
+acknowledged write is fsynced through it, so a mode that admitted a second
+node's pod would be describing a durability property this workload does not
+have. ReadWriteOnce excludes other nodes and nothing else; a second pod on
+the same node is excluded by the server's own lock on the journal root
+(docs/storage.md, "One writer"), and ReadWriteOncePod is not available on the
+non-CSI local class.
+*/}}
+{{- $volumes := list (dict "name" "obsync-blobs" "role" "blobs" "spec" .Values.storage.blobs) (dict "name" "obsync-journal" "role" "journal" "spec" .Values.storage.journal) -}}
+{{- range .Values.storage.mirrors -}}
+{{- $volumes = append $volumes (dict "name" (printf "obsync-mirror-%s" .name) "role" "mirror" "spec" .) -}}
+{{- end -}}
+{{- range $index, $volume := $volumes }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $volume.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "obsync.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $volume.role }}
+  annotations:
+    platform.snaraj.dev/volume-capacity: {{ $volume.spec.capacity | quote }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ $volume.spec.className }}
+  resources:
+    requests:
+      storage: {{ $volume.spec.size }}
+{{- end }}

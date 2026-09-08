@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deploymentReady",
+    "image",
+    "service",
+    "ingress",
+    "edge",
+    "trustedProxyCidrs",
+    "publicUrl",
+    "serverKeySecret",
+    "storage",
+    "retention",
+    "scrubRate",
+    "resources",
+    "securityContext"
+  ],
+  "definitions": {
+    "cpuQuantity": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\\.[0-9]{1,3})?|0\\.(?:[1-9][0-9]{0,2}|0[1-9][0-9]?|00[1-9]))$"
+    },
+    "storageQuantity": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti|Pi|Ei|k|K|M|G|T|P|E)?$"
+    },
+    "kubernetesName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+    },
+    "labelValue": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+    },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["className", "size", "capacity"],
+      "properties": {
+        "className": { "$ref": "#/definitions/kubernetesName" },
+        "size": { "$ref": "#/definitions/storageQuantity" },
+        "capacity": { "$ref": "#/definitions/storageQuantity" }
+      }
+    },
+    "resourcePair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory"],
+      "properties": {
+        "cpu": { "$ref": "#/definitions/cpuQuantity" },
+        "memory": { "$ref": "#/definitions/storageQuantity" }
+      }
+    }
+  },
+  "properties": {
+    "deploymentReady": { "type": "boolean" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "const": "ghcr.io/snaraj/obsync" },
+        "tag": {
+          "type": "string",
+          "description": "Locked to appVersion by the release contract's seven-lock walk.",
+          "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "pullPolicy": { "type": "string", "enum": ["IfNotPresent", "Never"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "properties": { "port": { "type": "integer", "const": 8080 } }
+    },
+    "ingress": {
+      "type": "object",
+      "description": "The deployment-provider binding point. All three fields name ONE connector; the instance is required because the peer namespace is shared.",
+      "additionalProperties": false,
+      "required": ["peerNamespace", "peerAppName", "peerInstance"],
+      "properties": {
+        "peerNamespace": { "$ref": "#/definitions/kubernetesName" },
+        "peerAppName": { "$ref": "#/definitions/labelValue" },
+        "peerInstance": { "$ref": "#/definitions/labelValue" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": { "mode": { "type": "string", "enum": ["none", "cloudflare"] } }
+    },
+    "trustedProxyCidrs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$|^[0-9A-Fa-f:]+/(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
+      }
+    },
+    "publicUrl": { "type": "string", "pattern": "^$|^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\\s]*)?$" },
+    "serverKeySecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "key"],
+      "properties": {
+        "name": { "$ref": "#/definitions/kubernetesName" },
+        "key": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blobs", "journal", "mirrors"],
+      "properties": {
+        "blobs": { "$ref": "#/definitions/volume" },
+        "journal": { "$ref": "#/definitions/volume" },
+        "mirrors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "className", "size", "capacity"],
+            "properties": {
+              "name": { "$ref": "#/definitions/kubernetesName" },
+              "className": { "$ref": "#/definitions/kubernetesName" },
+              "size": { "$ref": "#/definitions/storageQuantity" },
+              "capacity": { "$ref": "#/definitions/storageQuantity" }
+            }
+          }
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["days", "versions"],
+      "properties": {
+        "days": { "type": "integer", "minimum": 1 },
+        "versions": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "scrubRate": { "type": "string", "pattern": "^[1-9][0-9]*(?:B|KiB|MiB|GiB)/s$" },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "$ref": "#/definitions/resourcePair" },
+        "limits": { "$ref": "#/definitions/resourcePair" }
+      }
+    },
+    "securityContext": {
+      "type": "object",
+      "description": "Every field is a const: an override may restate the posture and can never weaken it (requirement 4).",
+      "additionalProperties": false,
+      "required": [
+        "runAsNonRoot",
+        "readOnlyRootFilesystem",
+        "allowPrivilegeEscalation",
+        "seccompProfile",
+        "dropCapabilities"
+      ],
+      "properties": {
+        "runAsNonRoot": { "type": "boolean", "const": true },
+        "readOnlyRootFilesystem": { "type": "boolean", "const": true },
+        "allowPrivilegeEscalation": { "type": "boolean", "const": false },
+        "seccompProfile": { "type": "string", "const": "RuntimeDefault" },
+        "dropCapabilities": { "type": "string", "const": "ALL" }
+      }
+    }
+  }
+}

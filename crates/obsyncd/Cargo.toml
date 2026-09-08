@@ -1,0 +1,15 @@
+[package]
+name = "obsyncd"
+description = "obsync server: encrypted-chunk storage, sync API, dashboard, CLI. Standard library only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+obsync-core = { path = "../obsync-core" }
+
+[[bin]]
+name = "obsyncd"
+path = "src/main.rs"

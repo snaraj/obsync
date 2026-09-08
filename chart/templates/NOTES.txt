@@ -1,0 +1,27 @@
+obsync {{ .Chart.AppVersion }} rendered into namespace {{ .Release.Namespace }}.
+
+Image     {{ .Values.image.repository }}:{{ .Values.image.tag }}@{{ .Values.image.digest }}
+Edge      OBSYNC_EDGE={{ .Values.edge.mode }}
+Storage   obsync-blobs   {{ .Values.storage.blobs.size }} on {{ .Values.storage.blobs.className }} (volume {{ .Values.storage.blobs.capacity }})
+          obsync-journal {{ .Values.storage.journal.size }} on {{ .Values.storage.journal.className }} (volume {{ .Values.storage.journal.capacity }})
+{{- range .Values.storage.mirrors }}
+          obsync-mirror-{{ .name }} {{ .size }} on {{ .className }} (volume {{ .capacity }})
+{{- end }}
+Ingress   only {{ .Values.ingress.peerNamespace }}/{{ .Values.ingress.peerAppName }}/{{ .Values.ingress.peerInstance }} on {{ .Values.service.port }}; all egress denied
+
+{{ if eq .Values.image.digest "sha256:0000000000000000000000000000000000000000000000000000000000000000" -}}
+WARNING: this render carries the fail-closed all-zeros image digest. It is what
+the chart ships in git; the published OCI chart carries the resolved digest the
+publisher substituted. Install the PUBLISHED chart, or set image.digest.
+{{ end -}}
+{{ if not .Values.deploymentReady -}}
+The Deployment is annotated deployment-ready=false. The platform reconciler
+sets it true once the namespace, both volumes, and the {{ .Values.serverKeySecret.name }}
+Secret exist (docs/platform-onboarding.md).
+{{ end -}}
+Before first use, confirm:
+  1. {{ .Values.serverKeySecret.name }} carries key {{ .Values.serverKeySecret.key }} (64 hex characters).
+  2. Both claims are Bound. The server refuses readiness while a volume is
+     unwritable, so /readyz is the truthful answer, not a hardcoded yes.
+  3. TLS terminates outside this process. obsync listens on plain HTTP and
+     never implements TLS (requirement 7).
