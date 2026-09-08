@@ -356,6 +356,65 @@ jobs:
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Attest the image's provenance with this run's identity
+        # The build attaches BuildKit's SLSA v1 provenance to the index as
+        # attestation manifests, one per platform, with this run's URL as the
+        # builder. A consumer that verifies with cosign asks for something the
+        # attachment is not: an in-toto statement over the index digest, signed
+        # by this workflow's identity. Each platform's predicate is read back
+        # off the published index and attested onto the digest here, after the
+        # vulnerability gate and the signature, before the chart can embed it.
+        # Anything that is not the v1 shape naming this exact run is refused.
+        if: steps.image_state.outputs.state == 'absent'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+          for platform in linux/amd64 linux/arm64; do
+            predicate="${RUNNER_TEMP}/provenance-${platform//\//-}.json"
+            docker buildx imagetools inspect "${IMAGE}@${DIGEST}" \
+              --format "{{ json (index .Provenance \"${platform}\").SLSA }}" > "${predicate}"
+            test "$(jq -r 'has("buildDefinition") and has("runDetails")' "${predicate}")" = true
+            test "$(jq -r '.runDetails.builder.id // empty' "${predicate}")" = "${run_url}"
+            cosign attest --yes --new-bundle-format --type slsaprovenance1 \
+              --predicate "${predicate}" "${IMAGE}@${DIGEST}"
+          done
+      - name: Prove the provenance verifies with the consumer's own command
+        # Unconditional, like the vulnerability gate: a reused `complete`
+        # digest that carries no verifiable provenance is not publishable
+        # either. The command, the identity, the parse and the refusals are
+        # the platform composition's acquisition check, run here first.
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          verified="${RUNNER_TEMP}/verified-provenance.jsonl"
+          cosign verify-attestation --type slsaprovenance1 --new-bundle-format \
+            --certificate-identity "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/release-publisher.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}" > "${verified}"
+          python3 -I -B - "${verified}" "${DIGEST}" <<'PYEOF'
+          import base64, json, sys
+          path, digest = sys.argv[1], sys.argv[2]
+          statements = 0
+          for line in open(path, encoding="utf-8"):
+              if not line.strip():
+                  continue
+              envelope = json.loads(line)
+              if envelope.get("payloadType") != "application/vnd.in-toto+json":
+                  raise SystemExit("attestation payload type is not in-toto")
+              statement = json.loads(base64.b64decode(envelope["payload"]))
+              if statement.get("predicateType") != "https://slsa.dev/provenance/v1":
+                  raise SystemExit("attestation is not SLSA v1 provenance")
+              subjects = {"sha256:" + s.get("digest", {}).get("sha256", "") for s in statement.get("subject", [])}
+              if subjects != {digest}:
+                  raise SystemExit(f"provenance subject is not exactly {digest}")
+              statements += 1
+          if statements < 2:
+              raise SystemExit(f"expected one verified SLSA v1 statement per platform, found {statements}")
+          print(f"verified {statements} SLSA v1 provenance statements over {digest}")
+          PYEOF
       - name: Embed the resolved image digest into the chart values
         # The published chart must be deployable AS PUBLISHED.
         # chart/values.yaml ships the all-zeros fail-closed sentinel in git, so
