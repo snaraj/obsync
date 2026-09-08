@@ -172,6 +172,15 @@ impl Store {
         })
     }
 
+    /// The logger this store was opened with.
+    ///
+    /// One process, one sink: the API lane and the storage engine write to
+    /// the same place, and there is no second logger to configure
+    /// differently by accident.
+    pub fn log(&self) -> Log {
+        self.log.clone()
+    }
+
     fn index(&self) -> MutexGuard<'_, Index> {
         self.index.lock().expect("index lock")
     }

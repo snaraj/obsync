@@ -19,7 +19,7 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 | Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves |
 | Other cluster tenant, or another account on the host | nothing (default-deny NetworkPolicy, non-root pod, volume roots 0700 and credential files 0600, measured and corrected on every start, `docs/storage.md`) | reach the API or the volumes, or read the recovery login or the wrapping key off a restored or bind-mounted volume |
-| Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits) |
+| Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, `docs/protocol.md`) |
 
 ## Deliberate non-goals
 
@@ -38,7 +38,9 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 - Content confidentiality: AES-256-GCM per chunk with per-chunk derived
   keys; manifests under a separate key; paths only inside manifests.
 - Request integrity and authenticity: HMAC over method, path, timestamp,
-  nonce, body hash; replay window and nonce cache.
+  nonce, body hash; a ±300 s window and a 600 s nonce cache that rests on the
+  journal volume, so the window a captured request has to beat is not
+  reopened by a restart.
 - Storage integrity: sid verification on write, scrub on read schedule,
   plaintext hash verified by the client before any vault write.
 - Availability: fsync-before-ack, watermark refusals, retention and

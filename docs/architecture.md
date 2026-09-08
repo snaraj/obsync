@@ -220,6 +220,16 @@ Every API request carries `X-Obsync-Device`, `X-Obsync-Ts` (unix seconds),
 timestamps outside ±300 s and nonces seen in the last 600 s. Chunk uploads
 already know their body hash: it is the `sid`.
 
+The 600 s is wall-clock time, not process time, so the nonces are kept on
+the journal volume rather than only in memory: every accepted nonce is
+appended to `v1/nonces` and fsynced before its request is answered, and a
+start loads back what the window still covers. Without that, a request
+captured 299 s before a restart is replayable 1 s after it. The file is
+compacted once it passes twice the cache's own ceiling, a torn final line
+costs only itself, and a volume that will not take the record refuses the
+request (`503 nonce_log_unavailable`): a request answered without its nonce
+written down is one a crash makes replayable.
+
 This gives integrity and authentication even on a hop without TLS (the
 in-cluster connector-to-pod leg, or a LAN transfer), on top of the content
 encryption that makes such a hop carry only ciphertext.
