@@ -464,7 +464,7 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
 #[cfg(test)]
 mod tests {
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     use super::*;
     use crate::log::LogLevel;
@@ -531,6 +531,21 @@ mod tests {
         PathClass::JournalRoot.path(dir.path()).join("nonces")
     }
 
+    /// Where a compaction assembles the replacement before it takes the
+    /// name (`docs/storage.md`, "Nonce log recovery", steps 1 and 2).
+    fn tmp_file(dir: &TempDir) -> std::path::PathBuf {
+        PathClass::JournalRoot.path(dir.path()).join("nonces.tmp")
+    }
+
+    /// Whether this process is root, whom no directory mode holds out. The
+    /// user comes off `/proc/self` on Linux, as `storage::posture` reads
+    /// it, and off the volume the caller just made everywhere else.
+    fn running_as_root(dir: &TempDir) -> bool {
+        std::fs::metadata("/proc/self")
+            .or_else(|_| std::fs::metadata(dir.path()))
+            .is_ok_and(|m| m.uid() == 0)
+    }
+
     fn lines_on_disk(dir: &TempDir) -> usize {
         std::fs::read_to_string(log_file(dir))
             .expect("the log is there")
@@ -543,6 +558,21 @@ mod tests {
     /// compaction that stands beyond it inside one test.
     fn cache(dir: &TempDir, now: u64, capacity: usize, log: &Log) -> NonceCache {
         NonceCache::sized(dir.path(), now, capacity, log).expect("the nonce log opens")
+    }
+
+    /// Accept five nonces at a capacity of two: two per window, with a
+    /// window between each pair, so the file grows to one line short of
+    /// twice the ceiling while the cache never passes it. Returns the
+    /// second the last of them was accepted at, when one entry is live.
+    fn fill_to_the_threshold(c: &mut NonceCache) -> u64 {
+        let mut now = 1_000;
+        for n in 1..=5u8 {
+            if n % 2 == 1 && n > 1 {
+                now += NONCE_TTL_SECS + 1;
+            }
+            c.remember(DEVICE, &nonce(n), now).expect("accepted");
+        }
+        now
     }
 
     #[test]
@@ -763,15 +793,7 @@ mod tests {
         let dir = volume("nonce-compaction");
         let log = Log::buffered(LogLevel::Debug);
         let mut c = cache(&dir, 1_000, 2, &log);
-        // Two per window, and a window between each pair, so the file grows
-        // past twice the ceiling while the cache never does.
-        let mut now = 1_000;
-        for n in 1..=5u8 {
-            if n % 2 == 1 && n > 1 {
-                now += NONCE_TTL_SECS + 1;
-            }
-            c.remember(DEVICE, &nonce(n), now).expect("accepted");
-        }
+        let now = fill_to_the_threshold(&mut c);
         assert_eq!(lines_on_disk(&dir), 5, "every acceptance is one line");
 
         c.remember(DEVICE, &nonce(6), now).expect("accepted");
@@ -793,17 +815,12 @@ mod tests {
         let log = Log::buffered(LogLevel::Debug);
         let victim = dir.path().join("victim");
         std::fs::write(&victim, "sentinel\n").expect("the victim");
-        let tmp = PathClass::JournalRoot.path(dir.path()).join("nonces.tmp");
+        let tmp = tmp_file(&dir);
         std::os::unix::fs::symlink(&victim, &tmp).expect("the link is planted");
 
         let mut c = cache(&dir, 1_000, 2, &log);
-        let mut now = 1_000;
-        for n in 1..=6u8 {
-            if n % 2 == 1 && n > 1 {
-                now += NONCE_TTL_SECS + 1;
-            }
-            c.remember(DEVICE, &nonce(n), now).expect("accepted");
-        }
+        let now = fill_to_the_threshold(&mut c);
+        c.remember(DEVICE, &nonce(6), now).expect("accepted");
         assert_eq!(lines_on_disk(&dir), 2, "the rewrite happened");
         assert_eq!(
             std::fs::read_to_string(&victim).expect("still there"),
@@ -828,6 +845,203 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&victim).expect("still there"),
             "sentinel\n"
+        );
+    }
+
+    // Pins `docs/storage.md`, "Nonce log recovery": "A crash before step 5
+    // leaves a partial `v1/nonces.tmp` behind. The next start ignores it."
+    #[test]
+    fn a_partial_temporary_file_is_ignored_at_the_next_start_and_the_rewrite_replaces_it() {
+        let dir = volume("nonce-tmp-partial");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&mut c);
+        drop(c);
+        // What a crash between step 2 and step 5 leaves: as much of the
+        // replacement as reached the volume. One complete line and a torn
+        // one, naming a device and a nonce the log itself never held.
+        std::fs::write(
+            tmp_file(&dir),
+            format!(
+                "{now} {OTHER} {}\n{now} {OTHER} {}",
+                nonce(9),
+                &nonce(9)[..10]
+            ),
+        )
+        .expect("the leftover lands");
+
+        let mut restarted = cache(&dir, now, 2, &log);
+        assert_eq!(
+            restarted.len(),
+            1,
+            "the window is what `v1/nonces` still covers, and nothing else"
+        );
+        // The leftover named a nonce. A start that had read it would call
+        // this a replay; it is accepted, and it is the request that crosses
+        // the threshold and drives the rewrite.
+        restarted
+            .remember(OTHER, &nonce(9), now)
+            .expect("nothing standing at the temporary name was ever loaded");
+        assert_eq!(
+            lines_on_disk(&dir),
+            2,
+            "the rewrite kept the live entry and the line that triggered it"
+        );
+        assert!(
+            std::fs::read_to_string(log_file(&dir))
+                .expect("the log")
+                .ends_with('\n'),
+            "and no torn tail came with it"
+        );
+        assert!(
+            std::fs::symlink_metadata(tmp_file(&dir)).is_err(),
+            "the temporary name is gone"
+        );
+    }
+
+    // Pins `docs/storage.md`, "Nonce log recovery": "Any failure inside the
+    // sequence refuses the request that triggered it with `503
+    // nonce_log_unavailable` ... Nothing already durable changes ... the
+    // nonce the refused request carried was never recorded."
+    #[test]
+    fn a_directory_at_the_temporary_name_refuses_the_request_and_spends_no_nonce() {
+        let dir = volume("nonce-tmp-directory");
+        let log = Log::buffered(LogLevel::Debug);
+        // A name step 1 cannot remove and step 2 cannot take.
+        std::fs::create_dir(tmp_file(&dir)).expect("a directory stands at the temporary name");
+        let mut c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&mut c);
+        assert_eq!(lines_on_disk(&dir), 5);
+
+        let e = c
+            .remember(DEVICE, &nonce(6), now)
+            .expect_err("the rewrite cannot happen, so the request cannot be answered");
+        assert_eq!(e.status, 503);
+        assert_eq!(e.code, "nonce_log_unavailable");
+        assert!(
+            log.captured().contains("event=nonce_log decision=refused"),
+            "{}",
+            log.captured()
+        );
+        assert_eq!(lines_on_disk(&dir), 5, "nothing already durable changed");
+        assert_eq!(c.len(), 1, "and neither did the window");
+        assert_eq!(
+            c.remember(DEVICE, &nonce(5), now)
+                .expect_err("what the window held it holds still")
+                .code,
+            "replayed_nonce"
+        );
+
+        std::fs::remove_dir(tmp_file(&dir)).expect("the directory goes");
+        c.remember(DEVICE, &nonce(6), now)
+            .expect("the nonce the refusal carried was never spent");
+        assert_eq!(
+            lines_on_disk(&dir),
+            2,
+            "and the threshold was still outstanding, so the rewrite happened"
+        );
+    }
+
+    // Pins `docs/storage.md`, "Nonce log recovery": "A crash after step 5
+    // leaves the replacement standing as the log, and that is the file the
+    // next start reads."
+    #[test]
+    fn the_bytes_the_rename_publishes_are_the_window_a_fresh_start_reads() {
+        let log = Log::buffered(LogLevel::Debug);
+        // The replacement a real compaction publishes, taken off a real
+        // volume: a log opened, handed a live window, rewritten.
+        let source = volume("nonce-rename-source");
+        let (mut durable, _) = NonceLog::open(source.path(), 1_000, &log).expect("the log opens");
+        let live: HashMap<Nonce, u64> = [
+            ((DEVICE.to_string(), nonce(5)), 2_202 + NONCE_TTL_SECS),
+            ((OTHER.to_string(), nonce(6)), 2_202 + NONCE_TTL_SECS),
+        ]
+        .into_iter()
+        .collect();
+        durable.compact(&live).expect("the rewrite lands");
+        let published = std::fs::read_to_string(log_file(&source)).expect("the log");
+        assert_eq!(
+            published.lines().count(),
+            2,
+            "step 5 puts one line per live entry at the log's name"
+        );
+        assert!(
+            std::fs::symlink_metadata(tmp_file(&source)).is_err(),
+            "and consumes the temporary name doing it"
+        );
+
+        // Step 6 lost: the replacement's bytes stand at the log's name and
+        // no temporary file is left. Built by hand, because a test cannot
+        // stop the kernel between a rename and the fsync that follows it.
+        let dir = volume("nonce-rename-crash");
+        std::fs::write(log_file(&dir), &published).expect("what the rename left");
+        let mut restarted = cache(&dir, 2_202, NONCE_CACHE_MAX, &log);
+        assert_eq!(
+            restarted.len(),
+            2,
+            "exactly the entries the replacement held"
+        );
+        assert_eq!(
+            restarted
+                .remember(DEVICE, &nonce(5), 2_202)
+                .expect_err("each is still inside its window")
+                .code,
+            "replayed_nonce"
+        );
+        assert_eq!(
+            restarted
+                .remember(OTHER, &nonce(6), 2_202)
+                .expect_err("both of them")
+                .code,
+            "replayed_nonce"
+        );
+    }
+
+    // Pins `docs/storage.md`, "Nonce log recovery": "The compaction
+    // threshold is still outstanding, so the next accepted request attempts
+    // the rewrite again."
+    #[test]
+    fn a_root_that_will_not_take_the_replacement_refuses_and_keeps_the_threshold() {
+        let dir = volume("nonce-root-readonly");
+        let log = Log::buffered(LogLevel::Debug);
+        if running_as_root(&dir) {
+            // A mode holds root out of nothing, so there is no refusal to
+            // make here. The case is skipped, never weakened.
+            return;
+        }
+        let mut c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&mut c);
+        let root = PathClass::JournalRoot.path(dir.path());
+
+        // Step 2 cannot create the replacement under a root this user may
+        // not write. Everything is measured while the root is closed and
+        // asserted after it is open, so no panic can leave it that way.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500))
+            .expect("closed to its owner");
+        let refused = c.remember(DEVICE, &nonce(6), now);
+        let while_closed = std::fs::read_to_string(log_file(&dir)).map(|t| t.lines().count());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("open again");
+
+        let e = refused.expect_err("the replacement cannot be created");
+        assert_eq!(e.status, 503);
+        assert_eq!(e.code, "nonce_log_unavailable");
+        assert!(
+            log.captured().contains("event=nonce_log decision=refused"),
+            "{}",
+            log.captured()
+        );
+        assert_eq!(
+            while_closed.expect("the log is still readable"),
+            5,
+            "nothing already durable changed"
+        );
+        c.remember(DEVICE, &nonce(6), now)
+            .expect("accepted once the root takes a new file");
+        assert_eq!(
+            lines_on_disk(&dir),
+            2,
+            "and the rewrite it was owed happened then"
         );
     }
 
