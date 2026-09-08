@@ -138,20 +138,6 @@ in octal. The modes on the `server_key` and `setup_token_ready` lines are the
 modes read back off the handle, so a startup line cannot claim a protection a
 file does not have. No line carries a filesystem location or any file content.
 
-`v1/nonces` is not one of the six classes and adds no line to the report.
-The one thing measured about it is that the name is not a link and not
-another type: a restored volume can arrive with it pointing at a file the
-server may write, and an append through it would put nonce lines inside
-that file. A start refuses one and says why.
-It holds no credential: a device id and a nonce are public request values
-that open nothing and are only ever compared, so it is server state like the
-journal segments beside it, created 0600 under the same measured 0700 root.
-What it does hold is the replay window (`docs/protocol.md`,
-"Authentication"): every accepted nonce is appended and fsynced before its
-request is answered, a start loads back what the 600 s still covers, the
-file is rewritten when it passes twice the cache's ceiling, and a torn final
-line costs only itself.
-
 `obsyncd check` runs the identical pass, and its policy is **repair and
 report**: an operator who runs it on a restored volume leaves that volume
 correct, and the report names every class with its decision
@@ -168,6 +154,87 @@ reference deployment's host directories are created for that user, so
 nothing needs sharing. A platform that applies an `fsGroup` anyway sees the
 pass correct the bits below the roots and refuse the mount point; the fix is
 to drop the `fsGroup`, not to widen the pass.
+
+`v1/nonces` is not one of the six classes and adds no line to the report.
+The one thing measured about it is that the name is not a link and not
+another type: a restored volume can arrive with it pointing at a file the
+server may write, and an append through it would put nonce lines inside
+that file. A start refuses one and says why.
+It holds no credential: a device id and a nonce are public request values
+that open nothing and are only ever compared, so it is server state like the
+journal segments beside it, created 0600 under the same measured 0700 root.
+What it does hold is the replay window (`docs/protocol.md`,
+"Authentication"): every accepted nonce is appended and fsynced before its
+request is answered, a start loads back what the 600 s still covers, the
+file is rewritten when it passes twice the cache's ceiling, and a torn final
+line costs only itself.
+
+### Nonce log recovery
+
+What an operator can rely on after a crash, and what the next start does
+with what the crash left.
+
+Every accepted nonce is appended to `v1/nonces` and fsynced before the
+request that carried it is answered. A nonce the server has acted on is a
+nonce the server has already written down.
+
+The file is rewritten when it passes twice the cache's ceiling. The
+rewrite is one sequence, in this order:
+
+1. `v1/nonces.tmp` is removed by name. A removal by name never follows a
+   link, so a link a restored volume brought is unlinked rather than
+   written through.
+2. The replacement is created at that name exclusively. `O_EXCL` refuses
+   a name of any kind that already exists, so nothing this writes can
+   land in a file that was already there.
+3. The entries the window still covers are written to it.
+4. The replacement is fsynced.
+5. It is renamed onto `v1/nonces`.
+6. The journal root is fsynced.
+
+The handle that wrote the replacement is the handle that appends to it
+afterwards. No name is resolved again after step 2.
+
+A crash before step 5 leaves a partial `v1/nonces.tmp` behind. The next
+start ignores it. The live window is read from `v1/nonces` alone, and
+nothing standing at the temporary name is ever loaded, whatever it holds.
+The next compaction removes it at step 1 and takes the name back.
+
+A crash after step 5 leaves the replacement standing as the log, and that
+is the file the next start reads. Step 6 is the only step such a crash
+can lose, and losing it costs nothing the window promised. The entries
+the replacement holds were fsynced at step 4. A rename the filesystem has
+not yet committed can only leave the name on the file the replacement was
+built from, and every entry in the replacement was appended to that file
+before it entered the window, so either file answers the window.
+
+Any failure inside the sequence refuses the request that triggered it
+with `503 nonce_log_unavailable` and one `event=nonce_log
+decision=refused` line. Nothing already durable changes: `v1/nonces`
+holds what it held, and the nonce the refused request carried was never
+recorded, so it is unspent and the device may send it again. The
+compaction threshold is still outstanding, so the next accepted request
+attempts the rewrite again.
+
+The boundary is the one "One writer" states below. These steps defend
+against what a crash and a restored volume leave behind. A process
+already holding the server's own uid inside the 0700 journal root is held
+out by none of them: it can write `v1/nonces` directly, exactly as it can
+write the journal segments beside it. Keeping such a process off the
+volume is the platform's admission decision, not this file's.
+
+Measured. `crates/obsyncd/src/api/auth.rs` pins each paragraph above with
+a test that drives a real compaction over a real volume: a partial
+temporary file present at start, a directory standing at the temporary
+name, the state step 5 leaves before step 6, and a replacement that
+cannot be created because the root is read-only.
+
+Not measured. Nothing here is tested by cutting power or by making a
+syscall that succeeded report a failure. The states a crash would leave
+are built by hand and then opened. The ordering claim — that a file
+fsynced before its rename is on the volume once that rename is visible —
+rests on the POSIX `fsync` contract and on the class honoring it, which
+this document assumes of every class.
 
 ## One writer
 
