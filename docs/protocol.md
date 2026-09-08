@@ -211,13 +211,13 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
 - Heads per file record ≤ 64; versions per file record ≤
   `OBSYNC_RETENTION_VERSIONS` plus one per head; sids per version ≤ 65,536;
   parents per version ≤ 64; `manifest_ct` ≤ 1 MiB of base64.
-- Response bound, measured by `render`'s own test at the ceilings above: a
-  full head list is 4,286 bytes, so a 1000-entry `/v1/changes` page carries
-  at most 64,000 head ids and 4.1 MiB of head list. The widest single version
-  renders as 5,444,021 bytes and the widest change entry as 5,448,438, so one
-  file record stays under 450 MiB at the shipped retention of 10 and one full
-  page under 6 GiB. The per-version ceilings, not the heads, are what set
-  those two; a client that wants a smaller page sets `limit`.
+- Response bound, enforced by `render`'s own test against the ceilings
+  above: a full head list is under 8 KiB, so a 1000-entry `/v1/changes` page
+  carries at most 64,000 head ids. The widest single version and the widest
+  change entry are each under 6 MiB, so one file record stays under 450 MiB
+  at the shipped retention of 10 and one full page under 6 GiB. The
+  per-version ceilings, not the heads, are what set those two; a client that
+  wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
   `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s.
 - Every response carries `X-Obsync-Seq` (journal head), `Cache-Control:
