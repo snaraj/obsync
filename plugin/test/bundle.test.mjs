@@ -113,7 +113,14 @@ test("no ingress, tunnel or access provider is named in the shipped code", () =>
 test("the manifest ships the values Obsidian and the release path expect", () => {
   const manifest = JSON.parse(readFileSync(join(plugin, "dist", "manifest.json"), "utf8"));
   assert.equal(manifest.id, "obsync");
-  assert.equal(manifest.version, "0.1.0");
+  // The shipped manifest carries the version the plugin's own sources
+  // declare; the release contract pins that number to the repository's
+  // other locks. A literal here would break on every release.
+  const source = JSON.parse(readFileSync(join(plugin, "manifest.json"), "utf8"));
+  const pkg = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+  assert.equal(manifest.version, source.version);
+  assert.equal(manifest.version, pkg.version);
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.isDesktopOnly, false, "the plugin runs on mobile");
   assert.ok(manifest.minAppVersion);
   const styles = readFileSync(join(plugin, "dist", "styles.css"), "utf8");

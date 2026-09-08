@@ -512,11 +512,17 @@ jobs:
           bundle="${RUNNER_TEMP}/obsync-plugin-${TAG}.zip"
           rm -f -- "${bundle}"
           find "${export_dir}" -exec touch -t 198001010000 {} +
+          # zip stores the names it is given; the leading "./" find prints is
+          # stripped here so the archive holds bare names and the check below
+          # reads exactly what the archive holds (the first publisher run
+          # exported a correct bundle and then failed this check looking for
+          # "./main.js" in a listing that said "main.js").
           ( cd "${export_dir}" && \
-            find . -type f -print | LC_ALL=C sort | zip -X -D -q -9 "${bundle}" -@ )
+            find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | \
+            zip -X -D -q -9 "${bundle}" -@ )
           unzip -l "${bundle}"
           for member in main.js manifest.json styles.css; do
-            unzip -l "${bundle}" | grep -qE " \./${member}\$"
+            unzip -l "${bundle}" | grep -qE " ${member}\$"
           done
           printf 'path=%s\nname=obsync-plugin-%s.zip\ndigest=sha256:%s\n' \
             "${bundle}" "${TAG}" "$(sha256sum "${bundle}" | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
