@@ -37,7 +37,9 @@ fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("obsync-api-{}-{tag}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    // Its own resolved form: the posture pass refuses a configured volume
+    // directory that is not (`/var` is a link on macOS).
+    std::fs::canonicalize(&dir).expect("temp dir resolves")
 }
 
 /// A running server with its store, its client, and its cleanup.
@@ -2041,7 +2043,8 @@ fn the_clock_the_server_signs_against_is_the_one_it_is_given() {
 #[test]
 fn a_temporary_volume_is_the_only_place_the_test_writes() {
     let dir = temp_dir("cleanup");
-    assert!(dir.starts_with(std::env::temp_dir()));
+    let root = std::fs::canonicalize(std::env::temp_dir()).expect("temp root resolves");
+    assert!(dir.starts_with(root));
     assert!(Path::new(&dir).is_dir());
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

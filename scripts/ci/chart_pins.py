@@ -408,7 +408,9 @@ def pin_security() -> None:
             "runAsNonRoot": True,
             "runAsUser": 65532,
             "runAsGroup": 65532,
-            "fsGroup": 65532,
+            # No fsGroup: a group-sharing mechanism the server refuses the
+            # result of (a group-writable volume directory). Exact equality
+            # here is what pins its absence.
             "seccompProfile": {"type": "RuntimeDefault"},
         },
         "the pod security context",

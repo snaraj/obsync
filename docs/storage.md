@@ -57,22 +57,24 @@ open handle or on a directory chain, never on a bare name:
    after the pass, and a later snapshot would write that tree's state into
    the protected root. So every directory from the filesystem root down to
    each configured volume directory must be owned by root or by the
-   server's user (`foreign_owner`), must not be writable by others
-   (`writable_by_others`), and may be writable by a group only when it is
-   the group the server itself writes with (`writable_by_group`); the
-   sticky bit satisfies the write conditions, since it narrows rename to
-   the entry's owner, the directory's owner, and root, all of which are
-   already root or the server. A link on the configured path must be
-   root's or the server's (`foreign_link`), since its owner can re-point
-   it. A refusal states how many directories up it was found (`depth=0` is
-   the configured directory itself); it never states a location. These
-   directories are the platform's to create, and this is the condition the
-   platform holds them to: a named volume, a `hostPath` the operator
-   created for the server's user, and a Kubernetes `fsGroup` that makes
-   the mount point group-writable by the server's own group all pass; a
-   bind mount of a directory another account owns is refused with one
-   line, and the fix is to give the directory to root or to the server's
-   user, never to widen the pass.
+   server's user (`foreign_owner`), and must not be writable by others
+   (`writable_by_others`) or by its group (`writable_by_group`): a group
+   number says nothing about who is in the group, and `fsGroup` exists to
+   share one. The sticky bit satisfies the write conditions, since it
+   narrows rename to the entry's owner, the directory's owner, and root,
+   all of which are already root or the server. The configured path must
+   be its own resolved form — absolute, no `.` or `..`, no link anywhere in
+   it (`not_canonical`) — because a link is re-pointed by its owner, and a
+   link nested inside another link's target is one no walk of the written
+   path would see; name the volume by its real path. A refusal states how
+   many directories up it was found (`depth=0` is the configured directory
+   itself); it never states a location. These directories are the
+   platform's to create, and this is the condition the platform holds them
+   to: a named volume and a `hostPath` the operator created for the
+   server's user pass; a bind mount of a directory another account owns,
+   or one a group may write, is refused with one line, and the fix is to
+   give the directory to root or to the server's user and close it, never
+   to widen the pass.
 2. **Look, open, compare** (roots and credential files). The name is
    looked at once without following a link (`lstat`): a link, a type the
    server never stores, or a foreign owner is refused before anything is
@@ -120,11 +122,14 @@ mode it was read at and is never corrected, since it is not the server's to
 change). A posture that cannot be corrected exits non-zero, exactly as it
 refuses a start.
 
-On Kubernetes the kubelet may re-apply group bits to volume contents at each
-mount when an `fsGroup` is set (the chart sets 65532). The pass corrects them
-again below the roots and logs one `repaired` line per affected class per
-start: that is the pass working, not a fault. The mount point itself becomes
-writable by the server's own group, which the mount classes accept.
+The chart sets no `fsGroup`. It is a group-sharing mechanism: the kubelet
+would make the mount point and everything under it writable by that group,
+and a mount point a group may write is refused above. The image ships
+`/data/blobs` and `/data/journal` owned by the server's user, and the
+reference deployment's host directories are created for that user, so
+nothing needs sharing. A platform that applies an `fsGroup` anyway sees the
+pass correct the bits below the roots and refuse the mount point; the fix is
+to drop the `fsGroup`, not to widen the pass.
 
 ## One writer
 

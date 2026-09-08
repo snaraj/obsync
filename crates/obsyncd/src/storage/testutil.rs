@@ -31,6 +31,9 @@ impl TempDir {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp directory is created");
+        // Its own resolved form: the posture pass refuses a configured
+        // directory that is not (`/var` is a link on macOS).
+        let path = fs::canonicalize(&path).expect("temp directory resolves");
         TempDir { path }
     }
 

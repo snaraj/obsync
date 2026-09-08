@@ -34,7 +34,12 @@ spec:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         runAsUser: 65532
         runAsGroup: 65532
-        fsGroup: 65532
+        {{- /* No fsGroup. It is a group-sharing mechanism: the kubelet would
+        make the mount points and everything under them writable by that
+        group, and the server refuses a volume directory a group may write
+        (docs/storage.md, "Volume posture"). The image ships /data/blobs and
+        /data/journal owned by this user and the reference deployment's host
+        directories are created for it, so nothing needs sharing. */}}
         seccompProfile:
           type: {{ .Values.securityContext.seccompProfile }}
       containers:
