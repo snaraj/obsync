@@ -18,6 +18,15 @@
 //! is measured on the handle it was written through ([`Posture::adopt`]), so
 //! no name is consulted again after a measurement.
 //!
+//! The directories above a root are measured too. `Journal` and `Blobs`
+//! work by name below their roots, and a name is only as good as the
+//! directories that hold it: whoever can rename `v1` away can put another
+//! tree under the name after the pass. So every directory from the
+//! filesystem root down to each configured volume directory must be owned
+//! by root or by this server, and must let nobody else rename what it
+//! holds ([`Posture::enforce`], the `*_mount` classes). A store cannot be
+//! opened without a completed pass in hand.
+//!
 //! Fail-closed (AGENTS.md requirement 4). What cannot be corrected refuses
 //! the start: a link is never followed, a wrong file type is never used,
 //! and a foreign owner is never accepted, because this process cannot
@@ -83,6 +92,11 @@ pub enum PathClass {
     BlobsRoot,
     /// The journal volume's root, which holds both files above.
     JournalRoot,
+    /// The directory `OBSYNC_JOURNAL_DIR` names, and every directory above
+    /// it: who may rename the journal root away.
+    JournalMount,
+    /// The same for `OBSYNC_BLOBS_DIR` and for each mirror.
+    BlobsMount,
 }
 
 impl PathClass {
@@ -93,12 +107,14 @@ impl PathClass {
             PathClass::SetupToken => "setup_token",
             PathClass::BlobsRoot => "blobs_root",
             PathClass::JournalRoot => "journal_root",
+            PathClass::JournalMount => "journal_mount",
+            PathClass::BlobsMount => "blobs_mount",
         }
     }
 
     /// Whether this class must be a directory.
     const fn is_dir(self) -> bool {
-        matches!(self, PathClass::BlobsRoot | PathClass::JournalRoot)
+        !matches!(self, PathClass::ServerKey | PathClass::SetupToken)
     }
 
     /// The one mode this class may rest at.
@@ -117,6 +133,7 @@ impl PathClass {
             PathClass::ServerKey => root.join("server.key"),
             PathClass::SetupToken => root.join("setup-token"),
             PathClass::BlobsRoot | PathClass::JournalRoot => root,
+            PathClass::JournalMount | PathClass::BlobsMount => volume_dir.to_path_buf(),
         }
     }
 }
@@ -295,6 +312,10 @@ impl Credential {
 #[derive(Debug)]
 pub struct Posture {
     uid: u32,
+    /// The group this server writes with, learned from the same probe: a
+    /// directory writable by that group is writable by this server's own
+    /// group and by nobody this pass can tell apart from it.
+    gid: u32,
     outcomes: Vec<Outcome>,
     /// Which inode each credential class was opened on, so two classes
     /// resolving to one file are refused.
@@ -313,12 +334,20 @@ impl Posture {
         // The probe below creates a file, so what is standing here has to be
         // a directory this process owns before it runs.
         kind_of(PathClass::JournalRoot, read_facts(&journal_root)?, log)?;
+        let (uid, gid) = effective_identity(&journal_root)?;
         let mut posture = Posture {
-            uid: effective_uid(&journal_root)?,
+            uid,
+            gid,
             outcomes: Vec::new(),
             opened: RefCell::new(Vec::new()),
         };
-        mount_writable_by_others(&cfg.journal_dir, log);
+        // Who may rename a root away is decided before any root is trusted
+        // by name.
+        posture.mount(PathClass::JournalMount, &cfg.journal_dir, log)?;
+        posture.mount(PathClass::BlobsMount, &cfg.blobs_dir, log)?;
+        for mirror in &cfg.mirrors {
+            posture.mount(PathClass::BlobsMount, &mirror.path, log)?;
+        }
         let mut roots = vec![PathClass::BlobsRoot.path(&cfg.blobs_dir)];
         roots.extend(
             cfg.mirrors
@@ -409,6 +438,27 @@ impl Posture {
     fn record(&mut self, class: PathClass, path: &Path, log: &Log) -> Result<(), StoreError> {
         let decision = self.verify(class, path, log)?;
         self.outcomes.push(Outcome { class, decision });
+        Ok(())
+    }
+
+    /// Decide who may rename the root a configured volume directory holds:
+    /// every directory from that one up to the filesystem root, and every
+    /// link on the configured path. A configured directory that is not
+    /// there is created first, at 0700, as a root is.
+    ///
+    /// # Errors
+    /// A refusal naming the reason and how many directories up it was found.
+    fn mount(&mut self, class: PathClass, dir: &Path, log: &Log) -> Result<(), StoreError> {
+        // A first start on an empty layout: the configured directory is
+        // created as the roots are, and then judged like any other.
+        make_root(dir)?;
+        let holders = walk(dir).map_err(|(reason, depth)| refuse_at(class, reason, depth, log))?;
+        let mode = judge(&holders, (self.uid, self.gid))
+            .map_err(|(reason, depth)| refuse_at(class, reason, depth, log))?;
+        self.outcomes.push(Outcome {
+            class,
+            decision: Decision::Ok { mode },
+        });
         Ok(())
     }
 
@@ -550,6 +600,7 @@ impl Posture {
     pub(crate) const fn expecting(uid: u32) -> Posture {
         Posture {
             uid,
+            gid: 0,
             outcomes: Vec::new(),
             opened: RefCell::new(Vec::new()),
         }
@@ -583,25 +634,120 @@ fn refuse(class: PathClass, reason: &'static str, log: &Log) -> StoreError {
     }
 }
 
-/// Say, once per start, when the journal mount point lets another account
-/// rename the root away. The mount point is the platform's to own
-/// (`docs/storage.md`), so this is a warning and not a refusal: nothing
-/// below it is trusted by name, and what such an account can do with the
-/// name is deny service, not read or substitute a credential.
-fn mount_writable_by_others(mount: &Path, log: &Log) {
-    let Ok(meta) = fs::symlink_metadata(mount) else {
-        return;
-    };
-    let mode = meta.mode();
-    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
-        log.warn(
-            "mount_posture",
-            &[
-                ("mount", Val::word("journal")),
-                ("reason", Val::word("writable_by_others")),
-            ],
-        );
+/// One refusal line for a mount class, with how many directories up from
+/// the configured one the reason was found (0 is that directory itself).
+/// A count is not a location.
+fn refuse_at(class: PathClass, reason: &'static str, depth: u32, log: &Log) -> StoreError {
+    log.error(
+        "posture",
+        &[
+            ("path_class", Val::word(class.label())),
+            ("decision", Val::word("refused")),
+            ("reason", Val::word(reason)),
+            ("depth", Val::count(u64::from(depth))),
+        ],
+    );
+    StoreError::Posture {
+        class: class.label(),
+        reason,
     }
+}
+
+/// One directory, or one link, on the way to a configured volume directory,
+/// as the rename decision sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Holder {
+    /// How many names up from the configured directory this is.
+    depth: u32,
+    /// A link on the configured path (its owner can re-point it) rather
+    /// than a directory on the resolved one.
+    link: bool,
+    kind: Kind,
+    uid: u32,
+    gid: u32,
+    /// Permission and sticky bits.
+    mode: u32,
+}
+
+fn holder_of(depth: u32, link: bool, meta: &fs::Metadata) -> Holder {
+    let facts = facts_of(meta);
+    Holder {
+        depth,
+        link,
+        kind: facts.kind,
+        uid: facts.uid,
+        gid: meta.gid(),
+        mode: meta.mode() & 0o7777,
+    }
+}
+
+/// Read every holder of a configured volume directory: the links on the
+/// path as written, then the real directories from the configured one up to
+/// the filesystem root. A `walk` reads; [`judge`] decides.
+fn walk(dir: &Path) -> Result<Vec<Holder>, (&'static str, u32)> {
+    let mut holders = Vec::new();
+    for (depth, name) in dir
+        .ancestors()
+        .filter(|p| !p.as_os_str().is_empty())
+        .enumerate()
+    {
+        let depth = u32::try_from(depth).unwrap_or(u32::MAX);
+        let meta = fs::symlink_metadata(name).map_err(|_| ("unreadable", depth))?;
+        if meta.file_type().is_symlink() {
+            holders.push(holder_of(depth, true, &meta));
+        }
+    }
+    let real = fs::canonicalize(dir).map_err(|_| ("unresolvable", 0))?;
+    for (depth, name) in real.ancestors().enumerate() {
+        let depth = u32::try_from(depth).unwrap_or(u32::MAX);
+        let meta = fs::symlink_metadata(name).map_err(|_| ("unreadable", depth))?;
+        holders.push(holder_of(depth, false, &meta));
+    }
+    Ok(holders)
+}
+
+/// Decide whether anyone but root and this server can rename what these
+/// holders hold, and return the configured directory's own permission bits.
+///
+/// A link is re-pointed by its owner, so a link must be root's or this
+/// server's. A directory hands rename authority over its entries to
+/// whoever may write it: its owner (who can also widen it), so the owner
+/// must be root or this server; everyone, when others may write it; the
+/// group, when the group may write it, accepted only for the group this
+/// server itself writes with. The sticky bit narrows rename to the entry's
+/// owner, the directory's owner, and root, and both of those are already
+/// root or this server, so a sticky directory holds its entries safely
+/// whatever its write bits say.
+fn judge(holders: &[Holder], me: (u32, u32)) -> Result<u32, (&'static str, u32)> {
+    let (uid, gid) = me;
+    let mut mode = None;
+    for h in holders {
+        if h.link {
+            if h.uid != 0 && h.uid != uid {
+                return Err(("foreign_link", h.depth));
+            }
+            continue;
+        }
+        if h.kind != Kind::Dir {
+            return Err(("not_a_directory", h.depth));
+        }
+        if h.uid != 0 && h.uid != uid {
+            return Err(("foreign_owner", h.depth));
+        }
+        let sticky = h.mode & 0o1000 != 0;
+        if !sticky {
+            if h.mode & 0o002 != 0 {
+                return Err(("writable_by_others", h.depth));
+            }
+            if h.mode & 0o020 != 0 && h.gid != gid {
+                return Err(("writable_by_group", h.depth));
+            }
+        }
+        if h.depth == 0 {
+            mode = Some(h.mode & MODE_MASK);
+        }
+    }
+    mode.ok_or(("unresolvable", 0))
 }
 
 /// Create a volume root at 0700 when it is not there.
@@ -620,13 +766,13 @@ fn make_root(root: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The user this process runs as, learned from the filesystem: it creates a
-/// file on the journal volume and asks who owns it.
+/// The user and group this process writes as, learned from the filesystem:
+/// it creates a file on the journal volume and asks who owns it.
 ///
 /// `geteuid` is a foreign call, and requirement 5 allows exactly one file to
 /// make those. The probe pays for itself twice over: it also proves the
 /// journal volume is writable, which is the first thing any start needs.
-fn effective_uid(journal_root: &Path) -> Result<u32, StoreError> {
+fn effective_identity(journal_root: &Path) -> Result<(u32, u32), StoreError> {
     let probe = journal_root.join(PROBE);
     // A pass that died mid-probe leaves one behind; removing a link removes
     // the link and not what it points at.
@@ -638,10 +784,11 @@ fn effective_uid(journal_root: &Path) -> Result<u32, StoreError> {
         .open(&probe)?;
     // From the open handle, so the answer is about the file that was created
     // and not about whatever now holds the name.
-    let uid = file.metadata()?.uid();
+    let meta = file.metadata()?;
+    let identity = (meta.uid(), meta.gid());
     drop(file);
     fs::remove_file(&probe)?;
-    Ok(uid)
+    Ok(identity)
 }
 
 #[cfg(test)]
@@ -994,28 +1141,244 @@ mod tests {
         );
     }
 
+    fn holder(depth: u32, link: bool, uid: u32, gid: u32, mode: u32) -> Holder {
+        Holder {
+            depth,
+            link,
+            kind: if link { Kind::Link } else { Kind::Dir },
+            uid,
+            gid,
+            mode,
+        }
+    }
+
+    /// The rename decision, one holder at a time. `me` is uid 1000 in group
+    /// 1000; the entry below each holder is root's or this server's, which
+    /// is what the sticky bit relies on.
     #[test]
-    fn a_mount_point_writable_by_others_is_said_once_and_a_closed_or_sticky_one_is_not() {
+    fn who_may_rename_what_a_directory_holds() {
+        const ME: (u32, u32) = (1000, 1000);
+        let chain = |h: Holder| judge(&[h, holder(1, false, 0, 0, 0o755)], ME);
+        assert_eq!(chain(holder(0, false, 1000, 1000, 0o700)), Ok(0o700));
+        assert_eq!(
+            chain(holder(0, false, 0, 0, 0o755)),
+            Ok(0o755),
+            "root's, closed"
+        );
+        assert_eq!(
+            chain(holder(0, false, 1000, 1000, 0o775)),
+            Ok(0o775),
+            "writable by the group this server writes with"
+        );
+        assert_eq!(
+            chain(holder(0, false, 0, 0, 0o1777)),
+            Ok(0o1777 & MODE_MASK),
+            "sticky: only the entry's owner, the directory's owner, or root"
+        );
+        assert_eq!(
+            chain(holder(0, false, 4242, 4242, 0o755)),
+            Err(("foreign_owner", 0)),
+            "its owner can widen it and rename what it holds"
+        );
+        assert_eq!(
+            chain(holder(0, false, 4242, 4242, 0o1755)),
+            Err(("foreign_owner", 0)),
+            "sticky does not help when the directory's owner is the stranger"
+        );
+        assert_eq!(
+            chain(holder(0, false, 0, 0, 0o777)),
+            Err(("writable_by_others", 0))
+        );
+        assert_eq!(
+            chain(holder(0, false, 0, 4242, 0o775)),
+            Err(("writable_by_group", 0)),
+            "a group this server does not write with"
+        );
+        assert_eq!(
+            chain(holder(0, false, 1000, 1000, 0o702)),
+            Err(("writable_by_others", 0))
+        );
+        // Above the configured directory, the same rules, and the depth says
+        // how far up.
+        assert_eq!(
+            judge(
+                &[
+                    holder(0, false, 1000, 1000, 0o700),
+                    holder(1, false, 4242, 4242, 0o755)
+                ],
+                ME
+            ),
+            Err(("foreign_owner", 1))
+        );
+        assert_eq!(
+            judge(
+                &[
+                    holder(0, false, 1000, 1000, 0o700),
+                    holder(1, false, 0, 0, 0o777),
+                    holder(2, false, 0, 0, 0o755)
+                ],
+                ME
+            ),
+            Err(("writable_by_others", 1))
+        );
+        // A link on the configured path is re-pointed by its owner.
+        assert_eq!(
+            judge(
+                &[
+                    holder(1, true, 4242, 4242, 0o777),
+                    holder(0, false, 1000, 1000, 0o700)
+                ],
+                ME
+            ),
+            Err(("foreign_link", 1))
+        );
+        assert_eq!(
+            judge(
+                &[
+                    holder(1, true, 0, 0, 0o777),
+                    holder(0, false, 1000, 1000, 0o700)
+                ],
+                ME
+            ),
+            Ok(0o700),
+            "root's link"
+        );
+        // Something that is not a directory cannot hold a root.
+        let mut file = holder(0, false, 1000, 1000, 0o600);
+        file.kind = Kind::File;
+        assert_eq!(judge(&[file], ME), Err(("not_a_directory", 0)));
+        assert_eq!(judge(&[], ME), Err(("unresolvable", 0)), "nothing was read");
+    }
+
+    /// The reviewer's round-10 schedule needed one thing: a directory above
+    /// the root that another account could write. That directory is refused
+    /// before any root is trusted by name.
+    #[test]
+    fn a_volume_directory_another_account_could_rename_refuses_the_start() {
         let dir = TempDir::new("posture-mount");
-        let (mount, _) = journal(&dir);
-        const LINE: &str = "event=mount_posture mount=journal reason=writable_by_others";
-        for (mode, said) in [
-            (0o777, true),
-            (0o775, true),
-            (0o1777, false),
-            (0o755, false),
-            (0o700, false),
+        let cfg = crate::cli::testutil::config(&dir).storage();
+        fs::create_dir_all(&cfg.journal_dir).expect("the journal directory");
+        fs::create_dir_all(&cfg.blobs_dir).expect("the blobs directory");
+        let mirror = dir.path().join("mirror");
+        fs::create_dir_all(&mirror).expect("the mirror directory");
+        let mut cfg = cfg;
+        cfg.mirrors.push(crate::config::MirrorVolume {
+            path: mirror.clone(),
+            label: "mirror".to_string(),
+        });
+
+        for (path, class) in [
+            (&cfg.journal_dir, "journal_mount"),
+            (&cfg.blobs_dir, "blobs_mount"),
+            (&mirror, "blobs_mount"),
         ] {
-            fs::set_permissions(&mount, Permissions::from_mode(mode)).expect("the mount mode");
+            fs::set_permissions(path, Permissions::from_mode(0o777)).expect("anyone may write it");
             let log = Log::buffered(LogLevel::Debug);
-            mount_writable_by_others(&mount, &log);
-            assert_eq!(
-                log.captured().contains(LINE),
-                said,
-                "{mode:o}: {}",
+            let err = Posture::enforce(&cfg, &log)
+                .expect_err("a directory anyone may write holds a root anyone may rename");
+            assert!(
+                matches!(err, StoreError::Posture { class: c, reason: "writable_by_others" } if c == class),
+                "{class}: {err}"
+            );
+            assert!(
+                log.captured().contains(&format!(
+                    "event=posture path_class={class} decision=refused reason=writable_by_others depth=0"
+                )),
+                "{}",
                 log.captured()
             );
+            fs::set_permissions(path, Permissions::from_mode(0o700)).expect("closed again");
         }
+
+        // Closed, sticky, or writable by this server's own group: each holds
+        // its root safely, and the pass reports every mount with the mode it
+        // was read at.
+        for mode in [0o700, 0o1777, 0o775] {
+            fs::set_permissions(&cfg.journal_dir, Permissions::from_mode(mode)).expect("the mode");
+            let log = Log::buffered(LogLevel::Debug);
+            let posture = Posture::enforce(&cfg, &log).expect("a directory nobody else can write");
+            let mounts: Vec<(&str, Decision)> = posture
+                .outcomes()
+                .iter()
+                .filter(|o| matches!(o.class, PathClass::JournalMount | PathClass::BlobsMount))
+                .map(|o| (o.class.label(), o.decision))
+                .collect();
+            assert_eq!(
+                mounts,
+                vec![
+                    (
+                        "journal_mount",
+                        Decision::Ok {
+                            mode: mode & MODE_MASK
+                        }
+                    ),
+                    ("blobs_mount", Decision::Ok { mode: 0o700 }),
+                    ("blobs_mount", Decision::Ok { mode: 0o700 }),
+                ],
+                "{mode:o}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_reports_every_link_on_the_configured_path_and_every_real_directory_above() {
+        let dir = TempDir::new("posture-walk");
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join("journal")).expect("the real directory");
+        let link = dir.path().join("link");
+        symlink(&real, &link).expect("a link on the configured path");
+
+        let holders = walk(&link.join("journal")).expect("readable");
+        let me = fs::symlink_metadata(&link).expect("the link").uid();
+        let links: Vec<&Holder> = holders.iter().filter(|h| h.link).collect();
+        assert_eq!(
+            links.iter().filter(|h| h.depth == 1 && h.uid == me).count(),
+            1,
+            "the link this test made, one name up from the configured directory"
+        );
+        // Any other link on the way (`/var` on macOS, say) is the platform's,
+        // and the decision sees it too.
+        assert!(links.iter().all(|h| h.uid == 0 || h.uid == me), "{links:?}");
+        let dirs: Vec<u32> = holders
+            .iter()
+            .filter(|h| !h.link)
+            .map(|h| h.depth)
+            .collect();
+        let canonical_depth = fs::canonicalize(real.join("journal"))
+            .expect("resolves")
+            .ancestors()
+            .count();
+        assert_eq!(
+            dirs,
+            (0..canonical_depth as u32).collect::<Vec<_>>(),
+            "every real directory from the configured one up to the filesystem root, in order"
+        );
+        assert!(
+            holders
+                .iter()
+                .filter(|h| !h.link)
+                .all(|h| h.kind == Kind::Dir)
+        );
+    }
+
+    #[test]
+    fn a_volume_directory_reached_through_this_servers_own_link_is_accepted() {
+        let dir = TempDir::new("posture-mount-link");
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join("journal")).expect("the real journal directory");
+        fs::create_dir_all(real.join("blobs")).expect("the real blobs directory");
+        let link = dir.path().join("link");
+        symlink(&real, &link).expect("a link this test owns");
+        let mut cfg = crate::cli::testutil::config(&dir).storage();
+        cfg.journal_dir = link.join("journal");
+        cfg.blobs_dir = link.join("blobs");
+        let log = Log::buffered(LogLevel::Debug);
+        Posture::enforce(&cfg, &log).expect("a link of this server's own is not a way in");
+        assert!(
+            !log.captured().contains("decision=refused"),
+            "{}",
+            log.captured()
+        );
     }
 
     #[test]

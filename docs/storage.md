@@ -43,44 +43,68 @@ by every account on the host is a standing way in: the token is the dashboard
 recovery login, and the key with the journal unwraps every stored device
 credential.
 
-`serve`, `check`, and `export` therefore run one pass over four classes —
-`blobs_root` (the primary and each mirror), `journal_root`, `server_key`,
-`setup_token` — before anything is read or written through them. Every
-decision is made on an open handle, never on a name:
+`serve`, `check`, and `export` therefore run one pass over six classes —
+`journal_mount` and `blobs_mount` (the directory each configured volume path
+names, one per mirror too, and every directory above it), `blobs_root` (the
+primary and each mirror), `journal_root`, `server_key`, `setup_token` —
+before anything is read or written through them, and a store cannot be
+opened without the completed pass in hand. Every decision is made on an
+open handle or on a directory chain, never on a bare name:
 
-1. **Look, open, compare.** The name is looked at once without following
-   a link (`lstat`): a link, a type the server never stores, or a foreign
-   owner is refused before anything is opened. The name is then opened
-   read-only and non-blocking (a fifo answers instead of waiting for a
-   writer), and the handle must be the inode that look saw, or the pass
-   refuses (`swapped`): whatever the name is made to say between the look
-   and the open, what the server holds is the file it looked at. The one
-   thing the look leaves standing that cannot be opened — a file of the
-   server's own user at a mode that shuts its user out — is corrected by
-   name only so that a handle can be reached at all. Every decision from
-   here on is made on that handle. No `O_NOFOLLOW` is involved: its value
-   differs between architectures, and the identity check does not.
-2. **Type.** On the handle. A directory where a file belongs, a file where
+1. **Who may rename a root away** (`*_mount`). Everything below a root
+   works by name, and a name is only as good as the directories that hold
+   it: whoever can rename `v1` away can put another tree under the name
+   after the pass, and a later snapshot would write that tree's state into
+   the protected root. So every directory from the filesystem root down to
+   each configured volume directory must be owned by root or by the
+   server's user (`foreign_owner`), must not be writable by others
+   (`writable_by_others`), and may be writable by a group only when it is
+   the group the server itself writes with (`writable_by_group`); the
+   sticky bit satisfies the write conditions, since it narrows rename to
+   the entry's owner, the directory's owner, and root, all of which are
+   already root or the server. A link on the configured path must be
+   root's or the server's (`foreign_link`), since its owner can re-point
+   it. A refusal states how many directories up it was found (`depth=0` is
+   the configured directory itself); it never states a location. These
+   directories are the platform's to create, and this is the condition the
+   platform holds them to: a named volume, a `hostPath` the operator
+   created for the server's user, and a Kubernetes `fsGroup` that makes
+   the mount point group-writable by the server's own group all pass; a
+   bind mount of a directory another account owns is refused with one
+   line, and the fix is to give the directory to root or to the server's
+   user, never to widen the pass.
+2. **Look, open, compare** (roots and credential files). The name is
+   looked at once without following a link (`lstat`): a link, a type the
+   server never stores, or a foreign owner is refused before anything is
+   opened. The name is then opened read-only and non-blocking (a fifo
+   answers instead of waiting for a writer), and the handle must be the
+   inode that look saw, or the pass refuses (`swapped`): whatever the name
+   is made to say between the look and the open, what the server holds is
+   the file it looked at. The one thing the look leaves standing that
+   cannot be opened — a file of the server's own user at a mode that shuts
+   its user out — is corrected by name only so that a handle can be reached
+   at all. Every decision from here on is made on that handle. No
+   `O_NOFOLLOW` is involved: its value differs between architectures, and
+   the identity check does not.
+3. **Type.** On the handle. A directory where a file belongs, a file where
    a root belongs, or anything the server never stores refuses the start.
-3. **Owner.** On the handle. The file's user must be the user the process
+4. **Owner.** On the handle. The file's user must be the user the process
    runs as, learned from a file the process creates on the journal volume
    and then removes. The process cannot `chown`, and whoever does own a
    file can widen it again, so a foreign owner is a refusal and never a
    correction.
-4. **Mode.** On the handle. Roots must be exactly 0700 and credential files
+5. **Mode.** On the handle. Roots must be exactly 0700 and credential files
    exactly 0600. Anything else is corrected with one `fchmod` and then
    RE-READ off the same handle: a mode that was set is not a mode that
    stuck. A correction the volume ignored, or one it refused, refuses the
    start.
-5. **Read through the handle.** `server.key` and `setup-token` are read
+6. **Read through the handle.** `server.key` and `setup-token` are read
    through the handle they were measured on, and a file the server has just
    written is measured on the handle it was written through and read back
-   through it. No name is consulted again after a measurement, so whoever
-   can rename the journal root aside after the pass changes what the name
-   says and not what the server reads. Two credential classes that resolve
-   to one inode (a hard link) are refused, and a `setup-token` that does not
-   hold 64 hex characters is refused rather than minted over: a file that is
-   not a token is not a first boot.
+   through it. No name is consulted again after a measurement. Two
+   credential classes that resolve to one inode (a hard link) are refused,
+   and a `setup-token` that does not hold 64 hex characters is refused
+   rather than minted over: a file that is not a token is not a first boot.
 
 Each decision is one line — `event=posture path_class=<class>
 decision=<ok|repaired|refused> …` — and a correction states `from` and `to`
@@ -91,30 +115,16 @@ file does not have. No line carries a filesystem location or any file content.
 `obsyncd check` runs the identical pass, and its policy is **repair and
 report**: an operator who runs it on a restored volume leaves that volume
 correct, and the report names every class with its decision
-(`posture setup_token: repaired 0644 -> 0600`). A posture that cannot be
-corrected exits non-zero, exactly as it refuses a start.
+(`posture setup_token: repaired 0644 -> 0600`; a mount is reported with the
+mode it was read at and is never corrected, since it is not the server's to
+change). A posture that cannot be corrected exits non-zero, exactly as it
+refuses a start.
 
 On Kubernetes the kubelet may re-apply group bits to volume contents at each
 mount when an `fsGroup` is set (the chart sets 65532). The pass corrects them
-again and logs one `repaired` line per affected class per start: that is the
-pass working, not a fault.
-
-The volume mount points themselves (`OBSYNC_BLOBS_DIR`, `OBSYNC_JOURNAL_DIR`)
-are the platform's to own: on the reference deployment they are mount points
-the server neither creates nor owns, and refusing their mode would refuse a
-correct deployment. They are not the control. The `v1` root inside each is
-0700 and owned by the server, and every credential is read through a
-measured handle, which together is what stops another account on the host
-from reaching or substituting anything below. What a mount point does
-decide is who may rename `v1` away: an account that can write the journal
-mount point can make the next start look like a first boot (a fresh root, a
-fresh key, a fresh token; the renamed tree keeps its data). That is denial
-of service, not disclosure, and the server says so once per start with
-`event=mount_posture mount=journal reason=writable_by_others` when the
-journal mount point is writable by group or others without the sticky bit.
-The condition an operator holds it to: owned by root or the server's user,
-and not writable by any other account (a sticky bit satisfies this, since
-only the entry's owner may then rename it).
+again below the roots and logs one `repaired` line per affected class per
+start: that is the pass working, not a fault. The mount point itself becomes
+writable by the server's own group, which the mount classes accept.
 
 ## Durability rules
 

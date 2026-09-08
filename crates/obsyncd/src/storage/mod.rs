@@ -102,7 +102,18 @@ impl Store {
     /// scans the blob volume. Every count reaches the SUMMARY line, so a
     /// crash that cost frames or left leftovers is visible at the next start
     /// (requirement 12).
-    pub fn open(cfg: &StorageConfig, server_key: [u8; 32], log: Log) -> Result<Store, StoreError> {
+    ///
+    /// Everything below the roots works by name, so the [`Posture`] is
+    /// required: it is the proof that the directories holding those names
+    /// let nobody but root and this server rename them, and that the roots
+    /// and credential files were measured. There is no way to open a store
+    /// on volumes whose posture was never decided.
+    pub fn open(
+        cfg: &StorageConfig,
+        server_key: [u8; 32],
+        _posture: &Posture,
+        log: Log,
+    ) -> Result<Store, StoreError> {
         let started = log.start("store_open", cfg.journal_capacity);
         let mirror_paths: Vec<PathBuf> = cfg.mirrors.iter().map(|m| m.path.clone()).collect();
         let (blobs, leftovers) = Blobs::open(&cfg.blobs_dir, &mirror_paths)?;

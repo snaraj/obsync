@@ -79,7 +79,7 @@ pub fn run(cfg: &Config, log: &Log) -> Result<CheckReport, StoreError> {
     let posture = Posture::enforce(&storage, log)?;
     let server_key =
         load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, log)?;
-    let store = Store::open(&storage, server_key, log.clone())?;
+    let store = Store::open(&storage, server_key, &posture, log.clone())?;
     let started = log.start("check", storage.blobs_capacity);
 
     let (chunks, bytes, bad_chunks) = store.verify_chunks()?;
@@ -146,22 +146,35 @@ mod tests {
             .collect();
         assert_eq!(
             classes,
-            vec!["blobs_root", "journal_root", "server_key", "setup_token"],
+            vec![
+                "journal_mount",
+                "blobs_mount",
+                "blobs_root",
+                "journal_root",
+                "server_key",
+                "setup_token"
+            ],
             "every class is reported"
         );
         assert_eq!(
-            report.posture[3].decision,
+            report.posture[5].decision,
             Decision::Repaired {
                 from: 0o644,
                 to: 0o600
             },
+            "the setup token"
         );
         assert_eq!(
-            report.posture[1].decision,
+            report.posture[3].decision,
             Decision::Repaired {
                 from: 0o755,
                 to: 0o700
             },
+            "the journal root"
+        );
+        assert!(
+            matches!(report.posture[0].decision, Decision::Ok { .. }),
+            "a mount is reported at the mode it was read at and never corrected"
         );
         assert_eq!(
             fs::symlink_metadata(&token)

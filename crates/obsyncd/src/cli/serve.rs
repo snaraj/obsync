@@ -75,7 +75,7 @@ pub fn run() -> i32 {
             Ok(key) => key,
             Err(e) => return fatal(&log, "server_key_failed", &e),
         };
-    let store = match Store::open(&storage, server_key, log.clone()) {
+    let store = match Store::open(&storage, server_key, &posture, log.clone()) {
         Ok(store) => store,
         Err(e) => return fatal(&log, "store_open_failed", &e),
     };
@@ -382,7 +382,7 @@ mod tests {
         let posture = Posture::enforce(&storage, log).expect("volume posture");
         let key = load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, log)
             .expect("server key");
-        let store = Store::open(&storage, key, log.clone()).expect("store");
+        let store = Store::open(&storage, key, &posture, log.clone()).expect("store");
         (posture, store)
     }
 

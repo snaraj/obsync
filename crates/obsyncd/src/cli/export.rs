@@ -77,7 +77,7 @@ pub fn run(
     let posture = Posture::enforce(&storage, &log)?;
     let server_key =
         load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)?;
-    let store = Store::open(&storage, server_key, log.clone())?;
+    let store = Store::open(&storage, server_key, &posture, log.clone())?;
     if !store.domain_exists(domain) {
         return Err(StoreError::UnknownDomain);
     }
@@ -225,7 +225,9 @@ mod tests {
     /// Two files, one per domain, each with one chunk.
     fn seed(cfg: &Config) -> (FileId, FileId) {
         let log = Log::new(LogLevel::Error);
-        let store = Store::open(&cfg.storage(), [9u8; 32], log).expect("store opens");
+        let storage = cfg.storage();
+        let posture = Posture::enforce(&storage, &log).expect("volume posture");
+        let store = Store::open(&storage, [9u8; 32], &posture, log).expect("store opens");
         let account = store.setup("sentinel account").expect("setup");
         let device = store
             .create_device(NewDevice {

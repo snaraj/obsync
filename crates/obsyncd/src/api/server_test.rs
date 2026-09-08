@@ -125,7 +125,7 @@ impl Harness {
         let server_key =
             load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)
                 .expect("server key");
-        let store = Store::open(&storage, server_key, log.clone()).expect("store");
+        let store = Store::open(&storage, server_key, &posture, log.clone()).expect("store");
 
         let dashboard = if setup.dashboard {
             Dashboard::load(&dashboard_dir, &log)

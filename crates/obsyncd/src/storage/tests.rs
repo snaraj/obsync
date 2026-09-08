@@ -45,7 +45,14 @@ fn config(dir: &TempDir) -> StorageConfig {
 }
 
 fn open(cfg: &StorageConfig) -> Store {
-    Store::open(cfg, [7u8; 32], Log::buffered(LogLevel::Debug)).expect("store opens")
+    open_with(cfg, [7u8; 32], Log::buffered(LogLevel::Debug))
+}
+
+/// The start sequence a store needs: the posture pass, then the open, with
+/// the pass in hand as the proof the open requires.
+fn open_with(cfg: &StorageConfig, key: [u8; 32], log: Log) -> Store {
+    let posture = Posture::enforce(cfg, &log).expect("volume posture");
+    Store::open(cfg, key, &posture, log).expect("store opens")
 }
 
 /// A store with an account and one paired device.
@@ -294,7 +301,7 @@ fn the_watermark_and_the_quota_refuse_with_their_numbers() {
     let mut cfg = config(&dir);
     cfg.blobs_capacity = WATERMARK + 8;
     let log = Log::buffered(LogLevel::Debug);
-    let store = Store::open(&cfg, [7u8; 32], log.clone()).expect("store opens");
+    let store = open_with(&cfg, [7u8; 32], log.clone());
     let account = store.setup("sentinel").expect("setup");
     let _ = store.put_chunk(&account, &sid, body.len() as u64, &mut &body[..]);
     let captured = log.captured();
@@ -636,7 +643,7 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
     assert_ne!(wrapped, secret, "the journal never holds the plain secret");
 
     // A different server key cannot unwrap it.
-    let other = Store::open(&cfg, [8u8; 32], Log::buffered(LogLevel::Error)).expect("reopen");
+    let other = open_with(&cfg, [8u8; 32], Log::buffered(LogLevel::Error));
     assert_ne!(
         other.device_secret(&id),
         Some(secret),
@@ -772,7 +779,7 @@ fn a_file_domain_survives_replay_from_frames_and_from_a_snapshot() {
     drop(setup);
 
     // From the frames alone.
-    let replayed = Store::open(&cfg, [3u8; 32], Log::new(LogLevel::Error)).expect("reopen");
+    let replayed = open_with(&cfg, [3u8; 32], Log::new(LogLevel::Error));
     assert_eq!(replayed.file(&file(1)).expect("one").domain_id, DOMAIN);
     assert_eq!(
         replayed.file(&file(2)).expect("two").domain_id,
@@ -781,7 +788,7 @@ fn a_file_domain_survives_replay_from_frames_and_from_a_snapshot() {
     // And through a snapshot, which carries the domain per file.
     replayed.snapshot().expect("snapshot");
     drop(replayed);
-    let loaded = Store::open(&cfg, [3u8; 32], Log::new(LogLevel::Error)).expect("reopen snapshot");
+    let loaded = open_with(&cfg, [3u8; 32], Log::new(LogLevel::Error));
     assert_eq!(loaded.file(&file(1)).expect("one").domain_id, DOMAIN);
     assert_eq!(loaded.file(&file(2)).expect("two").domain_id, second_domain);
     assert!(loaded.domain_exists(&second_domain));
@@ -1097,6 +1104,11 @@ fn ready_existing(cfg: &StorageConfig) -> Store {
 // server volumes it did not create. These drive the start-time pass against
 // exactly that shape.
 
+/// A mount class: reported at the mode it was read at, never corrected.
+fn is_mount(class: PathClass) -> bool {
+    matches!(class, PathClass::JournalMount | PathClass::BlobsMount)
+}
+
 /// The mode a restore hands a file over at.
 const WEAK_FILE: u32 = 0o644;
 /// The mode a restore hands a directory over at.
@@ -1158,8 +1170,8 @@ fn a_restored_volume_is_corrected_and_re_read_before_anything_is_served() {
     ] {
         assert!(captured.contains(line), "missing {line}\n{captured}");
     }
-    assert_eq!(posture.outcomes().len(), 4, "one decision per class");
-    for outcome in posture.outcomes() {
+    assert_eq!(posture.outcomes().len(), 6, "one decision per class");
+    for outcome in posture.outcomes().iter().filter(|o| !is_mount(o.class)) {
         assert_eq!(
             outcome.decision,
             Decision::Repaired {
@@ -1191,7 +1203,7 @@ fn a_corrected_volume_is_quiet_and_unchanged_on_the_next_start() {
         "a corrected volume produces no posture line\n{}",
         second.captured()
     );
-    for outcome in posture.outcomes() {
+    for outcome in posture.outcomes().iter().filter(|o| !is_mount(o.class)) {
         assert_eq!(
             outcome.decision,
             Decision::Ok {
@@ -1346,6 +1358,51 @@ fn the_wrapping_material_is_measured_where_it_is_read_not_only_where_the_pass_lo
     );
 }
 
+/// The round-10 schedule: a protected journal holding an account, the
+/// pass, `v1` renamed aside by whoever can write the directory above it, a
+/// valid journal with another account put under the name, the store opened,
+/// the protected root restored, a snapshot writing the poisoned index into
+/// it. Every step after the first needed a directory above the root that
+/// another account could write. That directory is refused before any root
+/// is trusted by name, and a store cannot be opened without the pass in
+/// hand, so the schedule never reaches its second step.
+#[test]
+fn a_journal_directory_another_account_could_write_is_refused_before_any_store_opens() {
+    let dir = TempDir::new("posture-substitution");
+    let cfg = config(&dir);
+    let account = ready(&cfg).account;
+
+    // The schedule's precondition.
+    chmod(&cfg.journal_dir, 0o777);
+    let log = Log::buffered(LogLevel::Debug);
+    let err = Posture::enforce(&cfg, &log)
+        .expect_err("a directory anyone may write holds a root anyone may rename away");
+    assert!(
+        matches!(
+            err,
+            StoreError::Posture {
+                class: "journal_mount",
+                reason: "writable_by_others"
+            }
+        ),
+        "{err}"
+    );
+    assert!(
+        !log.captured().contains("event=store"),
+        "nothing below the refusal ran: {}",
+        log.captured()
+    );
+
+    // Closed again, the same journal opens with the account it always held.
+    chmod(&cfg.journal_dir, 0o700);
+    let store = ready_existing(&cfg);
+    assert_eq!(
+        store.account().map(|a| a.account_id),
+        Some(account),
+        "the account it always held"
+    );
+}
+
 #[test]
 fn a_restored_tree_takes_one_start_to_reach_the_mode_every_class_requires() {
     let dir = TempDir::new("posture-tree");
@@ -1370,7 +1427,7 @@ fn a_restored_tree_takes_one_start_to_reach_the_mode_every_class_requires() {
     let posture = Posture::enforce(&cfg, &log).expect("the pass corrects the tree");
     let loaded = load_or_create_server_key(&cfg.journal_dir, None, &posture, &log)
         .expect("the restored key loads");
-    let store = Store::open(&cfg, loaded, log.clone()).expect("the store opens");
+    let store = Store::open(&cfg, loaded, &posture, log.clone()).expect("the store opens");
 
     assert_eq!(
         store.account().expect("the account survived").account_id,
