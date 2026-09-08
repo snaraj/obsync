@@ -1242,6 +1242,47 @@ fn post_in_domain(h: &Harness, cred: &Cred, file_id: &str, parents: &[&str], dom
         .send(h.addr)
 }
 
+/// A version naming no parent replaces no head, so a client that never
+/// reconciles accumulates one head per post. The wire says where that stops.
+#[test]
+fn a_file_stops_taking_heads_at_the_ceiling_and_keeps_the_ones_it_holds() {
+    use crate::storage::FILE_MAX_HEADS;
+
+    let h = Harness::start("head-ceiling");
+    let cred = h.setup_account();
+    let file_id = "b1".repeat(16);
+
+    for n in 0..FILE_MAX_HEADS {
+        let manifest = obsync_core::base64::encode(format!("head-{n}").as_bytes());
+        let res = post_version(&h, &cred, &file_id, &[], &[], &manifest);
+        assert_eq!(res.status, 201, "head {n}: {}", res.text());
+    }
+    let manifest = obsync_core::base64::encode(b"one-too-many");
+    let over = post_version(&h, &cred, &file_id, &[], &[], &manifest);
+    assert_eq!(over.status, 409, "{}", over.text());
+    assert_eq!(over.code(), "too_many_heads");
+
+    let record = Req::get(&format!("/v1/files/{file_id}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(record.status, 200, "{}", record.text());
+    let body = record.json();
+    let heads = body
+        .get("heads")
+        .and_then(Value::as_array)
+        .expect("the record states its heads");
+    assert_eq!(
+        heads.len(),
+        FILE_MAX_HEADS,
+        "the refusal took none of the heads the file already had"
+    );
+    assert_eq!(
+        body.get("conflicted").and_then(Value::as_bool),
+        Some(true),
+        "and the file is still reported as conflicted"
+    );
+}
+
 /// `docs/architecture.md` 5.1 item 4: the one clear field sharing added.
 #[test]
 fn a_version_names_its_domain_and_a_file_never_changes_it() {

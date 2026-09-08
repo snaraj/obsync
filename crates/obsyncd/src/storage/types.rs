@@ -435,6 +435,14 @@ pub enum StoreError {
     UnknownFile,
     /// No such domain: no file the store holds is in it.
     UnknownDomain,
+    /// A version whose acceptance would leave the file with more heads than
+    /// one merge is allowed to name.
+    TooManyHeads {
+        /// Heads the file would have held.
+        heads: usize,
+        /// The ceiling it would have passed.
+        max: usize,
+    },
     /// A version named a domain other than its file's own.
     DomainMismatch {
         /// The domain the file's first version fixed.
@@ -493,6 +501,9 @@ impl fmt::Display for StoreError {
             StoreError::UnknownDevice => f.write_str("unknown device"),
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
+            StoreError::TooManyHeads { heads, max } => {
+                write!(f, "too many heads: {heads} heads, max {max}")
+            }
             StoreError::UnknownFile => f.write_str("unknown file"),
             StoreError::UnknownDomain => f.write_str("unknown domain"),
             StoreError::DomainMismatch { expected, actual } => {
@@ -538,6 +549,7 @@ impl StoreError {
             StoreError::UnknownDevice => "unknown_device",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
+            StoreError::TooManyHeads { .. } => "too_many_heads",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",
             StoreError::DomainMismatch { .. } => "domain_mismatch",
@@ -582,6 +594,10 @@ mod tests {
         };
         assert_eq!(err.to_string(), "seq 9 is ahead of head 3");
         assert_eq!(err.code(), "seq_ahead");
+
+        let err = StoreError::TooManyHeads { heads: 65, max: 64 };
+        assert_eq!(err.to_string(), "too many heads: 65 heads, max 64");
+        assert_eq!(err.code(), "too_many_heads");
 
         // A posture refusal states the class and the reason, both compile
         // time words, and no location.

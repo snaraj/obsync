@@ -14,3 +14,8 @@ advances exactly one patch (AGENTS.md, requirement 10).
   owner, and mode of both volume roots and both credential files before
   anything is read or written through them. A weak mode is corrected and
   re-read; a link, a substituted type, or a foreign owner refuses the start.
+- A ceiling on the heads one file may hold, equal to the parents one version
+  may declare, so a conflicted file is always resolvable by one merge naming
+  every head and the head list a response carries is bounded. The version
+  that would pass it is refused with `409 too_many_heads` and nothing
+  already stored changes; replay applies what the journal already holds.
