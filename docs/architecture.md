@@ -507,6 +507,16 @@ returns immediately when a new frame lands.
    delete-versus-edit, overlapping hunks) keeps BOTH: the foreign head is
    written as `<name> (conflict from <device>, <date>).<ext>` and the user
    is told. obsync never silently discards an edit.
+
+   The base is the NEWEST version both heads reach, and neither head is its
+   own ancestor. Newest matters: an older common ancestor replays edits both
+   sides already agree on into the merge as spurious hunks. `GET
+   /v1/files/{id}` renders versions newest first, so the base is the first id
+   in that order that both heads reach. Both reachability sets are walked
+   once and intersected — one walk per side, not one per candidate. The
+   version graph is another device's to shape, the file a conflict lands on
+   is the file with the longest history, and this runs on Obsidian's UI
+   thread while the user waits.
 5. **Policy.** Per device: `perFileMaxBytes` (desktop 0 = unlimited; mobile
    512 MiB, the practical whole-file read ceiling in a WebView) and
    `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a

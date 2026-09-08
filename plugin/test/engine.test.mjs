@@ -476,6 +476,51 @@ test("the common ancestor walk finds the shared base, or nothing", () => {
   assert.equal(commonAncestor([{ version_id: "x", parents: [] }, { version_id: "y", parents: [] }], "x", "y"), null);
 });
 
+test("the common ancestor is the newest both heads reach, not the oldest", () => {
+  // A diamond: `main` and `side` fork from `root`, `merge` joins them, and a
+  // head hangs off each side. Both `side` and `root` are common; only one of
+  // them replays no edits into the merge.
+  const versions = [
+    { version_id: "left-head", parents: ["merge"] },
+    { version_id: "right-head", parents: ["side"] },
+    { version_id: "merge", parents: ["main", "side"] },
+    { version_id: "side", parents: ["root"] },
+    { version_id: "main", parents: ["root"] },
+    { version_id: "root", parents: [] },
+  ];
+  assert.equal(commonAncestor(versions, "left-head", "right-head"), "side", "root is common too, and older");
+  assert.equal(commonAncestor(versions, "merge", "side"), "root", "a head is never its own ancestor");
+});
+
+/** `n` versions newest first; the oldest names `tail` as its parents. */
+function chain(prefix, n, tail) {
+  const versions = [];
+  for (let i = n - 1; i >= 0; i--) {
+    versions.push({ version_id: `${prefix}${i}`, parents: i === 0 ? tail : [`${prefix}${i - 1}`] });
+  }
+  return versions;
+}
+
+test("the common ancestor walk stays linear over a 2 000-version history", () => {
+  // Two heads with 25 private versions each over a 1 950-version shared
+  // trunk: the file a conflict actually lands on is the file with history.
+  const versions = [...chain("r", 25, ["v1949"]), ...chain("l", 25, ["v1949"]), ...chain("v", 1950, [])];
+  assert.equal(versions.length, 2000);
+  const byId = new Map(versions.map((version) => [version.version_id, version.parents]));
+  let lookups = 0;
+  const parentsOf = (id) => {
+    lookups++;
+    return byId.get(id) ?? [];
+  };
+
+  assert.equal(commonAncestor(versions, "l24", "r24", parentsOf), "v1949");
+  assert.ok(lookups >= versions.length, `the seam counts the walk, it is not dead (${lookups})`);
+  assert.ok(
+    lookups <= 2 * versions.length,
+    `one walk per side, never one per candidate (${lookups} lookups over ${versions.length} versions)`,
+  );
+});
+
 test("a wait for an outcome gives up on a wall clock and says so", async () => {
   const timers = new FakeTimers();
   const started = Date.now();

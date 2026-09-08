@@ -465,13 +465,38 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   return manifest.path;
 }
 
-/** The newest version reachable from both heads, or `null`. */
+/** A version graph, as `GET /v1/files/{id}` renders it. */
+export type VersionNode = { version_id: string; parents: string[] };
+
+/** Parent lookup over one file's versions: the walk's only view of the graph. */
+function parentsFrom(versions: VersionNode[]): (id: string) => string[] {
+  const byId = new Map(versions.map((version) => [version.version_id, version.parents]));
+  return (id) => byId.get(id) ?? [];
+}
+
+/**
+ * The newest version both heads reach, or `null`.
+ *
+ * THE PROPERTY. `versions` is the server's own order, newest first
+ * (`docs/protocol.md`, "Files and versions"), so the answer is the FIRST id
+ * in that order that both heads reach and that is neither head. That is what
+ * "newest common ancestor" means here, and it is the whole contract: a merge
+ * base is only as good as the edits it does not replay.
+ *
+ * ONE WALK PER SIDE. Both reachability sets are computed once and
+ * intersected. Re-walking the right side per candidate gives the same answer
+ * at N times the cost, and the version graph is another device's to shape:
+ * the file a conflict lands on is the file with the longest history, and this
+ * runs on Obsidian's UI thread while the user waits. `parentsOf` is injected
+ * so a test can count lookups and hold that bound without timing a clock.
+ */
 export function commonAncestor(
-  versions: { version_id: string; parents: string[] }[],
+  versions: VersionNode[],
   left: string,
   right: string,
+  parentsOf?: (id: string) => string[],
 ): string | null {
-  const byId = new Map(versions.map((version) => [version.version_id, version]));
+  const parents = parentsOf ?? parentsFrom(versions);
   const reach = (start: string): Set<string> => {
     const seen = new Set<string>();
     const queue = [start];
@@ -479,13 +504,14 @@ export function commonAncestor(
       const id = queue.pop() as string;
       if (seen.has(id)) continue;
       seen.add(id);
-      for (const parent of byId.get(id)?.parents ?? []) queue.push(parent);
+      for (const parent of parents(id)) queue.push(parent);
     }
     return seen;
   };
   const fromLeft = reach(left);
-  for (const id of versions.map((version) => version.version_id)) {
-    if (fromLeft.has(id) && reach(right).has(id) && id !== left && id !== right) return id;
+  const fromRight = reach(right);
+  for (const { version_id: id } of versions) {
+    if (id !== left && id !== right && fromLeft.has(id) && fromRight.has(id)) return id;
   }
   return null;
 }
