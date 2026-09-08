@@ -82,12 +82,31 @@ impl NonceLog {
         log: &Log,
     ) -> Result<(NonceLog, Vec<(Nonce, u64)>), StoreError> {
         let root = PathClass::JournalRoot.path(journal_dir);
+        let path = root.join(FILE_NAME);
+        // A restored volume can arrive with this name already pointing at
+        // another file the server may write -- the wrapping material beside
+        // it, a journal segment -- and appending through it would put nonce
+        // lines inside that file. The name is looked at once without
+        // following a link, as `storage::posture` looks at a credential
+        // file, and anything that is not a regular file refuses the start.
+        //
+        // That look is not paired with an inode identity check on the handle
+        // the way posture's is: what posture defends against there is
+        // someone re-pointing the name between the look and the open, and
+        // whoever can do that inside this 0700 root can write the journal
+        // itself. What arrives already planted is what this closes.
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => return Err(refuse(log, "not_a_regular_file")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         let mut file = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
             .mode(FILE_MODE)
-            .open(root.join(FILE_NAME))?;
+            .open(&path)?;
         let mut text = String::new();
         file.read_to_string(&mut text)?;
 
@@ -99,16 +118,7 @@ impl NonceLog {
         for line in text[..complete].lines() {
             lines += 1;
             let Some((ts, entry)) = parse(line) else {
-                log.error(
-                    "nonce_log",
-                    &[
-                        ("decision", Val::word("refused")),
-                        ("reason", Val::word("nonce_log_corrupt")),
-                    ],
-                );
-                return Err(StoreError::Corrupt(
-                    "the nonce log holds a line that is not an entry".to_string(),
-                ));
+                return Err(refuse(log, "nonce_log_corrupt"));
             };
             // Only what the window still covers comes back. The rest stays
             // in the file until a compaction drops it, and is never a reason
@@ -224,6 +234,19 @@ impl NonceLog {
     pub const fn syncs(&self) -> u64 {
         self.syncs
     }
+}
+
+/// One refusal line and the error that stops the start (requirement 12).
+/// The reason is a compile-time word, and no line states a location.
+fn refuse(log: &Log, reason: &'static str) -> StoreError {
+    log.error(
+        "nonce_log",
+        &[
+            ("decision", Val::word("refused")),
+            ("reason", Val::word(reason)),
+        ],
+    );
+    StoreError::Corrupt(format!("the nonce log was refused: {reason}"))
 }
 
 /// One line: the second the nonce was accepted, the device, and the nonce.
