@@ -35,6 +35,48 @@ In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
 connecting-address and request-id headers or it is refused with `421
 edge_required`.
 
+## Idempotence
+
+A nonce is spent by being sent, so a retry that reuses the headers of a lost
+request is answered `401 replayed_nonce` — a refusal the client manufactured
+for itself. **Every retry is signed afresh**, with a new timestamp and a new
+nonce.
+
+That makes the question "may this request happen twice?" the client's to
+answer before it retries at all, so every route states it here. **Repeatable**
+means a second send leaves the server where one send would have left it and
+answers the same.
+
+| Route | Repeatable | Why |
+| --- | --- | --- |
+| `GET /livez`, `GET /readyz` | yes | reads |
+| `GET /v1/account` | yes | read |
+| `POST /v1/setup` | **no** | creates the account and mints a credential |
+| `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
+| `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
+| `GET /v1/pairing/{id}` | yes | read |
+| `POST /v1/pairing/{id}/approve` | **no** | consumes the pairing |
+| `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device |
+| `GET /v1/pairing/{id}/envelope` | **no** | single use; then `410 envelope_consumed` |
+| `GET /v1/devices` | yes | read |
+| `PATCH /v1/devices/{id}` | **no** | write |
+| `POST /v1/devices/{id}/revoke` | **no** | write, and one-way |
+| `POST /v1/devices/heartbeat` | **no** | write |
+| `POST /v1/chunks/exists` | yes | a read; POST only because the sid list is long |
+| `POST /v1/chunks/get` | yes | a read; same reason |
+| `PUT /v1/chunks/{sid}` | yes | the sid IS the body's hash |
+| `GET /v1/chunks/{sid}` | yes | read |
+| `POST /v1/files/{id}/versions` | **no** | appends a version and moves the heads |
+| `GET /v1/files…`, `GET /v1/changes` | yes | reads |
+| `POST /v1/dashboard/login-link` | **no** | mints a single-use token |
+
+A client that loses the answer to a **no** row must not re-send it. The
+outcome is unknown, not failed: the request may already have been applied.
+Settle it by reading what the server holds — the file record for a version
+post, the device list for a revoke — or tell the user, with the reason, that
+it is unknown. The plugin's table is `ROUTES` in `plugin/src/transport.ts`
+and a test asserts every route it emits appears there.
+
 ## Health
 
 - `GET /livez` → `200 ok` while the process runs.

@@ -56,7 +56,7 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource, bytesSource } from "./chunker";
 import { State } from "./state";
-import { DeviceRecord, Transport } from "./transport";
+import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { newVaultKey } from "./pairing";
@@ -700,10 +700,15 @@ export default class ObsyncPlugin extends Plugin {
     const trimmed = name.trim();
     // An emptied field means "go back to the default", not "keep whatever
     // name I had": the fallback is the DERIVED name, never the stored one.
-    await this.transport.patchDevice(deviceId, {
+    const saved = await this.transport.patchDevice(deviceId, {
       name: trimmed === "" ? this.defaultDeviceName() : trimmed,
       policy: this.state.data.policy,
     });
+    // A rename is not repeatable, and there is nothing to reconcile against:
+    // the name the user typed is not a fact this device can check for, only
+    // one the server can confirm. Say so and keep the local copy unchanged,
+    // so a retry sends the same thing rather than a half-applied pair.
+    if (saved.outcome === "lost") throw new Error(lostMessage("saving this device's settings", saved));
     this.state.data.deviceName = trimmed === "" ? null : trimmed;
     await this.state.save();
     this.log(`device decision=updated name_len=${trimmed.length}`);
@@ -720,9 +725,20 @@ export default class ObsyncPlugin extends Plugin {
    * the only device revoke itself, and that refusal is surfaced verbatim
    * rather than swallowed — a user who has just locked themselves out
    * deserves to know why it did not happen.
+   *
+   * A revoke is not repeatable, and a lost answer is the one case where both
+   * guesses are harmful: "it failed" leaves the user believing a device they
+   * wanted out still holds the vault, and a blind repeat can meet
+   * `only_device` on a revoke that already worked. The device list says which
+   * it was, and reading it is repeatable.
    */
   async revokeDevice(deviceId: string): Promise<void> {
-    await this.transport.revokeDevice(deviceId);
+    const sent = await this.transport.revokeDevice(deviceId);
+    if (sent.outcome === "lost") {
+      const revoked = (await this.listDevices()).find((device) => device.device_id === deviceId)?.revoked;
+      this.log(`device decision=reconciled reason=lost_answer revoked=${revoked === true}`);
+      if (revoked !== true) throw new Error(lostMessage(`revoking that device`, sent));
+    }
     this.log(`device decision=revoked self=${deviceId === this.state.data.deviceId}`);
     if (deviceId === this.state.data.deviceId) {
       this.engine?.stop();
@@ -750,11 +766,18 @@ export default class ObsyncPlugin extends Plugin {
    */
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
     try {
-      const result = await this.transport.setup(setupToken, accountName, {
+      const enrolled = await this.transport.setup(setupToken, accountName, {
         name: this.deviceName(),
         platform: this.platformName(),
         app_version: this.manifest.version,
       });
+      // Setup is not repeatable and the credential it mints exists nowhere
+      // else: a lost answer means this device may have been enrolled with a
+      // secret it never received. There is nothing to read back without a
+      // credential, so say exactly that. The token is spent either way, and
+      // the server's `409 already_set_up` will say so on the next attempt.
+      if (enrolled.outcome === "lost") throw new Error(lostMessage("creating the account", enrolled));
+      const result = enrolled.value;
       this.state.data.deviceId = result.device_id;
       this.state.data.deviceSecret = result.device_secret;
       await this.state.save();
@@ -773,7 +796,11 @@ export default class ObsyncPlugin extends Plugin {
   async openDashboard(): Promise<void> {
     try {
       const link = await this.transport.dashboardLoginLink();
-      window.open(link.url, "_blank");
+      // A login link is minted and single use. A lost answer means one may
+      // have been minted for nobody; it expires in five minutes, and asking
+      // for another is the user's own decision, not a retry this makes.
+      if (link.outcome === "lost") throw new Error(lostMessage("requesting a dashboard link", link));
+      window.open(link.value.url, "_blank");
     } catch (error) {
       new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
     }

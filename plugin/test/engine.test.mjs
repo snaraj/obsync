@@ -466,6 +466,95 @@ test("a binary conflict is never merged", async () => {
   assert.ok([...host.files.keys()].some((path) => path.startsWith("image (conflict from iPhone")));
 });
 
+/**
+ * The fake server, wrapped so it spends nonces exactly as obsyncd does and
+ * loses one answer. `before` loses the request instead, so the server never
+ * saw it: the two together are the whole ambiguity a lost answer creates.
+ */
+function lossy(server, host, state, { target, before = false }) {
+  const spent = new Set();
+  let lost = false;
+  return new Transport({
+    request: async (request) => {
+      const nonce = request.headers["X-Obsync-Nonce"];
+      if (nonce !== undefined) {
+        if (spent.has(nonce)) {
+          return {
+            status: 401,
+            headers: {},
+            text: JSON.stringify({ error: "replayed_nonce", detail: "seen within 600 s" }),
+            arrayBuffer: new ArrayBuffer(0),
+          };
+        }
+        spent.add(nonce);
+      }
+      const losing = !lost && request.url.endsWith(target);
+      if (losing && before) {
+        lost = true;
+        throw new Error("the request never arrived");
+      }
+      const response = await server.request(request);
+      if (losing) {
+        lost = true;
+        throw new Error("the answer was lost");
+      }
+      return response;
+    },
+    serverUrl: () => state.data.serverUrl,
+    device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => host.clock,
+    sleep: async () => undefined,
+    maxAttempts: 2,
+    log: (line) => host.logs.push(line),
+  });
+}
+
+test("a version post the server accepted but never acknowledged stores one version", async () => {
+  const { host, server, state, context } = await rig();
+  const lossyContext = { ...context, transport: lossy(server, host, state, { target: "/versions" }) };
+  host.seed("Notes/Lost.md", "one line\n", 1000);
+
+  const outcome = await pushFile(lossyContext, "Notes/Lost.md");
+
+  assert.equal(outcome.status, "pushed");
+  const file = server.files.get(outcome.fileId);
+  assert.equal(file.versions.length, 1);
+  assert.deepEqual(file.heads, [outcome.versionId], "it did not fork the file");
+  assert.equal(
+    posts(server, outcome.fileId),
+    1,
+    "the answer was read back, not bought with a second write and a second nonce",
+  );
+  assert.equal(
+    host.logs.some((line) => line.includes("status=401") || line.includes("replayed_nonce")),
+    false,
+    "no refusal this device manufactured for itself",
+  );
+  assert.ok(host.logs.some((line) => line.includes("decision=reconciled") && line.includes("committed=true")));
+});
+
+/** How many version posts of `fileId` the server actually received. */
+function posts(server, fileId) {
+  return server.requests.filter(
+    (request) => request.method === "POST" && request.target === `/v1/files/${fileId}/versions`,
+  ).length;
+}
+
+test("a version post that never arrived is posted again under a fresh signature", async () => {
+  const { host, server, state, context } = await rig();
+  const lossyContext = { ...context, transport: lossy(server, host, state, { target: "/versions", before: true }) };
+  host.seed("Notes/Never.md", "one line\n", 1000);
+
+  const outcome = await pushFile(lossyContext, "Notes/Never.md");
+
+  assert.equal(outcome.status, "pushed");
+  assert.equal(server.files.get(outcome.fileId).versions.length, 1);
+  assert.equal(posts(server, outcome.fileId), 1, "the server saw the post exactly once: the re-post");
+  assert.ok(host.logs.some((line) => line.includes("decision=reconciled") && line.includes("committed=false")));
+  assert.equal(host.logs.some((line) => line.includes("status=401")), false);
+});
+
 test("the common ancestor walk finds the shared base, or nothing", () => {
   const versions = [
     { version_id: "c", parents: ["a"] },

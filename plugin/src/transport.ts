@@ -7,8 +7,8 @@
  * the request from CORS. `throw: false` is set on every call so a 4xx is
  * data, not an exception, and every refusal can be logged with its code.
  *
- * SIGNING IS NOT OPTIONAL. `call()` signs whenever the endpoint is a device
- * endpoint, and the endpoint decides, not a setting (AGENTS.md requirement
+ * SIGNING IS NOT OPTIONAL. Every attempt signs whenever the endpoint is a
+ * device endpoint, and the endpoint decides, not a setting (AGENTS.md requirement
  * 4). The only unsigned calls are the three the protocol defines as
  * unauthenticated: `POST /v1/setup`, `POST /v1/pairing/{id}/claim` (the
  * device has no credential yet; the enroll token in the body is the
@@ -17,10 +17,21 @@
  * unauthenticated endpoint can be replaced by whoever terminates TLS, so the
  * trusted source of plugin code is the GitHub Release, not this transport.
  *
- * BACKOFF. Network errors and 5xx retry with exponential backoff and
- * jitter, 1 s doubling to a 60 s ceiling, half fixed and half random so a
- * fleet of devices does not resynchronise on the same second. 4xx never
- * retries: a refusal is a decision.
+ * AT MOST ONCE PER SIGNATURE. A signature is spent the moment it is sent:
+ * the server remembers the nonce for 600 s and answers `401 replayed_nonce`
+ * to anything carrying it again (`docs/protocol.md`, authentication). So a
+ * retry is signed afresh, and a request that must not happen twice is not
+ * re-sent at all. `ROUTES` classifies every route this client can emit and
+ * the classification decides the send: a repeatable route is re-signed and
+ * retried, everything else goes exactly once and comes back `ok` or `lost`.
+ * `lost` is neither success nor failure — the request may already have been
+ * applied — so the caller settles it by READING what the server holds. The
+ * transport never guesses, and never produces a `replayed_nonce` of its own.
+ *
+ * BACKOFF. A repeatable route retries on a network error or a 5xx with
+ * exponential backoff and jitter, 1 s doubling to a 60 s ceiling, half fixed
+ * and half random so a fleet of devices does not resynchronise on the same
+ * second. 4xx never retries: a refusal is a decision.
  *
  * PLATFORM. Identical on desktop and mobile. Mobile is HTTPS-only, so a
  * plain-HTTP server URL is rejected at the settings tab, not here.
@@ -56,6 +67,96 @@ export class ApiError extends Error {
     super(`${status} ${code}: ${detail}`);
     this.name = "ApiError";
   }
+}
+
+/**
+ * A request sent once and never answered. It may have been applied, so it is
+ * not a failure; nothing acknowledged it, so it is not a success. `attempts`
+ * is the receipt of the at-most-once rule and `reason` is the last thing the
+ * socket said.
+ */
+export interface Lost {
+  outcome: "lost";
+  attempts: number;
+  reason: string;
+}
+
+/** What a route that must not be repeated resolves to. */
+export type Sent<T> = { outcome: "ok"; value: T } | Lost;
+
+/**
+ * What to tell the user when the caller has nothing to read back. Both
+ * guesses mislead — "it failed" about a revoke that worked leaves a lost
+ * device trusted — so this says what is known and that nothing was repeated.
+ */
+export function lostMessage(what: string, lost: Lost): string {
+  return (
+    `${what}: the server never answered (${lost.reason}), so obsync cannot say whether it happened. ` +
+    "It was not repeated, because repeating it could act twice."
+  );
+}
+
+/** One route this client can emit, and whether a repeat is the same request. */
+export interface Route {
+  method: string;
+  path: RegExp;
+  /** May an unanswered send be signed afresh and sent again? */
+  idempotent: boolean;
+}
+
+const ID = "[0-9a-f]{32}";
+const SID = "[0-9a-f]{64}";
+
+/**
+ * Every route this client calls, classified once, here.
+ *
+ * IDEMPOTENT means a repeat leaves the server where one send would have left
+ * it and answers the same. The classification follows `docs/protocol.md`
+ * rather than the verb, and departs from the verb twice, both times towards
+ * the protocol. `POST /v1/chunks/{exists,get}` are reads that use POST only
+ * because a sid list does not fit in a query string. `GET
+ * /v1/pairing/{id}/envelope` hands over the sealed vault key EXACTLY ONCE and
+ * answers `410 envelope_consumed` afterwards, so retrying a lost answer
+ * destroys the pairing it was meant to complete. `PUT /v1/chunks/{sid}` is
+ * repeatable because the protocol says so: a chunk is named by the hash of
+ * its own bytes, so a repeat writes what is already there.
+ *
+ * Everything that mints or consumes state is not repeatable: setup, every
+ * pairing step, a device rename or revoke, a heartbeat, a version post, a
+ * dashboard login link.
+ *
+ * A target no entry matches is refused rather than guessed. One of the two
+ * defaults re-sends a write, and a table that quietly grows a default is a
+ * table nobody reads.
+ */
+export const ROUTES: readonly Route[] = [
+  { method: "GET", path: /^\/v1\/account$/, idempotent: true },
+  { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
+  { method: "GET", path: /^\/v1\/changes$/, idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/files/${ID}$`), idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/pairing/${ID}$`), idempotent: true },
+  { method: "GET", path: /^\/v1\/plugin\/manifest$/, idempotent: true },
+  { method: "PUT", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
+  { method: "POST", path: /^\/v1\/chunks\/exists$/, idempotent: true },
+  { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
+  { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
+  { method: "POST", path: /^\/v1\/pairing$/, idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/claim$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/approve$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reject$`), idempotent: false },
+  { method: "PATCH", path: new RegExp(`^/v1/devices/${ID}$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/devices/${ID}/revoke$`), idempotent: false },
+  { method: "POST", path: /^\/v1\/devices\/heartbeat$/, idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/files/${ID}/versions$`), idempotent: false },
+  { method: "POST", path: /^\/v1\/dashboard\/login-link$/, idempotent: false },
+];
+
+/** The table's entry for a request target, or `null`, which is a refusal. */
+export function routeFor(method: string, target: string): Route | null {
+  const path = target.split("?")[0] as string;
+  return ROUTES.find((route) => route.method === method && route.path.test(path)) ?? null;
 }
 
 export interface TransportOptions {
@@ -132,8 +233,13 @@ export interface VersionPost {
   deleted: boolean;
 }
 
+/**
+ * What the plugin reads of a version acknowledgement. The response also
+ * carries the journal `seq`, which nothing here consumes — and leaving it
+ * unnamed is what lets a LOST post be settled exactly from the file record,
+ * which states heads and conflict but no seq (`docs/protocol.md`).
+ */
 export interface VersionAck {
-  seq: number;
   heads: string[];
   conflicted: boolean;
 }
@@ -189,9 +295,27 @@ type CallOptions = {
   auth: "device" | "none";
   json?: unknown;
   binary?: Bytes;
-  accept?: "json" | "binary" | "text";
-  retry?: boolean;
 };
+
+/** Everything one attempt needs except its signature, which is per attempt. */
+interface Prepared {
+  url: string;
+  headers: Record<string, string>;
+  body: Bytes;
+  bodyText?: string;
+  /** `hex(SHA-256(body))`, the signature's last field. Empty when unsigned. */
+  digest: string;
+  device: { id: string; secret: Bytes } | null;
+}
+
+/**
+ * What one attempt produced. `settled` means the server decided, whatever it
+ * decided; `unsettled` means nothing did — no answer, or a 5xx that says the
+ * server reached no conclusion either.
+ */
+type Attempt =
+  | { kind: "settled"; response: HttpResponse }
+  | { kind: "unsettled"; status: number; reason: string };
 
 function toArrayBuffer(bytes: Bytes): ArrayBuffer {
   return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
@@ -220,7 +344,7 @@ export class Transport {
     return Math.round(base / 2 + this.random() * (base / 2));
   }
 
-  private async call(method: string, target: string, options: CallOptions): Promise<HttpResponse> {
+  private async prepare(target: string, options: CallOptions): Promise<Prepared> {
     const base = this.options.serverUrl().replace(/\/+$/, "");
     if (base === "") throw new ApiError(0, "no_server_url", "no server URL is configured");
     const headers: Record<string, string> = {};
@@ -234,67 +358,110 @@ export class Transport {
       body = options.binary;
       headers["Content-Type"] = "application/octet-stream";
     }
+    let device: { id: string; secret: Bytes } | null = null;
+    let digest = "";
     if (options.auth === "device") {
-      const device = this.options.device();
+      device = this.options.device();
       if (!device) throw new ApiError(0, "not_paired", "this device is not paired");
-      const ts = Math.floor(this.now() / 1000);
-      const nonce = hex(randomBytes(16));
       headers["X-Obsync-Device"] = device.id;
-      headers["X-Obsync-Ts"] = String(ts);
-      headers["X-Obsync-Nonce"] = nonce;
-      headers["X-Obsync-Sig"] = await signRequest(
-        device.secret,
-        method,
-        target,
-        ts,
-        nonce,
-        await bodyHash(body),
-      );
+      digest = await bodyHash(body);
     }
     for (const header of this.options.edgeHeaders()) headers[header.name] = header.value;
+    return { url: base + target, headers, body, bodyText, digest, device };
+  }
 
+  /**
+   * One attempt, signed HERE rather than once per call. The nonce is spent by
+   * being sent, so a second attempt carrying the first attempt's headers
+   * would be refused `401 replayed_nonce` — a refusal this client would have
+   * manufactured itself.
+   */
+  private async attempt(method: string, target: string, sending: Prepared): Promise<Attempt> {
+    const headers = { ...sending.headers };
+    if (sending.device) {
+      const ts = Math.floor(this.now() / 1000);
+      const nonce = hex(randomBytes(16));
+      headers["X-Obsync-Ts"] = String(ts);
+      headers["X-Obsync-Nonce"] = nonce;
+      headers["X-Obsync-Sig"] = await signRequest(sending.device.secret, method, target, ts, nonce, sending.digest);
+    }
+    try {
+      const response = await this.options.request({
+        url: sending.url,
+        method,
+        headers,
+        ...(sending.bodyText !== undefined
+          ? { body: sending.bodyText }
+          : sending.body.length > 0
+            ? { body: toArrayBuffer(sending.body) }
+            : {}),
+        throw: false,
+      });
+      return response.status < 500
+        ? { kind: "settled", response }
+        : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
+    } catch (error) {
+      return {
+        kind: "unsettled",
+        status: 0,
+        reason: `network=${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /** A settled response: 2xx is returned, 4xx is thrown as the decision it is. */
+  private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number): HttpResponse {
+    if (response.status >= 400) {
+      const { code, detail } = parseError(response.text);
+      this.log(`http ${method} ${target} status=${response.status} decision=refused code=${code} duration_ms=${this.now() - started}`);
+      throw new ApiError(response.status, code, detail);
+    }
+    this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempts} duration_ms=${this.now() - started}`);
+    return response;
+  }
+
+  /** A repeatable route (`ROUTES`): retried until it settles or runs out. */
+  private async call(method: string, target: string, options: CallOptions): Promise<HttpResponse> {
+    const sending = await this.prepare(target, options);
     const started = this.now();
     for (let attempt = 1; ; attempt++) {
-      let response: HttpResponse | null = null;
-      let failure = "";
-      try {
-        response = await this.options.request({
-          url: base + target,
-          method,
-          headers,
-          ...(bodyText !== undefined
-            ? { body: bodyText }
-            : body.length > 0
-              ? { body: toArrayBuffer(body) }
-              : {}),
-          throw: false,
-        });
-      } catch (error) {
-        failure = error instanceof Error ? error.message : String(error);
-      }
-      if (response && response.status < 500) {
-        if (response.status >= 400) {
-          const { code, detail } = parseError(response.text);
-          this.log(`http ${method} ${target} status=${response.status} decision=refused code=${code} duration_ms=${this.now() - started}`);
-          throw new ApiError(response.status, code, detail);
-        }
-        this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempt} duration_ms=${this.now() - started}`);
-        return response;
-      }
-      const reason = response ? `status=${response.status}` : `network=${failure}`;
+      const outcome = await this.attempt(method, target, sending);
+      if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started);
       if (attempt >= this.maxAttempts) {
-        this.log(`http ${method} ${target} ${reason} decision=gave_up attempts=${attempt} duration_ms=${this.now() - started}`);
-        throw new ApiError(response ? response.status : 0, "unreachable", reason);
+        this.log(`http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt} duration_ms=${this.now() - started}`);
+        throw new ApiError(outcome.status, "unreachable", outcome.reason);
       }
       const delay = this.backoffMs(attempt);
-      this.log(`http ${method} ${target} ${reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
+      this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
       await this.sleep(delay);
     }
   }
 
+  /**
+   * A route that must not be repeated (`ROUTES`): one attempt, one signature.
+   * An unsettled attempt is reported as `lost` and stops there. Re-sending it
+   * would act twice on a request the server may already have applied, and the
+   * caller — which knows what the operation MEANS — settles it by reading.
+   */
+  private async send(method: string, target: string, options: CallOptions): Promise<Sent<HttpResponse>> {
+    const sending = await this.prepare(target, options);
+    const started = this.now();
+    const outcome = await this.attempt(method, target, sending);
+    if (outcome.kind === "settled") {
+      return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started) };
+    }
+    this.log(`http ${method} ${target} ${outcome.reason} decision=lost attempts=1 duration_ms=${this.now() - started}`);
+    return { outcome: "lost", attempts: 1, reason: outcome.reason };
+  }
+
   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {
-    const response = await this.call(method, target, options);
-    return (response.text === "" ? {} : JSON.parse(response.text)) as T;
+    return decode<T>(await this.call(method, target, options));
+  }
+
+  /** The same, for a route that must not be repeated. */
+  private async once<T>(method: string, target: string, options: CallOptions): Promise<Sent<T>> {
+    const sent = await this.send(method, target, options);
+    return sent.outcome === "ok" ? { outcome: "ok", value: decode<T>(sent.value) } : sent;
   }
 
   // --- setup and account -------------------------------------------------
@@ -309,8 +476,8 @@ export class Transport {
     setupToken: string,
     accountName: string,
     device: { name: string; platform: string; app_version: string },
-  ): Promise<PairingCredential & { account_id: string }> {
-    return this.json("POST", "/v1/setup", {
+  ): Promise<Sent<PairingCredential & { account_id: string }>> {
+    return this.once("POST", "/v1/setup", {
       auth: "none",
       json: { setup_token: setupToken, account_name: accountName, device },
     });
@@ -322,16 +489,16 @@ export class Transport {
 
   // --- pairing -----------------------------------------------------------
 
-  pairingCreate(): Promise<PairingCreated> {
-    return this.json("POST", "/v1/pairing", { auth: "device", json: {} });
+  pairingCreate(): Promise<Sent<PairingCreated>> {
+    return this.once("POST", "/v1/pairing", { auth: "device", json: {} });
   }
 
   pairingClaim(
     pairingId: string,
     enrollToken: string,
     info: { name: string; platform: string; app_version: string },
-  ): Promise<PairingCredential> {
-    return this.json("POST", `/v1/pairing/${pairingId}/claim`, {
+  ): Promise<Sent<PairingCredential>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",
       json: { enroll_token: enrollToken, ...info },
     });
@@ -341,19 +508,20 @@ export class Transport {
     return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device" });
   }
 
-  pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<void> {
-    return this.json("POST", `/v1/pairing/${pairingId}/approve`, {
+  pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/approve`, {
       auth: "device",
       json: { envelope, nonce },
     });
   }
 
-  pairingReject(pairingId: string): Promise<void> {
-    return this.json("POST", `/v1/pairing/${pairingId}/reject`, { auth: "device", json: {} });
+  pairingReject(pairingId: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/reject`, { auth: "device", json: {} });
   }
 
-  pairingEnvelope(pairingId: string): Promise<PairingEnvelope> {
-    return this.json("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device" });
+  /** Single use by the protocol: a retry would destroy the sealed vault key. */
+  pairingEnvelope(pairingId: string): Promise<Sent<PairingEnvelope>> {
+    return this.once("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device" });
   }
 
   // --- devices -----------------------------------------------------------
@@ -362,16 +530,16 @@ export class Transport {
     return this.json("GET", "/v1/devices", { auth: "device" });
   }
 
-  patchDevice(deviceId: string, patch: { name?: string; policy?: Policy }): Promise<DeviceRecord> {
-    return this.json("PATCH", `/v1/devices/${deviceId}`, { auth: "device", json: patch });
+  patchDevice(deviceId: string, patch: { name?: string; policy?: Policy }): Promise<Sent<DeviceRecord>> {
+    return this.once("PATCH", `/v1/devices/${deviceId}`, { auth: "device", json: patch });
   }
 
-  revokeDevice(deviceId: string): Promise<void> {
-    return this.json("POST", `/v1/devices/${deviceId}/revoke`, { auth: "device", json: {} });
+  revokeDevice(deviceId: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/devices/${deviceId}/revoke`, { auth: "device", json: {} });
   }
 
-  heartbeat(appVersion: string, policy: Policy): Promise<void> {
-    return this.json("POST", "/v1/devices/heartbeat", {
+  heartbeat(appVersion: string, policy: Policy): Promise<Sent<void>> {
+    return this.once("POST", "/v1/devices/heartbeat", {
       auth: "device",
       json: { app_version: appVersion, policy },
     });
@@ -420,8 +588,8 @@ export class Transport {
 
   // --- files and versions ------------------------------------------------
 
-  postVersion(fileId: string, version: VersionPost): Promise<VersionAck> {
-    return this.json("POST", `/v1/files/${fileId}/versions`, { auth: "device", json: version });
+  postVersion(fileId: string, version: VersionPost): Promise<Sent<VersionAck>> {
+    return this.once("POST", `/v1/files/${fileId}/versions`, { auth: "device", json: version });
   }
 
   getFile(fileId: string): Promise<FileRecord> {
@@ -439,8 +607,8 @@ export class Transport {
 
   // --- dashboard and plugin distribution ---------------------------------
 
-  dashboardLoginLink(): Promise<{ url: string; expires: number }> {
-    return this.json("POST", "/v1/dashboard/login-link", { auth: "device", json: {} });
+  dashboardLoginLink(): Promise<Sent<{ url: string; expires: number }>> {
+    return this.once("POST", "/v1/dashboard/login-link", { auth: "device", json: {} });
   }
 
   /**
@@ -453,6 +621,10 @@ export class Transport {
   pluginManifest(): Promise<PluginManifest> {
     return this.json("GET", "/v1/plugin/manifest", { auth: "none" });
   }
+}
+
+function decode<T>(response: HttpResponse): T {
+  return (response.text === "" ? {} : JSON.parse(response.text)) as T;
 }
 
 function parseError(text: string): { code: string; detail: string } {

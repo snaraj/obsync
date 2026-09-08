@@ -30,9 +30,22 @@ import {
   sealEnvelope,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
+import { Sent, lostMessage } from "../transport";
 
 function fail(error: unknown): void {
   new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+}
+
+/**
+ * Every pairing step mints or consumes state, so none of them is repeatable
+ * and a lost answer is never retried (`transport.ts`). The user is the one
+ * who can act on it: a pairing that may or may not have advanced is one to
+ * abandon and start again, and only the person holding both devices can do
+ * that. So the reason is surfaced verbatim rather than guessed at here.
+ */
+function value<T>(sent: Sent<T>, what: string): T {
+  if (sent.outcome === "lost") throw new Error(lostMessage(what, sent));
+  return sent.value;
 }
 
 /**
@@ -100,7 +113,7 @@ export class PairCreateModal extends Modal {
 
   private async run(): Promise<void> {
     try {
-      const pairing = await this.plugin.transport.pairingCreate();
+      const pairing = value(await this.plugin.transport.pairingCreate(), "creating a pairing");
       const secret = newPairingSecret();
       const code = encodePairingCode(pairing.pairing_id, pairing.enroll_token, secret);
       const codeEl = this.contentEl.createEl("pre", { cls: "obsync-code", text: code });
@@ -157,7 +170,10 @@ export class PairCreateModal extends Modal {
                 const vrk = this.plugin.state.data.vrk;
                 if (!vrk) throw new Error("this device holds no vault key");
                 const sealed = await sealEnvelope(secret, pairingId, { vrk });
-                await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce);
+                value(
+                  await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce),
+                  "approving the new device",
+                );
                 new Notice("obsync: the new device is paired.");
                 this.close();
               } catch (error) {
@@ -168,7 +184,10 @@ export class PairCreateModal extends Modal {
       )
       .addButton((button) =>
         button.setButtonText("Reject").onClick(() => {
-          void this.plugin.transport.pairingReject(pairingId).catch(fail);
+          void this.plugin.transport
+            .pairingReject(pairingId)
+            .then((sent) => value(sent, "rejecting the new device"))
+            .catch(fail);
           this.close();
         }),
       );
@@ -220,11 +239,14 @@ export class PairClaimModal extends Modal {
     try {
       this.waiting = true;
       const parsed = decodePairingCode(this.code);
-      const credential = await this.plugin.transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
-        name: this.plugin.deviceName(),
-        platform: this.plugin.platformName(),
-        app_version: this.plugin.manifest.version,
-      });
+      const credential = value(
+        await this.plugin.transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
+          name: this.plugin.deviceName(),
+          platform: this.plugin.platformName(),
+          app_version: this.plugin.manifest.version,
+        }),
+        "claiming the pairing",
+      );
       this.plugin.state.data.deviceId = credential.device_id;
       this.plugin.state.data.deviceSecret = credential.device_secret;
       await this.plugin.state.save();
@@ -237,7 +259,13 @@ export class PairClaimModal extends Modal {
           return;
         }
         if (status.state !== "approved") continue;
-        const sealed = await this.plugin.transport.pairingEnvelope(parsed.pairingId);
+        // The envelope is handed over exactly once, so a lost answer has
+        // spent it: the vault key is gone and this pairing cannot complete.
+        // Say so; the user starts a new one on the other device.
+        const sealed = value(
+          await this.plugin.transport.pairingEnvelope(parsed.pairingId),
+          "collecting the sealed vault key",
+        );
         const envelope = await openEnvelope(parsed.pairingSecret, parsed.pairingId, sealed.envelope, sealed.nonce);
         this.plugin.state.data.vrk = envelope.vrk;
         await this.plugin.state.save();
