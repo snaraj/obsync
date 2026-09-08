@@ -9,7 +9,12 @@ two reads `.github/workflows/release-publisher.yml` and pins the narrow wiring
 that makes the module's decisions effective: the builder binding, the consumer
 identity and issuer, the digest binding, the unconditional verification on a
 reused image, and the platform loops matching the build. These are behaviour
-pins, not a step census: a new unrelated step changes nothing here.
+pins, not a step census: a new unrelated step changes nothing here. Part three
+EXECUTES the three production `run:` scripts, verbatim from the workflow,
+under bash with stand-ins for `cosign` and `docker` on PATH and the real `jq`
+and `python3`, and asserts the exit code: a contract refusal, or a failed
+cosign call, must stop the step. Text pins cannot see `|| true`; an executed
+step can.
 """
 
 from __future__ import annotations
@@ -19,7 +24,10 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -316,6 +324,161 @@ class PublisherWiringTests(unittest.TestCase):
                                                 "Prove the provenance verifies with the consumer's own command",
                                                 "Embed the resolved image digest into the chart values")]
         self.assertEqual(order, sorted(order))
+
+
+DOCKER_STUB = r"""#!/bin/sh
+# Stand-in for the only docker shape the publisher's provenance steps use:
+#   docker buildx imagetools inspect <ref> --raw
+#   docker buildx imagetools inspect <ref> --format '{{ json (index .Provenance "<platform>").SLSA }}'
+printf 'docker %s\n' "$*" >> "${STUB_LOG}"
+[ -n "${STUB_DOCKER_FAIL:-}" ] && exit 9
+[ "$1 $2 $3" = "buildx imagetools inspect" ] || { echo "unexpected docker call: $*" >&2; exit 64; }
+ref=$4; shift 4
+case "$1" in
+  --raw)
+    if [ "${ref}" = "${IMAGE}@${DIGEST}" ]; then cat "${STUB_DOCS}/index.json"; else cat "${STUB_DOCS}/manifests/${ref#*@sha256:}.json"; fi ;;
+  --format)
+    platform=$(printf '%s' "$2" | sed -n 's/.*index \.Provenance "\([^"]*\)".*/\1/p')
+    cat "${STUB_DOCS}/predicate-$(printf '%s' "${platform}" | tr / -).json" ;;
+  *) echo "unexpected docker call: $*" >&2; exit 64 ;;
+esac
+"""
+
+COSIGN_STUB = r"""#!/bin/sh
+# Stand-in for cosign: `attest` records itself; `verify-attestation` prints the
+# statements the test staged. STUB_COSIGN_FAIL makes either call fail.
+printf 'cosign %s\n' "$*" >> "${STUB_LOG}"
+[ -n "${STUB_COSIGN_FAIL:-}" ] && exit 7
+case "$1" in
+  attest) exit 0 ;;
+  verify-attestation) cat "${STUB_STATEMENTS}" ;;
+  *) echo "unexpected cosign call: $*" >&2; exit 64 ;;
+esac
+"""
+
+
+class PublisherStepExecutionTests(unittest.TestCase):
+    """The production steps, executed: a refusal is fatal, not a log line."""
+
+    @classmethod
+    def setUpClass(cls):
+        document = miniyaml.load_one(WORKFLOW.read_text(encoding="utf-8"))
+        cls.steps = {step.get("name"): step for job in document["jobs"].values() for step in job.get("steps", [])}
+        for tool in ("bash", "jq", "python3"):
+            if shutil.which(tool) is None:
+                raise AssertionError(f"{tool} is required to execute the publisher steps (the runner has it)")
+
+    def _stage(self, root: Path, predicates: dict[str, dict] | None = None, statements: list[str] | None = None) -> dict:
+        docs, bins, temp = root / "docs", root / "bin", root / "runner-temp"
+        (docs / "manifests").mkdir(parents=True); bins.mkdir(); temp.mkdir()
+        (docs / "index.json").write_text(json.dumps(_index()))
+        for digest, manifest in _manifests().items():
+            (docs / "manifests" / f"{digest[7:]}.json").write_text(json.dumps(manifest))
+        for platform, predicate in (predicates or {p: _platform_predicate(p) for p in PLATFORMS}).items():
+            (docs / f"predicate-{platform.replace('/', '-')}.json").write_text(json.dumps(predicate))
+        (docs / "statements.jsonl").write_text("\n".join(statements if statements is not None else _good_lines()) + "\n")
+        for name, body in (("docker", DOCKER_STUB), ("cosign", COSIGN_STUB)):
+            path = bins / name; path.write_text(body); path.chmod(0o755)
+        env = {"PATH": f"{bins}{os.pathsep}{os.environ['PATH']}", "HOME": str(root), "LANG": "C",
+               "IMAGE": IMAGE, "DIGEST": INDEX_DIGEST, "RUNNER_TEMP": str(temp),
+               "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "snaraj/obsync",
+               "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1",
+               "STUB_DOCS": str(docs), "STUB_LOG": str(root / "calls.log"), "STUB_STATEMENTS": str(docs / "statements.jsonl")}
+        return env
+
+    def _run(self, name: str, env: dict) -> subprocess.CompletedProcess:
+        script = Path(env["RUNNER_TEMP"]).parent / f"{name[:12].replace(' ', '-')}.sh"
+        script.write_text(self.steps[name]["run"])
+        # GitHub runs an un-shelled `run:` as `bash -e {0}`; the scripts add
+        # `set -euo pipefail` themselves. Nothing here relies on the harness
+        # adding more than `-e`.
+        return subprocess.run(["bash", "--noprofile", "--norc", "-e", str(script)], cwd=WORKFLOW.parents[2],
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def _read_index(self, env: dict) -> None:
+        result = self._run("Read the published index and its platform manifests", env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def _calls(self, env: dict, prefix: str) -> list[str]:
+        log = Path(env["STUB_LOG"])
+        return [line for line in log.read_text().splitlines() if line.startswith(prefix)] if log.exists() else []
+
+    def test_the_index_step_writes_the_index_and_only_the_platform_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            temp = Path(env["RUNNER_TEMP"])
+            self.assertEqual(json.loads((temp / "image-index.json").read_text()), _index())
+            written = sorted(p.name for p in (temp / "image-manifests").glob("*.json"))
+            self.assertEqual(written, sorted(f"{d[7:]}.json" for d in _manifests()))
+
+    def test_the_verify_step_passes_with_one_statement_per_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Prove the provenance verifies with the consumer's own command", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("verified one SLSA v1 provenance statement per platform", result.stdout)
+            self.assertEqual(len(self._calls(env, "cosign verify-attestation")), 1)
+
+    def test_the_verify_step_fails_when_the_contract_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp), statements=_good_lines()[:1]); self._read_index(env)
+            result = self._run("Prove the provenance verifies with the consumer's own command", env)
+            self.assertNotEqual(result.returncode, 0, "a contract refusal must fail the step")
+            self.assertIn("no verified SLSA v1 statement binds ['linux/arm64']", result.stderr)
+
+    def test_the_verify_step_fails_when_cosign_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Prove the provenance verifies with the consumer's own command", {**env, "STUB_COSIGN_FAIL": "1"})
+            self.assertNotEqual(result.returncode, 0, "a failed verification command must fail the step")
+            self.assertNotIn("provenance contract", result.stderr)
+
+    def test_the_attest_step_attests_each_platform_after_its_predicate_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Attest the image's provenance with this run's identity", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            attests = self._calls(env, "cosign attest")
+            self.assertEqual(len(attests), 2)
+            for line in attests:
+                self.assertIn(f"--type slsaprovenance1 --predicate {env['RUNNER_TEMP']}/provenance-linux-", line)
+                self.assertTrue(line.endswith(f"{IMAGE}@{INDEX_DIGEST}"))
+
+    def test_the_attest_step_stops_before_cosign_when_a_predicate_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong = {"linux/amd64": _platform_predicate("linux/arm64"), "linux/arm64": _platform_predicate("linux/arm64")}
+            env = self._stage(Path(tmp), predicates=wrong); self._read_index(env)
+            result = self._run("Attest the image's provenance with this run's identity", env)
+            self.assertNotEqual(result.returncode, 0, "a refused predicate must fail the step")
+            self.assertIn("binds linux/arm64, not linux/amd64", result.stderr)
+            self.assertEqual(self._calls(env, "cosign attest"), [], "nothing may be attested after a refusal")
+
+    def test_the_index_step_fails_when_the_registry_read_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp))
+            result = self._run("Read the published index and its platform manifests", {**env, "STUB_DOCKER_FAIL": "1"})
+            self.assertNotEqual(result.returncode, 0, "a failed index read must fail the step")
+            self.assertEqual(list((Path(env["RUNNER_TEMP"]) / "image-manifests").glob("*.json")), [])
+
+    def test_the_attest_step_fails_when_a_predicate_read_or_the_attest_call_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Attest the image's provenance with this run's identity", {**env, "STUB_DOCKER_FAIL": "1"})
+            self.assertNotEqual(result.returncode, 0, "a failed predicate read must fail the step")
+            self.assertEqual(self._calls(env, "cosign attest"), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Attest the image's provenance with this run's identity", {**env, "STUB_COSIGN_FAIL": "1"})
+            self.assertNotEqual(result.returncode, 0, "a failed attest call must fail the step")
+            self.assertEqual(len(self._calls(env, "cosign attest")), 1, "the loop stops at the first failure")
+
+    def test_the_attest_step_stops_when_the_builder_is_another_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._stage(Path(tmp)); self._read_index(env)
+            result = self._run("Attest the image's provenance with this run's identity", {**env, "GITHUB_RUN_ID": "2"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not this run", result.stderr)
+            self.assertEqual(self._calls(env, "cosign attest"), [])
 
 
 if __name__ == "__main__":
