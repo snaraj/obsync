@@ -186,23 +186,30 @@ impl NonceLog {
             body.push_str(&line(expiry.saturating_sub(NONCE_TTL_SECS), entry));
         }
         let tmp = self.root.join(TMP_NAME);
+        // Whatever stands at the temporary name -- a file a crash left, or a
+        // link a restored volume brought -- is removed by name, which never
+        // follows a link, and the replacement is then created exclusively:
+        // `O_EXCL` refuses an existing name of any kind, so nothing this
+        // writes can land in a file that was already there.
+        match fs::remove_file(&tmp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         let mut replacement = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
+            .read(true)
+            .append(true)
+            .create_new(true)
             .mode(FILE_MODE)
             .open(&tmp)?;
         replacement.write_all(body.as_bytes())?;
         replacement.sync_all()?;
-        drop(replacement);
         fs::rename(&tmp, self.root.join(FILE_NAME))?;
         File::open(&self.root)?.sync_all()?;
-        // The handle follows the name: what it pointed at is unlinked, and
-        // an append to it would be an append to a file nobody will read.
-        self.file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(self.root.join(FILE_NAME))?;
+        // The handle that wrote the bytes is the handle that appends to
+        // them: the rename moved the object it holds open, so no name is
+        // resolved again and there is no link left to follow.
+        self.file = replacement;
         self.lines = live.len();
         self.syncs += 1;
         Ok(())

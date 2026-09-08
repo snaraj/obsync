@@ -784,6 +784,53 @@ mod tests {
             .expect_err("and a live nonce is still a replay after the rewrite");
     }
 
+    /// The reviewer's round-15 case: a link planted at the temporary name.
+    /// A compaction that opened it by name would rewrite the link's target
+    /// and then rename the link onto the log.
+    #[test]
+    fn a_link_standing_at_the_temporary_name_is_not_followed_by_compaction() {
+        let dir = volume("nonce-tmp-link");
+        let log = Log::buffered(LogLevel::Debug);
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "sentinel\n").expect("the victim");
+        let tmp = PathClass::JournalRoot.path(dir.path()).join("nonces.tmp");
+        std::os::unix::fs::symlink(&victim, &tmp).expect("the link is planted");
+
+        let mut c = cache(&dir, 1_000, 2, &log);
+        let mut now = 1_000;
+        for n in 1..=6u8 {
+            if n % 2 == 1 && n > 1 {
+                now += NONCE_TTL_SECS + 1;
+            }
+            c.remember(DEVICE, &nonce(n), now).expect("accepted");
+        }
+        assert_eq!(lines_on_disk(&dir), 2, "the rewrite happened");
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("still there"),
+            "sentinel\n",
+            "and nothing was written through the planted link"
+        );
+        let meta = std::fs::symlink_metadata(log_file(&dir)).expect("the log");
+        assert!(
+            meta.file_type().is_file(),
+            "the log is a regular file, not the link"
+        );
+        assert!(
+            std::fs::symlink_metadata(&tmp).is_err(),
+            "the planted name is gone, not renamed onto the log"
+        );
+        // The handle that wrote the rewrite is the one that appends: the
+        // next accepted nonce, in a fresh window so the ceiling of two is
+        // not what answers, lands in the log and only there.
+        c.remember(DEVICE, &nonce(7), now + NONCE_TTL_SECS + 1)
+            .expect("accepted after the rewrite");
+        assert_eq!(lines_on_disk(&dir), 3);
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("still there"),
+            "sentinel\n"
+        );
+    }
+
     #[test]
     fn the_durable_state_is_readable_by_nobody_but_this_user() {
         let dir = volume("nonce-mode");
