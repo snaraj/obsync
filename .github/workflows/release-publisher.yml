@@ -383,7 +383,10 @@ jobs:
         # off the published index, refused unless it is the BuildKit v1 shape
         # that names THIS run as builder and describes THIS platform's manifest,
         # and only then attested onto the digest: after the vulnerability gate
-        # and the signature, before the chart can embed it.
+        # and the signature, before the chart can embed it. v0.1.2's run built,
+        # signed and attested, then refused its own attestation in the next
+        # step (statement type, and a predicate stripped of its layer groups);
+        # that tag carries no chart and no Release.
         if: steps.image_state.outputs.state == 'absent'
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -399,7 +402,14 @@ jobs:
             python3 -I -B scripts/ci/provenance_contract.py predicate \
               --file "${predicate}" --builder "${run_url}" --platform "${platform}" \
               --index "${index}" --manifests "${manifests}"
-            cosign attest --yes --new-bundle-format --type slsaprovenance1 \
+            # The URI form of --type on purpose: the named `slsaprovenance1`
+            # makes cosign re-serialise the predicate through its typed SLSA
+            # struct, which drops `runDetails.metadata.buildkit_metadata` and
+            # with it the layer groups the contract binds platforms through.
+            # The URI form embeds the predicate verbatim under the same
+            # predicate type, so the consumer's `--type slsaprovenance1` on
+            # verification still matches. Proven on v0.1.2's real predicate.
+            cosign attest --yes --new-bundle-format --type https://slsa.dev/provenance/v1 \
               --predicate "${predicate}" "${IMAGE}@${DIGEST}"
           done
       - name: Prove the provenance verifies with the consumer's own command
