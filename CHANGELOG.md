@@ -4,7 +4,15 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.1 - Unreleased
+## 0.1.2 - Unreleased
+
+- The release publisher attests the image's SLSA v1 provenance onto the
+  published digest with its own identity, one statement per platform,
+  and proves it verifies with the consumer's command before the chart
+  embeds the digest. v0.1.1's image carries BuildKit provenance but no
+  signed attestation, which the platform's acquisition check requires.
+
+## 0.1.1 - 2026-09-08
 
 - The release publisher checks the plugin bundle's listing for the names
   the archive holds. The first v0.1.0 publisher run exported a correct
