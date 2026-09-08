@@ -74,7 +74,10 @@ edge_required`.
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
   pending device and its wrapped secret are destroyed. Expiry of an
-  unapproved pairing destroys them the same way.
+  unapproved pairing destroys them the same way, and so does a restart:
+  pairings live in memory, so a claim that does not survive one leaves a
+  device nobody can approve, and the start destroys it. The claimant pairs
+  again.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
   then `{"envelope","nonce"}` exactly once; `410 envelope_consumed`

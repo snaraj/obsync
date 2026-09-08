@@ -2,8 +2,11 @@
 //!
 //! Pairings live in memory only (`docs/storage.md`, "Journal frames"): a
 //! restart cancels an in-flight pairing, which is the safe direction. The
-//! table below is the whole state machine, so every transition and every
-//! wrong-actor case is unit-testable without a store or a socket.
+//! device a claim creates is journaled, though, so cancelling the pairing is
+//! only half of it: `App::reconcile_pending` destroys every pending device
+//! this table is no longer holding. The table below is the whole state
+//! machine, so every transition and every wrong-actor case is unit-testable
+//! without a store or a socket.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
@@ -162,6 +165,17 @@ impl PairingTable {
             false
         });
         swept
+    }
+
+    /// Whether a pairing is still holding this device as its claimant.
+    ///
+    /// A pending device with no pairing behind it is one nobody can approve:
+    /// the table is the only place a claim exists, and it does not survive a
+    /// restart (`App::reconcile_pending`).
+    pub fn holds(&self, device: &DeviceId) -> bool {
+        self.entries
+            .values()
+            .any(|p| p.claimant.as_ref().is_some_and(|c| &c.device_id == device))
     }
 
     /// The creator's view.

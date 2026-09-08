@@ -182,7 +182,9 @@ requires the refusal.
 domain the post named), `gc` (a list of sids collected), `scrub` (a
 summary), `seen` (device sign-in and edit events, retention-bounded). There
 is no `domain` frame: a domain exists because a file record names it
-(`docs/architecture.md` 5.1 item 4). Pairings live in memory only. Frames
+(`docs/architecture.md` 5.1 item 4). Pairings live in memory only, so a
+start destroys every pending device no pairing is holding any more, through
+the `device` delete frame expiry uses (`docs/architecture.md` 4.2). Frames
 carry `account_id`.
 
 ## Integrity
