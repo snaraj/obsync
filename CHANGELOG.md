@@ -4,7 +4,24 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.2 - Unreleased
+## 0.1.3 - Unreleased
+
+- The publisher attests with the URI form of the provenance type
+  (`--type https://slsa.dev/provenance/v1`): the named `slsaprovenance1`
+  makes cosign re-serialise the predicate through its typed struct and
+  drop BuildKit's layer metadata, which is what the contract binds each
+  platform through. The contract accepts the in-toto Statement v0.1 that
+  cosign emits. v0.1.2's publisher run built, signed and attested its
+  image, then refused its own attestation on both counts, so that tag
+  carries no chart and no Release; nothing weaker was accepted.
+
+## 0.1.2 - 2026-09-08
+
+Tagged and its image published, signed and attested; the publisher's own
+verification refused the attestation (statement type; predicate stripped of
+its layer groups), so this version received no chart and no GitHub Release
+(repaired in 0.1.3).
+
 
 - The release publisher attests the image's SLSA v1 provenance onto the
   published digest with its own identity, one statement per platform,
