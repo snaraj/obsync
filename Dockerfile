@@ -66,10 +66,13 @@ RUN set -eux; \
     rustup toolchain install; \
     test "$(rustc --version | awk '{print $2}')" = "1.98.0"; \
     rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-# The workspace test suite runs ONCE, on the build platform, against the host
-# target -- the same battery `make check` and the PR gate run. Emulating a
-# second architecture to re-run identical stdlib-only tests buys nothing and
-# costs minutes per release.
+# The lint and the workspace test suite run ONCE, on the build platform,
+# against the host target -- the same battery `make check` and the PR gate
+# run, here on Linux: a `cfg(target_os)` branch the developer's own system
+# never compiles is linted where it ships, so `make image` finds it before
+# the gate does. Emulating a second architecture to re-run identical
+# stdlib-only tests buys nothing and costs minutes per release.
+RUN cargo clippy --workspace --all-targets --locked -- -D warnings
 RUN cargo test --workspace --locked
 # One fully static binary per target architecture. musl plus
 # `+crt-static` and self-contained linking means the result has no dynamic

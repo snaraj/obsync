@@ -209,8 +209,9 @@ jobs:
     # being nonroot reaches main green and fails the PUBLISHER -- after the
     # merge, where nobody is holding the diff any more. The stages also re-run
     # batteries the `application` job already ran, in a DIFFERENT environment:
-    # `cargo test --workspace --locked` and `npm run build && npm test` inside
-    # a container whose only input is the build context. A test that quietly
+    # `cargo clippy` with warnings as errors, `cargo test --workspace --locked`
+    # and `npm run build && npm test` inside a container whose only input is
+    # the build context. A test that quietly
     # depends on the runner's filesystem or process environment passes there
     # and fails here, which is precisely how the two that do were found.
     #

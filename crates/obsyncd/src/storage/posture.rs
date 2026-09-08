@@ -62,7 +62,10 @@ const FILE_MODE: u32 = 0o600;
 const DIR_MODE: u32 = 0o700;
 /// The versioned root each volume keeps its data under.
 const ROOT_DIR: &str = "v1";
-/// The file the pass creates to learn which user this process runs as.
+/// The prefix of the file a development host writes to learn which user
+/// this process runs as. Linux never writes it (`process_user` below), so
+/// there the name exists only for the tests that pin what survives.
+#[cfg(any(test, not(target_os = "linux")))]
 const PROBE: &str = ".posture-probe";
 
 /// `O_NONBLOCK` from `<fcntl.h>`: a fifo standing under a name answers the
