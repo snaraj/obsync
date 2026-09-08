@@ -70,12 +70,16 @@ open handle or on a directory chain, never on a bare name:
    narrows rename to the entry's owner, the directory's owner, and root,
    all of which are already root or the server. A chain that would be
    refused once complete is refused before anything is created beneath
-   it, so a refused start leaves nothing behind; the one write before the
-   judging is the probe that learns which user the server is, a uniquely
-   named empty file in the deepest existing directory of the journal path,
-   removed at once. A refusal states how many directories up it was found
-   (`depth=0` is the configured directory itself); it never states a
-   location.
+   it, so a refused start leaves nothing behind. On Linux, the shipped
+   platform, nothing at all is written before the judging: the user the
+   server runs as is read off `/proc/self`, which the kernel owns by the
+   process's effective user. On other systems (development only) the user
+   is learned from a uniquely named empty probe file in the deepest
+   existing directory of the journal path, removed at once; a probe a
+   crash leaves behind is a harmless empty file under `.posture-probe-`
+   and is never swept, since a sweep is a removal by name. A refusal states
+   how many directories up it was found (`depth=0` is the configured
+   directory itself); it never states a location.
 
    **The provisioning precondition.** The server takes ownership of
    nothing. When there is anything left to create — the configured

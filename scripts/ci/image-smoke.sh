@@ -328,8 +328,15 @@ done
 second_code="$(docker container inspect --format '{{.State.ExitCode}}' "${second}")"
 [ "${second_code}" != 0 ] \
   || deny 'the second server on the same volumes exited 0; a refusal is not a clean start'
-docker logs "${second}" 2>&1 | grep -q 'event=store_open decision=refused reason=journal_locked' \
-  || deny 'the second server did not say why it refused (event=store_open decision=refused reason=journal_locked)'
+# The log driver can lag the exit by a moment; read the line, not the moment.
+said=''
+for _ in 1 2 3 4 5; do
+  docker logs "${second}" 2>&1 | grep -q 'event=store_open decision=refused reason=journal_locked' && said=yes && break
+  sleep 1
+done
+[ -n "${said}" ] \
+  || { printf 'image-smoke: second server log:\n%s\nimage-smoke: first server log:\n%s\n' "$(docker logs "${second}" 2>&1)" "$(docker logs "${holder}" 2>&1 | tail -n 20)"; \
+       deny 'the second server did not say why it refused (event=store_open decision=refused reason=journal_locked)'; }
 body="$(curl --silent --show-error --max-time 2 "http://${holder_port}/readyz" 2>/dev/null || true)"
 case "${body}" in
   '{"ready":true'*) ;;
@@ -373,8 +380,14 @@ done
   || deny "the server on unprepared volumes is '${status:-gone}' after ${READY_BUDGET_SECONDS}s; it must refuse to start"
 [ "$(docker container inspect --format '{{.State.ExitCode}}' "${unprepared}")" != 0 ] \
   || deny 'the server on unprepared volumes exited 0; a refusal is not a clean start'
-docker logs "${unprepared}" 2>&1 | grep -q 'event=posture path_class=journal_mount decision=refused reason=unwritable' \
-  || deny 'the server on unprepared volumes did not say why it refused (journal_mount unwritable)'
+said=''
+for _ in 1 2 3 4 5; do
+  docker logs "${unprepared}" 2>&1 | grep -q 'event=posture path_class=journal_mount decision=refused reason=unwritable' && said=yes && break
+  sleep 1
+done
+[ -n "${said}" ] \
+  || { printf 'image-smoke: unprepared server log:\n%s\n' "$(docker logs "${unprepared}" 2>&1)"; \
+       deny 'the server on unprepared volumes did not say why it refused (journal_mount unwritable)'; }
 docker run --rm --user 0 \
   --volume "${blobs_volume}:/data/blobs" \
   --volume "${journal_volume}:/data/journal" \

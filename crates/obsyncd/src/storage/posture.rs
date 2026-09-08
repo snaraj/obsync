@@ -327,10 +327,13 @@ impl Posture {
     ///
     /// Nothing is written through a configured path before that path has
     /// been validated (absolute, normal, free of links) and the directories
-    /// that exist on it have been judged. The one write before the judging
-    /// is the probe that learns which user this is, in the deepest
-    /// directory that already exists on the validated journal path, removed
-    /// at once.
+    /// that exist on it have been judged. On Linux, the shipped platform,
+    /// that holds without exception: the user this process runs as is read
+    /// off `/proc/self`, and validation and judging are reads. Elsewhere
+    /// (development only) the user is learned from a uniquely named probe
+    /// file in the deepest directory that already exists on the validated
+    /// journal path, removed at once, and that is the one write before the
+    /// judging.
     ///
     /// # Errors
     /// The first class that cannot be made safe, after its refusal line.
@@ -858,16 +861,31 @@ fn make_root(root: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The user this process runs as, learned from the filesystem: it creates
-/// a file in `dir` and asks who owns it.
+/// The user this process runs as, without writing anything: `/proc/self`
+/// resolves to this process's own directory, which the kernel owns by the
+/// process's effective user.
 ///
 /// `geteuid` is a foreign call, and requirement 5 allows exactly one file to
-/// make those. The probe pays for itself twice over: it also proves the
-/// directory is writable, which is the first thing any start needs, and a
-/// directory this server cannot write is refused as `unwritable` here
-/// rather than on the first `mkdir`. The name is unique to this process
-/// and moment, so nothing that already stands under a probe's name is ever
-/// removed; a probe a crash left behind is swept once its owner is known.
+/// make those. Reading `/proc/self` costs no write, so on the shipped
+/// platform nothing is created or removed through a configured path before
+/// the directories on it have been judged.
+#[cfg(target_os = "linux")]
+fn process_user(class: PathClass, _dir: &Path, log: &Log) -> Result<u32, StoreError> {
+    let meta = fs::metadata("/proc/self").map_err(|_| refuse_at(class, "user_unknown", 0, log))?;
+    Ok(meta.uid())
+}
+
+/// The user this process runs as, learned from the filesystem on a system
+/// without `/proc`: it creates a file in `dir` and asks who owns it.
+///
+/// Development only; the shipped platform is Linux and reads `/proc/self`.
+/// The probe is uniquely named, so nothing that already stands under a
+/// probe's name is ever touched, and it is the one write before the chain
+/// is judged. A probe a crash leaves behind is an empty file of this user's
+/// under `.posture-probe-`, harmless, and never swept: a sweep is a
+/// removal by name, and removals by name are what this pass refuses to
+/// make before its judgment.
+#[cfg(not(target_os = "linux"))]
 fn process_user(class: PathClass, dir: &Path, log: &Log) -> Result<u32, StoreError> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -891,29 +909,7 @@ fn process_user(class: PathClass, dir: &Path, log: &Log) -> Result<u32, StoreErr
     let uid = file.metadata()?.uid();
     drop(file);
     fs::remove_file(&probe)?;
-    sweep_probes(dir, uid);
     Ok(uid)
-}
-
-/// Remove probes a crashed pass left behind: regular files of this user's
-/// under the probe prefix. Nothing else under that prefix is touched.
-fn sweep_probes(dir: &Path, uid: u32) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let stale = name.to_str().is_some_and(|n| n.starts_with(PROBE));
-        if !stale {
-            continue;
-        }
-        if let Ok(meta) = fs::symlink_metadata(entry.path())
-            && meta.file_type().is_file()
-            && meta.uid() == uid
-        {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1628,26 +1624,75 @@ mod tests {
             .expect("open for cleanup");
     }
 
+    /// The round-13 probe: a file of this user's under the probe prefix,
+    /// standing in a world-writable ancestor of a journal directory that
+    /// does not exist yet. The refusal must leave it exactly as it was.
     #[test]
-    fn a_probe_a_crash_left_behind_is_swept_and_nothing_else_under_the_prefix_is() {
-        let dir = TempDir::new("posture-sweep");
-        let cfg = crate::cli::testutil::config(&dir).storage();
-        let stale = dir.path().join(format!("{PROBE}-stale"));
-        fs::write(&stale, "").expect("a probe from a dead pass");
-        let not_ours = dir.path().join(format!("{PROBE}-dir"));
-        fs::create_dir(&not_ours).expect("a directory under the prefix");
-        let linked = dir.path().join(format!("{PROBE}-link"));
-        symlink(&not_ours, &linked).expect("a link under the prefix");
-        Posture::enforce(&cfg, &Log::buffered(LogLevel::Debug)).expect("the pass runs");
-        assert!(!stale.exists(), "the stale probe file is swept");
+    fn a_file_under_the_probe_prefix_survives_a_refused_start() {
+        let dir = TempDir::new("posture-survivor");
+        let open = dir.path().join("open");
+        fs::create_dir(&open).expect("the world-writable ancestor");
+        let survivor = open.join(format!("{PROBE}-must-survive"));
+        fs::write(&survivor, "keep").expect("a file of this user's under the prefix");
+        fs::set_permissions(&open, Permissions::from_mode(0o777)).expect("anyone may write it");
+        let mut cfg = crate::cli::testutil::config(&dir).storage();
+        cfg.journal_dir = open.join("journal");
+        let log = Log::buffered(LogLevel::Debug);
+        let err = Posture::enforce(&cfg, &log).expect_err("a parent anyone may write");
         assert!(
-            fs::symlink_metadata(&linked).is_ok(),
-            "a link under the prefix is not a probe and stays"
+            matches!(
+                err,
+                StoreError::Posture {
+                    class: "journal_mount",
+                    reason: "writable_by_others"
+                }
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&survivor).expect("still there"),
+            "keep",
+            "nothing under the probe prefix was removed by a refused start"
+        );
+        let left: Vec<String> = fs::read_dir(&open)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            vec![format!("{PROBE}-must-survive")],
+            "and nothing else was left behind"
+        );
+        fs::set_permissions(&open, Permissions::from_mode(0o700)).expect("closed for cleanup");
+    }
+
+    /// On the shipped platform the user is read, never written for: a
+    /// directory this process cannot write still yields it, untouched.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_user_is_learned_without_writing_anything() {
+        let dir = TempDir::new("posture-proc");
+        let closed = dir.path().join("closed");
+        fs::create_dir(&closed).expect("a directory");
+        fs::set_permissions(&closed, Permissions::from_mode(0o500)).expect("closed to its owner");
+        let log = Log::buffered(LogLevel::Debug);
+        let uid =
+            process_user(PathClass::JournalMount, &closed, &log).expect("read off /proc/self");
+        assert_eq!(
+            uid,
+            fs::symlink_metadata(&closed).expect("the directory").uid()
         );
         assert!(
-            not_ours.is_dir(),
-            "a directory under the prefix is not a probe and stays"
+            fs::read_dir(&closed).expect("readable").next().is_none(),
+            "nothing was written to learn it"
         );
+        assert!(
+            !log.captured().contains("decision=refused"),
+            "{}",
+            log.captured()
+        );
+        fs::set_permissions(&closed, Permissions::from_mode(0o700)).expect("open for cleanup");
     }
 
     #[test]
