@@ -664,12 +664,13 @@ for the dashboard paths, service-token policy for `/v1/*` -- and
 request-id headers mandatory on every request and refuses one that lacks
 them. `docs/platform-onboarding.md` lists the platform-repository changes.
 
-Every other deployment differs from it in two values and nothing else, the
-terminator and the edge mode:
+Every other deployment differs from it in the terminator and in which
+proxies, if any, may speak for a client's address; the edge mode is `none`
+wherever nothing but private connectivity reaches the server:
 
 | Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
 | --- | --- | --- | --- | --- |
-| Reference (pie5) | `cloudflare` | Cloudflare Tunnel, Access in front | the edge's own headers, required on every request | the deployment; `docs/validation.md` V1-V14 |
+| Reference (pie5) | `none` | an in-cluster TLS terminator the platform trusts, in front of the pod; the deployment's own tuple lives in the platform runbook | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty at activation: no forwarded address is trusted until a reviewed change names a proxy | planned, not yet proven: `docs/validation.md` V1-V14 by hand once the deployment is live |
 | Compose (any network, no provider) | `none` | Caddy, `deploy/compose`, reachable only on the bind address you choose | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
 
 The Compose row is the one a stranger can run: a private name, a certificate
