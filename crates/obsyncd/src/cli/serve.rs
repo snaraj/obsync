@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use obsync_core::hex;
 use obsync_core::http::{Limits, Server};
 
+use crate::api::auth::SystemClock;
 use crate::api::{self, App};
 use crate::config::Config;
 use crate::dashboard::Dashboard;
@@ -109,15 +110,18 @@ pub fn run() -> i32 {
 
     let dashboard = Dashboard::load(&cfg.dashboard_dir, &log);
     let plugin = PluginDist::load(&cfg.plugin_dir, &log);
-    let app = Arc::new(App::new(
+    let app = match App::new(
         cfg,
         store,
-        log.clone(),
         dashboard,
         plugin,
         Arc::clone(&shutdown),
         setup_token,
-    ));
+        Arc::new(SystemClock),
+    ) {
+        Ok(app) => Arc::new(app),
+        Err(e) => return fatal(&log, "nonce_log_failed", &e),
+    };
 
     log.info(
         "serve_start",
@@ -196,12 +200,13 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
             |_| false,
             |app| {
                 let now = app.clock.unix_secs();
-                let (nonces, pairings, sessions) = app.sweep(now);
-                if nonces + pairings + sessions > 0 {
+                let (nonces, nonce_appends, pairings, sessions) = app.sweep(now);
+                if nonces + pairings + sessions > 0 || nonce_appends > 0 {
                     app.log.debug(
                         "swept",
                         &[
                             ("nonces", Val::count(nonces as u64)),
+                            ("nonce_appends", Val::count(nonce_appends)),
                             ("pairings", Val::count(pairings as u64)),
                             ("sessions", Val::count(sessions as u64)),
                         ],

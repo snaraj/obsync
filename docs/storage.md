@@ -29,6 +29,7 @@ code change.
 <journal>/v1                                 journal volume root, mode 0700
 <journal>/v1/journal/<000001>.log            append-only segments, 64 MiB each
 <journal>/v1/index/<seq>.snap                periodic index snapshot
+<journal>/v1/nonces                          accepted request nonces, 0600
 <journal>/v1/server.key                      only when OBSYNC_SERVER_KEY is unset, 0600
 <journal>/v1/setup-token                     first-boot and recovery login, 0600
 <journal>/v1/quarantine/<sid>                chunks that failed a scrub
@@ -136,6 +137,16 @@ decision=<ok|repaired|refused> …` — and a correction states `from` and `to`
 in octal. The modes on the `server_key` and `setup_token_ready` lines are the
 modes read back off the handle, so a startup line cannot claim a protection a
 file does not have. No line carries a filesystem location or any file content.
+
+`v1/nonces` is not one of the six classes and adds no line to the report.
+It holds no credential: a device id and a nonce are public request values
+that open nothing and are only ever compared, so it is server state like the
+journal segments beside it, created 0600 under the same measured 0700 root.
+What it does hold is the replay window (`docs/protocol.md`,
+"Authentication"): every accepted nonce is appended and fsynced before its
+request is answered, a start loads back what the 600 s still covers, the
+file is rewritten when it passes twice the cache's ceiling, and a torn final
+line costs only itself.
 
 `obsyncd check` runs the identical pass, and its policy is **repair and
 report**: an operator who runs it on a restored volume leaves that volume

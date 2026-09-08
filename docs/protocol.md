@@ -25,9 +25,13 @@ sig = HMAC-SHA-256(device_secret,
 `path_and_query` is the request target exactly as sent (`/v1/changes?since=7`).
 An empty body hashes as SHA-256 of zero bytes. Rejections: `401
 bad_signature`, `401 stale_timestamp` (outside ±300 s), `401 replayed_nonce`
-(seen within 600 s), `403 device_revoked`, `403 device_pending` (a claimed
-device that the creator has not yet approved; only that pairing's envelope
-endpoint answers it, with `409 not_approved`). Pairing claim and envelope
+(seen within 600 s, and the 600 s survives a restart: accepted nonces rest on
+the journal volume and are fsynced before the request is answered), `503
+nonce_cache_full` (the replay cache is at its ceiling; refusing beats
+forgetting a nonce still inside its window), `503 nonce_log_unavailable`
+(the volume would not take that record), `403 device_revoked`, `403
+device_pending` (a claimed device that the creator has not yet approved;
+only that pairing's envelope endpoint answers it, with `409 not_approved`). Pairing claim and envelope
 fetch are the only device endpoints with their own rules (below). Admin endpoints
 use the dashboard session cookie plus `X-Obsync-Csrf`.
 

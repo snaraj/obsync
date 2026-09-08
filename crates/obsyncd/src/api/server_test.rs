@@ -146,13 +146,13 @@ impl Harness {
             App::new(
                 cfg,
                 store,
-                log,
                 dashboard,
                 plugin,
                 Arc::clone(&shutdown),
                 Some("5e".repeat(32)),
+                Arc::clone(&clock) as Arc<dyn Clock>,
             )
-            .with_clock(Arc::clone(&clock) as Arc<dyn Clock>),
+            .expect("the application state opens"),
         );
 
         let server = Server::bind("127.0.0.1:0", Limits::default()).expect("bind");
@@ -1240,6 +1240,38 @@ fn post_in_domain(h: &Harness, cred: &Cred, file_id: &str, parents: &[&str], dom
         .body(&body(&expected))
         .sign(cred, NOW)
         .send(h.addr)
+}
+
+/// The durable record is written by the request path itself, before the
+/// response: `docs/protocol.md` promises the 600 s window across a restart,
+/// and a background step could not keep it.
+#[test]
+fn an_authenticated_request_leaves_its_nonce_on_the_journal_volume() {
+    let h = Harness::start("nonce-durable");
+    let cred = h.setup_account();
+    let sent = nonce();
+    let empty = hex::encode(&sha256::sha256(&[]));
+
+    let res = Req::get("/v1/account")
+        .sign_with(&cred, NOW, &sent, &empty)
+        .send(h.addr);
+    assert_eq!(res.status, 200, "{}", res.text());
+
+    let file = crate::storage::PathClass::JournalRoot
+        .path(&h.dir.join("journal"))
+        .join("nonces");
+    let text = std::fs::read_to_string(&file).expect("the durable state is there");
+    let expected = format!("{NOW} {} {sent}", cred.id);
+    assert!(
+        text.lines().any(|line| line == expected),
+        "the accepted nonce is on the volume: {text}"
+    );
+
+    let again = Req::get("/v1/account")
+        .sign_with(&cred, NOW, &sent, &empty)
+        .send(h.addr);
+    assert_eq!(again.status, 401, "{}", again.text());
+    assert_eq!(again.code(), "replayed_nonce");
 }
 
 /// A version naming no parent replaces no head, so a client that never

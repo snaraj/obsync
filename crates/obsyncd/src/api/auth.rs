@@ -7,17 +7,20 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::hex;
 use obsync_core::http::Request;
 use obsync_core::{ct, hmac, sha256};
 
-use crate::log::Val;
+use crate::log::{Log, Val};
+use crate::storage::StoreError;
 use crate::storage::types::{DeviceRecord, DeviceState, SeenEvent, SeenKind};
 use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
+use super::nonce_log::{Nonce, NonceLog};
 use super::{ApiError, App, SIGN_IN_RECORD_INTERVAL_SECS, is_hex, render};
 
 /// Widest accepted difference between the request timestamp and server time.
@@ -84,28 +87,59 @@ impl Clock for FakeClock {
     }
 }
 
-/// Nonces seen inside the replay window, keyed by device and nonce.
+/// Nonces seen inside the replay window, and the file that outlives the
+/// process holding them.
+///
+/// There is no in-memory-only constructor. The window is a promise about
+/// wall-clock time, and a cache that a restart empties cannot keep it
+/// (AGENTS.md requirement 4): the only way to have one is to have the
+/// durable state open (`super::nonce_log`).
 pub struct NonceCache {
-    seen: HashMap<(String, String), u64>,
+    seen: HashMap<Nonce, u64>,
+    durable: NonceLog,
+    log: Log,
+    /// Most nonces held at once. [`NONCE_CACHE_MAX`] everywhere but the
+    /// tests that drive the ceiling and the compaction it triggers.
+    capacity: usize,
 }
 
 impl NonceCache {
-    /// An empty cache.
-    pub fn new() -> Self {
-        Self {
-            seen: HashMap::new(),
-        }
+    /// Open the durable state on the journal volume and load the nonces
+    /// still inside the window.
+    ///
+    /// # Errors
+    /// The volume, or on-disk state that is not a nonce log. Both refuse the
+    /// start: a server that cannot record what it accepts cannot promise
+    /// that it will refuse it a second time.
+    pub fn open(journal_dir: &Path, now: u64, log: &Log) -> Result<NonceCache, StoreError> {
+        Self::sized(journal_dir, now, NONCE_CACHE_MAX, log)
+    }
+
+    fn sized(
+        journal_dir: &Path,
+        now: u64,
+        capacity: usize,
+        log: &Log,
+    ) -> Result<NonceCache, StoreError> {
+        let (durable, entries) = NonceLog::open(journal_dir, now, log)?;
+        Ok(NonceCache {
+            seen: entries.into_iter().collect(),
+            durable,
+            log: log.clone(),
+            capacity,
+        })
     }
 
     /// Remember `nonce` for `device`, or report the replay.
     ///
     /// # Errors
     /// `401 replayed_nonce` when the pair is already held, `503
-    /// nonce_cache_full` when the cache is at its ceiling: refusing beats
-    /// forgetting a nonce that is still inside its window.
+    /// nonce_cache_full` when the cache is at its ceiling — refusing beats
+    /// forgetting a nonce that is still inside its window — and `503
+    /// nonce_log_unavailable` when the volume will not take the record.
     pub fn remember(&mut self, device: &str, nonce: &str, now: u64) -> Result<(), ApiError> {
-        let key = (device.to_string(), nonce.to_string());
-        if let Some(expiry) = self.seen.get(&key)
+        let entry = (device.to_string(), nonce.to_string());
+        if let Some(expiry) = self.seen.get(&entry)
             && *expiry > now
         {
             return Err(ApiError::new(
@@ -114,17 +148,30 @@ impl NonceCache {
                 "nonce was used inside the window",
             ));
         }
-        if self.seen.len() >= NONCE_CACHE_MAX {
+        if self.seen.len() >= self.capacity {
             self.sweep(now);
         }
-        if self.seen.len() >= NONCE_CACHE_MAX {
+        if self.seen.len() >= self.capacity {
             return Err(ApiError::new(
                 503,
                 "nonce_cache_full",
                 "replay cache is full; retry shortly",
             ));
         }
-        self.seen.insert(key, now + NONCE_TTL_SECS);
+        // The file is rewritten before this line joins it, never after: a
+        // volume that refuses the rewrite refuses the request too, and the
+        // nonce it carried is still unspent.
+        if self.durable.lines() > self.capacity * 2 {
+            self.sweep(now);
+            let live = &self.seen;
+            self.durable
+                .compact(live)
+                .map_err(|e| self.unavailable(&e))?;
+        }
+        self.durable
+            .append(now, &entry)
+            .map_err(|e| self.unavailable(&e))?;
+        self.seen.insert(entry, now + NONCE_TTL_SECS);
         Ok(())
     }
 
@@ -133,6 +180,12 @@ impl NonceCache {
         let before = self.seen.len();
         self.seen.retain(|_, expiry| *expiry > now);
         before - self.seen.len()
+    }
+
+    /// Records written since the last call, for the sweep summary: what one
+    /// period of requests cost the journal volume (requirement 12).
+    pub const fn appends(&mut self) -> u64 {
+        self.durable.take_appends()
     }
 
     /// How many nonces are held.
@@ -144,11 +197,27 @@ impl NonceCache {
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
     }
-}
 
-impl Default for NonceCache {
-    fn default() -> Self {
-        Self::new()
+    /// How many times the durable state has been made durable, for the test
+    /// that pins one per accepted request.
+    #[cfg(test)]
+    pub const fn syncs(&self) -> u64 {
+        self.durable.syncs()
+    }
+
+    /// One line for a volume that would not take the record, and the
+    /// refusal the request gets. The kind is the io kind and no location
+    /// (requirement 12, requirement 6).
+    fn unavailable(&self, e: &std::io::Error) -> ApiError {
+        self.log.error(
+            "nonce_log",
+            &[("decision", Val::word("refused")), ("io", Val::io(e))],
+        );
+        ApiError::new(
+            503,
+            "nonce_log_unavailable",
+            "replay state could not be recorded; retry shortly",
+        )
     }
 }
 
@@ -394,7 +463,13 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+    use crate::log::LogLevel;
+    use crate::storage::PathClass;
+    use crate::storage::testutil::TempDir;
 
     const SECRET: [u8; 32] = [7u8; 32];
 
@@ -437,49 +512,263 @@ mod tests {
         assert!(!verify(&SECRET, &canon, &"a".repeat(128)));
     }
 
+    const DEVICE: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const OTHER: &str = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
+
+    fn nonce(n: u8) -> String {
+        format!("{n:032x}")
+    }
+
+    /// A journal volume with the root the posture pass would have made.
+    fn volume(label: &str) -> TempDir {
+        let dir = TempDir::new(label);
+        std::fs::create_dir_all(PathClass::JournalRoot.path(dir.path())).expect("journal root");
+        dir
+    }
+
+    /// Where the durable state rests, as `docs/storage.md` states it.
+    fn log_file(dir: &TempDir) -> std::path::PathBuf {
+        PathClass::JournalRoot.path(dir.path()).join("nonces")
+    }
+
+    fn lines_on_disk(dir: &TempDir) -> usize {
+        std::fs::read_to_string(log_file(dir))
+            .expect("the log is there")
+            .lines()
+            .count()
+    }
+
+    /// A cache over `dir` at a capacity the test drives. Production takes
+    /// `NONCE_CACHE_MAX`; two is enough to reach the ceiling and the
+    /// compaction that stands beyond it inside one test.
+    fn cache(dir: &TempDir, now: u64, capacity: usize, log: &Log) -> NonceCache {
+        NonceCache::sized(dir.path(), now, capacity, log).expect("the nonce log opens")
+    }
+
     #[test]
     fn a_nonce_is_refused_a_second_time_inside_the_window() {
-        let mut cache = NonceCache::new();
-        cache.remember("dev", "n1", 1_000).expect("first use");
-        let e = cache.remember("dev", "n1", 1_000).expect_err("replay");
+        let dir = volume("nonce-replay");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        assert!(c.is_empty(), "a volume with no log is a first boot");
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
+        let e = c.remember(DEVICE, &nonce(1), 1_000).expect_err("replay");
         assert_eq!(e.status, 401);
         assert_eq!(e.code, "replayed_nonce");
     }
 
     #[test]
     fn the_same_nonce_from_another_device_is_not_a_replay() {
-        let mut cache = NonceCache::new();
-        cache.remember("dev_a", "n1", 1_000).expect("first use");
-        cache
-            .remember("dev_b", "n1", 1_000)
+        let dir = volume("nonce-devices");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
+        c.remember(OTHER, &nonce(1), 1_000)
             .expect("different device");
     }
 
     #[test]
     fn a_nonce_is_forgotten_only_after_the_full_ttl() {
-        let mut cache = NonceCache::new();
-        cache.remember("dev", "n1", 1_000).expect("first use");
+        let dir = volume("nonce-ttl");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         assert!(
-            cache
-                .remember("dev", "n1", 1_000 + NONCE_TTL_SECS - 1)
+            c.remember(DEVICE, &nonce(1), 1_000 + NONCE_TTL_SECS - 1)
                 .is_err(),
             "a nonce inside the ttl is still a replay"
         );
-        cache.sweep(1_000 + NONCE_TTL_SECS + 1);
-        assert!(cache.is_empty());
-        cache
-            .remember("dev", "n1", 1_000 + NONCE_TTL_SECS + 1)
+        c.sweep(1_000 + NONCE_TTL_SECS + 1);
+        assert!(c.is_empty());
+        c.remember(DEVICE, &nonce(1), 1_000 + NONCE_TTL_SECS + 1)
             .expect("outside the ttl");
     }
 
     #[test]
     fn sweeping_keeps_live_entries_and_drops_expired_ones() {
-        let mut cache = NonceCache::new();
-        cache.remember("dev", "old", 1_000).expect("first");
-        cache.remember("dev", "new", 1_400).expect("second");
-        let dropped = cache.sweep(1_700);
+        let dir = volume("nonce-sweep");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_400).expect("second");
+        let dropped = c.sweep(1_700);
         assert_eq!(dropped, 1);
-        assert_eq!(cache.len(), 1);
+        assert_eq!(c.len(), 1);
+    }
+
+    /// The whole point of the file: a request captured before a restart is
+    /// still inside its window after one.
+    #[test]
+    fn a_nonce_outlives_the_process_that_accepted_it() {
+        let dir = volume("nonce-restart");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
+        assert_eq!(
+            lines_on_disk(&dir),
+            1,
+            "the accepted nonce is on the volume"
+        );
+        drop(c);
+
+        let mut restarted = cache(&dir, 1_100, NONCE_CACHE_MAX, &log);
+        assert_eq!(restarted.len(), 1, "the window survives the process");
+        let e = restarted
+            .remember(DEVICE, &nonce(1), 1_100)
+            .expect_err("the captured request is still a replay");
+        assert_eq!(e.code, "replayed_nonce");
+        assert!(
+            log.captured()
+                .contains("event=nonce_log decision=loaded entries=1"),
+            "{}",
+            log.captured()
+        );
+    }
+
+    #[test]
+    fn an_entry_past_the_window_is_not_loaded() {
+        let dir = volume("nonce-expiry");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
+        drop(c);
+
+        // One second past the window it protects nothing, and holding it
+        // would be a cache that only ever grows.
+        let mut restarted = cache(&dir, 1_000 + NONCE_TTL_SECS + 1, NONCE_CACHE_MAX, &log);
+        assert!(restarted.is_empty());
+        restarted
+            .remember(DEVICE, &nonce(1), 1_000 + NONCE_TTL_SECS + 1)
+            .expect("outside the window it is a fresh nonce");
+        assert!(log.captured().contains("expired=1"), "{}", log.captured());
+    }
+
+    #[test]
+    fn a_torn_last_line_costs_only_itself() {
+        let dir = volume("nonce-torn");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        drop(c);
+        // A crash between an append and its fsync: half a line, and only
+        // ever the newest one.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(log_file(&dir))
+            .expect("the log opens");
+        file.write_all(format!("1000 {DEVICE} {}", &nonce(3)[..10]).as_bytes())
+            .expect("the torn line lands");
+        drop(file);
+
+        let mut restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        assert_eq!(restarted.len(), 2, "everything before it survives");
+        assert_eq!(lines_on_disk(&dir), 2, "and the torn line is cut off");
+        assert!(
+            log.captured().contains("decision=truncated"),
+            "{}",
+            log.captured()
+        );
+        restarted
+            .remember(DEVICE, &nonce(1), 1_000)
+            .expect_err("the lines that were durable are still held");
+    }
+
+    #[test]
+    fn a_line_that_is_not_an_entry_refuses_the_start() {
+        let dir = volume("nonce-corrupt");
+        let log = Log::buffered(LogLevel::Debug);
+        std::fs::write(
+            log_file(&dir),
+            format!("1000 {DEVICE} not-a-nonce\n1000 x y\n"),
+        )
+        .expect("foreign content");
+        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, &log) else {
+            panic!("a log that is not a log refuses the start");
+        };
+        assert_eq!(e.code(), "corrupt");
+        assert!(
+            log.captured().contains("reason=nonce_log_corrupt"),
+            "{}",
+            log.captured()
+        );
+    }
+
+    #[test]
+    fn the_ceiling_still_refuses_after_a_reload() {
+        let dir = volume("nonce-ceiling");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 2, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        drop(c);
+
+        // Reloading is not a way past the ceiling: what came back off the
+        // volume counts against it exactly as what this process accepted.
+        let mut restarted = cache(&dir, 1_000, 2, &log);
+        assert_eq!(restarted.len(), 2);
+        let e = restarted
+            .remember(DEVICE, &nonce(3), 1_000)
+            .expect_err("the ceiling is reached");
+        assert_eq!(e.status, 503);
+        assert_eq!(e.code, "nonce_cache_full");
+    }
+
+    #[test]
+    fn every_accepted_nonce_pays_for_one_durable_record() {
+        let dir = volume("nonce-durability");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        for n in 1..=3u8 {
+            c.remember(DEVICE, &nonce(n), 1_000).expect("accepted");
+        }
+        // A replay is not an acceptance, so it costs nothing.
+        c.remember(DEVICE, &nonce(1), 1_000).expect_err("replay");
+        assert_eq!(
+            c.syncs(),
+            3,
+            "the record is made durable before the request is served"
+        );
+    }
+
+    #[test]
+    fn the_log_is_compacted_once_it_passes_twice_the_ceiling() {
+        let dir = volume("nonce-compaction");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 2, &log);
+        // Two per window, and a window between each pair, so the file grows
+        // past twice the ceiling while the cache never does.
+        let mut now = 1_000;
+        for n in 1..=5u8 {
+            if n % 2 == 1 && n > 1 {
+                now += NONCE_TTL_SECS + 1;
+            }
+            c.remember(DEVICE, &nonce(n), now).expect("accepted");
+        }
+        assert_eq!(lines_on_disk(&dir), 5, "every acceptance is one line");
+
+        c.remember(DEVICE, &nonce(6), now).expect("accepted");
+        assert_eq!(
+            lines_on_disk(&dir),
+            2,
+            "the rewrite keeps what the window still covers and nothing else"
+        );
+        c.remember(DEVICE, &nonce(5), now)
+            .expect_err("and a live nonce is still a replay after the rewrite");
+    }
+
+    #[test]
+    fn the_durable_state_is_readable_by_nobody_but_this_user() {
+        let dir = volume("nonce-mode");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 2, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+        let mode = std::fs::symlink_metadata(log_file(&dir))
+            .expect("the log is there")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

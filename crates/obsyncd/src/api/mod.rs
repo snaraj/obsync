@@ -15,6 +15,7 @@ pub mod chunks;
 pub mod devices;
 pub mod edge;
 pub mod files;
+pub mod nonce_log;
 pub mod pairing;
 pub mod plugin;
 pub mod rand;
@@ -43,7 +44,7 @@ use crate::storage::Store;
 use crate::storage::types::StoreError;
 use crate::types::{AccountId, DeviceId};
 
-use self::auth::{Clock, SystemClock};
+use self::auth::Clock;
 use self::edge::ClientInfo;
 use self::pairing::PairingTable;
 use self::render::s;
@@ -268,25 +269,43 @@ pub struct App {
 
 impl App {
     /// Assemble the application state. `serve` owns every argument already.
+    ///
+    /// The clock arrives here rather than afterwards because the durable
+    /// replay state is loaded against it: what is still inside the 600 s
+    /// window is a question only a clock can answer, and the answer must
+    /// come from the clock the running server will keep asking.
+    ///
+    /// Taking the [`Store`] by value is what proves the journal volume was
+    /// measured: a store cannot be opened without a completed posture pass,
+    /// and the nonce log opened below rests on that same volume.
+    ///
+    /// # Errors
+    /// A journal volume that will not give up its durable replay state.
+    /// That refuses the start: a server that cannot record the nonces it
+    /// accepts cannot promise to refuse them a second time (requirement 4).
     pub fn new(
         cfg: Config,
         store: Store,
-        log: Log,
         dashboard: Dashboard,
         plugin: PluginDist,
         shutdown: Arc<AtomicBool>,
         setup_token: Option<String>,
-    ) -> Self {
-        Self {
+        clock: Arc<dyn Clock>,
+    ) -> Result<App, StoreError> {
+        // The store's own logger, rather than a second one handed in beside
+        // it: one process writes to one sink.
+        let log = store.log();
+        let nonces = auth::NonceCache::open(&cfg.journal_dir, clock.unix_secs(), &log)?;
+        Ok(Self {
             cfg,
             store,
             log,
-            clock: Arc::new(SystemClock),
+            clock,
             dashboard,
             plugin,
             shutdown,
             setup_token,
-            nonces: Mutex::new(auth::NonceCache::new()),
+            nonces: Mutex::new(nonces),
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
             seen: Mutex::new(HashMap::new()),
@@ -299,7 +318,7 @@ impl App {
             scrub_requested: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
             scrub_running: AtomicBool::new(false),
-        }
+        })
     }
 
     /// Whether a collection is running right now.
@@ -343,13 +362,6 @@ impl App {
         self.scrub_requested.swap(false, Ordering::SeqCst)
     }
 
-    /// Replace the clock. Tests drive the ±300 s window with a fake.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
-        self
-    }
-
     /// The account id, or `409 not_set_up`.
     pub fn account_id(&self) -> Result<AccountId, ApiError> {
         match self.store.account() {
@@ -358,15 +370,20 @@ impl App {
         }
     }
 
-    /// Drop expired nonces, pairings, and sessions. Returns the three counts.
+    /// Drop expired nonces, pairings, and sessions. Returns the three counts
+    /// and what the accepted requests since the last sweep cost the journal
+    /// volume in durable nonce records.
     ///
     /// A pairing that expired while claimed but unapproved leaves a device
     /// nobody ever approved. That device is deleted here, secret and all, so
     /// a claim can never outlive the ten minutes that granted it
     /// (`docs/architecture.md` 4.2). Each deletion is one log line
     /// (requirement 12).
-    pub fn sweep(&self, now: u64) -> (usize, usize, usize) {
-        let nonces = self.nonces.lock().expect("nonce cache").sweep(now);
+    pub fn sweep(&self, now: u64) -> (usize, u64, usize, usize) {
+        let (nonces, nonce_appends) = {
+            let mut cache = self.nonces.lock().expect("nonce cache");
+            (cache.sweep(now), cache.appends())
+        };
         let swept = self.pairings.lock().expect("pairings").sweep(now);
         for device in &swept.orphans {
             let decision = match self.store.delete_device(device) {
@@ -382,7 +399,7 @@ impl App {
             );
         }
         let sessions = self.sessions.lock().expect("sessions").sweep(now);
-        (nonces, swept.pairings, sessions)
+        (nonces, nonce_appends, swept.pairings, sessions)
     }
 
     /// The last decisions, newest first, optionally only those whose device id
