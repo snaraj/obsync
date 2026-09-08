@@ -41,7 +41,11 @@ chart renders.
    default-deny, OCIRepository with `platform.snaraj.dev/chart-release`,
    exact `ref.digest`, `oci://` chart URL, and the publisher's
    `matchOIDCIdentity`; HelmRelease shaped like the sites (`maxHistory: 2`,
-   `driftDetection`, rollback remediation, `deploymentReady: true`).
+   `driftDetection`, rollback remediation). `deploymentReady` stays `false`
+   until items 5 and 6 exist on the cluster: false renders every object with
+   zero application replicas, so the claims can bind their volumes first;
+   true, set by one reviewed values change afterwards, scales the Deployment
+   to its one replica.
 5. **Storage:** two static local PersistentVolumes on `local-pie-ssd` under
    `/mnt/local-pie-ssd/obsidian/obsync-{blobs,journal}` (250 GiB and 4 GiB), node
    affinity to the node, `Retain`; pre-bound to the claims the chart creates,

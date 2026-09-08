@@ -155,18 +155,18 @@ class ThePinsHoldAgainstTheRealChart(unittest.TestCase):
     """The enforcement path itself. CI's `chart` job runs these for real."""
 
     def test_the_render_parses_and_carries_the_expected_document_kinds(self):
-        kinds = sorted(document["kind"] for document in chart_pins.render())
-        self.assertEqual(
-            kinds,
-            [
-                "Deployment",
-                "NetworkPolicy",
-                "PersistentVolumeClaim",
-                "PersistentVolumeClaim",
-                "Service",
-                "ServiceAccount",
-            ],
-        )
+        # Both readiness values render the same six objects; the count that
+        # differs is the replica count, pinned by `pin_readiness`.
+        expected = [
+            "Deployment",
+            "NetworkPolicy",
+            "PersistentVolumeClaim",
+            "PersistentVolumeClaim",
+            "Service",
+            "ServiceAccount",
+        ]
+        self.assertEqual(sorted(document["kind"] for document in chart_pins.render()), expected)
+        self.assertEqual(sorted(document["kind"] for document in chart_pins.render(*chart_pins.ACTIVE)), expected)
 
     def test_each_pin_holds(self):
         for name, pin in chart_pins.PINS.items():

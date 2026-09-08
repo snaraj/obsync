@@ -87,6 +87,12 @@ def _helm(sets: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
+ACTIVE = ("deploymentReady=true",)
+"""The platform-ready render: the shipped default is false, which renders the
+same objects with zero application replicas (see `pin_readiness`), so every
+pin that inspects the running shape renders with the gate open."""
+
+
 def render(*sets: str) -> list[dict[str, Any]]:
     """Render the COMPLETE chart and read it with the fail-closed reader."""
     completed = _helm(list(sets))
@@ -161,7 +167,7 @@ def pin_ingress() -> None:
             }
         ]
 
-    policy = only(render(), "NetworkPolicy")
+    policy = only(render(*ACTIVE), "NetworkPolicy")
     spec = policy["spec"]
     equals(spec["podSelector"], {"matchLabels": selector_labels()}, "the policy podSelector")
     equals(spec["policyTypes"], ["Ingress", "Egress"], "the policy types")
@@ -183,7 +189,7 @@ def pin_ingress() -> None:
 
     # (c) The pin MOVES with the value, which is what proves it reads the
     # instance at all rather than matching a constant.
-    moved = only(render("ingress.peerInstance=other-tunnel"), "NetworkPolicy")
+    moved = only(render(*ACTIVE, "ingress.peerInstance=other-tunnel"), "NetworkPolicy")
     equals(moved["spec"]["ingress"], expected_rule("other-tunnel"), "the overridden ingress rule")
     if configured["ingress"]["peerInstance"] in str(moved["spec"]["ingress"]):
         raise PinError("the overridden render still names the default peer instance")
@@ -223,7 +229,7 @@ def _assert_claim(claim: dict[str, Any], *, name: str, spec: dict[str, Any]) -> 
 
 def pin_storage() -> None:
     configured = values()
-    documents = render()
+    documents = render(*ACTIVE)
 
     claims = {claim["metadata"]["name"]: claim for claim in every(documents, "PersistentVolumeClaim")}
     equals(sorted(claims), ["obsync-blobs", "obsync-journal"], "the default claim inventory")
@@ -245,6 +251,7 @@ def pin_storage() -> None:
     # arrive as a claim like the other two -- and reach the process, or it is a
     # mount nothing writes to.
     mirrored = render(
+        *ACTIVE,
         "storage.mirrors[0].name=spare",
         "storage.mirrors[0].className=local-pie-ssd",
         "storage.mirrors[0].size=100Gi",
@@ -309,7 +316,7 @@ def pin_storage() -> None:
     # Drive a render where they differ -- a volume grown ahead of its claim,
     # the exact situation the distinction exists for -- and require the process
     # to still be told the claim size while the annotation reports the volume.
-    grown = render("storage.blobs.capacity=500Gi")
+    grown = render(*ACTIVE, "storage.blobs.capacity=500Gi")
     grown_pod = only(grown, "Deployment")["spec"]["template"]["spec"]
     grown_environment = {
         entry["name"]: entry.get("value")
@@ -373,7 +380,7 @@ def pin_storage() -> None:
 
 def pin_security() -> None:
     configured = values()
-    documents = render()
+    documents = render(*ACTIVE)
     pod = only(documents, "Deployment")["spec"]["template"]["spec"]
     equals(pod["automountServiceAccountToken"], False, "the pod service-account token mount")
     # The server key wraps every device secret. A pod that started without it
@@ -468,7 +475,40 @@ def pin_security() -> None:
     print("chart-pins security: (c) the workload reference renders repository:tag@digest")
 
 
-PINS = {"ingress": pin_ingress, "storage": pin_storage, "security": pin_security}
+
+
+def pin_readiness() -> None:
+    """`deploymentReady` gates the REPLICA COUNT, not a label on it.
+
+    False (the shipped default) renders every object -- the claims can bind
+    their volumes and the TLS proxy can resolve the Service -- with zero
+    application replicas, so nothing waits on a volume or a Secret that does
+    not exist yet. True is a scale from zero to one replica and nothing else,
+    and the value itself is a boolean the schema refuses to coerce.
+    """
+    kinds = ["Deployment", "NetworkPolicy", "PersistentVolumeClaim", "PersistentVolumeClaim", "Service", "ServiceAccount"]
+    print("chart-pins readiness: (a) the shipped default renders every object with zero replicas")
+    pending = render()
+    equals(sorted(document["kind"] for document in pending), kinds, "the pending render's document kinds")
+    deployment = only(pending, "Deployment")
+    equals(deployment["spec"]["replicas"], 0, "the pending replica count")
+    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "false", "the pending readiness annotation")
+    print("chart-pins readiness: (b) the platform-ready render is the same objects at one replica")
+    active = render(*ACTIVE)
+    equals(sorted(document["kind"] for document in active), kinds, "the active render's document kinds")
+    deployment = only(active, "Deployment")
+    equals(deployment["spec"]["replicas"], 1, "the active replica count")
+    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "true", "the active readiness annotation")
+    for name in ("obsync-blobs", "obsync-journal"):
+        for shape, documents in (("pending", pending), ("active", active)):
+            if not any(claim["metadata"]["name"] == name for claim in every(documents, "PersistentVolumeClaim")):
+                raise PinError(f"the {shape} render does not create claim {name}")
+    print("chart-pins readiness: (c) the gate is a boolean, never coerced")
+    refuse("deploymentReady=yes", because="the schema admits only a boolean")
+    refuse("deploymentReady=1", because="the schema admits only a boolean")
+
+
+PINS = {"ingress": pin_ingress, "storage": pin_storage, "security": pin_security, "readiness": pin_readiness}
 
 
 def main(argv: list[str] | None = None) -> int:
