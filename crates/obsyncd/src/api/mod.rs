@@ -41,7 +41,7 @@ use crate::dashboard::Dashboard;
 use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
 use crate::storage::Store;
-use crate::storage::types::StoreError;
+use crate::storage::types::{DeviceState, StoreError};
 use crate::types::{AccountId, DeviceId};
 
 use self::auth::Clock;
@@ -279,6 +279,10 @@ impl App {
     /// measured: a store cannot be opened without a completed posture pass,
     /// and the nonce log opened below rests on that same volume.
     ///
+    /// This is also where a restart's loose ends are tied: the durable
+    /// replay state is loaded, and every pending device whose pairing did
+    /// not survive the restart is destroyed ([`App::reconcile_pending`]).
+    ///
     /// # Errors
     /// A journal volume that will not give up its durable replay state.
     /// That refuses the start: a server that cannot record the nonces it
@@ -296,7 +300,7 @@ impl App {
         // it: one process writes to one sink.
         let log = store.log();
         let nonces = auth::NonceCache::open(&cfg.journal_dir, clock.unix_secs(), &log)?;
-        Ok(Self {
+        let app = Self {
             cfg,
             store,
             log,
@@ -318,7 +322,51 @@ impl App {
             scrub_requested: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
             scrub_running: AtomicBool::new(false),
-        })
+        };
+        app.reconcile_pending();
+        Ok(app)
+    }
+
+    /// Destroy every pending device no pairing is holding any more.
+    ///
+    /// A pairing lives in memory only (`docs/storage.md`, "Journal frames")
+    /// and the device a claim creates is journaled, so a restart leaves
+    /// every unapproved claimant behind a pairing that no longer exists:
+    /// nobody can approve it, and expiry cannot reach it because expiry only
+    /// ever sees the table. It would keep its wrapped secret for the life of
+    /// the store. It is destroyed here, down the path expiry uses, so the
+    /// journal record and the destruction of the secret are the same code
+    /// (`docs/architecture.md` 4.2).
+    ///
+    /// A pending device carries no sync authority in the first place; what
+    /// this takes away is a credential nobody could ever activate. Active
+    /// and revoked devices are not touched: one is approved, and the other's
+    /// record is the revocation.
+    fn reconcile_pending(&self) {
+        let orphans: Vec<DeviceId> = {
+            let pairings = self.pairings.lock().expect("pairings");
+            self.store
+                .devices()
+                .into_iter()
+                .filter(|d| d.state == DeviceState::Pending && !pairings.holds(&d.device_id))
+                .map(|d| d.device_id)
+                .collect()
+        };
+        let mut count = 0u64;
+        let mut refused = 0u64;
+        for device in &orphans {
+            match self.store.delete_device(device) {
+                Ok(()) => count += 1,
+                Err(_) => refused += 1,
+            }
+        }
+        self.log.info(
+            "pending_reconciled",
+            &[
+                ("count", Val::count(count)),
+                ("refused", Val::count(refused)),
+            ],
+        );
     }
 
     /// Whether a collection is running right now.
@@ -823,4 +871,196 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         _ => return None,
     };
     Some(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::auth::FakeClock;
+    use crate::api::pairing::Claimant;
+    use crate::log::LogLevel;
+    use crate::storage::testutil::TempDir;
+    use crate::storage::types::NewDevice;
+    use crate::storage::{Posture, Store};
+    use crate::types::AccountId;
+
+    const NOW: u64 = 1_757_200_000;
+
+    /// The state `serve` assembles, without a listener: the posture pass,
+    /// the store, then the application over it. Dropping it releases the
+    /// journal, so a test can build the next one over the same volumes.
+    fn app(dir: &TempDir, log: &Log) -> App {
+        let pairs: Vec<(String, String)> = [
+            (
+                "OBSYNC_BLOBS_DIR",
+                dir.path().join("blobs").display().to_string(),
+            ),
+            (
+                "OBSYNC_JOURNAL_DIR",
+                dir.path().join("journal").display().to_string(),
+            ),
+            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
+            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
+            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
+            ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let cfg = Config::from_pairs(&pairs).expect("configuration");
+        let storage = cfg.storage();
+        let posture = Posture::enforce(&storage, log).expect("volume posture");
+        let store =
+            Store::open(&storage, [7u8; 32], &posture, log.clone()).expect("the store opens");
+        App::new(
+            cfg,
+            store,
+            Dashboard::unavailable(),
+            PluginDist::unavailable(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Arc::new(FakeClock::new(NOW)),
+        )
+        .expect("the application state opens")
+    }
+
+    fn device(account: AccountId, name: &'static str, state: DeviceState) -> NewDevice {
+        NewDevice {
+            account_id: account,
+            name: name.to_string(),
+            platform: "linux".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [3u8; 32],
+            state,
+        }
+    }
+
+    /// A claim journals its device and a pairing holds it in memory, so a
+    /// restart leaves a credential nobody can ever approve.
+    #[test]
+    fn a_pending_device_whose_pairing_is_gone_does_not_survive_the_restart() {
+        let dir = TempDir::new("app-pending");
+        let first = Log::buffered(LogLevel::Debug);
+        let (pending, active, revoked) = {
+            let app = app(&dir, &first);
+            let account = app.store.setup("sentinel account").expect("setup");
+            let active = app
+                .store
+                .create_device(device(account, "approved", DeviceState::Active))
+                .expect("the approved device")
+                .device_id;
+            let revoked = app
+                .store
+                .create_device(device(account, "gone", DeviceState::Active))
+                .expect("the revoked device")
+                .device_id;
+            app.store.revoke_device(&revoked).expect("revoked");
+            let pending = app
+                .store
+                .create_device(device(account, "claimant", DeviceState::Pending))
+                .expect("the claimant")
+                .device_id;
+            assert!(
+                app.store.device_secret(&pending).is_some(),
+                "the claimant holds a credential while its pairing stands"
+            );
+            (pending, active, revoked)
+        };
+
+        let second = Log::buffered(LogLevel::Debug);
+        let restarted = app(&dir, &second);
+        assert!(
+            restarted.store.device(&pending).is_none(),
+            "the orphaned claimant is gone"
+        );
+        assert!(
+            restarted.store.device_secret(&pending).is_none(),
+            "and its secret with it"
+        );
+        assert!(
+            restarted.store.device(&active).is_some(),
+            "an approved device is not a loose end"
+        );
+        assert!(
+            restarted.store.device(&revoked).is_some(),
+            "and a revoked device's record is the revocation"
+        );
+        assert!(
+            second
+                .captured()
+                .contains("event=pending_reconciled count=1 refused=0"),
+            "{}",
+            second.captured()
+        );
+
+        // The destruction is journaled, so the next start finds nothing to
+        // do rather than doing it again.
+        drop(restarted);
+        let third = Log::buffered(LogLevel::Debug);
+        let again = app(&dir, &third);
+        assert!(again.store.device(&pending).is_none());
+        assert!(
+            third
+                .captured()
+                .contains("event=pending_reconciled count=0 refused=0"),
+            "{}",
+            third.captured()
+        );
+    }
+
+    #[test]
+    fn a_pending_device_whose_pairing_still_stands_is_left_alone() {
+        let dir = TempDir::new("app-claimed");
+        let log = Log::buffered(LogLevel::Debug);
+        let app = app(&dir, &log);
+        let account = app.store.setup("sentinel account").expect("setup");
+        let creator = app
+            .store
+            .create_device(device(account, "laptop", DeviceState::Active))
+            .expect("the creator")
+            .device_id;
+        let claimant = app
+            .store
+            .create_device(device(account, "phone", DeviceState::Pending))
+            .expect("the claimant")
+            .device_id;
+        // A second claimant with no pairing of its own, so the question the
+        // table is asked is which device it is holding and not whether it is
+        // holding one.
+        let orphan = app
+            .store
+            .create_device(device(account, "tablet", DeviceState::Pending))
+            .expect("the orphan")
+            .device_id;
+        {
+            let mut pairings = app.pairings.lock().expect("pairings");
+            pairings.create("p", creator, "t", NOW);
+            pairings.finish_claim(
+                "p",
+                Claimant {
+                    device_id: claimant,
+                    name: "phone".to_string(),
+                    platform: "ios".to_string(),
+                    app_version: "0.1.0".to_string(),
+                },
+            );
+        }
+
+        app.reconcile_pending();
+        assert!(
+            app.store.device(&claimant).is_some(),
+            "a claim its creator can still approve is not an orphan"
+        );
+        assert!(app.store.device_secret(&claimant).is_some());
+        assert!(
+            app.store.device(&orphan).is_none(),
+            "and another device's pairing is not a reason to keep this one"
+        );
+        assert!(
+            log.captured()
+                .contains("event=pending_reconciled count=1 refused=0"),
+            "{}",
+            log.captured()
+        );
+    }
 }

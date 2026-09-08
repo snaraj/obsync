@@ -299,6 +299,15 @@ that phrase the vault is unrecoverable by design.
    is what activates the device; rejection, or expiry of an unapproved
    pairing, destroys the pending credential.
 
+A pairing lives in memory and the device a claim creates is journaled, so a
+restart between step 2 and step 3 leaves a pending device behind a pairing
+that no longer exists: nobody can approve it, and the expiry sweep cannot
+reach it, because the sweep only ever sees the table. Assembling the
+application state therefore destroys every pending device no pairing is
+holding, down the path expiry uses, and logs one line with the count. The
+claimant is asked to pair again, which is the safe direction and the same
+one an expiry takes.
+
 The dashboard can display pairing instructions but cannot approve a device:
 it holds no `VRK`. Approval is always from a paired Obsidian instance.
 
