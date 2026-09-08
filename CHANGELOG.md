@@ -11,6 +11,11 @@ advances exactly one patch (AGENTS.md, requirement 10).
   and proves it verifies with the consumer's command before the chart
   embeds the digest. v0.1.1's image carries BuildKit provenance but no
   signed attestation, which the platform's acquisition check requires.
+  `scripts/ci/provenance_contract.py` decides, offline, what each
+  statement binds: the BuildKit v1 shape naming this exact run, and one
+  production platform, identified by the layer digests of that platform's
+  manifest; every platform gets exactly one statement, on a fresh build
+  and on a reused digest alike.
 
 ## 0.1.1 - 2026-09-08
 
