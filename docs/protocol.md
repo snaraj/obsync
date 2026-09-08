@@ -31,9 +31,10 @@ nonce_cache_full` (the replay cache is at its ceiling; refusing beats
 forgetting a nonce still inside its window), `503 nonce_log_unavailable`
 (the volume would not take that record), `403 device_revoked`, `403
 device_pending` (a claimed device that the creator has not yet approved;
-only that pairing's envelope endpoint answers it, with `409 not_approved`). Pairing claim and envelope
-fetch are the only device endpoints with their own rules (below). Admin endpoints
-use the dashboard session cookie plus `X-Obsync-Csrf`.
+only that pairing's envelope endpoint answers it, with `409 not_approved`).
+Pairing claim and envelope fetch are the only device endpoints with their own
+rules (below). Admin endpoints use the dashboard session cookie plus
+`X-Obsync-Csrf`.
 
 In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
 connecting-address and request-id headers or it is refused with `421
