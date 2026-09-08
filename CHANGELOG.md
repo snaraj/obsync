@@ -4,7 +4,22 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.0 - Unreleased
+## 0.1.1 - Unreleased
+
+- The release publisher checks the plugin bundle's listing for the names
+  the archive holds. The first v0.1.0 publisher run exported a correct
+  bundle and then failed its own check, looking for `./main.js` in a
+  listing that said `main.js`; v0.1.0 keeps its tag, signed image and
+  signed chart and received no Release.
+- The nonce log's compaction recovery contract is published for operators
+  (`docs/storage.md`, "Nonce log recovery"), and each of its sentences is
+  pinned by a test that drives a real compaction over a real volume.
+
+## 0.1.0 - 2026-09-08
+
+Tagged, with its image and chart published and signed; it received no
+GitHub Release because the publisher's bundle check failed after them
+(repaired in 0.1.1).
 
 ### Added
 
