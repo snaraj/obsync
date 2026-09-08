@@ -51,7 +51,7 @@ import {
   unhex,
   versionId,
 } from "../crypto";
-import { ApiError, VersionAck } from "../transport";
+import { ApiError, FileRecord, VersionAck, VersionPost } from "../transport";
 import { assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
@@ -245,11 +245,63 @@ export async function postManifest(
     deleted: manifest.deleted,
   };
   try {
-    return { versionId: id, ack: await context.transport.postVersion(fileId, post) };
+    return { versionId: id, ack: await postOnce(context, fileId, id, post) };
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
     context.host.log(`push decision=retry reason=missing_chunks file=${fileId}`);
     await uploadMissing(context, new Set(sids), manifest.chunks, manifest.path, manifest.size);
-    return { versionId: id, ack: await context.transport.postVersion(fileId, post) };
+    return { versionId: id, ack: await postOnce(context, fileId, id, post) };
   }
+}
+
+/**
+ * Post one version, and settle a lost answer by READING rather than guessing.
+ *
+ * A version post is not repeatable, so the transport sends it once and says
+ * `lost` when nothing answered: the server may hold the version, or may never
+ * have seen it. Calling it failed drops an edit this device already believes
+ * it offered. Guessing the other way and re-sending is survivable only
+ * because THIS body hashes to THIS version id, which the server no-ops
+ * (`docs/protocol.md`) — a property of the id, not of the request — and it
+ * still buys a second write, a second nonce, and a `409 missing_chunks` if
+ * the server collected a chunk in between. Reading the file record answers
+ * the question that was actually asked, and reading IS repeatable, so it can
+ * be retried freely. The re-post is what the read's "absent" earns.
+ */
+async function postOnce(
+  context: SyncContext,
+  fileId: string,
+  id: string,
+  post: VersionPost,
+): Promise<VersionAck> {
+  const sent = await context.transport.postVersion(fileId, post);
+  if (sent.outcome === "ok") return sent.value;
+  const committed = await committedAck(context, fileId, id);
+  context.host.log(
+    `push decision=reconciled reason=lost_answer file=${fileId} committed=${committed !== null}`,
+  );
+  if (committed) return committed;
+  // Absent: a fresh signature over the same body is a first post, not a repeat.
+  const again = await context.transport.postVersion(fileId, post);
+  if (again.outcome === "ok") return again.value;
+  throw new ApiError(0, "lost", `${fileId}: ${again.reason}`);
+}
+
+/** The ack the file record implies, or `null` when the version never landed. */
+async function committedAck(
+  context: SyncContext,
+  fileId: string,
+  id: string,
+): Promise<VersionAck | null> {
+  let file: FileRecord;
+  try {
+    file = await context.transport.getFile(fileId);
+  } catch (error) {
+    // A file whose FIRST version was the lost one does not exist yet.
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+  return file.versions.some((version) => version.version_id === id)
+    ? { heads: file.heads, conflicted: file.conflicted }
+    : null;
 }

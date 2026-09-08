@@ -224,6 +224,20 @@ This gives integrity and authentication even on a hop without TLS (the
 in-cluster connector-to-pod leg, or a LAN transfer), on top of the content
 encryption that makes such a hop carry only ciphertext.
 
+A nonce is spent by being sent, so replay protection and retries meet here.
+The device signs every ATTEMPT afresh, never once per call: reusing a lost
+attempt's headers would earn a `401 replayed_nonce` the client caused itself.
+And a fresh signature is not licence to repeat, so `docs/protocol.md` states
+per route whether a second send is the same request. A route that is not
+repeatable is sent exactly once; when nothing answers it — a dropped
+response, a timeout, a 5xx — the outcome is **unknown**, which is neither
+success nor failure, and the caller settles it by READING what the server
+holds (the file record for a version post, the device list for a revoke) or
+by telling the user, with the reason, that it is unknown. Guessing either way
+is worse than saying so: "it failed" about a revoke that worked leaves a lost
+device trusted, and re-sending a version post that landed forks the file into
+a conflict the user never made.
+
 ### 3.6 Device secrets at rest
 
 The server stores `wrapped = device_secret XOR HKDF(server_key,

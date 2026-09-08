@@ -15,12 +15,26 @@ import { createHash, createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { ApiError, Transport, parseMultipart } = require("../build/transport.js");
+const { ApiError, Transport, parseMultipart, routeFor } = require("../build/transport.js");
 const c = require("../build/crypto.js");
 
 const DEVICE_ID = "aabbccddeeff00112233445566778899";
 const DEVICE_SECRET_HEX = "0f".repeat(32);
 const SERVER = "https://sync.example.invalid";
+const PAIRING_ID = "00".repeat(16);
+const FILE_ID = "44".repeat(16);
+const SID = "55".repeat(32);
+const INFO = { name: "n", platform: "linux", app_version: "0.1.0" };
+const VERSION_POST = {
+  version_id: "11".repeat(32),
+  parents: [],
+  sids: [],
+  bytes: 0,
+  domain_id: "66".repeat(16),
+  manifest_ct: "AAAA",
+  manifest_nonce: "33".repeat(12),
+  deleted: false,
+};
 
 function harness(responses, options = {}) {
   const sent = [];
@@ -77,7 +91,8 @@ test("a device call is signed over its method, target and body", async () => {
     deleted: false,
   };
   const ack = await transport.postVersion("00".repeat(16), version);
-  assert.equal(ack.seq, 9);
+  assert.equal(ack.outcome, "ok", "a version post that was answered is not lost");
+  assert.deepEqual(ack.value.heads, []);
 
   const request = sent[0];
   const target = `/v1/files/${"00".repeat(16)}/versions`;
@@ -125,8 +140,9 @@ test("only the three unauthenticated endpoints go unsigned", async () => {
     platform: "linux",
     app_version: "0.1.0",
   });
-  assert.equal(enrolled.device_id, DEVICE_ID, "setup enrols the first device");
-  assert.equal(enrolled.device_secret, DEVICE_SECRET_HEX);
+  assert.equal(enrolled.outcome, "ok");
+  assert.equal(enrolled.value.device_id, DEVICE_ID, "setup enrols the first device");
+  assert.equal(enrolled.value.device_secret, DEVICE_SECRET_HEX);
   assert.deepEqual(JSON.parse(sent[0].body), {
     setup_token: "token",
     account_name: "account",
@@ -290,6 +306,178 @@ test("a batched chunk fetch maps parts back to nulls for missing sids", async ()
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);
+});
+
+// --- idempotency: the table, the fresh signature, the lost outcome --------
+
+/**
+ * The client's own plumbing. Everything else on the prototype emits a route
+ * the server sees and must therefore appear in `CALLS` below, which is what
+ * stops a new endpoint from arriving unclassified.
+ */
+const INTERNAL = ["constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once"];
+
+/** Every route-emitting method, arguments that make it emit, and its verdict. */
+const CALLS = [
+  ["setup", ["token", "account", INFO], false],
+  ["account", [], true],
+  ["pairingCreate", [], false],
+  ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
+  ["pairingStatus", [PAIRING_ID], true],
+  ["pairingApprove", [PAIRING_ID, "AAAA", "33".repeat(12)], false],
+  ["pairingReject", [PAIRING_ID], false],
+  ["pairingEnvelope", [PAIRING_ID], false],
+  ["devices", [], true],
+  ["patchDevice", [DEVICE_ID, { name: "n" }], false],
+  ["revokeDevice", [DEVICE_ID], false],
+  ["heartbeat", ["0.1.0", { perFileMaxBytes: 0, totalBudgetBytes: 0 }], false],
+  ["missingChunks", [[SID]], true],
+  ["putChunk", [SID, Uint8Array.from([1, 2, 3])], true],
+  ["getChunk", [SID], true],
+  ["getChunks", [[SID]], true],
+  ["postVersion", [FILE_ID, VERSION_POST], false],
+  ["getFile", [FILE_ID], true],
+  ["changes", [7, 0], true],
+  ["dashboardLoginLink", [], false],
+  ["pluginManifest", [], true],
+];
+
+/** One fake that answers every method: each reads only the fields it needs. */
+function always(status, text) {
+  const sent = [];
+  const transport = new Transport({
+    request: async (request) => {
+      sent.push(request);
+      return {
+        status,
+        headers: { "content-type": 'multipart/mixed; boundary="b"' },
+        text,
+        arrayBuffer: new ArrayBuffer(0),
+      };
+    },
+    serverUrl: () => SERVER,
+    device: () => ({ id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => 1757200000000,
+    sleep: async () => undefined,
+    maxAttempts: 2,
+  });
+  return { transport, sent };
+}
+
+test("every route this client emits is classified, and sent as its verdict says", async () => {
+  assert.deepEqual(
+    CALLS.map(([name]) => name).sort(),
+    Object.getOwnPropertyNames(Transport.prototype)
+      .filter((name) => !INTERNAL.includes(name))
+      .sort(),
+    "a method that reaches the server must state the route it emits",
+  );
+
+  for (const [name, args, idempotent] of CALLS) {
+    const answered = always(200, '{"missing":[],"devices":[],"versions":[],"heads":[],"changes":[]}');
+    await answered.transport[name](...args);
+    assert.ok(answered.sent.length > 0, `${name} sent nothing`);
+    for (const request of answered.sent) {
+      const target = request.url.replace(SERVER, "");
+      const route = routeFor(request.method, target);
+      assert.ok(route, `${name}: ${request.method} ${target} is in no ROUTES entry`);
+      assert.equal(route.idempotent, idempotent, `${name}: ${request.method} ${target}`);
+    }
+
+    // The table is a claim about behaviour, so drive the behaviour: nothing
+    // settles, and the send either retries or reports its one attempt lost.
+    const unsettled = always(503, "");
+    const result = await unsettled.transport[name](...args).catch((error) => error);
+    if (idempotent) {
+      assert.ok(unsettled.sent.length > 1, `${name}: a repeatable route is retried`);
+      assert.equal(result.code, "unreachable", `${name}: and gives up saying so`);
+    } else {
+      assert.equal(unsettled.sent.length, 1, `${name}: sent at most once per signature`);
+      assert.equal(result.outcome, "lost", `${name}: an unanswered send is lost, not thrown`);
+    }
+  }
+});
+
+test("a target no entry matches is a refusal, never a default", () => {
+  assert.equal(routeFor("DELETE", `/v1/devices/${DEVICE_ID}`), null);
+  assert.equal(routeFor("POST", "/v1/files"), null);
+  assert.equal(routeFor("GET", `/v1/chunks/${DEVICE_ID}`), null, "a sid is 32 bytes, not 16");
+});
+
+test("an idempotent retry is signed afresh, so a nonce-spending server accepts it", async () => {
+  const spent = new Set();
+  const sent = [];
+  let clock = 1757200000000;
+  const transport = new Transport({
+    request: async (request) => {
+      sent.push(request);
+      clock += 61000; // as much time as a backoff really takes
+      const nonce = request.headers["X-Obsync-Nonce"];
+      if (spent.has(nonce)) {
+        return {
+          status: 401,
+          headers: {},
+          text: JSON.stringify({ error: "replayed_nonce", detail: "seen within 600 s" }),
+          arrayBuffer: new ArrayBuffer(0),
+        };
+      }
+      spent.add(nonce);
+      return sent.length === 1
+        ? { status: 503, headers: {}, text: "", arrayBuffer: new ArrayBuffer(0) }
+        : { status: 200, headers: {}, text: JSON.stringify({ account_id: "a" }), arrayBuffer: new ArrayBuffer(0) };
+    },
+    serverUrl: () => SERVER,
+    device: () => ({ id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => clock,
+    sleep: async () => undefined,
+    maxAttempts: 3,
+  });
+
+  const account = await transport.account();
+  assert.equal(account.account_id, "a", "the retry was served, not refused as a replay");
+  assert.equal(sent.length, 2);
+  assert.equal(spent.size, 2, "each attempt spent a nonce of its own");
+  assert.notEqual(sent[0].headers["X-Obsync-Nonce"], sent[1].headers["X-Obsync-Nonce"]);
+  assert.notEqual(sent[0].headers["X-Obsync-Ts"], sent[1].headers["X-Obsync-Ts"], "and a timestamp inside the window");
+  assert.notEqual(sent[0].headers["X-Obsync-Sig"], sent[1].headers["X-Obsync-Sig"]);
+});
+
+test("a request that must not be repeated is sent once and comes back lost", async () => {
+  for (const failure of [new Error("socket hang up"), { status: 503, text: "" }]) {
+    const { transport, sent, slept, logged } = harness([failure, { status: 204 }]);
+    const lost = await transport.pairingApprove(PAIRING_ID, "AAAA", "33".repeat(12));
+    assert.equal(lost.outcome, "lost");
+    assert.equal(lost.attempts, 1, "at most once per signature");
+    assert.match(lost.reason, failure instanceof Error ? /network=socket hang up/ : /status=503/);
+    assert.equal(sent.length, 1, "the second response was never asked for");
+    assert.deepEqual(slept, [], "no backoff is spent on something that will not be sent again");
+    assert.ok(logged.some((line) => line.includes("decision=lost") && line.includes("attempts=1")));
+  }
+});
+
+test("a lost outcome is data: neither a thrown failure nor an acknowledgement", async () => {
+  const { transport } = harness([new Error("connection reset by peer")]);
+  const lost = await transport.postVersion(FILE_ID, VERSION_POST);
+  assert.equal(lost.outcome, "lost", "it resolved rather than threw");
+  assert.equal("value" in lost, false, "there is nothing to mistake for an ack");
+});
+
+test("replayed_nonce stays a refusal, and this client never provokes one", async () => {
+  const { transport, sent } = harness([
+    { status: 401, text: JSON.stringify({ error: "replayed_nonce", detail: "seen within 600 s" }) },
+  ]);
+  await assert.rejects(
+    () => transport.account(),
+    (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 401);
+      assert.equal(error.code, "replayed_nonce");
+      return true;
+    },
+  );
+  assert.equal(sent.length, 1, "a 401 is a decision, not a retry");
 });
 
 test("body hashing is the protocol's, including the empty body", async () => {

@@ -211,6 +211,13 @@ export async function loadDomainMap(
 /**
  * Write the map as a version of the reserved file. `parents` is the head it
  * replaces, or empty for a vault's first map.
+ *
+ * A version post is not repeatable in general, but THIS one is: the nonce is
+ * derived from the map's bytes, so `id` is a function of the content and a
+ * second post of the same map is the same version, which the server answers
+ * `200` as a no-op (`docs/protocol.md`). So a lost answer is settled by
+ * sending it once more rather than by a read. A second loss stops the engine:
+ * a vault whose map may not exist must not start syncing against a guess.
  */
 export async function saveDomainMap(
   transport: Transport,
@@ -222,7 +229,7 @@ export async function saveDomainMap(
   const binder = await contentVersionId(keys.fileId, parents, []);
   const { nonce, ciphertext } = await encryptDomainMap(keys.key, keys.fileId, binder, json);
   const id = await versionId(keys.fileId, parents, ciphertext, []);
-  await transport.postVersion(keys.fileId, {
+  const post = {
     version_id: id,
     parents,
     sids: [],
@@ -231,6 +238,11 @@ export async function saveDomainMap(
     manifest_ct: base64(ciphertext),
     manifest_nonce: hex(nonce),
     deleted: false,
-  });
+  };
+  if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {
+    if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {
+      throw new DomainMapError("unwritten");
+    }
+  }
   return id;
 }

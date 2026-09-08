@@ -537,7 +537,13 @@ export class SyncEngine {
   private async heartbeat(): Promise<void> {
     const context = this.need();
     try {
-      await context.transport.heartbeat(context.host.appVersion, context.state.data.policy);
+      // A heartbeat is not repeatable, and nothing here depends on it: it
+      // updates `last_seen` and the reported policy, and the next one is an
+      // hour away. A lost answer is therefore logged and dropped -- reading
+      // the device list back to learn whether a timestamp moved would cost a
+      // request to answer a question nothing asks.
+      const beat = await context.transport.heartbeat(context.host.appVersion, context.state.data.policy);
+      if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
       const { devices } = await context.transport.devices();
       context.deviceNames.clear();
       for (const device of devices) context.deviceNames.set(device.device_id, device.name);

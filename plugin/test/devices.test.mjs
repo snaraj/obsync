@@ -19,15 +19,19 @@ const { Transport, ApiError } = require("../build/transport.js");
 
 const OTHER_DEVICE = "1122334455667788990011223344ffff";
 
-/** A plugin instance with real state and transport, and no Obsidian widgets. */
-async function plugin() {
+/**
+ * A plugin instance with real state and transport, and no Obsidian widgets.
+ * `wrap` puts a lossy hop in front of the fake server, which is the only way
+ * to reach the code that settles an answer that never arrived.
+ */
+async function plugin(wrap = (request) => request) {
   const box = sandbox();
   const ObsyncPlugin = box.require(join(box.home, "build", "main.js")).default;
   const server = new FakeServer();
   const { state } = await fakeState(false);
   const logs = [];
   const transport = new Transport({
-    request: server.request,
+    request: wrap(server.request),
     serverUrl: () => state.data.serverUrl,
     device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
     edgeHeaders: () => [],
@@ -176,4 +180,66 @@ test("revoking this device stops syncing and says so in the status", async () =>
 test("revoking an unknown device is refused, not silently ignored", async () => {
   const { instance } = await plugin();
   await assert.rejects(() => instance.revokeDevice("00".repeat(16)), /unknown_device/);
+});
+
+/** Lose the answer to `target` once; `before` loses the request instead. */
+function lossy(target, before = false) {
+  let lost = false;
+  return (request) => async (sending) => {
+    const losing = !lost && sending.url.endsWith(target);
+    if (losing && before) {
+      lost = true;
+      throw new Error("network is unreachable");
+    }
+    const response = await request(sending);
+    if (losing) {
+      lost = true;
+      throw new Error("the answer was lost");
+    }
+    return response;
+  };
+}
+
+const SECOND_DEVICE = {
+  device_id: OTHER_DEVICE,
+  name: "iPhone",
+  platform: "ios",
+  app_version: "0.1.0",
+  last_seen: 0,
+  revoked: false,
+  policy: {},
+};
+
+test("a revoke whose answer is lost is settled by reading the device list", async () => {
+  const { instance, server, logs } = await plugin(lossy("/revoke"));
+  server.devices.push({ ...SECOND_DEVICE });
+
+  await instance.revokeDevice(OTHER_DEVICE);
+
+  assert.equal(server.devices[1].revoked, true, "the server had applied it");
+  assert.equal(
+    server.requests.filter((request) => request.target.endsWith("/revoke")).length,
+    1,
+    "a revoke is never sent twice",
+  );
+  assert.ok(logs.some((line) => line.includes("device decision=reconciled") && line.includes("revoked=true")));
+  assert.ok(logs.some((line) => line.includes("device decision=revoked")), "and it is reported as done");
+});
+
+test("a revoke that never landed is reported with its exact reason, not as done", async () => {
+  const { instance, server, logs } = await plugin(lossy("/revoke", true));
+  server.devices.push({ ...SECOND_DEVICE });
+
+  await assert.rejects(() => instance.revokeDevice(OTHER_DEVICE), (error) => {
+    assert.match(error.message, /the server never answered \(network=network is unreachable\)/);
+    assert.match(error.message, /It was not repeated/);
+    return true;
+  });
+  assert.equal(server.devices[1].revoked, false);
+  assert.ok(logs.some((line) => line.includes("device decision=reconciled") && line.includes("revoked=false")));
+  assert.equal(
+    logs.some((line) => line.includes("device decision=revoked")),
+    false,
+    "a lost answer is never reported as success",
+  );
 });
