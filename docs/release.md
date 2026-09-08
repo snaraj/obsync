@@ -10,6 +10,12 @@ and `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
 `scripts/ci/release_contract.py` walks every commit in `base..head` and
 denies skips, reversions, and mixed ranges without exactly one patch.
 
+Three followers move with the locks and are held by gates, not by the
+classifier: `plugin/package.json` `version` and its two copies in
+`package-lock.json` (the plugin's bundle test compares the built manifest to
+both sources), and `Cargo.lock`, refreshed by `cargo check` (`--locked` in the
+image and gate refuses a stale one).
+
 ## Classifier
 
 Two verdicts, no flag: `artifact` (any path outside the documentation
