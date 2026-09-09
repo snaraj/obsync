@@ -15,9 +15,11 @@ the chart ships in git; the published OCI chart carries the resolved digest the
 publisher substituted. Install the PUBLISHED chart, or set image.digest.
 {{ end -}}
 {{ if not .Values.deploymentReady -}}
-The Deployment is annotated deployment-ready=false. The platform reconciler
-sets it true once the namespace, both volumes, and the {{ .Values.serverKeySecret.name }}
-Secret exist (docs/platform-onboarding.md).
+deploymentReady is false: the Deployment renders with ZERO replicas (annotated
+deployment-ready=false); the claims, Service, account and policy render as
+usual. The platform reconciler sets it true once the namespace, both volumes,
+and the {{ .Values.serverKeySecret.name }} Secret exist
+(docs/platform-onboarding.md); that scales the Deployment to one replica.
 {{ end -}}
 Before first use, confirm:
   1. {{ .Values.serverKeySecret.name }} carries key {{ .Values.serverKeySecret.key }} (64 hex characters).

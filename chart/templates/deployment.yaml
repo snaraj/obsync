@@ -8,7 +8,14 @@ metadata:
   annotations:
     platform.snaraj.dev/deployment-ready: {{ .Values.deploymentReady | quote }}
 spec:
-  replicas: 1
+  {{- /* deploymentReady is the platform's gate and it gates THIS number, not
+  only the annotation above: zero application replicas until the platform
+  has proven the namespace, both volumes and the server-key Secret, one after.
+  Every other object renders either way, so the claims can bind their
+  pre-provisioned volumes and the TLS proxy can resolve the Service before
+  any Pod exists, and the flip to true is a scale from zero to one, nothing
+  else. Never more than one: the journal has exactly one writer. */}}
+  replicas: {{ if .Values.deploymentReady }}1{{ else }}0{{ end }}
   revisionHistoryLimit: 3
   strategy:
     {{- /* The journal has exactly one writer, and ReadWriteOnce does not

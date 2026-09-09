@@ -10,10 +10,13 @@ job that enforces them.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chart_pins  # noqa: E402
@@ -113,6 +116,50 @@ class VolumeSourcesAreRefusedByName(unittest.TestCase):
                     chart_pins._volume_claims({"name": "v", "persistentVolumeClaim": claim})
 
 
+class TheGateRunsEveryPin(unittest.TestCase):
+    """The registry is the gate's contract, not a list the gate reads back.
+
+    `test_each_pin_holds` iterates `PINS`, so deleting a registration would
+    delete its own test. These pins name the registry independently: exactly
+    the four pins, each bound to its function; `all` invokes every one of
+    them, readiness included; a readiness refusal fails the gate; and the
+    hosted gate and `make check` run `all`, never a subset. None of them needs
+    helm, so they run everywhere.
+    """
+
+    def test_the_registry_names_exactly_the_four_pins_bound_to_their_functions(self):
+        self.assertEqual(list(chart_pins.PINS), ["ingress", "storage", "security", "readiness"])
+        for name in chart_pins.PINS:
+            self.assertIs(chart_pins.PINS[name], getattr(chart_pins, f"pin_{name}"))
+
+    def test_all_invokes_every_registered_pin_readiness_included(self):
+        calls: list[str] = []
+        stubs = {name: (lambda n=name: calls.append(n)) for name in chart_pins.PINS}
+        with mock.patch.dict(chart_pins.PINS, stubs), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(chart_pins.main(["all"]), 0)
+        self.assertEqual(calls, ["ingress", "storage", "security", "readiness"])
+
+    def test_a_readiness_refusal_fails_the_all_gate_and_the_single_pin(self):
+        def refuse_readiness() -> None:
+            raise chart_pins.PinError("the readiness shape moved")
+
+        quiet = {name: (lambda: None) for name in chart_pins.PINS if name != "readiness"}
+        with mock.patch.dict(chart_pins.PINS, {**quiet, "readiness": refuse_readiness}):
+            for argv in (["all"], ["readiness"]):
+                with self.subTest(argv=argv):
+                    err = io.StringIO()
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                        self.assertEqual(chart_pins.main(argv), 1)
+                    self.assertIn("DENY: chart pin failed: the readiness shape moved", err.getvalue())
+
+    def test_the_hosted_gate_and_make_check_run_all_pins(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/pr-gate.yml").read_text(encoding="utf-8")
+        makefile = (root / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("python3 -B scripts/ci/chart_pins.py all", workflow)
+        self.assertIn("python3 -B scripts/ci/chart_pins.py all", makefile)
+
+
 class TheMustFailHelperCanItselfFail(unittest.TestCase):
     """`refuse` is what makes every non-vacuity claim in the pins true.
 
@@ -155,18 +202,18 @@ class ThePinsHoldAgainstTheRealChart(unittest.TestCase):
     """The enforcement path itself. CI's `chart` job runs these for real."""
 
     def test_the_render_parses_and_carries_the_expected_document_kinds(self):
-        kinds = sorted(document["kind"] for document in chart_pins.render())
-        self.assertEqual(
-            kinds,
-            [
-                "Deployment",
-                "NetworkPolicy",
-                "PersistentVolumeClaim",
-                "PersistentVolumeClaim",
-                "Service",
-                "ServiceAccount",
-            ],
-        )
+        # Both readiness values render the same six objects; the count that
+        # differs is the replica count, pinned by `pin_readiness`.
+        expected = [
+            "Deployment",
+            "NetworkPolicy",
+            "PersistentVolumeClaim",
+            "PersistentVolumeClaim",
+            "Service",
+            "ServiceAccount",
+        ]
+        self.assertEqual(sorted(document["kind"] for document in chart_pins.render()), expected)
+        self.assertEqual(sorted(document["kind"] for document in chart_pins.render(*chart_pins.ACTIVE)), expected)
 
     def test_each_pin_holds(self):
         for name, pin in chart_pins.PINS.items():
