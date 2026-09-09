@@ -63,16 +63,24 @@ EXPECTED_MAIN_JOBS = {
     "gate": "success",
     "security": "success",
 }
-EXPECTED_CODEQL_JOBS = {
+EXPECTED_CODEQL_MATRIX_JOBS = {
     "analyze (javascript-typescript, none)": "success",
     "analyze (rust, none)": "success",
 }
+# The matrix legs PLUS `dispositions`, which decides whether the alerts those
+# legs produced are all covered by a reviewed entry in
+# security/codeql-dispositions.json and, on main, dismisses the covered ones
+# and requires main to hold none. It is part of the CodeQL inventory the
+# publisher authorizes against for the same reason the legs are: a release cut
+# from a SHA whose alerts were never judged is a release nobody checked.
+EXPECTED_CODEQL_JOBS = {**EXPECTED_CODEQL_MATRIX_JOBS, "dispositions": "success"}
 REQUIRED_STATUS_CHECKS = (
     "analyze (javascript-typescript, none)",
     "analyze (rust, none)",
     "application",
     "chart",
     "container",
+    "dispositions",
     "gate",
     "security",
 )

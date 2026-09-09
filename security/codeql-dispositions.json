@@ -1,0 +1,50 @@
+[
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/obsyncd/src/storage/mod.rs",
+    "line_is": "const WRAP_SALT: &[u8] = b\"obsync/v1/wrap\";",
+    "reason": "false positive",
+    "comment": "HKDF domain-separation label (docs/architecture.md 3.6); the secret is the input keying material, the salt is public by definition (RFC 5869 3.1)",
+    "disposition": "https://github.com/snaraj/obsync/issues/20"
+  },
+  {
+    "rule": "js/incomplete-url-substring-sanitization",
+    "path": "plugin/test/**",
+    "reason": "used in tests",
+    "comment": "test assertion on a string constant in the built bundle; no request is made from it",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/**/*.rs",
+    "within": "test-module",
+    "reason": "used in tests",
+    "comment": "test vector inside the file's trailing #[cfg(test)] mod",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/**/*_test.rs",
+    "reason": "used in tests",
+    "comment": "test vector in a whole-file test module, declared `#[cfg(test)] mod <name>_test;` by its parent and compiled into no shipped binary",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/check.rs",
+    "line_contains": "println!",
+    "reviewed_sha256": "b4274868a997d5140586a1ea0a5a6dde8ac8665c152720ec80ad74e5172cc584",
+    "reason": "false positive",
+    "comment": "CheckReport::print, the operator report: counts, posture class labels, octal modes, ciphertext chunk sids; every println! in this file is in that report",
+    "disposition": "https://github.com/snaraj/obsync/issues/23"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/export.rs",
+    "line_contains": "println!",
+    "reviewed_sha256": "9054684fe55969095e3c46b66de6e22051d5899c74de230818d2bbc8f1778b9d",
+    "reason": "false positive",
+    "comment": "ExportReport::print, the operator report: counts and ciphertext chunk sids; every println! in this file is in that report",
+    "disposition": "https://github.com/snaraj/obsync/issues/23"
+  }
+]

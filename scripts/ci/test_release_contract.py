@@ -717,7 +717,7 @@ class EventAndRunRecords(unittest.TestCase):
                 with self.assertRaises(contract.ContractError):
                     resolve(runs(**override))
 
-    def test_both_codeql_matrix_jobs_are_required(self):
+    def test_every_codeql_job_is_required(self):
         self.assertEqual(
             contract.validate_codeql_jobs_record(
                 jobs_record(contract.EXPECTED_CODEQL_JOBS, run_id=7),
@@ -726,12 +726,22 @@ class EventAndRunRecords(unittest.TestCase):
             ),
             "a" * 40,
         )
-        with self.assertRaises(contract.ContractError):
-            contract.validate_codeql_jobs_record(
-                jobs_record({"analyze (rust, none)": "success"}, run_id=7),
-                expected_run_id=7,
-                expected_source_sha="a" * 40,
-            )
+        # Each job dropped in turn: an analysis leg that did not run, and the
+        # `dispositions` job that decides whether the alerts those legs
+        # produced are covered. A release cut from either is unauthorized.
+        for absent in contract.EXPECTED_CODEQL_JOBS:
+            with self.subTest(absent=absent):
+                remaining = {
+                    name: conclusion
+                    for name, conclusion in contract.EXPECTED_CODEQL_JOBS.items()
+                    if name != absent
+                }
+                with self.assertRaises(contract.ContractError):
+                    contract.validate_codeql_jobs_record(
+                        jobs_record(remaining, run_id=7),
+                        expected_run_id=7,
+                        expected_source_sha="a" * 40,
+                    )
 
 
 class PublisherAuthority(GitFixture):
@@ -1128,7 +1138,19 @@ class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
         rendered = {
             f"analyze ({entry['language']}, {entry['build-mode']})" for entry in matrix
         }
-        self.assertEqual(rendered, set(contract.EXPECTED_CODEQL_JOBS))
+        self.assertEqual(rendered, set(contract.EXPECTED_CODEQL_MATRIX_JOBS))
+
+    def test_the_codeql_inventory_is_the_matrix_plus_every_other_codeql_job(self):
+        # Derived from the workflow rather than from a second hardcoded list: a
+        # job added to codeql.yml is in the inventory the publisher authorizes
+        # against, or this refuses -- which is the only reason the strict
+        # `_validate_job_inventory` count check cannot be broken by an
+        # unrelated addition nobody connected to the release chain.
+        jobs = set(workflow("codeql.yml")["jobs"]) - {"analyze"}
+        self.assertEqual(
+            set(contract.EXPECTED_CODEQL_JOBS),
+            set(contract.EXPECTED_CODEQL_MATRIX_JOBS) | jobs,
+        )
 
 
 class TheImageBuildIsARequiredGateJob(unittest.TestCase):

@@ -81,6 +81,57 @@ javascript-only was needed. `javascript-typescript` is that file's alias for
 Neither job needs a toolchain step, because build-mode `none` extracts from
 source.
 
+A third job, `dispositions`, decides what happens to the alerts those two
+produce. It needs `analyze`, holds `contents: read` and `security-events:
+write`, and runs on the pull request, on the main push, and on the weekly
+schedule alike.
+
+| Step | What it enforces |
+| --- | --- |
+| Wait for GitHub to index both analyses | Both SARIF uploads reach `processing_status: complete` (600 s budget, 15 s interval) before anything is judged. `analyze` returns when the SARIF is UPLOADED; a listing taken before indexing is empty, so without this step "no uncovered alert" would mean "no alert had arrived yet" and the job would pass on a finding nobody has seen. A `failed` upload or an exhausted budget is a refusal. |
+| List the open alerts on the analysed ref | `refs/pull/<n>/merge` on a pull request, `refs/heads/main` otherwise, paginated and slurped into ONE array, plus `git ls-files` as the tracked set. |
+| List main's dismissed alerts | **Push only.** A dismissal is permanent until someone changes it, so the file has to answer for the alerts that are already quiet. Without this listing an entry removed, narrowed, or never written leaves its finding silent forever and no later run looks at it again. |
+| List the open alerts on the base branch | **Pull request only.** Open AND dismissed, plus the commit the base's analyses describe. GitHub's pull-request analyses are diff-informed here: the merge ref only ever carries findings inside the changed range. Run 34312223079 on `refs/pull/25/merge` returned `results=0` for both languages while `refs/heads/main` at `f67b18d` carried 78 and 1 from the identical rule packs, and main's one open alert — #81, `storage/mod.rs` — is invisible on the pull-request ref. The commit comes from the newest analysis per language category, and the two legs must agree: disagreeing legs mean there is no single tree the base's alert lines belong to, and the job stops. |
+| Check out the base branch as a second tree | **Pull request only.** `git fetch --depth=1` and `git worktree add --detach` at that COMMIT, not the branch tip, so the line numbers are the ones the findings describe. Its `git ls-files` is written out and logged as evidence that the worktree is really the base's. LOCATION predicates (`line_is`, `line_contains`, `within: test-module`) are judged there; `reviewed_sha256` is judged against the PULL REQUEST's tree, because that is the content main will have after the merge, and so is entry validation — whether a glob names a tracked place and whether a content hash names one file are claims about the file being reviewed, so a change that adds a file and its disposition together is not refused for the base not having it yet. |
+| Validate the disposition file | `security/codeql-dispositions.json` parses closed: known keys only, an exact rule id, a glob with at least one literal segment that matches a tracked file, one of CodeQL's three reasons, a single-line comment whose composition with its disposition URL still fits GitHub's 280 characters, and no `used in tests` entry over product code. |
+| Reconcile main's dismissed alerts with this file | **Push only, and BEFORE the check.** A dismissed alert no entry covers is REOPENED — the one mutation that makes the state more visible, and it turns policy drift into the single failure the check already has. A dismissed alert an entry covers whose stored `dismissed_reason` or `dismissed_comment` is not this file's is re-dismissed with the file's values: the reviewed justification wins over whatever was typed. An alert whose most recent INSTANCE is `fixed` — the finding is no longer detected, so the instance names an old commit by construction — is counted as `stale` and left alone: reopening it would resurrect a finding the tool says is gone, and its line number belongs to a tree nobody is judging. The step then re-lists main's open alerts, so anything it reopened is in front of the check that follows, and logs `reconcile reopened=N redismissed=N unchanged=N stale=N`. The first push after this train lands will re-dismiss most of the 78 existing acceptances, because their hand-typed comments are not the composed ones. |
+| Refuse any open alert no disposition covers | **The gate.** Every open alert is classified covered or uncovered by rule, glob, and scope — `line_contains` reads the line CodeQL actually flagged; `within: test-module` accepts only a Rust line at or after the file's TRAILING test module, which is a top-level `#[cfg(test)]` whose next line opens a `mod` that is the file's last top-level item. An attribute on any other item opens nothing: `api/auth.rs` carries `#[cfg(test)]` on a fake clock at line 59 and opens its module at 464, and reading the first attribute as the marker would make every product line below 59 dismissible as a test vector. Any uncovered alert fails the job and is named. No `if:`: it runs on the pull request and on main alike. |
+| Refuse any base-branch alert this file stops covering | **Pull request only.** THIS pull request's disposition file — read from the workspace, never the base branch's own copy, which is the version being replaced — against the base branch's open alerts and the base branch's tree. Narrowing or deleting an entry main relies on fails here, before the merge. |
+| Dismiss every covered alert and require main to hold none | `push` only. Dismisses each covered alert through the API with the entry's reason and `"<comment> Disposition: <issue url>"`, then re-lists open alerts on main and fails, naming them, if any remain. |
+
+Two bindings make those verdicts mean what they say. **Every judged alert names
+the commit and the analysis it came from**: `most_recent_instance.commit_sha`
+must equal the commit being judged and `analysis_key` must be
+`.github/workflows/codeql.yml:analyze`, so a superseded or foreign record cannot
+supply a line number to a checkout that never produced it. The single exemption
+is an instance the tool itself reports as `fixed`: nothing is judged from it, so
+there is nothing to bind, and it is skipped and counted rather than refused. **Every acceptance
+over product code names what was reviewed**: `line_is` (the exact source line,
+compared after trimming, equality not substring) or `reviewed_sha256` (the
+sha256 of the tracked file, which must then be one file and not a glob). A
+`line_contains` token alone over product code is refused — it accepts whatever a
+later edit puts on a line carrying that token. `reviewed_sha256` is verified on
+EVERY run whether or not an alert touches the file, so an edit to a reviewed
+printer cannot land without the same pull request re-reading it and moving the
+hash.
+
+The invariant is that **`main` holds zero open code-scanning alerts**, enforced
+rather than checked, and the only way an alert goes quiet is a fix or a
+disposition entry that arrived through a reviewed PR carrying its own issue.
+Nothing is excluded from analysis — no `query-filters`, no `paths-ignore`, no
+`config-file` — so accepting a finding is always a written reason, never a
+narrower scan. An entry that matched no alert in a listing is reported as
+`stale`, informational: on a pull-request ref, where the alerts a disposition
+covers are normally already dismissed, every entry reports stale.
+
+Adding a disposition: open an issue that carries the reasoning, then a PR that
+adds one entry naming that issue as its `disposition`, with the narrowest glob
+and scope that cover the alert. `scripts/ci/codeql_dispositions.py` is offline
+and unit-tested; the workflow does the `gh api` I/O and the script decides.
+`dispositions` is in the CodeQL inventory `release_contract.py` authorizes a
+release against, so a version whose alerts were never judged cannot be
+published.
+
 Cancellation is guarded to pull requests only. The weekly schedule resolves to
 the default branch's head SHA, which is the concurrency group of a push run
 still analysing that same commit; cancelling it would leave that version
@@ -152,9 +203,23 @@ analyze (rust, none)
 application
 chart
 container
+dispositions
 gate
 security
 ```
+
+`dispositions` is new in v0.1.6, and the ORDER of adding it to `Protect-Main`
+matters — though not for the reason it is tempting to give. A pull request whose
+branch predates the job CAN report it: `pull_request` runs the workflow file
+from the pull request's own branch, which is why this train's first run reported
+`dispositions` on a base that had never seen it. The real reason is the other
+direction: every OPEN pull request whose branch does NOT carry the job would
+become unmergeable the moment the context is required, and would stay that way
+until rebased. So the requirement and the job land together: (1) merge this
+train, (2) the owner adds `dispositions` to the ruleset, (3)
+`release_contract.py settings-preflight` agrees with `REQUIRED_STATUS_CHECKS`
+again. Between (1) and (2) the job still runs and still fails red; what is
+missing is only the ruleset's refusal to merge around a red one.
 
 ## Zero-spend guardrails
 
