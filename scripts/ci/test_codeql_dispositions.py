@@ -668,7 +668,7 @@ class CommandDecisions(unittest.TestCase):
             "crates/obsyncd/src/storage/mod.rs:2 state=open entry=0",
             out,
         )
-        self.assertIn("uncovered=0 drift=0 stale=0 decision=pass", out)
+        self.assertIn("uncovered=0 drift=0 stale_alerts=0 stale=0 decision=pass", out)
 
     def test_check_exits_1_and_names_every_uncovered_alert(self):
         code, out, err = self.check(
@@ -679,7 +679,7 @@ class CommandDecisions(unittest.TestCase):
         self.assertIn("uncovered #90 rust/hard-coded-cryptographic-value", out)
         self.assertIn("crates/obsyncd/src/storage/mod.rs:4", out)
         self.assertIn("uncovered #91", out)
-        self.assertIn("uncovered=2 drift=0 stale=0 decision=refuse", out)
+        self.assertIn("uncovered=2 drift=0 stale_alerts=0 stale=0 decision=refuse", out)
         self.assertIn("2 alert(s) no reviewed disposition covers", err)
 
     def test_check_reports_an_entry_that_matched_nothing(self):
@@ -873,6 +873,63 @@ class CommandDecisions(unittest.TestCase):
         self.assertIn("uncovered #90", out)
         self.assertIn("the next push to main would reopen it", out)
         self.assertIn("1 alert(s) no reviewed disposition covers", err)
+
+    def test_entries_are_validated_against_the_files_of_the_tree_being_reviewed(self):
+        # A pull request that adds a file AND its disposition in one change.
+        # `--tracked` feeds only entry validation -- whether a glob names a
+        # tracked place, whether a content hash names one file -- and those are
+        # claims about the file being REVIEWED, which is the pull request's.
+        # Handed the base branch's list instead, the same honest entry is
+        # refused for naming a file the base does not have yet.
+        added = "crates/obsyncd/src/cli/new_report.rs"
+        record = entry(path=added, line_is='println!("new");', rule=LOGGING_RULE)
+        self.tracked.write_text("\n".join([*TRACKED, added]) + "\n", encoding="utf-8")
+        code, _, err = self.check([entry(), record], [])
+        self.assertEqual(code, 0, err)
+        self.tracked.write_text("\n".join(TRACKED) + "\n", encoding="utf-8")
+        code, _, err = self.check([entry(), record], [])
+        self.assertEqual(code, 1)
+        self.assertIn(f"matches no tracked file: {added!r}", err)
+
+    def test_an_alert_whose_instance_is_fixed_is_counted_and_left_alone(self):
+        # GitHub keeps a dismissal after the code is gone and leaves the
+        # instance on the last analysis that saw it -- an OLD commit, by
+        # construction. Judging it would read a line number out of a tree
+        # nobody is looking at, and reopening it would resurrect a finding the
+        # tool says no longer exists.
+        gone = dismissed(
+            70, entry(), line=4, commit="0" * 40, key=".github/workflows/old.yml:analyze"
+        )
+        gone["most_recent_instance"]["state"] = "fixed"
+        code, out, _ = self.check([entry()], [gone], states="open,dismissed")
+        self.assertEqual(code, 0)
+        self.assertIn("stale #70 rust/hard-coded-cryptographic-value", out)
+        self.assertIn("instance=fixed", out)
+        self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
+        code, out, _ = self.reconcile([entry()], [gone])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "stale", "number": 70}],
+        )
+
+    def test_an_alert_whose_instance_is_live_is_still_bound_to_the_commit(self):
+        # The exemption is exactly one instance state. A dismissed alert whose
+        # instance is dismissed -- every one of main's 78 today -- is refused
+        # when its commit or analysis is not the one being judged.
+        for mutation, expected in (
+            ({"commit": "0" * 40}, "was analysed on commit"),
+            ({"key": ".github/workflows/other.yml:analyze"}, "came from analysis"),
+        ):
+            for instance_state in ("dismissed", "open", None):
+                with self.subTest(mutation=sorted(mutation), instance=instance_state):
+                    stale = dismissed(70, entry(), line=2, **mutation)
+                    if instance_state is not None:
+                        stale["most_recent_instance"]["state"] = instance_state
+                    code, _, err = self.check([entry()], [stale], states="open,dismissed")
+                    self.assertEqual(code, 1)
+                    self.assertIn(expected, err)
+                    self.assertIn("superseded or foreign", err)
 
     def test_check_refuses_a_states_value_it_does_not_model(self):
         for states in ("fixed", "open,fixed", "open,open", ""):
@@ -1449,7 +1506,7 @@ class WorkflowWiring(unittest.TestCase):
         for flag in (
             '--alerts "${RUNNER_TEMP}/alerts-base.json"',
             '--tree "${RUNNER_TEMP}/base-tree"',
-            '--tracked "${RUNNER_TEMP}/base-tracked.txt"',
+            '--tracked "${RUNNER_TEMP}/tracked.txt"',
             '--ref "${ref}"',
         ):
             with self.subTest(flag=flag):
@@ -1668,6 +1725,13 @@ class StepExecution(unittest.TestCase):
         )
         (root / "remaining").write_text(remaining)
         (root / "tracked.txt").write_text(self.tracked())
+        (root / "base-tracked.txt").write_text(
+            "".join(
+                line + "\n"
+                for line in self.tracked().splitlines()
+                if line != "crates/obsyncd/src/cli/export.rs"
+            )
+        )
         (root / "dismissed.jsonl").write_text(
             "".join(json.dumps(a) + "\n" for a in (dismissed_alerts or []))
         )
@@ -1715,7 +1779,11 @@ class StepExecution(unittest.TestCase):
             "STUB_ANALYSES": str(root / "analyses.jsonl"),
             "STUB_REMAINING": str(root / "remaining"),
             "STUB_TRACKED": str(root / "tracked.txt"),
-            "STUB_BASE_TRACKED": str(root / "tracked.txt"),
+            # Deliberately NOT the same list: the base branch is missing a file
+            # a shipped entry names, which is what a pull request adding a file
+            # and its disposition together looks like from the base's side.
+            # Every executed base check therefore proves which list it used.
+            "STUB_BASE_TRACKED": str(root / "base-tracked.txt"),
             "STUB_BASE_TREE": str(base_tree),
         }
         if base_alerts is not None:
@@ -2041,6 +2109,50 @@ class StepExecution(unittest.TestCase):
             self.assertIn(
                 "dispositions: reconcile reopened=0 redismissed=0 unchanged=1", result.stdout
             )
+
+    def test_a_push_counts_a_dismissal_whose_finding_is_gone_and_touches_nothing(self):
+        gone = {
+            **self.covered_alerts()[0],
+            "state": "dismissed",
+            "dismissed_reason": "false positive",
+            "dismissed_comment": "written before the code moved",
+        }
+        # The instance the tool itself calls fixed, at the commit it was last
+        # seen on -- older than the one being judged, by construction.
+        gone["most_recent_instance"] = {
+            **gone["most_recent_instance"],
+            "state": "fixed",
+            "commit_sha": "0" * 40,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(Path(tmp), dismissed_alerts=[gone])
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+            result = self.run_step(self.RECONCILE, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
+            self.assertIn(
+                "dispositions: reconcile reopened=0 redismissed=0 unchanged=0 stale=1",
+                result.stdout,
+            )
+            self.assertIn("dispositions: stale alert=81", result.stdout)
+
+    def test_the_base_check_validates_this_pull_requests_files_not_the_bases(self):
+        # The staged base list is missing `cli/export.rs`, which a shipped
+        # entry names. Validated against the base's list the run would refuse;
+        # against this pull request's, it passes -- which is what a change that
+        # adds a file and its disposition together needs.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[self.base_alert()]
+            )
+            base_list = (Path(tmp) / "base-tracked.txt").read_text()
+            self.assertNotIn("crates/obsyncd/src/cli/export.rs", base_list)
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                self.assertEqual(self.run_step(name, env).returncode, 0)
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("covered #40", result.stdout)
 
     def test_the_base_check_sees_a_dismissed_base_alert_this_file_stops_covering(self):
         # b5: an open-only base listing would miss exactly this -- the

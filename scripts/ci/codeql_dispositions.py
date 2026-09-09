@@ -216,6 +216,7 @@ class Alert:
 
     number: int
     state: str
+    instance_state: str | None
     rule: str
     path: str
     line: int
@@ -224,6 +225,19 @@ class Alert:
     analysis_key: str
     dismissed_reason: str | None
     dismissed_comment: str | None
+
+    @property
+    def historical(self) -> bool:
+        """The finding is no longer detected; this instance is a record, not a place.
+
+        GitHub keeps a dismissed alert dismissed after the code that produced it
+        is gone, and leaves `most_recent_instance` on the last analysis that saw
+        it. Such an instance names an old commit BY CONSTRUCTION, so binding it
+        to today's commit would refuse it forever, and judging its line number
+        against today's tree would read an unrelated line. It is skipped,
+        counted and named -- never reopened, never re-dismissed, never dismissed.
+        """
+        return self.instance_state == "fixed"
 
     def __str__(self) -> str:
         return f"#{self.number} {self.rule} {self.path}:{self.line} state={self.state}"
@@ -383,26 +397,32 @@ def _alert(
         raise Refusal(f"{where} names no analysed ref")
     if ref != expected_ref:
         raise Refusal(f"{where} was analysed on {ref}, not {expected_ref}")
+    instance_state = instance.get("state")
+    if instance_state is not None and not isinstance(instance_state, str):
+        raise Refusal(f"{where} instance state is neither a string nor null")
     # The record has to name the SOURCE it describes and the analysis that
     # produced it. Without both, a line number is read out of a checkout that
     # may not be the one the finding was found in, and an alert from another
-    # workflow's analysis is judged by a policy that never covered it.
+    # workflow's analysis is judged by a policy that never covered it. The one
+    # exemption is an instance the tool itself calls `fixed`: nothing is judged
+    # from it at all, so there is nothing to bind.
     commit = instance.get("commit_sha")
     if not isinstance(commit, str) or not commit:
         raise Refusal(f"{where} names no analysed commit")
-    if commit != expected_commit:
-        raise Refusal(
-            f"{where} was analysed on commit {commit}, not {expected_commit}; "
-            "superseded or foreign; refusing to judge on stale locations"
-        )
     key = instance.get("analysis_key")
     if not isinstance(key, str) or not key:
         raise Refusal(f"{where} names no analysis key")
-    if key != expected_key:
-        raise Refusal(
-            f"{where} came from analysis {key}, not {expected_key}; "
-            "superseded or foreign; refusing to judge on stale locations"
-        )
+    if instance_state != "fixed":
+        if commit != expected_commit:
+            raise Refusal(
+                f"{where} was analysed on commit {commit}, not {expected_commit}; "
+                "superseded or foreign; refusing to judge on stale locations"
+            )
+        if key != expected_key:
+            raise Refusal(
+                f"{where} came from analysis {key}, not {expected_key}; "
+                "superseded or foreign; refusing to judge on stale locations"
+            )
     location = _object(instance.get("location"), f"{where} location")
     path = location.get("path")
     if not isinstance(path, str) or not path:
@@ -418,6 +438,7 @@ def _alert(
     return Alert(
         number=number,
         state=state,
+        instance_state=instance_state,
         rule=rule,
         path=_relative(path, where),
         line=line,
@@ -636,9 +657,20 @@ def _prepared(args: argparse.Namespace, states: tuple[str, ...], ref: str, listi
     return entries, alerts
 
 
+def _live(alerts: list[Alert]) -> tuple[list[Alert], list[Alert]]:
+    """The alerts to judge, and the ones whose instance is no longer detected."""
+    return (
+        [alert for alert in alerts if not alert.historical],
+        [alert for alert in alerts if alert.historical],
+    )
+
+
 def _check(args: argparse.Namespace) -> int:
     states = _states(args.states)
-    entries, alerts = _prepared(args, states, args.ref, args.alerts)
+    entries, listed = _prepared(args, states, args.ref, args.alerts)
+    alerts, historical = _live(listed)
+    for alert in historical:
+        print(f"stale {alert} instance=fixed")
     verdicts = classify(entries, alerts, Tree(args.tree))
     used: set[int] = set()
     uncovered = 0
@@ -672,8 +704,9 @@ def _check(args: argparse.Namespace) -> int:
             print(f"stale entry={entry.index} rule={entry.rule} path={entry.path}")
     decision = "refuse" if uncovered else "pass"
     print(
-        f"codeql-dispositions: SUMMARY command=check ref={args.ref} alerts={len(alerts)} "
-        f"covered={len(alerts) - uncovered} uncovered={uncovered} drift={drifted} "
+        f"codeql-dispositions: SUMMARY command=check ref={args.ref} "
+        f"alerts={len(alerts)} covered={len(alerts) - uncovered} uncovered={uncovered} "
+        f"drift={drifted} stale_alerts={len(historical)} "
         f"stale={len(entries) - len(used)} decision={decision}"
     )
     if uncovered:
@@ -695,7 +728,10 @@ def _reconcile(args: argparse.Namespace) -> int:
     visible: it turns that drift into the single failure `check` already has,
     an uncovered open alert on main.
     """
-    entries, alerts = _prepared(args, ("dismissed",), MAIN_REF, args.dismissed)
+    entries, listed = _prepared(args, ("dismissed",), MAIN_REF, args.dismissed)
+    alerts, historical = _live(listed)
+    for alert in historical:
+        print(json.dumps({"action": "stale", "number": alert.number}))
     for alert, entry in classify(entries, alerts, Tree(args.tree)):
         if entry is None:
             print(json.dumps({"action": "reopen", "number": alert.number}))
@@ -721,7 +757,8 @@ def _reconcile(args: argparse.Namespace) -> int:
 
 
 def _plan(args: argparse.Namespace) -> int:
-    entries, alerts = _prepared(args, ("open",), MAIN_REF, args.alerts)
+    entries, listed = _prepared(args, ("open",), MAIN_REF, args.alerts)
+    alerts, _ = _live(listed)
     for alert, entry in classify(entries, alerts, Tree(args.tree)):
         if entry is None:
             continue

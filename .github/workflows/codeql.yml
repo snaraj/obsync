@@ -239,8 +239,10 @@ jobs:
         # The COMMIT the base's analyses ran on, not the branch tip: the alert
         # locations are line numbers in that commit, and a tip that has moved
         # since would put them somewhere else. A worktree rather than an
-        # unpacked archive, so `git ls-files` inside it is the base branch's
-        # own tracked list and not this checkout's.
+        # unpacked archive, so the tree is git's own materialisation of that
+        # commit; its `ls-files` is written out and logged as evidence that the
+        # worktree is really the base's, and is NOT what the entries are
+        # validated against (see the base check below).
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
@@ -266,6 +268,12 @@ jobs:
         # into the single failure the check already has -- an uncovered open
         # alert on main. Run after the check instead and the reopened alert
         # escapes this run entirely.
+        #
+        # An alert whose most recent INSTANCE is `fixed` is counted as stale and
+        # left alone: the finding is no longer detected, so the instance names
+        # an old commit by construction and its line number belongs to a tree
+        # nobody is judging. Reopening it would resurrect a finding the tool
+        # says is gone.
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
@@ -283,6 +291,7 @@ jobs:
           reopened=0
           redismissed=0
           unchanged=0
+          stale=0
           while IFS= read -r entry; do
             action="$(jq -r .action <<<"${entry}")"
             number="$(jq -r .number <<<"${entry}")"
@@ -298,12 +307,15 @@ jobs:
                   -f dismissed_comment="$(jq -r .comment <<<"${entry}") Disposition: $(jq -r .disposition <<<"${entry}")" > /dev/null
                 redismissed=$(( redismissed + 1 ))
                 printf 'dispositions: redismissed alert=%s stored justification was not this file\n' "${number}" ;;
+              stale)
+                stale=$(( stale + 1 ))
+                printf 'dispositions: stale alert=%s the finding is no longer detected\n' "${number}" ;;
               *)
                 unchanged=$(( unchanged + 1 )) ;;
             esac
           done < "${plan}"
           gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" --jq '.[]' | jq -s . > "${RUNNER_TEMP}/alerts.json"
-          printf 'dispositions: reconcile reopened=%d redismissed=%d unchanged=%d\n' "${reopened}" "${redismissed}" "${unchanged}"
+          printf 'dispositions: reconcile reopened=%d redismissed=%d unchanged=%d stale=%d\n' "${reopened}" "${redismissed}" "${unchanged}" "${stale}"
           printf 'dispositions: DONE step=reconcile open_after=%s duration=%ds\n' "$(jq length "${RUNNER_TEMP}/alerts.json")" "$(( SECONDS - started ))"
       - name: Refuse any open alert no disposition covers
         # No `if:`. This is the gate, and it runs on the pull request and on
@@ -328,9 +340,17 @@ jobs:
       - name: Refuse any base-branch alert this file stops covering
         # THIS pull request's disposition file -- read from the workspace, never
         # the base branch's own copy, which is the version being replaced --
-        # against the BASE branch's open alerts and the BASE branch's tree.
+        # against the BASE branch's alerts and the BASE branch's tree.
         # Removing or narrowing an entry main currently relies on fails here,
         # before the merge that would leave main holding an open alert.
+        #
+        # `--tracked` is THIS pull request's list, not the base's, because it
+        # feeds only entry validation: whether a glob names a tracked place and
+        # whether a `reviewed_sha256` names exactly one file. Those are claims
+        # about the file being reviewed, which is this pull request's. Handing
+        # it the base's list would refuse a pull request that adds a file and
+        # its disposition together. Alert LOCATIONS still come from the base
+        # tree, which is what `--tree` is.
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
@@ -343,7 +363,7 @@ jobs:
             --alerts "${RUNNER_TEMP}/alerts-base.json" \
             --tree "${RUNNER_TEMP}/base-tree" \
             --content-tree . \
-            --tracked "${RUNNER_TEMP}/base-tracked.txt" \
+            --tracked "${RUNNER_TEMP}/tracked.txt" \
             --ref "${ref}" \
             --commit "${commit}" \
             --analysis-key .github/workflows/codeql.yml:analyze \
