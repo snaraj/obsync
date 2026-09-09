@@ -249,6 +249,11 @@ class Alert:
         commit being judged, and reading `fixed` alone refused every push to
         main forever (issue #29).
 
+        The stamp is read for its PRESENCE, not its syntax: null or a
+        non-empty string, and any non-empty value GitHub sends is the stamp.
+        What guards the exemption is the ref, the analysis key and the alert's
+        own state, not a second opinion about a field this tool does not own.
+
         `fixed_at` is what earns the exemption, never the old commit on its own:
         an unstamped dismissal whose instance sits on another commit is
         superseded or foreign and stays refused, because the alternative is a
@@ -459,6 +464,13 @@ def _alert(
     # `fixed_at` is the alert-level stamp GitHub writes when the current
     # analysis stops detecting a finding it has a dismissal for. It is the only
     # thing that lets a dismissed record keep an instance on an older commit.
+    #
+    # WHAT IS AND IS NOT CHECKED: null, or a non-empty string. The SYNTAX is
+    # not validated -- this reads the field's PRESENCE, which is what GitHub
+    # varies, and any non-empty value it sends is taken as the stamp. A
+    # timestamp parser here would be this tool inventing a second opinion about
+    # a field it does not own; what guards the exemption is the ref, the
+    # analysis key and the alert's own state, each checked above.
     fixed_at = raw.get("fixed_at")
     if fixed_at is not None and (not isinstance(fixed_at, str) or not fixed_at):
         raise Refusal(f"{where} field fixed_at is neither a non-empty string nor null")

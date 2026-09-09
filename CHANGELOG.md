@@ -21,7 +21,9 @@ advances exactly one patch (AGENTS.md, requirement 10).
   the exemption and an old commit alone never does: an unstamped dismissal
   whose instance names another commit, and any OPEN alert that does, are still
   refused as superseded or foreign, and the ref and analysis-key bindings now
-  hold in every state. `fixed_at` can be read at face value because the job
+  hold in every state. The stamp is read for its presence, null or a non-empty
+  string, and its syntax is not validated: the ref, the analysis key and the
+  alert's own state are what guard the exemption. `fixed_at` can be read at face value because the job
   waits for `processing_status: complete` on both analyses before it lists
   anything, and on a pull request the base listing now requires the analysis
   record it selects per language to report an empty `error` — agreement on a

@@ -1165,7 +1165,11 @@ class CommandDecisions(unittest.TestCase):
             [{"action": "unchanged", "number": 81}],
         )
 
-    def test_a_fixed_at_that_is_not_a_timestamp_or_null_is_refused(self):
+    def test_a_fixed_at_that_is_neither_a_non_empty_string_nor_null_is_refused(self):
+        # PRESENCE, not syntax: the parse refuses a type it does not model and
+        # an empty string, and takes any non-empty string GitHub sends as the
+        # stamp. What guards the exemption is the ref, the analysis key and the
+        # alert's own state, each with its own test above.
         for stamp in (12345, "", [], {}, True):
             with self.subTest(fixed_at=stamp):
                 code, _, err = self.check(
