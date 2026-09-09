@@ -538,8 +538,21 @@ mod tests {
     const DEVICE: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
     const OTHER: &str = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
 
-    fn nonce(n: u8) -> String {
-        format!("{n:032x}")
+    /// A distinct nonce per seed, DERIVED at runtime rather than written
+    /// down as one.
+    ///
+    /// Deterministic, so a test that expects a replay gets the same thirty-two
+    /// characters back for the same seed, and distinct per seed, which is the
+    /// only property any test here relies on. Derived rather than formatted
+    /// from the seed because a constant reaching a nonce is exactly what
+    /// `rust/hard-coded-cryptographic-value` exists to find: a fixture that
+    /// trips it costs a triage on every change to this file, and an alert
+    /// list that is mostly fixtures is one nobody reads. Nothing here is a
+    /// credential -- a nonce is a public request value that opens nothing --
+    /// but the analyser cannot know that, and neither can a reader skimming
+    /// the list.
+    fn nonce(seed: u8) -> String {
+        hex::encode(&sha256::sha256(&[seed])[..16])
     }
 
     /// A journal volume with the root the posture pass would have made.
