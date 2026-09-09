@@ -89,6 +89,14 @@ _ABSENT = object()
 
 COMMIT = "f" * 40
 ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
+# The shape main was really in on 2026-09-09 (push run 34368935826 at
+# f229a46): 33 of 78 dismissals stamped `fixed_at` with their instance left on
+# the previous commit, e4aa059, and the other 45 unstamped on the judged one.
+PREVIOUS_COMMIT = "e4aa059c671b872d3761440141ab841a7e89be50"
+FIXED_AT = "2026-09-09T15:17:32Z"
+# What a pull request judges the base's alerts at: the commit the base's two
+# analyses agree on, never this pull request's own head.
+BASE_ANALYSES_COMMIT = "9" * 40
 SALT_LINE = 'const WRAP_SALT: &[u8] = b"obsync/v1/wrap";'
 # A hash whose shape is right and whose value is nobody's file: entries that
 # only need to satisfy the product-code rule carry it, and every test that
@@ -124,6 +132,7 @@ def alert(
     state: str = "open",
     commit: str = COMMIT,
     key: str = ANALYSIS_KEY,
+    fixed_at: str | None = None,
     dismissed_reason: str | None = None,
     dismissed_comment: str | None = None,
 ) -> dict:
@@ -131,6 +140,7 @@ def alert(
         "number": number,
         "state": state,
         "rule": {"id": rule, "severity": "warning"},
+        "fixed_at": fixed_at,
         "dismissed_reason": dismissed_reason,
         "dismissed_comment": dismissed_comment,
         "most_recent_instance": {
@@ -611,13 +621,15 @@ class CommandDecisions(unittest.TestCase):
         listing.write_text(json.dumps(alerts), encoding="utf-8")
         return str(dispositions), str(listing)
 
-    def judged(self, dispositions: str, tree: str | None = None) -> list[str]:
+    def judged(
+        self, dispositions: str, tree: str | None = None, commit: str = COMMIT
+    ) -> list[str]:
         return [
             "--dispositions", dispositions,
             "--tree", tree or str(self.root / "tree"),
             "--content-tree", str(self.root / "tree"),
             "--tracked", str(self.tracked),
-            "--commit", COMMIT,
+            "--commit", commit,
             "--analysis-key", ANALYSIS_KEY,
         ]
 
@@ -628,10 +640,11 @@ class CommandDecisions(unittest.TestCase):
         ref: str = cd.MAIN_REF,
         states: str = "open",
         tree: str | None = None,
+        commit: str = COMMIT,
     ):
         dispositions, listing = self.files(entries, alerts)
         return run_cli(
-            ["check", *self.judged(dispositions, tree), "--alerts", listing,
+            ["check", *self.judged(dispositions, tree, commit), "--alerts", listing,
              "--ref", ref, "--states", states]
         )
 
@@ -639,9 +652,11 @@ class CommandDecisions(unittest.TestCase):
         dispositions, listing = self.files(entries, alerts)
         return run_cli(["plan", *self.judged(dispositions), "--alerts", listing])
 
-    def reconcile(self, entries: list[dict], alerts: list[dict]):
+    def reconcile(self, entries: list[dict], alerts: list[dict], commit: str = COMMIT):
         dispositions, listing = self.files(entries, alerts)
-        return run_cli(["reconcile", *self.judged(dispositions), "--dismissed", listing])
+        return run_cli(
+            ["reconcile", *self.judged(dispositions, commit=commit), "--dismissed", listing]
+        )
 
     def test_validate_accepts_a_good_file_and_names_every_entry(self):
         dispositions, _ = self.files([entry()], [])
@@ -922,14 +937,12 @@ class CommandDecisions(unittest.TestCase):
         # construction. Judging it would read a line number out of a tree
         # nobody is looking at, and reopening it would resurrect a finding the
         # tool says no longer exists.
-        gone = dismissed(
-            70, entry(), line=4, commit="0" * 40, key=".github/workflows/old.yml:analyze"
-        )
+        gone = dismissed(70, entry(), line=4, commit="0" * 40)
         gone["most_recent_instance"]["state"] = "fixed"
         code, out, _ = self.check([entry()], [gone], states="open,dismissed")
         self.assertEqual(code, 0)
         self.assertIn("stale #70 rust/hard-coded-cryptographic-value", out)
-        self.assertIn("instance=fixed", out)
+        self.assertIn("instance on 0000000", out)
         self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
         code, out, _ = self.reconcile([entry()], [gone])
         self.assertEqual(code, 0)
@@ -938,23 +951,234 @@ class CommandDecisions(unittest.TestCase):
             [{"action": "stale", "number": 70}],
         )
 
-    def test_an_alert_whose_instance_is_live_is_still_bound_to_the_commit(self):
-        # The exemption is exactly one instance state. A dismissed alert whose
-        # instance is dismissed -- every one of main's 78 today -- is refused
-        # when its commit or analysis is not the one being judged.
-        for mutation, expected in (
-            ({"commit": "0" * 40}, "was analysed on commit"),
-            ({"key": ".github/workflows/other.yml:analyze"}, "came from analysis"),
-        ):
-            for instance_state in ("dismissed", "open", None):
-                with self.subTest(mutation=sorted(mutation), instance=instance_state):
-                    stale = dismissed(70, entry(), line=2, **mutation)
-                    if instance_state is not None:
-                        stale["most_recent_instance"]["state"] = instance_state
-                    code, _, err = self.check([entry()], [stale], states="open,dismissed")
+    def fixed_instance(self, state: str, **instance: object) -> dict:
+        """An alert this listing can carry whose INSTANCE the tool calls `fixed`.
+
+        THE THREE SHAPES, named:
+
+        - `alert=dismissed / instance=fixed` is the VALID compatibility path --
+          the dismissal GitHub kept after the finding went away. This is the
+          shape the exemption exists for.
+        - `alert=fixed / instance=fixed` never reaches this code AT ALL, by
+          construction: both listing steps ask GitHub only for `state=open` and
+          `state=dismissed`, `_states` refuses `fixed` as a listing to ask for,
+          and the closed alert-state parse refuses a record carrying
+          `state: "fixed"` however it arrived. Pinned by
+          `test_check_refuses_a_states_value_it_does_not_model` and
+          `test_check_refuses_an_alert_that_is_not_open`; it is NOT re-pinned
+          here, and it is not a case this helper can build.
+        - `alert=open / instance=fixed` is CONTRADICTORY -- an open finding the
+          analysis no longer detects is one GitHub marks fixed -- and it is
+          exercised below only to show the ref and key bindings hold on it too.
+          It is not a compatibility case and nothing may rely on it.
+        """
+        record = alert(number=70, line=4, state=state, commit="0" * 40)
+        record["most_recent_instance"].update({"state": "fixed", **instance})
+        return record
+
+    def test_a_fixed_instance_still_binds_its_ref_and_analysis(self):
+        # A `fixed` instance is exempt from the COMMIT and from nothing else.
+        # The analysis-key check used to sit inside `if instance_state !=
+        # "fixed"`, so in that one state a record from another workflow's
+        # analysis was judged by a policy that never covered it; the same
+        # exemption around the ref would have judged another branch's record as
+        # if it were this one's. Both bind unconditionally now -- on the valid
+        # dismissed shape and on the contradictory open one alike -- and both
+        # callers say so.
+        for state, shape in (("dismissed", "valid"), ("open", "contradictory")):
+            for foreign, expected in (
+                (
+                    {"analysis_key": ".github/workflows/other.yml:analyze"},
+                    "came from analysis .github/workflows/other.yml:analyze, "
+                    f"not {ANALYSIS_KEY}",
+                ),
+                ({"ref": PR_REF}, f"was analysed on {PR_REF}, not {cd.MAIN_REF}"),
+            ):
+                record = self.fixed_instance(state, **foreign)
+                with self.subTest(caller="check", shape=f"alert={state}", kind=shape,
+                                  foreign=sorted(foreign)):
+                    code, _, err = self.check([entry()], [record], states="open,dismissed")
                     self.assertEqual(code, 1)
                     self.assertIn(expected, err)
+                with self.subTest(caller="reconcile", shape=f"alert={state}", kind=shape,
+                                  foreign=sorted(foreign)):
+                    # The push caller lists dismissed alerts only, so an open
+                    # record never reaches the binding: the state parse refuses
+                    # it first, which is itself the right refusal.
+                    code, _, err = self.reconcile([entry()], [record])
+                    self.assertEqual(code, 1)
+                    self.assertIn(
+                        expected if state == "dismissed"
+                        else "is 'open'; this listing was asked for dismissed",
+                        err,
+                    )
+        # The positive control, on the VALID shape only: the same dismissed
+        # record from THIS ref and THIS analysis is historical -- counted,
+        # named, and never judged -- through both callers.
+        code, out, err = self.check(
+            [entry()], [self.fixed_instance("dismissed")], states="open,dismissed"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "stale #70 rust/hard-coded-cryptographic-value "
+            "crates/obsyncd/src/storage/mod.rs:4 state=dismissed "
+            "fixed_at=None instance on " + "0" * 40,
+            out,
+        )
+        self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
+        code, out, err = self.reconcile([entry()], [self.fixed_instance("dismissed")])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "stale", "number": 70}],
+        )
+
+    def stamped(self, **overrides: object) -> dict:
+        """Alert #90 as `main` really carried it after v0.1.7 (issue #29).
+
+        `state=dismissed`, instance `state=dismissed` on the PREVIOUS commit,
+        this ref and this workflow's analysis key, and `fixed_at` stamped: the
+        auth nonce vectors it covered were removed, so the analysis of the
+        commit being judged no longer finds it and GitHub left the instance
+        where it was last seen.
+        """
+        record = dismissed(
+            90,
+            entry(),
+            path="crates/obsyncd/src/api/auth.rs",
+            line=1038,
+            commit=PREVIOUS_COMMIT,
+            fixed_at=FIXED_AT,
+        )
+        record["most_recent_instance"]["state"] = "dismissed"
+        record.update(overrides)
+        return record
+
+    def test_reconcile_counts_a_stamped_dismissal_left_on_the_previous_commit(self):
+        # CALLER 1, THE PUSH PATH. THE LIVE DEFECT (issue #29): 33 of main's 78
+        # dismissals were in this shape and `historical` only recognised
+        # `instance.state == "fixed"`, so the commit binding refused the whole
+        # run before anything was written -- and would have refused every push
+        # to main forever. Completeness for this caller is the job's
+        # wait-for-indexing step: both of THIS run's SARIFs reach
+        # `processing_status: complete` before any listing is taken, so
+        # `fixed_at` is the verdict of the analysis of `--commit`.
+        code, out, err = self.reconcile([entry()], [self.stamped()])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "stale", "number": 90}],
+        )
+
+    def test_the_base_check_counts_a_stamped_dismissal_left_on_an_older_commit(self):
+        # CALLER 2, THE PULL-REQUEST PATH, driven the way the workflow drives
+        # it: `--states open,dismissed` over the BASE's alerts at the commit the
+        # base's two analyses agree on, which is this caller's completeness
+        # evidence -- this pull request's own uploads say nothing about main.
+        # The same predicate answers, and nothing is judged.
+        code, out, err = self.check(
+            [entry()], [self.stamped()], states="open,dismissed", commit=BASE_ANALYSES_COMMIT
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            f"stale #90 rust/hard-coded-cryptographic-value "
+            f"crates/obsyncd/src/api/auth.rs:1038 state=dismissed "
+            f"fixed_at={FIXED_AT} instance on {PREVIOUS_COMMIT}",
+            out,
+        )
+        self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
+
+    # THE KEY NEGATIVE, one test per caller. `fixed_at` is what says the
+    # finding is gone. Without it the record claims to be current and its
+    # instance is not, which is the superseded or foreign case the refusal
+    # exists for -- a stale location must never become its own excuse for being
+    # stale. The two callers are separate methods on purpose: sharing one
+    # method means a mutant that breaks the first assertion stops the method
+    # there, and the second caller is never executed at all, so its refusal is
+    # asserted by a line that never ran.
+
+    def test_an_unstamped_dismissal_on_another_commit_is_refused_in_reconcile(self):
+        code, _, err = self.reconcile([entry()], [self.stamped(fixed_at=None)])
+        self.assertEqual(code, 1)
+        self.assertIn(f"was analysed on commit {PREVIOUS_COMMIT}, not {COMMIT}", err)
+        self.assertIn("superseded or foreign", err)
+
+    def test_an_unstamped_dismissal_on_another_commit_is_refused_in_the_base_check(self):
+        code, _, err = self.check(
+            [entry()],
+            [self.stamped(fixed_at=None)],
+            states="open,dismissed",
+            commit=BASE_ANALYSES_COMMIT,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn(f"was analysed on commit {PREVIOUS_COMMIT}, not {BASE_ANALYSES_COMMIT}", err)
+        self.assertIn("superseded or foreign", err)
+
+    def test_the_ref_and_the_analysis_bind_whatever_the_stamp_says(self):
+        # A record from another branch or another workflow is foreign in every
+        # state: no stamp makes it this file's business.
+        for overrides, expected in (
+            ({"key": ".github/workflows/other.yml:analyze"}, "came from analysis"),
+            ({"ref": PR_REF}, f"was analysed on {PR_REF}, not {cd.MAIN_REF}"),
+        ):
+            with self.subTest(foreign=sorted(overrides)):
+                foreign = self.stamped()
+                foreign["most_recent_instance"].update(
+                    {"analysis_key": overrides.get("key", ANALYSIS_KEY),
+                     "ref": overrides.get("ref", cd.MAIN_REF)}
+                )
+                code, _, err = self.check([entry()], [foreign], states="dismissed")
+                self.assertEqual(code, 1)
+                self.assertIn(expected, err)
+
+    def test_an_open_alert_on_another_commit_is_refused_however_it_is_stamped(self):
+        # The exemption is for DISMISSED records only. An open finding the
+        # analysis no longer detects is one GitHub calls fixed; an open alert
+        # pointing at another commit is superseded or foreign.
+        for stamp in (None, FIXED_AT):
+            for instance_state in ("open", "dismissed", None):
+                with self.subTest(fixed_at=stamp, instance=instance_state):
+                    old = alert(number=90, line=2, commit=PREVIOUS_COMMIT, fixed_at=stamp)
+                    if instance_state is not None:
+                        old["most_recent_instance"]["state"] = instance_state
+                    code, _, err = self.check([entry()], [old], states="open,dismissed")
+                    self.assertEqual(code, 1)
+                    self.assertIn("was analysed on commit", err)
                     self.assertIn("superseded or foreign", err)
+
+    def test_a_stamped_dismissal_on_the_judged_commit_is_judged_as_before(self):
+        # The stamp is not a way out of the file's authority: what has an
+        # instance on the commit being judged is judged, drift and all.
+        drifted = dismissed(
+            81, entry(), line=2, fixed_at=FIXED_AT, dismissed_comment="typed in the UI"
+        )
+        code, out, err = self.reconcile([entry()], [drifted])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            [json.loads(line)["action"] for line in out.splitlines()], ["redismiss"]
+        )
+        agreed = dismissed(81, entry(), line=2, fixed_at=FIXED_AT)
+        code, out, err = self.reconcile([entry()], [agreed])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "unchanged", "number": 81}],
+        )
+
+    def test_a_fixed_at_that_is_neither_a_non_empty_string_nor_null_is_refused(self):
+        # PRESENCE, not syntax: the parse refuses a type it does not model and
+        # an empty string, and takes any non-empty string GitHub sends as the
+        # stamp. What guards the exemption is the ref, the analysis key and the
+        # alert's own state, each with its own test above.
+        for stamp in (12345, "", [], {}, True):
+            with self.subTest(fixed_at=stamp):
+                code, _, err = self.check(
+                    [entry()], [self.stamped(fixed_at=stamp)], states="dismissed"
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    "field fixed_at is neither a non-empty string nor null", err
+                )
 
     def test_check_refuses_a_states_value_it_does_not_model(self):
         for states in ("fixed", "open,fixed", "open,open", ""):
@@ -1764,17 +1988,33 @@ class StepExecution(unittest.TestCase):
             ),
         ]
 
-    def analyses(self, commits: tuple[str, str] | None = None) -> list[dict]:
+    def analyses(
+        self,
+        commits: tuple[str, str] | None = None,
+        errors: tuple[str, str] = ("", ""),
+    ) -> list[dict]:
+        """The base's analysis records, one per language category.
+
+        `error` is a required string in GitHub's analysis schema, empty on a
+        successful analysis, and separate from `warning`. The base check's
+        completeness evidence is these records, so the step has to read it.
+        """
         rust, javascript = commits or (self.BASE_COMMIT, self.BASE_COMMIT)
         return [
             {
                 "id": index,
                 "category": f".github/workflows/codeql.yml:analyze/build-mode:none/language:{lang}",
                 "commit_sha": commit,
+                "error": error,
+                "warning": "",
                 "ref": cd.MAIN_REF,
             }
-            for index, (lang, commit) in enumerate(
-                (("rust", rust), ("javascript-typescript", javascript)), start=1
+            for index, (lang, commit, error) in enumerate(
+                (
+                    ("rust", rust, errors[0]),
+                    ("javascript-typescript", javascript, errors[1]),
+                ),
+                start=1,
             )
         ]
 
@@ -2345,31 +2585,39 @@ class StepExecution(unittest.TestCase):
             self.assertNotIn("reconcile reopened=", result.stdout)
 
     def test_a_push_counts_a_dismissal_whose_finding_is_gone_and_touches_nothing(self):
-        gone = {
-            **self.covered_alerts()[0],
-            "state": "dismissed",
-            "dismissed_reason": "false positive",
-            "dismissed_comment": "written before the code moved",
-        }
-        # The instance the tool itself calls fixed, at the commit it was last
-        # seen on -- older than the one being judged, by construction.
-        gone["most_recent_instance"] = {
-            **gone["most_recent_instance"],
-            "state": "fixed",
-            "commit_sha": "0" * 40,
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            env = self.stage(Path(tmp), dismissed_alerts=[gone])
-            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
-            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
-            result = self.run_step(self.RECONCILE, env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
-            self.assertIn(
-                "dispositions: reconcile reopened=0 redismissed=0 unchanged=0 stale=1",
-                result.stdout,
-            )
-            self.assertIn("dispositions: stale alert=81", result.stdout)
+        # Both shapes GitHub uses to say the finding is no longer detected, run
+        # through the real step: the instance it calls `fixed`, and the one it
+        # leaves `dismissed` while stamping `fixed_at` on the alert -- which is
+        # the shape 33 of main's 78 dismissals were in when the first live
+        # reconcile refused the whole run (issue #29).
+        for instance_state, stamp in (("fixed", None), ("dismissed", FIXED_AT)):
+            with self.subTest(instance=instance_state, fixed_at=stamp):
+                gone = {
+                    **self.covered_alerts()[0],
+                    "state": "dismissed",
+                    "fixed_at": stamp,
+                    "dismissed_reason": "false positive",
+                    "dismissed_comment": "written before the code moved",
+                }
+                # The commit it was last seen on -- older than the one being
+                # judged, by construction.
+                gone["most_recent_instance"] = {
+                    **gone["most_recent_instance"],
+                    "state": instance_state,
+                    "commit_sha": PREVIOUS_COMMIT,
+                }
+                with tempfile.TemporaryDirectory() as tmp:
+                    env = self.stage(Path(tmp), dismissed_alerts=[gone])
+                    self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+                    self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+                    result = self.run_step(self.RECONCILE, env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
+                    self.assertIn(
+                        "dispositions: reconcile reopened=0 redismissed=0 unchanged=0 stale=1",
+                        result.stdout,
+                    )
+                    self.assertIn("dispositions: stale alert=81", result.stdout)
 
     def test_the_base_check_validates_this_pull_requests_files_not_the_bases(self):
         # The staged base list is missing `cli/export.rs`, which a shipped
@@ -2440,6 +2688,120 @@ class StepExecution(unittest.TestCase):
             result = self.run_step(self.BASE_LIST, env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("has no CodeQL analysis for rust", result.stderr)
+
+    def stale_base_alert(self) -> dict:
+        """A base dismissal the new exemption would skip -- stamped, older instance."""
+        return alert(
+            number=40,
+            rule=LOGGING_RULE,
+            path="crates/obsyncd/src/cli/check.rs",
+            line=1,
+            ref=cd.MAIN_REF,
+            state="dismissed",
+            commit=PREVIOUS_COMMIT,
+            fixed_at=FIXED_AT,
+            dismissed_reason="false positive",
+            dismissed_comment="written before the code moved",
+        )
+
+    def test_the_base_listing_refuses_an_analysis_that_reports_an_error(self):
+        # The new historical exemption rests on the selected base analysis
+        # being the analysis OF the commit being judged. A record that agrees
+        # with the other leg on a SHA and still carries a non-empty `error`
+        # establishes nothing, and skipping a stamped record on that evidence
+        # is exactly what the old predicate refused to do. Both legs are
+        # checked, and a stamped dismissal is present so the run would have
+        # something to skip.
+        for language, errors in (
+            ("rust", ("sentinel analysis failed", "")),
+            ("javascript-typescript", ("", "sentinel analysis failed")),
+        ):
+            with self.subTest(language=language):
+                with tempfile.TemporaryDirectory() as tmp:
+                    env = self.stage(
+                        Path(tmp),
+                        event="pull_request",
+                        alerts=[],
+                        base_alerts=[],
+                        base_dismissed=[self.stale_base_alert()],
+                        analyses=self.analyses(errors=errors),
+                    )
+                    result = self.run_step(self.BASE_LIST, env)
+                    self.assertNotEqual(result.returncode, 0, "an errored analysis must stop the job")
+                    self.assertIn(
+                        f"DENY base analysis for {language} at {self.BASE_COMMIT} "
+                        "reports an error: sentinel analysis failed",
+                        result.stderr,
+                    )
+                    self.assertIn("wait for a successful base CodeQL run", result.stderr)
+                    # Nothing the later steps read was produced, so under the
+                    # job's `set -e` the base tree is never checked out and the
+                    # base check never runs. Executed, not asserted by hand:
+                    temp = Path(env["RUNNER_TEMP"])
+                    self.assertFalse((temp / "base-commit.txt").exists())
+                    self.assertFalse((temp / "alerts-base.json").exists())
+                    self.assertNotEqual(self.run_step(self.BASE_TREE, env).returncode, 0)
+                    self.assertNotEqual(self.run_step(self.BASE_CHECK, env).returncode, 0)
+
+    def test_the_base_listing_refuses_a_malformed_analysis_record(self):
+        # `error` and `commit_sha` are required strings. A record missing
+        # either is not evidence of anything, and guessing is how a stale
+        # location gets judged.
+        for description, mutate, expected in (
+            (
+                "error missing",
+                lambda record: record.pop("error"),
+                "malformed (error is missing or not a string)",
+            ),
+            (
+                "error not a string",
+                lambda record: record.update({"error": 0}),
+                "malformed (error is missing or not a string)",
+            ),
+            (
+                "commit_sha not a string",
+                lambda record: record.update({"commit_sha": 12345}),
+                "malformed (commit_sha is not a non-empty string)",
+            ),
+        ):
+            with self.subTest(record=description):
+                records = self.analyses()
+                mutate(records[0])
+                with tempfile.TemporaryDirectory() as tmp:
+                    env = self.stage(
+                        Path(tmp),
+                        event="pull_request",
+                        alerts=[],
+                        base_alerts=[],
+                        base_dismissed=[self.stale_base_alert()],
+                        analyses=records,
+                    )
+                    result = self.run_step(self.BASE_LIST, env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"DENY base analysis record for rust is {expected}", result.stderr)
+                    self.assertFalse((Path(env["RUNNER_TEMP"]) / "base-commit.txt").exists())
+
+    def test_a_healthy_base_analysis_lets_the_base_check_count_the_stale_one(self):
+        # The positive control the two negatives are measured against: the same
+        # stamped dismissal, both legs reporting no error on one commit, all
+        # four steps run, and the record is counted rather than judged.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp),
+                event="pull_request",
+                alerts=[],
+                base_alerts=[],
+                base_dismissed=[self.stale_base_alert()],
+            )
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                result = self.run_step(name, env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"stale #40 {LOGGING_RULE}", result.stdout)
+            self.assertIn(f"fixed_at={FIXED_AT} instance on {PREVIOUS_COMMIT}", result.stdout)
+            self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", result.stdout)
+            self.assertIn("decision=pass", result.stdout)
 
     def test_the_base_tree_is_fetched_at_the_analyses_commit(self):
         # b6, executed: the git calls name the commit, never the branch.

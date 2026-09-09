@@ -4,6 +4,32 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.8 - Unreleased
+
+- A dismissed alert GitHub has stamped `fixed_at` is skipped, counted and
+  named instead of refusing the run. `Alert.historical` described exactly this
+  case and then tested `most_recent_instance.state == "fixed"`, which the
+  shape never satisfies, so the first live reconcile after v0.1.7 (push run
+  34368935826 at `f229a46`) stopped on alert #90 with
+  `was analysed on commit e4aa059…, not f229a46…` before writing anything:
+  every later step was skipped, main kept its one covered open alert, and the
+  publisher denied the version on the exact-SHA binding. The API partitions
+  main's 78 dismissals exactly: 33 (#55–#90, `hard-coded-cryptographic-value`
+  in `api/auth.rs` 583–1052, the auth nonce vectors v0.1.7 removed) carry
+  `fixed_at` with their instance left on `e4aa059`, and the other 45 carry
+  `fixed_at: null` with their instance on `f229a46`. The stamp is what earns
+  the exemption and an old commit alone never does: an unstamped dismissal
+  whose instance names another commit, and any OPEN alert that does, are still
+  refused as superseded or foreign, and the ref and analysis-key bindings now
+  hold in every state. The stamp is read for its presence, null or a non-empty
+  string, and its syntax is not validated: the ref, the analysis key and the
+  alert's own state are what guard the exemption. `fixed_at` can be read at face value because the job
+  waits for `processing_status: complete` on both analyses before it lists
+  anything, and on a pull request the base listing now requires the analysis
+  record it selects per language to report an empty `error` — agreement on a
+  commit is not evidence that the analysis of that commit succeeded, and there
+  is no fallback to an older healthy record.
+
 ## 0.1.7 - Unreleased
 
 - A journal append that fails is rolled back to the length the journal has

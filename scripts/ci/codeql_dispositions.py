@@ -223,6 +223,8 @@ class Alert:
     ref: str
     commit_sha: str
     analysis_key: str
+    judged_commit: str
+    fixed_at: str | None
     dismissed_reason: str | None
     dismissed_comment: str | None
 
@@ -236,8 +238,38 @@ class Alert:
         to today's commit would refuse it forever, and judging its line number
         against today's tree would read an unrelated line. It is skipped,
         counted and named -- never reopened, never re-dismissed, never dismissed.
+
+        GitHub says that in two ways, and this predicate is both. It may call
+        the INSTANCE `fixed`. Or it may leave the instance at `dismissed` and
+        say so on the ALERT instead, by stamping `fixed_at` the moment the
+        current analysis stops detecting it. That second shape is the one main
+        was in after v0.1.7 removed the auth nonce vectors: 33 of its 78
+        dismissals carried `fixed_at` with their instance on the previous
+        commit, the other 45 carried `fixed_at: null` with their instance on the
+        commit being judged, and reading `fixed` alone refused every push to
+        main forever (issue #29).
+
+        The stamp is read for its PRESENCE, not its syntax: null or a
+        non-empty string, and any non-empty value GitHub sends is the stamp.
+        What guards the exemption is the ref, the analysis key and the alert's
+        own state, not a second opinion about a field this tool does not own.
+
+        `fixed_at` is what earns the exemption, never the old commit on its own:
+        an unstamped dismissal whose instance sits on another commit is
+        superseded or foreign and stays refused, because the alternative is a
+        stale location becoming its own excuse for being stale. An OPEN alert on
+        another commit stays refused for the same reason -- an open finding the
+        analysis no longer detects is what GitHub stamps and calls fixed. The
+        ref and the analysis key are bound before this is ever asked, so the
+        stamp and the commit read here are always this ref's, from this
+        workflow's analysis, on a run that waited for both analyses to finish
+        processing before it listed anything.
         """
-        return self.instance_state == "fixed"
+        return self.instance_state == "fixed" or (
+            self.state == "dismissed"
+            and self.fixed_at is not None
+            and self.commit_sha != self.judged_commit
+        )
 
     def __str__(self) -> str:
         return f"#{self.number} {self.rule} {self.path}:{self.line} state={self.state}"
@@ -403,26 +435,25 @@ def _alert(
     # The record has to name the SOURCE it describes and the analysis that
     # produced it. Without both, a line number is read out of a checkout that
     # may not be the one the finding was found in, and an alert from another
-    # workflow's analysis is judged by a policy that never covered it. The one
-    # exemption is an instance the tool itself calls `fixed`: nothing is judged
-    # from it at all, so there is nothing to bind.
+    # workflow's analysis is judged by a policy that never covered it.
+    #
+    # The ref and the analysis key bind UNCONDITIONALLY: a record from another
+    # branch or another workflow is foreign whatever state it is in, and no
+    # stamp makes it this file's business. The commit binds only what is
+    # actually judged, and `Alert.historical` is the single predicate that says
+    # what that is -- so the alert is built first and the binding asks it,
+    # rather than a second copy of the same rule deciding here.
     commit = instance.get("commit_sha")
     if not isinstance(commit, str) or not commit:
         raise Refusal(f"{where} names no analysed commit")
     key = instance.get("analysis_key")
     if not isinstance(key, str) or not key:
         raise Refusal(f"{where} names no analysis key")
-    if instance_state != "fixed":
-        if commit != expected_commit:
-            raise Refusal(
-                f"{where} was analysed on commit {commit}, not {expected_commit}; "
-                "superseded or foreign; refusing to judge on stale locations"
-            )
-        if key != expected_key:
-            raise Refusal(
-                f"{where} came from analysis {key}, not {expected_key}; "
-                "superseded or foreign; refusing to judge on stale locations"
-            )
+    if key != expected_key:
+        raise Refusal(
+            f"{where} came from analysis {key}, not {expected_key}; "
+            "superseded or foreign; refusing to judge on stale locations"
+        )
     location = _object(instance.get("location"), f"{where} location")
     path = location.get("path")
     if not isinstance(path, str) or not path:
@@ -430,12 +461,25 @@ def _alert(
     line = location.get("start_line")
     if isinstance(line, bool) or not isinstance(line, int) or line <= 0:
         raise Refusal(f"{where} has no positive start line")
+    # `fixed_at` is the alert-level stamp GitHub writes when the current
+    # analysis stops detecting a finding it has a dismissal for. It is the only
+    # thing that lets a dismissed record keep an instance on an older commit.
+    #
+    # WHAT IS AND IS NOT CHECKED: null, or a non-empty string. The SYNTAX is
+    # not validated -- this reads the field's PRESENCE, which is what GitHub
+    # varies, and any non-empty value it sends is taken as the stamp. A
+    # timestamp parser here would be this tool inventing a second opinion about
+    # a field it does not own; what guards the exemption is the ref, the
+    # analysis key and the alert's own state, each checked above.
+    fixed_at = raw.get("fixed_at")
+    if fixed_at is not None and (not isinstance(fixed_at, str) or not fixed_at):
+        raise Refusal(f"{where} field fixed_at is neither a non-empty string nor null")
     dismissed_reason = raw.get("dismissed_reason")
     dismissed_comment = raw.get("dismissed_comment")
     for field, value in (("dismissed_reason", dismissed_reason), ("dismissed_comment", dismissed_comment)):
         if value is not None and not isinstance(value, str):
             raise Refusal(f"{where} field {field} is neither a string nor null")
-    return Alert(
+    alert = Alert(
         number=number,
         state=state,
         instance_state=instance_state,
@@ -445,9 +489,17 @@ def _alert(
         ref=ref,
         commit_sha=commit,
         analysis_key=key,
+        judged_commit=expected_commit,
+        fixed_at=fixed_at,
         dismissed_reason=dismissed_reason,
         dismissed_comment=dismissed_comment,
     )
+    if not alert.historical and commit != expected_commit:
+        raise Refusal(
+            f"{where} was analysed on commit {commit}, not {expected_commit}; "
+            "superseded or foreign; refusing to judge on stale locations"
+        )
+    return alert
 
 
 def load_alerts(
@@ -670,7 +722,7 @@ def _check(args: argparse.Namespace) -> int:
     entries, listed = _prepared(args, states, args.ref, args.alerts)
     alerts, historical = _live(listed)
     for alert in historical:
-        print(f"stale {alert} instance=fixed")
+        print(f"stale {alert} fixed_at={alert.fixed_at} instance on {alert.commit_sha}")
     verdicts = classify(entries, alerts, Tree(args.tree))
     used: set[int] = set()
     uncovered = 0

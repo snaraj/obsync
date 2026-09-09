@@ -219,9 +219,32 @@ jobs:
           first=""
           for language in rust javascript-typescript; do
             category=".github/workflows/codeql.yml:analyze/build-mode:none/language:${language}"
-            latest="$(jq -r --arg c "${category}" '[.[] | select(.category == $c)] | (max_by(.id) // {}) | .commit_sha // ""' "${analyses}")"
-            if [ -z "${latest}" ]; then
+            record="$(jq -c --arg c "${category}" '[.[] | select(.category == $c)] | (max_by(.id) // null)' "${analyses}")"
+            if [ "${record}" = "null" ]; then
               printf 'dispositions: DENY the base branch has no CodeQL analysis for %s\n' "${language}" >&2
+              exit 1
+            fi
+            # The record has to say it SUCCEEDED. `error` is a required string
+            # in GitHub's analysis schema and is separate from `warning`; the
+            # newest record for a category can carry a real failure and still
+            # agree with the other leg on a commit. Agreement is not success,
+            # and the historical exemption below rests on this being the
+            # analysis of that commit -- an errored one establishes nothing.
+            # There is deliberately NO fallback to an older healthy record: the
+            # tree that would be judged is the one this record names, and a
+            # stale success is not evidence about it.
+            latest="$(jq -r '.commit_sha | (strings // "")' <<<"${record}")"
+            if [ -z "${latest}" ]; then
+              printf 'dispositions: DENY base analysis record for %s is malformed (commit_sha is not a non-empty string)\n' "${language}" >&2
+              exit 1
+            fi
+            if [ "$(jq -r '.error | type' <<<"${record}")" != "string" ]; then
+              printf 'dispositions: DENY base analysis record for %s is malformed (error is missing or not a string)\n' "${language}" >&2
+              exit 1
+            fi
+            failure="$(jq -r .error <<<"${record}")"
+            if [ -n "${failure}" ]; then
+              printf 'dispositions: DENY base analysis for %s at %s reports an error: %s; wait for a successful base CodeQL run and re-run\n' "${language}" "${latest}" "${failure}" >&2
               exit 1
             fi
             if [ -z "${commit}" ]; then commit="${latest}"; first="${language}"; fi
@@ -269,11 +292,13 @@ jobs:
         # alert on main. Run after the check instead and the reopened alert
         # escapes this run entirely.
         #
-        # An alert whose most recent INSTANCE is `fixed` is counted as stale and
-        # left alone: the finding is no longer detected, so the instance names
-        # an old commit by construction and its line number belongs to a tree
-        # nobody is judging. Reopening it would resurrect a finding the tool
-        # says is gone.
+        # An alert the analysis no longer detects is counted as stale and left
+        # alone: its instance names an old commit by construction, so its line
+        # number belongs to a tree nobody is judging, and reopening it would
+        # resurrect a finding the tool says is gone. GitHub says that either by
+        # calling the INSTANCE `fixed` or by stamping `fixed_at` on a still
+        # `dismissed` one; both are `Alert.historical`, and an unstamped
+        # dismissal on another commit is still refused as superseded (#29).
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
