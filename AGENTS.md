@@ -250,7 +250,12 @@ reconciles first: a dismissal nothing covers is reopened, a stored
 justification that is not this file's is rewritten. Then it dismisses every
 covered open alert and requires main to hold zero, which is a gate invariant
 rather than a habit. Every judged alert must name the commit and this
-workflow's analysis. Nothing is excluded from analysis: no `query-filters`, no
+workflow's analysis, with one exemption: a DISMISSED alert GitHub has stamped
+`fixed_at`, on this ref and from this analysis, is no longer detected, so its
+instance names the last commit that saw it by construction — it is skipped,
+counted and named, never judged. An unstamped record on another commit, and an
+OPEN alert on another commit, stay refused as superseded or foreign.
+Nothing is excluded from analysis: no `query-filters`, no
 `paths-ignore`, no `config-file`. Dismissing an alert by hand — in the UI or
 through the API — is forbidden for everyone, the owner included, because a hand
 dismissal is unreviewed, absent from this repository, and invisible to the next
