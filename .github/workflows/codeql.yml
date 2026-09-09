@@ -269,11 +269,13 @@ jobs:
         # alert on main. Run after the check instead and the reopened alert
         # escapes this run entirely.
         #
-        # An alert whose most recent INSTANCE is `fixed` is counted as stale and
-        # left alone: the finding is no longer detected, so the instance names
-        # an old commit by construction and its line number belongs to a tree
-        # nobody is judging. Reopening it would resurrect a finding the tool
-        # says is gone.
+        # An alert the analysis no longer detects is counted as stale and left
+        # alone: its instance names an old commit by construction, so its line
+        # number belongs to a tree nobody is judging, and reopening it would
+        # resurrect a finding the tool says is gone. GitHub says that either by
+        # calling the INSTANCE `fixed` or by stamping `fixed_at` on a still
+        # `dismissed` one; both are `Alert.historical`, and an unstamped
+        # dismissal on another commit is still refused as superseded (#29).
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
