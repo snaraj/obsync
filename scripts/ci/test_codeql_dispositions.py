@@ -45,6 +45,7 @@ anything. Text pins cannot see a `|| true`; an executed step can.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -86,12 +87,26 @@ TRACKED = [
 
 _ABSENT = object()
 
+COMMIT = "f" * 40
+ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
+SALT_LINE = 'const WRAP_SALT: &[u8] = b"obsync/v1/wrap";'
+# A hash whose shape is right and whose value is nobody's file: entries that
+# only need to satisfy the product-code rule carry it, and every test that
+# actually verifies content computes the real digest instead.
+UNREAD_SHA256 = "a" * 64
+
 
 def entry(**overrides: object) -> dict:
-    """One well-formed entry, with `_ABSENT` removing a field."""
+    """One well-formed entry, with `_ABSENT` removing a field.
+
+    The default names PRODUCT code, so it carries `line_is`: an acceptance over
+    shipped code has to say what was read. A caller using another location
+    predicate drops it explicitly with `line_is=_ABSENT`.
+    """
     record: dict[str, object] = {
         "rule": CRYPTO_RULE,
         "path": "crates/obsyncd/src/storage/mod.rs",
+        "line_is": SALT_LINE,
         "reason": "false positive",
         "comment": "a domain separator, not a secret",
         "disposition": ISSUE,
@@ -107,17 +122,39 @@ def alert(
     line: int = 1,
     ref: str = cd.MAIN_REF,
     state: str = "open",
+    commit: str = COMMIT,
+    key: str = ANALYSIS_KEY,
+    dismissed_reason: str | None = None,
+    dismissed_comment: str | None = None,
 ) -> dict:
     return {
         "number": number,
         "state": state,
         "rule": {"id": rule, "severity": "warning"},
+        "dismissed_reason": dismissed_reason,
+        "dismissed_comment": dismissed_comment,
         "most_recent_instance": {
             "ref": ref,
-            "analysis_key": ".github/workflows/codeql.yml:analyze",
+            "commit_sha": commit,
+            "analysis_key": key,
             "location": {"path": path, "start_line": line, "end_line": line},
         },
     }
+
+
+def dismissed(number: int, entry_record: dict, **overrides: object) -> dict:
+    """A dismissed alert whose stored justification is the entry's, unless told otherwise."""
+    stored = {
+        "dismissed_reason": entry_record["reason"],
+        "dismissed_comment": f"{entry_record['comment']}"
+        f"{cd.DISPOSITION_JOIN}{entry_record['disposition']}",
+    }
+    stored.update(overrides)
+    return alert(number=number, state="dismissed", **stored)
+
+
+def load(document: list[dict], ref: str = cd.MAIN_REF, states: tuple[str, ...] = ("open",)):
+    return cd.load_alerts(document, ref, COMMIT, ANALYSIS_KEY, states)
 
 
 def run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -223,20 +260,20 @@ class SchemaRefusals(unittest.TestCase):
 
     def test_two_scopes_at_once_are_refused(self):
         self.refuse(
-            entry(path="crates/**/*.rs", line_contains="WRAP_SALT", within="test-module"),
+            entry(path="crates/**/*.rs", line_is=_ABSENT, line_contains="WRAP_SALT", within="test-module"),
             "carries line_contains and within",
         )
 
     def test_a_short_or_untrimmed_line_token_is_refused(self):
-        self.refuse(entry(line_contains="key"), "at least 4 characters")
-        self.refuse(entry(line_contains="WRAP_SALT "), "not a trimmed token")
+        self.refuse(entry(line_is=_ABSENT, line_contains="key"), "at least 4 characters")
+        self.refuse(entry(line_is=_ABSENT, line_contains="WRAP_SALT "), "not a trimmed token")
 
     def test_an_unmodelled_within_value_is_refused(self):
-        self.refuse(entry(within="tests"), "field within must be one of test-module")
+        self.refuse(entry(line_is=_ABSENT, within="tests"), "field within must be one of test-module")
 
     def test_within_test_module_over_a_non_rust_path_is_refused(self):
         self.refuse(
-            entry(path="plugin/test/**", within="test-module", reason="used in tests"),
+            entry(path="plugin/test/**", line_is=_ABSENT, within="test-module", reason="used in tests"),
             "scopes `within: test-module` over a non-Rust file",
         )
 
@@ -258,7 +295,7 @@ class SchemaRefusals(unittest.TestCase):
             {"path": "crates/**/*.rs", "within": "test-module"},
         ):
             with self.subTest(**overrides):
-                cd.load_entries([entry(reason="used in tests", **overrides)], TRACKED)
+                cd.load_entries([entry(reason="used in tests", line_is=_ABSENT, **overrides)], TRACKED)
 
     def test_the_document_itself_is_closed(self):
         for document, expected in (
@@ -339,27 +376,44 @@ class SyntheticTree(unittest.TestCase):
 
     def covers(self, raw: dict, hit: dict) -> bool:
         loaded = cd.load_entries([raw], TRACKED)[0]
-        return cd.covers(loaded, cd.load_alerts([hit], hit["most_recent_instance"]["ref"])[0], self.tree)
+        return cd.covers(loaded, load([hit], hit["most_recent_instance"]["ref"])[0], self.tree)
+
+    TOKEN = entry(
+        line_is=_ABSENT, line_contains="WRAP_SALT", reviewed_sha256=UNREAD_SHA256
+    )
 
     def test_line_contains_reads_the_flagged_line(self):
-        self.assertTrue(self.covers(entry(line_contains="WRAP_SALT"), alert(line=2)))
+        self.assertTrue(self.covers(self.TOKEN, alert(line=2)))
         for line in (1, 3, 4, 8):
             with self.subTest(line=line):
-                self.assertFalse(self.covers(entry(line_contains="WRAP_SALT"), alert(line=line)))
+                self.assertFalse(self.covers(self.TOKEN, alert(line=line)))
 
-    def test_line_contains_refuses_a_line_past_the_end_of_the_file(self):
-        self.assertFalse(self.covers(entry(line_contains="WRAP_SALT"), alert(line=9999)))
+    def test_line_is_compares_the_whole_trimmed_line_not_a_substring(self):
+        # The line the entry names is line 2 of the fixture. An entry naming a
+        # PART of it covers nothing: equality, not containment.
+        self.assertTrue(self.covers(entry(), alert(line=2)))
+        for line in (1, 3, 4, 8):
+            with self.subTest(line=line):
+                self.assertFalse(self.covers(entry(), alert(line=line)))
+        for fragment in ("const WRAP_SALT", 'b"obsync/v1/wrap";', "WRAP_SALT"):
+            with self.subTest(fragment=fragment):
+                self.assertFalse(self.covers(entry(line_is=fragment), alert(line=2)))
 
-    def test_line_contains_refuses_a_file_that_is_not_there(self):
-        self.assertFalse(
-            self.covers(
-                entry(path="crates/**/*.rs", line_contains="WRAP_SALT"),
-                alert(path="crates/obsyncd/src/api/auth.rs", line=2),
-            )
-        )
+    def test_line_is_ignores_indentation_on_both_sides(self):
+        self.assertTrue(self.covers(entry(line_is=f"   {SALT_LINE}  "), alert(line=2)))
+
+    def test_a_line_predicate_refuses_a_line_past_the_end_of_the_file(self):
+        self.assertFalse(self.covers(self.TOKEN, alert(line=9999)))
+        self.assertFalse(self.covers(entry(), alert(line=9999)))
+
+    def test_a_line_predicate_refuses_a_file_that_is_not_there(self):
+        with tempfile.TemporaryDirectory() as empty:
+            loaded = cd.load_entries([entry()], TRACKED)[0]
+            hit = load([alert(line=2)])[0]
+            self.assertFalse(cd.covers(loaded, hit, cd.Tree(Path(empty))))
 
     def test_within_test_module_accepts_at_or_after_the_marker_and_refuses_above_it(self):
-        scoped = entry(path="crates/**/*.rs", within="test-module", reason="used in tests")
+        scoped = entry(path="crates/**/*.rs", line_is=_ABSENT, within="test-module", reason="used in tests")
         for line in (6, 7, 8, 9):
             with self.subTest(line=line):
                 self.assertTrue(self.covers(scoped, alert(line=line)))
@@ -370,11 +424,11 @@ class SyntheticTree(unittest.TestCase):
     def test_within_test_module_refuses_a_file_with_no_marker(self):
         (self.root / "crates/obsyncd/src/api").mkdir(parents=True)
         (self.root / "crates/obsyncd/src/api/auth.rs").write_text("fn a() {}\n", encoding="utf-8")
-        scoped = entry(path="crates/**/*.rs", within="test-module", reason="used in tests")
+        scoped = entry(path="crates/**/*.rs", line_is=_ABSENT, within="test-module", reason="used in tests")
         self.assertFalse(self.covers(scoped, alert(path="crates/obsyncd/src/api/auth.rs", line=1)))
 
     def test_an_unscoped_entry_covers_by_rule_and_path_alone(self):
-        unscoped = entry(path="plugin/test/**", rule=URL_RULE, reason="used in tests")
+        unscoped = entry(path="plugin/test/**", line_is=_ABSENT, rule=URL_RULE, reason="used in tests")
         self.assertTrue(
             self.covers(unscoped, alert(rule=URL_RULE, path="plugin/test/bundle.test.mjs", line=1))
         )
@@ -389,7 +443,7 @@ class SyntheticTree(unittest.TestCase):
         for path in ("/etc/passwd", "../outside.rs", "crates/../../outside.rs"):
             with self.subTest(path=path):
                 with self.assertRaises(cd.Refusal) as caught:
-                    cd.load_alerts([alert(path=path)], cd.MAIN_REF)
+                    load([alert(path=path)])
                 self.assertIn("will not read", str(caught.exception))
 
 
@@ -499,14 +553,12 @@ class StrictTestModuleMarker(unittest.TestCase):
             )
             tree = cd.Tree(root)
             scoped = cd.load_entries(
-                [entry(path="crates/**/*.rs", within="test-module", reason="used in tests")],
+                [entry(path="crates/**/*.rs", line_is=_ABSENT, within="test-module", reason="used in tests")],
                 TRACKED,
             )[0]
 
             def covered(line: int) -> bool:
-                hit = cd.load_alerts(
-                    [alert(path="crates/obsyncd/src/api/auth.rs", line=line)], cd.MAIN_REF
-                )[0]
+                hit = load([alert(path="crates/obsyncd/src/api/auth.rs", line=line)])[0]
                 return cd.covers(scoped, hit, tree)
 
             # Between the early attribute and the module -- product code.
@@ -527,14 +579,12 @@ class StrictTestModuleMarker(unittest.TestCase):
             )
             tree = cd.Tree(root)
             scoped = cd.load_entries(
-                [entry(path="crates/**/*.rs", within="test-module", reason="used in tests")],
+                [entry(path="crates/**/*.rs", line_is=_ABSENT, within="test-module", reason="used in tests")],
                 TRACKED,
             )[0]
             for line in (1, 2, 4):
                 with self.subTest(line=line):
-                    hit = cd.load_alerts(
-                        [alert(path="crates/obsyncd/src/api/auth.rs", line=line)], cd.MAIN_REF
-                    )[0]
+                    hit = load([alert(path="crates/obsyncd/src/api/auth.rs", line=line)])[0]
                     self.assertFalse(cd.covers(scoped, hit, tree))
 
 
@@ -561,33 +611,40 @@ class CommandDecisions(unittest.TestCase):
         listing.write_text(json.dumps(alerts), encoding="utf-8")
         return str(dispositions), str(listing)
 
-    def check(self, entries: list[dict], alerts: list[dict], ref: str = cd.MAIN_REF):
+    def judged(self, dispositions: str, tree: str | None = None) -> list[str]:
+        return [
+            "--dispositions", dispositions,
+            "--tree", tree or str(self.root / "tree"),
+            "--content-tree", str(self.root / "tree"),
+            "--tracked", str(self.tracked),
+            "--commit", COMMIT,
+            "--analysis-key", ANALYSIS_KEY,
+        ]
+
+    def check(
+        self,
+        entries: list[dict],
+        alerts: list[dict],
+        ref: str = cd.MAIN_REF,
+        states: str = "open",
+        tree: str | None = None,
+    ):
         dispositions, listing = self.files(entries, alerts)
         return run_cli(
-            [
-                "check",
-                "--dispositions", dispositions,
-                "--alerts", listing,
-                "--tree", str(self.root / "tree"),
-                "--tracked", str(self.tracked),
-                "--ref", ref,
-            ]
+            ["check", *self.judged(dispositions, tree), "--alerts", listing,
+             "--ref", ref, "--states", states]
         )
 
     def plan(self, entries: list[dict], alerts: list[dict]):
         dispositions, listing = self.files(entries, alerts)
-        return run_cli(
-            [
-                "plan",
-                "--dispositions", dispositions,
-                "--alerts", listing,
-                "--tree", str(self.root / "tree"),
-                "--tracked", str(self.tracked),
-            ]
-        )
+        return run_cli(["plan", *self.judged(dispositions), "--alerts", listing])
+
+    def reconcile(self, entries: list[dict], alerts: list[dict]):
+        dispositions, listing = self.files(entries, alerts)
+        return run_cli(["reconcile", *self.judged(dispositions), "--dismissed", listing])
 
     def test_validate_accepts_a_good_file_and_names_every_entry(self):
-        dispositions, _ = self.files([entry(line_contains="WRAP_SALT")], [])
+        dispositions, _ = self.files([entry()], [])
         code, out, _ = run_cli(
             ["validate", "--dispositions", dispositions, "--tracked", str(self.tracked)]
         )
@@ -604,30 +661,30 @@ class CommandDecisions(unittest.TestCase):
         self.assertIn("entry 0 field rule is not one exact CodeQL rule id", err)
 
     def test_check_passes_when_every_alert_is_covered(self):
-        code, out, _ = self.check([entry(line_contains="WRAP_SALT")], [alert(number=81, line=2)])
+        code, out, _ = self.check([entry()], [alert(number=81, line=2)])
         self.assertEqual(code, 0)
         self.assertIn(
             "covered #81 rust/hard-coded-cryptographic-value "
-            "crates/obsyncd/src/storage/mod.rs:2 entry=0",
+            "crates/obsyncd/src/storage/mod.rs:2 state=open entry=0",
             out,
         )
-        self.assertIn("uncovered=0 stale=0 decision=pass", out)
+        self.assertIn("uncovered=0 drift=0 stale=0 decision=pass", out)
 
     def test_check_exits_1_and_names_every_uncovered_alert(self):
         code, out, err = self.check(
-            [entry(line_contains="WRAP_SALT")],
+            [entry()],
             [alert(number=81, line=2), alert(number=90, line=4), alert(number=91, line=1)],
         )
         self.assertEqual(code, 1)
         self.assertIn("uncovered #90 rust/hard-coded-cryptographic-value", out)
         self.assertIn("crates/obsyncd/src/storage/mod.rs:4", out)
         self.assertIn("uncovered #91", out)
-        self.assertIn("uncovered=2 stale=0 decision=refuse", out)
-        self.assertIn("2 open alert(s) no reviewed disposition covers", err)
+        self.assertIn("uncovered=2 drift=0 stale=0 decision=refuse", out)
+        self.assertIn("2 alert(s) no reviewed disposition covers", err)
 
     def test_check_reports_an_entry_that_matched_nothing(self):
         code, out, _ = self.check(
-            [entry(line_contains="WRAP_SALT"), entry(rule=LOGGING_RULE, path="crates/**/*.rs")],
+            [entry(), entry(rule=LOGGING_RULE, path="crates/**/*.rs")],
             [alert(number=81, line=2)],
         )
         self.assertEqual(code, 0)
@@ -637,14 +694,14 @@ class CommandDecisions(unittest.TestCase):
 
     def test_check_refuses_an_alert_analysed_on_another_ref(self):
         code, _, err = self.check(
-            [entry(line_contains="WRAP_SALT")], [alert(number=81, line=2, ref=PR_REF)]
+            [entry()], [alert(number=81, line=2, ref=PR_REF)]
         )
         self.assertEqual(code, 1)
         self.assertIn(f"alert #81 was analysed on {PR_REF}, not {cd.MAIN_REF}", err)
 
     def test_check_reads_the_pull_request_ref_when_that_is_what_was_analysed(self):
         code, _, _ = self.check(
-            [entry(line_contains="WRAP_SALT")], [alert(number=81, line=2, ref=PR_REF)], ref=PR_REF
+            [entry()], [alert(number=81, line=2, ref=PR_REF)], ref=PR_REF
         )
         self.assertEqual(code, 0)
 
@@ -652,10 +709,10 @@ class CommandDecisions(unittest.TestCase):
         for state in ("dismissed", "fixed", "closed", None):
             with self.subTest(state=state):
                 code, _, err = self.check(
-                    [entry(line_contains="WRAP_SALT")], [alert(number=81, line=2, state=state)]
+                    [entry()], [alert(number=81, line=2, state=state)]
                 )
                 self.assertEqual(code, 1)
-                self.assertIn("open alerts only", err)
+                self.assertIn("this listing was asked for open", err)
 
     def test_check_refuses_a_malformed_alert(self):
         good = alert(number=81, line=2)
@@ -663,20 +720,30 @@ class CommandDecisions(unittest.TestCase):
             ({"number": 0}, "no positive alert number"),
             ({"rule": {}}, "no readable rule id"),
             ({"most_recent_instance": {}}, "names no analysed ref"),
-            ({"most_recent_instance": {"ref": cd.MAIN_REF}}, "location is not an object"),
+            (
+                {"most_recent_instance": {"ref": cd.MAIN_REF, "commit_sha": COMMIT,
+                                          "analysis_key": ANALYSIS_KEY}},
+                "location is not an object",
+            ),
+            ({"most_recent_instance": {**alert()["most_recent_instance"],
+                                       "commit_sha": "b" * 40}},
+             "superseded or foreign"),
+            ({"most_recent_instance": {**alert()["most_recent_instance"],
+                                       "analysis_key": ".github/workflows/other.yml:scan"}},
+             "superseded or foreign"),
         ):
             with self.subTest(mutation=sorted(mutation)):
-                code, _, err = self.check([entry(line_contains="WRAP_SALT")], [{**good, **mutation}])
+                code, _, err = self.check([entry()], [{**good, **mutation}])
                 self.assertEqual(code, 1)
                 self.assertIn(expected, err)
-        code, _, err = self.check([entry(line_contains="WRAP_SALT")], [{"number": 1}])
+        code, _, err = self.check([entry()], [{"number": 1}])
         self.assertEqual(code, 1)
 
     def test_plan_emits_exactly_the_covered_alerts_with_their_dismissal_fields(self):
         entries = [
-            entry(line_contains="WRAP_SALT"),
-            entry(path="plugin/test/**", rule=URL_RULE, reason="used in tests",
-                  comment="a string constant in a test bundle"),
+            entry(),
+            entry(path="plugin/test/**", line_is=_ABSENT, rule=URL_RULE,
+                  reason="used in tests", comment="a string constant in a test bundle"),
         ]
         code, out, _ = self.plan(
             entries,
@@ -711,14 +778,111 @@ class CommandDecisions(unittest.TestCase):
 
     def test_plan_refuses_an_alert_that_was_not_analysed_on_main(self):
         code, out, err = self.plan(
-            [entry(line_contains="WRAP_SALT")], [alert(number=81, line=2, ref=PR_REF)]
+            [entry()], [alert(number=81, line=2, ref=PR_REF)]
         )
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn(f"was analysed on {PR_REF}, not {cd.MAIN_REF}", err)
 
+    def test_reconcile_reopens_a_dismissed_alert_no_entry_covers(self):
+        # The state main is actually in when an entry is removed, narrowed, or
+        # was never written: the finding is silent and nothing lists it again.
+        code, out, _ = self.reconcile(
+            [entry()],
+            [
+                alert(
+                    number=90,
+                    line=4,
+                    state="dismissed",
+                    dismissed_reason="false positive",
+                    dismissed_comment="somebody typed this in the UI",
+                )
+            ],
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "reopen", "number": 90}],
+        )
+
+    def test_reconcile_rewrites_a_stored_justification_that_is_not_this_files(self):
+        record = entry()
+        for stored in (
+            {"dismissed_reason": "won't fix"},
+            {"dismissed_comment": "a different sentence"},
+            {"dismissed_comment": None},
+            {"dismissed_comment": record["comment"]},  # the URL half missing
+        ):
+            with self.subTest(stored=sorted(stored)):
+                code, out, _ = self.reconcile(
+                    [record], [dismissed(81, record, line=2, **stored)]
+                )
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    [json.loads(line) for line in out.splitlines()],
+                    [
+                        {
+                            "action": "redismiss",
+                            "number": 81,
+                            "reason": record["reason"],
+                            "comment": record["comment"],
+                            "disposition": record["disposition"],
+                        }
+                    ],
+                )
+
+    def test_reconcile_leaves_a_dismissal_this_file_already_says_alone(self):
+        record = entry()
+        code, out, _ = self.reconcile([record], [dismissed(81, record, line=2)])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "unchanged", "number": 81}],
+        )
+
+    def test_reconcile_refuses_an_alert_that_is_open_or_off_main(self):
+        record = entry()
+        code, _, err = self.reconcile([record], [alert(number=81, line=2)])
+        self.assertEqual(code, 1)
+        self.assertIn("this listing was asked for dismissed", err)
+        code, _, err = self.reconcile([record], [dismissed(81, record, line=2, ref=PR_REF)])
+        self.assertEqual(code, 1)
+        self.assertIn(f"was analysed on {PR_REF}", err)
+
+    def test_check_reports_drift_on_a_covered_dismissed_alert_without_failing(self):
+        record = entry()
+        code, out, _ = self.check(
+            [record],
+            [dismissed(81, record, line=2, dismissed_reason="won't fix")],
+            states="open,dismissed",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("covered #81", out)
+        self.assertIn("drift #81 entry=0 reason=\"won't fix\" expected='false positive'", out)
+        self.assertIn("drift=1", out)
+
+    def test_check_fails_on_a_dismissed_alert_no_entry_covers(self):
+        # The base check's whole purpose: an acceptance the branch already
+        # relies on, deleted, is a finding that would be reopened on main.
+        code, out, err = self.check(
+            [entry()],
+            [dismissed(90, entry(), line=4)],
+            states="open,dismissed",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("uncovered #90", out)
+        self.assertIn("the next push to main would reopen it", out)
+        self.assertIn("1 alert(s) no reviewed disposition covers", err)
+
+    def test_check_refuses_a_states_value_it_does_not_model(self):
+        for states in ("fixed", "open,fixed", "open,open", ""):
+            with self.subTest(states=states):
+                code, _, err = self.check([entry()], [], states=states)
+                self.assertEqual(code, 1)
+                self.assertIn("--states must be a comma-separated subset", err)
+
     def test_plan_is_empty_and_successful_when_main_holds_no_open_alert(self):
-        code, out, _ = self.plan([entry(line_contains="WRAP_SALT")], [])
+        code, out, _ = self.plan([entry()], [])
         self.assertEqual(code, 0)
         self.assertEqual(out, "")
 
@@ -751,9 +915,8 @@ class TheShippedFile(unittest.TestCase):
         lines = source.splitlines()
         declared = [n for n, line in enumerate(lines, 1) if line.startswith("const WRAP_SALT")]
         self.assertEqual(len(declared), 1, "exactly one WRAP_SALT declaration")
-        hit = cd.load_alerts(
-            [alert(number=81, path="crates/obsyncd/src/storage/mod.rs", line=declared[0])],
-            cd.MAIN_REF,
+        hit = load(
+            [alert(number=81, path="crates/obsyncd/src/storage/mod.rs", line=declared[0])]
         )[0]
         covering = [e for e in self.entries if cd.covers(e, hit, self.tree)]
         self.assertEqual([e.reason for e in covering[:1]], ["false positive"])
@@ -763,12 +926,8 @@ class TheShippedFile(unittest.TestCase):
         source = (ROOT / "crates/obsyncd/src/api/auth.rs").read_text(encoding="utf-8")
         marker = cd.test_module_line(source.splitlines())
         self.assertIsNotNone(marker)
-        inside = cd.load_alerts(
-            [alert(number=1, path="crates/obsyncd/src/api/auth.rs", line=marker + 1)], cd.MAIN_REF
-        )[0]
-        above = cd.load_alerts(
-            [alert(number=2, path="crates/obsyncd/src/api/auth.rs", line=marker - 1)], cd.MAIN_REF
-        )[0]
+        inside = load([alert(number=1, path="crates/obsyncd/src/api/auth.rs", line=marker + 1)])[0]
+        above = load([alert(number=2, path="crates/obsyncd/src/api/auth.rs", line=marker - 1)])[0]
         self.assertTrue(any(cd.covers(e, inside, self.tree) for e in self.entries))
         self.assertFalse(any(cd.covers(e, above, self.tree) for e in self.entries))
 
@@ -779,7 +938,7 @@ class TheShippedFile(unittest.TestCase):
         # test-location entry is what covers alert #32.
         path = "crates/obsyncd/src/api/server_test.rs"
         self.assertIsNone(cd.test_module_line((ROOT / path).read_text(encoding="utf-8").splitlines()))
-        hit = cd.load_alerts([alert(number=32, path=path, line=1)], cd.MAIN_REF)[0]
+        hit = load([alert(number=32, path=path, line=1)])[0]
         covering = [e for e in self.entries if cd.covers(e, hit, self.tree)]
         self.assertEqual([e.reason for e in covering[:1]], ["used in tests"])
 
@@ -853,7 +1012,7 @@ class TheShippedFile(unittest.TestCase):
             ),
         ):
             with self.subTest(rule=rule, path=path):
-                hit = cd.load_alerts([alert(rule=rule, path=path, line=line)], cd.MAIN_REF)[0]
+                hit = load([alert(rule=rule, path=path, line=line)])[0]
                 covering = [e for e in self.entries if cd.covers(e, hit, self.tree)]
                 self.assertTrue(covering, f"nothing covers {hit}")
                 self.assertEqual(covering[0].reason, reason)
@@ -879,7 +1038,7 @@ class TheShippedFile(unittest.TestCase):
                     "every println! in this file must be inside the operator report",
                 )
                 # And a line that is not part of the report is not covered.
-                hit = cd.load_alerts([alert(rule=LOGGING_RULE, path=path, line=1)], cd.MAIN_REF)[0]
+                hit = load([alert(rule=LOGGING_RULE, path=path, line=1)])[0]
                 self.assertFalse(any(cd.covers(e, hit, self.tree) for e in self.entries))
 
     def test_no_shipped_entry_dismisses_product_code_as_used_in_tests(self):
@@ -893,6 +1052,147 @@ class TheShippedFile(unittest.TestCase):
                 self.assertTrue(matched)
                 if entry_.within is None:
                     self.assertTrue(all(cd._is_test_location(path) for path in matched))
+
+
+class ReviewedContent(unittest.TestCase):
+    """An acceptance over product code names what was read, and it is re-read.
+
+    Finding 3 of the round-1 verdict: entry 4 accepted any flagged `println!`
+    in `cli/check.rs`, so a harmless new output inserted inside
+    `CheckReport::print` was accepted with no policy change, and a REAL logging
+    finding added there later would inherit the same false-positive verdict.
+    The location test could not see it: the new call was inside the method.
+    """
+
+    PRINTERS = ("crates/obsyncd/src/cli/check.rs", "crates/obsyncd/src/cli/export.rs")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tracked = subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.splitlines()
+        cls.shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))
+
+    def content_tree(self, root: Path, edits: dict[str, str] | None = None) -> Path:
+        """The reviewed files, byte-identical unless an edit says otherwise."""
+        tree = root / "content"
+        for path in (*self.PRINTERS, "crates/obsyncd/src/storage/mod.rs"):
+            target = tree / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / path).read_bytes())
+        for path, text in (edits or {}).items():
+            (tree / path).write_text(text, encoding="utf-8")
+        return tree
+
+    def run_check(self, tree: Path, entries: list[dict] | None = None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dispositions.json").write_text(
+                json.dumps(self.shipped if entries is None else entries), encoding="utf-8"
+            )
+            (root / "alerts.json").write_text("[]", encoding="utf-8")
+            (root / "tracked.txt").write_text("\n".join(self.tracked) + "\n", encoding="utf-8")
+            return run_cli(
+                [
+                    "check",
+                    "--dispositions", str(root / "dispositions.json"),
+                    "--alerts", str(root / "alerts.json"),
+                    "--tree", str(ROOT),
+                    "--content-tree", str(tree),
+                    "--tracked", str(root / "tracked.txt"),
+                    "--ref", cd.MAIN_REF,
+                    "--commit", COMMIT,
+                    "--analysis-key", ANALYSIS_KEY,
+                    "--states", "open",
+                ]
+            )
+
+    def test_the_shipped_hashes_are_the_shipped_files(self):
+        for record in self.shipped:
+            if "reviewed_sha256" not in record:
+                continue
+            with self.subTest(path=record["path"]):
+                digest = hashlib.sha256((ROOT / record["path"]).read_bytes()).hexdigest()
+                self.assertEqual(record["reviewed_sha256"], digest)
+
+    def test_the_content_is_verified_even_when_no_alert_touches_the_file(self):
+        # Zero alerts in the listing. The hash is still read, because the guard
+        # is about the reviewed CONTENT, not about today's findings.
+        with tempfile.TemporaryDirectory() as tmp:
+            unchanged = self.content_tree(Path(tmp))
+            code, _, _ = self.run_check(unchanged)
+            self.assertEqual(code, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            edited = self.content_tree(
+                Path(tmp),
+                {self.PRINTERS[0]: (ROOT / self.PRINTERS[0]).read_text(encoding="utf-8") + "\n"},
+            )
+            code, _, err = self.run_check(edited)
+            self.assertEqual(code, 1)
+            self.assertIn("differs from the reviewed content", err)
+            self.assertIn("re-triage https://github.com/snaraj/obsync/issues/23", err)
+
+    def test_a_new_output_inside_the_report_method_is_refused(self):
+        # The exact mutation that survived round 1: one more `println!` INSIDE
+        # `CheckReport::print`, where the location pin still passes.
+        source = (ROOT / self.PRINTERS[0]).read_text(encoding="utf-8")
+        anchor = '        println!("chunks verified: {}", self.chunks);\n'
+        self.assertIn(anchor, source)
+        mutated = source.replace(
+            anchor, anchor + '        println!("harmless: {}", self.bytes);\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err = self.run_check(self.content_tree(Path(tmp), {self.PRINTERS[0]: mutated}))
+            self.assertEqual(code, 1, "a new output in a reviewed printer must force re-triage")
+            self.assertIn(self.PRINTERS[0], err)
+
+    def test_a_missing_reviewed_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = self.content_tree(Path(tmp))
+            (tree / self.PRINTERS[1]).unlink()
+            code, _, err = self.run_check(tree)
+            self.assertEqual(code, 1)
+            self.assertIn("is not readable in the tree being judged", err)
+
+    def test_an_acceptance_over_product_code_must_name_what_was_reviewed(self):
+        product = "crates/obsyncd/src/cli/check.rs"
+        for record, expected in (
+            (entry(path=product, line_is=_ABSENT, rule=LOGGING_RULE), "without naming what was reviewed"),
+            (
+                entry(path=product, line_is=_ABSENT, line_contains="println!", rule=LOGGING_RULE),
+                "without naming what was reviewed",
+            ),
+            (entry(path="crates/**/*.rs", line_is=_ABSENT), "without naming what was reviewed"),
+        ):
+            with self.subTest(record=record.get("path"), scope=sorted(record)):
+                with self.assertRaises(cd.Refusal) as caught:
+                    cd.load_entries([record], self.tracked)
+                self.assertIn(expected, str(caught.exception))
+        # Either binding satisfies it, and a test-scoped entry needs neither.
+        for record in (
+            entry(path=product, line_is=_ABSENT, rule=LOGGING_RULE, reviewed_sha256=UNREAD_SHA256),
+            entry(path=product, line_is="println!(\"chunks failed:   {}\", self.bad_chunks.len());",
+                  rule=LOGGING_RULE),
+            entry(path="plugin/test/**", line_is=_ABSENT, rule=URL_RULE, reason="used in tests"),
+            entry(path="crates/**/*.rs", line_is=_ABSENT, within="test-module",
+                  reason="used in tests"),
+        ):
+            with self.subTest(scope=sorted(record)):
+                cd.load_entries([record], self.tracked)
+
+    def test_a_content_hash_needs_one_file_and_a_real_digest(self):
+        for record, expected in (
+            (
+                entry(path="crates/**/*.rs", line_is=_ABSENT, reviewed_sha256=UNREAD_SHA256),
+                "its path is not one tracked file",
+            ),
+            (entry(reviewed_sha256="ABC"), "not a lowercase hex sha256"),
+            (entry(reviewed_sha256=UNREAD_SHA256.upper()), "not a lowercase hex sha256"),
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaises(cd.Refusal) as caught:
+                    cd.load_entries([record], self.tracked)
+                self.assertIn(expected, str(caught.exception))
 
 
 def flat(script: str) -> str:
@@ -1033,8 +1333,12 @@ class WorkflowWiring(unittest.TestCase):
         self.assertEqual(
             guarded,
             {
+                "List main's dismissed alerts": "github.event_name == 'push'",
                 "List the open alerts on the base branch": "github.event_name == 'pull_request'",
                 "Check out the base branch as a second tree": "github.event_name == 'pull_request'",
+                "Reconcile main's dismissed alerts with this file": (
+                    "github.event_name == 'push'"
+                ),
                 "Refuse any base-branch alert this file stops covering": (
                     "github.event_name == 'pull_request'"
                 ),
@@ -1044,6 +1348,52 @@ class WorkflowWiring(unittest.TestCase):
             },
         )
 
+    def test_the_reconciliation_runs_before_the_check_that_would_catch_it(self):
+        # Order is the guarantee: reopening turns drift into an uncovered open
+        # alert, and only a check that runs AFTERWARDS sees it.
+        order = [
+            self.names.index(name)
+            for name in (
+                "List main's dismissed alerts",
+                "Reconcile main's dismissed alerts with this file",
+                "Refuse any open alert no disposition covers",
+                "Dismiss every covered alert and require main to hold none",
+            )
+        ]
+        self.assertEqual(order, sorted(order))
+        script = flat(self.step("Reconcile main's dismissed alerts with this file")["run"])
+        self.assertIn("python3 -I -B scripts/ci/codeql_dispositions.py reconcile", script)
+        self.assertIn('--dismissed "${RUNNER_TEMP}/dismissed.json"', script)
+        self.assertIn(
+            'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" '
+            "-f state=open",
+            script,
+        )
+        self.assertIn("-f state=dismissed", script)
+        # And it re-reads main's open alerts, so anything reopened above is in
+        # front of the check that follows.
+        self.assertIn(
+            'gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts'
+            '?state=open&ref=refs/heads/main&per_page=100" --jq \'.[]\' | jq -s . '
+            '> "${RUNNER_TEMP}/alerts.json"',
+            script,
+        )
+        self.assertIn("dispositions: reconcile reopened=%d redismissed=%d unchanged=%d", script)
+        listing = flat(self.step("List main's dismissed alerts")["run"])
+        self.assertIn("state=dismissed&ref=refs/heads/main", listing)
+
+    def test_every_judged_alert_is_bound_to_a_commit_and_this_analysis(self):
+        for name, commit in (
+            ("Refuse any open alert no disposition covers", '--commit "${GITHUB_SHA}"'),
+            ("Reconcile main's dismissed alerts with this file", '--commit "${GITHUB_SHA}"'),
+            ("Dismiss every covered alert and require main to hold none", '--commit "${GITHUB_SHA}"'),
+            ("Refuse any base-branch alert this file stops covering", '--commit "${commit}"'),
+        ):
+            with self.subTest(step=name):
+                script = flat(self.step(name)["run"])
+                self.assertIn(commit, script)
+                self.assertIn("--analysis-key .github/workflows/codeql.yml:analyze", script)
+
     def test_a_pull_request_also_lists_the_base_branchs_open_alerts(self):
         # GitHub's pull-request analyses are diff-informed: the merge ref only
         # carries findings inside the changed range, so main's open alerts are
@@ -1052,18 +1402,37 @@ class WorkflowWiring(unittest.TestCase):
         script = flat(self.step("List the open alerts on the base branch")["run"])
         self.assertIn('test -n "${GITHUB_BASE_REF}"', script)
         self.assertIn('ref="refs/heads/${GITHUB_BASE_REF}"', script)
+        # Open AND dismissed: an acceptance the base already relies on is
+        # invisible in an open-only listing, and deleting it would be silent.
+        for state in ("open", "dismissed"):
+            with self.subTest(state=state):
+                self.assertIn(
+                    'gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts'
+                    f'?state={state}&ref=${{ref}}&per_page=100" --jq \'.[]\'',
+                    script,
+                )
+        self.assertIn('| jq -s . > "${RUNNER_TEMP}/alerts-base.json"', script)
+        # And the commit the base's analyses describe, per language, refusing
+        # to proceed when the two legs disagree.
         self.assertIn(
-            'gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts'
-            '?state=open&ref=${ref}&per_page=100" --jq \'.[]\' | jq -s . '
-            '> "${RUNNER_TEMP}/alerts-base.json"',
+            'gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/analyses'
+            '?ref=${ref}&per_page=50"',
             script,
         )
+        self.assertIn("for language in rust javascript-typescript; do", script)
+        self.assertIn("base analyses disagree", script)
+        self.assertIn('printf \'%s\\n\' "${commit}" > "${RUNNER_TEMP}/base-commit.txt"', script)
         self.assertIn("dispositions: DONE step=list-base-alerts", script)
 
     def test_the_base_tree_is_a_worktree_whose_tracked_list_is_its_own(self):
         script = flat(self.step("Check out the base branch as a second tree")["run"])
-        self.assertIn('git fetch --depth=1 origin "${GITHUB_BASE_REF}"', script)
-        self.assertIn('git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD', script)
+        # The COMMIT the analyses ran on, not the branch tip: alert lines are
+        # line numbers in that commit.
+        self.assertIn('commit="$(cat "${RUNNER_TEMP}/base-commit.txt")"', script)
+        self.assertIn('git fetch --depth=1 origin "${commit}"', script)
+        self.assertIn('git worktree add --detach "${RUNNER_TEMP}/base-tree" "${commit}"', script)
+        self.assertNotIn("FETCH_HEAD", script)
+        self.assertNotIn('origin "${GITHUB_BASE_REF}"', script)
         self.assertIn(
             'git -C "${RUNNER_TEMP}/base-tree" ls-files > "${RUNNER_TEMP}/base-tracked.txt"',
             script,
@@ -1156,11 +1525,22 @@ case "${target}" in
     [ -s "${STUB_SARIF_STATUS}.rest" ] && mv "${STUB_SARIF_STATUS}.rest" "${STUB_SARIF_STATUS}"
     rm -f "${STUB_SARIF_STATUS}.rest"
     printf '%s\n' "${status}" ;;
+  *code-scanning/analyses*)
+    cat "${STUB_ANALYSES}" ;;
   *code-scanning/alerts*)
-    if [ "${filter}" != ".[]" ]; then cat "${STUB_REMAINING}"
-    elif [ -n "${STUB_BASE_ALERTS:-}" ] && [ "${target}" != "${target#*ref=refs/heads/}" ]
-    then cat "${STUB_BASE_ALERTS}"
-    else cat "${STUB_ALERTS}"; fi ;;
+    if [ "${filter}" != ".[]" ]; then cat "${STUB_REMAINING}"; exit 0; fi
+    base=0
+    [ "${target}" != "${target#*ref=refs/heads/}" ] && base=1
+    case "${target}" in
+      *state=dismissed*)
+        if [ "${base}" -eq 1 ] && [ -n "${STUB_BASE_DISMISSED:-}" ]
+        then cat "${STUB_BASE_DISMISSED}"
+        else cat "${STUB_DISMISSED}"; fi ;;
+      *)
+        if [ "${base}" -eq 1 ] && [ -n "${STUB_BASE_ALERTS:-}" ]
+        then cat "${STUB_BASE_ALERTS}"
+        else cat "${STUB_ALERTS}"; fi ;;
+    esac ;;
   *) echo "unexpected gh call: $*" >&2; exit 64 ;;
 esac
 """
@@ -1221,10 +1601,38 @@ class StepExecution(unittest.TestCase):
             n for n, line in enumerate(source.splitlines(), 1) if line.startswith("const WRAP_SALT")
         )
 
+    HEAD_SHA = "e" * 40
+    BASE_COMMIT = "d" * 40
+
     def covered_alerts(self) -> list[dict]:
         return [
-            alert(number=81, path="crates/obsyncd/src/storage/mod.rs", line=self.salt_line),
-            alert(number=80, rule=URL_RULE, path="plugin/test/bundle.test.mjs", line=103),
+            alert(
+                number=81,
+                path="crates/obsyncd/src/storage/mod.rs",
+                line=self.salt_line,
+                commit=self.HEAD_SHA,
+            ),
+            alert(
+                number=80,
+                rule=URL_RULE,
+                path="plugin/test/bundle.test.mjs",
+                line=103,
+                commit=self.HEAD_SHA,
+            ),
+        ]
+
+    def analyses(self, commits: tuple[str, str] | None = None) -> list[dict]:
+        rust, javascript = commits or (self.BASE_COMMIT, self.BASE_COMMIT)
+        return [
+            {
+                "id": index,
+                "category": f".github/workflows/codeql.yml:analyze/build-mode:none/language:{lang}",
+                "commit_sha": commit,
+                "ref": cd.MAIN_REF,
+            }
+            for index, (lang, commit) in enumerate(
+                (("rust", rust), ("javascript-typescript", javascript)), start=1
+            )
         ]
 
     @classmethod
@@ -1242,7 +1650,10 @@ class StepExecution(unittest.TestCase):
         alerts: list[dict] | None = None,
         remaining: str = "",
         base_alerts: list[dict] | None = None,
+        base_dismissed: list[dict] | None = None,
         base_dispositions: list[dict] | None = None,
+        dismissed_alerts: list[dict] | None = None,
+        analyses: list[dict] | None = None,
     ) -> dict:
         bins, temp = root / "bin", root / "runner-temp"
         bins.mkdir()
@@ -1257,6 +1668,15 @@ class StepExecution(unittest.TestCase):
         )
         (root / "remaining").write_text(remaining)
         (root / "tracked.txt").write_text(self.tracked())
+        (root / "dismissed.jsonl").write_text(
+            "".join(json.dumps(a) + "\n" for a in (dismissed_alerts or []))
+        )
+        (root / "analyses.jsonl").write_text(
+            "".join(
+                json.dumps(a) + "\n"
+                for a in (self.analyses() if analyses is None else analyses)
+            )
+        )
         # The base branch's tree: the report printer at a different line, and
         # its own copy of the disposition file -- the version this pull request
         # is replacing, which the base check must never read.
@@ -1284,12 +1704,15 @@ class StepExecution(unittest.TestCase):
             "GITHUB_REPOSITORY": "snaraj/obsync",
             "GITHUB_EVENT_NAME": event,
             "GITHUB_BASE_REF": "main" if event == "pull_request" else "",
+            "GITHUB_SHA": self.HEAD_SHA,
             "PR_NUMBER": "23" if event == "pull_request" else "",
             "SARIF_ID_RUST": "sarif-rust",
             "SARIF_ID_JAVASCRIPT_TYPESCRIPT": "sarif-js",
             "STUB_LOG": str(root / "calls.log"),
             "STUB_SARIF_STATUS": str(root / "sarif-status"),
             "STUB_ALERTS": str(root / "alerts.jsonl"),
+            "STUB_DISMISSED": str(root / "dismissed.jsonl"),
+            "STUB_ANALYSES": str(root / "analyses.jsonl"),
             "STUB_REMAINING": str(root / "remaining"),
             "STUB_TRACKED": str(root / "tracked.txt"),
             "STUB_BASE_TRACKED": str(root / "tracked.txt"),
@@ -1300,6 +1723,11 @@ class StepExecution(unittest.TestCase):
                 "".join(json.dumps(a) + "\n" for a in base_alerts)
             )
             environment["STUB_BASE_ALERTS"] = str(root / "alerts-base.jsonl")
+        if base_dismissed is not None:
+            (root / "dismissed-base.jsonl").write_text(
+                "".join(json.dumps(a) + "\n" for a in base_dismissed)
+            )
+            environment["STUB_BASE_DISMISSED"] = str(root / "dismissed-base.jsonl")
         return environment
 
     def run_step(self, name: str, env: dict) -> subprocess.CompletedProcess:
@@ -1327,16 +1755,20 @@ class StepExecution(unittest.TestCase):
     VALIDATE = "Validate the disposition file"
     CHECK = "Refuse any open alert no disposition covers"
     BASE_CHECK = "Refuse any base-branch alert this file stops covering"
+    DISMISSED_LIST = "List main's dismissed alerts"
+    RECONCILE = "Reconcile main's dismissed alerts with this file"
     DISMISS = "Dismiss every covered alert and require main to hold none"
 
-    @staticmethod
-    def base_alert(line: int = 3) -> dict:
+    @classmethod
+    def base_alert(cls, line: int = 3, **overrides: object) -> dict:
         return alert(
             number=40,
             rule=LOGGING_RULE,
             path="crates/obsyncd/src/cli/check.rs",
             line=line,
             ref=cd.MAIN_REF,
+            commit=cls.BASE_COMMIT,
+            **overrides,
         )
 
     def test_the_wait_polls_until_both_analyses_are_indexed(self):
@@ -1416,7 +1848,8 @@ class StepExecution(unittest.TestCase):
             # A product-code logging alert in a file no entry names: exactly
             # the new real finding this gate exists to stop.
             listing = self.covered_alerts() + [
-                alert(number=900, rule=LOGGING_RULE, path="crates/obsyncd/src/log.rs", line=1)
+                alert(number=900, rule=LOGGING_RULE, path="crates/obsyncd/src/log.rs", line=1,
+                      commit=self.HEAD_SHA)
             ]
             env = self.stage(Path(tmp), alerts=listing)
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
@@ -1509,6 +1942,7 @@ class StepExecution(unittest.TestCase):
             path="crates/obsyncd/src/cli/check.rs",
             line=3,
             ref="refs/pull/23/merge",
+            commit=self.HEAD_SHA,
         )
         with tempfile.TemporaryDirectory() as tmp:
             env = self.stage(
@@ -1532,6 +1966,150 @@ class StepExecution(unittest.TestCase):
             )
             self.assertIn("uncovered #40 rust/cleartext-logging", result.stdout)
             self.assertIn("crates/obsyncd/src/cli/check.rs:1", result.stdout)
+
+    def test_a_push_reopens_a_dismissal_no_entry_covers_and_then_the_check_sees_it(self):
+        stray = alert(
+            number=900,
+            rule=LOGGING_RULE,
+            path="crates/obsyncd/src/log.rs",
+            line=1,
+            state="dismissed",
+            commit=self.HEAD_SHA,
+            dismissed_reason="false positive",
+            dismissed_comment="typed into the UI, recorded nowhere",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            # After the reopen, main's open listing carries it -- which is what
+            # the re-list inside the reconcile step is for.
+            env = self.stage(
+                Path(tmp),
+                dismissed_alerts=[stray],
+                alerts=[*self.covered_alerts(), {**stray, "state": "open"}],
+            )
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+            result = self.run_step(self.RECONCILE, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            patches = self.calls(env, "gh api -X PATCH")
+            self.assertEqual(len(patches), 1)
+            self.assertIn("alerts/900 -f state=open", patches[0])
+            self.assertIn("dispositions: reconcile reopened=1 redismissed=0 unchanged=0", result.stdout)
+            # And now the check refuses, because reopening turned the drift
+            # into an uncovered OPEN alert on main.
+            check = self.run_step(self.CHECK, env)
+            self.assertNotEqual(check.returncode, 0, "the reopened alert must fail the run")
+            self.assertIn("uncovered #900", check.stdout)
+
+    def test_a_push_rewrites_a_stored_justification_that_is_not_this_files(self):
+        salt = self.covered_alerts()[0]
+        stale = {
+            **salt,
+            "state": "dismissed",
+            "dismissed_reason": "won't fix",
+            "dismissed_comment": "whatever was typed at the time",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(Path(tmp), dismissed_alerts=[stale])
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+            result = self.run_step(self.RECONCILE, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            patches = self.calls(env, "gh api -X PATCH")
+            self.assertEqual(len(patches), 1)
+            self.assertIn("alerts/81 -f state=dismissed -f dismissed_reason=false positive", patches[0])
+            self.assertIn("Disposition: https://github.com/snaraj/obsync/issues/20", patches[0])
+            self.assertIn(
+                "dispositions: reconcile reopened=0 redismissed=1 unchanged=0", result.stdout
+            )
+
+    def test_a_push_touches_nothing_when_the_record_already_says_what_the_file_says(self):
+        shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))[0]
+        salt = self.covered_alerts()[0]
+        agreed = {
+            **salt,
+            "state": "dismissed",
+            "dismissed_reason": shipped["reason"],
+            "dismissed_comment": f"{shipped['comment']}{cd.DISPOSITION_JOIN}{shipped['disposition']}",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(Path(tmp), dismissed_alerts=[agreed])
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+            result = self.run_step(self.RECONCILE, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
+            self.assertIn(
+                "dispositions: reconcile reopened=0 redismissed=0 unchanged=1", result.stdout
+            )
+
+    def test_the_base_check_sees_a_dismissed_base_alert_this_file_stops_covering(self):
+        # b5: an open-only base listing would miss exactly this -- the
+        # acceptance main already relies on, deleted by the pull request.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp),
+                event="pull_request",
+                alerts=[],
+                base_alerts=[],
+                base_dismissed=[
+                    self.base_alert(
+                        line=1,
+                        state="dismissed",
+                        dismissed_reason="false positive",
+                        dismissed_comment="an acceptance this pull request removes",
+                    )
+                ],
+            )
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                self.assertEqual(self.run_step(name, env).returncode, 0)
+            self.assertEqual(
+                len(json.loads((Path(env["RUNNER_TEMP"]) / "alerts-base.json").read_text())), 1
+            )
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("uncovered #40", result.stdout)
+            self.assertIn("the next push to main would reopen it", result.stdout)
+
+    def test_the_base_listing_refuses_analyses_that_disagree(self):
+        # b7: two legs on different commits means there is no single tree the
+        # base's alert lines belong to.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp),
+                event="pull_request",
+                alerts=[],
+                base_alerts=[],
+                analyses=self.analyses((self.BASE_COMMIT, "c" * 40)),
+            )
+            result = self.run_step(self.BASE_LIST, env)
+            self.assertNotEqual(result.returncode, 0, "disagreeing analyses must stop the job")
+            self.assertIn("base analyses disagree", result.stderr)
+            self.assertFalse((Path(env["RUNNER_TEMP"]) / "base-commit.txt").exists())
+
+    def test_the_base_listing_refuses_a_branch_with_no_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[], analyses=[]
+            )
+            result = self.run_step(self.BASE_LIST, env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("has no CodeQL analysis for rust", result.stderr)
+
+    def test_the_base_tree_is_fetched_at_the_analyses_commit(self):
+        # b6, executed: the git calls name the commit, never the branch.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[self.base_alert()]
+            )
+            self.assertEqual(self.run_step(self.BASE_LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.BASE_TREE, env).returncode, 0)
+            self.assertEqual(
+                self.calls(env, "git fetch"), [f"git fetch --depth=1 origin {self.BASE_COMMIT}"]
+            )
+            self.assertIn(
+                f"git worktree add --detach {env['RUNNER_TEMP']}/base-tree {self.BASE_COMMIT}",
+                self.calls(env, "git worktree"),
+            )
 
     def test_the_base_steps_produce_nothing_on_a_push(self):
         with tempfile.TemporaryDirectory() as tmp:

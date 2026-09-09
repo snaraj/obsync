@@ -10,15 +10,23 @@ advances exactly one patch (AGENTS.md, requirement 10).
   every accepted alert with its rule, its glob, its scope, one of CodeQL's
   three reasons and the issue carrying the reasoning, and a new `dispositions`
   job in `codeql.yml` waits for both analyses to be indexed and then fails any
-  ref that carries an open alert no entry covers — on a pull request that means
-  the changed range AND the base branch, whose alerts a diff-informed
-  pull-request analysis never shows, judged in the base branch's own tree. On a
-  push to `main` the same
-  job dismisses every covered alert through the API with that entry's reason
-  and comment and then requires `main` to hold zero open alerts, so nobody
-  dismisses by hand, nothing is excluded from analysis, and a new real finding
-  blocks the gate and the release chain until it is fixed or dispositioned in
-  a reviewed pull request.
+  ref that carries an alert no entry covers — on a pull request that means the
+  changed range AND the base branch, whose alerts a diff-informed pull-request
+  analysis never shows and whose dismissed alerts count too, judged in the
+  commit the base's analyses ran on. On a push to `main` the job first
+  reconciles the alerts that are already quiet — a dismissal nothing covers is
+  reopened, a stored justification that is not this file's is rewritten — then
+  dismisses every covered open alert and requires `main` to hold zero, so
+  nobody dismisses by hand, nothing is excluded from analysis, and a new real
+  finding blocks the gate and the release chain until it is fixed or
+  dispositioned in a reviewed pull request.
+- An acceptance over product code now names what was reviewed: `line_is` (the
+  exact source line) or `reviewed_sha256` (the file's bytes), verified on every
+  run whether or not an alert touches the file, so an edit to accepted code
+  cannot land without re-triage in the same pull request. Every judged alert
+  must also name the commit it was analysed on and this workflow's analysis
+  key, so a superseded or foreign record cannot supply a line number to a
+  checkout that never produced it.
 
 ## 0.1.5 - 2026-09-09
 
