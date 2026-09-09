@@ -1131,7 +1131,10 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
             ("free", Val::bytes(*free)),
             ("watermark", Val::bytes(*watermark)),
         ],
-        StoreError::JournalFaulted { io } => vec![("io", Val::io_kind(*io))],
+        StoreError::JournalFaulted { io, rollback_io } => vec![
+            ("io", Val::io_kind(*io)),
+            ("rollback_io", Val::io_kind(*rollback_io)),
+        ],
         StoreError::QuotaExceeded { used, quota } => {
             vec![("used", Val::bytes(*used)), ("quota", Val::bytes(*quota))]
         }

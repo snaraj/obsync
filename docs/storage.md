@@ -290,12 +290,16 @@ requires the refusal.
    decision=truncated io=<kind> segment=<n> torn_bytes=<n>` — the error's
    kind, never its message, which can carry a path.
 4. Faulted journal: if that rollback ITSELF fails, at the truncation or at
-   its `fsync`, the journal is faulted. The line says `decision=faulted`,
-   every later append refuses with `journal_faulted` without touching the
-   volume, `/readyz` answers `503 not_ready` with `journal faulted; restart
-   to replay`, and the state clears only at the next start, which replays and
-   truncates the tail as rule 2 describes. Chunk uploads are unaffected: the
-   blob volume is its own record.
+   its `fsync`, the journal is faulted. The line says `decision=faulted` and
+   adds `rollback_io=<kind>`, and the refusal carries both kinds. The second
+   kind is a second fact and the state's actual cause: a truncation refused
+   by a full volume and one refused by a read-only mount both read as
+   `faulted` and need different repairs. From then on every append refuses
+   with `journal_faulted` without touching the volume, `/readyz` answers
+   `503 not_ready` with `journal faulted; restart to replay`, and the state
+   clears only at the next start, which replays and truncates the tail as
+   rule 2 describes. Chunk uploads are unaffected: the blob volume is its
+   own record.
 5. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
    newest valid snapshot and applies later frames.
 6. No write is acknowledged before it is durable. This is not configurable
@@ -345,14 +349,19 @@ values.
 
 The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
-volume is asked. Tracked journal usage is what the journal's segments hold —
-the open segment's durable length plus every other segment's size, kept in
-memory so the append path costs no syscall — and `VolumeStatus` reports the
-same number, so a refusal and the dashboard never disagree about how full the
-volume is. The two volumes have separate refusal codes, `volume_full` and
-`journal_full`, because they are provisioned and filled independently and a
-refusal that did not say which one it measured would send an operator to the
-wrong disk. A journal volume that fills anyway, below the declared capacity,
+volume is asked. Tracked journal usage is everything under the journal root —
+the open segment's durable length plus every other file on the volume: the
+other segments, the index snapshots, the quarantine, and the small fixed
+files. Snapshots are why this is not a segment count: they rest on the same
+volume and reach tens of megabytes for a large vault. The total is measured
+where the set of files changes (the open, a roll, the end of a replay, and
+the prune every snapshot ends in) and held in memory, so the APPEND path,
+which is the one that may not walk a directory, costs no syscall.
+`VolumeStatus` reports the same number, so a refusal and the dashboard never
+disagree about how full the volume is. The two volumes have separate refusal
+codes, `volume_full` and `journal_full`, because they are provisioned and
+filled independently and a refusal that did not say which one it measured
+would send an operator to the wrong disk. A journal volume that fills anyway, below the declared capacity,
 is rule 3 above: the append is refused, rolled back, and never acknowledged.
 
 ## Replication and propagation (design hooks, phased)

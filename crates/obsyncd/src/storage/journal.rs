@@ -109,6 +109,19 @@ pub(crate) struct ReplayReport {
     pub(crate) truncated_bytes: u64,
 }
 
+/// Why a journal is faulted: two kinds, because they are two facts.
+///
+/// `io` is what refused the append; `rollback_io` is what refused the
+/// rollback that would have undone it, and that second one is the state's
+/// actual cause. A truncation refused by a full volume and a truncation
+/// refused by a read-only mount both read as `decision=faulted`, and the
+/// operator's next action is different for each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Faulted {
+    io: io::ErrorKind,
+    rollback_io: io::ErrorKind,
+}
+
 /// The journal volume: segments, snapshots, quarantine.
 pub(crate) struct Journal {
     root: PathBuf,
@@ -117,17 +130,18 @@ pub(crate) struct Journal {
     /// The durable length of the open segment: what the journal believes it
     /// has made durable, which after a failed write is SHORTER than the file.
     segment_len: u64,
-    /// Bytes the segments other than the open one occupy. Measured wherever
-    /// the set of segments changes, so the append path adds one addition and
-    /// no syscall.
-    older_bytes: u64,
+    /// Bytes everything on the journal volume other than the open segment
+    /// occupies: the other segments, the snapshots, the quarantine, and the
+    /// small fixed files. Measured wherever the set of files changes, so the
+    /// append path adds one addition and no syscall.
+    other_bytes: u64,
     /// Declared journal capacity (`OBSYNC_JOURNAL_CAPACITY`).
     capacity: u64,
     /// The refusal threshold for this volume.
     watermark: u64,
     /// Set when a failed append could not be rolled back. Every later append
     /// refuses; a restart replays, truncates the tail, and clears it.
-    faulted: Option<io::ErrorKind>,
+    faulted: Option<Faulted>,
     log: Log,
     #[cfg(test)]
     fault: Mutex<Fault>,
@@ -144,7 +158,7 @@ impl Journal {
             segment: None,
             segment_no: 0,
             segment_len: 0,
-            older_bytes: 0,
+            other_bytes: 0,
             capacity: cfg.journal_capacity,
             watermark: cfg.free_watermark.bytes_for(cfg.journal_capacity),
             faulted: None,
@@ -153,36 +167,43 @@ impl Journal {
             fault: Mutex::new(Fault::None),
         };
         journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
-        journal.measure_segments()?;
+        journal.measure_volume()?;
         Ok(journal)
     }
 
-    /// Bytes the journal's own segments occupy.
+    /// Bytes the journal volume holds.
     ///
-    /// The open segment's DURABLE length plus the size of every other
-    /// segment. This is the number the journal watermark is measured
-    /// against and the number `VolumeStatus` reports, so a refusal and the
-    /// dashboard never disagree about how full the volume is.
+    /// The open segment's DURABLE length plus everything else under the
+    /// root: the other segments, the snapshots, the quarantine and the small
+    /// fixed files. Snapshots are the reason this is not a segment count --
+    /// they rest on the same volume and reach tens of megabytes for a large
+    /// vault. This is the number the journal watermark is measured against
+    /// and the number `VolumeStatus` reports, so a refusal and the dashboard
+    /// never disagree about how full the volume is.
     pub(crate) fn tracked_bytes(&self) -> u64 {
-        self.older_bytes.saturating_add(self.segment_len)
+        self.other_bytes.saturating_add(self.segment_len)
     }
 
     /// The kind of the failure that faulted this journal, if it is faulted.
+    ///
+    /// The APPEND's kind, which is what readiness reports; the rollback's own
+    /// kind reaches the log line and the refusal, where an operator reads it.
     pub(crate) fn faulted(&self) -> Option<io::ErrorKind> {
-        self.faulted
+        self.faulted.map(|f| f.io)
     }
 
-    /// Re-measure the segments the open one does not cover.
-    fn measure_segments(&mut self) -> Result<(), StoreError> {
-        let open = self.segment.is_some().then_some(self.segment_no);
-        let mut older = 0;
-        for number in self.segments()? {
-            if Some(number) == open {
-                continue;
-            }
-            older += fs::metadata(self.segment_path(number))?.len();
-        }
-        self.older_bytes = older;
+    /// Re-measure everything under the journal root except the open segment.
+    ///
+    /// A walk, but of `O(segments + snapshots)` entries rather than of a
+    /// vault, and only where the set of files changes: the open, a roll, the
+    /// end of a replay, and the prune every snapshot ends in. The APPEND path
+    /// is what may not walk, and it does not.
+    fn measure_volume(&mut self) -> Result<(), StoreError> {
+        let open = self
+            .segment
+            .is_some()
+            .then(|| self.segment_path(self.segment_no));
+        self.other_bytes = volume_bytes(&self.root, open.as_deref())?;
         Ok(())
     }
 
@@ -233,8 +254,11 @@ impl Journal {
     /// torn one and replay would truncate at the torn frame, discarding
     /// every write acknowledged after the failure.
     pub(crate) fn append(&mut self, record: &Record) -> Result<(), StoreError> {
-        if let Some(io) = self.faulted {
-            return Err(StoreError::JournalFaulted { io });
+        if let Some(f) = self.faulted {
+            return Err(StoreError::JournalFaulted {
+                io: f.io,
+                rollback_io: f.rollback_io,
+            });
         }
         let payload = record.to_value().to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
@@ -329,32 +353,39 @@ impl Journal {
         // Read off the volume rather than inferred from which phase failed:
         // it is the number an operator would measure.
         let torn = self.on_disk().map_or(0, |len| len.saturating_sub(durable));
-        let decision = match self.rollback(durable) {
+        let (decision, rollback_io) = match self.rollback(durable) {
             // Nothing to restore: the durable length only ever advances after
             // a successful fsync, so a failed append never moved it. The
             // truncation is what puts the VOLUME back where the journal
             // already believes it is.
-            Ok(()) => "truncated",
-            Err(_) => {
+            Ok(()) => ("truncated", None),
+            Err(r) => {
                 // The bytes the failure left are really on the volume and the
                 // volume is really that much fuller, so the accounting says
                 // so: a faulted journal still answers for how full it is.
                 self.segment_len = self.on_disk().unwrap_or(durable);
-                self.faulted = Some(e.kind());
-                "faulted"
+                self.faulted = Some(Faulted {
+                    io: e.kind(),
+                    rollback_io: r.kind(),
+                });
+                ("faulted", Some(r.kind()))
             }
         };
         // One line, and the KIND rather than the message: an I/O message can
         // carry a path (AGENTS.md requirements 6 and 12).
-        self.log.error(
-            "journal_append_failed",
-            &[
-                ("decision", Val::word(decision)),
-                ("io", Val::io(&e)),
-                ("segment", Val::count(u64::from(self.segment_no))),
-                ("torn_bytes", Val::bytes(torn)),
-            ],
-        );
+        let mut fields = vec![
+            ("decision", Val::word(decision)),
+            ("io", Val::io(&e)),
+            ("segment", Val::count(u64::from(self.segment_no))),
+            ("torn_bytes", Val::bytes(torn)),
+        ];
+        // Only on the faulted decision, because only there is there a second
+        // failure to name. On a truncated one the rollback worked, and a
+        // field saying so would be noise on every line an operator greps.
+        if let Some(kind) = rollback_io {
+            fields.push(("rollback_io", Val::io_kind(kind)));
+        }
+        self.log.error("journal_append_failed", &fields);
         StoreError::Io(e)
     }
 
@@ -410,7 +441,7 @@ impl Journal {
         self.segment = Some(file);
         self.segment_no = number;
         fsync_dir(&self.root.join("journal"))?;
-        self.measure_segments()
+        self.measure_volume()
     }
 
     /// Replay every frame after `after` into `apply`.
@@ -456,7 +487,7 @@ impl Journal {
                         report.truncated_bytes = remaining;
                         self.segment = None;
                         self.segment_len = 0;
-                        self.measure_segments()?;
+                        self.measure_volume()?;
                         return Ok(report);
                     }
                 }
@@ -464,7 +495,7 @@ impl Journal {
         }
         self.segment = None;
         self.segment_len = 0;
-        self.measure_segments()?;
+        self.measure_volume()?;
         Ok(report)
     }
 
@@ -516,7 +547,7 @@ impl Journal {
             }
         }
         fsync_dir(&self.root.join("journal"))?;
-        self.measure_segments()
+        self.measure_volume()
     }
 
     /// The sequence of the first frame in a segment.
@@ -693,6 +724,24 @@ fn make_dir(path: &Path) -> Result<(), StoreError> {
         .mode(DIR_MODE)
         .create(path)?;
     Ok(())
+}
+
+/// Bytes every file under `dir` occupies, skipping `except`.
+///
+/// `DirEntry::metadata` does not follow symlinks, so a link counts as the
+/// link and this walk never wanders off the volume it is measuring.
+fn volume_bytes(dir: &Path, except: Option<&Path>) -> Result<u64, StoreError> {
+    let mut total = 0;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            total += volume_bytes(&entry.path(), except)?;
+        } else if except != Some(entry.path().as_path()) {
+            total += meta.len();
+        }
+    }
+    Ok(total)
 }
 
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
@@ -1382,6 +1431,25 @@ mod tests {
         total
     }
 
+    /// Every byte the journal ROOT holds, walked independently of the code
+    /// under test: this is the number the accounting must equal.
+    fn volume_total(dir: &TempDir) -> u64 {
+        fn walk(path: &Path) -> u64 {
+            let mut total = 0;
+            for entry in fs::read_dir(path).expect("journal root") {
+                let entry = entry.expect("entry");
+                let meta = entry.metadata().expect("metadata");
+                if meta.is_dir() {
+                    total += walk(&entry.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+            total
+        }
+        walk(&dir.path().join("journal/v1"))
+    }
+
     fn seqs(records: &[Record]) -> Vec<Seq> {
         records.iter().map(|r| r.seq).collect()
     }
@@ -1517,8 +1585,13 @@ mod tests {
                 .append(&record(4, account_frame()))
                 .expect_err("a faulted journal takes nothing");
             match err {
-                StoreError::JournalFaulted { io } => {
-                    assert_eq!(io, io::ErrorKind::StorageFull, "{case}");
+                StoreError::JournalFaulted { io, rollback_io } => {
+                    assert_eq!(io, io::ErrorKind::StorageFull, "{case}: the append");
+                    assert_eq!(
+                        rollback_io,
+                        io::ErrorKind::PermissionDenied,
+                        "{case}: and the rollback, which is a different failure"
+                    );
                 }
                 other => panic!("{case}: expected journal_faulted, got {other}"),
             }
@@ -1529,7 +1602,7 @@ mod tests {
             );
             assert_eq!(
                 journal.tracked_bytes(),
-                on_disk,
+                volume_total(&dir),
                 "{case}: a faulted journal still answers for how full the volume is"
             );
 
@@ -1599,13 +1672,14 @@ mod tests {
 
     #[test]
     fn a_failed_append_logs_one_line_naming_the_decision_and_the_kind() {
-        for (fault, decision) in [
+        for (fault, decision, rollback_io) in [
             (
                 Fault::JournalAppendErrno {
                     code: ENOSPC,
                     at: AppendPhase::Write,
                 },
                 "truncated",
+                None,
             ),
             (
                 Fault::JournalRecoveryFails {
@@ -1614,6 +1688,16 @@ mod tests {
                     rollback: RollbackPhase::Truncate,
                 },
                 "faulted",
+                Some("rollback_io=PermissionDenied"),
+            ),
+            (
+                Fault::JournalRecoveryFails {
+                    code: ENOSPC,
+                    at: AppendPhase::Sync,
+                    rollback: RollbackPhase::Sync,
+                },
+                "faulted",
+                Some("rollback_io=PermissionDenied"),
             ),
         ] {
             let dir = TempDir::new("journal-append-log");
@@ -1632,6 +1716,16 @@ mod tests {
             let line = lines[0];
             assert!(line.contains(&format!("decision={decision}")), "{line}");
             assert!(line.contains("io=StorageFull"), "{line}");
+            // The rollback's OWN failure, on the decision it explains and on
+            // no other: `decision=faulted` alone cannot say whether the
+            // truncation or its fsync refused, nor with what.
+            match rollback_io {
+                Some(field) => assert!(line.contains(field), "{line}"),
+                None => assert!(
+                    !line.contains("rollback_io="),
+                    "a rollback that worked names no failure: {line}"
+                ),
+            }
             assert!(line.contains("segment=1"), "{line}");
             assert!(
                 !line.contains("torn_bytes=0"),
@@ -1682,8 +1776,73 @@ mod tests {
         assert!(journal.tracked_bytes() > 0);
         assert_eq!(
             journal.tracked_bytes(),
-            segment_bytes(&dir),
-            "the accounting is what the segments hold"
+            volume_total(&dir),
+            "the accounting is what the volume holds"
+        );
+    }
+
+    #[test]
+    fn the_accounting_counts_the_snapshots_on_the_same_volume() {
+        let dir = TempDir::new("journal-snapshot-accounting");
+        let mut journal = open_journal(&dir);
+        journal.append(&record(1, account_frame())).expect("append");
+        let segments_only = journal.tracked_bytes();
+
+        let mut index = Index::default();
+        index.apply(&record(1, account_frame()));
+        journal.snapshot(&index).expect("snapshot");
+
+        // A snapshot rests on the journal volume and takes journal space, so
+        // the number the watermark refuses on has to see it. Counting only
+        // the segments would leave this equal to `segments_only`.
+        assert!(
+            journal.tracked_bytes() > segments_only,
+            "the snapshot's bytes are counted: {} is not more than {segments_only}",
+            journal.tracked_bytes()
+        );
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "and the total is the volume's own"
+        );
+        assert!(
+            volume_total(&dir) > segment_bytes(&dir),
+            "the volume really does hold more than its segments"
+        );
+    }
+
+    #[test]
+    fn a_restart_counts_the_segment_it_reopens_exactly_once() {
+        let dir = TempDir::new("journal-reopen-accounting");
+        let mut journal = open_journal(&dir);
+        journal.append(&record(1, account_frame())).expect("append");
+        journal.append(&record(2, account_frame())).expect("append");
+        drop(journal);
+
+        // The open leaves no segment open, so the measure counts every
+        // segment; the first append then REOPENS the newest one through
+        // `roll`, which must stop counting it as one of the others. A replay
+        // in between is the same transition a second time.
+        let mut reopened = open_journal(&dir);
+        assert_eq!(
+            reopened.tracked_bytes(),
+            volume_total(&dir),
+            "at the open, with no segment open"
+        );
+        let (seen, _) = replay_all(&mut reopened);
+        assert_eq!(seqs(&seen), vec![Seq(1), Seq(2)]);
+        assert_eq!(
+            reopened.tracked_bytes(),
+            volume_total(&dir),
+            "at the end of a replay"
+        );
+        reopened
+            .append(&record(3, account_frame()))
+            .expect("append");
+        assert_eq!(
+            reopened.tracked_bytes(),
+            volume_total(&dir),
+            "after the append that reopened the segment: counted once, not twice"
         );
     }
 

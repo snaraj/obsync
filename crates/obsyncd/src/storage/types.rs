@@ -413,9 +413,14 @@ pub enum StoreError {
     /// segment clean failed too, so the segment holds bytes no frame owns.
     /// Nothing more may be appended until a restart replays and truncates.
     JournalFaulted {
-        /// The kind of the failure that put the journal here. The error
-        /// itself went to the caller of the append that failed.
+        /// The kind of the failure that refused the append. The error itself
+        /// went to the caller of the append that failed.
         io: io::ErrorKind,
+        /// The kind of the failure that refused the ROLLBACK, which is what
+        /// made the state unrecoverable. A full volume and a read-only mount
+        /// both leave the journal faulted and need different repairs, so the
+        /// two kinds are two fields.
+        rollback_io: io::ErrorKind,
     },
     /// The account quota is exhausted.
     QuotaExceeded {
@@ -618,6 +623,7 @@ mod tests {
         // kind it remembers reaches the log line, never the message.
         let err = StoreError::JournalFaulted {
             io: io::ErrorKind::StorageFull,
+            rollback_io: io::ErrorKind::PermissionDenied,
         };
         assert_eq!(err.to_string(), "journal faulted: restart to replay");
         assert_eq!(err.code(), "journal_faulted");
