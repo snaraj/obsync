@@ -15,8 +15,8 @@ use obsync_core::http::Request;
 use obsync_core::{ct, hmac, sha256};
 
 use crate::log::{Log, Val};
-use crate::storage::StoreError;
 use crate::storage::types::{DeviceRecord, DeviceState, SeenEvent, SeenKind};
+use crate::storage::{StoreError, error_fields};
 use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
@@ -451,13 +451,12 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
         country: client.country.clone(),
     };
     if let Err(e) = app.store.record_seen(id, event) {
-        app.log.warn(
-            "seen_event_dropped",
-            &[
-                ("kind", Val::word(kind.as_word())),
-                ("decision", Val::word(e.code())),
-            ],
-        );
+        let mut fields = vec![
+            ("kind", Val::word(kind.as_word())),
+            ("decision", Val::word(e.code())),
+        ];
+        fields.extend(error_fields(&e));
+        app.log.warn("seen_event_dropped", &fields);
     }
 }
 

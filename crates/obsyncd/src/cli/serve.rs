@@ -21,7 +21,9 @@ use crate::config::Config;
 use crate::dashboard::Dashboard;
 use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
-use crate::storage::{PathClass, Posture, Store, StoreError, load_or_create_server_key};
+use crate::storage::{
+    PathClass, Posture, Store, StoreError, error_fields, load_or_create_server_key,
+};
 use crate::types::UnixMs;
 use crate::{api::rand, signal};
 
@@ -144,21 +146,29 @@ pub fn run() -> i32 {
     }
     match app.store.snapshot() {
         Ok(()) => log.info("shutdown_snapshot", &[("decision", Val::word("ok"))]),
-        Err(e) => log.error("shutdown_snapshot", &[("decision", Val::word(e.code()))]),
+        Err(e) => {
+            let mut fields = vec![("decision", Val::word(e.code()))];
+            fields.extend(error_fields(&e));
+            log.error("shutdown_snapshot", &fields);
+        }
     }
     log.info("serve_stop", &[("decision", Val::word("clean"))]);
     0
 }
 
 /// Log a fatal storage refusal by its code and exit non-zero.
+///
+/// The refusal's own numbers come from [`error_fields`], so a start that dies
+/// on I/O names the `io::ErrorKind` it died on: a full volume, a wrong owner
+/// and a missing mount printed the identical line before, and telling them
+/// apart cost a probe container (issue #19).
 fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
-    log.error(
-        event,
-        &[
-            ("decision", Val::word("exit")),
-            ("refusal", Val::word(e.code())),
-        ],
-    );
+    let mut fields = vec![
+        ("decision", Val::word("exit")),
+        ("refusal", Val::word(e.code())),
+    ];
+    fields.extend(error_fields(e));
+    log.error(event, &fields);
     1
 }
 
@@ -221,13 +231,12 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
             |_| false,
             |app| {
                 if let Err(e) = app.store.snapshot() {
-                    app.log.error(
-                        "snapshot_failed",
-                        &[
-                            ("decision", Val::word("retry_next_period")),
-                            ("refusal", Val::word(e.code())),
-                        ],
-                    );
+                    let mut fields = vec![
+                        ("decision", Val::word("retry_next_period")),
+                        ("refusal", Val::word(e.code())),
+                    ];
+                    fields.extend(error_fields(&e));
+                    app.log.error("snapshot_failed", &fields);
                 }
             },
         ),
@@ -374,6 +383,7 @@ fn setup_token(
 mod tests {
     use super::*;
     use std::fs;
+    use std::io;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
@@ -522,6 +532,61 @@ mod tests {
             "{}",
             log.captured()
         );
+    }
+
+    /// A start that dies on I/O states WHICH I/O, and still no location.
+    ///
+    /// Every real cause arrives carrying a path in its message -- a full
+    /// volume, a mount owned by somebody else, a mount that is not there --
+    /// and `refusal=io_error` alone cannot tell them apart, which is what
+    /// issue #19 paid a probe container to learn. The kind is a closed enum,
+    /// so naming it costs the line nothing (requirement 6, requirement 12).
+    #[test]
+    fn a_fatal_start_names_the_io_kind_and_never_the_path() {
+        let log = Log::buffered(LogLevel::Error);
+        let refusal = StoreError::from(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "/data/journal/v1/sentinel-name",
+        ));
+        assert_eq!(
+            fatal(&log, "posture_failed", &refusal),
+            1,
+            "a fatal start exits non-zero"
+        );
+
+        let captured = log.captured();
+        assert_eq!(
+            captured.lines().count(),
+            1,
+            "one line per decision: {captured}"
+        );
+        for field in [
+            "event=posture_failed",
+            "decision=exit",
+            "refusal=io_error",
+            "io=PermissionDenied",
+        ] {
+            assert!(captured.contains(field), "{field} missing: {captured}");
+        }
+        for leak in ["/data", "journal/v1", "v1/sentinel-name"] {
+            assert!(
+                !captured.contains(leak),
+                "{leak} reached the line: {captured}"
+            );
+        }
+    }
+
+    /// And a refusal that is not I/O gains no `io=` field: the kind is a fact
+    /// about an I/O error, and a line that carried one for a lock refusal
+    /// would be stating something nobody measured.
+    #[test]
+    fn a_fatal_start_that_is_not_io_carries_no_kind() {
+        let log = Log::buffered(LogLevel::Error);
+        assert_eq!(fatal(&log, "store_open_failed", &StoreError::Locked), 1);
+
+        let captured = log.captured();
+        assert!(captured.contains("refusal=journal_locked"), "{captured}");
+        assert!(!captured.contains(" io="), "{captured}");
     }
 
     #[test]

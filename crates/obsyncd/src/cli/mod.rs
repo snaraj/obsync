@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::log::{Log, Val};
-use crate::storage::StoreError;
+use crate::storage::{StoreError, error_fields};
 use crate::types::DomainId;
 
 /// What `obsyncd help` prints, on standard error.
@@ -85,10 +85,9 @@ fn report<T: Report>(outcome: Result<T, StoreError>, job: &'static str, log: &Lo
             0
         }
         Err(e) => {
-            log.error(
-                "cli_failed",
-                &[("job", Val::word(job)), ("decision", Val::word(e.code()))],
-            );
+            let mut fields = vec![("job", Val::word(job)), ("decision", Val::word(e.code()))];
+            fields.extend(error_fields(&e));
+            log.error("cli_failed", &fields);
             eprintln!("obsyncd {job}: {e}");
             1
         }
@@ -203,9 +202,51 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+
+    use crate::log::LogLevel;
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// `check` and `export` refuse through the same helper, so the one line
+    /// an operator gets off a failed subcommand names the I/O kind too, and
+    /// still no path (requirement 6, requirement 12; issue #19).
+    #[test]
+    fn a_refused_subcommand_names_the_io_kind_and_never_the_path() {
+        let log = Log::buffered(LogLevel::Error);
+        let outcome: Result<check::CheckReport, StoreError> =
+            Err(StoreError::from(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "/data/journal/v1/sentinel-name",
+            )));
+        assert_eq!(
+            report(outcome, "check", &log),
+            1,
+            "a refusal exits non-zero"
+        );
+
+        let captured = log.captured();
+        assert_eq!(
+            captured.lines().count(),
+            1,
+            "one line per decision: {captured}"
+        );
+        for field in [
+            "event=cli_failed",
+            "job=check",
+            "decision=io_error",
+            "io=PermissionDenied",
+        ] {
+            assert!(captured.contains(field), "{field} missing: {captured}");
+        }
+        for leak in ["/data", "journal/v1", "v1/sentinel-name"] {
+            assert!(
+                !captured.contains(leak),
+                "{leak} reached the line: {captured}"
+            );
+        }
     }
 
     #[test]

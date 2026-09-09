@@ -1622,6 +1622,36 @@ fn a_restored_tree_takes_one_start_to_reach_the_mode_every_class_requires() {
     );
 }
 
+/// A collection that cannot journal its plan states which I/O stopped it.
+///
+/// The background threads log and carry on, so this line is the whole account
+/// an operator ever gets of a failed collection (requirement 12). It named
+/// `io_error` and no more until issue #19: a volume that filled and a volume
+/// the process may not write printed the same six words.
+#[test]
+fn a_collection_that_cannot_journal_names_the_io_kind_that_stopped_it() {
+    let dir = TempDir::new("store-gc-io-kind");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&cfg, [7u8; 32], log.clone());
+    store.setup("sentinel account").expect("setup runs once");
+    store.set_fault(Fault::JournalMidAppend);
+
+    let summary = store.gc_run(UnixMs::now());
+    assert_eq!(
+        summary.chunks_collected, 0,
+        "a refused plan collects nothing"
+    );
+
+    let captured = log.captured();
+    let line = captured
+        .lines()
+        .find(|line| line.contains("event=gc_failed"))
+        .unwrap_or_else(|| panic!("no gc_failed line: {captured}"));
+    assert!(line.contains("decision=io_error"), "{line}");
+    assert!(line.contains("io=Interrupted"), "{line}");
+}
+
 /// Widen every directory and file under a tree, the way a restore that does
 /// not carry modes leaves one.
 fn widen(root: &std::path::Path) {
