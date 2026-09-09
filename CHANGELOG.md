@@ -23,7 +23,10 @@ advances exactly one patch (AGENTS.md, requirement 10).
   refused as superseded or foreign, and the ref and analysis-key bindings now
   hold in every state. `fixed_at` can be read at face value because the job
   waits for `processing_status: complete` on both analyses before it lists
-  anything.
+  anything, and on a pull request the base listing now requires the analysis
+  record it selects per language to report an empty `error` — agreement on a
+  commit is not evidence that the analysis of that commit succeeded, and there
+  is no fallback to an older healthy record.
 
 ## 0.1.7 - Unreleased
 

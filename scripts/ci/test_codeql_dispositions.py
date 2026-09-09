@@ -1984,17 +1984,33 @@ class StepExecution(unittest.TestCase):
             ),
         ]
 
-    def analyses(self, commits: tuple[str, str] | None = None) -> list[dict]:
+    def analyses(
+        self,
+        commits: tuple[str, str] | None = None,
+        errors: tuple[str, str] = ("", ""),
+    ) -> list[dict]:
+        """The base's analysis records, one per language category.
+
+        `error` is a required string in GitHub's analysis schema, empty on a
+        successful analysis, and separate from `warning`. The base check's
+        completeness evidence is these records, so the step has to read it.
+        """
         rust, javascript = commits or (self.BASE_COMMIT, self.BASE_COMMIT)
         return [
             {
                 "id": index,
                 "category": f".github/workflows/codeql.yml:analyze/build-mode:none/language:{lang}",
                 "commit_sha": commit,
+                "error": error,
+                "warning": "",
                 "ref": cd.MAIN_REF,
             }
-            for index, (lang, commit) in enumerate(
-                (("rust", rust), ("javascript-typescript", javascript)), start=1
+            for index, (lang, commit, error) in enumerate(
+                (
+                    ("rust", rust, errors[0]),
+                    ("javascript-typescript", javascript, errors[1]),
+                ),
+                start=1,
             )
         ]
 
@@ -2668,6 +2684,120 @@ class StepExecution(unittest.TestCase):
             result = self.run_step(self.BASE_LIST, env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("has no CodeQL analysis for rust", result.stderr)
+
+    def stale_base_alert(self) -> dict:
+        """A base dismissal the new exemption would skip -- stamped, older instance."""
+        return alert(
+            number=40,
+            rule=LOGGING_RULE,
+            path="crates/obsyncd/src/cli/check.rs",
+            line=1,
+            ref=cd.MAIN_REF,
+            state="dismissed",
+            commit=PREVIOUS_COMMIT,
+            fixed_at=FIXED_AT,
+            dismissed_reason="false positive",
+            dismissed_comment="written before the code moved",
+        )
+
+    def test_the_base_listing_refuses_an_analysis_that_reports_an_error(self):
+        # The new historical exemption rests on the selected base analysis
+        # being the analysis OF the commit being judged. A record that agrees
+        # with the other leg on a SHA and still carries a non-empty `error`
+        # establishes nothing, and skipping a stamped record on that evidence
+        # is exactly what the old predicate refused to do. Both legs are
+        # checked, and a stamped dismissal is present so the run would have
+        # something to skip.
+        for language, errors in (
+            ("rust", ("sentinel analysis failed", "")),
+            ("javascript-typescript", ("", "sentinel analysis failed")),
+        ):
+            with self.subTest(language=language):
+                with tempfile.TemporaryDirectory() as tmp:
+                    env = self.stage(
+                        Path(tmp),
+                        event="pull_request",
+                        alerts=[],
+                        base_alerts=[],
+                        base_dismissed=[self.stale_base_alert()],
+                        analyses=self.analyses(errors=errors),
+                    )
+                    result = self.run_step(self.BASE_LIST, env)
+                    self.assertNotEqual(result.returncode, 0, "an errored analysis must stop the job")
+                    self.assertIn(
+                        f"DENY base analysis for {language} at {self.BASE_COMMIT} "
+                        "reports an error: sentinel analysis failed",
+                        result.stderr,
+                    )
+                    self.assertIn("wait for a successful base CodeQL run", result.stderr)
+                    # Nothing the later steps read was produced, so under the
+                    # job's `set -e` the base tree is never checked out and the
+                    # base check never runs. Executed, not asserted by hand:
+                    temp = Path(env["RUNNER_TEMP"])
+                    self.assertFalse((temp / "base-commit.txt").exists())
+                    self.assertFalse((temp / "alerts-base.json").exists())
+                    self.assertNotEqual(self.run_step(self.BASE_TREE, env).returncode, 0)
+                    self.assertNotEqual(self.run_step(self.BASE_CHECK, env).returncode, 0)
+
+    def test_the_base_listing_refuses_a_malformed_analysis_record(self):
+        # `error` and `commit_sha` are required strings. A record missing
+        # either is not evidence of anything, and guessing is how a stale
+        # location gets judged.
+        for description, mutate, expected in (
+            (
+                "error missing",
+                lambda record: record.pop("error"),
+                "malformed (error is missing or not a string)",
+            ),
+            (
+                "error not a string",
+                lambda record: record.update({"error": 0}),
+                "malformed (error is missing or not a string)",
+            ),
+            (
+                "commit_sha not a string",
+                lambda record: record.update({"commit_sha": 12345}),
+                "malformed (commit_sha is not a non-empty string)",
+            ),
+        ):
+            with self.subTest(record=description):
+                records = self.analyses()
+                mutate(records[0])
+                with tempfile.TemporaryDirectory() as tmp:
+                    env = self.stage(
+                        Path(tmp),
+                        event="pull_request",
+                        alerts=[],
+                        base_alerts=[],
+                        base_dismissed=[self.stale_base_alert()],
+                        analyses=records,
+                    )
+                    result = self.run_step(self.BASE_LIST, env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"DENY base analysis record for rust is {expected}", result.stderr)
+                    self.assertFalse((Path(env["RUNNER_TEMP"]) / "base-commit.txt").exists())
+
+    def test_a_healthy_base_analysis_lets_the_base_check_count_the_stale_one(self):
+        # The positive control the two negatives are measured against: the same
+        # stamped dismissal, both legs reporting no error on one commit, all
+        # four steps run, and the record is counted rather than judged.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp),
+                event="pull_request",
+                alerts=[],
+                base_alerts=[],
+                base_dismissed=[self.stale_base_alert()],
+            )
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                result = self.run_step(name, env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"stale #40 {LOGGING_RULE}", result.stdout)
+            self.assertIn(f"fixed_at={FIXED_AT} instance on {PREVIOUS_COMMIT}", result.stdout)
+            self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", result.stdout)
+            self.assertIn("decision=pass", result.stdout)
 
     def test_the_base_tree_is_fetched_at_the_analyses_commit(self):
         # b6, executed: the git calls name the commit, never the branch.

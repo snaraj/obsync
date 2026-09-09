@@ -254,7 +254,10 @@ workflow's analysis, with one exemption: a DISMISSED alert GitHub has stamped
 `fixed_at`, on this ref and from this analysis, is no longer detected, so its
 instance names the last commit that saw it by construction — it is skipped,
 counted and named, never judged. An unstamped record on another commit, and an
-OPEN alert on another commit, stay refused as superseded or foreign.
+OPEN alert on another commit, stay refused as superseded or foreign. That
+exemption rests on the analysis being a successful one, so the base listing
+refuses an analysis record reporting a non-empty `error`, or missing the fields
+that would say, and never falls back to an older healthy record.
 Nothing is excluded from analysis: no `query-filters`, no
 `paths-ignore`, no `config-file`. Dismissing an alert by hand — in the UI or
 through the API — is forbidden for everyone, the owner included, because a hand
