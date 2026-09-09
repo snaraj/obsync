@@ -29,6 +29,8 @@ import {
   routes,
   sparklinePath,
   versionsPerHour,
+  volumeIsLow,
+  volumeNote,
 } from '../lib.js';
 
 const KiB = 1024;
@@ -293,6 +295,49 @@ const FRESH = {
   policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
   revoked: false,
 };
+
+test('volumeNote: an ordinary volume states the threshold it refuses below', () => {
+  const note = volumeNote({ bytes_free: 79 * GiB, watermark_bytes: 12.5 * GiB });
+  assert.equal(note, 'Writes are refused below 12.5 GiB free.');
+});
+
+test('volumeNote: a volume at its watermark says writes are being refused', () => {
+  const note = volumeNote({ bytes_free: 1 * GiB, watermark_bytes: 2 * GiB });
+  assert.match(note, /^Below the watermark: writes are refused with 507/);
+});
+
+test('volumeNote: an unverified usage figure is never dressed up as a threshold', () => {
+  // The stale state wins over both of the others. The server is refusing
+  // writes because it cannot trust this number, so a page that printed the
+  // ordinary sentence would claim a comparison the server itself will not
+  // make -- and it would do so most convincingly when the figure happens to
+  // look comfortable.
+  const roomy = volumeNote({
+    bytes_free: 79 * GiB,
+    watermark_bytes: 12.5 * GiB,
+    usage_unverified: true,
+  });
+  assert.match(roomy, /could not be re-measured/);
+  assert.match(roomy, /refused until a survey succeeds/);
+  assert.doesNotMatch(roomy, /Writes are refused below/);
+
+  const low = volumeNote({ bytes_free: 1 * GiB, watermark_bytes: 2 * GiB, usage_unverified: true });
+  assert.equal(low, roomy, 'the reason is the same whichever way the figure reads');
+});
+
+test('volumeNote: a missing watermark is not a full disk, and not a crash', () => {
+  assert.equal(volumeNote({}), 'Writes are refused below the free-space watermark.');
+  assert.equal(volumeNote(null), 'Writes are refused below the free-space watermark.');
+});
+
+test('volumeIsLow: absent numbers read as not low, and equality counts as low', () => {
+  assert.equal(volumeIsLow({ bytes_free: 3, watermark_bytes: 2 }), false);
+  assert.equal(volumeIsLow({ bytes_free: 2, watermark_bytes: 2 }), true);
+  assert.equal(volumeIsLow({ bytes_free: 1, watermark_bytes: 2 }), true);
+  assert.equal(volumeIsLow({ watermark_bytes: 2 }), false, 'no figure is not a full disk');
+  assert.equal(volumeIsLow({ bytes_free: 1 }), false);
+  assert.equal(volumeIsLow(undefined), false);
+});
 
 test('buildDeviceRows: a freshly paired device renders its nulls, not "undefined"', () => {
   const [row] = buildDeviceRows([FRESH]);

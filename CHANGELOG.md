@@ -19,6 +19,19 @@ advances exactly one patch (AGENTS.md, requirement 10).
   number, and the image smoke gained a ninth property that exhausts a real
   blob volume and requires the server's `io=StorageFull` account, its 503,
   and its recovery when the space comes back.
+- A journal accounting survey that is itself refused is now recorded as a
+  fact of its own rather than dropped: the tracked total is marked unverified,
+  a survey publishes both of its halves or neither, and while it stands the
+  server is fail-closed — an append retries the survey once and otherwise
+  refuses with `503 journal_unverified` having written nothing, so the
+  watermark is never decided against a figure nothing has re-read. `/readyz`
+  retries the survey too and answers `503 not_ready` with the kind that
+  refused it, so a volume an operator has fixed comes back on the next probe
+  with no write in between; `VolumeStatus` gained `usage_unverified` so the
+  dashboard shows the figure as the last one read successfully. A faulted
+  journal stays faulted however well the volume measures: that state is about
+  the segment's contents and still clears only at a restart. The original
+  operation error is unchanged and still what its caller gets.
 - The `dispositions` reconciliation rewrites a stored justification with two
   writes, `state=open` then `state=dismissed`: GitHub refuses a `dismissed`
   write to an already-dismissed alert, which stopped the first live run on

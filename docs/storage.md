@@ -402,6 +402,42 @@ them and see the volume as emptier than it is. Serialization by construction
 is half of that; the other half is a test that the guard is really held while
 the file moves, which is what the hook inside the move measures.
 
+### When the survey itself fails
+
+An accounted residue is only as good as the walk that measured it, and a walk
+can be refused. A survey that fails is a DIFFERENT fact from a survey that
+succeeded, and the journal records it as one: `unverified` holds the
+`io::ErrorKind` that refused the walk, set on failure and cleared only by a
+COMPLETE later one. Nothing partial is ever published — the two walks the
+survey makes are stored together or not at all, because one fresh number
+beside one stale one is a total that was never true of the volume at any
+instant.
+
+While it is set the tracked total is known to be stale, so admission is
+fail-closed. The next append retries the survey once: if that succeeds, the
+state clears and the watermark is applied to the total it just read; if it
+fails, the frame is refused with `503 journal_unverified` and nothing reaches
+the volume. Readiness retries it too, which is what makes the recovery visible
+without a write: `/readyz` answers `503 not_ready` with `journal usage
+unverified; survey failed: <kind>` while it stands, and `200` on the first
+probe after the volume can be walked again. The verdict cache bounds how often
+an unauthenticated prober can make it walk. `VolumeStatus` carries
+`usage_unverified` beside `bytes_used`, so a dashboard shows the figure as the
+last one read successfully rather than as a current one.
+
+Two states, and the distinction matters to an operator: `journal_faulted` is
+about the segment's CONTENTS — bytes no frame owns — and clears only at a
+restart that replays and truncates; `journal_unverified` is about the
+ACCOUNTING and clears the moment a walk succeeds. A journal that is both stays
+faulted: no survey can speak to a torn tail. Each transition says so once,
+`event=journal_survey_failed io=<kind> at=<where>` and
+`event=journal_survey_recovered by=<where>`, and never on the retries in
+between.
+
+The original operation error is still what its caller gets, in every case
+above. The accounting is a consequence of the failure, never a replacement for
+reporting it.
+
 ## Replication and propagation (design hooks, phased)
 
 - **Mirrors (v0.1):** every chunk write goes to the primary and each mirror

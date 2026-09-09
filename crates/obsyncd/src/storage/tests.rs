@@ -1405,6 +1405,114 @@ fn journal_used(store: &Store) -> u64 {
 }
 
 #[test]
+fn a_journal_whose_usage_cannot_be_re_read_refuses_writes_and_says_so() {
+    // The reviewer's double failure at the surface an operator sees. When the
+    // survey that follows a failed snapshot ALSO fails, `bytes_used` is the
+    // last figure that was read successfully -- so the dashboard says so
+    // beside it, and the server refuses writes rather than deciding the
+    // watermark against a number nothing has re-read.
+    let dir = TempDir::new("store-usage-unverified");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let setup = {
+        let store = open_with(&cfg, [7u8; 32], log.clone());
+        let account = store.setup("sentinel account").expect("setup runs once");
+        let device = store
+            .create_device(NewDevice {
+                account_id: account,
+                name: "sentinel device".to_string(),
+                platform: "linux".to_string(),
+                app_version: "0.1.0".to_string(),
+                secret: [3u8; 32],
+                state: DeviceState::Active,
+            })
+            .expect("device pairs")
+            .device_id;
+        Setup {
+            store,
+            account,
+            device,
+        }
+    };
+    let stale = journal_used(&setup.store);
+    assert!(!unverified_flag(&setup.store), "verified to begin with");
+
+    // A directory where the snapshot's destination belongs refuses the
+    // rename; a FILE where the quarantine directory belongs then refuses the
+    // survey that would account for the temporary the refused rename leaves
+    // behind. Neither fixture is a permission: the in-image test stage runs
+    // as root, and root walks a directory whose mode forbids it.
+    let index_dir = cfg.journal_dir.join("v1/index");
+    let seq = setup.store.head_seq();
+    fs::create_dir_all(index_dir.join(format!("{seq}.snap"))).expect("block the rename");
+    let quarantine = cfg.journal_dir.join("v1/quarantine");
+    fs::write(&quarantine, b"not a directory\n").expect("block the survey");
+    let err = setup.store.snapshot().expect_err("the snapshot fails");
+    assert!(
+        matches!(err, StoreError::Io(_)),
+        "the original error is what the caller gets, got {err}"
+    );
+
+    assert_eq!(
+        setup.store.journal_usage_unverified(),
+        Some(std::io::ErrorKind::NotADirectory),
+        "the failed survey is remembered as its own fact"
+    );
+    assert!(
+        unverified_flag(&setup.store),
+        "and the dashboard qualifies the figure it is showing"
+    );
+    assert_eq!(
+        journal_used(&setup.store),
+        stale,
+        "which is the last one that was read successfully"
+    );
+    let refused = setup
+        .store
+        .update_device(&setup.device, Some("after".to_string()), None, None)
+        .expect_err("admission is closed while the usage is unverified");
+    assert_eq!(refused.code(), "journal_unverified", "{refused}");
+
+    // The operator fixes the volume. No write is needed to recover: the
+    // readiness path re-surveys, and after it the figure is current again.
+    fs::remove_file(&quarantine).expect("free the name");
+    setup
+        .store
+        .verify_journal_usage()
+        .expect("the survey answers now");
+    assert_eq!(setup.store.journal_usage_unverified(), None);
+    assert!(
+        !unverified_flag(&setup.store),
+        "the dashboard stops warning"
+    );
+    setup
+        .store
+        .update_device(&setup.device, Some("after".to_string()), None, None)
+        .expect("and writes are taken again");
+    assert_eq!(
+        journal_used(&setup.store),
+        journal_root_bytes(&cfg),
+        "against a total that is the volume's own"
+    );
+    assert!(
+        log.captured()
+            .contains("event=journal_survey_recovered by=readiness"),
+        "the recovery names the path that found it: {}",
+        log.captured()
+    );
+}
+
+/// Whether the dashboard would mark the journal's usage figure as stale.
+fn unverified_flag(store: &Store) -> bool {
+    store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume")
+        .usage_unverified
+}
+
+#[test]
 fn journal_usage_stays_current_when_the_scrub_quarantines_a_chunk() {
     // The reviewer's reproduction, and the ordinary device update before the
     // scrub is the whole of it: without that update the next append rolls,
@@ -1569,6 +1677,15 @@ fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
 
 #[test]
 fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
+    // The FORMULA, not the wiring. This drives `Journal::quarantined`
+    // directly with two sizes, which proves the arithmetic of a replacement
+    // and says nothing about whether `Store::repair` reads the right ones --
+    // substituting zero for the pre-move size leaves this test green. The
+    // end-to-end proof is `a_second_quarantine_of_the_same_sid_is_accounted
+    // _through_the_store`, and the two are kept apart on purpose: a test
+    // that exercises a unit under a caller the product never uses is a test
+    // of the unit, and should not be presented as anything else.
+    //
     // The same sid quarantined twice: the second rename replaces the first
     // file, so the volume gains the difference and not the whole of it.
     let dir = TempDir::new("store-quarantine-replace");

@@ -799,6 +799,9 @@ impl Store {
             bytes_used: used,
             bytes_free: self.cfg.blobs_capacity.saturating_sub(used),
             watermark_bytes: watermark,
+            // The blob volume's usage is the index's own running total, which
+            // is read from memory and cannot refuse.
+            usage_unverified: false,
         }];
         for mirror in &self.cfg.mirrors {
             all.push(VolumeStatus {
@@ -809,12 +812,20 @@ impl Store {
                 bytes_used: used,
                 bytes_free: self.cfg.blobs_capacity.saturating_sub(used),
                 watermark_bytes: watermark,
+                usage_unverified: false,
             });
         }
         // The journal's own accounting, not a walk of the volume: it is the
         // number the journal watermark refuses against, and a dashboard that
         // showed a different one would disagree with the refusal.
-        let journal_used = self.journal().tracked_bytes();
+        // One guard for both, so the figure and the word that qualifies it
+        // are read from the same state: a total taken before a failed survey
+        // and a flag taken after it would say the number is trustworthy when
+        // it is not.
+        let journal = self.journal();
+        let journal_used = journal.tracked_bytes();
+        let journal_unverified = journal.unverified().is_some();
+        drop(journal);
         all.push(VolumeStatus {
             role: "journal".to_string(),
             path: self.cfg.journal_dir.clone(),
@@ -823,6 +834,11 @@ impl Store {
             bytes_used: journal_used,
             bytes_free: self.cfg.journal_capacity.saturating_sub(journal_used),
             watermark_bytes: self.cfg.free_watermark.bytes_for(self.cfg.journal_capacity),
+            // The journal surveys a real directory, so its total is the one
+            // that can go stale: while this is true the figure beside it is
+            // the last one that was read successfully, and writes are being
+            // refused with `journal_unverified` until a survey succeeds.
+            usage_unverified: journal_unverified,
         });
         all
     }
@@ -1087,7 +1103,7 @@ impl Store {
     /// # Errors
     /// The volume.
     pub fn resurvey_journal(&self) -> Result<(), StoreError> {
-        self.journal().resurvey()
+        self.journal().resurvey("start")
     }
 
     /// The handle the nonce log reports its own size on the journal volume
@@ -1109,6 +1125,43 @@ impl Store {
     /// longer acknowledge anything (AGENTS.md requirement 7).
     pub fn journal_faulted(&self) -> Option<std::io::ErrorKind> {
         self.journal().faulted()
+    }
+
+    /// The kind of the failure that refused the journal's last survey, if its
+    /// usage figure has not been re-read successfully since.
+    ///
+    /// Read-only: what readiness reports once [`Store::verify_journal_usage`]
+    /// has had its attempt, and what the dashboard shows beside the figure.
+    pub fn journal_usage_unverified(&self) -> Option<std::io::ErrorKind> {
+        self.journal().unverified()
+    }
+
+    /// Re-survey the journal volume IF its usage is unverified, and say
+    /// whether it is verified now.
+    ///
+    /// The recovery path that needs no write. A journal whose survey was
+    /// refused admits nothing until a survey succeeds, and until this exists
+    /// the only thing that could retry that survey was an append -- so an
+    /// operator who fixed the volume had no way to see the server come back
+    /// except by sending a write and watching it be accepted. Readiness calls
+    /// this, so a fixed volume shows up as `200` on the next probe.
+    ///
+    /// A no-op when the usage is verified, which is the ordinary case: this
+    /// is on an unauthenticated path, and it may not walk the volume on every
+    /// probe. When it does walk, the readiness cache bounds how often, and
+    /// only a COMPLETE survey clears the state.
+    pub fn verify_journal_usage(&self) -> Result<(), std::io::ErrorKind> {
+        let mut journal = self.journal();
+        if journal.unverified().is_none() {
+            return Ok(());
+        }
+        let outcome = journal.resurvey("readiness");
+        match outcome {
+            Ok(()) => Ok(()),
+            // The kind the survey recorded, which is the one that refused the
+            // walk just now rather than whatever refused an earlier one.
+            Err(_) => Err(journal.unverified().unwrap_or(std::io::ErrorKind::Other)),
+        }
     }
 
     /// Whether this store's journal mutex is currently held.
@@ -1190,6 +1243,7 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
             ("io", Val::io_kind(*io)),
             ("rollback_io", Val::io_kind(*rollback_io)),
         ],
+        StoreError::JournalUnverified { io } => vec![("io", Val::io_kind(*io))],
         StoreError::QuotaExceeded { used, quota } => {
             vec![("used", Val::bytes(*used)), ("quota", Val::bytes(*quota))]
         }

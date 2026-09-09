@@ -457,6 +457,72 @@ fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
 }
 
 #[test]
+fn a_journal_whose_usage_is_unverified_answers_readyz_and_recovers_without_a_write() {
+    // The other half of the accounting refusal, over the wire. A journal that
+    // could not re-read its own usage refuses every write, so readiness must
+    // say so -- and, unlike the faulted state, this one clears itself the
+    // moment a survey succeeds. Readiness is where that survey is retried, so
+    // an operator who fixes the volume watches the server come back on the
+    // next probe instead of having to send a write to find out.
+    let h = Harness::start("journal-unverified");
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+    let cred = h.setup_account();
+
+    // A directory where the snapshot's destination belongs refuses the
+    // rename; a FILE where the quarantine directory belongs then refuses the
+    // survey that would account for what the refused rename left behind.
+    // Both fail, which is the case the accounting cannot recover from on its
+    // own. Neither fixture is a mode: this suite runs as root inside the
+    // release image, and root walks a directory whose mode forbids it.
+    let index_dir = h.dir.join("journal/v1/index");
+    let quarantine = h.dir.join("journal/v1/quarantine");
+    let seq = h.app.store.head_seq();
+    std::fs::create_dir_all(index_dir.join(format!("{seq}.snap"))).expect("block the rename");
+    std::fs::write(&quarantine, b"not a directory\n").expect("block the survey");
+    h.app
+        .store
+        .snapshot()
+        .expect_err("the snapshot and its survey both fail");
+
+    // Writes refuse with their own code, distinct from a faulted journal:
+    // nothing here needs a restart.
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "journal_unverified");
+
+    // Readiness answers false, and names the kind that refused the survey.
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("journal usage unverified; survey failed: NotADirectory"),
+        "the refusal names the accounting and the kind, never a path"
+    );
+
+    // The operator fixes the volume, and NOTHING is written afterwards: the
+    // probe itself re-surveys, the state clears, and readiness is true again.
+    std::fs::remove_file(&quarantine).expect("free the name");
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(
+        h.app.store.journal_usage_unverified(),
+        None,
+        "the probe is what cleared it, with no write in between"
+    );
+    let accepted = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(accepted.status, 200, "{}", accepted.text());
+}
+
+#[test]
 fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
     let h = Harness::start("journal-faulted");
     let cred = h.setup_account();

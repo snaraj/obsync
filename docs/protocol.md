@@ -86,7 +86,10 @@ and a test asserts every route it emits appears there.
 
 - `GET /livez` → `200 ok` while the process runs.
 - `GET /readyz` → `200 {"ready":true,"seq":<n>}` when volumes are writable,
-  the journal is replayed, and no shutdown is in progress; else `503`.
+  the journal is replayed and its usage is verified, and no shutdown is in
+  progress; else `503 not_ready`. A journal whose usage survey was refused is
+  re-surveyed by this probe, so a fixed volume answers `200` again without any
+  write.
 
 ## Setup and account
 
@@ -221,7 +224,10 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   [{"hour":<unix_s>,"count":<n>}]} (24 entries, oldest first),
   "last_gc":<gc>|null,"last_scrub":<scrub>|null}` where `<volume>` =
   `{"role":"blobs|journal|mirror","path_class":"<StorageClass label or
-  'host'>","bytes_total","bytes_used","bytes_free","watermark_bytes"}`,
+  'host'>","bytes_total","bytes_used","bytes_free","watermark_bytes",
+  "usage_unverified":<bool>}` (`usage_unverified` is true when `bytes_used`
+  is the last figure read successfully rather than a current one; writes are
+  being refused with `journal_unverified` while it is),
   `<gc>` = `{"ts","duration_ms","chunks_collected","bytes_collected",
   "chunks_retained"}`, `<scrub>` = `{"ts","duration_ms","chunks_verified",
   "bytes_verified","mismatches","quarantined":<count>,"complete_pass"}`.

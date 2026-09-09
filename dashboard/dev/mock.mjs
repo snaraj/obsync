@@ -166,6 +166,7 @@ const volumes = [
     bytes_used: 171 * GiB,
     bytes_free: 79 * GiB,
     watermark_bytes: 12.5 * GiB,
+    usage_unverified: false,
   },
   {
     role: 'journal',
@@ -174,6 +175,7 @@ const volumes = [
     bytes_used: 3.82 * GiB,
     bytes_free: 0.18 * GiB,
     watermark_bytes: 2 * GiB,
+    usage_unverified: false,
   },
   {
     role: 'mirror',
@@ -182,6 +184,7 @@ const volumes = [
     bytes_used: 171 * GiB,
     bytes_free: 329 * GiB,
     watermark_bytes: 25 * GiB,
+    usage_unverified: false,
   },
 ];
 

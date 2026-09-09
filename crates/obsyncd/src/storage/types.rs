@@ -313,6 +313,13 @@ pub struct VolumeStatus {
     pub bytes_free: u64,
     /// The refusal threshold for this volume.
     pub watermark_bytes: u64,
+    /// Whether `bytes_used` is the last figure that was read SUCCESSFULLY
+    /// rather than one just measured. True only for the journal, whose usage
+    /// comes from a walk that a filesystem can refuse; while it is true the
+    /// server is refusing writes with `journal_unverified` and retrying the
+    /// walk, so a dashboard must show the number as stale rather than as
+    /// current.
+    pub usage_unverified: bool,
 }
 
 /// The result of one garbage-collection run.
@@ -422,6 +429,14 @@ pub enum StoreError {
         /// two kinds are two fields.
         rollback_io: io::ErrorKind,
     },
+    /// The journal's usage figure could not be re-measured, so the watermark
+    /// has no number it can trust to refuse against. Admission is closed
+    /// until a survey succeeds; a restart is NOT required, and the next
+    /// append retries the survey itself.
+    JournalUnverified {
+        /// The kind of the failure that refused the survey.
+        io: io::ErrorKind,
+    },
     /// The account quota is exhausted.
     QuotaExceeded {
         /// Bytes used after this write would land.
@@ -510,6 +525,12 @@ impl fmt::Display for StoreError {
                 write!(f, "journal full: {free} bytes free, watermark {watermark}")
             }
             StoreError::JournalFaulted { .. } => f.write_str("journal faulted: restart to replay"),
+            StoreError::JournalUnverified { io } => {
+                write!(
+                    f,
+                    "journal usage unverified: {io:?}; refusing until a survey succeeds"
+                )
+            }
             StoreError::VolumeFull { free, watermark } => {
                 write!(f, "volume full: {free} bytes free, watermark {watermark}")
             }
@@ -572,6 +593,7 @@ impl StoreError {
             StoreError::VolumeFull { .. } => "volume_full",
             StoreError::JournalFull { .. } => "journal_full",
             StoreError::JournalFaulted { .. } => "journal_faulted",
+            StoreError::JournalUnverified { .. } => "journal_unverified",
             StoreError::QuotaExceeded { .. } => "quota_exceeded",
             StoreError::MissingChunks(_) => "missing_chunks",
             StoreError::VersionIdMismatch { .. } => "version_id_mismatch",
@@ -627,6 +649,19 @@ mod tests {
         };
         assert_eq!(err.to_string(), "journal faulted: restart to replay");
         assert_eq!(err.code(), "journal_faulted");
+
+        // An unverified journal is a different refusal from a faulted one: it
+        // clears itself on the next successful survey and needs no restart,
+        // so it names the kind that refused the survey rather than telling an
+        // operator to restart.
+        let err = StoreError::JournalUnverified {
+            io: io::ErrorKind::PermissionDenied,
+        };
+        assert_eq!(
+            err.to_string(),
+            "journal usage unverified: PermissionDenied; refusing until a survey succeeds"
+        );
+        assert_eq!(err.code(), "journal_unverified");
 
         let err = StoreError::QuotaExceeded { used: 10, quota: 5 };
         assert_eq!(err.to_string(), "quota exceeded: 10 bytes used, quota 5");

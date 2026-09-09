@@ -159,6 +159,12 @@ impl From<StoreError> for ApiError {
             StoreError::JournalFaulted { .. } => {
                 ApiError::new(503, code, "the journal faulted; restart to replay")
             }
+            // Also 503, and also not a client fault, but a different one: no
+            // restart is needed and the condition clears itself the moment a
+            // survey succeeds, so this one IS worth retrying.
+            StoreError::JournalUnverified { .. } => {
+                ApiError::new(503, code, "journal usage unverified; retrying the survey")
+            }
             StoreError::QuotaExceeded { .. } => {
                 ApiError::new(507, code, "the account quota is exhausted")
             }
@@ -240,10 +246,34 @@ pub struct LogLine {
     pub decision: &'static str,
 }
 
+/// Why readiness is false.
+///
+/// A `&'static str` phrase, because a reason is a compile-time fact, plus for
+/// the conditions that have a filesystem cause worth naming, its
+/// `io::ErrorKind`. The KIND and never the message: an I/O message can carry
+/// a path and `/readyz` is unauthenticated (AGENTS.md requirement 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotReady {
+    /// The phrase, which is the whole detail when there is no kind.
+    pub reason: &'static str,
+    /// The filesystem kind behind it, when one refused.
+    pub io: Option<std::io::ErrorKind>,
+}
+
+impl NotReady {
+    /// The `detail` a `503 not_ready` answers with.
+    fn detail(self) -> String {
+        match self.io {
+            Some(kind) => format!("{}: {kind:?}", self.reason),
+            None => self.reason.to_string(),
+        }
+    }
+}
+
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
 struct ReadyCache {
     checked_at: u64,
-    verdict: Result<(), &'static str>,
+    verdict: Result<(), NotReady>,
 }
 
 /// Everything a handler may read. Constructed once by `cli::serve` and shared
@@ -486,9 +516,12 @@ impl App {
 
     /// Truthful readiness: the store is open, every volume takes a write, and
     /// no shutdown is in progress (AGENTS.md requirement 7).
-    pub fn readiness(&self) -> Result<(), &'static str> {
+    pub fn readiness(&self) -> Result<(), NotReady> {
         if self.shutdown.load(Ordering::SeqCst) {
-            return Err("shutting down");
+            return Err(NotReady {
+                reason: "shutting down",
+                io: None,
+            });
         }
         let now = self.clock.unix_secs();
         let mut cache = self.ready.lock().expect("ready cache");
@@ -501,27 +534,54 @@ impl App {
         verdict
     }
 
-    fn probe_volumes(&self) -> Result<(), &'static str> {
+    fn probe_volumes(&self) -> Result<(), NotReady> {
         // Asked FIRST, and before any probe: a faulted journal acknowledges
         // nothing, yet both volumes still take the probe write, so a probe
         // that ran first would report a server ready that cannot record a
-        // single frame (AGENTS.md requirement 7).
+        // single frame (AGENTS.md requirement 7). It also has precedence over
+        // the survey below, because no survey can clear it.
         if let Some(kind) = self.store.journal_faulted() {
             self.not_ready("journal", &std::io::Error::from(kind));
-            return Err("journal faulted; restart to replay");
+            return Err(NotReady {
+                reason: "journal faulted; restart to replay",
+                io: None,
+            });
+        }
+        // Second, and the reason this probe does more than look: a journal
+        // whose usage could not be surveyed refuses every write, and until
+        // the survey is retried nothing can tell whether it still would. The
+        // retry happens HERE so that a volume an operator has just fixed
+        // comes back to `200` without anyone sending a write. A no-op when
+        // the usage is verified, and the 5-second verdict cache is what
+        // bounds how often an unauthenticated prober can make it walk.
+        if let Err(kind) = self.store.verify_journal_usage() {
+            self.not_ready("journal", &std::io::Error::from(kind));
+            return Err(NotReady {
+                reason: "journal usage unverified; survey failed",
+                io: Some(kind),
+            });
         }
         if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
             self.not_ready("blobs", &e);
-            return Err("blobs volume is not writable");
+            return Err(NotReady {
+                reason: "blobs volume is not writable",
+                io: None,
+            });
         }
         if let Err(e) = probe_writable(&self.cfg.journal_dir) {
             self.not_ready("journal", &e);
-            return Err("journal volume is not writable");
+            return Err(NotReady {
+                reason: "journal volume is not writable",
+                io: None,
+            });
         }
         for m in &self.cfg.blobs_mirrors {
             if let Err(e) = probe_writable(&m.path) {
                 self.not_ready("mirror", &e);
-                return Err("a mirror volume is not writable");
+                return Err(NotReady {
+                    reason: "a mirror volume is not writable",
+                    io: None,
+                });
             }
         }
         Ok(())
@@ -631,7 +691,7 @@ impl App {
                 200,
                 &obj(vec![("ready", render::b(true)), ("seq", render::seq(seq))]),
             )),
-            Err(reason) => Err(ApiError::new(503, "not_ready", reason)),
+            Err(reason) => Err(ApiError::new(503, "not_ready", reason.detail())),
         }
     }
 

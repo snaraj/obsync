@@ -158,6 +158,14 @@ pub(crate) struct Journal {
     /// Set when a failed append could not be rolled back. Every later append
     /// refuses; a restart replays, truncates the tail, and clears it.
     faulted: Option<Faulted>,
+    /// Set when a survey could not read the volume, cleared when a later one
+    /// could. An ATTEMPTED survey and a SUCCESSFUL survey are different
+    /// facts: without this field a refused walk leaves the last good total
+    /// in place and every later watermark decision is taken against a number
+    /// nothing has re-read, which is how a full volume keeps admitting
+    /// frames. While it is set the totals below are stale by construction,
+    /// so admission is fail-closed until a survey succeeds.
+    unverified: Option<io::ErrorKind>,
     log: Log,
     #[cfg(test)]
     fault: Mutex<Fault>,
@@ -180,12 +188,13 @@ impl Journal {
             capacity: cfg.journal_capacity,
             watermark: cfg.free_watermark.bytes_for(cfg.journal_capacity),
             faulted: None,
+            unverified: None,
             log,
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
         };
         journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
-        journal.measure_volume()?;
+        journal.measure_volume("open")?;
         Ok(journal)
     }
 
@@ -234,8 +243,8 @@ impl Journal {
     /// `cli::serve` when a first boot creates it. A survey is the right
     /// answer for a start-time event and the wrong one for anything on the
     /// request path, which is why nothing on the request path calls it.
-    pub(crate) fn resurvey(&mut self) -> Result<(), StoreError> {
-        self.measure_volume()
+    pub(crate) fn resurvey(&mut self, at: &'static str) -> Result<(), StoreError> {
+        self.measure_volume(at)
     }
 
     /// Account for what a quarantine attempt did to one name.
@@ -263,6 +272,15 @@ impl Journal {
         self.faulted.map(|f| f.io)
     }
 
+    /// The kind of the failure that refused the last survey, if the totals
+    /// have not been re-read successfully since.
+    ///
+    /// What `VolumeStatus` reports, so the dashboard says the usage figure is
+    /// stale rather than showing it as though it had just been measured.
+    pub(crate) fn unverified(&self) -> Option<io::ErrorKind> {
+        self.unverified
+    }
+
     /// Re-survey the part of the volume nobody keeps a running total for.
     ///
     /// A walk, but of `O(segments + snapshots)` entries rather than of a
@@ -275,20 +293,69 @@ impl Journal {
     /// an operator emptied it by hand, finds whatever is really there.
     /// The nonce log is NOT surveyed -- its own writer owns that number and
     /// keeps it current between walks.
-    fn measure_volume(&mut self) -> Result<(), StoreError> {
+    ///
+    /// The OUTCOME is recorded, not only returned: a walk that refused
+    /// leaves every total below it stale, and a caller that dropped the
+    /// error would go on deciding admission against a number nothing has
+    /// re-read. So a refusal sets [`Journal::unverified`] and says so once,
+    /// a success clears it and says so once, and callers are free to keep
+    /// reporting whatever error brought them here.
+    fn measure_volume(&mut self, at: &'static str) -> Result<(), StoreError> {
+        match self.survey_volume() {
+            // Only a COMPLETE survey clears the state, because only a
+            // complete one replaced every total it owns. `faulted` is NOT
+            // touched here and must not be: a torn segment no rollback could
+            // cut is a fact about the volume's CONTENTS, which no amount of
+            // re-measuring changes. Only a restart, which replays and
+            // truncates the tail, clears that one.
+            Ok(()) => {
+                if self.unverified.take().is_some() {
+                    self.log
+                        .info("journal_survey_recovered", &[("by", Val::word(at))]);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let io = survey_kind(&e);
+                // Once, on the way in. A volume that refuses every walk would
+                // otherwise put this line on every append and every readiness
+                // probe that retries it.
+                if self.unverified.is_none() {
+                    self.log.error(
+                        "journal_survey_failed",
+                        &[("io", Val::io_kind(io)), ("at", Val::word(at))],
+                    );
+                }
+                self.unverified = Some(io);
+                Err(e)
+            }
+        }
+    }
+
+    /// The walk itself. Separate from [`Journal::measure_volume`] so that the
+    /// recording of its outcome has exactly one home.
+    ///
+    /// Nothing is published until BOTH walks have answered. A survey that
+    /// stored the root's total and then met a refused quarantine would leave
+    /// the journal holding one fresh number beside one stale one -- a total
+    /// that was never true of the volume at any instant, and worse than
+    /// either of the two it was made from.
+    fn survey_volume(&mut self) -> Result<(), StoreError> {
         let mut skip = vec![self.quarantine_dir(), self.root.join(NONCE_FILE)];
         skip.push(self.root.join(NONCE_TMP));
         if self.segment.is_some() {
             skip.push(self.segment_path(self.segment_no));
         }
-        self.other_bytes = volume_bytes(&self.root, &skip)?;
-        self.quarantine_bytes = match volume_bytes(&self.quarantine_dir(), &[]) {
+        let other = volume_bytes(&self.root, &skip)?;
+        let quarantine = match volume_bytes(&self.quarantine_dir(), &[]) {
             Ok(bytes) => bytes,
             // No quarantine directory until the first quarantine: nothing
             // there is nothing to count.
             Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => 0,
             Err(e) => return Err(e),
         };
+        self.other_bytes = other;
+        self.quarantine_bytes = quarantine;
         Ok(())
     }
 
@@ -329,10 +396,11 @@ impl Journal {
     /// Append one record and fsync it. The caller may acknowledge afterwards,
     /// never before (docs/storage.md, durability rule 6).
     ///
-    /// Two refusals happen before anything reaches the volume: a journal
-    /// already faulted, and a frame that would take the journal volume below
-    /// its watermark. Afterwards the write and its fsync are wrapped: any
-    /// failure rolls the segment back to the length the journal believes is
+    /// Three refusals happen before anything reaches the volume: a journal
+    /// already faulted, a journal whose usage could not be re-surveyed and
+    /// cannot be now either, and a frame that would take the journal volume
+    /// below its watermark. Afterwards the write and its fsync are wrapped:
+    /// any failure rolls the segment back to the length the journal believes is
     /// durable, so the next frame starts clean and nothing that was never
     /// acknowledged survives to a replay. Segments are `O_APPEND`, so
     /// WITHOUT that rollback the next successful frame would land after a
@@ -344,6 +412,19 @@ impl Journal {
                 io: f.io,
                 rollback_io: f.rollback_io,
             });
+        }
+        // Fail-closed while the accounting is unverified. One retry first,
+        // because the condition is usually transient and clears itself: the
+        // walk that refused is retried here, and if it succeeds the totals
+        // are fresh and admission proceeds against them. If it refuses again
+        // the frame is refused, which is the only safe answer -- the
+        // watermark below can only be as true as the number it subtracts
+        // from, and that number is known to be stale.
+        if self.unverified.is_some() {
+            self.measure_volume("append")
+                .map_err(|_| StoreError::JournalUnverified {
+                    io: self.unverified.expect("a refused survey records its kind"),
+                })?;
         }
         let payload = record.to_value().to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
@@ -526,7 +607,7 @@ impl Journal {
         self.segment = Some(file);
         self.segment_no = number;
         fsync_dir(&self.root.join("journal"))?;
-        self.measure_volume()
+        self.measure_volume("roll")
     }
 
     /// Replay every frame after `after` into `apply`.
@@ -572,7 +653,7 @@ impl Journal {
                         report.truncated_bytes = remaining;
                         self.segment = None;
                         self.segment_len = 0;
-                        self.measure_volume()?;
+                        self.measure_volume("replay")?;
                         return Ok(report);
                     }
                 }
@@ -580,7 +661,7 @@ impl Journal {
         }
         self.segment = None;
         self.segment_len = 0;
-        self.measure_volume()?;
+        self.measure_volume("replay")?;
         Ok(report)
     }
 
@@ -593,9 +674,15 @@ impl Journal {
         // the next roll. The original error is what the caller gets: the
         // accounting is a consequence of the failure, never a replacement
         // for reporting it.
+        //
+        // The survey's own error is discarded HERE and only here, because
+        // `measure_volume` has already recorded it: a refused survey leaves
+        // the journal unverified, which closes admission until one succeeds.
+        // Discarding a return value is safe exactly when the fact it carried
+        // has been stored somewhere the next decision will read.
         let outcome = self.snapshot_inner(index);
         if outcome.is_err() {
-            let _ = self.measure_volume();
+            let _ = self.measure_volume("snapshot");
         }
         outcome
     }
@@ -653,7 +740,7 @@ impl Journal {
             }
         }
         fsync_dir(&self.root.join("journal"))?;
-        self.measure_volume()
+        self.measure_volume("prune")
     }
 
     /// The sequence of the first frame in a segment.
@@ -854,6 +941,18 @@ fn volume_bytes(dir: &Path, except: &[PathBuf]) -> Result<u64, StoreError> {
         }
     }
     Ok(total)
+}
+
+/// The `io::ErrorKind` a refused survey is remembered by.
+///
+/// A walk only ever fails on the filesystem, so the `Io` arm is the real
+/// one; the fallback exists so that a survey can never be recorded as having
+/// succeeded just because its error was of some other shape.
+fn survey_kind(e: &StoreError) -> io::ErrorKind {
+    match e {
+        StoreError::Io(e) => e.kind(),
+        _ => io::ErrorKind::Other,
+    }
 }
 
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
@@ -2062,7 +2161,7 @@ mod tests {
         // The survey re-walks the volume. It must leave the nonce log to its
         // own writer, and REPLACE the quarantine total rather than add to it:
         // either mistake doubles bytes that are on the volume exactly once.
-        journal.resurvey().expect("survey");
+        journal.resurvey("test").expect("survey");
         assert_eq!(
             journal.tracked_bytes(),
             volume_total(&dir),
@@ -2165,6 +2264,216 @@ mod tests {
             journal.tracked_bytes(),
             volume_total(&dir),
             "the accounting is the volume's own after a failed prune"
+        );
+    }
+
+    /// Put a regular FILE where the quarantine directory belongs, so the
+    /// second walk of every survey is refused with `NotADirectory`.
+    ///
+    /// A mode would not do. The in-image test stage runs as ROOT, and root
+    /// walks a directory whose mode forbids it, so a permission fixture
+    /// passes on a laptop and fails inside the release image -- this repo has
+    /// paid for that lesson once already (`readyz_tells_the_truth_about_the
+    /// _volumes_and_about_shutting_down`). A file is not a directory for
+    /// anybody.
+    fn block_survey(dir: &TempDir) {
+        let quarantine = dir.path().join("journal/v1/quarantine");
+        if quarantine.is_dir() {
+            // Outside `journal/v1`, so an independent walk of the volume does
+            // not count what is only stashed.
+            fs::rename(&quarantine, dir.path().join("quarantine-stash")).expect("stash it");
+        }
+        fs::write(&quarantine, b"not a directory\n").expect("occupy the name");
+    }
+
+    fn unblock_survey(dir: &TempDir) {
+        let quarantine = dir.path().join("journal/v1/quarantine");
+        fs::remove_file(&quarantine).expect("free the name");
+        let stash = dir.path().join("quarantine-stash");
+        if stash.is_dir() {
+            fs::rename(&stash, &quarantine).expect("put it back");
+        }
+    }
+
+    fn occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    #[test]
+    fn a_refused_survey_closes_admission_until_one_succeeds() {
+        // The reviewer's double failure. A snapshot fails AND the survey that
+        // would account for what it left behind fails too, so the totals are
+        // known to be stale. Preserving the original error is not enough on
+        // its own: the watermark can only be as true as the number it
+        // subtracts from, and a journal that went on admitting frames against
+        // a figure nothing had re-read is exactly how a full volume keeps
+        // taking writes.
+        let dir = TempDir::new("journal-survey-refused");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut journal = open_logged(&dir, log.clone());
+        journal.append(&record(1, account_frame())).expect("append");
+        let mut index = Index::default();
+        index.apply(&record(1, account_frame()));
+
+        // A directory where the snapshot's destination belongs refuses the
+        // rename, after the temporary is already written; a file where the
+        // quarantine belongs then refuses the walk that would account for
+        // that temporary. Two different refusals, neither of them a mode.
+        let index_dir = dir.path().join("journal/v1/index");
+        fs::create_dir_all(index_dir.join("1.snap")).expect("block the rename");
+        block_survey(&dir);
+
+        let err = journal
+            .snapshot(&index)
+            .expect_err("the snapshot cannot rename onto a directory");
+        assert!(
+            matches!(err, StoreError::Io(_)),
+            "the ORIGINAL failure is what the caller acts on, got {err}"
+        );
+        assert!(
+            index_dir.join("1.tmp").is_file(),
+            "and it left a temporary nothing will remove"
+        );
+        assert_eq!(
+            journal.unverified(),
+            Some(io::ErrorKind::NotADirectory),
+            "the refused survey is recorded as its own fact"
+        );
+
+        // Fail-closed. The retry inside the append meets the same refusal, so
+        // the frame is refused and NOTHING reaches the volume.
+        let before = volume_total(&dir);
+        let refused = journal
+            .append(&record(2, account_frame()))
+            .expect_err("admission is closed while the usage is unverified");
+        match refused {
+            StoreError::JournalUnverified { io } => {
+                assert_eq!(io, io::ErrorKind::NotADirectory, "the kind that refused");
+            }
+            other => panic!("expected journal_unverified, got {other}"),
+        }
+        assert_eq!(
+            volume_total(&dir),
+            before,
+            "a refused admission writes nothing"
+        );
+        assert_eq!(
+            occurrences(&log.captured(), "event=journal_survey_failed"),
+            1,
+            "once per transition into the state, not once per retry"
+        );
+        assert!(
+            log.captured()
+                .contains("event=journal_survey_failed io=NotADirectory at=snapshot"),
+            "the line names the kind and where the survey ran: {}",
+            log.captured()
+        );
+
+        // The operator fixes the volume. The next append surveys again, the
+        // survey succeeds, the state clears, and the frame lands -- with the
+        // watermark applied to the total that survey just read.
+        unblock_survey(&dir);
+        journal
+            .append(&record(2, account_frame()))
+            .expect("a verified journal takes the frame");
+        assert_eq!(journal.unverified(), None, "a complete survey clears it");
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "and the total is the volume's own again"
+        );
+        assert_eq!(
+            occurrences(&log.captured(), "event=journal_survey_recovered by=append"),
+            1,
+            "recovery is stated once, and says which path found it: {}",
+            log.captured()
+        );
+    }
+
+    #[test]
+    fn a_survey_that_gets_half_way_publishes_neither_half() {
+        // The survey reads two totals. If it stored the first and then met a
+        // refusal on the second, the journal would hold one fresh number
+        // beside one stale one: a total that was never true of the volume at
+        // any instant. Nothing is published until both walks have answered.
+        let dir = TempDir::new("journal-survey-partial");
+        let mut journal = open_journal(&dir);
+        let quarantine = dir.path().join("journal/v1/quarantine");
+        fs::create_dir_all(&quarantine).expect("quarantine");
+        fs::write(quarantine.join("sentinel"), vec![7u8; 100]).expect("a quarantined chunk");
+        journal.resurvey("test").expect("both walks answer");
+        let before = journal.tracked_bytes();
+        assert_eq!(before, volume_total(&dir), "the baseline is the volume's");
+
+        // The ROOT walk will now find 500 bytes more, and the quarantine walk
+        // will refuse. A survey that published as it went would take the new
+        // root total and keep the old quarantine one.
+        fs::write(dir.path().join("journal/v1/index/junk"), vec![9u8; 500])
+            .expect("something new under the root");
+        block_survey(&dir);
+        journal
+            .resurvey("test")
+            .expect_err("the quarantine walk refuses");
+        assert_eq!(
+            journal.tracked_bytes(),
+            before,
+            "a half-finished survey publishes nothing"
+        );
+        assert_eq!(
+            journal.unverified(),
+            Some(io::ErrorKind::NotADirectory),
+            "and it does not count as a survey"
+        );
+
+        unblock_survey(&dir);
+        journal.resurvey("test").expect("both walks answer again");
+        assert_eq!(journal.unverified(), None, "cleared by the complete one");
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "which publishes both halves at once"
+        );
+    }
+
+    #[test]
+    fn a_faulted_journal_stays_faulted_however_well_the_volume_measures() {
+        // Two states, two facts, and one of them a survey can never speak to.
+        // `unverified` is about the accounting and clears the moment a walk
+        // succeeds; `faulted` is about the CONTENTS -- a segment holding
+        // bytes no frame owns -- and clears only at a restart that replays
+        // and truncates. A journal that is both must stay faulted.
+        let dir = TempDir::new("journal-faulted-and-unverified");
+        let mut journal = open_journal(&dir);
+        journal.set_fault(Fault::JournalRecoveryFails {
+            code: ENOSPC,
+            at: AppendPhase::Write,
+            rollback: RollbackPhase::Truncate,
+        });
+        journal
+            .append(&record(1, account_frame()))
+            .expect_err("the volume refuses the frame and the rollback");
+        journal.set_fault(Fault::None);
+        assert_eq!(journal.faulted(), Some(io::ErrorKind::StorageFull));
+
+        // Now make it unverified as well, then let the volume recover.
+        block_survey(&dir);
+        journal.resurvey("test").expect_err("the walk refuses");
+        assert_eq!(journal.unverified(), Some(io::ErrorKind::NotADirectory));
+        unblock_survey(&dir);
+        journal.resurvey("test").expect("the walk answers");
+
+        assert_eq!(journal.unverified(), None, "the accounting is verified");
+        assert_eq!(
+            journal.faulted(),
+            Some(io::ErrorKind::StorageFull),
+            "and the torn segment is still torn"
+        );
+        let refused = journal
+            .append(&record(2, account_frame()))
+            .expect_err("a faulted journal takes nothing");
+        assert!(
+            matches!(refused, StoreError::JournalFaulted { .. }),
+            "faulted has precedence over unverified, got {refused}"
         );
     }
 
