@@ -148,6 +148,10 @@ pub(crate) enum BlobPhase {
     Sync,
     /// The `rename` into place.
     Rename,
+    /// The directory fsyncs a quarantine move runs AFTER its rename, where
+    /// a failure means the bytes moved and the failure was in making that
+    /// durable -- the one case where an error does not mean nothing moved.
+    QuarantineSync,
 }
 
 /// The storage engine. One per process, shared by every request thread.
@@ -988,15 +992,29 @@ impl Store {
             );
             return Ok(true);
         }
-        // The size BEFORE the move: after it the name is gone from the blob
-        // volume, and this is the number the journal volume just gained.
-        let moved = self.blobs.chunk_bytes(sid);
-        let quarantine = self.journal().quarantine_dir();
-        self.blobs.quarantine(sid, &quarantine)?;
-        // In the same call as the move, so the journal's usage is right for
-        // the very next append rather than for the next roll. `rename` is
-        // atomic: a move that failed returned above and moved nothing.
-        self.journal().quarantined(moved);
+        // ONE guard, held across the move AND the accounting that follows it.
+        // Every reader of the journal's usage takes this same lock -- the
+        // watermark check inside an append, a survey at a roll, `volumes()`
+        // for the dashboard -- so with the guard spanning both there is no
+        // interval in which the file has moved and the total has not, and
+        // none in which a survey counts the file and the update then counts
+        // it again. A lock around the addition alone would leave both.
+        let mut journal = self.journal();
+        let quarantine = journal.quarantine_dir();
+        let target = quarantine.join(sid.to_string());
+        // What stands at the destination BEFORE: a quarantine of the same sid
+        // that an earlier pass left, whose bytes the rename replaces.
+        let replaced = name_bytes(&target);
+
+        let outcome = self.blobs.quarantine(sid, &quarantine);
+        // Read the destination rather than assume the outcome. The move is a
+        // `rename`, but the two directory fsyncs come AFTER it, so an error
+        // here can perfectly well mean the bytes moved and the failure was
+        // in making that durable. Whatever is really at that name is what
+        // the volume really holds.
+        journal.quarantined(replaced, name_bytes(&target));
+        drop(journal);
+        outcome?;
         self.log.error(
             "chunk_quarantined",
             &[
@@ -1093,6 +1111,16 @@ impl Store {
         self.journal().faulted()
     }
 
+    /// Whether this store's journal mutex is currently held.
+    ///
+    /// Tests only, and true of a caller that holds it itself: `Mutex` is not
+    /// reentrant, so a `try_lock` from inside a guarded region fails. That is
+    /// what makes it a proof that a region spans what it claims to.
+    #[cfg(test)]
+    pub(crate) fn journal_guard_held(&self) -> bool {
+        self.journal.try_lock().is_err()
+    }
+
     /// Arm a crash point. Tests only.
     #[cfg(test)]
     pub(crate) fn set_fault(&self, fault: Fault) {
@@ -1181,6 +1209,15 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
         StoreError::Io(e) => vec![("io", Val::io(e))],
         _ => Vec::new(),
     }
+}
+
+/// The bytes a name holds right now, or zero if nothing is there.
+///
+/// Zero rather than an error because this only ever feeds an accounting
+/// update: a name with nothing at it contributes nothing, which is the same
+/// answer either way.
+fn name_bytes(path: &Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
 /// Random bytes from the kernel. The one source of randomness in the server.

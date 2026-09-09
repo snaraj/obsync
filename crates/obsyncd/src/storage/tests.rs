@@ -1505,6 +1505,148 @@ fn the_journal_watermark_counts_a_quarantine_no_append_wrote() {
 }
 
 #[test]
+fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
+    // The two directory fsyncs run AFTER the rename, so an error there means
+    // the bytes DID move and the failure was in making that durable. The
+    // comment this replaces claimed the opposite, and the accounting believed
+    // it. Two outcomes are checked: the error still reaches the caller, and
+    // the volume's usage is the volume's own either way.
+    let dir = TempDir::new("store-quarantine-sync-fault");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        fs::write(setup.store.blobs.path(&sid), b"rot").expect("corrupt the only copy");
+        sid
+    };
+
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&cfg, [7u8; 32], log.clone());
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("open the segment".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+
+    store.set_fault(Fault::BlobErrno {
+        phase: BlobPhase::QuarantineSync,
+        code: ENOSPC,
+    });
+    let summary = store.scrub_step(1 << 20);
+    store.set_fault(Fault::None);
+
+    // 1. The bytes really moved, even though the call failed.
+    let quarantined = cfg.journal_dir.join("v1/quarantine").join(sid.to_string());
+    assert!(
+        quarantined.is_file(),
+        "the rename happened before the fsync refused"
+    );
+    // 2. The residue is accounted for.
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and those bytes are counted, in the same call that failed to sync them"
+    );
+    // 3. And the failure is REPORTED rather than swallowed by the accounting.
+    // These are two separate properties and each has its own assertion: a
+    // repair that counted the bytes and reported success would be worse than
+    // one that counted nothing.
+    assert!(
+        log.captured().contains("event=scrub_repair_failed"),
+        "the original error reaches the log: {}",
+        log.captured()
+    );
+    assert!(
+        log.captured().contains("io=StorageFull"),
+        "with the kind the volume returned: {}",
+        log.captured()
+    );
+    assert_eq!(
+        summary.quarantined,
+        vec![sid],
+        "and the scrub still reports the chunk as one it could not repair"
+    );
+}
+
+#[test]
+fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
+    // The same sid quarantined twice: the second rename replaces the first
+    // file, so the volume gains the difference and not the whole of it.
+    let dir = TempDir::new("store-quarantine-replace");
+    let cfg = config(&dir);
+    let store = ready_existing(&cfg);
+    let quarantine = cfg.journal_dir.join("v1/quarantine");
+    fs::create_dir_all(&quarantine).expect("quarantine");
+
+    let name = quarantine.join("a".repeat(64));
+    fs::write(&name, vec![b'o'; 900]).expect("what an earlier pass left");
+    {
+        let mut journal = store.journal();
+        journal.quarantined(0, 900);
+    }
+    assert_eq!(journal_used(&store), journal_root_bytes(&cfg), "before");
+
+    // A second move onto the same name: 900 bytes leave the volume as 120
+    // arrive, and the accounting has to see both halves.
+    fs::write(&name, vec![b'n'; 120]).expect("the replacement");
+    {
+        let mut journal = store.journal();
+        journal.quarantined(900, 120);
+    }
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "a replacement is a difference, not an addition"
+    );
+}
+
+#[test]
+fn the_journal_guard_spans_the_quarantine_move() {
+    // Serialization by construction is one thing; a test that the guard is
+    // really held while the file moves is another, and the verdict asks for
+    // both. This is the second: a hook that runs INSIDE the move, after the
+    // rename and before the accounting, asks the store for its own journal
+    // mutex. `Mutex` is not reentrant, so a `try_lock` that fails is proof
+    // the guarded region reaches this point -- and that no survey or
+    // watermark reader can be here with it.
+    let dir = TempDir::new("store-quarantine-guard");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        fs::write(setup.store.blobs.path(&sid), b"rot").expect("corrupt the only copy");
+        sid
+    };
+
+    let store = Arc::new(ready_existing(&cfg));
+    let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let watching = Arc::downgrade(&store);
+        let held = Arc::clone(&held);
+        let ran = Arc::clone(&ran);
+        store.blobs.set_mid_move(Arc::new(move || {
+            let store = watching.upgrade().expect("the store outlives its own move");
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            held.store(
+                store.journal_guard_held(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }));
+    }
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(summary.quarantined, vec![sid], "the move happened");
+    assert!(
+        ran.load(std::sync::atomic::Ordering::SeqCst),
+        "the hook ran, so this test measured something"
+    );
+    assert!(
+        held.load(std::sync::atomic::Ordering::SeqCst),
+        "the journal guard is held while the file moves, not taken afterwards"
+    );
+}
+
+#[test]
 fn the_scrub_repairs_from_a_mirror_and_quarantines_what_it_cannot() {
     let dir = TempDir::new("store-scrub");
     let mut cfg = config(&dir);

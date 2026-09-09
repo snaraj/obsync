@@ -238,14 +238,21 @@ impl Journal {
         self.measure_volume()
     }
 
-    /// Account for a chunk the scrub has just moved into the quarantine.
+    /// Account for what a quarantine attempt did to one name.
     ///
-    /// Called after the move succeeded, with the size the moved file had. A
-    /// move that failed moved nothing: `rename` is atomic, so there is no
-    /// partial file to account for, and a `quarantine/` directory the
-    /// attempt created holds no bytes.
-    pub(crate) fn quarantined(&mut self, bytes: u64) {
-        self.quarantine_bytes = self.quarantine_bytes.saturating_add(bytes);
+    /// `was` and `now` are that name's size before and after, read off the
+    /// volume both times. Two numbers rather than one because there are four
+    /// outcomes and only this shape covers them all: a move onto an empty
+    /// name (0 to N), a move onto a quarantine an earlier pass left (M to N,
+    /// and M is no longer there), a `rename` that refused (0 to 0), and a
+    /// move whose directory fsync then failed (0 to N, because the bytes did
+    /// move). The caller holds the journal guard across the move and this
+    /// call, so no survey and no watermark reader sees a state between them.
+    pub(crate) fn quarantined(&mut self, was: u64, now: u64) {
+        self.quarantine_bytes = self
+            .quarantine_bytes
+            .saturating_add(now)
+            .saturating_sub(was);
     }
 
     /// The kind of the failure that faulted this journal, if it is faulted.
@@ -579,6 +586,21 @@ impl Journal {
 
     /// Write a snapshot of `index`, then drop what it supersedes.
     pub(crate) fn snapshot(&mut self, index: &Index) -> Result<(), StoreError> {
+        // Every exit accounts for what is REALLY on the volume, the failing
+        // ones included. A snapshot that dies part way leaves a `.tmp` that
+        // nothing later removes, and returning early past the survey left
+        // those bytes invisible to the watermark and to the dashboard until
+        // the next roll. The original error is what the caller gets: the
+        // accounting is a consequence of the failure, never a replacement
+        // for reporting it.
+        let outcome = self.snapshot_inner(index);
+        if outcome.is_err() {
+            let _ = self.measure_volume();
+        }
+        outcome
+    }
+
+    fn snapshot_inner(&mut self, index: &Index) -> Result<(), StoreError> {
         let seq = index.seq;
         let payload = snapshot_value(index).to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
@@ -603,6 +625,12 @@ impl Journal {
     }
 
     /// Delete superseded snapshots and the segments they cover.
+    ///
+    /// A removal that succeeded before one that failed already changed the
+    /// volume, and that failing exit is surveyed too — by [`Journal::snapshot`],
+    /// which is this function's only caller and wraps the whole of it. One
+    /// accounting point at the public boundary rather than two nested ones:
+    /// a second wrapper here could never be the one that ran.
     fn prune(&mut self, through: Seq) -> Result<(), StoreError> {
         let mut snapshots = self.snapshots()?;
         while snapshots.len() > SNAPSHOTS_KEPT {
@@ -1983,7 +2011,7 @@ mod tests {
         let quarantine = journal.quarantine_dir();
         fs::create_dir_all(&quarantine).expect("quarantine");
         fs::write(quarantine.join("sentinel"), b"rot").expect("quarantined");
-        journal.quarantined(3);
+        journal.quarantined(0, 3);
         assert_eq!(journal.tracked_bytes(), before + 3);
         assert_eq!(journal.tracked_bytes(), volume_total(&dir));
 
@@ -2024,7 +2052,7 @@ mod tests {
         let quarantine = journal.quarantine_dir();
         fs::create_dir_all(&quarantine).expect("quarantine");
         fs::write(quarantine.join("sentinel"), vec![b'q'; 64]).expect("quarantined");
-        journal.quarantined(64);
+        journal.quarantined(0, 64);
         assert_eq!(
             journal.tracked_bytes(),
             volume_total(&dir),
@@ -2047,6 +2075,96 @@ mod tests {
             journal.tracked_bytes(),
             volume_total(&dir),
             "and after a roll"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_that_fails_still_accounts_for_what_it_left_behind() {
+        // The reviewer's reproduction, and two more failure exits beside it.
+        // A snapshot that dies part way leaves an `index/<seq>.tmp` that
+        // nothing later removes, and every early return used to skip the
+        // survey the prune would have run -- so those bytes were invisible
+        // to the watermark and to the dashboard until the next roll. The
+        // segment is opened FIRST in each case, because a later roll would
+        // re-survey and conceal exactly this.
+        //
+        // Each case: what makes the snapshot fail, and whether the failure
+        // is expected to leave bytes behind.
+        for (case, blocks_rename, leaves_residue) in [
+            ("rename refused", true, true),
+            ("index directory gone", false, false),
+        ] {
+            let dir = TempDir::new("journal-snapshot-failure");
+            let mut journal = open_journal(&dir);
+            journal.append(&record(1, account_frame())).expect("append");
+            let mut index = Index::default();
+            index.apply(&record(1, account_frame()));
+
+            let index_dir = dir.path().join("journal/v1/index");
+            if blocks_rename {
+                // A directory standing at the destination: `rename` refuses
+                // to replace it, and the temporary it already wrote stays.
+                fs::create_dir_all(index_dir.join("1.snap")).expect("block the rename");
+            } else {
+                fs::remove_dir_all(&index_dir).expect("take the directory away");
+            }
+
+            let err = journal
+                .snapshot(&index)
+                .expect_err("{case}: the snapshot fails");
+            assert!(
+                matches!(err, StoreError::Io(_)),
+                "{case}: the original error reaches the caller, got {err}"
+            );
+            assert_eq!(
+                index_dir.join("1.tmp").is_file(),
+                leaves_residue,
+                "{case}: what the failure left behind"
+            );
+            assert_eq!(
+                journal.tracked_bytes(),
+                volume_total(&dir),
+                "{case}: and the accounting is the volume's own"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prune_that_fails_still_accounts_for_what_it_removed() {
+        // A prune removes files one at a time. One removal succeeding before
+        // another fails has already changed the volume, so the failing exit
+        // has to survey too. The snapshot directory is made unreadable AFTER
+        // the snapshot lands, so the failure is in `prune` and not before it.
+        let dir = TempDir::new("journal-prune-failure");
+        let mut journal = open_journal(&dir);
+        journal.append(&record(1, account_frame())).expect("append");
+        let mut index = Index::default();
+        index.apply(&record(1, account_frame()));
+        journal.snapshot(&index).expect("the first snapshot lands");
+
+        // A DIRECTORY standing where a superseded snapshot's file should be:
+        // `remove_file` refuses it, so the prune fails AFTER the third
+        // snapshot has already been renamed into place. Everything else is
+        // untouched -- the open segment above all -- so the only question is
+        // whether the failing exit still accounts for what landed.
+        let index_dir = dir.path().join("journal/v1/index");
+        fs::remove_file(index_dir.join("1.snap")).expect("the first snapshot");
+        fs::create_dir(index_dir.join("1.snap")).expect("block its removal");
+        index.seq = Seq(2);
+        journal.snapshot(&index).expect("the second snapshot lands");
+        index.seq = Seq(3);
+        let err = journal
+            .snapshot(&index)
+            .expect_err("the prune cannot remove a directory");
+        assert!(matches!(err, StoreError::Io(_)), "{err}");
+        assert!(
+            index_dir.join("3.snap").is_file(),
+            "the third snapshot landed before the prune failed"
+        );
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "the accounting is the volume's own after a failed prune"
         );
     }
 

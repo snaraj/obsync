@@ -372,16 +372,18 @@ accumulate: the open segment's durable length, a survey of everything the
 other three do not own, the quarantine, and the nonce log.
 
 Every writer of this volume, what it leaves behind when it fails, and how the
-number stays right:
+number stays right. Two properties, never one: the residue is ACCOUNTED FOR,
+and the original durability error is still RETURNED. A failing path that
+quietly balanced the books would be worse than one that did not.
 
 | Writes | When | Residue on failure | Accounted by |
 | --- | --- | --- | --- |
 | `journal/<n>.log`, the open segment | every journalled write | a torn tail, rolled back in the same call; kept for the next replay if the rollback also fails | the open segment's durable length, advanced only after a successful fsync |
 | `journal/<n>.log`, a new segment (roll) | first append after a start or replay, and at 64 MiB | an empty segment | the survey, re-run by the roll itself, which then excludes the segment it opened |
 | the last segment, truncated (replay) | every start | none: it removes bytes | the survey, re-run before replay returns |
-| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left | the survey, re-run by the prune the same call ends in; a leftover `.tmp` is inside the surveyed set and is counted |
-| `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | none | the survey, re-run at the end |
-| `quarantine/<sid>` | a scrub mismatch no mirror can repair | none: the move is a `rename`, so it happened or it did not | the size read before the move, added in the same call; corrected by the survey's own re-measure of that directory at the next roll or start |
+| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left, which nothing later removes | the survey, re-run by the prune a successful call ends in AND on every failing exit, before the original error is returned |
+| `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | whatever was removed before one removal failed | the survey, re-run at the end and on every failing exit, before the original error is returned |
+| `quarantine/<sid>` | a scrub mismatch no mirror can repair | the bytes may have MOVED and the failure be in the directory fsyncs that follow the rename | the destination's size read after the attempt, minus what stood at that name before it, applied under the same journal guard the move is made under |
 | `nonces` | every authenticated request | a partial line from a short write | the log publishes the absolute size of both its names after every write, the failing ones included |
 | `nonces.tmp` → `nonces` (compaction) | when the log passes twice the nonce ceiling | a `nonces.tmp` a failed compaction left | the same publish, which counts the temporary BY NAME so that leftover is seen |
 | `server.key` | first boot | a partial key refuses the start | the survey at `Journal::open`, which runs after it |
@@ -390,6 +392,15 @@ number stays right:
 
 The survey walks `O(segments + snapshots)` entries, never a vault, and it does
 not follow symlinks, so it cannot wander off the volume it is measuring.
+
+The quarantine move is the one writer whose ordering matters, because it
+changes the volume from OUTSIDE the journal's own code. The journal guard is
+taken before the move and released after the accounting, so the move and the
+number that describes it are one transition: no survey can run between them
+and count the file twice, and no watermark check can read the total between
+them and see the volume as emptier than it is. Serialization by construction
+is half of that; the other half is a test that the guard is really held while
+the file moves, which is what the hook inside the move measures.
 
 ## Replication and propagation (design hooks, phased)
 

@@ -1181,6 +1181,73 @@ class ImageSmokeContract(unittest.TestCase):
         found = self.mutate(SAID_DENY, "  || true")
         self.kills(found, "does not reach `deny`")
 
+    # --- restored ------------------------------------------------------------
+    #
+    # These five negatives stood before the round-2 repair and were deleted by
+    # it, while the validators they protect stayed. The round-2 verdict found
+    # the consequence by mutating the SUITE rather than the script: emptying
+    # `HARDENING`, and making `_image_of` return the pinned filler
+    # unconditionally, each left all 48 tests passing. A validator with no
+    # negative is a rule that cannot fail, which is the same defect the
+    # recovery guard had. Never delete a negative again without saying so.
+
+    def test_an_unpinned_filler_image_is_refused(self):
+        found = self.mutate(
+            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \\\n  rm -f',
+            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" busybox:latest \\\n  rm -f',
+        )
+        self.kills(found, "not the digest-pinned")
+
+    def test_dropping_the_servers_own_line_is_refused(self):
+        # The HTTP 503 alone is also what a shutting-down server answers.
+        found = self.mutate(f"grep -q '{READINESS_LINE}'", "grep -q 'event=readiness'")
+        self.kills(found, "the server's own line")
+
+    def test_running_the_ninth_property_unhardened_is_refused(self):
+        found = self.mutate(
+            '  --volume "${full_blobs}:/data/blobs" \\\n'
+            '  --volume "${full_journal}:/data/journal" \\\n',
+            '  --volume "${full_blobs}:/data/blobs" \\\n'
+            '  --volume "${full_journal}:/data/journal" \\\n'
+            "  --cap-add SYS_ADMIN \\\n",
+        )
+        self.assertEqual(found, [], "adding a capability is not what this rule reads")
+        found = self.mutate(
+            "  --read-only \\\n"
+            "  --cap-drop ALL \\\n"
+            "  --security-opt no-new-privileges \\\n"
+            '  --volume "${full_blobs}:/data/blobs" \\\n',
+            '  --volume "${full_blobs}:/data/blobs" \\\n',
+        )
+        self.kills(found, "runs without --read-only")
+
+    def test_putting_the_journal_on_the_volume_that_is_exhausted_is_refused(self):
+        found = self.mutate(
+            '  --volume "${full_journal}:/data/journal" \\\n',
+            '  --volume "${full_blobs}:/data/journal" \\\n',
+        )
+        self.kills(found, "puts the journal on the volume it exhausts")
+
+    def test_a_property_that_proves_nothing_is_refused(self):
+        found = self.mutate('prove "full blob volume:', 'true "full blob volume:')
+        self.kills(found, "no ninth property")
+
+    # --- and the two validators that had no negative at all -----------------
+
+    def test_a_server_that_does_not_mount_the_exhausted_volume_is_refused(self):
+        found = self.mutate(
+            '  --volume "${full_blobs}:/data/blobs" \\\n'
+            '  --volume "${full_journal}:/data/journal" \\\n'
+            '  --env "OBSYNC_BLOBS_CAPACITY',
+            '  --volume "${full_journal}:/data/journal" \\\n'
+            '  --env "OBSYNC_BLOBS_CAPACITY',
+        )
+        self.kills(found, "does not mount the volume it exhausts")
+
+    def test_dropping_the_wire_refusal_is_refused(self):
+        found = self.mutate(WIRE_DETAIL, "the volume said something")
+        self.kills(found, "does not require the wire refusal")
+
 
 # ---------------------------------------------------------------------------
 # The ninth property, EXECUTED.

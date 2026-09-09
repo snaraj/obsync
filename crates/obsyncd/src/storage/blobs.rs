@@ -23,6 +23,8 @@ use crate::types::{Sid, UnixMs};
 #[cfg(test)]
 use crate::storage::{BlobPhase, Fault};
 #[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
 use std::sync::Mutex;
 
 /// Copy buffer. Large enough to keep the disk busy, small enough that a
@@ -42,6 +44,12 @@ pub(crate) struct Blobs {
     mirrors: Vec<PathBuf>,
     #[cfg(test)]
     fault: Mutex<Fault>,
+    /// Called from inside the quarantine move. Tests only, and the point of
+    /// it is WHERE it runs: a test can look at the rest of the store from a
+    /// moment that is genuinely mid-operation, which is the only way to
+    /// prove a lock spans one.
+    #[cfg(test)]
+    mid_move: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Blobs {
@@ -56,6 +64,8 @@ impl Blobs {
             mirrors: mirrors.to_vec(),
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
+            #[cfg(test)]
+            mid_move: Mutex::new(None),
         };
         let mut removed = 0;
         for volume in blobs.volumes() {
@@ -170,15 +180,6 @@ impl Blobs {
         publish(&tmp, &Blobs::chunk_path(mirror, sid))
     }
 
-    /// The bytes a stored chunk occupies, or zero if it is already gone.
-    ///
-    /// Zero rather than an error on purpose: this only ever feeds an
-    /// accounting update, and a chunk that vanished between the scrub
-    /// reading it and this call moved no bytes anywhere.
-    pub(crate) fn chunk_bytes(&self, sid: &Sid) -> u64 {
-        fs::metadata(self.path(sid)).map(|m| m.len()).unwrap_or(0)
-    }
-
     /// Open a chunk for reading, with its length.
     pub(crate) fn open_chunk(&self, sid: &Sid) -> Result<(File, u64), StoreError> {
         let file = File::open(self.path(sid))?;
@@ -274,9 +275,26 @@ impl Blobs {
         make_dir(quarantine)?;
         let target = quarantine.join(sid.to_string());
         fs::rename(self.path(sid), &target)?;
+        // The bytes have moved. Everything below can still fail, and the
+        // caller accounts for the destination as it really is afterwards
+        // rather than for what this returns.
+        #[cfg(test)]
+        {
+            let hook = self.mid_move.lock().expect("mid-move hook").clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+            self.errno_at(BlobPhase::QuarantineSync)?;
+        }
         fsync_dir(quarantine)?;
         fsync_parent(&self.path(sid))?;
         Ok(())
+    }
+
+    /// Install the mid-move hook. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_mid_move(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.mid_move.lock().expect("mid-move hook") = Some(hook);
     }
 
     /// Delete a chunk from the primary volume and every mirror.
