@@ -782,8 +782,9 @@ impl Store {
             pruned: plan.pruned,
             summary: frame_summary,
         }) {
-            self.log
-                .error("gc_failed", &[("decision", Val::word(e.code()))]);
+            let mut fields = vec![("decision", Val::word(e.code()))];
+            fields.extend(error_fields(&e));
+            self.log.error("gc_failed", &fields);
             summary.chunks_collected = 0;
             summary.bytes_collected = 0;
             return summary;
@@ -792,10 +793,9 @@ impl Store {
         for sid in &collect {
             if let Err(e) = self.blobs.remove(sid) {
                 failed += 1;
-                self.log.warn(
-                    "gc_unlink_failed",
-                    &[("sid", Val::sid(sid)), ("decision", Val::word(e.code()))],
-                );
+                let mut fields = vec![("sid", Val::sid(sid)), ("decision", Val::word(e.code()))];
+                fields.extend(error_fields(&e));
+                self.log.warn("gc_unlink_failed", &fields);
             }
         }
         drop(index);
@@ -846,10 +846,10 @@ impl Store {
                         }
                         Ok(false) => quarantined.push(sid),
                         Err(e) => {
-                            self.log.error(
-                                "scrub_repair_failed",
-                                &[("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))],
-                            );
+                            let mut fields =
+                                vec![("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))];
+                            fields.extend(error_fields(&e));
+                            self.log.error("scrub_repair_failed", &fields);
                             quarantined.push(sid);
                         }
                     }
@@ -857,10 +857,12 @@ impl Store {
                 // Gone from the volume: either a collection took it while the
                 // hashing ran, or it never landed. The index reconciles below.
                 Ok(None) => {}
-                Err(e) => self.log.error(
-                    "scrub_read_failed",
-                    &[("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))],
-                ),
+                Err(e) => {
+                    let mut fields =
+                        vec![("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))];
+                    fields.extend(error_fields(&e));
+                    self.log.error("scrub_read_failed", &fields);
+                }
             }
         }
 
@@ -889,8 +891,9 @@ impl Store {
         if let Err(e) = append(&mut journal, &mut index, |_| Frame::Scrub {
             summary: frame,
         }) {
-            self.log
-                .error("scrub_failed", &[("decision", Val::word(e.code()))]);
+            let mut fields = vec![("decision", Val::word(e.code()))];
+            fields.extend(error_fields(&e));
+            self.log.error("scrub_failed", &fields);
         }
         drop(index);
         drop(journal);
@@ -1037,7 +1040,13 @@ pub(crate) fn version_id_of(
 }
 
 /// The numbers a refusal was decided on, for its log line (requirement 12).
-fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
+///
+/// Every line that states a `StoreError` extends its fields with this, so the
+/// facts a refusal was decided on are stated in exactly one grammar and no
+/// site can quietly state fewer. `StoreError::Io` maps to the closed
+/// `io::ErrorKind` name and nothing else: a message can carry a path, a kind
+/// cannot (requirement 6, `Val::io`).
+pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
     match e {
         StoreError::VolumeFull { free, watermark } => vec![
             ("free", Val::bytes(*free)),

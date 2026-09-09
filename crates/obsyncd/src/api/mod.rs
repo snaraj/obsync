@@ -42,8 +42,8 @@ use crate::config::Config;
 use crate::dashboard::Dashboard;
 use crate::log::{Log, Val};
 use crate::plugin_dist::PluginDist;
-use crate::storage::Store;
 use crate::storage::types::{DeviceState, StoreError};
+use crate::storage::{Store, error_fields};
 use crate::types::{AccountId, DeviceId};
 
 use self::auth::Clock;
@@ -436,17 +436,15 @@ impl App {
         };
         let swept = self.pairings.lock().expect("pairings").sweep(now);
         for device in &swept.orphans {
-            let decision = match self.store.delete_device(device) {
-                Ok(()) => "deleted",
-                Err(e) => e.code(),
-            };
-            self.log.warn(
-                "pairing_expired",
-                &[
-                    ("device", Val::device(device)),
-                    ("decision", Val::word(decision)),
-                ],
-            );
+            let mut fields = vec![("device", Val::device(device))];
+            match self.store.delete_device(device) {
+                Ok(()) => fields.push(("decision", Val::word("deleted"))),
+                Err(e) => {
+                    fields.push(("decision", Val::word(e.code())));
+                    fields.extend(error_fields(&e));
+                }
+            }
+            self.log.warn("pairing_expired", &fields);
         }
         let sessions = self.sessions.lock().expect("sessions").sweep(now);
         (nonces, nonce_appends, swept.pairings, sessions)
