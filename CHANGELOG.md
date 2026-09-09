@@ -4,7 +4,23 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.6 - Unreleased
+## 0.1.7 - Unreleased
+
+- A journal append that fails is rolled back to the length the journal has
+  made durable and the cut is fsynced, so the next frame starts clean and a
+  write acknowledged after a failure can no longer be discarded by the next
+  start's truncation; if that rollback itself fails the journal is faulted,
+  every later append refuses with `journal_faulted`, `/readyz` answers 503
+  with the reason to restart, and the line names both the append's and the
+  rollback's error kinds.
+- The journal volume has its own free-space watermark, refusing a frame with
+  `507 journal_full` against `OBSYNC_JOURNAL_CAPACITY` minus everything the
+  journal root holds, snapshots included; `VolumeStatus` reports that same
+  number, and the image smoke gained a ninth property that exhausts a real
+  blob volume and requires the server's `io=StorageFull` account, its 503,
+  and its recovery when the space comes back.
+
+## 0.1.6 - 2026-09-09
 
 - CodeQL dispositions are code: `security/codeql-dispositions.json` records
   every accepted alert with its rule, its glob, its scope, one of CodeQL's
