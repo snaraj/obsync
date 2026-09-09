@@ -4,7 +4,20 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.5 - Unreleased
+## 0.1.6 - Unreleased
+
+- CodeQL dispositions are code: `security/codeql-dispositions.json` records
+  every accepted alert with its rule, its glob, its scope, one of CodeQL's
+  three reasons and the issue carrying the reasoning, and a new `dispositions`
+  job in `codeql.yml` waits for both analyses to be indexed and then fails any
+  ref that carries an open alert no entry covers. On a push to `main` the same
+  job dismisses every covered alert through the API with that entry's reason
+  and comment and then requires `main` to hold zero open alerts, so nobody
+  dismisses by hand, nothing is excluded from analysis, and a new real finding
+  blocks the gate and the release chain until it is fixed or dispositioned in
+  a reviewed pull request.
+
+## 0.1.5 - 2026-09-09
 
 - Every line that states a storage refusal now names the `io::ErrorKind`
   behind it (`io=StorageFull`, `io=PermissionDenied`, `io=NotFound`) through
