@@ -138,6 +138,12 @@ impl NonceCache {
         })
     }
 
+    /// Arm the durable log's crash point. Tests only.
+    #[cfg(test)]
+    fn set_fault(&self, fault: super::nonce_log::NonceFault) {
+        self.durable.set_fault(fault);
+    }
+
     /// Remember `nonce` for `device`, or report the replay.
     ///
     /// # Errors
@@ -471,6 +477,8 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+
+    use super::super::nonce_log::NonceFault;
 
     /// The accounting handle a nonce log publishes into. These tests judge
     /// the log, not the journal that reads it, so each gets its own.
@@ -852,6 +860,46 @@ mod tests {
             nonce_bytes_on_disk(&dir),
             "after the compaction, temporary included"
         );
+    }
+
+    /// `ENOSPC`, the same number on Linux and on macOS.
+    const ENOSPC: i32 = 28;
+
+    #[test]
+    fn a_write_that_failed_part_way_still_publishes_the_bytes_that_landed() {
+        // The claim this pins is that the figure is published BEFORE the
+        // error is returned. A volume that refuses half way through a line
+        // still grew the file, and a watermark that cannot see those bytes
+        // is a watermark that admits a write onto a full volume.
+        for fault in [
+            NonceFault::ShortWrite { code: ENOSPC },
+            NonceFault::SyncFails { code: ENOSPC },
+        ] {
+            let dir = volume("nonce-partial-write");
+            let log = Log::buffered(LogLevel::Debug);
+            let handle = reported();
+            let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+                .expect("the nonce log opens");
+            c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+            let before = handle.load(Ordering::Acquire);
+
+            c.set_fault(fault);
+            c.remember(DEVICE, &nonce(2), 1_000)
+                .expect_err("the volume refused");
+            c.set_fault(NonceFault::None);
+
+            let landed = handle.load(Ordering::Acquire);
+            assert!(
+                landed > before,
+                "{fault:?}: bytes landed before the error and were published: \
+                 {landed} is not above {before}"
+            );
+            assert_eq!(
+                landed,
+                nonce_bytes_on_disk(&dir),
+                "{fault:?}: and the figure is the volume's own"
+            );
+        }
     }
 
     #[test]

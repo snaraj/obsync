@@ -28,6 +28,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+use std::sync::Mutex;
+
 use crate::log::{Log, Val};
 use crate::storage::{PathClass, StoreError};
 
@@ -44,6 +47,32 @@ const FILE_MODE: u32 = 0o600;
 /// One remembered request: the device that sent it and the nonce it carried,
 /// both 32 hex characters.
 pub type Nonce = (String, String);
+
+/// A crash point in the nonce log, armed by a test so the volume's own
+/// refusals can be proven rather than argued (AGENTS.md, "Testing doctrine").
+///
+/// Compiled only into the test build, like the storage engine's `Fault`: a
+/// switch that could skip a write or an fsync in the shipped binary is
+/// exactly the toggle requirement 4 forbids.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NonceFault {
+    /// No crash point armed.
+    #[default]
+    None,
+    /// Half the line lands, then the errno: what a full volume does to a
+    /// write that does not fit.
+    ShortWrite {
+        /// The `errno` the write returns.
+        code: i32,
+    },
+    /// The whole line lands and the fsync refuses, so the bytes are on the
+    /// volume and none of them is durable.
+    SyncFails {
+        /// The `errno` the fsync returns.
+        code: i32,
+    },
+}
 
 /// The file the accepted nonces are written to, held open for the life of
 /// the process.
@@ -67,6 +96,8 @@ pub struct NonceLog {
     lines: usize,
     /// Appends since the last sweep summary.
     appended: u64,
+    #[cfg(test)]
+    fault: Mutex<NonceFault>,
     /// Durability steps taken. `fsync` leaves nothing a hermetic test can
     /// observe, so what a test can pin is that the step runs, once per
     /// accepted request; the count rises in exactly one place.
@@ -164,6 +195,8 @@ impl NonceLog {
                     lines,
                     appended: 0,
                     syncs: 0,
+                    #[cfg(test)]
+                    fault: Mutex::new(NonceFault::None),
                 };
                 // What a restart inherits, said once before anything is
                 // written: the journal's survey ran before this and left
@@ -173,6 +206,17 @@ impl NonceLog {
             },
             entries,
         ))
+    }
+
+    /// Arm a crash point for the next write. Tests only.
+    #[cfg(test)]
+    pub fn set_fault(&self, fault: NonceFault) {
+        *self.fault.lock().expect("fault lock") = fault;
+    }
+
+    #[cfg(test)]
+    fn armed(&self) -> NonceFault {
+        *self.fault.lock().expect("fault lock")
     }
 
     /// Publish what this log occupies on the journal volume.
@@ -196,7 +240,17 @@ impl NonceLog {
     /// The volume. The caller refuses the request it came from: a request
     /// answered without its nonce recorded is one a crash makes replayable.
     pub fn append(&mut self, ts: u64, entry: &Nonce) -> io::Result<()> {
-        let wrote = self.file.write_all(line(ts, entry).as_bytes());
+        let text = line(ts, entry);
+        #[cfg(test)]
+        let wrote = match self.armed() {
+            NonceFault::ShortWrite { code } => self
+                .file
+                .write_all(&text.as_bytes()[..text.len() / 2])
+                .and(Err(io::Error::from_raw_os_error(code))),
+            _ => self.file.write_all(text.as_bytes()),
+        };
+        #[cfg(not(test))]
+        let wrote = self.file.write_all(text.as_bytes());
         let synced = if wrote.is_ok() { self.fsync() } else { Ok(()) };
         // Before either `?`: a short write that then failed still grew the
         // file, and the volume's accounting has to see that.
@@ -276,6 +330,10 @@ impl NonceLog {
 
     /// The durability step, and the only place the count rises.
     fn fsync(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        if let NonceFault::SyncFails { code } = self.armed() {
+            return Err(io::Error::from_raw_os_error(code));
+        }
         self.file.sync_all()?;
         self.syncs += 1;
         Ok(())

@@ -1998,6 +1998,59 @@ mod tests {
     }
 
     #[test]
+    fn a_survey_leaves_the_other_writers_totals_alone() {
+        // The four numbers only add up if they are DISJOINT. Nothing proved
+        // that: every earlier test surveyed a volume that held no nonce log
+        // and no quarantine, so a survey that counted them too would have
+        // been invisible. Both are planted here BEFORE a survey runs.
+        let dir = TempDir::new("journal-survey-disjoint");
+        let mut journal = open_journal(&dir);
+        journal.append(&record(1, account_frame())).expect("append");
+
+        // What the API lane's log looks like on the volume, and the number it
+        // publishes for it -- the leftover of a failed compaction included,
+        // because that name is counted too.
+        let root = dir.path().join("journal/v1");
+        fs::write(root.join("nonces"), vec![b'n'; 400]).expect("the nonce log");
+        fs::write(root.join("nonces.tmp"), vec![b't'; 120]).expect("its leftover");
+        journal.nonce_bytes().store(520, Ordering::Release);
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "the log's own number, counted once"
+        );
+
+        // A chunk the scrub moved, with its running total beside it.
+        let quarantine = journal.quarantine_dir();
+        fs::create_dir_all(&quarantine).expect("quarantine");
+        fs::write(quarantine.join("sentinel"), vec![b'q'; 64]).expect("quarantined");
+        journal.quarantined(64);
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "and the quarantine, counted once"
+        );
+
+        // The survey re-walks the volume. It must leave the nonce log to its
+        // own writer, and REPLACE the quarantine total rather than add to it:
+        // either mistake doubles bytes that are on the volume exactly once.
+        journal.resurvey().expect("survey");
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "still once each after a survey"
+        );
+
+        // ...and a roll surveys too, on the path an ordinary append takes.
+        journal.append(&record(2, account_frame())).expect("append");
+        assert_eq!(
+            journal.tracked_bytes(),
+            volume_total(&dir),
+            "and after a roll"
+        );
+    }
+
+    #[test]
     fn a_crash_mid_append_truncates_the_tail_and_keeps_the_rest() {
         let dir = TempDir::new("journal-torn");
         let mut journal = open_journal(&dir);
