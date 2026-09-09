@@ -15,6 +15,8 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use obsync_core::crc32::crc32;
 use obsync_core::hex;
@@ -43,6 +45,11 @@ const FILE_MODE: u32 = 0o600;
 const DIR_MODE: u32 = 0o700;
 /// Frame header: length and CRC.
 const HEADER: usize = 8;
+/// The nonce log and its compaction temporary, both on the journal volume
+/// and both owned by the API lane's own accounting rather than by the survey
+/// below (`api/nonce_log.rs`). Named here so the two cannot drift apart.
+pub(crate) const NONCE_FILE: &str = "nonces";
+pub(crate) const NONCE_TMP: &str = "nonces.tmp";
 
 /// One journalled fact. Everything the server remembers is a sequence of these.
 #[derive(Clone, Debug)]
@@ -130,11 +137,20 @@ pub(crate) struct Journal {
     /// The durable length of the open segment: what the journal believes it
     /// has made durable, which after a failed write is SHORTER than the file.
     segment_len: u64,
-    /// Bytes everything on the journal volume other than the open segment
-    /// occupies: the other segments, the snapshots, the quarantine, and the
-    /// small fixed files. Measured wherever the set of files changes, so the
-    /// append path adds one addition and no syscall.
+    /// Bytes the SURVEYED part of the volume holds: everything under the
+    /// root except the open segment, the quarantine, and the nonce log --
+    /// the three whose writers keep their own running total below, so no
+    /// byte is counted twice and no walk has to run to see a change.
     other_bytes: u64,
+    /// Bytes the quarantine directory holds. Written by the scrub, which can
+    /// quarantine a chunk at any moment between two walks, so it is kept as
+    /// a running total the scrub updates in the same call.
+    quarantine_bytes: u64,
+    /// Bytes the nonce log holds, its compaction leftover included. Written
+    /// by the API lane on every authenticated request, which is the reason
+    /// this is an atomic and not a field: taking the journal's own mutex per
+    /// request would serialise the API against the writer it protects.
+    nonce_bytes: Arc<AtomicU64>,
     /// Declared journal capacity (`OBSYNC_JOURNAL_CAPACITY`).
     capacity: u64,
     /// The refusal threshold for this volume.
@@ -159,6 +175,8 @@ impl Journal {
             segment_no: 0,
             segment_len: 0,
             other_bytes: 0,
+            quarantine_bytes: 0,
+            nonce_bytes: Arc::new(AtomicU64::new(0)),
             capacity: cfg.journal_capacity,
             watermark: cfg.free_watermark.bytes_for(cfg.journal_capacity),
             faulted: None,
@@ -171,17 +189,63 @@ impl Journal {
         Ok(journal)
     }
 
-    /// Bytes the journal volume holds.
+    /// Bytes the journal volume holds, right now.
     ///
-    /// The open segment's DURABLE length plus everything else under the
-    /// root: the other segments, the snapshots, the quarantine and the small
-    /// fixed files. Snapshots are the reason this is not a segment count --
-    /// they rest on the same volume and reach tens of megabytes for a large
-    /// vault. This is the number the journal watermark is measured against
-    /// and the number `VolumeStatus` reports, so a refusal and the dashboard
-    /// never disagree about how full the volume is.
+    /// Four sources, each owned by exactly ONE writer and each an absolute
+    /// number rather than a delta, so they cannot double-count and a missed
+    /// update cannot accumulate:
+    ///
+    /// - the open segment's DURABLE length, owned by `append`;
+    /// - everything else the last walk surveyed (the other segments, the
+    ///   snapshots, the credentials, the lock), owned by `measure_volume`;
+    /// - the quarantine, owned by the scrub through [`Journal::quarantined`];
+    /// - the nonce log, owned by the API lane through the handle
+    ///   [`Journal::nonce_bytes`] returns.
+    ///
+    /// Snapshots are the reason this is not a segment count -- they rest on
+    /// the same volume and reach tens of megabytes for a large vault -- and
+    /// the last two are the reason it is not a walk: both change between
+    /// walks, one of them on every authenticated request. This is the number
+    /// the journal watermark is measured against AND the number
+    /// `VolumeStatus` reports, so a refusal and the dashboard never disagree
+    /// about how full the volume is, at any moment rather than at the last
+    /// roll.
     pub(crate) fn tracked_bytes(&self) -> u64 {
-        self.other_bytes.saturating_add(self.segment_len)
+        self.other_bytes
+            .saturating_add(self.segment_len)
+            .saturating_add(self.quarantine_bytes)
+            .saturating_add(self.nonce_bytes.load(Ordering::Acquire))
+    }
+
+    /// The handle the nonce log reports its own size through.
+    ///
+    /// Absolute, not a delta: the log sets it to what its files hold after
+    /// every write, so a compaction that failed half way -- leaving both the
+    /// old file and a temporary one -- is accounted for by the same call
+    /// that made the mess, and a lost update cannot drift.
+    pub(crate) fn nonce_bytes(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.nonce_bytes)
+    }
+
+    /// Re-survey the volume now.
+    ///
+    /// For the one writer that lands on it AFTER the store is open and
+    /// before it serves: the setup token, written once per volume by
+    /// `cli::serve` when a first boot creates it. A survey is the right
+    /// answer for a start-time event and the wrong one for anything on the
+    /// request path, which is why nothing on the request path calls it.
+    pub(crate) fn resurvey(&mut self) -> Result<(), StoreError> {
+        self.measure_volume()
+    }
+
+    /// Account for a chunk the scrub has just moved into the quarantine.
+    ///
+    /// Called after the move succeeded, with the size the moved file had. A
+    /// move that failed moved nothing: `rename` is atomic, so there is no
+    /// partial file to account for, and a `quarantine/` directory the
+    /// attempt created holds no bytes.
+    pub(crate) fn quarantined(&mut self, bytes: u64) {
+        self.quarantine_bytes = self.quarantine_bytes.saturating_add(bytes);
     }
 
     /// The kind of the failure that faulted this journal, if it is faulted.
@@ -192,18 +256,32 @@ impl Journal {
         self.faulted.map(|f| f.io)
     }
 
-    /// Re-measure everything under the journal root except the open segment.
+    /// Re-survey the part of the volume nobody keeps a running total for.
     ///
     /// A walk, but of `O(segments + snapshots)` entries rather than of a
-    /// vault, and only where the set of files changes: the open, a roll, the
-    /// end of a replay, and the prune every snapshot ends in. The APPEND path
-    /// is what may not walk, and it does not.
+    /// vault, and only where the set of those files changes: the open, a
+    /// roll, the end of a replay, and the prune every snapshot ends in. The
+    /// APPEND path is what may not walk, and it does not.
+    ///
+    /// The quarantine is re-measured here too, because this is the one place
+    /// that can correct it: a start after a crash mid-quarantine, or after
+    /// an operator emptied it by hand, finds whatever is really there.
+    /// The nonce log is NOT surveyed -- its own writer owns that number and
+    /// keeps it current between walks.
     fn measure_volume(&mut self) -> Result<(), StoreError> {
-        let open = self
-            .segment
-            .is_some()
-            .then(|| self.segment_path(self.segment_no));
-        self.other_bytes = volume_bytes(&self.root, open.as_deref())?;
+        let mut skip = vec![self.quarantine_dir(), self.root.join(NONCE_FILE)];
+        skip.push(self.root.join(NONCE_TMP));
+        if self.segment.is_some() {
+            skip.push(self.segment_path(self.segment_no));
+        }
+        self.other_bytes = volume_bytes(&self.root, &skip)?;
+        self.quarantine_bytes = match volume_bytes(&self.quarantine_dir(), &[]) {
+            Ok(bytes) => bytes,
+            // No quarantine directory until the first quarantine: nothing
+            // there is nothing to count.
+            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
+        };
         Ok(())
     }
 
@@ -726,18 +804,24 @@ fn make_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Bytes every file under `dir` occupies, skipping `except`.
+/// Bytes every file under `dir` occupies, skipping the paths in `except`.
 ///
-/// `DirEntry::metadata` does not follow symlinks, so a link counts as the
-/// link and this walk never wanders off the volume it is measuring.
-fn volume_bytes(dir: &Path, except: Option<&Path>) -> Result<u64, StoreError> {
+/// A skipped path is skipped whether it is a file or a directory, because
+/// the three things this survey leaves out are one of each. `DirEntry::
+/// metadata` does not follow symlinks, so a link counts as the link and this
+/// walk never wanders off the volume it is measuring.
+fn volume_bytes(dir: &Path, except: &[PathBuf]) -> Result<u64, StoreError> {
     let mut total = 0;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
+        let path = entry.path();
+        if except.contains(&path) {
+            continue;
+        }
         let meta = entry.metadata()?;
         if meta.is_dir() {
-            total += volume_bytes(&entry.path(), except)?;
-        } else if except != Some(entry.path().as_path()) {
+            total += volume_bytes(&path, except)?;
+        } else {
             total += meta.len();
         }
     }
@@ -1844,6 +1928,73 @@ mod tests {
             volume_total(&dir),
             "after the append that reopened the segment: counted once, not twice"
         );
+    }
+
+    #[test]
+    fn the_frame_that_would_roll_is_the_one_refused() {
+        // The watermark is checked BEFORE `roll()`, and after an open or a
+        // replay there is no segment open, so the very first append is a
+        // frame that would roll. Its check has to be decided on a total that
+        // is already right, or a restart onto a full volume writes one more
+        // frame before it starts refusing.
+        let dir = TempDir::new("journal-roll-watermark");
+        let mut cfg = storage_config(&dir);
+        {
+            let mut journal =
+                Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("journal opens");
+            for seq in 1..=8 {
+                journal
+                    .append(&record(seq, account_frame()))
+                    .expect("room while the capacity is generous");
+            }
+        }
+        // Re-open with a capacity those frames already exhaust. No segment is
+        // open, so the next append would roll into the newest one.
+        cfg.journal_capacity = WATERMARK + 8;
+        let mut journal =
+            Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("journal opens");
+        let before = segment_bytes(&dir);
+        let err = journal
+            .append(&record(9, account_frame()))
+            .expect_err("the frame that would roll is refused");
+        match err {
+            StoreError::JournalFull { free, watermark } => {
+                assert_eq!(watermark, WATERMARK);
+                assert_eq!(
+                    free,
+                    (WATERMARK + 8) - volume_total(&dir),
+                    "decided on the whole volume, before the roll"
+                );
+            }
+            other => panic!("expected journal_full, got {other}"),
+        }
+        assert_eq!(segment_bytes(&dir), before, "and nothing was written");
+    }
+
+    #[test]
+    fn the_quarantine_is_counted_between_surveys_and_re_measured_at_one() {
+        let dir = TempDir::new("journal-quarantine-accounting");
+        let mut journal = open_journal(&dir);
+        journal.append(&record(1, account_frame())).expect("append");
+        let before = journal.tracked_bytes();
+
+        // What the scrub does: a file appears under the root, and the same
+        // call says so.
+        let quarantine = journal.quarantine_dir();
+        fs::create_dir_all(&quarantine).expect("quarantine");
+        fs::write(quarantine.join("sentinel"), b"rot").expect("quarantined");
+        journal.quarantined(3);
+        assert_eq!(journal.tracked_bytes(), before + 3);
+        assert_eq!(journal.tracked_bytes(), volume_total(&dir));
+
+        // A survey corrects it rather than adding to it, so a start after a
+        // crash mid-quarantine finds what is really there.
+        let mut reopened = open_journal(&dir);
+        assert_eq!(reopened.tracked_bytes(), volume_total(&dir));
+        reopened
+            .append(&record(2, account_frame()))
+            .expect("append");
+        assert_eq!(reopened.tracked_bytes(), volume_total(&dir));
     }
 
     #[test]

@@ -756,6 +756,33 @@ READY_PREFIX = '{"ready":true'
 FILLER = "/data/blobs/filler"
 # The digest-pinned throwaway, by the name the script resolves it into.
 FILLER_IMAGE = "${throwaway}"
+# Each half of property 9 is a poll loop that sets a variable and a guard that
+# refuses when the loop never set it, and BOTH have to be pinned. A loop whose
+# pattern matches anything, and a guard that cannot fail, are each a property
+# that stays green having proved nothing -- and neither shows up as a missing
+# line, which is why presence was not enough. Per half: the variable, the
+# token the loop must match on (`None` where rule 5's grep is that token), and
+# whether the refusal must name the budget it waited against.
+GUARDS = (
+    ("refused", '*"not_ready"*)', True),
+    ("said", None, False),
+    ("recovered", '{"ready":true*)', True),
+)
+# The budget a wait is measured against (AGENTS.md requirement 12).
+BUDGET = "${READY_BUDGET_SECONDS}"
+# A guard whose alternative is one of these refuses nothing at all.
+NEVER_REFUSES = ("true", ":")
+
+# The mutation anchors, lifted verbatim out of `image-smoke.sh` at the time
+# this file was written, so a hand-typed near-miss cannot silently stop
+# matching and turn a negative test into one that proves nothing. `mutate`
+# asserts each one is unique before it applies it.
+RECOVERY_TEST = '[ -n "${recovered}" ] \\\n'
+RECOVERY_DENY = '  || deny "the server did not become ready again within ${READY_BUDGET_SECONDS}s of the volume being freed: \'${body}\'"\n'
+REFUSED_TEST = '[ -n "${refused}" ] \\\n'
+REFUSED_DENY = '  || deny "a full blob volume was still answering ready after ${READY_BUDGET_SECONDS}s: \'${body}\'"\n'
+REFUSED_PATTERN = '    *\'"not_ready"\'*) refused="${body}"; break ;;\n'
+SAID_DENY = '  || { printf \'image-smoke: full-volume server log:\\n%s\\n\' "$(docker logs "${full}" 2>&1 | tail -n 20)"; \\\n       deny \'the server did not say what the full blob volume returned (event=readiness decision=not_ready volume=blobs io=StorageFull)\'; }'
 # The hardening every run in this script carries.
 HARDENING = (
     ("--read-only",),
@@ -881,6 +908,35 @@ def _mentions(commands_: list[list[str]], needle: str) -> bool:
     return any(any(needle in token for token in c) for c in commands_)
 
 
+def _sets(block: list[list[str]], var: str) -> list[list[str]]:
+    """The commands that give `var` a value other than its empty initialiser."""
+    empty = f"{var}=''"
+    return [
+        c
+        for c in block
+        if any(t.startswith(f"{var}=") and t != empty and t != f"{var}=" for t in c)
+    ]
+
+
+def _guards(block: list[list[str]], var: str) -> list[list[str]]:
+    """The commands that refuse when `var` was never set.
+
+    Matched on MENTIONING the variable rather than on holding it as an exact
+    token: `[ -n "${recovered}x" ]` is a guard that can never fail, and the
+    rule that judges the test is only reached if this finds it.
+    """
+    name = "${" + var + "}"
+    return [
+        c for c in block if c and c[0] == "[" and "||" in c and any(name in t for t in c)
+    ]
+
+
+def _split_on_or(command: list[str]) -> tuple[list[str], list[str]]:
+    """A guard's test, and what runs when the test fails."""
+    at = command.index("||")
+    return command[:at], command[at + 1 :]
+
+
 def ninth_refusals(text: str) -> list[str]:
     """Everything wrong with the ninth property, one string per rule."""
     found: list[str] = []
@@ -953,6 +1009,49 @@ def ninth_refusals(text: str) -> list[str]:
             f"({WIRE_CODE}, {WIRE_DETAIL})"
         )
 
+    # 5b: every half REFUSES. For each, the loop matches on the one pattern
+    # that means what the half claims, and the guard is exactly
+    # `[ -n "${var}" ] || deny …`: a test that cannot fail and an alternative
+    # that refuses nothing are the two ways to keep a green line while the
+    # property stops being a property.
+    for var, pattern, budget in GUARDS:
+        if pattern is not None:
+            setters = _sets(block, var)
+            if not setters:
+                found.append(f"{SMOKE_NAME}: nothing in property 9 sets {var}")
+            elif not any(c[0] == pattern for c in setters):
+                found.append(
+                    f"{SMOKE_NAME}: property 9 sets {var} on {setters[0][0]!r}, "
+                    f"not on {pattern!r}; a looser pattern matches an answer "
+                    "that is not the one the property claims"
+                )
+        guards = _guards(block, var)
+        if len(guards) != 1:
+            found.append(
+                f"{SMOKE_NAME}: property 9 has {len(guards)} refusals for {var}, not 1"
+            )
+            continue
+        test, alternative = _split_on_or(guards[0])
+        if test != ["[", "-n", "${" + var + "}", "]"]:
+            found.append(
+                f"{SMOKE_NAME}: property 9's {var} refusal tests {' '.join(test)!r}, "
+                f'not `[ -n "${{{var}}}" ]`; a test that cannot fail refuses nothing'
+            )
+        if "deny" not in alternative:
+            found.append(
+                f"{SMOKE_NAME}: property 9's {var} refusal does not reach `deny`"
+            )
+        if any(word in alternative for word in NEVER_REFUSES):
+            found.append(
+                f"{SMOKE_NAME}: property 9's {var} refusal is satisfied by "
+                f"{[w for w in NEVER_REFUSES if w in alternative]}, so it never fires"
+            )
+        if budget and not any(BUDGET in token for token in alternative):
+            found.append(
+                f"{SMOKE_NAME}: property 9's {var} refusal does not name the "
+                f"budget it waited against ({BUDGET})"
+            )
+
     # 6: recovery. The free itself, and the requirement that ready returns.
     freed = [
         c
@@ -965,15 +1064,14 @@ def ninth_refusals(text: str) -> list[str]:
             f"{SMOKE_NAME}: property 9 never frees the volume again, so it proves "
             "a refusal and not a recovery"
         )
+    # ...and that the recovery is required AFTER it, not before: a ready
+    # answer read before the volume was freed is the answer from the run that
+    # had not filled it yet.
     after = block[block.index(freed[0]) :] if freed else []
-    if not _mentions(after, READY_PREFIX):
+    if not _sets(after, "recovered"):
         found.append(
             f"{SMOKE_NAME}: property 9 does not require {READY_PREFIX} after the "
             "volume is freed"
-        )
-    if not any(c[0] == "deny" or "deny" in c for c in after):
-        found.append(
-            f"{SMOKE_NAME}: property 9 does not refuse when readiness never returns"
         )
 
     # 7: the count the SUMMARY prints.
@@ -1035,55 +1133,234 @@ class ImageSmokeContract(unittest.TestCase):
         found = self.mutate("  rm -f /data/blobs/filler \\\n", "  true \\\n")
         self.kills(found, "never frees the volume again")
 
-    def test_dropping_the_requirement_that_readiness_returns_is_refused(self):
+    def test_a_recovery_pattern_that_matches_something_else_is_refused(self):
         found = self.mutate(
             "    '{\"ready\":true'*) recovered=\"${body}\"; break ;;\n",
             "    'nothing-matches-this'*) recovered=\"${body}\"; break ;;\n",
         )
-        self.kills(found, "does not require")
+        self.kills(found, "a looser pattern")
 
-    def test_an_unpinned_filler_image_is_refused(self):
+    # --- the three halves must REFUSE, not merely exist ---------------------
+    #
+    # The reviewer's finding: the suite stayed green when the final recovery
+    # assertion was made unconditional. Dropping a half is one mutation and it
+    # was caught; keeping the half and making its guard vacuous is a different
+    # one, it leaves every line in place, and it was not.
+
+    def test_an_unconditional_recovery_assertion_is_refused(self):
+        # The reviewer's own shape: the guard stands and refuses nothing.
+        found = self.mutate(RECOVERY_DENY, "  || true\n")
+        self.kills(found, "does not reach `deny`")
+
+    def test_a_recovery_test_that_cannot_fail_is_refused(self):
+        # The other half of the same trick: leave `deny` in place and make the
+        # test true whatever the loop did.
+        found = self.mutate(RECOVERY_TEST, '[ -n "${recovered}x" ] \\\n')
+        self.kills(found, "refuses nothing")
+
+    def test_a_recovery_refusal_that_hides_its_budget_is_refused(self):
         found = self.mutate(
-            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \\\n  rm -f',
-            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" busybox:latest \\\n  rm -f',
+            "within ${READY_BUDGET_SECONDS}s of the volume being freed",
+            "eventually, of the volume being freed",
         )
-        self.kills(found, "not the digest-pinned")
+        self.kills(found, "does not name the budget")
 
-    def test_dropping_the_servers_own_line_is_refused(self):
-        # The HTTP 503 alone is also what a shutting-down server answers.
-        found = self.mutate(
-            f"grep -q '{READINESS_LINE}'", "grep -q 'event=readiness'"
+    def test_an_unconditional_503_assertion_is_refused(self):
+        found = self.mutate(REFUSED_DENY, "  || true\n")
+        self.kills(found, "does not reach `deny`")
+
+    def test_a_503_test_that_cannot_fail_is_refused(self):
+        found = self.mutate(REFUSED_TEST, '[ -n "${refused}x" ] \\\n')
+        self.kills(found, "refuses nothing")
+
+    def test_a_loosened_503_pattern_is_refused(self):
+        found = self.mutate(REFUSED_PATTERN, '    *) refused="${body}"; break ;;\n')
+        self.kills(found, "a looser pattern")
+
+    def test_an_unconditional_log_line_assertion_is_refused(self):
+        found = self.mutate(SAID_DENY, "  || true")
+        self.kills(found, "does not reach `deny`")
+
+
+# ---------------------------------------------------------------------------
+# The ninth property, EXECUTED.
+#
+# The reader above judges the script's shape. A shape can be right while the
+# property still cannot fail, which is exactly what the round-1 verdict found:
+# replacing `[ -n "${recovered}" ]` with unconditional success left every
+# structural rule green and let the real smoke time out waiting for recovery
+# and print its ninth proof anyway. So the property is also RUN -- against
+# stubs, never a container runtime -- in three worlds where it must refuse,
+# and the mutation that made it unfalsifiable is run in the same worlds and
+# must reach `prove`, which is what says these three cases have teeth.
+# ---------------------------------------------------------------------------
+
+# The `curl` stub answers from a script of bodies, one per call, the last one
+# repeating: that is exactly the shape of a poll loop's world.
+CURL_STUB = r"""#!/bin/sh
+n=0
+if [ -f "${STUB_CURL_N}" ]; then n=$(cat "${STUB_CURL_N}"); fi
+n=$((n + 1))
+printf '%s' "${n}" > "${STUB_CURL_N}"
+total=$(grep -c '' "${STUB_CURL_BODIES}")
+if [ "${n}" -gt "${total}" ]; then n="${total}"; fi
+sed -n "${n}p" "${STUB_CURL_BODIES}"
+exit 0
+"""
+
+# `docker` answers everything property 9 asks of it, and records nothing:
+# what this harness judges is the script's own control flow.
+NINTH_DOCKER_STUB = r"""#!/bin/sh
+case "$1 $2" in
+  'port 8080/tcp'*) printf '127.0.0.1:1\n'; exit 0 ;;
+esac
+case "$1" in
+  port) printf '127.0.0.1:1\n'; exit 0 ;;
+  logs) cat "${STUB_LOGS}"; exit 0 ;;
+  container)
+    case "$2" in
+      inspect) printf 'running\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  volume|run|stop|rm|image) exit 0 ;;
+esac
+exit 0
+"""
+
+# A ready answer, the 503 the full volume gives, and the log line the server
+# writes beside it. The bodies a world is built from.
+READY_BODY = '{"ready":true,"seq":0}'
+NOT_READY_BODY = '{"error":"not_ready","detail":"blobs volume is not writable"}'
+
+
+def ninth_source(text: str) -> str:
+    """Property 9's own lines, from its first command to its `prove`."""
+    start = text.index("docker volume create --driver local")
+    end = text.index('prove "full blob volume:', start)
+    end = text.index("\n", end) + 1
+    return text[start:end]
+
+
+def run_ninth(text: str, bodies: list[str], log_line: bool = True) -> tuple[int, str]:
+    """Run property 9 against a scripted world; return its status and output.
+
+    Nothing here starts a container: `docker` and `curl` are stubs, `sleep` is
+    a no-op so a 60 s budget costs nothing, and `deny` and `prove` are the
+    script's own words reduced to what this judges -- did it refuse, and did
+    it reach the ninth proof.
+    """
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            "image='obsync:stub'",
+            "full='smoke-full'",
+            "full_blobs='smoke-full-blobs'",
+            "full_journal='smoke-full-journal'",
+            f"throwaway='{STUB_THROWAWAY}'",
+            "BLOBS_CAPACITY='1GiB'",
+            "JOURNAL_CAPACITY='256MiB'",
+            "FULL_BLOBS_SIZE='8m'",
+            "READY_BUDGET_SECONDS=3",
+            "proven=8",
+            "sleep() { :; }",
+            "prove() { proven=$((proven + 1)); printf 'PROVEN %s\\n' \"$1\"; }",
+            "deny() { printf 'DENY %s\\n' \"$1\" >&2; exit 1; }",
+            ninth_source(text),
+            "",
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        binaries = root / "bin"
+        binaries.mkdir()
+        for name, body in (("docker", NINTH_DOCKER_STUB), ("curl", CURL_STUB)):
+            stub = binaries / name
+            stub.write_text(body, encoding="utf-8")
+            stub.chmod(0o755)
+        (root / "bodies").write_text("\n".join(bodies) + "\n", encoding="utf-8")
+        (root / "logs").write_text(
+            (READINESS_LINE + "\n") if log_line else "nothing of the sort\n",
+            encoding="utf-8",
         )
-        self.kills(found, "the server's own line")
-
-    def test_running_the_ninth_property_unhardened_is_refused(self):
-        found = self.mutate(
-            '  --volume "${full_blobs}:/data/blobs" \\\n'
-            '  --volume "${full_journal}:/data/journal" \\\n',
-            '  --volume "${full_blobs}:/data/blobs" \\\n'
-            '  --volume "${full_journal}:/data/journal" \\\n'
-            '  --cap-add SYS_ADMIN \\\n',
+        script_path = root / "ninth.sh"
+        script_path.write_text(harness, encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", str(script_path)],
+            cwd=str(ROOT),
+            env={
+                "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
+                "HOME": str(root),
+                "LANG": "C",
+                "STUB_CURL_BODIES": str(root / "bodies"),
+                "STUB_CURL_N": str(root / "n"),
+                "STUB_LOGS": str(root / "logs"),
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
-        self.assertEqual(found, [], "adding a capability is not what this rule reads")
-        found = self.mutate("  --read-only \\\n  --cap-drop ALL \\\n  --security-opt no-new-privileges \\\n  --volume \"${full_blobs}:/data/blobs\" \\\n", "  --volume \"${full_blobs}:/data/blobs\" \\\n")
-        self.kills(found, "runs without --read-only")
+    return result.returncode, result.stdout + result.stderr
 
-    def test_putting_the_journal_on_the_volume_that_is_exhausted_is_refused(self):
-        found = self.mutate(
-            '  --volume "${full_journal}:/data/journal" \\\n',
-            '  --volume "${full_blobs}:/data/journal" \\\n',
+
+# The three worlds. Each is the poll answers `curl` gives, in order, the last
+# repeating for the rest of that loop's budget.
+WORLD_HAPPY = [READY_BODY, NOT_READY_BODY, READY_BODY]
+WORLD_NEVER_RECOVERS = [READY_BODY, NOT_READY_BODY, NOT_READY_BODY]
+WORLD_NEVER_FULL = [READY_BODY, READY_BODY, READY_BODY]
+
+
+class TheNinthPropertyRuns(unittest.TestCase):
+    """The property, executed. No container runtime is touched."""
+
+    def setUp(self):
+        self.text = SMOKE.read_text(encoding="utf-8")
+
+    def proves(self, status: int, output: str):
+        self.assertEqual(status, 0, output)
+        self.assertIn("PROVEN full blob volume", output)
+
+    def refuses(self, status: int, output: str, because: str):
+        self.assertNotEqual(status, 0, f"it passed: {output}")
+        self.assertIn("DENY", output)
+        self.assertIn(because, output)
+        self.assertNotIn(
+            "PROVEN full blob volume",
+            output,
+            "a property that refused must not also print its proof",
         )
-        self.kills(found, "puts the journal on the volume it exhausts")
 
-    def test_a_property_that_proves_nothing_is_refused(self):
-        found = self.mutate(
-            'prove "full blob volume:', 'true "full blob volume:'
+    def test_a_volume_that_fills_and_frees_reaches_the_ninth_proof(self):
+        # The baseline the three refusals are measured against: without it,
+        # a property that refused everything would look perfect.
+        self.proves(*run_ninth(self.text, WORLD_HAPPY))
+
+    def test_a_volume_that_never_recovers_cannot_reach_the_proof(self):
+        status, output = run_ninth(self.text, WORLD_NEVER_RECOVERS)
+        self.refuses(status, output, "did not become ready again")
+
+    def test_a_volume_that_never_refuses_cannot_reach_the_proof(self):
+        status, output = run_ninth(self.text, WORLD_NEVER_FULL)
+        self.refuses(status, output, "still answering ready")
+
+    def test_a_server_that_never_said_why_cannot_reach_the_proof(self):
+        status, output = run_ninth(self.text, WORLD_HAPPY, log_line=False)
+        self.refuses(status, output, "did not say what the full blob volume returned")
+
+    def test_the_unconditional_recovery_guard_would_have_passed(self):
+        # The round-1 finding, executed rather than argued: with the guard
+        # made unconditional, the world where recovery never comes reaches
+        # the ninth proof. That is what the three cases above now stop, and
+        # this is the proof they are not vacuous.
+        mutated = self.text.replace(RECOVERY_DENY, "  || true\n")
+        self.assertNotEqual(mutated, self.text, "the mutation anchor still matches")
+        status, output = run_ninth(mutated, WORLD_NEVER_RECOVERS)
+        self.assertEqual(status, 0, output)
+        self.assertIn(
+            "PROVEN full blob volume",
+            output,
+            "the mutant is meant to pass here; if it does not, these cases "
+            "are proving something other than the guard",
         )
-        self.kills(found, "no ninth property")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 if __name__ == "__main__":

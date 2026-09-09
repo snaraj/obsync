@@ -25,6 +25,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::log::{Log, Val};
 use crate::storage::{PathClass, StoreError};
@@ -53,6 +55,13 @@ pub struct NonceLog {
     /// The journal root, for the compaction's temporary file and rename.
     root: PathBuf,
     file: File,
+    /// What this log occupies on the JOURNAL volume, published after every
+    /// write so the volume's watermark and its dashboard see these bytes at
+    /// the moment they land rather than at the journal's next survey. It is
+    /// an absolute number, not a delta: a lost update cannot accumulate, and
+    /// the journal's own survey leaves these two names alone
+    /// (`storage/journal.rs`, `NONCE_FILE` and `NONCE_TMP`).
+    reported: Arc<AtomicU64>,
     /// Lines the file holds, live and expired alike: what the caller's
     /// compaction threshold is measured against.
     lines: usize,
@@ -79,6 +88,7 @@ impl NonceLog {
     pub fn open(
         journal_dir: &Path,
         now: u64,
+        reported: Arc<AtomicU64>,
         log: &Log,
     ) -> Result<(NonceLog, Vec<(Nonce, u64)>), StoreError> {
         let root = PathClass::JournalRoot.path(journal_dir);
@@ -146,15 +156,38 @@ impl NonceLog {
             ],
         );
         Ok((
-            NonceLog {
-                root,
-                file,
-                lines,
-                appended: 0,
-                syncs: 0,
+            {
+                let log = NonceLog {
+                    root,
+                    file,
+                    reported,
+                    lines,
+                    appended: 0,
+                    syncs: 0,
+                };
+                // What a restart inherits, said once before anything is
+                // written: the journal's survey ran before this and left
+                // these names to this number.
+                log.publish();
+                log
             },
             entries,
         ))
+    }
+
+    /// Publish what this log occupies on the journal volume.
+    ///
+    /// Two `stat`s: the open handle, and the compaction temporary by name.
+    /// BOTH names, because a compaction that fails leaves the temporary
+    /// behind and those bytes are on the volume exactly as the file's are.
+    /// Called after every write, the failing ones included: bytes that
+    /// landed before an error are still bytes, and a watermark that cannot
+    /// see them is a watermark that admits a write onto a full volume.
+    fn publish(&self) {
+        let live = self.file.metadata().map_or(0, |m| m.len());
+        let leftover = fs::symlink_metadata(self.root.join(TMP_NAME)).map_or(0, |m| m.len());
+        self.reported
+            .store(live.saturating_add(leftover), Ordering::Release);
     }
 
     /// Write one accepted nonce down and make it durable.
@@ -163,8 +196,13 @@ impl NonceLog {
     /// The volume. The caller refuses the request it came from: a request
     /// answered without its nonce recorded is one a crash makes replayable.
     pub fn append(&mut self, ts: u64, entry: &Nonce) -> io::Result<()> {
-        self.file.write_all(line(ts, entry).as_bytes())?;
-        self.fsync()?;
+        let wrote = self.file.write_all(line(ts, entry).as_bytes());
+        let synced = if wrote.is_ok() { self.fsync() } else { Ok(()) };
+        // Before either `?`: a short write that then failed still grew the
+        // file, and the volume's accounting has to see that.
+        self.publish();
+        wrote?;
+        synced?;
         self.lines += 1;
         self.appended += 1;
         Ok(())
@@ -181,6 +219,14 @@ impl NonceLog {
     /// # Errors
     /// The volume.
     pub fn compact(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
+        let outcome = self.compact_inner(live);
+        // A compaction that failed part way leaves the old file AND a
+        // temporary beside it; both are on the volume and both are counted.
+        self.publish();
+        outcome
+    }
+
+    fn compact_inner(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
         let mut body = String::new();
         for (entry, expiry) in live {
             body.push_str(&line(expiry.saturating_sub(NONCE_TTL_SECS), entry));

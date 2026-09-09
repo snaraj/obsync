@@ -988,8 +988,15 @@ impl Store {
             );
             return Ok(true);
         }
+        // The size BEFORE the move: after it the name is gone from the blob
+        // volume, and this is the number the journal volume just gained.
+        let moved = self.blobs.chunk_bytes(sid);
         let quarantine = self.journal().quarantine_dir();
         self.blobs.quarantine(sid, &quarantine)?;
+        // In the same call as the move, so the journal's usage is right for
+        // the very next append rather than for the next roll. `rename` is
+        // atomic: a move that failed returned above and moved nothing.
+        self.journal().quarantined(moved);
         self.log.error(
             "chunk_quarantined",
             &[
@@ -1054,6 +1061,26 @@ impl Store {
     /// Returns segments read, frames that decode, and frames that do not.
     pub fn verify_journal(&self) -> Result<(u64, u64, u64), StoreError> {
         self.journal().verify()
+    }
+
+    /// Re-survey the journal volume, for a start-time write that landed on
+    /// it after this store opened.
+    ///
+    /// # Errors
+    /// The volume.
+    pub fn resurvey_journal(&self) -> Result<(), StoreError> {
+        self.journal().resurvey()
+    }
+
+    /// The handle the nonce log reports its own size on the journal volume
+    /// through (`api/nonce_log.rs`).
+    ///
+    /// That file is written on every authenticated request, so its bytes
+    /// cannot wait for the journal's next survey and cannot be counted by
+    /// taking the journal's mutex per request either. It owns its number and
+    /// publishes it here.
+    pub(crate) fn nonce_bytes(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.journal().nonce_bytes()
     }
 
     /// The kind of the failure that faulted the journal, if it is faulted.

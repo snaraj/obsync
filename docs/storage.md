@@ -351,18 +351,45 @@ The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
 volume is asked. Tracked journal usage is everything under the journal root —
 the open segment's durable length plus every other file on the volume: the
-other segments, the index snapshots, the quarantine, and the small fixed
-files. Snapshots are why this is not a segment count: they rest on the same
-volume and reach tens of megabytes for a large vault. The total is measured
-where the set of files changes (the open, a roll, the end of a replay, and
-the prune every snapshot ends in) and held in memory, so the APPEND path,
-which is the one that may not walk a directory, costs no syscall.
-`VolumeStatus` reports the same number, so a refusal and the dashboard never
-disagree about how full the volume is. The two volumes have separate refusal
-codes, `volume_full` and `journal_full`, because they are provisioned and
-filled independently and a refusal that did not say which one it measured
-would send an operator to the wrong disk. A journal volume that fills anyway, below the declared capacity,
-is rule 3 above: the append is refused, rolled back, and never acknowledged.
+other segments, the index snapshots, the quarantine, the nonce log, and the
+small fixed files. Snapshots are why this is not a segment count: they rest on
+the same volume and reach tens of megabytes for a large vault. `VolumeStatus`
+reports the same number, so a refusal and the dashboard never disagree about
+how full the volume is, at any moment rather than at the last roll. The two
+volumes have separate refusal codes, `volume_full` and `journal_full`, because
+they are provisioned and filled independently and a refusal that did not say
+which one it measured would send an operator to the wrong disk. A journal
+volume that fills anyway, below the declared capacity, is rule 3 above: the
+append is refused, rolled back, and never acknowledged.
+
+### Where the measure runs
+
+The append path may not walk a directory, and everything that writes to this
+volume between two walks would otherwise be invisible to the refusal. So the
+total is four numbers, each owned by exactly one writer and each ABSOLUTE
+rather than a delta, so they cannot double-count and a missed update cannot
+accumulate: the open segment's durable length, a survey of everything the
+other three do not own, the quarantine, and the nonce log.
+
+Every writer of this volume, what it leaves behind when it fails, and how the
+number stays right:
+
+| Writes | When | Residue on failure | Accounted by |
+| --- | --- | --- | --- |
+| `journal/<n>.log`, the open segment | every journalled write | a torn tail, rolled back in the same call; kept for the next replay if the rollback also fails | the open segment's durable length, advanced only after a successful fsync |
+| `journal/<n>.log`, a new segment (roll) | first append after a start or replay, and at 64 MiB | an empty segment | the survey, re-run by the roll itself, which then excludes the segment it opened |
+| the last segment, truncated (replay) | every start | none: it removes bytes | the survey, re-run before replay returns |
+| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left | the survey, re-run by the prune the same call ends in; a leftover `.tmp` is inside the surveyed set and is counted |
+| `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | none | the survey, re-run at the end |
+| `quarantine/<sid>` | a scrub mismatch no mirror can repair | none: the move is a `rename`, so it happened or it did not | the size read before the move, added in the same call; corrected by the survey's own re-measure of that directory at the next roll or start |
+| `nonces` | every authenticated request | a partial line from a short write | the log publishes the absolute size of both its names after every write, the failing ones included |
+| `nonces.tmp` → `nonces` (compaction) | when the log passes twice the nonce ceiling | a `nonces.tmp` a failed compaction left | the same publish, which counts the temporary BY NAME so that leftover is seen |
+| `server.key` | first boot | a partial key refuses the start | the survey at `Journal::open`, which runs after it |
+| `setup-token` | first boot | a partial token refuses the start | a survey `cli::serve` runs after it, being the last write the volume takes before the server serves |
+| `lock` | every start | none: it is empty | the survey at `Journal::open`, which runs after it |
+
+The survey walks `O(segments + snapshots)` entries, never a vault, and it does
+not follow symlinks, so it cannot wander off the volume it is measuring.
 
 ## Replication and propagation (design hooks, phased)
 

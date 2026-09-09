@@ -309,7 +309,15 @@ impl App {
         // The store's own logger, rather than a second one handed in beside
         // it: one process writes to one sink.
         let log = store.log();
-        let nonces = auth::NonceCache::open(&cfg.journal_dir, clock.unix_secs(), &log)?;
+        // The nonce log rests on the journal volume and grows on every
+        // authenticated request, so it reports its own bytes into the store's
+        // accounting rather than waiting for the journal's next survey.
+        let nonces = auth::NonceCache::open(
+            &cfg.journal_dir,
+            clock.unix_secs(),
+            store.nonce_bytes(),
+            &log,
+        )?;
         let app = Self {
             cfg,
             store,

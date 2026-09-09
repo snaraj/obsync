@@ -87,6 +87,12 @@ pub fn run() -> i32 {
         Ok(token) => token,
         Err(e) => return fatal(&log, "setup_token_failed", &e),
     };
+    // A first boot has just written the token onto the journal volume, after
+    // the store surveyed it. This is the last write that volume takes before
+    // the server serves, so it is the last moment a survey is free.
+    if let Err(e) = store.resurvey_journal() {
+        return fatal(&log, "store_open_failed", &e);
+    }
 
     let limits = Limits {
         max_header_bytes: MAX_HEADER_BYTES,

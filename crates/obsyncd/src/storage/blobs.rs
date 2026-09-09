@@ -170,6 +170,15 @@ impl Blobs {
         publish(&tmp, &Blobs::chunk_path(mirror, sid))
     }
 
+    /// The bytes a stored chunk occupies, or zero if it is already gone.
+    ///
+    /// Zero rather than an error on purpose: this only ever feeds an
+    /// accounting update, and a chunk that vanished between the scrub
+    /// reading it and this call moved no bytes anywhere.
+    pub(crate) fn chunk_bytes(&self, sid: &Sid) -> u64 {
+        fs::metadata(self.path(sid)).map(|m| m.len()).unwrap_or(0)
+    }
+
     /// Open a chunk for reading, with its length.
     pub(crate) fn open_chunk(&self, sid: &Sid) -> Result<(File, u64), StoreError> {
         let file = File::open(self.path(sid))?;

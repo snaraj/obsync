@@ -509,6 +509,67 @@ fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
     assert_eq!(after.code(), "journal_faulted");
 }
 
+/// Every byte the journal ROOT holds, walked independently of the server.
+fn journal_root_bytes(dir: &Path) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let meta = entry.metadata().expect("metadata");
+            if meta.is_dir() {
+                total += walk(&entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+    walk(&dir.join("journal/v1"))
+}
+
+#[test]
+fn the_journal_volume_counts_the_nonce_log_the_api_writes() {
+    // End to end, because the wiring is the part that can be missing: the
+    // nonce log publishes its bytes into a handle, and only `App::new`
+    // decides whether that handle is the store's. Setup has already opened
+    // the segment, so nothing here re-surveys the volume and a number that
+    // waited for the next roll would simply be wrong.
+    let h = Harness::start("nonce-volume-accounting");
+    let cred = h.setup_account();
+    let used = |h: &Harness| {
+        h.app
+            .store
+            .volumes()
+            .into_iter()
+            .find(|v| v.role == "journal")
+            .expect("a journal volume")
+            .bytes_used
+    };
+    let after_setup = journal_root_bytes(&h.dir);
+    assert_eq!(used(&h), after_setup, "after setup");
+
+    for n in 0..4 {
+        let res = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+            .body(&format!("{{\"name\":\"laptop {n}\"}}"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+    }
+
+    let grown = journal_root_bytes(&h.dir);
+    assert!(
+        grown > after_setup,
+        "authenticated requests grew the journal volume: {grown} is not above {after_setup}"
+    );
+    assert_eq!(
+        used(&h),
+        grown,
+        "and every one of those bytes is where the watermark reads them"
+    );
+}
+
 #[test]
 fn an_unknown_route_is_a_json_404() {
     let h = Harness::start("404");

@@ -8,6 +8,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -1369,6 +1370,138 @@ fn retention_prunes_old_versions_and_replay_agrees() {
         live,
         "replaying the gc frame prunes the same versions"
     );
+}
+
+/// Every byte the journal ROOT holds, walked independently of the accounting
+/// under test. `VolumeStatus` for the journal must equal this at every
+/// moment, not only just after a roll.
+fn journal_root_bytes(cfg: &StorageConfig) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = fs::read_dir(path) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let meta = entry.metadata().expect("metadata");
+            if meta.is_dir() {
+                total += walk(&entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+    walk(&cfg.journal_dir.join("v1"))
+}
+
+/// What the dashboard shows for the journal volume.
+fn journal_used(store: &Store) -> u64 {
+    store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume")
+        .bytes_used
+}
+
+#[test]
+fn journal_usage_stays_current_when_the_scrub_quarantines_a_chunk() {
+    // The reviewer's reproduction, and the ordinary device update before the
+    // scrub is the whole of it: without that update the next append rolls,
+    // the roll re-surveys the volume, and the survey CONCEALS an accounting
+    // that never saw the move. With the segment already open, nothing
+    // re-surveys and the quarantined bytes are simply missing.
+    let dir = TempDir::new("store-quarantine-accounting");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let body = b"ciphertext-sentinel".to_vec();
+    let sid = put(&setup, &body);
+    let path = setup.store.blobs.path(&sid);
+    fs::write(&path, b"rot").expect("corrupt the only copy");
+    drop(setup);
+
+    let store = ready_existing(&cfg);
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("studio laptop".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "current before the move"
+    );
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(summary.quarantined, vec![sid], "the chunk is quarantined");
+    assert!(
+        cfg.journal_dir
+            .join("v1/quarantine")
+            .join(sid.to_string())
+            .is_file(),
+        "and it really is on the journal volume"
+    );
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and the volume's usage says so in the same call, not at the next roll"
+    );
+
+    // ...and the next start, which re-surveys, reaches the same number.
+    drop(store);
+    let reopened = open(&cfg);
+    assert_eq!(journal_used(&reopened), journal_root_bytes(&cfg));
+}
+
+#[test]
+fn the_journal_watermark_counts_a_quarantine_no_append_wrote() {
+    // Only the scrub wrote, and only into the quarantine. The refusal has to
+    // see those bytes: they are on the journal volume exactly as a frame is.
+    let dir = TempDir::new("store-quarantine-watermark");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, &vec![b'x'; 4096]);
+        // Corrupted at the SAME length: what moves onto the journal volume
+        // is whatever is on disk when the scrub gives up on it, and four
+        // kilobytes of rot is four kilobytes of journal volume.
+        fs::write(setup.store.blobs.path(&sid), vec![b'r'; 4096]).expect("corrupt the only copy");
+        sid
+    };
+
+    // Capacity chosen against what the volume already holds, so there is
+    // room for an ordinary frame now and none once four kilobytes land in
+    // the quarantine: the refusal has to be caused by the quarantine and by
+    // nothing else.
+    let mut tight = cfg.clone();
+    tight.journal_capacity = WATERMARK + journal_root_bytes(&cfg) + 2048;
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&tight, [7u8; 32], log.clone());
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("before".to_string()), None, None)
+        .expect("there is room before the quarantine");
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(
+        summary.quarantined,
+        vec![sid],
+        "4 KiB moved onto the journal"
+    );
+
+    let err = store
+        .update_device(&device, Some("after".to_string()), None, None)
+        .expect_err("the quarantine took the volume below its watermark");
+    let (free, watermark) = match err {
+        StoreError::JournalFull { free, watermark } => (free, watermark),
+        other => panic!("expected journal_full, got {other}"),
+    };
+    assert_eq!(watermark, WATERMARK);
+    assert_eq!(
+        free,
+        tight.journal_capacity - journal_root_bytes(&tight),
+        "the refusal is decided on what the volume really holds"
+    );
+    assert!(log.captured().contains("decision=journal_full"));
 }
 
 #[test]
