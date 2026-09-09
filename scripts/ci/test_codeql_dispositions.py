@@ -951,6 +951,88 @@ class CommandDecisions(unittest.TestCase):
             [{"action": "stale", "number": 70}],
         )
 
+    def fixed_instance(self, state: str, **instance: object) -> dict:
+        """An alert this listing can carry whose INSTANCE the tool calls `fixed`.
+
+        THE THREE SHAPES, named:
+
+        - `alert=dismissed / instance=fixed` is the VALID compatibility path --
+          the dismissal GitHub kept after the finding went away. This is the
+          shape the exemption exists for.
+        - `alert=fixed / instance=fixed` never reaches this code AT ALL, by
+          construction: both listing steps ask GitHub only for `state=open` and
+          `state=dismissed`, `_states` refuses `fixed` as a listing to ask for,
+          and the closed alert-state parse refuses a record carrying
+          `state: "fixed"` however it arrived. Pinned by
+          `test_check_refuses_a_states_value_it_does_not_model` and
+          `test_check_refuses_an_alert_that_is_not_open`; it is NOT re-pinned
+          here, and it is not a case this helper can build.
+        - `alert=open / instance=fixed` is CONTRADICTORY -- an open finding the
+          analysis no longer detects is one GitHub marks fixed -- and it is
+          exercised below only to show the ref and key bindings hold on it too.
+          It is not a compatibility case and nothing may rely on it.
+        """
+        record = alert(number=70, line=4, state=state, commit="0" * 40)
+        record["most_recent_instance"].update({"state": "fixed", **instance})
+        return record
+
+    def test_a_fixed_instance_still_binds_its_ref_and_analysis(self):
+        # A `fixed` instance is exempt from the COMMIT and from nothing else.
+        # The analysis-key check used to sit inside `if instance_state !=
+        # "fixed"`, so in that one state a record from another workflow's
+        # analysis was judged by a policy that never covered it; the same
+        # exemption around the ref would have judged another branch's record as
+        # if it were this one's. Both bind unconditionally now -- on the valid
+        # dismissed shape and on the contradictory open one alike -- and both
+        # callers say so.
+        for state, shape in (("dismissed", "valid"), ("open", "contradictory")):
+            for foreign, expected in (
+                (
+                    {"analysis_key": ".github/workflows/other.yml:analyze"},
+                    "came from analysis .github/workflows/other.yml:analyze, "
+                    f"not {ANALYSIS_KEY}",
+                ),
+                ({"ref": PR_REF}, f"was analysed on {PR_REF}, not {cd.MAIN_REF}"),
+            ):
+                record = self.fixed_instance(state, **foreign)
+                with self.subTest(caller="check", shape=f"alert={state}", kind=shape,
+                                  foreign=sorted(foreign)):
+                    code, _, err = self.check([entry()], [record], states="open,dismissed")
+                    self.assertEqual(code, 1)
+                    self.assertIn(expected, err)
+                with self.subTest(caller="reconcile", shape=f"alert={state}", kind=shape,
+                                  foreign=sorted(foreign)):
+                    # The push caller lists dismissed alerts only, so an open
+                    # record never reaches the binding: the state parse refuses
+                    # it first, which is itself the right refusal.
+                    code, _, err = self.reconcile([entry()], [record])
+                    self.assertEqual(code, 1)
+                    self.assertIn(
+                        expected if state == "dismissed"
+                        else "is 'open'; this listing was asked for dismissed",
+                        err,
+                    )
+        # The positive control, on the VALID shape only: the same dismissed
+        # record from THIS ref and THIS analysis is historical -- counted,
+        # named, and never judged -- through both callers.
+        code, out, err = self.check(
+            [entry()], [self.fixed_instance("dismissed")], states="open,dismissed"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "stale #70 rust/hard-coded-cryptographic-value "
+            "crates/obsyncd/src/storage/mod.rs:4 state=dismissed "
+            "fixed_at=None instance on " + "0" * 40,
+            out,
+        )
+        self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
+        code, out, err = self.reconcile([entry()], [self.fixed_instance("dismissed")])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            [json.loads(line) for line in out.splitlines()],
+            [{"action": "stale", "number": 70}],
+        )
+
     def stamped(self, **overrides: object) -> dict:
         """Alert #90 as `main` really carried it after v0.1.7 (issue #29).
 
@@ -1006,19 +1088,27 @@ class CommandDecisions(unittest.TestCase):
         )
         self.assertIn("alerts=0 covered=0 uncovered=0 drift=0 stale_alerts=1", out)
 
-    def test_neither_caller_exempts_an_unstamped_dismissal_on_another_commit(self):
-        # THE KEY NEGATIVE, through both callers. `fixed_at` is what says the
-        # finding is gone. Without it the record claims to be current and its
-        # instance is not, which is the superseded or foreign case the refusal
-        # exists for -- a stale location must never become its own excuse for
-        # being stale.
-        unstamped = self.stamped(fixed_at=None)
-        code, _, err = self.reconcile([entry()], [unstamped])
+    # THE KEY NEGATIVE, one test per caller. `fixed_at` is what says the
+    # finding is gone. Without it the record claims to be current and its
+    # instance is not, which is the superseded or foreign case the refusal
+    # exists for -- a stale location must never become its own excuse for being
+    # stale. The two callers are separate methods on purpose: sharing one
+    # method means a mutant that breaks the first assertion stops the method
+    # there, and the second caller is never executed at all, so its refusal is
+    # asserted by a line that never ran.
+
+    def test_an_unstamped_dismissal_on_another_commit_is_refused_in_reconcile(self):
+        code, _, err = self.reconcile([entry()], [self.stamped(fixed_at=None)])
         self.assertEqual(code, 1)
         self.assertIn(f"was analysed on commit {PREVIOUS_COMMIT}, not {COMMIT}", err)
         self.assertIn("superseded or foreign", err)
+
+    def test_an_unstamped_dismissal_on_another_commit_is_refused_in_the_base_check(self):
         code, _, err = self.check(
-            [entry()], [unstamped], states="open,dismissed", commit=BASE_ANALYSES_COMMIT
+            [entry()],
+            [self.stamped(fixed_at=None)],
+            states="open,dismissed",
+            commit=BASE_ANALYSES_COMMIT,
         )
         self.assertEqual(code, 1)
         self.assertIn(f"was analysed on commit {PREVIOUS_COMMIT}, not {BASE_ANALYSES_COMMIT}", err)
