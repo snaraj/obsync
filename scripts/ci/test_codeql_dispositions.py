@@ -1024,9 +1024,77 @@ class WorkflowWiring(unittest.TestCase):
         self.assertIn("main still holds open code-scanning alerts", script)
         self.assertIn("exit 1", script)
 
-    def test_only_the_dismissal_carries_a_guard(self):
-        guarded = [name for name, step in zip(self.names, self.steps) if "if" in step]
-        self.assertEqual(guarded, ["Dismiss every covered alert and require main to hold none"])
+    def test_every_guard_is_exactly_the_event_it_names(self):
+        # The whole guard inventory in one assertion: the three base-branch
+        # steps run only on a pull request, the dismissal only on a push, and
+        # nothing else carries an `if:` at all. A guard removed, added, or
+        # pointed at the wrong event fails here.
+        guarded = {name: step["if"] for name, step in zip(self.names, self.steps) if "if" in step}
+        self.assertEqual(
+            guarded,
+            {
+                "List the open alerts on the base branch": "github.event_name == 'pull_request'",
+                "Check out the base branch as a second tree": "github.event_name == 'pull_request'",
+                "Refuse any base-branch alert this file stops covering": (
+                    "github.event_name == 'pull_request'"
+                ),
+                "Dismiss every covered alert and require main to hold none": (
+                    "github.event_name == 'push'"
+                ),
+            },
+        )
+
+    def test_a_pull_request_also_lists_the_base_branchs_open_alerts(self):
+        # GitHub's pull-request analyses are diff-informed: the merge ref only
+        # carries findings inside the changed range, so main's open alerts are
+        # invisible there and a file that stops covering one of them would be
+        # green on the PR and red on main after the merge.
+        script = flat(self.step("List the open alerts on the base branch")["run"])
+        self.assertIn('test -n "${GITHUB_BASE_REF}"', script)
+        self.assertIn('ref="refs/heads/${GITHUB_BASE_REF}"', script)
+        self.assertIn(
+            'gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts'
+            '?state=open&ref=${ref}&per_page=100" --jq \'.[]\' | jq -s . '
+            '> "${RUNNER_TEMP}/alerts-base.json"',
+            script,
+        )
+        self.assertIn("dispositions: DONE step=list-base-alerts", script)
+
+    def test_the_base_tree_is_a_worktree_whose_tracked_list_is_its_own(self):
+        script = flat(self.step("Check out the base branch as a second tree")["run"])
+        self.assertIn('git fetch --depth=1 origin "${GITHUB_BASE_REF}"', script)
+        self.assertIn('git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD', script)
+        self.assertIn(
+            'git -C "${RUNNER_TEMP}/base-tree" ls-files > "${RUNNER_TEMP}/base-tracked.txt"',
+            script,
+        )
+
+    def test_the_base_check_reads_this_files_entries_in_the_base_tree(self):
+        script = flat(self.step("Refuse any base-branch alert this file stops covering")["run"])
+        self.assertIn("python3 -I -B scripts/ci/codeql_dispositions.py check", script)
+        # This pull request's file, never the base branch's own copy -- that
+        # copy is the version being replaced, so judging with it would prove
+        # nothing about the change.
+        self.assertIn("--dispositions security/codeql-dispositions.json", script)
+        self.assertNotIn("base-tree/security", script)
+        for flag in (
+            '--alerts "${RUNNER_TEMP}/alerts-base.json"',
+            '--tree "${RUNNER_TEMP}/base-tree"',
+            '--tracked "${RUNNER_TEMP}/base-tracked.txt"',
+            '--ref "${ref}"',
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, script)
+        self.assertNotIn("--tree .", script)
+        order = [
+            self.names.index(name)
+            for name in (
+                "List the open alerts on the base branch",
+                "Check out the base branch as a second tree",
+                "Refuse any base-branch alert this file stops covering",
+            )
+        ]
+        self.assertEqual(order, sorted(order))
 
     def test_every_step_logs_a_start_and_a_done_line(self):
         for step in self.steps:
@@ -1063,8 +1131,9 @@ class WorkflowWiring(unittest.TestCase):
 
 
 GH_STUB = r"""#!/bin/sh
-# Stand-in for the three gh shapes this job uses: read a SARIF's processing
-# status, list open alerts, and PATCH one alert to dismissed.
+# Stand-in for the four gh shapes this job uses: read a SARIF's processing
+# status, list the open alerts on the analysed ref, list them on the base
+# branch, and PATCH one alert to dismissed.
 printf 'gh %s\n' "$*" >> "${STUB_LOG}"
 [ -n "${STUB_GH_FAIL:-}" ] && exit 4
 patch=0
@@ -1088,7 +1157,10 @@ case "${target}" in
     rm -f "${STUB_SARIF_STATUS}.rest"
     printf '%s\n' "${status}" ;;
   *code-scanning/alerts*)
-    if [ "${filter}" = ".[]" ]; then cat "${STUB_ALERTS}"; else cat "${STUB_REMAINING}"; fi ;;
+    if [ "${filter}" != ".[]" ]; then cat "${STUB_REMAINING}"
+    elif [ -n "${STUB_BASE_ALERTS:-}" ] && [ "${target}" != "${target#*ref=refs/heads/}" ]
+    then cat "${STUB_BASE_ALERTS}"
+    else cat "${STUB_ALERTS}"; fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 64 ;;
 esac
 """
@@ -1098,6 +1170,36 @@ SLEEP_STUB = r"""#!/bin/sh
 printf 'sleep %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 """
+
+GIT_STUB = r"""#!/bin/sh
+# Stand-in for the three git shapes this job uses. `ls-files` answers from a
+# staged list; the base-branch worktree is materialised from a staged fixture,
+# because the production step fetches it over the network.
+printf 'git %s\n' "$*" >> "${STUB_LOG}"
+case "$1" in
+  ls-files) cat "${STUB_TRACKED}"; exit 0 ;;
+  fetch) exit 0 ;;
+  worktree)
+    [ "$2" = "add" ] || { echo "unexpected git call: $*" >&2; exit 64; }
+    mkdir -p "$4"
+    cp -R "${STUB_BASE_TREE}/." "$4/"
+    exit 0 ;;
+  -C)
+    shift 2
+    [ "$1" = "ls-files" ] || { echo "unexpected git call: $*" >&2; exit 64; }
+    cat "${STUB_BASE_TRACKED}"
+    exit 0 ;;
+esac
+echo "unexpected git call: $*" >&2
+exit 64
+"""
+
+# The base branch's copy of `crates/obsyncd/src/cli/check.rs`, where the report
+# printer sits at a DIFFERENT line from this checkout's. An alert at line 3 is
+# covered when judged in this tree and uncovered when judged in the pull
+# request's, which is what makes "judge in the tree the finding came from"
+# a testable claim rather than a comment.
+BASE_CHECK_RS = "// the base branch's copy\n// of the report printer\n" '        println!("chunks verified: {}", self.chunks);\n'
 
 
 class StepExecution(unittest.TestCase):
@@ -1125,6 +1227,12 @@ class StepExecution(unittest.TestCase):
             alert(number=80, rule=URL_RULE, path="plugin/test/bundle.test.mjs", line=103),
         ]
 
+    @classmethod
+    def tracked(cls) -> str:
+        return subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout
+
     def stage(
         self,
         root: Path,
@@ -1133,11 +1241,13 @@ class StepExecution(unittest.TestCase):
         statuses: tuple[str, ...] = ("complete",),
         alerts: list[dict] | None = None,
         remaining: str = "",
+        base_alerts: list[dict] | None = None,
+        base_dispositions: list[dict] | None = None,
     ) -> dict:
         bins, temp = root / "bin", root / "runner-temp"
         bins.mkdir()
         temp.mkdir()
-        for name, body in (("gh", GH_STUB), ("sleep", SLEEP_STUB)):
+        for name, body in (("gh", GH_STUB), ("sleep", SLEEP_STUB), ("git", GIT_STUB)):
             path = bins / name
             path.write_text(body)
             path.chmod(0o755)
@@ -1146,13 +1256,34 @@ class StepExecution(unittest.TestCase):
             "".join(json.dumps(a) + "\n" for a in (self.covered_alerts() if alerts is None else alerts))
         )
         (root / "remaining").write_text(remaining)
-        return {
+        (root / "tracked.txt").write_text(self.tracked())
+        # The base branch's tree: the report printer at a different line, and
+        # its own copy of the disposition file -- the version this pull request
+        # is replacing, which the base check must never read.
+        base_tree = root / "base-tree"
+        (base_tree / "crates/obsyncd/src/cli").mkdir(parents=True)
+        (base_tree / "crates/obsyncd/src/cli/check.rs").write_text(BASE_CHECK_RS, encoding="utf-8")
+        (base_tree / "security").mkdir()
+        (base_tree / "security/codeql-dispositions.json").write_text(
+            json.dumps(
+                base_dispositions
+                if base_dispositions is not None
+                else [
+                    e
+                    for e in json.loads(DISPOSITIONS.read_text(encoding="utf-8"))
+                    if e["path"] != "crates/obsyncd/src/cli/check.rs"
+                ]
+            ),
+            encoding="utf-8",
+        )
+        environment = {
             "PATH": f"{bins}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(root),
             "LANG": "C",
             "RUNNER_TEMP": str(temp),
             "GITHUB_REPOSITORY": "snaraj/obsync",
             "GITHUB_EVENT_NAME": event,
+            "GITHUB_BASE_REF": "main" if event == "pull_request" else "",
             "PR_NUMBER": "23" if event == "pull_request" else "",
             "SARIF_ID_RUST": "sarif-rust",
             "SARIF_ID_JAVASCRIPT_TYPESCRIPT": "sarif-js",
@@ -1160,7 +1291,16 @@ class StepExecution(unittest.TestCase):
             "STUB_SARIF_STATUS": str(root / "sarif-status"),
             "STUB_ALERTS": str(root / "alerts.jsonl"),
             "STUB_REMAINING": str(root / "remaining"),
+            "STUB_TRACKED": str(root / "tracked.txt"),
+            "STUB_BASE_TRACKED": str(root / "tracked.txt"),
+            "STUB_BASE_TREE": str(base_tree),
         }
+        if base_alerts is not None:
+            (root / "alerts-base.jsonl").write_text(
+                "".join(json.dumps(a) + "\n" for a in base_alerts)
+            )
+            environment["STUB_BASE_ALERTS"] = str(root / "alerts-base.jsonl")
+        return environment
 
     def run_step(self, name: str, env: dict) -> subprocess.CompletedProcess:
         script = Path(env["RUNNER_TEMP"]).parent / f"{abs(hash(name)) % 10**8}.sh"
@@ -1182,9 +1322,22 @@ class StepExecution(unittest.TestCase):
 
     WAIT = "Wait for GitHub to index both analyses"
     LIST = "List the open alerts on the analysed ref"
+    BASE_LIST = "List the open alerts on the base branch"
+    BASE_TREE = "Check out the base branch as a second tree"
     VALIDATE = "Validate the disposition file"
     CHECK = "Refuse any open alert no disposition covers"
+    BASE_CHECK = "Refuse any base-branch alert this file stops covering"
     DISMISS = "Dismiss every covered alert and require main to hold none"
+
+    @staticmethod
+    def base_alert(line: int = 3) -> dict:
+        return alert(
+            number=40,
+            rule=LOGGING_RULE,
+            path="crates/obsyncd/src/cli/check.rs",
+            line=line,
+            ref=cd.MAIN_REF,
+        )
 
     def test_the_wait_polls_until_both_analyses_are_indexed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1301,15 +1454,96 @@ class StepExecution(unittest.TestCase):
 
     def test_a_pull_request_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = self.stage(Path(tmp), event="pull_request", alerts=[])
-            for name in (self.WAIT, self.LIST, self.VALIDATE, self.CHECK):
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[self.base_alert()]
+            )
+            for name in (
+                self.WAIT,
+                self.LIST,
+                self.BASE_LIST,
+                self.BASE_TREE,
+                self.VALIDATE,
+                self.CHECK,
+                self.BASE_CHECK,
+            ):
                 with self.subTest(step=name):
-                    self.assertEqual(self.run_step(name, env).returncode, 0)
+                    result = self.run_step(name, env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
             self.assertIsNone(
                 self.steps[self.CHECK].get("if"), "the check must not be guarded off a pull request"
             )
             self.assertIn("github.event_name == 'push'", self.steps[self.DISMISS]["if"])
+
+    def test_a_pull_request_judges_the_base_branchs_alerts_in_the_base_tree(self):
+        # The alert main holds is invisible on the merge ref, so the base
+        # listing is what puts it in front of this file at all -- and line 3 is
+        # the report printer in the BASE tree only.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[self.base_alert()]
+            )
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                self.assertEqual(self.run_step(name, env).returncode, 0)
+            temp = Path(env["RUNNER_TEMP"])
+            self.assertEqual(json.loads((temp / "alerts.json").read_text()), [])
+            self.assertEqual(
+                json.loads((temp / "alerts-base.json").read_text()), [self.base_alert()]
+            )
+            self.assertEqual((temp / "alerts-base-ref.txt").read_text().strip(), cd.MAIN_REF)
+            self.assertEqual(
+                (temp / "base-tree/crates/obsyncd/src/cli/check.rs").read_text(), BASE_CHECK_RS
+            )
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("covered #40 rust/cleartext-logging", result.stdout)
+            self.assertIn("dispositions: DONE step=check-base-coverage", result.stdout)
+
+    def test_the_same_base_alert_is_uncovered_when_judged_in_the_pull_requests_tree(self):
+        # The other half of the claim: line 3 of THIS checkout's check.rs is a
+        # doc comment, so judging the base branch's finding here would refuse
+        # it. That is why the base check reads the base tree.
+        same_finding_on_the_merge_ref = alert(
+            number=40,
+            rule=LOGGING_RULE,
+            path="crates/obsyncd/src/cli/check.rs",
+            line=3,
+            ref="refs/pull/23/merge",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[same_finding_on_the_merge_ref]
+            )
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            result = self.run_step(self.CHECK, env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("uncovered #40 rust/cleartext-logging", result.stdout)
+
+    def test_the_base_check_fails_when_this_file_stops_covering_a_base_alert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(
+                Path(tmp), event="pull_request", alerts=[], base_alerts=[self.base_alert(line=1)]
+            )
+            for name in (self.LIST, self.BASE_LIST, self.BASE_TREE):
+                self.assertEqual(self.run_step(name, env).returncode, 0)
+            result = self.run_step(self.BASE_CHECK, env)
+            self.assertNotEqual(
+                result.returncode, 0, "an uncovered base alert must fail before the merge"
+            )
+            self.assertIn("uncovered #40 rust/cleartext-logging", result.stdout)
+            self.assertIn("crates/obsyncd/src/cli/check.rs:1", result.stdout)
+
+    def test_the_base_steps_produce_nothing_on_a_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(Path(tmp))
+            for name in (self.LIST, self.VALIDATE, self.CHECK, self.DISMISS):
+                self.assertEqual(self.run_step(name, env).returncode, 0)
+            temp = Path(env["RUNNER_TEMP"])
+            for produced in ("alerts-base.json", "alerts-base-ref.txt", "base-tracked.txt"):
+                with self.subTest(file=produced):
+                    self.assertFalse((temp / produced).exists())
+            self.assertEqual(self.calls(env, "git fetch"), [])
+            self.assertEqual(self.calls(env, "git worktree"), [])
 
     def test_a_failing_api_call_stops_the_step(self):
         with tempfile.TemporaryDirectory() as tmp:

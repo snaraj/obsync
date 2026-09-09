@@ -84,9 +84,12 @@ jobs:
   # security/codeql-dispositions.json, reviewed like every other change, and
   # this job is what makes that file the ONLY way an alert goes quiet:
   #
-  #   on a pull request  an open alert no entry covers fails the job by name,
-  #                      so a new real finding blocks the gate and the release
-  #                      chain until it is fixed or dispositioned;
+  #   on a pull request  an open alert no entry covers -- in the changed range
+  #                      OR on the base branch -- fails the job by name, so a
+  #                      new real finding blocks the gate and the release chain
+  #                      until it is fixed or dispositioned, and a file that
+  #                      stops covering an alert main already holds fails
+  #                      BEFORE the merge that would turn main red;
   #   on a push to main  every covered alert is dismissed through the API with
   #                      the entry's reason and comment, and main is then
   #                      required to hold zero open alerts.
@@ -170,6 +173,42 @@ jobs:
           git ls-files > "${RUNNER_TEMP}/tracked.txt"
           gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${ref}&per_page=100" --jq '.[]' | jq -s . > "${RUNNER_TEMP}/alerts.json"
           printf 'dispositions: DONE step=list-open-alerts ref=%s alerts=%s duration=%ds\n' "${ref}" "$(jq length "${RUNNER_TEMP}/alerts.json")" "$(( SECONDS - started ))"
+      - name: List the open alerts on the base branch
+        # WHY A PULL REQUEST NEEDS A SECOND LISTING. GitHub's pull-request
+        # analyses are diff-informed here: the merge ref only ever carries
+        # findings inside the changed range. Run 34312223079 on
+        # refs/pull/25/merge returned results=0 for both languages while
+        # refs/heads/main at f67b18d carried 78 and 1 from the identical rule
+        # packs, and main's one open alert -- #81, storage/mod.rs -- is
+        # invisible on the pull-request ref. So a pull request that stops
+        # covering an alert main already holds would be green here and red on
+        # main after the merge. The pull-request check has to predict main's
+        # outcome, which means judging main's alerts too.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          test -n "${GITHUB_BASE_REF}"
+          ref="refs/heads/${GITHUB_BASE_REF}"
+          printf 'dispositions: START step=list-base-alerts ref=%s\n' "${ref}"
+          printf '%s\n' "${ref}" > "${RUNNER_TEMP}/alerts-base-ref.txt"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${ref}&per_page=100" --jq '.[]' | jq -s . > "${RUNNER_TEMP}/alerts-base.json"
+          printf 'dispositions: DONE step=list-base-alerts ref=%s alerts=%s duration=%ds\n' "${ref}" "$(jq length "${RUNNER_TEMP}/alerts-base.json")" "$(( SECONDS - started ))"
+      - name: Check out the base branch as a second tree
+        # A line predicate is judged in the tree the finding was taken from:
+        # `line_contains` and `within: test-module` both read a line NUMBER,
+        # and the base branch's line numbers are not this pull request's. A
+        # worktree rather than an unpacked archive, so `git ls-files` inside it
+        # is the base branch's own tracked list and not this checkout's.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          printf 'dispositions: START step=checkout-base-tree ref=%s\n' "${GITHUB_BASE_REF}"
+          git fetch --depth=1 origin "${GITHUB_BASE_REF}"
+          git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD
+          git -C "${RUNNER_TEMP}/base-tree" ls-files > "${RUNNER_TEMP}/base-tracked.txt"
+          printf 'dispositions: DONE step=checkout-base-tree ref=%s tracked=%s duration=%ds\n' "${GITHUB_BASE_REF}" "$(wc -l < "${RUNNER_TEMP}/base-tracked.txt" | tr -d ' ')" "$(( SECONDS - started ))"
       - name: Validate the disposition file
         run: |
           set -euo pipefail
@@ -195,6 +234,25 @@ jobs:
             --tracked "${RUNNER_TEMP}/tracked.txt" \
             --ref "${ref}"
           printf 'dispositions: DONE step=check-coverage ref=%s duration=%ds decision=covered\n' "${ref}" "$(( SECONDS - started ))"
+      - name: Refuse any base-branch alert this file stops covering
+        # THIS pull request's disposition file -- read from the workspace, never
+        # the base branch's own copy, which is the version being replaced --
+        # against the BASE branch's open alerts and the BASE branch's tree.
+        # Removing or narrowing an entry main currently relies on fails here,
+        # before the merge that would leave main holding an open alert.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          ref="$(cat "${RUNNER_TEMP}/alerts-base-ref.txt")"
+          printf 'dispositions: START step=check-base-coverage ref=%s\n' "${ref}"
+          python3 -I -B scripts/ci/codeql_dispositions.py check \
+            --dispositions security/codeql-dispositions.json \
+            --alerts "${RUNNER_TEMP}/alerts-base.json" \
+            --tree "${RUNNER_TEMP}/base-tree" \
+            --tracked "${RUNNER_TEMP}/base-tracked.txt" \
+            --ref "${ref}"
+          printf 'dispositions: DONE step=check-base-coverage ref=%s duration=%ds decision=covered\n' "${ref}" "$(( SECONDS - started ))"
       - name: Dismiss every covered alert and require main to hold none
         # Push only: a pull request must never mutate the repository's alert
         # state, and the merge commit's own ref is not where the invariant
