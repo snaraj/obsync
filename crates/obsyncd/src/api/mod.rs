@@ -151,6 +151,14 @@ impl From<StoreError> for ApiError {
             StoreError::VolumeFull { .. } => {
                 ApiError::new(507, code, "free space is below the watermark")
             }
+            StoreError::JournalFull { .. } => {
+                ApiError::new(507, code, "journal free space is below the watermark")
+            }
+            // Not a client fault and not retryable by this client: the
+            // journal takes nothing more until a restart replays its tail.
+            StoreError::JournalFaulted { .. } => {
+                ApiError::new(503, code, "the journal faulted; restart to replay")
+            }
             StoreError::QuotaExceeded { .. } => {
                 ApiError::new(507, code, "the account quota is exhausted")
             }
@@ -486,18 +494,45 @@ impl App {
     }
 
     fn probe_volumes(&self) -> Result<(), &'static str> {
-        if probe_writable(&self.cfg.blobs_dir).is_err() {
+        // Asked FIRST, and before any probe: a faulted journal acknowledges
+        // nothing, yet both volumes still take the probe write, so a probe
+        // that ran first would report a server ready that cannot record a
+        // single frame (AGENTS.md requirement 7).
+        if let Some(kind) = self.store.journal_faulted() {
+            self.not_ready("journal", &std::io::Error::from(kind));
+            return Err("journal faulted; restart to replay");
+        }
+        if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
+            self.not_ready("blobs", &e);
             return Err("blobs volume is not writable");
         }
-        if probe_writable(&self.cfg.journal_dir).is_err() {
+        if let Err(e) = probe_writable(&self.cfg.journal_dir) {
+            self.not_ready("journal", &e);
             return Err("journal volume is not writable");
         }
         for m in &self.cfg.blobs_mirrors {
-            if probe_writable(&m.path).is_err() {
+            if let Err(e) = probe_writable(&m.path) {
+                self.not_ready("mirror", &e);
                 return Err("a mirror volume is not writable");
             }
         }
         Ok(())
+    }
+
+    /// One line for a volume the readiness probe could not use: which volume,
+    /// and what the filesystem said. The KIND, never the message, which can
+    /// carry a path (AGENTS.md requirements 6 and 12). A verdict is cached
+    /// for [`READY_CACHE_SECS`], so an unauthenticated prober cannot make
+    /// this repeat faster than that.
+    fn not_ready(&self, volume: &'static str, e: &std::io::Error) {
+        self.log.error(
+            "readiness",
+            &[
+                ("decision", Val::word("not_ready")),
+                ("volume", Val::word(volume)),
+                ("io", Val::io(e)),
+            ],
+        );
     }
 
     /// Serve one request: resolve, enforce the edge requirement, dispatch,

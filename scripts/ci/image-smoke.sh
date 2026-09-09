@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # image-smoke -- run the SHIPPED image the way the README tells a stranger to
-# run it, and prove the five properties that quick start depends on.
+# run it, and prove the nine properties that quick start, and the deployment
+# it becomes, depend on.
 #
 # WHY THIS EXISTS. The `container` job proved the image BUILDS and that its
 # config says `User=nonroot`. Neither fact requires the image to work. With two
@@ -39,6 +40,11 @@
 #                     that needs a capability or a writable root filesystem
 #                     fails here rather than on the owner's Pi.
 #
+# Properties 6 to 9 come after those, each documented where it runs: a
+# RESTORED volume, ONE WRITER, the PROVISIONING PRECONDITION, and a FULL blob
+# volume. They are the states a deployment reaches later, and every one of
+# them was a refusal that had to be true rather than a start that had to work.
+#
 # It BUILDS NOTHING. The image reference is the argument, so the gate smokes
 # the exact bytes it just built and `make image` smokes the exact bytes it just
 # built, and neither can drift into smoking something else.
@@ -61,6 +67,9 @@ image="$1"
 # values that configure the same code paths on a laptop or a CI runner.
 readonly BLOBS_CAPACITY='1GiB'
 readonly JOURNAL_CAPACITY='256MiB'
+# The size of the blob volume property 9 exhausts. Small enough to fill in a
+# moment, large enough that the server's own layout fits in it with room.
+readonly FULL_BLOBS_SIZE='8m'
 # Requirement 12: every wait states the budget it is measured against.
 readonly READY_BUDGET_SECONDS=60
 readonly TOKEN_PATH='/data/journal/v1/setup-token'
@@ -71,8 +80,11 @@ restored="${container}-restored"
 holder="${container}-holder"
 second="${container}-second"
 unprepared="${container}-unprepared"
+full="${container}-full"
 blobs_volume="obsync-smoke-blobs-${run_id}"
 journal_volume="obsync-smoke-journal-${run_id}"
+full_blobs="obsync-smoke-full-blobs-${run_id}"
+full_journal="obsync-smoke-full-journal-${run_id}"
 started_at="$(date +%s)"
 
 proven=0
@@ -126,8 +138,8 @@ throwaway="$(awk '$1 == "image:" && $2 ~ /^docker\.io\/library\/caddy@sha256:/ {
 
 cleanup() {
   local status=$?
-  docker rm --force "${container}" "${restored}" "${holder}" "${second}" "${unprepared}" >/dev/null 2>&1 || true
-  docker volume rm --force "${blobs_volume}" "${journal_volume}" >/dev/null 2>&1 || true
+  docker rm --force "${container}" "${restored}" "${holder}" "${second}" "${unprepared}" "${full}" >/dev/null 2>&1 || true
+  docker volume rm --force "${blobs_volume}" "${journal_volume}" "${full_blobs}" "${full_journal}" >/dev/null 2>&1 || true
   return "${status}"
 }
 trap cleanup EXIT
@@ -416,6 +428,113 @@ docker run --rm --user 0 \
   "${throwaway}" sh -c 'test ! -e /data/journal/v1 && test ! -e /data/blobs/v1' \
   || deny 'the refused start created a root on the unprepared volumes'
 prove 'provisioning precondition: root-owned 0755 volumes holding no root are refused with reason=unwritable, exit non-zero, and nothing is created'
+
+# (9) A FULL blob volume, exhausted for real. Every property above ran with
+# room, and "the watermark refuses at the declared capacity" is proven by the
+# storage lane's own tests. What no test can prove is what the SHIPPED image
+# does when the filesystem itself says ENOSPC: readiness is a real write to
+# that volume, and it is the signal Kubernetes takes the pod out of service
+# on, so it is the one an operator's cluster acts upon.
+#
+# The volume is a tmpfs-backed local volume rather than `--tmpfs`, and the
+# difference matters: a `--tmpfs` mount belongs to one container and nothing
+# else can reach it -- `docker cp` into it writes past the mount, into the
+# image's own rootfs, and a `--read-only` container refuses the copy outright.
+# A tmpfs-backed VOLUME is shared by every container that mounts it while it
+# is mounted, so the digest-pinned throwaway can fill it and empty it again
+# while the server serves, under the same hardening as every property above.
+#
+# NOT PROVEN HERE, deliberately: a chunk PUT over the limit. `PUT /v1/chunks
+# /{sid}` is HMAC-SHA256 authenticated over method, path, timestamp, nonce and
+# body hash (AGENTS.md, "Security invariants"), and this smoke has no signing
+# client. Writing one in shell would mean the smoke testing a client this
+# repository does not ship, which is worth less than exhausting the volume for
+# real and requiring the server's own account of it and its recovery.
+docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
+  --opt "o=size=${FULL_BLOBS_SIZE},mode=0700,uid=65532,gid=65532" "${full_blobs}" >/dev/null \
+  || deny "could not create a ${FULL_BLOBS_SIZE} blob volume to exhaust"
+docker volume create "${full_journal}" >/dev/null
+docker run --detach --name "${full}" \
+  --publish '127.0.0.1::8080' \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${full_blobs}:/data/blobs" \
+  --volume "${full_journal}:/data/journal" \
+  --env "OBSYNC_BLOBS_CAPACITY=${BLOBS_CAPACITY}" \
+  --env "OBSYNC_JOURNAL_CAPACITY=${JOURNAL_CAPACITY}" \
+  "${image}" >/dev/null
+full_port="$(docker port "${full}" 8080/tcp | head -n 1)" \
+  || deny 'the server on the small blob volume published no port for 8080/tcp'
+ready=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  status="$(docker container inspect --format '{{.State.Status}}' "${full}" 2>/dev/null || true)"
+  [ "${status}" = running ] \
+    || deny "the server on the small blob volume stopped before it was ready (status=${status:-gone})"
+  body="$(curl --silent --show-error --max-time 2 "http://${full_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    '{"ready":true'*) ready="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${ready}" ] \
+  || deny "no {\"ready\":true from the small blob volume within ${READY_BUDGET_SECONDS}s"
+
+# Fill it to the last byte. `dd` asks for far more than fits and stops at
+# ENOSPC, so the volume is exactly full whatever its size option meant.
+docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \
+  sh -c 'dd if=/dev/zero of=/data/blobs/filler bs=1M count=1024 2>/dev/null; \
+    test "$(df -P /data/blobs | awk "NR == 2 { print \$4 }")" -eq 0' \
+  || deny 'could not exhaust the blob volume'
+
+# The verdict is cached for a few seconds by design, so this polls rather
+# than assuming; the budget is the same one readiness itself is given.
+refused=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  body="$(curl --silent --show-error --max-time 2 "http://${full_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    *'"not_ready"'*) refused="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${refused}" ] \
+  || deny "a full blob volume was still answering ready after ${READY_BUDGET_SECONDS}s: '${body}'"
+case "${refused}" in
+  *'blobs volume is not writable'*) ;;
+  *) deny "the refusal did not name the volume that refused: '${refused}'" ;;
+esac
+# The server's own account, which is the half an operator reads. The KIND the
+# filesystem returned, and no path (AGENTS.md requirements 6 and 12).
+said=''
+for _ in 1 2 3 4 5; do
+  docker logs "${full}" 2>&1 \
+    | grep -q 'event=readiness decision=not_ready volume=blobs io=StorageFull' && said=yes && break
+  sleep 1
+done
+[ -n "${said}" ] \
+  || { printf 'image-smoke: full-volume server log:\n%s\n' "$(docker logs "${full}" 2>&1 | tail -n 20)"; \
+       deny 'the server did not say what the full blob volume returned (event=readiness decision=not_ready volume=blobs io=StorageFull)'; }
+status="$(docker container inspect --format '{{.State.Status}}' "${full}")"
+[ "${status}" = running ] \
+  || deny "the server ${status} on a full volume; a full volume is a refusal, never an exit"
+
+# And it comes back. A volume an operator has just grown, or collected, must
+# make the server ready again with no restart.
+docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \
+  rm -f /data/blobs/filler \
+  || deny 'could not free the blob volume again'
+recovered=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  body="$(curl --silent --show-error --max-time 2 "http://${full_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    '{"ready":true'*) recovered="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${recovered}" ] \
+  || deny "the server did not become ready again within ${READY_BUDGET_SECONDS}s of the volume being freed: '${body}'"
+docker stop --time 10 "${full}" >/dev/null
+prove "full blob volume: an exhausted volume answered 503 not_ready and logged io=StorageFull without exiting, and the server was ready again once the space came back"
 
 printf 'image-smoke: SUMMARY image=%s properties=%d duration=%ds decision=pass\n' \
   "${image}" "${proven}" "$(( $(date +%s) - started_at ))"

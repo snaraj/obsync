@@ -268,14 +268,37 @@ requires the refusal.
 
 1. Chunk write: stream to `tmp`, hashing; on completion `fsync(file)`,
    `rename` into place, `fsync(dir)`; only then respond. A crash leaves
-   either the complete chunk or a `tmp` file that startup removes.
+   either the complete chunk or a `tmp` file that startup removes. Each of
+   the three points refuses differently and leaves a different residue: a
+   refusal while streaming removes the temp on the way out; a refusal at the
+   `fsync` leaves an unsynced temp; a refusal at the `rename` leaves a synced
+   one. Both leftovers are removed at the next start, which counts them on
+   its `store_open` SUMMARY, and in every case the chunk is simply absent and
+   the client re-uploads.
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first
    torn or CRC-failing frame, truncates the segment there, and logs the
    count of frames recovered.
-3. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
+3. Failed journal append: the journal records the length it has made durable
+   before it writes, and any failure of the write or of its `fsync` cuts the
+   segment back to that length and fsyncs the cut before the error returns.
+   Nothing was acknowledged, and the next frame starts clean. This is not a
+   nicety: segments are opened `O_APPEND`, so without the rollback the next
+   successful frame would land AFTER a torn one, and the next start would
+   truncate at the torn frame and discard every write acknowledged since.
+   Each failure logs one line, `event=journal_append_failed
+   decision=truncated io=<kind> segment=<n> torn_bytes=<n>` — the error's
+   kind, never its message, which can carry a path.
+4. Faulted journal: if that rollback ITSELF fails, at the truncation or at
+   its `fsync`, the journal is faulted. The line says `decision=faulted`,
+   every later append refuses with `journal_faulted` without touching the
+   volume, `/readyz` answers `503 not_ready` with `journal faulted; restart
+   to replay`, and the state clears only at the next start, which replays and
+   truncates the tail as rule 2 describes. Chunk uploads are unaffected: the
+   blob volume is its own record.
+5. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
    newest valid snapshot and applies later frames.
-4. No write is acknowledged before it is durable. This is not configurable
+6. No write is acknowledged before it is durable. This is not configurable
    (AGENTS.md requirement 4).
 
 ## Journal frames
@@ -318,8 +341,19 @@ exposes no filesystem statistics, so `OBSYNC_BLOBS_CAPACITY` and
 claim sizes. Writes are refused with `507` when free space on the blob
 volume is below the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when
 the account's quota is exceeded. The dashboard shows both thresholds and the current
-values. The journal volume has its own watermark; running out of journal
-space fails readiness, never corrupts.
+values.
+
+The journal volume has the same watermark applied to its own capacity, and
+refuses a frame that would take it below with `507 journal_full` before the
+volume is asked. Tracked journal usage is what the journal's segments hold —
+the open segment's durable length plus every other segment's size, kept in
+memory so the append path costs no syscall — and `VolumeStatus` reports the
+same number, so a refusal and the dashboard never disagree about how full the
+volume is. The two volumes have separate refusal codes, `volume_full` and
+`journal_full`, because they are provisioned and filled independently and a
+refusal that did not say which one it measured would send an operator to the
+wrong disk. A journal volume that fills anyway, below the declared capacity,
+is rule 3 above: the append is refused, rolled back, and never acknowledged.
 
 ## Replication and propagation (design hooks, phased)
 

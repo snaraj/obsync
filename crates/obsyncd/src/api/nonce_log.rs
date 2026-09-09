@@ -16,7 +16,7 @@
 //!
 //! Every accepted nonce is appended and fsynced BEFORE the request it
 //! authenticates is answered, for the reason a journal frame is
-//! (`docs/storage.md`, durability rule 4): a nonce the server has already
+//! (`docs/storage.md`, durability rule 6): a nonce the server has already
 //! acted on but not written down is a nonce a crash makes replayable.
 #![forbid(unsafe_code)]
 
@@ -172,7 +172,7 @@ impl NonceLog {
 
     /// Rewrite the file with the entries still inside the window.
     ///
-    /// The shape of a snapshot (`docs/storage.md`, durability rule 3): a
+    /// The shape of a snapshot (`docs/storage.md`, durability rule 5): a
     /// temporary file, fsynced, renamed onto the name, and the directory
     /// fsynced after it. A crash leaves the file it had or the file it was
     /// given, never half of either, so a compaction can never be the reason

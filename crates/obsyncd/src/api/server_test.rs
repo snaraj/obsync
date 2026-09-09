@@ -457,6 +457,59 @@ fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
 }
 
 #[test]
+fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
+    let h = Harness::start("journal-faulted");
+    let cred = h.setup_account();
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+
+    // A full volume at the append, and a rollback the same full volume
+    // refuses: the one transition after which the journal may take nothing
+    // more (docs/storage.md, "Durability rules").
+    h.app
+        .store
+        .set_fault(crate::storage::Fault::JournalRecoveryFails {
+            code: 28,
+            at: crate::storage::AppendPhase::Write,
+            rollback: crate::storage::RollbackPhase::Truncate,
+        });
+    // The first journalled write of the request is the device's `sign_in`
+    // event, so that is the append the volume refuses and the rollback
+    // fails; the request's own append then meets the faulted journal.
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "journal_faulted");
+    h.app.store.set_fault(crate::storage::Fault::None);
+    assert_eq!(
+        h.app.store.journal_faulted(),
+        Some(std::io::ErrorKind::StorageFull),
+        "the store remembers what put it there"
+    );
+
+    // The volumes still take a probe write. Readiness is false anyway,
+    // because the server can no longer acknowledge anything.
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("journal faulted; restart to replay"),
+        "the refusal names the transition, not a volume"
+    );
+
+    // And every later write refuses with the state rather than an I/O error.
+    let after = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio desk"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(after.status, 503, "{}", after.text());
+    assert_eq!(after.code(), "journal_faulted");
+}
+
+#[test]
 fn an_unknown_route_is_a_json_404() {
     let h = Harness::start("404");
     let res = Req::get("/v1/nope").send(h.addr);

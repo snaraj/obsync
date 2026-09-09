@@ -1,4 +1,8 @@
-"""`image-smoke.sh`'s DENY account is a control, so it gets a control.
+"""`image-smoke.sh` carries two controls: its DENY account, and its ninth
+property. Both are pinned here, by two readers that share nothing but the
+script. The first subject follows; the second is below it.
+
+`image-smoke.sh`'s DENY account is a control, so it gets a control.
 
 WHY. The smoke's value is that it RUNS the shipped image; its value on a bad
 day is the account `deny` prints before it exits. Issue #19 is the day that
@@ -70,12 +74,74 @@ EVERY RULE HAS A NEGATIVE TEST. `MutatedSmokeIsRefused` re-runs both readers
 over the real script with one property broken -- in memory, never on disk --
 so a rule that stopped being able to fail fails here instead. Round 1's
 `if false` mutant is one of them, on both readers.
+
+
+SECOND SUBJECT: THE NINTH PROPERTY. Everything above is about `deny`, the
+account the smoke prints on its worst day. The rest of this file is about
+property 9, the one that makes a bad day happen on purpose.
+
+WHY. Properties 1 to 8 run on volumes with room. Nothing in this repository
+proved what the SHIPPED image does when the filesystem itself refuses, and a
+full volume is not a hypothetical: it is where a vault that outgrows its claim
+ends up, and the readiness answer is what a cluster takes the pod out of
+service on. Property 9 exhausts a real volume, requires the server's 503 and
+its own `io=StorageFull` line, frees the space, and requires the server ready
+again without a restart.
+
+That property is only worth what its weakest half is worth, and every half of
+it can be quietly removed while the smoke still prints nine green lines:
+
+  - a blob volume created WITHOUT a size option can never be exhausted, so the
+    fill succeeds, readiness stays true, and the property proves the opposite
+    of what it claims. This is the failure that leaves no trace at all.
+  - a fill or a free run from an UNPINNED image is a third-party container
+    handed the server's blob volume, which is the helper-container hole the
+    onboarding contract closes for the journal volume.
+  - dropping the recovery half turns "a full volume refuses and comes back"
+    into "a full volume refuses", which is also true of a server that has
+    crashed, and of one that never recovers when the operator grows the disk.
+  - dropping the requirement on the server's OWN line leaves the HTTP 503,
+    which a shutting-down server also answers. The line is what says the
+    filesystem returned ENOSPC rather than something else entirely.
+  - dropping the hardening flags smokes a container that is not the one the
+    chart renders, on the one property most likely to need a write.
+
+WHAT IS PINNED, and against WHAT. Every rule below is decided on the script's
+EXECUTABLE structure -- comments dropped, line continuations joined, each
+remaining line split into shell tokens -- so no rule can be satisfied by prose
+describing what the script would do. `# docker volume create --opt o=size=8m`
+is a comment and counts for nothing.
+
+  1. size -- the blob volume property 9 uses is created with `type=tmpfs` and
+     an `o=` option carrying `size=`. Without both it is an ordinary volume
+     with the host's whole disk behind it.
+  2. separate volumes -- the journal is a different volume from the blobs, so
+     exhausting the blobs does not also exhaust the journal and the refusal
+     names one cause.
+  3. hardening -- the run carries `--read-only`, `--cap-drop ALL` and
+     `--security-opt no-new-privileges`, as every other property's run does.
+  4. pinned filler -- every container that touches that volume other than the
+     server itself runs `${throwaway}`, the digest-pinned image the compose
+     file names, and never a literal reference or a tag.
+  5. the server's own account -- a `grep` in the region asks the container log
+     for `event=readiness decision=not_ready volume=blobs io=StorageFull`, and
+     another executable line requires the wire refusal `not_ready` naming the
+     volume. It must be the grep's own pattern: the same words inside the
+     refusal message that fires when the grep fails describe the check without
+     being it, which is exactly the shape this suite exists to refuse.
+  6. recovery -- an executable line frees the volume through the throwaway,
+     and an executable line requires `{"ready":true` afterwards under a
+     refusal if it never comes.
+  7. the count -- the script calls `prove` exactly nine times, so the SUMMARY
+     line's `properties=` is nine and a property that returns without proving
+     anything cannot pass unnoticed.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -658,6 +724,366 @@ class MutatedSmokeIsRefused(unittest.TestCase):
     def test_an_unpinned_throwaway_source_is_refused(self):
         found = self.mutate(THROWAWAY_DIGEST, r"^docker\.io\/library\/caddy:")
         self.kills(found, "not matched by digest")
+
+
+# ---------------------------------------------------------------------------
+# The ninth property: a blob volume exhausted for real.
+#
+# A second reader, deliberately separate from the one above. That one answers
+# "does `deny` still run its diagnostics"; this one answers "does property 9
+# still exhaust a volume it can exhaust, and still require the recovery". They
+# share the script and nothing else, so they share no state here either.
+# ---------------------------------------------------------------------------
+
+# Property 9's region: from the command that creates the volume it exhausts to
+# the `prove` that closes it. Both ends are executable, so the region cannot be
+# moved by editing a comment.
+REGION_START = "${full_blobs}"
+# ... and it is the `docker volume create` of that name that opens the region,
+# not the cleanup trap's `docker volume rm`, which names it far earlier.
+REGION_PROOF = "full blob volume:"
+# How many properties the script must prove. The SUMMARY prints the count it
+# reached, so this is the number a reader of the gate log sees.
+PROPERTIES = 9
+# The line the server writes when a volume will not take the readiness probe.
+READINESS_LINE = "event=readiness decision=not_ready volume=blobs io=StorageFull"
+# The detail the wire refusal carries, and the code it carries it under.
+WIRE_DETAIL = "blobs volume is not writable"
+WIRE_CODE = "not_ready"
+# What a ready answer starts with, matched by the smoke as a `case` pattern.
+READY_PREFIX = '{"ready":true'
+# The file the fill writes and the free removes.
+FILLER = "/data/blobs/filler"
+# The digest-pinned throwaway, by the name the script resolves it into.
+FILLER_IMAGE = "${throwaway}"
+# The hardening every run in this script carries.
+HARDENING = (
+    ("--read-only",),
+    ("--cap-drop", "ALL"),
+    ("--security-opt", "no-new-privileges"),
+)
+
+
+def commands(text: str) -> list[list[str]]:
+    """The script's executable lines, as shell tokens.
+
+    Continuations are joined first, so a command spread over ten lines is one
+    command. Whole-line comments are dropped, and `shlex` drops anything after
+    an unquoted `#`, so a rule can never be satisfied by a description of the
+    command it is looking for.
+    """
+    joined = re.sub(r"\\\n[ \t]*", " ", text)
+    out: list[list[str]] = []
+    for raw in joined.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("#!"):
+            continue
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            # An unbalanced quote across a construct this reader does not
+            # follow. It carries no rule; a rule that needed it would be
+            # missing instead, which refuses.
+            continue
+        if tokens:
+            out.append(tokens)
+    return out
+
+
+def region(text: str) -> list[list[str]]:
+    """Property 9's own commands, in order."""
+    all_commands = commands(text)
+    start = next(
+        (
+            i
+            for i, c in enumerate(all_commands)
+            if _creates_volume(c) and any(REGION_START in t for t in c)
+        ),
+        None,
+    )
+    if start is None:
+        return []
+    end = next(
+        (
+            i
+            for i, c in enumerate(all_commands)
+            if i > start and c[0] == "prove" and c[1:2] and c[1].startswith(REGION_PROOF)
+        ),
+        None,
+    )
+    if end is None:
+        return []
+    return all_commands[start : end + 1]
+
+
+def _runs(command: list[str]) -> bool:
+    return command[:2] == ["docker", "run"]
+
+
+def _creates_volume(command: list[str]) -> bool:
+    return command[:3] == ["docker", "volume", "create"]
+
+
+def _options(command: list[str]) -> list[str]:
+    """The values of every `--opt` flag, in order."""
+    return [
+        command[i + 1]
+        for i, token in enumerate(command)
+        if token == "--opt" and i + 1 < len(command)
+    ]
+
+
+def _mounts(command: list[str]) -> list[str]:
+    return [
+        command[i + 1]
+        for i, token in enumerate(command)
+        if token == "--volume" and i + 1 < len(command)
+    ]
+
+
+def _mounted_at(command: list[str], destination: str) -> str | None:
+    for mount in _mounts(command):
+        source, _, dest = mount.partition(":")
+        if dest == destination:
+            return source
+    return None
+
+
+def _has_flag(command: list[str], pair: tuple[str, ...]) -> bool:
+    if len(pair) == 1:
+        return pair[0] in command
+    flag, value = pair
+    return any(
+        token == flag and command[i + 1 : i + 2] == [value]
+        for i, token in enumerate(command)
+    )
+
+
+def _image_of(command: list[str]) -> str | None:
+    """The image a `docker run` names: the last token that is not a flag, a
+    flag's value, or the command the container runs."""
+    skip = {"--volume", "--env", "--name", "--publish", "--security-opt", "--cap-drop",
+            "--user", "--opt", "--driver"}
+    i = 2
+    while i < len(command):
+        token = command[i]
+        if token in skip:
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token
+    return None
+
+
+def _mentions(commands_: list[list[str]], needle: str) -> bool:
+    return any(any(needle in token for token in c) for c in commands_)
+
+
+def ninth_refusals(text: str) -> list[str]:
+    """Everything wrong with the ninth property, one string per rule."""
+    found: list[str] = []
+    block = region(text)
+    if not block:
+        return [f"{SMOKE_NAME}: no ninth property (nothing creates {REGION_START})"]
+
+    # 1 and 2: the volumes it runs on.
+    created = [c for c in block if _creates_volume(c)]
+    sized = [
+        c
+        for c in created
+        if any(REGION_START in t for t in c)
+        and any("type=tmpfs" in o for o in _options(c))
+        and any(o.startswith("o=") and "size=" in o for o in _options(c))
+    ]
+    if not sized:
+        found.append(
+            f"{SMOKE_NAME}: the volume property 9 exhausts is not created with "
+            "type=tmpfs and an o= option carrying size="
+        )
+
+    servers = [c for c in block if _runs(c) and "--detach" in c]
+    if len(servers) != 1:
+        found.append(f"{SMOKE_NAME}: property 9 starts {len(servers)} servers, not 1")
+    for server in servers:
+        blobs = _mounted_at(server, "/data/blobs")
+        journal = _mounted_at(server, "/data/journal")
+        if blobs is None or REGION_START not in blobs:
+            found.append(
+                f"{SMOKE_NAME}: property 9's server does not mount the volume it exhausts"
+            )
+        if journal is None:
+            found.append(f"{SMOKE_NAME}: property 9's server mounts no journal volume")
+        elif journal == blobs:
+            found.append(
+                f"{SMOKE_NAME}: property 9 puts the journal on the volume it exhausts"
+            )
+        # 3: the hardening.
+        for pair in HARDENING:
+            if not _has_flag(server, pair):
+                found.append(
+                    f"{SMOKE_NAME}: property 9's server runs without {' '.join(pair)}"
+                )
+
+    # 4: everything else that touches that volume is the pinned throwaway.
+    for c in block:
+        if not _runs(c) or "--detach" in c:
+            continue
+        if _mounted_at(c, "/data/blobs") is None:
+            continue
+        if _image_of(c) != FILLER_IMAGE:
+            found.append(
+                f"{SMOKE_NAME}: property 9 touches the blob volume with "
+                f"{_image_of(c)!r}, not the digest-pinned {FILLER_IMAGE}"
+            )
+
+    # 5: the server's own account, and the wire refusal. The line must be what
+    # a `grep` actually asks the container log for -- naming it in the refusal
+    # message that fires when the grep fails is a description, not a check.
+    greps = [c for c in block if "grep" in c and any(READINESS_LINE in t for t in c)]
+    if not greps:
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not require the server's own line "
+            f"({READINESS_LINE})"
+        )
+    if not _mentions(block, WIRE_CODE) or not _mentions(block, WIRE_DETAIL):
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not require the wire refusal "
+            f"({WIRE_CODE}, {WIRE_DETAIL})"
+        )
+
+    # 6: recovery. The free itself, and the requirement that ready returns.
+    freed = [
+        c
+        for c in block
+        if _runs(c) and _mounted_at(c, "/data/blobs") is not None and _mentions([c], FILLER)
+        and "rm" in c
+    ]
+    if not freed:
+        found.append(
+            f"{SMOKE_NAME}: property 9 never frees the volume again, so it proves "
+            "a refusal and not a recovery"
+        )
+    after = block[block.index(freed[0]) :] if freed else []
+    if not _mentions(after, READY_PREFIX):
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not require {READY_PREFIX} after the "
+            "volume is freed"
+        )
+    if not any(c[0] == "deny" or "deny" in c for c in after):
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not refuse when readiness never returns"
+        )
+
+    # 7: the count the SUMMARY prints.
+    proofs = [c for c in commands(text) if c[0] == "prove"]
+    if len(proofs) != PROPERTIES:
+        found.append(
+            f"{SMOKE_NAME}: the smoke proves {len(proofs)} properties, not {PROPERTIES}"
+        )
+    return found
+
+
+class ImageSmokeContract(unittest.TestCase):
+    """The shipped smoke, and the mutations that must not pass it."""
+
+    maxDiff = None
+
+    def setUp(self):
+        self.text = SMOKE.read_text(encoding="utf-8")
+
+    def mutate(self, old: str, new: str) -> list[str]:
+        """Apply one edit to a scratch copy and re-decide every rule."""
+        self.assertEqual(
+            self.text.count(old), 1, f"the mutation anchor is not unique: {old!r}"
+        )
+        return ninth_refusals(self.text.replace(old, new))
+
+    def kills(self, found: list[str], needle: str):
+        self.assertTrue(
+            any(needle in f for f in found),
+            f"no refusal naming {needle!r}; got {found}",
+        )
+
+    def test_the_shipped_smoke_satisfies_every_rule(self):
+        self.assertEqual(ninth_refusals(self.text), [])
+
+    def test_the_reader_sees_commands_and_not_comments(self):
+        # The whole suite rests on this: a comment describing the command is
+        # not the command. Both spellings of a comment are dropped.
+        script = "# docker run --read-only image\ndocker run image  # --read-only\n"
+        self.assertEqual(commands(script), [["docker", "run", "image"]])
+        # And a continuation is one command, not two.
+        self.assertEqual(
+            commands("docker run \\\n  --read-only \\\n  image\n"),
+            [["docker", "run", "--read-only", "image"]],
+        )
+
+    def test_an_unbounded_blob_volume_is_refused(self):
+        # The quietest failure of all: the fill succeeds, readiness never
+        # drops, and the property prints its green line having proven nothing.
+        found = self.mutate(
+            '--opt "o=size=${FULL_BLOBS_SIZE},mode=0700,uid=65532,gid=65532"',
+            '--opt "o=mode=0700,uid=65532,gid=65532"',
+        )
+        self.kills(found, "size=")
+
+    def test_dropping_the_recovery_half_is_refused(self):
+        # "A full volume refuses" is also true of a server that never comes
+        # back when the operator grows the disk.
+        found = self.mutate("  rm -f /data/blobs/filler \\\n", "  true \\\n")
+        self.kills(found, "never frees the volume again")
+
+    def test_dropping_the_requirement_that_readiness_returns_is_refused(self):
+        found = self.mutate(
+            "    '{\"ready\":true'*) recovered=\"${body}\"; break ;;\n",
+            "    'nothing-matches-this'*) recovered=\"${body}\"; break ;;\n",
+        )
+        self.kills(found, "does not require")
+
+    def test_an_unpinned_filler_image_is_refused(self):
+        found = self.mutate(
+            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \\\n  rm -f',
+            'docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" busybox:latest \\\n  rm -f',
+        )
+        self.kills(found, "not the digest-pinned")
+
+    def test_dropping_the_servers_own_line_is_refused(self):
+        # The HTTP 503 alone is also what a shutting-down server answers.
+        found = self.mutate(
+            f"grep -q '{READINESS_LINE}'", "grep -q 'event=readiness'"
+        )
+        self.kills(found, "the server's own line")
+
+    def test_running_the_ninth_property_unhardened_is_refused(self):
+        found = self.mutate(
+            '  --volume "${full_blobs}:/data/blobs" \\\n'
+            '  --volume "${full_journal}:/data/journal" \\\n',
+            '  --volume "${full_blobs}:/data/blobs" \\\n'
+            '  --volume "${full_journal}:/data/journal" \\\n'
+            '  --cap-add SYS_ADMIN \\\n',
+        )
+        self.assertEqual(found, [], "adding a capability is not what this rule reads")
+        found = self.mutate("  --read-only \\\n  --cap-drop ALL \\\n  --security-opt no-new-privileges \\\n  --volume \"${full_blobs}:/data/blobs\" \\\n", "  --volume \"${full_blobs}:/data/blobs\" \\\n")
+        self.kills(found, "runs without --read-only")
+
+    def test_putting_the_journal_on_the_volume_that_is_exhausted_is_refused(self):
+        found = self.mutate(
+            '  --volume "${full_journal}:/data/journal" \\\n',
+            '  --volume "${full_blobs}:/data/journal" \\\n',
+        )
+        self.kills(found, "puts the journal on the volume it exhausts")
+
+    def test_a_property_that_proves_nothing_is_refused(self):
+        found = self.mutate(
+            'prove "full blob volume:', 'true "full blob volume:'
+        )
+        self.kills(found, "no ninth property")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

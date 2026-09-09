@@ -151,7 +151,13 @@ impl Val {
 
     /// The kind of an I/O error, never its message (a message can carry a path).
     pub fn io(e: &io::Error) -> Val {
-        Val(format!("{:?}", e.kind()))
+        Val::io_kind(e.kind())
+    }
+
+    /// An I/O error kind on its own, for a state that remembered only the
+    /// kind because the error itself was returned to the caller.
+    pub fn io_kind(kind: io::ErrorKind) -> Val {
+        Val(format!("{kind:?}"))
     }
 
     /// The rendered value, for tests.

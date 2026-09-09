@@ -33,7 +33,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -83,6 +83,71 @@ pub(crate) enum Fault {
     JournalMidAppend,
     /// Write the final journal frame with a corrupt payload.
     JournalTornFrame,
+    /// A real filesystem errno at the journal append. The process does NOT
+    /// die: the error returns and the journal must recover from it, which
+    /// is what separates this from [`Fault::JournalMidAppend`].
+    JournalAppendErrno {
+        /// The `errno` the write or the fsync returns.
+        code: i32,
+        /// Which half of the append fails.
+        at: AppendPhase,
+    },
+    /// The append fails at `at` AND the rollback that would undo it fails at
+    /// `rollback`: the two failures that put the journal in the faulted
+    /// state. One armed value, because the second failure only exists as a
+    /// consequence of the first.
+    JournalRecoveryFails {
+        /// The `errno` the failing append returns.
+        code: i32,
+        /// Which half of the append fails.
+        at: AppendPhase,
+        /// Which half of the rollback fails.
+        rollback: RollbackPhase,
+    },
+    /// A real filesystem errno at one phase of a chunk write. Each phase
+    /// leaves a different residue, and the test says which.
+    BlobErrno {
+        /// Where in the write the errno surfaces.
+        phase: BlobPhase,
+        /// The `errno` returned there.
+        code: i32,
+    },
+}
+
+/// Which half of a journal append a fault surfaces in.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AppendPhase {
+    /// The `write`: half the frame lands, then the errno. The segment is
+    /// left longer than the journal's durable length.
+    Write,
+    /// The `fsync`: the whole frame is on disk and none of it is durable.
+    Sync,
+}
+
+/// Which half of the rollback after a failed append a fault surfaces in.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RollbackPhase {
+    /// The `set_len` back to the durable length.
+    Truncate,
+    /// The `fsync` that makes that truncation durable. Truncating without
+    /// it leaves the journal believing a rollback that a power cut can
+    /// still undo.
+    Sync,
+}
+
+/// Which phase of a chunk write a fault surfaces in (docs/storage.md,
+/// durability rule 1). The residue differs per phase and the test says so.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BlobPhase {
+    /// The stream into the temp file.
+    Stream,
+    /// The `fsync` of the temp file.
+    Sync,
+    /// The `rename` into place.
+    Rename,
 }
 
 /// The storage engine. One per process, shared by every request thread.
@@ -123,7 +188,7 @@ impl Store {
         let started = log.start("store_open", cfg.journal_capacity);
         let mirror_paths: Vec<PathBuf> = cfg.mirrors.iter().map(|m| m.path.clone()).collect();
         let (blobs, leftovers) = Blobs::open(&cfg.blobs_dir, &mirror_paths)?;
-        let mut journal = Journal::open(&cfg.journal_dir)?;
+        let mut journal = Journal::open(cfg, log.clone())?;
         let (snapshot, skipped) = journal.load_snapshot()?;
         let from_snapshot = snapshot.is_some();
         let mut index = snapshot.unwrap_or_default();
@@ -742,7 +807,10 @@ impl Store {
                 watermark_bytes: watermark,
             });
         }
-        let journal_used = dir_bytes(&self.cfg.journal_dir);
+        // The journal's own accounting, not a walk of the volume: it is the
+        // number the journal watermark refuses against, and a dashboard that
+        // showed a different one would disagree with the refusal.
+        let journal_used = self.journal().tracked_bytes();
         all.push(VolumeStatus {
             role: "journal".to_string(),
             path: self.cfg.journal_dir.clone(),
@@ -988,6 +1056,16 @@ impl Store {
         self.journal().verify()
     }
 
+    /// The kind of the failure that faulted the journal, if it is faulted.
+    ///
+    /// A faulted journal takes no more frames until a restart replays and
+    /// truncates its tail, so readiness must answer false while it is set:
+    /// the volumes can still take a probe write on a server that can no
+    /// longer acknowledge anything (AGENTS.md requirement 7).
+    pub fn journal_faulted(&self) -> Option<std::io::ErrorKind> {
+        self.journal().faulted()
+    }
+
     /// Arm a crash point. Tests only.
     #[cfg(test)]
     pub(crate) fn set_fault(&self, fault: Fault) {
@@ -999,7 +1077,7 @@ impl Store {
 /// Append a frame at the next sequence and apply it to the index.
 ///
 /// Journal first, index second, always: the index may only hold what the
-/// journal already made durable (docs/storage.md, durability rule 4).
+/// journal already made durable (docs/storage.md, durability rule 6).
 fn append(
     journal: &mut Journal,
     index: &mut Index,
@@ -1048,10 +1126,12 @@ pub(crate) fn version_id_of(
 /// cannot (requirement 6, `Val::io`).
 pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
     match e {
-        StoreError::VolumeFull { free, watermark } => vec![
+        StoreError::VolumeFull { free, watermark }
+        | StoreError::JournalFull { free, watermark } => vec![
             ("free", Val::bytes(*free)),
             ("watermark", Val::bytes(*watermark)),
         ],
+        StoreError::JournalFaulted { io } => vec![("io", Val::io_kind(*io))],
         StoreError::QuotaExceeded { used, quota } => {
             vec![("used", Val::bytes(*used)), ("quota", Val::bytes(*quota))]
         }
@@ -1079,23 +1159,6 @@ fn random_bytes<const N: usize>() -> Result<[u8; N], StoreError> {
     let mut out = [0u8; N];
     file.read_exact(&mut out)?;
     Ok(out)
-}
-
-/// Bytes occupied under a directory, for volume usage.
-fn dir_bytes(dir: &Path) -> u64 {
-    let mut total = 0;
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            total += dir_bytes(&path);
-        } else if let Ok(meta) = entry.metadata() {
-            total += meta.len();
-        }
-    }
-    total
 }
 
 /// The name of the lock file on the journal root.

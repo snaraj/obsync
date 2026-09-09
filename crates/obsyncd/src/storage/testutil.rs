@@ -8,8 +8,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::{StorageConfig, Watermark};
 use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, VersionRecord};
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, UnixMs, VersionId};
+
+/// Blob capacity: small enough that a test reaches the watermark with a few
+/// bytes.
+pub(crate) const CAPACITY: u64 = 64 * 1024;
+/// The refusal threshold those tests are measured against.
+pub(crate) const WATERMARK: u64 = 32 * 1024;
+/// Journal capacity. Generous on purpose: the journal watermark is proven by
+/// the test that shrinks this to the frame it refuses, and every other test
+/// wants a journal that simply takes its frames.
+pub(crate) const JOURNAL_CAPACITY: u64 = 4 * 1024 * 1024;
 
 /// A directory under `std::env::temp_dir()` removed when the test ends,
 /// including when the test fails: `Drop` runs on the unwind.
@@ -46,6 +57,28 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// The storage configuration every engine test opens against. One
+/// definition, so the journal tests and the store tests measure the same
+/// volume against the same thresholds.
+pub(crate) fn storage_config(dir: &TempDir) -> StorageConfig {
+    StorageConfig {
+        blobs_dir: dir.path().join("blobs"),
+        journal_dir: dir.path().join("journal"),
+        mirrors: Vec::new(),
+        blobs_capacity: CAPACITY,
+        journal_capacity: JOURNAL_CAPACITY,
+        blobs_class: "test-class".to_string(),
+        journal_class: "test-class".to_string(),
+        free_watermark: Watermark {
+            percent: 0,
+            bytes: WATERMARK,
+        },
+        retention_days: 30,
+        retention_versions: 2,
+        scrub_rate_bytes_per_sec: 1 << 20,
     }
 }
 

@@ -15,34 +15,12 @@ use std::time::{Duration, SystemTime};
 use obsync_core::sha256::sha256;
 
 use super::*;
-use crate::config::{MirrorVolume, StorageConfig, Watermark};
+use crate::config::{MirrorVolume, StorageConfig};
 use crate::log::{Log, LogLevel};
-use crate::storage::testutil::TempDir;
+use crate::storage::testutil::{CAPACITY, TempDir, WATERMARK, storage_config as config};
+use crate::storage::{AppendPhase, BlobPhase, RollbackPhase};
 
-/// Small enough that a test can reach the watermark with a few bytes.
-const CAPACITY: u64 = 64 * 1024;
-/// The refusal threshold those tests are measured against.
-const WATERMARK: u64 = 32 * 1024;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-
-fn config(dir: &TempDir) -> StorageConfig {
-    StorageConfig {
-        blobs_dir: dir.path().join("blobs"),
-        journal_dir: dir.path().join("journal"),
-        mirrors: Vec::new(),
-        blobs_capacity: CAPACITY,
-        journal_capacity: CAPACITY,
-        blobs_class: "test-class".to_string(),
-        journal_class: "test-class".to_string(),
-        free_watermark: Watermark {
-            percent: 0,
-            bytes: WATERMARK,
-        },
-        retention_days: 30,
-        retention_versions: 2,
-        scrub_rate_bytes_per_sec: 1 << 20,
-    }
-}
 
 fn open(cfg: &StorageConfig) -> Store {
     open_with(cfg, [7u8; 32], Log::buffered(LogLevel::Debug))
@@ -590,7 +568,8 @@ fn a_journal_that_already_holds_more_heads_than_the_ceiling_replays_unchanged() 
         let (account, device) = (setup.account, setup.device);
         // The store goes first: the journal has exactly one writer.
         drop(setup);
-        let mut journal = Journal::open(&cfg.journal_dir).expect("the journal opens");
+        let mut journal =
+            Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("the journal opens");
         journal.append(&record).expect("the frame lands");
         (account, device, planted)
     };
@@ -950,6 +929,230 @@ fn volumes_report_capacity_class_and_watermark() {
     assert_eq!(volumes[1].class_label, "slow-hdd");
     assert_eq!(volumes[2].role, "journal");
     assert!(volumes[2].bytes_used > 0, "the journal has frames in it");
+}
+
+/// `ENOSPC`: the same number on Linux and on macOS.
+const ENOSPC: i32 = 28;
+/// `EDQUOT`: Linux and macOS disagree on the number, and both map to
+/// `ErrorKind::QuotaExceeded`, which is what every test asserts on.
+#[cfg(target_os = "linux")]
+const EDQUOT: i32 = 122;
+#[cfg(not(target_os = "linux"))]
+const EDQUOT: i32 = 69;
+
+#[test]
+fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
+    // docs/storage.md, durability rule 1 has three points at which the
+    // filesystem can refuse, and each leaves a DIFFERENT residue. "Exactly
+    // one leftover" would be true of two of them and false of the third, so
+    // every phase states its own number.
+    for (phase, code, kind, residue) in [
+        // The stream refuses: the temp is removed on the way out.
+        (
+            BlobPhase::Stream,
+            ENOSPC,
+            std::io::ErrorKind::StorageFull,
+            0,
+        ),
+        // The fsync refuses: an unsynced temp stays.
+        (
+            BlobPhase::Sync,
+            EDQUOT,
+            std::io::ErrorKind::QuotaExceeded,
+            1,
+        ),
+        // The rename refuses: a synced temp stays, named by nothing.
+        (
+            BlobPhase::Rename,
+            ENOSPC,
+            std::io::ErrorKind::StorageFull,
+            1,
+        ),
+    ] {
+        let dir = TempDir::new("store-blob-errno");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let store = open_with(&cfg, [7u8; 32], log.clone());
+        let account = store.setup("sentinel account").expect("setup runs once");
+        let body = b"ciphertext-sentinel".to_vec();
+        let sid = Sid::new(sha256(&body));
+
+        store.set_fault(Fault::BlobErrno { phase, code });
+        let err = store
+            .put_chunk(&account, &sid, body.len() as u64, &mut &body[..])
+            .expect_err("the volume refused");
+        match err {
+            StoreError::Io(ref e) => assert_eq!(e.kind(), kind, "{phase:?}: {err}"),
+            other => panic!("{phase:?}: expected the volume's own error, got {other}"),
+        }
+        assert!(
+            !store.chunk_exists(&sid),
+            "{phase:?}: nothing was acknowledged"
+        );
+
+        // The refusal line carries the code and the KIND, and no path
+        // (AGENTS.md requirements 6 and 12).
+        let captured = log.captured();
+        assert!(
+            captured.contains("decision=io_error"),
+            "{phase:?}: {captured}"
+        );
+        assert!(
+            captured.contains(&format!("io={kind:?}")),
+            "{phase:?}: {captured}"
+        );
+        assert!(
+            !captured.contains(dir.path().to_str().expect("a utf-8 temp path")),
+            "{phase:?}: no path on the line: {captured}"
+        );
+
+        let tmp = cfg.blobs_dir.join("v1/tmp");
+        assert_eq!(
+            fs::read_dir(&tmp).expect("tmp").count(),
+            residue,
+            "{phase:?}: the residue this phase leaves"
+        );
+        drop(store);
+
+        // Whatever it left, the next start removes it and says how many.
+        let restart = Log::buffered(LogLevel::Debug);
+        let reopened = open_with(&cfg, [7u8; 32], restart.clone());
+        assert!(
+            restart
+                .captured()
+                .contains(&format!("tmp_removed={residue}")),
+            "{phase:?}: the start counts what it removed: {}",
+            restart.captured()
+        );
+        assert_eq!(
+            fs::read_dir(&tmp).expect("tmp").count(),
+            0,
+            "{phase:?}: and nothing is left"
+        );
+        assert!(
+            !reopened.chunk_exists(&sid),
+            "{phase:?}: the chunk never appears"
+        );
+    }
+}
+
+#[test]
+fn the_journal_watermark_refuses_a_version_and_the_dashboard_agrees() {
+    let dir = TempDir::new("store-journal-watermark");
+    let cfg = config(&dir);
+    let (account, device, sid) = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        (setup.account, setup.device, sid)
+    };
+
+    // The same volumes, re-opened with a journal capacity that leaves less
+    // than the watermark for one more frame. Nothing else changes: the
+    // frames setup wrote are what fills it.
+    let mut tight = cfg.clone();
+    tight.journal_capacity = WATERMARK + 8;
+    let log = Log::buffered(LogLevel::Debug);
+    let setup = Setup {
+        store: open_with(&tight, [7u8; 32], log.clone()),
+        account,
+        device,
+    };
+
+    let refused = version(&setup, file(1), "one", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(refused)
+        .expect_err("the journal volume is below its watermark");
+    let (free, watermark) = match err {
+        StoreError::JournalFull { free, watermark } => (free, watermark),
+        other => panic!("expected journal_full, got {other}"),
+    };
+    assert_eq!(watermark, WATERMARK, "the threshold it was measured on");
+    assert!(setup.store.file(&file(1)).is_none(), "nothing landed");
+
+    // The refusal and the dashboard measure the same volume the same way.
+    let journal = setup
+        .store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume");
+    assert_eq!(journal.bytes_total, WATERMARK + 8);
+    assert_eq!(journal.watermark_bytes, WATERMARK);
+    assert!(journal.bytes_used > 0, "setup's frames are counted");
+    assert_eq!(
+        journal.bytes_free, free,
+        "the refusal's free space is the one the dashboard shows"
+    );
+    assert_eq!(journal.bytes_used + journal.bytes_free, journal.bytes_total);
+
+    // The two volumes are told apart: this is the journal, not the blobs.
+    let captured = log.captured();
+    assert!(captured.contains("decision=journal_full"), "{captured}");
+    assert!(!captured.contains("decision=volume_full"), "{captured}");
+    assert!(captured.contains(&format!("free={free}")), "{captured}");
+    assert!(
+        captured.contains(&format!("watermark={WATERMARK}")),
+        "{captured}"
+    );
+}
+
+#[test]
+fn a_faulted_journal_refuses_every_later_write_and_a_restart_clears_it() {
+    let dir = TempDir::new("store-journal-faulted");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let landed = version(&setup, file(1), "one", &[], &[sid], false);
+    setup.store.append_version(landed).expect("acknowledged");
+
+    setup.store.set_fault(Fault::JournalRecoveryFails {
+        code: ENOSPC,
+        at: AppendPhase::Write,
+        rollback: RollbackPhase::Truncate,
+    });
+    let lost = version(&setup, file(2), "two", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(lost)
+        .expect_err("the volume refused");
+    assert!(matches!(err, StoreError::Io(_)), "{err}");
+    assert_eq!(
+        setup.store.journal_faulted(),
+        Some(std::io::ErrorKind::StorageFull),
+        "the store reports the fault readiness answers on"
+    );
+
+    // Later writes refuse without asking the volume.
+    setup.store.set_fault(Fault::None);
+    let after = version(&setup, file(3), "three", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(after)
+        .expect_err("a faulted journal takes nothing");
+    assert!(matches!(err, StoreError::JournalFaulted { .. }), "{err}");
+    assert!(setup.store.file(&file(3)).is_none());
+
+    // A restart replays, truncates the tail, and serves again.
+    let (account, device) = (setup.account, setup.device);
+    drop(setup);
+    let reopened = open(&cfg);
+    assert_eq!(reopened.journal_faulted(), None, "a start clears the state");
+    assert!(
+        reopened.file(&file(1)).is_some(),
+        "everything acknowledged before the fault is intact"
+    );
+    assert!(reopened.file(&file(2)).is_none(), "the torn frame is gone");
+    let setup = Setup {
+        store: reopened,
+        account,
+        device,
+    };
+    let again = version(&setup, file(4), "four", &[], &[sid], false);
+    setup
+        .store
+        .append_version(again)
+        .expect("the journal takes writes again");
 }
 
 #[test]

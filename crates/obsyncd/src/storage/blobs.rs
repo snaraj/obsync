@@ -21,7 +21,7 @@ use crate::storage::types::StoreError;
 use crate::types::{Sid, UnixMs};
 
 #[cfg(test)]
-use crate::storage::Fault;
+use crate::storage::{BlobPhase, Fault};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -106,22 +106,35 @@ impl Blobs {
     ) -> Result<(), StoreError> {
         let tmp = self.root.join("v1/tmp").join(tmp_name());
         let mut file = create(&tmp)?;
+        // A volume that fills during the stream refuses at a write. The temp
+        // holds whatever landed and is removed with every other stream-phase
+        // refusal below, so this phase leaves NO residue for startup to find.
+        #[cfg(test)]
+        let outcome = self.errno_at(BlobPhase::Stream).and_then(|()| {
+            hash_stream(body, Some(&mut file))
+                .and_then(|(digest, total)| check(sid, declared_len, digest, total))
+        });
+        #[cfg(not(test))]
         let outcome = hash_stream(body, Some(&mut file))
             .and_then(|(digest, total)| check(sid, declared_len, digest, total));
         if let Err(e) = outcome {
             let _ = fs::remove_file(&tmp);
             return Err(e);
         }
-        // A crash here leaves an unsynced temp file: startup removes it and
-        // the chunk is simply absent, so the client re-uploads.
+        // A crash or a refusal here leaves an UNSYNCED temp file: startup
+        // removes it and the chunk is simply absent, so the client re-uploads.
         #[cfg(test)]
         self.tripped(Fault::ChunkBeforeFsync)?;
+        #[cfg(test)]
+        self.errno_at(BlobPhase::Sync)?;
         file.sync_all()?;
         drop(file);
-        // A crash here leaves a synced temp file with no name in the tree:
-        // startup removes it, same outcome.
+        // A crash or a refusal here leaves a SYNCED temp file with no name in
+        // the tree: startup removes it, same outcome.
         #[cfg(test)]
         self.tripped(Fault::ChunkBeforeRename)?;
+        #[cfg(test)]
+        self.errno_at(BlobPhase::Rename)?;
         publish(&tmp, &Blobs::chunk_path(&self.root, sid))?;
         for mirror in &self.mirrors {
             self.mirror_copy(mirror, sid)?;
@@ -285,6 +298,17 @@ impl Blobs {
             )));
         }
         Ok(())
+    }
+
+    /// The real filesystem errno a test armed for this phase of the write.
+    #[cfg(test)]
+    fn errno_at(&self, phase: BlobPhase) -> Result<(), StoreError> {
+        match *self.fault.lock().expect("fault lock") {
+            Fault::BlobErrno { phase: armed, code } if armed == phase => {
+                Err(StoreError::Io(io::Error::from_raw_os_error(code)))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

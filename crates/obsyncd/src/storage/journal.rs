@@ -1,6 +1,6 @@
 //! The append-only journal and the index snapshots beside it.
 //!
-//! docs/storage.md, "Journal frames" and "Durability rules" 2 and 3. A frame
+//! docs/storage.md, "Journal frames" and "Durability rules" 2 to 5. A frame
 //! is `u32 len | u32 crc32(payload) | payload`, the payload is canonical JSON
 //! naming its type in `t`, segments roll at 64 MiB, and every append is
 //! fsynced before the caller may acknowledge it. Replay stops at the first
@@ -20,6 +20,8 @@ use obsync_core::crc32::crc32;
 use obsync_core::hex;
 use obsync_core::json::{self, Value};
 
+use crate::config::StorageConfig;
+use crate::log::{Log, Val};
 use crate::storage::index::{DeviceEntry, FileEntry, Index};
 use crate::storage::types::{
     DevicePolicy, DeviceRecord, DeviceState, GcSummary, ScrubSummary, SeenEvent, SeenKind,
@@ -28,7 +30,7 @@ use crate::storage::types::{
 use crate::types::{AccountId, DeviceId, FileId, Seq, Sid, UnixMs, VersionId};
 
 #[cfg(test)]
-use crate::storage::Fault;
+use crate::storage::{AppendPhase, Fault, RollbackPhase};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -112,15 +114,29 @@ pub(crate) struct Journal {
     root: PathBuf,
     segment: Option<File>,
     segment_no: u32,
+    /// The durable length of the open segment: what the journal believes it
+    /// has made durable, which after a failed write is SHORTER than the file.
     segment_len: u64,
+    /// Bytes the segments other than the open one occupy. Measured wherever
+    /// the set of segments changes, so the append path adds one addition and
+    /// no syscall.
+    older_bytes: u64,
+    /// Declared journal capacity (`OBSYNC_JOURNAL_CAPACITY`).
+    capacity: u64,
+    /// The refusal threshold for this volume.
+    watermark: u64,
+    /// Set when a failed append could not be rolled back. Every later append
+    /// refuses; a restart replays, truncates the tail, and clears it.
+    faulted: Option<io::ErrorKind>,
+    log: Log,
     #[cfg(test)]
     fault: Mutex<Fault>,
 }
 
 impl Journal {
     /// Create the layout and open the newest segment for appending.
-    pub(crate) fn open(journal_dir: &Path) -> Result<Journal, StoreError> {
-        let root = journal_dir.join("v1");
+    pub(crate) fn open(cfg: &StorageConfig, log: Log) -> Result<Journal, StoreError> {
+        let root = cfg.journal_dir.join("v1");
         make_dir(&root.join("journal"))?;
         make_dir(&root.join("index"))?;
         let mut journal = Journal {
@@ -128,11 +144,46 @@ impl Journal {
             segment: None,
             segment_no: 0,
             segment_len: 0,
+            older_bytes: 0,
+            capacity: cfg.journal_capacity,
+            watermark: cfg.free_watermark.bytes_for(cfg.journal_capacity),
+            faulted: None,
+            log,
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
         };
         journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
+        journal.measure_segments()?;
         Ok(journal)
+    }
+
+    /// Bytes the journal's own segments occupy.
+    ///
+    /// The open segment's DURABLE length plus the size of every other
+    /// segment. This is the number the journal watermark is measured
+    /// against and the number `VolumeStatus` reports, so a refusal and the
+    /// dashboard never disagree about how full the volume is.
+    pub(crate) fn tracked_bytes(&self) -> u64 {
+        self.older_bytes.saturating_add(self.segment_len)
+    }
+
+    /// The kind of the failure that faulted this journal, if it is faulted.
+    pub(crate) fn faulted(&self) -> Option<io::ErrorKind> {
+        self.faulted
+    }
+
+    /// Re-measure the segments the open one does not cover.
+    fn measure_segments(&mut self) -> Result<(), StoreError> {
+        let open = self.segment.is_some().then_some(self.segment_no);
+        let mut older = 0;
+        for number in self.segments()? {
+            if Some(number) == open {
+                continue;
+            }
+            older += fs::metadata(self.segment_path(number))?.len();
+        }
+        self.older_bytes = older;
+        Ok(())
     }
 
     /// Where quarantined chunks go (docs/storage.md, on-disk layout).
@@ -170,13 +221,38 @@ impl Journal {
     }
 
     /// Append one record and fsync it. The caller may acknowledge afterwards,
-    /// never before (docs/storage.md, durability rule 4).
+    /// never before (docs/storage.md, durability rule 6).
+    ///
+    /// Two refusals happen before anything reaches the volume: a journal
+    /// already faulted, and a frame that would take the journal volume below
+    /// its watermark. Afterwards the write and its fsync are wrapped: any
+    /// failure rolls the segment back to the length the journal believes is
+    /// durable, so the next frame starts clean and nothing that was never
+    /// acknowledged survives to a replay. Segments are `O_APPEND`, so
+    /// WITHOUT that rollback the next successful frame would land after a
+    /// torn one and replay would truncate at the torn frame, discarding
+    /// every write acknowledged after the failure.
     pub(crate) fn append(&mut self, record: &Record) -> Result<(), StoreError> {
+        if let Some(io) = self.faulted {
+            return Err(StoreError::JournalFaulted { io });
+        }
         let payload = record.to_value().to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
         bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
         bytes.extend_from_slice(&payload);
+
+        // The journal volume's own watermark, symmetric with the blob one
+        // (docs/storage.md, "Free-space watermark and quota"). Measured on
+        // the frame that is about to be written, so the refusal happens
+        // before the volume is asked and both numbers reach the line.
+        let free = self.capacity.saturating_sub(self.tracked_bytes());
+        if free.saturating_sub(bytes.len() as u64) < self.watermark {
+            return Err(StoreError::JournalFull {
+                free,
+                watermark: self.watermark,
+            });
+        }
 
         if self.segment.is_none() || self.segment_len + bytes.len() as u64 > SEGMENT_MAX {
             self.roll()?;
@@ -190,12 +266,13 @@ impl Journal {
             let last = bytes.len() - 1;
             bytes[last] ^= 0xff;
         }
-        let file = self.segment.as_mut().expect("a segment is open");
 
         // A crash part way through a frame leaves a torn tail: replay
-        // truncates it and reports the loss.
+        // truncates it and reports the loss. No rollback runs, because in a
+        // real crash this process is gone before it could run one.
         #[cfg(test)]
         if mid_append {
+            let file = self.segment.as_mut().expect("a segment is open");
             let half = bytes.len() / 2;
             file.write_all(&bytes[..half])?;
             file.sync_all()?;
@@ -206,10 +283,113 @@ impl Journal {
             )));
         }
 
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        self.segment_len += bytes.len() as u64;
-        Ok(())
+        let durable = self.segment_len;
+        match self.write_frame(&bytes).and_then(|()| self.sync_frame()) {
+            Ok(()) => {
+                self.segment_len = durable + bytes.len() as u64;
+                Ok(())
+            }
+            Err(e) => Err(self.recover(durable, e)),
+        }
+    }
+
+    /// Write the frame, or the failure a test injected in its place.
+    fn write_frame(&mut self, bytes: &[u8]) -> Result<(), io::Error> {
+        #[cfg(test)]
+        let injected = self.errno_at(AppendPhase::Write);
+        let file = self.segment.as_mut().expect("a segment is open");
+        #[cfg(test)]
+        if let Some(e) = injected {
+            // What a real short write leaves behind: part of the frame.
+            file.write_all(&bytes[..bytes.len() / 2])?;
+            return Err(e);
+        }
+        file.write_all(bytes)
+    }
+
+    /// Make the frame durable, or the failure a test injected in its place.
+    ///
+    /// The whole frame is on disk by the time this runs and none of it is
+    /// durable, so a failure here must roll the segment back exactly as a
+    /// failed write does.
+    fn sync_frame(&mut self) -> Result<(), io::Error> {
+        #[cfg(test)]
+        if let Some(e) = self.errno_at(AppendPhase::Sync) {
+            return Err(e);
+        }
+        self.segment.as_ref().expect("a segment is open").sync_all()
+    }
+
+    /// Undo a failed append, and say what happened exactly once.
+    ///
+    /// Returns the ORIGINAL error either way: the caller asked for a frame
+    /// and the volume refused, and that is the fact it acts on. Whether the
+    /// journal could clean up after itself is the `decision` on the line.
+    fn recover(&mut self, durable: u64, e: io::Error) -> StoreError {
+        // Read off the volume rather than inferred from which phase failed:
+        // it is the number an operator would measure.
+        let torn = self.on_disk().map_or(0, |len| len.saturating_sub(durable));
+        let decision = match self.rollback(durable) {
+            // Nothing to restore: the durable length only ever advances after
+            // a successful fsync, so a failed append never moved it. The
+            // truncation is what puts the VOLUME back where the journal
+            // already believes it is.
+            Ok(()) => "truncated",
+            Err(_) => {
+                // The bytes the failure left are really on the volume and the
+                // volume is really that much fuller, so the accounting says
+                // so: a faulted journal still answers for how full it is.
+                self.segment_len = self.on_disk().unwrap_or(durable);
+                self.faulted = Some(e.kind());
+                "faulted"
+            }
+        };
+        // One line, and the KIND rather than the message: an I/O message can
+        // carry a path (AGENTS.md requirements 6 and 12).
+        self.log.error(
+            "journal_append_failed",
+            &[
+                ("decision", Val::word(decision)),
+                ("io", Val::io(&e)),
+                ("segment", Val::count(u64::from(self.segment_no))),
+                ("torn_bytes", Val::bytes(torn)),
+            ],
+        );
+        StoreError::Io(e)
+    }
+
+    /// The open segment's length as the volume holds it right now, which
+    /// after a failed write is longer than the length the journal believes.
+    fn on_disk(&self) -> Option<u64> {
+        self.segment
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .map(|m| m.len())
+    }
+
+    /// Cut the segment back to the length the journal believes is durable,
+    /// and make that cut durable in turn.
+    fn rollback(&mut self, durable: u64) -> Result<(), io::Error> {
+        #[cfg(test)]
+        if let Some(e) = self.rollback_fails_at(RollbackPhase::Truncate) {
+            return Err(e);
+        }
+        self.segment
+            .as_mut()
+            .expect("a segment is open")
+            .set_len(durable)?;
+        self.sync_rollback()
+    }
+
+    /// fsync the truncated segment, or the failure a test injected in its
+    /// place. A truncation this call did not make durable is a rollback the
+    /// next power cut undoes, so it is a separate and separately proven step.
+    fn sync_rollback(&mut self) -> Result<(), io::Error> {
+        #[cfg(test)]
+        if let Some(e) = self.rollback_fails_at(RollbackPhase::Sync) {
+            return Err(e);
+        }
+        self.segment.as_ref().expect("a segment is open").sync_all()
     }
 
     /// Open the next segment, fsyncing the directory that names it.
@@ -229,7 +409,8 @@ impl Journal {
         self.segment_len = file.metadata()?.len();
         self.segment = Some(file);
         self.segment_no = number;
-        fsync_dir(&self.root.join("journal"))
+        fsync_dir(&self.root.join("journal"))?;
+        self.measure_segments()
     }
 
     /// Replay every frame after `after` into `apply`.
@@ -274,12 +455,16 @@ impl Journal {
                         fsync_dir(&self.root.join("journal"))?;
                         report.truncated_bytes = remaining;
                         self.segment = None;
+                        self.segment_len = 0;
+                        self.measure_segments()?;
                         return Ok(report);
                     }
                 }
             }
         }
         self.segment = None;
+        self.segment_len = 0;
+        self.measure_segments()?;
         Ok(report)
     }
 
@@ -330,7 +515,8 @@ impl Journal {
                 fs::remove_file(self.segment_path(number))?;
             }
         }
-        fsync_dir(&self.root.join("journal"))
+        fsync_dir(&self.root.join("journal"))?;
+        self.measure_segments()
     }
 
     /// The sequence of the first frame in a segment.
@@ -416,6 +602,33 @@ impl Journal {
     #[cfg(test)]
     fn armed(&self, at: Fault) -> bool {
         *self.fault.lock().expect("fault lock") == at
+    }
+
+    /// The errno a test armed for this phase of the append, if any. Both
+    /// journal errno faults answer here: a recovery fault is an append that
+    /// fails first and cannot be undone second.
+    #[cfg(test)]
+    fn errno_at(&self, phase: AppendPhase) -> Option<io::Error> {
+        match *self.fault.lock().expect("fault lock") {
+            Fault::JournalAppendErrno { code, at }
+            | Fault::JournalRecoveryFails { code, at, .. }
+                if at == phase =>
+            {
+                Some(io::Error::from_raw_os_error(code))
+            }
+            _ => None,
+        }
+    }
+
+    /// The failure a test armed for this phase of the rollback, if any.
+    #[cfg(test)]
+    fn rollback_fails_at(&self, phase: RollbackPhase) -> Option<io::Error> {
+        match *self.fault.lock().expect("fault lock") {
+            Fault::JournalRecoveryFails { rollback, .. } if rollback == phase => {
+                Some(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1017,10 +1230,26 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::testutil::{TempDir, device_record, version_record};
+    use crate::log::LogLevel;
+    use crate::storage::testutil::{
+        TempDir, WATERMARK, device_record, storage_config, version_record,
+    };
 
-    fn journal(dir: &TempDir) -> Journal {
-        Journal::open(dir.path()).expect("journal opens")
+    /// `ENOSPC`: the same number on Linux and on macOS.
+    const ENOSPC: i32 = 28;
+    /// `EDQUOT`: Linux and macOS disagree on the number, and both map to
+    /// `ErrorKind::QuotaExceeded`, which is what every test asserts on.
+    #[cfg(target_os = "linux")]
+    const EDQUOT: i32 = 122;
+    #[cfg(not(target_os = "linux"))]
+    const EDQUOT: i32 = 69;
+
+    fn open_journal(dir: &TempDir) -> Journal {
+        open_logged(dir, Log::buffered(LogLevel::Debug))
+    }
+
+    fn open_logged(dir: &TempDir, log: Log) -> Journal {
+        Journal::open(&storage_config(dir), log).expect("journal opens")
     }
 
     fn account_frame() -> Frame {
@@ -1051,7 +1280,7 @@ mod tests {
     #[test]
     fn every_frame_type_round_trips_through_a_segment() {
         let dir = TempDir::new("journal-frames");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         let device = device_record();
         let frames = vec![
             account_frame(),
@@ -1143,10 +1372,325 @@ mod tests {
         }
     }
 
+    /// Every segment byte the volume actually holds, so the journal's own
+    /// accounting can be checked against the disk rather than against itself.
+    fn segment_bytes(dir: &TempDir) -> u64 {
+        let mut total = 0;
+        for entry in fs::read_dir(dir.path().join("journal/v1/journal")).expect("segments") {
+            total += entry.expect("entry").metadata().expect("metadata").len();
+        }
+        total
+    }
+
+    fn seqs(records: &[Record]) -> Vec<Seq> {
+        records.iter().map(|r| r.seq).collect()
+    }
+
+    #[test]
+    fn a_failed_append_is_rolled_back_so_the_next_frame_lands_clean() {
+        // A real full or over-quota volume, at each half of the append. The
+        // errno numbers differ per platform and the KINDS do not, so the
+        // assertion is on the kind and the test is honest everywhere.
+        for (code, kind) in [
+            (ENOSPC, io::ErrorKind::StorageFull),
+            (EDQUOT, io::ErrorKind::QuotaExceeded),
+        ] {
+            for at in [AppendPhase::Write, AppendPhase::Sync] {
+                let case = format!("{at:?}/{kind:?}");
+                let dir = TempDir::new("journal-append-errno");
+                let mut journal = open_journal(&dir);
+                journal
+                    .append(&record(1, account_frame()))
+                    .expect("the first frame lands");
+                let acknowledged = journal.tracked_bytes();
+
+                journal.set_fault(Fault::JournalAppendErrno { code, at });
+                let err = journal
+                    .append(&record(2, account_frame()))
+                    .expect_err("the volume refused");
+                match err {
+                    StoreError::Io(ref e) => assert_eq!(e.kind(), kind, "{case}: {err}"),
+                    other => panic!("{case}: expected the volume's own error, got {other}"),
+                }
+
+                // The rollback is complete AND durable: the journal believes
+                // exactly what the volume holds, both back at the length the
+                // last acknowledged frame left.
+                journal.set_fault(Fault::None);
+                assert_eq!(
+                    journal.tracked_bytes(),
+                    acknowledged,
+                    "{case}: rolled back to the durable length"
+                );
+                assert_eq!(
+                    segment_bytes(&dir),
+                    acknowledged,
+                    "{case}: and the volume agrees"
+                );
+
+                journal
+                    .append(&record(3, account_frame()))
+                    .expect("the journal takes frames again");
+
+                // The whole point: the frame acknowledged AFTER the failure
+                // survives the restart. Without the rollback it would sit
+                // behind a torn one and replay would cut it away.
+                let mut reopened = open_journal(&dir);
+                let (seen, report) = replay_all(&mut reopened);
+                assert_eq!(
+                    seqs(&seen),
+                    vec![Seq(1), Seq(3)],
+                    "{case}: exactly the acknowledged frames, in order"
+                );
+                assert_eq!(report.truncated_bytes, 0, "{case}: nothing torn to cut");
+            }
+        }
+    }
+
+    #[test]
+    fn a_rollback_that_fails_faults_the_journal_and_it_takes_nothing_more() {
+        // Both halves of the append crossed with both halves of the rollback.
+        // `replayed` is what the next start finds: the two acknowledged frames
+        // always, plus the complete-but-never-acknowledged third one in the
+        // one case where nothing truncated it away. Nothing acknowledged is
+        // ever lost, which is the invariant.
+        for (at, rollback, replayed, torn) in [
+            (
+                AppendPhase::Write,
+                RollbackPhase::Truncate,
+                vec![Seq(1), Seq(2)],
+                true,
+            ),
+            (
+                AppendPhase::Write,
+                RollbackPhase::Sync,
+                vec![Seq(1), Seq(2)],
+                false,
+            ),
+            (
+                AppendPhase::Sync,
+                RollbackPhase::Truncate,
+                vec![Seq(1), Seq(2), Seq(3)],
+                false,
+            ),
+            (
+                AppendPhase::Sync,
+                RollbackPhase::Sync,
+                vec![Seq(1), Seq(2)],
+                false,
+            ),
+        ] {
+            let case = format!("{at:?}/{rollback:?}");
+            let dir = TempDir::new("journal-faulted");
+            let mut journal = open_journal(&dir);
+            journal
+                .append(&record(1, account_frame()))
+                .expect("acknowledged before the fault");
+            journal
+                .append(&record(2, account_frame()))
+                .expect("acknowledged before the fault");
+
+            journal.set_fault(Fault::JournalRecoveryFails {
+                code: ENOSPC,
+                at,
+                rollback,
+            });
+            let err = journal
+                .append(&record(3, account_frame()))
+                .expect_err("the volume refused");
+            match err {
+                StoreError::Io(ref e) => {
+                    assert_eq!(e.kind(), io::ErrorKind::StorageFull, "{case}: {err}");
+                }
+                other => panic!("{case}: expected the volume's own error, got {other}"),
+            }
+            assert_eq!(
+                journal.faulted(),
+                Some(io::ErrorKind::StorageFull),
+                "{case}: a rollback that failed faults the journal"
+            );
+
+            // Every later append refuses, and touches nothing.
+            journal.set_fault(Fault::None);
+            let on_disk = segment_bytes(&dir);
+            let err = journal
+                .append(&record(4, account_frame()))
+                .expect_err("a faulted journal takes nothing");
+            match err {
+                StoreError::JournalFaulted { io } => {
+                    assert_eq!(io, io::ErrorKind::StorageFull, "{case}");
+                }
+                other => panic!("{case}: expected journal_faulted, got {other}"),
+            }
+            assert_eq!(
+                segment_bytes(&dir),
+                on_disk,
+                "{case}: and wrote nothing while refusing"
+            );
+            assert_eq!(
+                journal.tracked_bytes(),
+                on_disk,
+                "{case}: a faulted journal still answers for how full the volume is"
+            );
+
+            // The restart IS the recovery: replay truncates what it finds torn
+            // and every record acknowledged before the fault is intact.
+            let mut reopened = open_journal(&dir);
+            assert_eq!(reopened.faulted(), None, "{case}: a start clears the state");
+            let (seen, report) = replay_all(&mut reopened);
+            assert_eq!(seqs(&seen), replayed, "{case}: what the next start finds");
+            assert!(
+                seqs(&seen).starts_with(&[Seq(1), Seq(2)]),
+                "{case}: every record acknowledged before the fault survives"
+            );
+            assert_eq!(
+                report.truncated_bytes > 0,
+                torn,
+                "{case}: whether a torn tail had to be cut"
+            );
+            reopened
+                .append(&record(9, account_frame()))
+                .expect("{case}: and the journal takes frames again");
+        }
+    }
+
+    #[test]
+    fn exactly_the_acknowledged_frames_survive_a_fault_at_any_point() {
+        const N: u64 = 20;
+        for k in [1, 2, 7, 13, 19, 20] {
+            let dir = TempDir::new("journal-property");
+            let mut journal = open_journal(&dir);
+            let mut acknowledged = Vec::new();
+            for seq in 1..=N {
+                if seq == k {
+                    // Alternate the half that fails, so neither is the one
+                    // the property happens to be true for.
+                    let at = if seq.is_multiple_of(2) {
+                        AppendPhase::Sync
+                    } else {
+                        AppendPhase::Write
+                    };
+                    journal.set_fault(Fault::JournalAppendErrno { code: ENOSPC, at });
+                    journal
+                        .append(&record(seq, account_frame()))
+                        .expect_err("the fault refuses");
+                    journal.set_fault(Fault::None);
+                    continue;
+                }
+                journal
+                    .append(&record(seq, account_frame()))
+                    .expect("append");
+                acknowledged.push(Seq(seq));
+            }
+
+            let mut reopened = open_journal(&dir);
+            let (seen, report) = replay_all(&mut reopened);
+            assert_eq!(
+                seqs(&seen),
+                acknowledged,
+                "fault at {k}: exactly the acknowledged set, in order"
+            );
+            assert_eq!(
+                report.truncated_bytes, 0,
+                "fault at {k}: the rollback left nothing torn"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_append_logs_one_line_naming_the_decision_and_the_kind() {
+        for (fault, decision) in [
+            (
+                Fault::JournalAppendErrno {
+                    code: ENOSPC,
+                    at: AppendPhase::Write,
+                },
+                "truncated",
+            ),
+            (
+                Fault::JournalRecoveryFails {
+                    code: ENOSPC,
+                    at: AppendPhase::Write,
+                    rollback: RollbackPhase::Truncate,
+                },
+                "faulted",
+            ),
+        ] {
+            let dir = TempDir::new("journal-append-log");
+            let log = Log::buffered(LogLevel::Debug);
+            let mut journal = open_logged(&dir, log.clone());
+            journal.append(&record(1, account_frame())).expect("append");
+            journal.set_fault(fault);
+            let _ = journal.append(&record(2, account_frame()));
+
+            let captured = log.captured();
+            let lines: Vec<&str> = captured
+                .lines()
+                .filter(|l| l.contains("event=journal_append_failed"))
+                .collect();
+            assert_eq!(lines.len(), 1, "exactly one line per event: {captured}");
+            let line = lines[0];
+            assert!(line.contains(&format!("decision={decision}")), "{line}");
+            assert!(line.contains("io=StorageFull"), "{line}");
+            assert!(line.contains("segment=1"), "{line}");
+            assert!(
+                !line.contains("torn_bytes=0"),
+                "the line states the bytes the failure left behind: {line}"
+            );
+            assert!(line.contains("torn_bytes="), "{line}");
+            // Requirement 6: an I/O message can carry a path, so only the
+            // kind is ever rendered.
+            assert!(
+                !line.contains(dir.path().to_str().expect("a utf-8 temp path")),
+                "no path on the line: {line}"
+            );
+            assert!(
+                !line.contains("os error") && !line.contains("No space"),
+                "the kind, never the message: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_journal_watermark_refuses_with_both_numbers_before_anything_is_written() {
+        let dir = TempDir::new("journal-watermark");
+        let mut cfg = storage_config(&dir);
+        // Everything but the watermark and eight bytes is already spoken for.
+        cfg.journal_capacity = WATERMARK + 8;
+        let mut journal =
+            Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("journal opens");
+        let err = journal
+            .append(&record(1, account_frame()))
+            .expect_err("below the watermark");
+        match err {
+            StoreError::JournalFull { free, watermark } => {
+                assert_eq!(free, WATERMARK + 8, "the refusal names the free space");
+                assert_eq!(watermark, WATERMARK, "and the threshold it was measured on");
+            }
+            other => panic!("expected journal_full, got {other}"),
+        }
+        assert_eq!(segment_bytes(&dir), 0, "and the volume was never asked");
+        assert_eq!(journal.tracked_bytes(), 0);
+
+        // The same frame lands when the volume has room, and the journal's
+        // accounting is the volume's own.
+        let dir = TempDir::new("journal-watermark-room");
+        let mut journal = open_journal(&dir);
+        journal
+            .append(&record(1, account_frame()))
+            .expect("room for the frame");
+        assert!(journal.tracked_bytes() > 0);
+        assert_eq!(
+            journal.tracked_bytes(),
+            segment_bytes(&dir),
+            "the accounting is what the segments hold"
+        );
+    }
+
     #[test]
     fn a_crash_mid_append_truncates_the_tail_and_keeps_the_rest() {
         let dir = TempDir::new("journal-torn");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
         journal
             .append(&record(
@@ -1165,7 +1709,7 @@ mod tests {
             .expect_err("the injected crash surfaces");
         assert!(matches!(err, StoreError::Io(_)), "{err}");
 
-        let mut reopened = Journal::open(dir.path()).expect("reopen");
+        let mut reopened = open_journal(&dir);
         let (seen, report) = replay_all(&mut reopened);
         assert_eq!(report.frames, 2, "the two complete frames survive");
         assert!(report.truncated_bytes > 0, "the torn tail is reported");
@@ -1188,12 +1732,12 @@ mod tests {
     #[test]
     fn a_frame_whose_crc_fails_is_refused_like_a_torn_one() {
         let dir = TempDir::new("journal-crc");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
         journal.set_fault(Fault::JournalTornFrame);
         journal.append(&record(2, account_frame())).expect("append");
 
-        let mut reopened = Journal::open(dir.path()).expect("reopen");
+        let mut reopened = open_journal(&dir);
         let (seen, report) = replay_all(&mut reopened);
         assert_eq!(report.frames, 1, "only the intact frame survives");
         assert_eq!(seen.len(), 1);
@@ -1203,7 +1747,7 @@ mod tests {
     #[test]
     fn a_snapshot_replaces_the_frames_it_covers() {
         let dir = TempDir::new("journal-snapshot");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
         let mut index = Index::default();
         index.apply(&record(1, account_frame()));
@@ -1221,7 +1765,7 @@ mod tests {
             ))
             .expect("append");
 
-        let reopened = Journal::open(dir.path()).expect("reopen");
+        let reopened = open_journal(&dir);
         let (loaded, skipped) = reopened.load_snapshot().expect("load");
         let mut loaded = loaded.expect("a snapshot exists");
         assert_eq!(skipped, 0);
@@ -1240,7 +1784,7 @@ mod tests {
     #[test]
     fn an_unreadable_snapshot_is_skipped_for_an_older_one() {
         let dir = TempDir::new("journal-bad-snapshot");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
         let mut index = Index::default();
         index.apply(&record(1, account_frame()));
@@ -1248,7 +1792,7 @@ mod tests {
         index.seq = Seq(2);
         journal.snapshot(&index).expect("second snapshot");
 
-        let snapshot = dir.path().join("v1/index/2.snap");
+        let snapshot = dir.path().join("journal/v1/index/2.snap");
         fs::write(&snapshot, b"not a frame at all").expect("corrupt the newest snapshot");
 
         let (loaded, skipped) = journal.load_snapshot().expect("load");
@@ -1259,7 +1803,7 @@ mod tests {
     #[test]
     fn verify_counts_frames_and_flags_a_bad_one() {
         let dir = TempDir::new("journal-verify");
-        let mut journal = journal(&dir);
+        let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
         journal.append(&record(2, account_frame())).expect("append");
         let (segments, frames, bad) = journal.verify().expect("verify");

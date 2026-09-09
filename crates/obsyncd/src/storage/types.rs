@@ -391,12 +391,31 @@ pub enum StoreError {
         /// What arrived.
         actual: u64,
     },
-    /// Free space is at or below the watermark.
+    /// Free space on the blob volume is at or below the watermark.
     VolumeFull {
         /// Bytes free after this write would land.
         free: u64,
         /// The refusal threshold.
         watermark: u64,
+    },
+    /// Free space on the JOURNAL volume is at or below the watermark. A
+    /// separate variant from [`StoreError::VolumeFull`] on purpose: the two
+    /// volumes are configured, provisioned and filled independently, and a
+    /// refusal that did not say which one it measured would send an operator
+    /// to the wrong disk.
+    JournalFull {
+        /// Bytes free on the journal volume after this frame would land.
+        free: u64,
+        /// The refusal threshold.
+        watermark: u64,
+    },
+    /// A journal append failed and the rollback that would have left the
+    /// segment clean failed too, so the segment holds bytes no frame owns.
+    /// Nothing more may be appended until a restart replays and truncates.
+    JournalFaulted {
+        /// The kind of the failure that put the journal here. The error
+        /// itself went to the caller of the append that failed.
+        io: io::ErrorKind,
     },
     /// The account quota is exhausted.
     QuotaExceeded {
@@ -482,6 +501,10 @@ impl fmt::Display for StoreError {
             StoreError::LengthMismatch { declared, actual } => {
                 write!(f, "length mismatch: declared {declared}, received {actual}")
             }
+            StoreError::JournalFull { free, watermark } => {
+                write!(f, "journal full: {free} bytes free, watermark {watermark}")
+            }
+            StoreError::JournalFaulted { .. } => f.write_str("journal faulted: restart to replay"),
             StoreError::VolumeFull { free, watermark } => {
                 write!(f, "volume full: {free} bytes free, watermark {watermark}")
             }
@@ -542,6 +565,8 @@ impl StoreError {
             StoreError::SidMismatch { .. } => "sid_mismatch",
             StoreError::LengthMismatch { .. } => "length_mismatch",
             StoreError::VolumeFull { .. } => "volume_full",
+            StoreError::JournalFull { .. } => "journal_full",
+            StoreError::JournalFaulted { .. } => "journal_faulted",
             StoreError::QuotaExceeded { .. } => "quota_exceeded",
             StoreError::MissingChunks(_) => "missing_chunks",
             StoreError::VersionIdMismatch { .. } => "version_id_mismatch",
@@ -576,6 +601,26 @@ mod tests {
         };
         assert_eq!(err.to_string(), "volume full: 7 bytes free, watermark 2048");
         assert_eq!(err.code(), "volume_full");
+
+        // The two volumes are told apart by the code, and each names the
+        // numbers its own refusal was decided on.
+        let err = StoreError::JournalFull {
+            free: 7,
+            watermark: 2048,
+        };
+        assert_eq!(
+            err.to_string(),
+            "journal full: 7 bytes free, watermark 2048"
+        );
+        assert_eq!(err.code(), "journal_full");
+
+        // The faulted journal states the transition and nothing else: the
+        // kind it remembers reaches the log line, never the message.
+        let err = StoreError::JournalFaulted {
+            io: io::ErrorKind::StorageFull,
+        };
+        assert_eq!(err.to_string(), "journal faulted: restart to replay");
+        assert_eq!(err.code(), "journal_faulted");
 
         let err = StoreError::QuotaExceeded { used: 10, quota: 5 };
         assert_eq!(err.to_string(), "quota exceeded: 10 bytes used, quota 5");
