@@ -457,6 +457,385 @@ fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
 }
 
 #[test]
+fn a_journal_whose_usage_is_unverified_answers_readyz_and_recovers_without_a_write() {
+    // The other half of the accounting refusal, over the wire. A journal that
+    // could not re-read its own usage refuses every write, so readiness must
+    // say so -- and, unlike the faulted state, this one clears itself the
+    // moment a survey succeeds. Readiness is where that survey is retried, so
+    // an operator who fixes the volume watches the server come back on the
+    // next probe instead of having to send a write to find out.
+    let h = Harness::start("journal-unverified");
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+    let cred = h.setup_account();
+
+    // A directory where the snapshot's destination belongs refuses the
+    // rename; a FILE where the quarantine directory belongs then refuses the
+    // survey that would account for what the refused rename left behind.
+    // Both fail, which is the case the accounting cannot recover from on its
+    // own. Neither fixture is a mode: this suite runs as root inside the
+    // release image, and root walks a directory whose mode forbids it.
+    let index_dir = h.dir.join("journal/v1/index");
+    let quarantine = h.dir.join("journal/v1/quarantine");
+    let seq = h.app.store.head_seq();
+    std::fs::create_dir_all(index_dir.join(format!("{seq}.snap"))).expect("block the rename");
+    std::fs::write(&quarantine, b"not a directory\n").expect("block the survey");
+    h.app
+        .store
+        .snapshot()
+        .expect_err("the snapshot and its survey both fail");
+
+    // Writes refuse with their own code, distinct from a faulted journal:
+    // nothing here needs a restart.
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "journal_unverified");
+
+    // Readiness answers false, and names the kind that refused the survey.
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("journal usage unverified; survey failed: NotADirectory"),
+        "the refusal names the accounting and the kind, never a path"
+    );
+
+    // The operator fixes the volume, and NOTHING is written afterwards: the
+    // probe itself re-surveys, the state clears, and readiness is true again.
+    std::fs::remove_file(&quarantine).expect("free the name");
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(
+        h.app.store.journal_usage_unverified(),
+        None,
+        "the probe is what cleared it, with no write in between"
+    );
+    let accepted = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(accepted.status, 200, "{}", accepted.text());
+}
+
+/// A dashboard session, for the two admin views that carry `render::volume`.
+///
+/// Deliberately NOT shared with
+/// `the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header`:
+/// there the cookie mechanics are the subject and their assertions belong
+/// inline; here they are only the way in.
+fn admin_cookie(h: &Harness, cred: &Cred) -> String {
+    let link = Req::post("/v1/dashboard/login-link")
+        .sign(cred, NOW)
+        .send(h.addr);
+    assert_eq!(link.status, 200, "{}", link.text());
+    let url = link
+        .json()
+        .get("url")
+        .and_then(Value::as_str)
+        .expect("a login url")
+        .to_string();
+    let token = url
+        .split("token=")
+        .nth(1)
+        .expect("a token in the url")
+        .to_string();
+    let login = Req::get(&format!("/login?token={token}")).send(h.addr);
+    assert_eq!(login.status, 302, "{}", login.text());
+    login
+        .headers_all("set-cookie")
+        .iter()
+        .map(|c| c.split(';').next().expect("a cookie pair").to_string())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The journal volume AS THE DASHBOARD RECEIVES IT: the parsed JSON of the
+/// authenticated admin view, not the Rust `VolumeStatus` behind it. The join
+/// between those two is the thing under test.
+fn journal_volume(h: &Harness, cookie: &str) -> Value {
+    let res = Req::get("/v1/admin/storage")
+        .header("Cookie", cookie)
+        .send(h.addr);
+    assert_eq!(res.status, 200, "{}", res.text());
+    res.json()
+        .get("volumes")
+        .and_then(Value::as_array)
+        .expect("the storage view carries volumes")
+        .iter()
+        .find(|v| v.get("role").and_then(Value::as_str) == Some("journal"))
+        .expect("a journal volume")
+        .clone()
+}
+
+#[test]
+fn the_dashboard_is_told_when_the_journal_usage_figure_is_stale() {
+    // The stale-usage flag is only worth having if it reaches the page, and
+    // nothing proved that it did. The Store test observes the Rust
+    // `VolumeStatus`; the dashboard helper test supplies its own boolean.
+    // Between them sits the serializer, and replacing its value with a
+    // constant `false` -- or `bytes_used` with a constant zero -- left every
+    // API test green while the dashboard would show a trustworthy-looking
+    // figure the server considers stale.
+    //
+    // So every assertion here is on the PARSED JSON of the authenticated
+    // admin view, the same bytes the dashboard fetches, read three times:
+    // before the failure, while unverified, and after recovery.
+    let h = Harness::start_with(
+        "volume-wire-unverified",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    // The only HMAC-signed request in this test is the login link, and it is
+    // made HERE, before the first measurement. Every authenticated device
+    // request appends to the nonce log, whose bytes the journal total
+    // includes: one issued between the three observations would look exactly
+    // like the survey drift this test exists to rule out.
+    let cookie = admin_cookie(&h, &cred);
+
+    // (a) Before. The key must be PRESENT and a BOOLEAN: a serializer that
+    // dropped it, or emitted a string, leaves a page that silently never
+    // warns, and `!= true` would pass for all three of those.
+    let before = journal_volume(&h, &cookie);
+    let flag = before
+        .get("usage_unverified")
+        .unwrap_or_else(|| panic!("the volume object must carry usage_unverified: {before:?}"));
+    assert_eq!(
+        flag.as_bool(),
+        Some(false),
+        "a fresh journal's usage is verified, and the field is a boolean: {flag:?}"
+    );
+    // Non-zero, so a serializer that emitted a constant zero cannot pass for
+    // it here or at (c).
+    let used0 = before
+        .get("bytes_used")
+        .and_then(Value::as_u64)
+        .expect("bytes_used");
+    assert!(
+        used0 > 0,
+        "setup journalled an account and a device, so the figure is real: {used0}"
+    );
+
+    // The snapshot directory is taken away rather than blocked, so the
+    // snapshot fails BEFORE writing its temporary and leaves the volume
+    // byte-for-byte alone; a file where the quarantine belongs then refuses
+    // the survey that would have accounted for it. Nothing here is a mode:
+    // this suite runs as root inside the release image.
+    let index_dir = h.dir.join("journal/v1/index");
+    let stash = h.dir.join("index-stash");
+    let quarantine = h.dir.join("journal/v1/quarantine");
+    std::fs::rename(&index_dir, &stash).expect("take the snapshot directory away");
+    std::fs::write(&quarantine, b"not a directory\n").expect("refuse the survey");
+    h.app
+        .store
+        .snapshot()
+        .expect_err("the snapshot and its survey both fail");
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    assert_eq!(
+        Req::get("/readyz").send(h.addr).status,
+        503,
+        "the server is refusing writes while this is true"
+    );
+
+    // (b) While unverified: the flag is true and the figure beside it is the
+    // LAST GOOD one, unchanged. Those two facts belong to each other -- a
+    // true flag beside a silently refreshed number would be describing a
+    // state the server is not in.
+    let during = journal_volume(&h, &cookie);
+    assert_eq!(
+        during.get("usage_unverified").and_then(Value::as_bool),
+        Some(true),
+        "the page is told the figure could not be re-read: {during:?}"
+    );
+    assert_eq!(
+        during.get("bytes_used").and_then(Value::as_u64),
+        Some(used0),
+        "and the figure is the last one read successfully"
+    );
+    for key in ["bytes_total", "bytes_free", "watermark_bytes"] {
+        assert!(
+            during.get(key).is_some(),
+            "the rest of the volume object survives the state: {key} missing from {during:?}"
+        );
+    }
+
+    // Bytes the next survey must find, written where the walk counts them --
+    // under the journal root, outside the quarantine and the nonce log. They
+    // are what tells a fresh walk apart from the cached number.
+    const SENTINEL: u64 = 4096;
+    std::fs::write(
+        h.dir.join("journal/v1/sentinel"),
+        vec![7u8; SENTINEL as usize],
+    )
+    .expect("bytes the next survey must find");
+
+    // The operator fixes the volume; readiness re-surveys with no write.
+    std::fs::remove_file(&quarantine).expect("free the name");
+    std::fs::rename(&stash, &index_dir).expect("put the snapshot directory back");
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+
+    // (c) After: the flag is false again, and the figure is what a walk of
+    // the volume finds -- checked three ways, because each catches a
+    // different lie.
+    let after = journal_volume(&h, &cookie);
+    assert_eq!(
+        after.get("usage_unverified").and_then(Value::as_bool),
+        Some(false),
+        "a survey succeeded, so the figure is current again: {after:?}"
+    );
+    let used1 = after
+        .get("bytes_used")
+        .and_then(Value::as_u64)
+        .expect("bytes_used");
+    // The walk is independent of the accounting under test and of any
+    // assumption about what the failed snapshot left: it is every byte under
+    // the journal root, which is exactly the set the four sources cover.
+    // `journal_root_bytes` is the same walk this file already uses to check
+    // the nonce log's contribution.
+    assert_eq!(
+        used1,
+        journal_root_bytes(&h.dir),
+        "the served figure is what the volume really holds"
+    );
+    // A walk against a walk can agree while both are wrong, so the value is
+    // pinned as well. Exact here because the snapshot failed before writing
+    // its temporary; if that ever stops being true, this is the line that
+    // says so rather than the walk quietly following along.
+    assert_eq!(
+        used1,
+        used0 + SENTINEL,
+        "which is the last good figure plus the bytes planted while nobody could look"
+    );
+    assert_ne!(
+        used1, used0,
+        "and it moved: a cached figure, or a serialized constant, would not have"
+    );
+}
+
+#[test]
+fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
+    let h = Harness::start("journal-faulted");
+    let cred = h.setup_account();
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+
+    // A full volume at the append, and a rollback the same full volume
+    // refuses: the one transition after which the journal may take nothing
+    // more (docs/storage.md, "Durability rules").
+    h.app
+        .store
+        .set_fault(crate::storage::Fault::JournalRecoveryFails {
+            code: 28,
+            at: crate::storage::AppendPhase::Write,
+            rollback: crate::storage::RollbackPhase::Truncate,
+        });
+    // The first journalled write of the request is the device's `sign_in`
+    // event, so that is the append the volume refuses and the rollback
+    // fails; the request's own append then meets the faulted journal.
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "journal_faulted");
+    h.app.store.set_fault(crate::storage::Fault::None);
+    assert_eq!(
+        h.app.store.journal_faulted(),
+        Some(std::io::ErrorKind::StorageFull),
+        "the store remembers what put it there"
+    );
+
+    // The volumes still take a probe write. Readiness is false anyway,
+    // because the server can no longer acknowledge anything.
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("journal faulted; restart to replay"),
+        "the refusal names the transition, not a volume"
+    );
+
+    // And every later write refuses with the state rather than an I/O error.
+    let after = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio desk"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(after.status, 503, "{}", after.text());
+    assert_eq!(after.code(), "journal_faulted");
+}
+
+/// Every byte the journal ROOT holds, walked independently of the server.
+fn journal_root_bytes(dir: &Path) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let meta = entry.metadata().expect("metadata");
+            if meta.is_dir() {
+                total += walk(&entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+    walk(&dir.join("journal/v1"))
+}
+
+#[test]
+fn the_journal_volume_counts_the_nonce_log_the_api_writes() {
+    // End to end, because the wiring is the part that can be missing: the
+    // nonce log publishes its bytes into a handle, and only `App::new`
+    // decides whether that handle is the store's. Setup has already opened
+    // the segment, so nothing here re-surveys the volume and a number that
+    // waited for the next roll would simply be wrong.
+    let h = Harness::start("nonce-volume-accounting");
+    let cred = h.setup_account();
+    let used = |h: &Harness| {
+        h.app
+            .store
+            .volumes()
+            .into_iter()
+            .find(|v| v.role == "journal")
+            .expect("a journal volume")
+            .bytes_used
+    };
+    let after_setup = journal_root_bytes(&h.dir);
+    assert_eq!(used(&h), after_setup, "after setup");
+
+    for n in 0..4 {
+        let res = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+            .body(&format!("{{\"name\":\"laptop {n}\"}}"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+    }
+
+    let grown = journal_root_bytes(&h.dir);
+    assert!(
+        grown > after_setup,
+        "authenticated requests grew the journal volume: {grown} is not above {after_setup}"
+    );
+    assert_eq!(
+        used(&h),
+        grown,
+        "and every one of those bytes is where the watermark reads them"
+    );
+}
+
+#[test]
 fn an_unknown_route_is_a_json_404() {
     let h = Harness::start("404");
     let res = Req::get("/v1/nope").send(h.addr);

@@ -142,20 +142,14 @@ function renderVolumes(host, volumes) {
   for (const v of volumes) {
     const node = clone('tpl-volume');
     const usedPct = L.percentOf(v.bytes_used, v.bytes_total);
-    const low = typeof v.bytes_free === 'number' && typeof v.watermark_bytes === 'number'
-      && v.bytes_free <= v.watermark_bytes;
+    const low = L.volumeIsLow(v);
 
     setText(field(node, 'role'), v.role);
     setText(field(node, 'class'), v.path_class);
     setText(field(node, 'used'), L.formatBytes(v.bytes_used));
     setText(field(node, 'total'), L.formatBytes(v.bytes_total));
     setText(field(node, 'free'), L.formatBytes(v.bytes_free));
-    setText(
-      field(node, 'watermark'),
-      low
-        ? `Below the watermark: writes are refused with 507 until ${L.formatBytes(v.watermark_bytes)} is free.`
-        : `Writes are refused below ${L.formatBytes(v.watermark_bytes)} free.`,
-    );
+    setText(field(node, 'watermark'), L.volumeNote(v));
     field(node, 'bartitle').textContent =
       `${v.role}: ${usedPct.toFixed(0)} percent used, ${L.formatBytes(v.bytes_free)} free`;
 

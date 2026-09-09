@@ -197,6 +197,10 @@ pub fn change(c: &Change) -> Value {
 
 /// One volume: its role, the class label the operator gave it, and its
 /// numbers. The mount point never leaves the process (requirement 6).
+///
+/// `usage_unverified` qualifies `bytes_used` rather than replacing it: the
+/// figure is the last one that was read successfully, and saying so is more
+/// useful to an operator than either hiding it or presenting it as current.
 pub fn volume(v: &VolumeStatus) -> Value {
     obj(vec![
         ("role", s(&v.role)),
@@ -205,6 +209,7 @@ pub fn volume(v: &VolumeStatus) -> Value {
         ("bytes_used", n(v.bytes_used)),
         ("bytes_free", n(v.bytes_free)),
         ("watermark_bytes", n(v.watermark_bytes)),
+        ("usage_unverified", b(v.usage_unverified)),
     ])
 }
 

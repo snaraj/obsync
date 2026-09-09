@@ -8,6 +8,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -15,34 +16,12 @@ use std::time::{Duration, SystemTime};
 use obsync_core::sha256::sha256;
 
 use super::*;
-use crate::config::{MirrorVolume, StorageConfig, Watermark};
+use crate::config::{MirrorVolume, StorageConfig};
 use crate::log::{Log, LogLevel};
-use crate::storage::testutil::TempDir;
+use crate::storage::testutil::{CAPACITY, TempDir, WATERMARK, storage_config as config};
+use crate::storage::{AppendPhase, BlobPhase, RollbackPhase};
 
-/// Small enough that a test can reach the watermark with a few bytes.
-const CAPACITY: u64 = 64 * 1024;
-/// The refusal threshold those tests are measured against.
-const WATERMARK: u64 = 32 * 1024;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-
-fn config(dir: &TempDir) -> StorageConfig {
-    StorageConfig {
-        blobs_dir: dir.path().join("blobs"),
-        journal_dir: dir.path().join("journal"),
-        mirrors: Vec::new(),
-        blobs_capacity: CAPACITY,
-        journal_capacity: CAPACITY,
-        blobs_class: "test-class".to_string(),
-        journal_class: "test-class".to_string(),
-        free_watermark: Watermark {
-            percent: 0,
-            bytes: WATERMARK,
-        },
-        retention_days: 30,
-        retention_versions: 2,
-        scrub_rate_bytes_per_sec: 1 << 20,
-    }
-}
 
 fn open(cfg: &StorageConfig) -> Store {
     open_with(cfg, [7u8; 32], Log::buffered(LogLevel::Debug))
@@ -590,7 +569,8 @@ fn a_journal_that_already_holds_more_heads_than_the_ceiling_replays_unchanged() 
         let (account, device) = (setup.account, setup.device);
         // The store goes first: the journal has exactly one writer.
         drop(setup);
-        let mut journal = Journal::open(&cfg.journal_dir).expect("the journal opens");
+        let mut journal =
+            Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("the journal opens");
         journal.append(&record).expect("the frame lands");
         (account, device, planted)
     };
@@ -952,6 +932,230 @@ fn volumes_report_capacity_class_and_watermark() {
     assert!(volumes[2].bytes_used > 0, "the journal has frames in it");
 }
 
+/// `ENOSPC`: the same number on Linux and on macOS.
+const ENOSPC: i32 = 28;
+/// `EDQUOT`: Linux and macOS disagree on the number, and both map to
+/// `ErrorKind::QuotaExceeded`, which is what every test asserts on.
+#[cfg(target_os = "linux")]
+const EDQUOT: i32 = 122;
+#[cfg(not(target_os = "linux"))]
+const EDQUOT: i32 = 69;
+
+#[test]
+fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
+    // docs/storage.md, durability rule 1 has three points at which the
+    // filesystem can refuse, and each leaves a DIFFERENT residue. "Exactly
+    // one leftover" would be true of two of them and false of the third, so
+    // every phase states its own number.
+    for (phase, code, kind, residue) in [
+        // The stream refuses: the temp is removed on the way out.
+        (
+            BlobPhase::Stream,
+            ENOSPC,
+            std::io::ErrorKind::StorageFull,
+            0,
+        ),
+        // The fsync refuses: an unsynced temp stays.
+        (
+            BlobPhase::Sync,
+            EDQUOT,
+            std::io::ErrorKind::QuotaExceeded,
+            1,
+        ),
+        // The rename refuses: a synced temp stays, named by nothing.
+        (
+            BlobPhase::Rename,
+            ENOSPC,
+            std::io::ErrorKind::StorageFull,
+            1,
+        ),
+    ] {
+        let dir = TempDir::new("store-blob-errno");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let store = open_with(&cfg, [7u8; 32], log.clone());
+        let account = store.setup("sentinel account").expect("setup runs once");
+        let body = b"ciphertext-sentinel".to_vec();
+        let sid = Sid::new(sha256(&body));
+
+        store.set_fault(Fault::BlobErrno { phase, code });
+        let err = store
+            .put_chunk(&account, &sid, body.len() as u64, &mut &body[..])
+            .expect_err("the volume refused");
+        match err {
+            StoreError::Io(ref e) => assert_eq!(e.kind(), kind, "{phase:?}: {err}"),
+            other => panic!("{phase:?}: expected the volume's own error, got {other}"),
+        }
+        assert!(
+            !store.chunk_exists(&sid),
+            "{phase:?}: nothing was acknowledged"
+        );
+
+        // The refusal line carries the code and the KIND, and no path
+        // (AGENTS.md requirements 6 and 12).
+        let captured = log.captured();
+        assert!(
+            captured.contains("decision=io_error"),
+            "{phase:?}: {captured}"
+        );
+        assert!(
+            captured.contains(&format!("io={kind:?}")),
+            "{phase:?}: {captured}"
+        );
+        assert!(
+            !captured.contains(dir.path().to_str().expect("a utf-8 temp path")),
+            "{phase:?}: no path on the line: {captured}"
+        );
+
+        let tmp = cfg.blobs_dir.join("v1/tmp");
+        assert_eq!(
+            fs::read_dir(&tmp).expect("tmp").count(),
+            residue,
+            "{phase:?}: the residue this phase leaves"
+        );
+        drop(store);
+
+        // Whatever it left, the next start removes it and says how many.
+        let restart = Log::buffered(LogLevel::Debug);
+        let reopened = open_with(&cfg, [7u8; 32], restart.clone());
+        assert!(
+            restart
+                .captured()
+                .contains(&format!("tmp_removed={residue}")),
+            "{phase:?}: the start counts what it removed: {}",
+            restart.captured()
+        );
+        assert_eq!(
+            fs::read_dir(&tmp).expect("tmp").count(),
+            0,
+            "{phase:?}: and nothing is left"
+        );
+        assert!(
+            !reopened.chunk_exists(&sid),
+            "{phase:?}: the chunk never appears"
+        );
+    }
+}
+
+#[test]
+fn the_journal_watermark_refuses_a_version_and_the_dashboard_agrees() {
+    let dir = TempDir::new("store-journal-watermark");
+    let cfg = config(&dir);
+    let (account, device, sid) = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        (setup.account, setup.device, sid)
+    };
+
+    // The same volumes, re-opened with a journal capacity that leaves less
+    // than the watermark for one more frame. Nothing else changes: the
+    // frames setup wrote are what fills it.
+    let mut tight = cfg.clone();
+    tight.journal_capacity = WATERMARK + 8;
+    let log = Log::buffered(LogLevel::Debug);
+    let setup = Setup {
+        store: open_with(&tight, [7u8; 32], log.clone()),
+        account,
+        device,
+    };
+
+    let refused = version(&setup, file(1), "one", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(refused)
+        .expect_err("the journal volume is below its watermark");
+    let (free, watermark) = match err {
+        StoreError::JournalFull { free, watermark } => (free, watermark),
+        other => panic!("expected journal_full, got {other}"),
+    };
+    assert_eq!(watermark, WATERMARK, "the threshold it was measured on");
+    assert!(setup.store.file(&file(1)).is_none(), "nothing landed");
+
+    // The refusal and the dashboard measure the same volume the same way.
+    let journal = setup
+        .store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume");
+    assert_eq!(journal.bytes_total, WATERMARK + 8);
+    assert_eq!(journal.watermark_bytes, WATERMARK);
+    assert!(journal.bytes_used > 0, "setup's frames are counted");
+    assert_eq!(
+        journal.bytes_free, free,
+        "the refusal's free space is the one the dashboard shows"
+    );
+    assert_eq!(journal.bytes_used + journal.bytes_free, journal.bytes_total);
+
+    // The two volumes are told apart: this is the journal, not the blobs.
+    let captured = log.captured();
+    assert!(captured.contains("decision=journal_full"), "{captured}");
+    assert!(!captured.contains("decision=volume_full"), "{captured}");
+    assert!(captured.contains(&format!("free={free}")), "{captured}");
+    assert!(
+        captured.contains(&format!("watermark={WATERMARK}")),
+        "{captured}"
+    );
+}
+
+#[test]
+fn a_faulted_journal_refuses_every_later_write_and_a_restart_clears_it() {
+    let dir = TempDir::new("store-journal-faulted");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let landed = version(&setup, file(1), "one", &[], &[sid], false);
+    setup.store.append_version(landed).expect("acknowledged");
+
+    setup.store.set_fault(Fault::JournalRecoveryFails {
+        code: ENOSPC,
+        at: AppendPhase::Write,
+        rollback: RollbackPhase::Truncate,
+    });
+    let lost = version(&setup, file(2), "two", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(lost)
+        .expect_err("the volume refused");
+    assert!(matches!(err, StoreError::Io(_)), "{err}");
+    assert_eq!(
+        setup.store.journal_faulted(),
+        Some(std::io::ErrorKind::StorageFull),
+        "the store reports the fault readiness answers on"
+    );
+
+    // Later writes refuse without asking the volume.
+    setup.store.set_fault(Fault::None);
+    let after = version(&setup, file(3), "three", &[], &[sid], false);
+    let err = setup
+        .store
+        .append_version(after)
+        .expect_err("a faulted journal takes nothing");
+    assert!(matches!(err, StoreError::JournalFaulted { .. }), "{err}");
+    assert!(setup.store.file(&file(3)).is_none());
+
+    // A restart replays, truncates the tail, and serves again.
+    let (account, device) = (setup.account, setup.device);
+    drop(setup);
+    let reopened = open(&cfg);
+    assert_eq!(reopened.journal_faulted(), None, "a start clears the state");
+    assert!(
+        reopened.file(&file(1)).is_some(),
+        "everything acknowledged before the fault is intact"
+    );
+    assert!(reopened.file(&file(2)).is_none(), "the torn frame is gone");
+    let setup = Setup {
+        store: reopened,
+        account,
+        device,
+    };
+    let again = version(&setup, file(4), "four", &[], &[sid], false);
+    setup
+        .store
+        .append_version(again)
+        .expect("the journal takes writes again");
+}
+
 #[test]
 fn a_crash_before_the_chunk_is_durable_leaves_the_store_consistent() {
     for fault in [Fault::ChunkBeforeFsync, Fault::ChunkBeforeRename] {
@@ -1166,6 +1370,490 @@ fn retention_prunes_old_versions_and_replay_agrees() {
         live,
         "replaying the gc frame prunes the same versions"
     );
+}
+
+/// Every byte the journal ROOT holds, walked independently of the accounting
+/// under test. `VolumeStatus` for the journal must equal this at every
+/// moment, not only just after a roll.
+fn journal_root_bytes(cfg: &StorageConfig) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = fs::read_dir(path) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let meta = entry.metadata().expect("metadata");
+            if meta.is_dir() {
+                total += walk(&entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+    walk(&cfg.journal_dir.join("v1"))
+}
+
+/// What the dashboard shows for the journal volume.
+fn journal_used(store: &Store) -> u64 {
+    store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume")
+        .bytes_used
+}
+
+#[test]
+fn a_journal_whose_usage_cannot_be_re_read_refuses_writes_and_says_so() {
+    // The reviewer's double failure at the surface an operator sees. When the
+    // survey that follows a failed snapshot ALSO fails, `bytes_used` is the
+    // last figure that was read successfully -- so the dashboard says so
+    // beside it, and the server refuses writes rather than deciding the
+    // watermark against a number nothing has re-read.
+    let dir = TempDir::new("store-usage-unverified");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let setup = {
+        let store = open_with(&cfg, [7u8; 32], log.clone());
+        let account = store.setup("sentinel account").expect("setup runs once");
+        let device = store
+            .create_device(NewDevice {
+                account_id: account,
+                name: "sentinel device".to_string(),
+                platform: "linux".to_string(),
+                app_version: "0.1.0".to_string(),
+                secret: [3u8; 32],
+                state: DeviceState::Active,
+            })
+            .expect("device pairs")
+            .device_id;
+        Setup {
+            store,
+            account,
+            device,
+        }
+    };
+    let stale = journal_used(&setup.store);
+    assert!(!unverified_flag(&setup.store), "verified to begin with");
+
+    // A directory where the snapshot's destination belongs refuses the
+    // rename; a FILE where the quarantine directory belongs then refuses the
+    // survey that would account for the temporary the refused rename leaves
+    // behind. Neither fixture is a permission: the in-image test stage runs
+    // as root, and root walks a directory whose mode forbids it.
+    let index_dir = cfg.journal_dir.join("v1/index");
+    let seq = setup.store.head_seq();
+    fs::create_dir_all(index_dir.join(format!("{seq}.snap"))).expect("block the rename");
+    let quarantine = cfg.journal_dir.join("v1/quarantine");
+    fs::write(&quarantine, b"not a directory\n").expect("block the survey");
+    let err = setup.store.snapshot().expect_err("the snapshot fails");
+    assert!(
+        matches!(err, StoreError::Io(_)),
+        "the original error is what the caller gets, got {err}"
+    );
+
+    assert_eq!(
+        setup.store.journal_usage_unverified(),
+        Some(std::io::ErrorKind::NotADirectory),
+        "the failed survey is remembered as its own fact"
+    );
+    assert!(
+        unverified_flag(&setup.store),
+        "and the dashboard qualifies the figure it is showing"
+    );
+    assert_eq!(
+        journal_used(&setup.store),
+        stale,
+        "which is the last one that was read successfully"
+    );
+    let refused = setup
+        .store
+        .update_device(&setup.device, Some("after".to_string()), None, None)
+        .expect_err("admission is closed while the usage is unverified");
+    assert_eq!(refused.code(), "journal_unverified", "{refused}");
+
+    // The operator fixes the volume. No write is needed to recover: the
+    // readiness path re-surveys, and after it the figure is current again.
+    fs::remove_file(&quarantine).expect("free the name");
+    setup
+        .store
+        .verify_journal_usage()
+        .expect("the survey answers now");
+    assert_eq!(setup.store.journal_usage_unverified(), None);
+    assert!(
+        !unverified_flag(&setup.store),
+        "the dashboard stops warning"
+    );
+    setup
+        .store
+        .update_device(&setup.device, Some("after".to_string()), None, None)
+        .expect("and writes are taken again");
+    assert_eq!(
+        journal_used(&setup.store),
+        journal_root_bytes(&cfg),
+        "against a total that is the volume's own"
+    );
+    assert!(
+        log.captured()
+            .contains("event=journal_survey_recovered by=readiness"),
+        "the recovery names the path that found it: {}",
+        log.captured()
+    );
+}
+
+/// Whether the dashboard would mark the journal's usage figure as stale.
+fn unverified_flag(store: &Store) -> bool {
+    store
+        .volumes()
+        .into_iter()
+        .find(|v| v.role == "journal")
+        .expect("a journal volume")
+        .usage_unverified
+}
+
+#[test]
+fn journal_usage_stays_current_when_the_scrub_quarantines_a_chunk() {
+    // The reviewer's reproduction, and the ordinary device update before the
+    // scrub is the whole of it: without that update the next append rolls,
+    // the roll re-surveys the volume, and the survey CONCEALS an accounting
+    // that never saw the move. With the segment already open, nothing
+    // re-surveys and the quarantined bytes are simply missing.
+    let dir = TempDir::new("store-quarantine-accounting");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let body = b"ciphertext-sentinel".to_vec();
+    let sid = put(&setup, &body);
+    let path = setup.store.blobs.path(&sid);
+    fs::write(&path, b"rot").expect("corrupt the only copy");
+    drop(setup);
+
+    let store = ready_existing(&cfg);
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("studio laptop".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "current before the move"
+    );
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(summary.quarantined, vec![sid], "the chunk is quarantined");
+    assert!(
+        cfg.journal_dir
+            .join("v1/quarantine")
+            .join(sid.to_string())
+            .is_file(),
+        "and it really is on the journal volume"
+    );
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and the volume's usage says so in the same call, not at the next roll"
+    );
+
+    // ...and the next start, which re-surveys, reaches the same number.
+    drop(store);
+    let reopened = open(&cfg);
+    assert_eq!(journal_used(&reopened), journal_root_bytes(&cfg));
+}
+
+#[test]
+fn the_journal_watermark_counts_a_quarantine_no_append_wrote() {
+    // Only the scrub wrote, and only into the quarantine. The refusal has to
+    // see those bytes: they are on the journal volume exactly as a frame is.
+    let dir = TempDir::new("store-quarantine-watermark");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, &vec![b'x'; 4096]);
+        // Corrupted at the SAME length: what moves onto the journal volume
+        // is whatever is on disk when the scrub gives up on it, and four
+        // kilobytes of rot is four kilobytes of journal volume.
+        fs::write(setup.store.blobs.path(&sid), vec![b'r'; 4096]).expect("corrupt the only copy");
+        sid
+    };
+
+    // Capacity chosen against what the volume already holds, so there is
+    // room for an ordinary frame now and none once four kilobytes land in
+    // the quarantine: the refusal has to be caused by the quarantine and by
+    // nothing else.
+    let mut tight = cfg.clone();
+    tight.journal_capacity = WATERMARK + journal_root_bytes(&cfg) + 2048;
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&tight, [7u8; 32], log.clone());
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("before".to_string()), None, None)
+        .expect("there is room before the quarantine");
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(
+        summary.quarantined,
+        vec![sid],
+        "4 KiB moved onto the journal"
+    );
+
+    let err = store
+        .update_device(&device, Some("after".to_string()), None, None)
+        .expect_err("the quarantine took the volume below its watermark");
+    let (free, watermark) = match err {
+        StoreError::JournalFull { free, watermark } => (free, watermark),
+        other => panic!("expected journal_full, got {other}"),
+    };
+    assert_eq!(watermark, WATERMARK);
+    assert_eq!(
+        free,
+        tight.journal_capacity - journal_root_bytes(&tight),
+        "the refusal is decided on what the volume really holds"
+    );
+    assert!(log.captured().contains("decision=journal_full"));
+}
+
+#[test]
+fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
+    // The two directory fsyncs run AFTER the rename, so an error there means
+    // the bytes DID move and the failure was in making that durable. The
+    // comment this replaces claimed the opposite, and the accounting believed
+    // it. Two outcomes are checked: the error still reaches the caller, and
+    // the volume's usage is the volume's own either way.
+    let dir = TempDir::new("store-quarantine-sync-fault");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        fs::write(setup.store.blobs.path(&sid), b"rot").expect("corrupt the only copy");
+        sid
+    };
+
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&cfg, [7u8; 32], log.clone());
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("open the segment".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+
+    store.set_fault(Fault::BlobErrno {
+        phase: BlobPhase::QuarantineSync,
+        code: ENOSPC,
+    });
+    let summary = store.scrub_step(1 << 20);
+    store.set_fault(Fault::None);
+
+    // 1. The bytes really moved, even though the call failed.
+    let quarantined = cfg.journal_dir.join("v1/quarantine").join(sid.to_string());
+    assert!(
+        quarantined.is_file(),
+        "the rename happened before the fsync refused"
+    );
+    // 2. The residue is accounted for.
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and those bytes are counted, in the same call that failed to sync them"
+    );
+    // 3. And the failure is REPORTED rather than swallowed by the accounting.
+    // These are two separate properties and each has its own assertion: a
+    // repair that counted the bytes and reported success would be worse than
+    // one that counted nothing.
+    assert!(
+        log.captured().contains("event=scrub_repair_failed"),
+        "the original error reaches the log: {}",
+        log.captured()
+    );
+    assert!(
+        log.captured().contains("io=StorageFull"),
+        "with the kind the volume returned: {}",
+        log.captured()
+    );
+    assert_eq!(
+        summary.quarantined,
+        vec![sid],
+        "and the scrub still reports the chunk as one it could not repair"
+    );
+}
+
+#[test]
+fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
+    // The FORMULA, not the wiring. This drives `Journal::quarantined`
+    // directly with two sizes, which proves the arithmetic of a replacement
+    // and says nothing about whether `Store::repair` reads the right ones --
+    // substituting zero for the pre-move size leaves this test green. The
+    // end-to-end proof is `a_second_quarantine_of_the_same_sid_is_accounted
+    // _through_the_store`, and the two are kept apart on purpose: a test
+    // that exercises a unit under a caller the product never uses is a test
+    // of the unit, and should not be presented as anything else.
+    //
+    // The same sid quarantined twice: the second rename replaces the first
+    // file, so the volume gains the difference and not the whole of it.
+    let dir = TempDir::new("store-quarantine-replace");
+    let cfg = config(&dir);
+    let store = ready_existing(&cfg);
+    let quarantine = cfg.journal_dir.join("v1/quarantine");
+    fs::create_dir_all(&quarantine).expect("quarantine");
+
+    let name = quarantine.join("a".repeat(64));
+    fs::write(&name, vec![b'o'; 900]).expect("what an earlier pass left");
+    {
+        let mut journal = store.journal();
+        journal.quarantined(0, 900);
+    }
+    assert_eq!(journal_used(&store), journal_root_bytes(&cfg), "before");
+
+    // A second move onto the same name: 900 bytes leave the volume as 120
+    // arrive, and the accounting has to see both halves.
+    fs::write(&name, vec![b'n'; 120]).expect("the replacement");
+    {
+        let mut journal = store.journal();
+        journal.quarantined(900, 120);
+    }
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "a replacement is a difference, not an addition"
+    );
+}
+
+#[test]
+fn the_journal_guard_spans_the_quarantine_move() {
+    // Serialization by construction is one thing; a test that the guard is
+    // really held while the file moves is another, and the verdict asks for
+    // both. This is the second: a hook that runs INSIDE the move, after the
+    // rename and before the accounting, asks the store for its own journal
+    // mutex. `Mutex` is not reentrant, so a `try_lock` that fails is proof
+    // the guarded region reaches this point -- and that no survey or
+    // watermark reader can be here with it.
+    let dir = TempDir::new("store-quarantine-guard");
+    let cfg = config(&dir);
+    let sid = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        fs::write(setup.store.blobs.path(&sid), b"rot").expect("corrupt the only copy");
+        sid
+    };
+
+    let store = Arc::new(ready_existing(&cfg));
+    let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let watching = Arc::downgrade(&store);
+        let held = Arc::clone(&held);
+        let ran = Arc::clone(&ran);
+        store.blobs.set_mid_move(Arc::new(move || {
+            let store = watching.upgrade().expect("the store outlives its own move");
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            held.store(
+                store.journal_guard_held(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }));
+    }
+
+    let summary = store.scrub_step(1 << 20);
+    assert_eq!(summary.quarantined, vec![sid], "the move happened");
+    assert!(
+        ran.load(std::sync::atomic::Ordering::SeqCst),
+        "the hook ran, so this test measured something"
+    );
+    assert!(
+        held.load(std::sync::atomic::Ordering::SeqCst),
+        "the journal guard is held while the file moves, not taken afterwards"
+    );
+}
+
+#[test]
+fn a_second_quarantine_of_the_same_sid_is_accounted_through_the_store() {
+    // The replacement case, driven through `Store::repair` rather than
+    // through `Journal::quarantined` directly. That distinction is the whole
+    // test: the unit-level one exercises the arithmetic, and leaves the
+    // STORE free to hand it a wrong `was` -- substituting zero for the
+    // destination's pre-move size survives it, because it never runs.
+    //
+    // Two rounds, and the second must land while the segment is already open
+    // so that nothing re-surveys and conceals the delta.
+    let dir = TempDir::new("store-quarantine-replace-live");
+    let cfg = config(&dir);
+    let big = vec![b'x'; 4096];
+    let sid = Sid::new(sha256(&big));
+
+    // Round one: a 4 KiB chunk rots at its own length and is quarantined.
+    {
+        let setup = ready(&cfg);
+        put(&setup, &big);
+        fs::write(setup.store.blobs.path(&sid), vec![b'r'; 4096]).expect("rot, same length");
+    }
+    let first_quarantine = {
+        let store = ready_existing(&cfg);
+        assert_eq!(
+            store.scrub_step(1 << 20).quarantined,
+            vec![sid],
+            "round one"
+        );
+        // The same chunk uploaded again -- the content hashes to the same
+        // sid, so this is the same name -- and rotted to a DIFFERENT length.
+        let account = store.account().expect("account").account_id;
+        store
+            .put_chunk(&account, &sid, big.len() as u64, &mut &big[..])
+            .expect("the chunk lands again");
+        fs::write(store.blobs.path(&sid), vec![b'r'; 100]).expect("rot, shorter this time");
+        quarantine_bytes(&cfg)
+    };
+
+    // Round two, on a store that has surveyed the 4 KiB quarantine at open
+    // and then opened its segment with an ordinary write.
+    let store = ready_existing(&cfg);
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("open the segment".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+    let before = journal_used(&store);
+    assert_eq!(
+        before,
+        journal_root_bytes(&cfg),
+        "current before the replacement"
+    );
+
+    assert_eq!(
+        store.scrub_step(1 << 20).quarantined,
+        vec![sid],
+        "round two"
+    );
+    let quarantined = cfg.journal_dir.join("v1/quarantine").join(sid.to_string());
+    assert_eq!(
+        fs::metadata(&quarantined).expect("the quarantine").len(),
+        100,
+        "the shorter file replaced the longer one at the same name"
+    );
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and the accounting is the volume's own after a replacement"
+    );
+    // And the difference is where it should be. The whole-volume total also
+    // moves with the frames this round journalled, so the quarantine's own
+    // bytes are measured on their own: 4096 out, 100 in. Together with the
+    // equality above that pins the accounting to new MINUS old -- a
+    // replacement counted as an addition leaves the total 4096 too high,
+    // which the walk equality refuses.
+    assert_eq!(
+        (first_quarantine, quarantine_bytes(&cfg)),
+        (4096, 100),
+        "the quarantine holds the replacement and not both"
+    );
+}
+
+/// Bytes the quarantine directory holds, walked independently.
+fn quarantine_bytes(cfg: &StorageConfig) -> u64 {
+    let dir = cfg.journal_dir.join("v1/quarantine");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| e.metadata().expect("metadata").len())
+        .sum()
 }
 
 #[test]

@@ -268,14 +268,41 @@ requires the refusal.
 
 1. Chunk write: stream to `tmp`, hashing; on completion `fsync(file)`,
    `rename` into place, `fsync(dir)`; only then respond. A crash leaves
-   either the complete chunk or a `tmp` file that startup removes.
+   either the complete chunk or a `tmp` file that startup removes. Each of
+   the three points refuses differently and leaves a different residue: a
+   refusal while streaming removes the temp on the way out; a refusal at the
+   `fsync` leaves an unsynced temp; a refusal at the `rename` leaves a synced
+   one. Both leftovers are removed at the next start, which counts them on
+   its `store_open` SUMMARY, and in every case the chunk is simply absent and
+   the client re-uploads.
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first
    torn or CRC-failing frame, truncates the segment there, and logs the
    count of frames recovered.
-3. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
+3. Failed journal append: the journal records the length it has made durable
+   before it writes, and any failure of the write or of its `fsync` cuts the
+   segment back to that length and fsyncs the cut before the error returns.
+   Nothing was acknowledged, and the next frame starts clean. This is not a
+   nicety: segments are opened `O_APPEND`, so without the rollback the next
+   successful frame would land AFTER a torn one, and the next start would
+   truncate at the torn frame and discard every write acknowledged since.
+   Each failure logs one line, `event=journal_append_failed
+   decision=truncated io=<kind> segment=<n> torn_bytes=<n>` — the error's
+   kind, never its message, which can carry a path.
+4. Faulted journal: if that rollback ITSELF fails, at the truncation or at
+   its `fsync`, the journal is faulted. The line says `decision=faulted` and
+   adds `rollback_io=<kind>`, and the refusal carries both kinds. The second
+   kind is a second fact and the state's actual cause: a truncation refused
+   by a full volume and one refused by a read-only mount both read as
+   `faulted` and need different repairs. From then on every append refuses
+   with `journal_faulted` without touching the volume, `/readyz` answers
+   `503 not_ready` with `journal faulted; restart to replay`, and the state
+   clears only at the next start, which replays and truncates the tail as
+   rule 2 describes. Chunk uploads are unaffected: the blob volume is its
+   own record.
+5. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
    newest valid snapshot and applies later frames.
-4. No write is acknowledged before it is durable. This is not configurable
+6. No write is acknowledged before it is durable. This is not configurable
    (AGENTS.md requirement 4).
 
 ## Journal frames
@@ -318,8 +345,98 @@ exposes no filesystem statistics, so `OBSYNC_BLOBS_CAPACITY` and
 claim sizes. Writes are refused with `507` when free space on the blob
 volume is below the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when
 the account's quota is exceeded. The dashboard shows both thresholds and the current
-values. The journal volume has its own watermark; running out of journal
-space fails readiness, never corrupts.
+values.
+
+The journal volume has the same watermark applied to its own capacity, and
+refuses a frame that would take it below with `507 journal_full` before the
+volume is asked. Tracked journal usage is everything under the journal root —
+the open segment's durable length plus every other file on the volume: the
+other segments, the index snapshots, the quarantine, the nonce log, and the
+small fixed files. Snapshots are why this is not a segment count: they rest on
+the same volume and reach tens of megabytes for a large vault. `VolumeStatus`
+reports the same number, so a refusal and the dashboard never disagree about
+how full the volume is, at any moment rather than at the last roll. The two
+volumes have separate refusal codes, `volume_full` and `journal_full`, because
+they are provisioned and filled independently and a refusal that did not say
+which one it measured would send an operator to the wrong disk. A journal
+volume that fills anyway, below the declared capacity, is rule 3 above: the
+append is refused, rolled back, and never acknowledged.
+
+### Where the measure runs
+
+The append path may not walk a directory, and everything that writes to this
+volume between two walks would otherwise be invisible to the refusal. So the
+total is four numbers, each owned by exactly one writer and each ABSOLUTE
+rather than a delta, so they cannot double-count and a missed update cannot
+accumulate: the open segment's durable length, a survey of everything the
+other three do not own, the quarantine, and the nonce log.
+
+Every writer of this volume, what it leaves behind when it fails, and how the
+number stays right. Two properties, never one: the residue is ACCOUNTED FOR,
+and the original durability error is still RETURNED. A failing path that
+quietly balanced the books would be worse than one that did not.
+
+| Writes | When | Residue on failure | Accounted by |
+| --- | --- | --- | --- |
+| `journal/<n>.log`, the open segment | every journalled write | a torn tail, rolled back in the same call; kept for the next replay if the rollback also fails | the open segment's durable length, advanced only after a successful fsync |
+| `journal/<n>.log`, a new segment (roll) | first append after a start or replay, and at 64 MiB | an empty segment | the survey, re-run by the roll itself, which then excludes the segment it opened |
+| the last segment, truncated (replay) | every start | none: it removes bytes | the survey, re-run before replay returns |
+| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left, which nothing later removes | the survey, re-run by the prune a successful call ends in AND on every failing exit, before the original error is returned |
+| `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | whatever was removed before one removal failed | the survey, re-run at the end and on every failing exit, before the original error is returned |
+| `quarantine/<sid>` | a scrub mismatch no mirror can repair | the bytes may have MOVED and the failure be in the directory fsyncs that follow the rename | the destination's size read after the attempt, minus what stood at that name before it, applied under the same journal guard the move is made under |
+| `nonces` | every authenticated request | a partial line from a short write | the log publishes the absolute size of both its names after every write, the failing ones included |
+| `nonces.tmp` → `nonces` (compaction) | when the log passes twice the nonce ceiling | a `nonces.tmp` a failed compaction left | the same publish, which counts the temporary BY NAME so that leftover is seen |
+| `server.key` | first boot | a partial key refuses the start | the survey at `Journal::open`, which runs after it |
+| `setup-token` | first boot | a partial token refuses the start | a survey `cli::serve` runs after it, being the last write the volume takes before the server serves |
+| `lock` | every start | none: it is empty | the survey at `Journal::open`, which runs after it |
+
+The survey walks `O(segments + snapshots)` entries, never a vault, and it does
+not follow symlinks, so it cannot wander off the volume it is measuring.
+
+The quarantine move is the one writer whose ordering matters, because it
+changes the volume from OUTSIDE the journal's own code. The journal guard is
+taken before the move and released after the accounting, so the move and the
+number that describes it are one transition: no survey can run between them
+and count the file twice, and no watermark check can read the total between
+them and see the volume as emptier than it is. Serialization by construction
+is half of that; the other half is a test that the guard is really held while
+the file moves, which is what the hook inside the move measures.
+
+### When the survey itself fails
+
+An accounted residue is only as good as the walk that measured it, and a walk
+can be refused. A survey that fails is a DIFFERENT fact from a survey that
+succeeded, and the journal records it as one: `unverified` holds the
+`io::ErrorKind` that refused the walk, set on failure and cleared only by a
+COMPLETE later one. Nothing partial is ever published — the two walks the
+survey makes are stored together or not at all, because one fresh number
+beside one stale one is a total that was never true of the volume at any
+instant.
+
+While it is set the tracked total is known to be stale, so admission is
+fail-closed. The next append retries the survey once: if that succeeds, the
+state clears and the watermark is applied to the total it just read; if it
+fails, the frame is refused with `503 journal_unverified` and nothing reaches
+the volume. Readiness retries it too, which is what makes the recovery visible
+without a write: `/readyz` answers `503 not_ready` with `journal usage
+unverified; survey failed: <kind>` while it stands, and `200` on the first
+probe after the volume can be walked again. The verdict cache bounds how often
+an unauthenticated prober can make it walk. `VolumeStatus` carries
+`usage_unverified` beside `bytes_used`, so a dashboard shows the figure as the
+last one read successfully rather than as a current one.
+
+Two states, and the distinction matters to an operator: `journal_faulted` is
+about the segment's CONTENTS — bytes no frame owns — and clears only at a
+restart that replays and truncates; `journal_unverified` is about the
+ACCOUNTING and clears the moment a walk succeeds. A journal that is both stays
+faulted: no survey can speak to a torn tail. Each transition says so once,
+`event=journal_survey_failed io=<kind> at=<where>` and
+`event=journal_survey_recovered by=<where>`, and never on the retries in
+between.
+
+The original operation error is still what its caller gets, in every case
+above. The accounting is a consequence of the failure, never a replacement for
+reporting it.
 
 ## Replication and propagation (design hooks, phased)
 

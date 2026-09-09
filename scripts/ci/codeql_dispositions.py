@@ -687,18 +687,31 @@ def _check(args: argparse.Namespace) -> int:
             continue
         used.add(entry.index)
         print(f"covered {alert} entry={entry.index}")
-        if alert.state == "dismissed" and (
-            alert.dismissed_reason != entry.reason
-            or alert.dismissed_comment != entry.dismissal_comment
-        ):
+        if alert.state == "dismissed":
             # Informational on a check: the push run repairs the record. Saying
-            # it here is how a reviewer sees that main's stored justification
-            # is not the one this file carries.
-            drifted += 1
-            print(
-                f"drift #{alert.number} entry={entry.index} "
-                f"reason={alert.dismissed_reason!r} expected={entry.reason!r}"
-            )
+            # it here is how a reviewer sees that main's stored justification is
+            # not the one this file carries -- so the line has to name WHICH
+            # field differs. Printing the reason alone made all 78 of main's
+            # records read as `reason='used in tests' expected='used in tests'`,
+            # a contradiction, because what actually differed was the comment.
+            # The stored comment is never printed: it is a whole sentence, and
+            # the entry beside it already says what the right one is.
+            drift = [
+                name
+                for name, stored, expected in (
+                    ("reason", alert.dismissed_reason, entry.reason),
+                    ("comment", alert.dismissed_comment, entry.dismissal_comment),
+                )
+                if stored != expected
+            ]
+            if drift:
+                drifted += 1
+                detail = (
+                    f" reason={alert.dismissed_reason!r} expected={entry.reason!r}"
+                    if "reason" in drift
+                    else ""
+                )
+                print(f"drift #{alert.number} entry={entry.index} fields={','.join(drift)}{detail}")
     for entry in entries:
         if entry.index not in used:
             print(f"stale entry={entry.index} rule={entry.rule} path={entry.path}")

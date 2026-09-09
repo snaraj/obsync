@@ -229,6 +229,38 @@ export function routes() {
 }
 
 /**
+ * The sentence under a volume's bar: what the server is doing about this
+ * volume's space, in an operator's terms.
+ *
+ * Three states, and the unverified one wins. A `bytes_used` the server could
+ * not re-measure says nothing trustworthy about the watermark, so a page that
+ * printed the ordinary threshold sentence beside it would be claiming a
+ * comparison the server is itself refusing to make.
+ */
+export function volumeNote(v) {
+  const vol = v && typeof v === 'object' ? v : {};
+  if (vol.usage_unverified === true) {
+    return 'Usage could not be re-measured: this is the last figure read successfully, and writes are refused until a survey succeeds.';
+  }
+  const watermark = typeof vol.watermark_bytes === 'number' ? vol.watermark_bytes : null;
+  if (watermark === null) return 'Writes are refused below the free-space watermark.';
+  return volumeIsLow(vol)
+    ? `Below the watermark: writes are refused with 507 until ${formatBytes(watermark)} is free.`
+    : `Writes are refused below ${formatBytes(watermark)} free.`;
+}
+
+/**
+ * Whether a volume's free space has reached its watermark. False when either
+ * number is missing: an absent figure is not a full disk.
+ */
+export function volumeIsLow(v) {
+  const vol = v && typeof v === 'object' ? v : {};
+  return typeof vol.bytes_free === 'number'
+    && typeof vol.watermark_bytes === 'number'
+    && vol.bytes_free <= vol.watermark_bytes;
+}
+
+/**
  * View rows for the devices table: active devices first, then by last-seen
  * (newest first), then by name, so a revoked device never sits at the top.
  */

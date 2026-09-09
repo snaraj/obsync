@@ -4,7 +4,45 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.6 - Unreleased
+## 0.1.7 - Unreleased
+
+- A journal append that fails is rolled back to the length the journal has
+  made durable and the cut is fsynced, so the next frame starts clean and a
+  write acknowledged after a failure can no longer be discarded by the next
+  start's truncation; if that rollback itself fails the journal is faulted,
+  every later append refuses with `journal_faulted`, `/readyz` answers 503
+  with the reason to restart, and the line names both the append's and the
+  rollback's error kinds.
+- The journal volume has its own free-space watermark, refusing a frame with
+  `507 journal_full` against `OBSYNC_JOURNAL_CAPACITY` minus everything the
+  journal root holds, snapshots included; `VolumeStatus` reports that same
+  number, and the image smoke gained a ninth property that exhausts a real
+  blob volume and requires the server's `io=StorageFull` account, its 503,
+  and its recovery when the space comes back.
+- A journal accounting survey that is itself refused is now recorded as a
+  fact of its own rather than dropped: the tracked total is marked unverified,
+  a survey publishes both of its halves or neither, and while it stands the
+  server is fail-closed — an append retries the survey once and otherwise
+  refuses with `503 journal_unverified` having written nothing, so the
+  watermark is never decided against a figure nothing has re-read. `/readyz`
+  retries the survey too and answers `503 not_ready` with the kind that
+  refused it, so a volume an operator has fixed comes back on the next probe
+  with no write in between; `VolumeStatus` gained `usage_unverified` so the
+  dashboard shows the figure as the last one read successfully. A faulted
+  journal stays faulted however well the volume measures: that state is about
+  the segment's contents and still clears only at a restart. The original
+  operation error is unchanged and still what its caller gets.
+- The `dispositions` reconciliation rewrites a stored justification with two
+  writes, `state=open` then `state=dismissed`: GitHub refuses a `dismissed`
+  write to an already-dismissed alert, which stopped the first live run on
+  `main` with 78 rewrites planned. Each write announces its phase; either write
+  failing is fatal to that run and blocks publication, and the next authorized
+  run converges from whatever state was left. The offline step harness is now
+  STATEFUL — it holds each alert's state, reason and comment, answers listings
+  from them, and refuses a second dismissal the way the API does — so the
+  single-write shape cannot pass the suite again.
+
+## 0.1.6 - 2026-09-09
 
 - CodeQL dispositions are code: `security/codeql-dispositions.json` records
   every accepted alert with its rule, its glob, its scope, one of CodeQL's

@@ -849,17 +849,42 @@ class CommandDecisions(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"was analysed on {PR_REF}", err)
 
-    def test_check_reports_drift_on_a_covered_dismissed_alert_without_failing(self):
+    def test_check_reports_drift_naming_the_fields_that_differ(self):
+        # The line has to say WHICH field drifted. Printing the reason alone
+        # made all 78 of main's records read `reason='used in tests'
+        # expected='used in tests'` -- a contradiction, because what differed
+        # was the comment.
+        record = entry()
+        stored_comment = "a sentence somebody typed into the UI"
+        for stored, fields, shows_reason in (
+            ({"dismissed_reason": "won't fix"}, "reason", True),
+            ({"dismissed_comment": stored_comment}, "comment", False),
+            ({"dismissed_reason": "won't fix", "dismissed_comment": stored_comment},
+             "reason,comment", True),
+        ):
+            with self.subTest(fields=fields):
+                code, out, _ = self.check(
+                    [record], [dismissed(81, record, line=2, **stored)], states="open,dismissed"
+                )
+                self.assertEqual(code, 0)
+                self.assertIn("covered #81", out)
+                self.assertIn(f"drift #81 entry=0 fields={fields}", out)
+                self.assertIn("drift=1", out)
+                # The stored comment is a whole sentence and never printed.
+                self.assertNotIn(stored_comment, out)
+                if shows_reason:
+                    self.assertIn("reason=\"won't fix\" expected='false positive'", out)
+                else:
+                    self.assertNotIn("expected=", out)
+
+    def test_check_reports_no_drift_when_the_record_already_agrees(self):
         record = entry()
         code, out, _ = self.check(
-            [record],
-            [dismissed(81, record, line=2, dismissed_reason="won't fix")],
-            states="open,dismissed",
+            [record], [dismissed(81, record, line=2)], states="open,dismissed"
         )
         self.assertEqual(code, 0)
-        self.assertIn("covered #81", out)
-        self.assertIn("drift #81 entry=0 reason=\"won't fix\" expected='false positive'", out)
-        self.assertIn("drift=1", out)
+        self.assertNotIn("drift #81", out)
+        self.assertIn("drift=0", out)
 
     def test_check_fails_on_a_dismissed_alert_no_entry_covers(self):
         # The base check's whole purpose: an acceptance the branch already
@@ -1427,6 +1452,17 @@ class WorkflowWiring(unittest.TestCase):
             script,
         )
         self.assertIn("-f state=dismissed", script)
+        # A rewrite is TWO writes, reopen first, each announcing its phase:
+        # GitHub refuses `state=dismissed` on an already-dismissed alert.
+        self.assertIn(
+            "printf 'dispositions: redismiss alert=%s phase=reopen\\n' \"${number}\" "
+            'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" '
+            "-f state=open > /dev/null "
+            "printf 'dispositions: redismiss alert=%s phase=dismiss\\n' \"${number}\" "
+            'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" '
+            "-f state=dismissed",
+            script,
+        )
         # And it re-reads main's open alerts, so anything reopened above is in
         # front of the check that follows.
         self.assertIn(
@@ -1557,24 +1593,65 @@ class WorkflowWiring(unittest.TestCase):
 
 
 GH_STUB = r"""#!/bin/sh
-# Stand-in for the four gh shapes this job uses: read a SARIF's processing
-# status, list the open alerts on the analysed ref, list them on the base
-# branch, and PATCH one alert to dismissed.
+# A STATEFUL stand-in for the gh shapes this job uses. Every alert lives as one
+# record in ${STUB_STATE}/<number>.json -- its state, its dismissed reason and
+# its dismissed comment -- and a write changes that record ONLY when it
+# succeeds. Listings are generated from those records, so a reopen is visible
+# to the next listing, and a second invocation of the harness meets exactly
+# what the first one left behind.
+#
+# IT MODELS THE REFUSAL THAT STOPPED THE FIRST LIVE RECONCILE. A
+# `state=dismissed` write to an alert that is ALREADY dismissed answers
+# `gh: Alert is already dismissed. (HTTP 400)` and exits non-zero. #25's
+# stand-in accepted every PATCH and its test expected exactly the single
+# dismissed-to-dismissed write GitHub rejects, which is why that shape passed
+# the suite and then failed on main with 78 rewrites planned (issue #26).
+#
+# `state=open` on an already-open record is a no-op success, the way the API
+# treats a transition to the state a record is already in. STUB_PATCH_FAIL
+# names a phase (`open` or `dismissed`) whose write fails, so a run can be
+# interrupted BETWEEN the two writes and the leftover state inspected.
 printf 'gh %s\n' "$*" >> "${STUB_LOG}"
 [ -n "${STUB_GH_FAIL:-}" ] && exit 4
 patch=0
 target=""
 filter=""
+wanted=""
+reason=""
+comment=""
 previous=""
 for argument in "$@"; do
   case "${argument}" in
     PATCH) patch=1 ;;
     repos/*) target="${argument}" ;;
+    state=*) wanted="${argument#state=}" ;;
+    dismissed_reason=*) reason="${argument#dismissed_reason=}" ;;
+    dismissed_comment=*) comment="${argument#dismissed_comment=}" ;;
   esac
   [ "${previous}" = "--jq" ] && filter="${argument}"
   previous="${argument}"
 done
-if [ "${patch}" -eq 1 ]; then exit 0; fi
+if [ "${patch}" -eq 1 ]; then
+  record="${STUB_STATE}/${target##*/}.json"
+  if [ ! -f "${record}" ]; then
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  if [ "${wanted}" = "dismissed" ] && [ "$(jq -r .state "${record}")" = "dismissed" ]; then
+    echo "gh: Alert is already dismissed. (HTTP 400)" >&2
+    exit 1
+  fi
+  if [ "${STUB_PATCH_FAIL:-}" = "${wanted}" ]; then
+    echo "gh: Server Error (HTTP 502)" >&2
+    exit 1
+  fi
+  jq --arg state "${wanted}" --arg reason "${reason}" --arg comment "${comment}" \
+    'if $state == "dismissed"
+       then .state = $state | .dismissed_reason = $reason | .dismissed_comment = $comment
+       else .state = $state | .dismissed_reason = null | .dismissed_comment = null
+     end' "${record}" > "${record}.new" && mv "${record}.new" "${record}"
+  exit 0
+fi
 case "${target}" in
   *code-scanning/sarifs/*)
     status="$(head -n 1 "${STUB_SARIF_STATUS}")"
@@ -1585,19 +1662,28 @@ case "${target}" in
   *code-scanning/analyses*)
     cat "${STUB_ANALYSES}" ;;
   *code-scanning/alerts*)
-    if [ "${filter}" != ".[]" ]; then cat "${STUB_REMAINING}"; exit 0; fi
-    base=0
-    [ "${target}" != "${target#*ref=refs/heads/}" ] && base=1
-    case "${target}" in
-      *state=dismissed*)
-        if [ "${base}" -eq 1 ] && [ -n "${STUB_BASE_DISMISSED:-}" ]
-        then cat "${STUB_BASE_DISMISSED}"
-        else cat "${STUB_DISMISSED}"; fi ;;
-      *)
-        if [ "${base}" -eq 1 ] && [ -n "${STUB_BASE_ALERTS:-}" ]
-        then cat "${STUB_BASE_ALERTS}"
-        else cat "${STUB_ALERTS}"; fi ;;
-    esac ;;
+    query="${target#*\?}"
+    state=""
+    ref=""
+    saved="${IFS}"
+    IFS='&'
+    for pair in ${query}; do
+      case "${pair}" in
+        state=*) state="${pair#state=}" ;;
+        ref=*) ref="${pair#ref=}" ;;
+      esac
+    done
+    IFS="${saved}"
+    records="$(cat "${STUB_STATE}"/*.json 2>/dev/null || true)"
+    [ -z "${records}" ] && exit 0
+    if [ "${filter}" = ".[]" ]; then
+      printf '%s' "${records}" | jq -s -c --arg s "${state}" --arg r "${ref}" \
+        'map(select(.state == $s and .most_recent_instance.ref == $r)) | sort_by(.number) | .[]'
+    else
+      printf '%s' "${records}" | jq -s -r --arg s "${state}" --arg r "${ref}" \
+        'map(select(.state == $s and .most_recent_instance.ref == $r)) | sort_by(.number) | .[]
+         | "#\(.number) \(.rule.id) \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"'
+    fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 64 ;;
 esac
 """
@@ -1720,10 +1806,6 @@ class StepExecution(unittest.TestCase):
             path.write_text(body)
             path.chmod(0o755)
         (root / "sarif-status").write_text("\n".join(statuses) + "\n")
-        (root / "alerts.jsonl").write_text(
-            "".join(json.dumps(a) + "\n" for a in (self.covered_alerts() if alerts is None else alerts))
-        )
-        (root / "remaining").write_text(remaining)
         (root / "tracked.txt").write_text(self.tracked())
         (root / "base-tracked.txt").write_text(
             "".join(
@@ -1732,9 +1814,18 @@ class StepExecution(unittest.TestCase):
                 if line != "crates/obsyncd/src/cli/export.rs"
             )
         )
-        (root / "dismissed.jsonl").write_text(
-            "".join(json.dumps(a) + "\n" for a in (dismissed_alerts or []))
-        )
+        # THE ONLY SOURCE OF ALERTS. Every listing the stand-in answers is
+        # generated from these records, so a write this run makes is what the
+        # next listing -- and the next run of the harness -- sees.
+        state = root / "alert-state"
+        state.mkdir()
+        for record in [
+            *(self.covered_alerts() if alerts is None else alerts),
+            *(dismissed_alerts or []),
+            *(base_alerts or []),
+            *(base_dismissed or []),
+        ]:
+            (state / f"{record['number']}.json").write_text(json.dumps(record), encoding="utf-8")
         (root / "analyses.jsonl").write_text(
             "".join(
                 json.dumps(a) + "\n"
@@ -1774,10 +1865,8 @@ class StepExecution(unittest.TestCase):
             "SARIF_ID_JAVASCRIPT_TYPESCRIPT": "sarif-js",
             "STUB_LOG": str(root / "calls.log"),
             "STUB_SARIF_STATUS": str(root / "sarif-status"),
-            "STUB_ALERTS": str(root / "alerts.jsonl"),
-            "STUB_DISMISSED": str(root / "dismissed.jsonl"),
             "STUB_ANALYSES": str(root / "analyses.jsonl"),
-            "STUB_REMAINING": str(root / "remaining"),
+            "STUB_STATE": str(root / "alert-state"),
             "STUB_TRACKED": str(root / "tracked.txt"),
             # Deliberately NOT the same list: the base branch is missing a file
             # a shipped entry names, which is what a pull request adding a file
@@ -1786,17 +1875,13 @@ class StepExecution(unittest.TestCase):
             "STUB_BASE_TRACKED": str(root / "base-tracked.txt"),
             "STUB_BASE_TREE": str(base_tree),
         }
-        if base_alerts is not None:
-            (root / "alerts-base.jsonl").write_text(
-                "".join(json.dumps(a) + "\n" for a in base_alerts)
-            )
-            environment["STUB_BASE_ALERTS"] = str(root / "alerts-base.jsonl")
-        if base_dismissed is not None:
-            (root / "dismissed-base.jsonl").write_text(
-                "".join(json.dumps(a) + "\n" for a in base_dismissed)
-            )
-            environment["STUB_BASE_DISMISSED"] = str(root / "dismissed-base.jsonl")
         return environment
+
+    def stored(self, env: dict, number: int) -> dict:
+        """The record the stand-in holds now -- the persisted truth, not a count."""
+        return json.loads(
+            (Path(env["STUB_STATE"]) / f"{number}.json").read_text(encoding="utf-8")
+        )
 
     def run_step(self, name: str, env: dict) -> subprocess.CompletedProcess:
         script = Path(env["RUNNER_TEMP"]).parent / f"{abs(hash(name)) % 10**8}.sh"
@@ -1878,7 +1963,10 @@ class StepExecution(unittest.TestCase):
             env = self.stage(Path(tmp))
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
             temp = Path(env["RUNNER_TEMP"])
-            self.assertEqual(json.loads((temp / "alerts.json").read_text()), self.covered_alerts())
+            self.assertEqual(
+                json.loads((temp / "alerts.json").read_text()),
+                sorted(self.covered_alerts(), key=lambda record: record["number"]),
+            )
             self.assertEqual((temp / "alerts-ref.txt").read_text().strip(), "refs/heads/main")
             self.assertIn("security/codeql-dispositions.json", (temp / "tracked.txt").read_text())
 
@@ -1932,21 +2020,38 @@ class StepExecution(unittest.TestCase):
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
             result = self.run_step(self.DISMISS, env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            patches = self.calls(env, "gh api -X PATCH")
-            self.assertEqual(len(patches), 2)
-            self.assertIn(
-                "gh api -X PATCH repos/snaraj/obsync/code-scanning/alerts/81 -f state=dismissed "
-                "-f dismissed_reason=false positive -f dismissed_comment=HKDF domain-separation",
-                patches[0],
-            )
-            self.assertIn("Disposition: https://github.com/snaraj/obsync/issues/20", patches[0])
-            self.assertIn("alerts/80 -f state=dismissed -f dismissed_reason=used in tests", patches[1])
-            self.assertIn("Disposition: https://github.com/snaraj/obsync/issues/22", patches[1])
+            self.assertEqual(len(self.calls(env, "gh api -X PATCH")), 2)
+            # The PERSISTED record, not the command: state, reason, and the
+            # composed comment the entry actually carries.
+            shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))
+            for number, record in ((80, shipped[1]), (81, shipped[0])):
+                with self.subTest(alert=number):
+                    held = self.stored(env, number)
+                    self.assertEqual(held["state"], "dismissed")
+                    self.assertEqual(held["dismissed_reason"], record["reason"])
+                    self.assertEqual(
+                        held["dismissed_comment"],
+                        f"{record['comment']}{cd.DISPOSITION_JOIN}{record['disposition']}",
+                    )
             self.assertIn("dismissed=2 remaining=0", result.stdout)
 
     def test_a_push_fails_when_main_still_holds_an_open_alert_afterwards(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = self.stage(Path(tmp), remaining="#900 rust/cleartext-logging cli/check.rs:52\n")
+            # An open alert nothing covers, left standing in the stand-in's
+            # own state after the covered ones are dismissed.
+            env = self.stage(
+                Path(tmp),
+                alerts=[
+                    *self.covered_alerts(),
+                    alert(
+                        number=900,
+                        rule=LOGGING_RULE,
+                        path="crates/obsyncd/src/log.rs",
+                        line=1,
+                        commit=self.HEAD_SHA,
+                    ),
+                ],
+            )
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
             result = self.run_step(self.DISMISS, env)
             self.assertNotEqual(result.returncode, 0, "a remaining open alert must fail the job")
@@ -2035,7 +2140,114 @@ class StepExecution(unittest.TestCase):
             self.assertIn("uncovered #40 rust/cleartext-logging", result.stdout)
             self.assertIn("crates/obsyncd/src/cli/check.rs:1", result.stdout)
 
-    def test_a_push_reopens_a_dismissal_no_entry_covers_and_then_the_check_sees_it(self):
+    def test_a_push_reopens_before_it_rewrites_a_stored_justification(self):
+        # THE LIVE DEFECT, at the shape main was actually in: 78 dismissals
+        # whose comments were typed by hand before this file existed. GitHub
+        # refuses `state=dismissed` on an already-dismissed alert, so each
+        # rewrite is a reopen followed by a dismiss, in that order, per alert.
+        shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))
+        salt, bundle = self.covered_alerts()
+
+        def stored(record: dict, **fields: object) -> dict:
+            return {**record, "state": "dismissed", **fields}
+
+        foreign = {"dismissed_reason": "used in tests", "dismissed_comment": "typed in the UI"}
+        agreed = {
+            "dismissed_reason": shipped[0]["reason"],
+            "dismissed_comment": f"{shipped[0]['comment']}"
+            f"{cd.DISPOSITION_JOIN}{shipped[0]['disposition']}",
+        }
+        gone = stored({**salt, "number": 78}, **foreign)
+        gone["most_recent_instance"] = {
+            **gone["most_recent_instance"], "state": "fixed", "commit_sha": "0" * 40,
+        }
+        listing = [
+            stored(salt, **foreign),                      # 81 -> redismiss
+            stored(bundle, **foreign),                    # 80 -> redismiss
+            stored({**salt, "number": 79}, **agreed),     # 79 -> unchanged
+            gone,                                         # 78 -> stale
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.stage(Path(tmp), dismissed_alerts=listing)
+            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+            result = self.run_step(self.RECONCILE, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            patches = self.calls(env, "gh api -X PATCH")
+            self.assertEqual(len(patches), 4, "two writes per rewrite, and no others")
+            for number, record in ((80, shipped[1]), (81, shipped[0])):
+                with self.subTest(alert=number):
+                    mine = [line for line in patches if f"/alerts/{number} " in line]
+                    self.assertEqual(len(mine), 2, "one reopen and one dismiss")
+                    self.assertIn("-f state=open", mine[0])
+                    self.assertIn("-f state=dismissed", mine[1])
+                    # The phases are logged, and in the order they are sent.
+                    self.assertEqual(
+                        [
+                            line
+                            for line in result.stdout.splitlines()
+                            if line.startswith(f"dispositions: redismiss alert={number} ")
+                        ],
+                        [
+                            f"dispositions: redismiss alert={number} phase=reopen",
+                            f"dispositions: redismiss alert={number} phase=dismiss",
+                        ],
+                    )
+                    # And the PERSISTED record is what the entry says.
+                    held = self.stored(env, number)
+                    self.assertEqual(held["state"], "dismissed")
+                    self.assertEqual(held["dismissed_reason"], record["reason"])
+                    self.assertEqual(
+                        held["dismissed_comment"],
+                        f"{record['comment']}{cd.DISPOSITION_JOIN}{record['disposition']}",
+                    )
+            # The two the file already agreed with, and the one whose finding is
+            # gone, are untouched.
+            self.assertEqual(self.stored(env, 79)["dismissed_comment"], agreed["dismissed_comment"])
+            self.assertEqual(self.stored(env, 78)["dismissed_comment"], foreign["dismissed_comment"])
+            self.assertIn(
+                "dispositions: reconcile reopened=0 redismissed=2 unchanged=1 stale=1",
+                result.stdout,
+            )
+
+    def test_each_kind_of_drift_causes_the_transition_and_agreement_causes_none(self):
+        # Reason-only and comment-only drift each earn the real two-write
+        # transition; a record that already says what the file says is a no-op.
+        shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))[0]
+        composed = f"{shipped['comment']}{cd.DISPOSITION_JOIN}{shipped['disposition']}"
+        salt = self.covered_alerts()[0]
+        for label, stored_fields, writes in (
+            ("reason-only", {"dismissed_reason": "won't fix", "dismissed_comment": composed}, 2),
+            (
+                "comment-only",
+                {"dismissed_reason": shipped["reason"], "dismissed_comment": "typed in the UI"},
+                2,
+            ),
+            (
+                "agreed",
+                {"dismissed_reason": shipped["reason"], "dismissed_comment": composed},
+                0,
+            ),
+        ):
+            with self.subTest(drift=label), tempfile.TemporaryDirectory() as tmp:
+                env = self.stage(
+                    Path(tmp), dismissed_alerts=[{**salt, "state": "dismissed", **stored_fields}]
+                )
+                self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+                self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+                result = self.run_step(self.RECONCILE, env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.calls(env, "gh api -X PATCH")), writes)
+                held = self.stored(env, 81)
+                self.assertEqual(held["state"], "dismissed")
+                self.assertEqual(held["dismissed_reason"], shipped["reason"])
+                self.assertEqual(held["dismissed_comment"], composed)
+
+    def test_a_reopened_record_reaches_the_listing_and_then_fails_the_check(self):
+        # Nothing is pre-staged as open: the reconcile REOPENS it, the listing
+        # the same step takes afterwards reads it back from the stand-in, and
+        # the check that follows refuses it. That chain is the reason reopening
+        # is the mutation this design chose.
         stray = alert(
             number=900,
             rule=LOGGING_RULE,
@@ -2047,68 +2259,90 @@ class StepExecution(unittest.TestCase):
             dismissed_comment="typed into the UI, recorded nowhere",
         )
         with tempfile.TemporaryDirectory() as tmp:
-            # After the reopen, main's open listing carries it -- which is what
-            # the re-list inside the reconcile step is for.
-            env = self.stage(
-                Path(tmp),
-                dismissed_alerts=[stray],
-                alerts=[*self.covered_alerts(), {**stray, "state": "open"}],
-            )
+            env = self.stage(Path(tmp), dismissed_alerts=[stray])
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+            self.assertEqual(
+                json.loads((Path(env["RUNNER_TEMP"]) / "alerts.json").read_text()),
+                sorted(self.covered_alerts(), key=lambda record: record["number"]),
+                "the stray is dismissed, so the first open listing does not carry it",
+            )
             self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
             result = self.run_step(self.RECONCILE, env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            patches = self.calls(env, "gh api -X PATCH")
-            self.assertEqual(len(patches), 1)
-            self.assertIn("alerts/900 -f state=open", patches[0])
-            self.assertIn("dispositions: reconcile reopened=1 redismissed=0 unchanged=0", result.stdout)
-            # And now the check refuses, because reopening turned the drift
-            # into an uncovered OPEN alert on main.
+            self.assertEqual(self.stored(env, 900)["state"], "open")
+            self.assertIsNone(self.stored(env, 900)["dismissed_reason"])
+            listed = json.loads((Path(env["RUNNER_TEMP"]) / "alerts.json").read_text())
+            self.assertIn(900, [record["number"] for record in listed])
             check = self.run_step(self.CHECK, env)
             self.assertNotEqual(check.returncode, 0, "the reopened alert must fail the run")
             self.assertIn("uncovered #900", check.stdout)
 
-    def test_a_push_rewrites_a_stored_justification_that_is_not_this_files(self):
-        salt = self.covered_alerts()[0]
-        stale = {
-            **salt,
-            "state": "dismissed",
-            "dismissed_reason": "won't fix",
-            "dismissed_comment": "whatever was typed at the time",
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            env = self.stage(Path(tmp), dismissed_alerts=[stale])
-            self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
-            self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
-            result = self.run_step(self.RECONCILE, env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            patches = self.calls(env, "gh api -X PATCH")
-            self.assertEqual(len(patches), 1)
-            self.assertIn("alerts/81 -f state=dismissed -f dismissed_reason=false positive", patches[0])
-            self.assertIn("Disposition: https://github.com/snaraj/obsync/issues/20", patches[0])
-            self.assertIn(
-                "dispositions: reconcile reopened=0 redismissed=1 unchanged=0", result.stdout
-            )
-
-    def test_a_push_touches_nothing_when_the_record_already_says_what_the_file_says(self):
+    def test_a_write_that_fails_leaves_state_a_later_run_converges_from(self):
+        # Both interruption points. The step exits, so every later step of THAT
+        # run is skipped and publication is blocked; a second, authorized run
+        # over the state actually left behind converges without assuming the
+        # first one finished.
         shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))[0]
+        composed = f"{shipped['comment']}{cd.DISPOSITION_JOIN}{shipped['disposition']}"
+        foreign = {"dismissed_reason": "used in tests", "dismissed_comment": "typed in the UI"}
         salt = self.covered_alerts()[0]
-        agreed = {
-            **salt,
-            "state": "dismissed",
-            "dismissed_reason": shipped["reason"],
-            "dismissed_comment": f"{shipped['comment']}{cd.DISPOSITION_JOIN}{shipped['disposition']}",
-        }
+        for phase, left in (("open", "dismissed"), ("dismissed", "open")):
+            with self.subTest(fails=phase), tempfile.TemporaryDirectory() as tmp:
+                env = self.stage(
+                    Path(tmp),
+                    alerts=[self.covered_alerts()[1]],
+                    dismissed_alerts=[{**salt, "state": "dismissed", **foreign}],
+                )
+                self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
+                self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
+                first = self.run_step(self.RECONCILE, {**env, "STUB_PATCH_FAIL": phase})
+                self.assertNotEqual(first.returncode, 0, "a refused write must stop the run")
+                self.assertNotIn("reconcile reopened=", first.stdout, "no summary from a dead run")
+                held = self.stored(env, 81)
+                self.assertEqual(held["state"], left)
+                if left == "dismissed":
+                    # The reopen never landed: the record is exactly as it was.
+                    self.assertEqual(held["dismissed_reason"], foreign["dismissed_reason"])
+                    self.assertEqual(held["dismissed_comment"], foreign["dismissed_comment"])
+                else:
+                    # The reopen landed and the rewrite did not: open, unjustified.
+                    self.assertIsNone(held["dismissed_reason"])
+                    self.assertIsNone(held["dismissed_comment"])
+
+                # A SECOND run, over that persisted state, with no memory of
+                # the first. It re-lists, reconciles what is still dismissed,
+                # checks coverage, and dismisses what reopening left open.
+                for step in (self.LIST, self.DISMISSED_LIST, self.RECONCILE, self.CHECK):
+                    with self.subTest(fails=phase, step=step):
+                        again = self.run_step(step, env)
+                        self.assertEqual(again.returncode, 0, again.stderr)
+                dismiss = self.run_step(self.DISMISS, env)
+                self.assertEqual(dismiss.returncode, 0, dismiss.stderr)
+                self.assertIn("remaining=0", dismiss.stdout)
+                converged = self.stored(env, 81)
+                self.assertEqual(converged["state"], "dismissed")
+                self.assertEqual(converged["dismissed_reason"], shipped["reason"])
+                self.assertEqual(converged["dismissed_comment"], composed)
+
+    def test_a_push_stops_and_names_the_alert_when_the_reopen_is_refused(self):
+        salt = self.covered_alerts()[0]
+        listing = [
+            {
+                **salt,
+                "state": "dismissed",
+                "dismissed_reason": "used in tests",
+                "dismissed_comment": "typed in the UI",
+            }
+        ]
         with tempfile.TemporaryDirectory() as tmp:
-            env = self.stage(Path(tmp), dismissed_alerts=[agreed])
+            env = self.stage(Path(tmp), dismissed_alerts=listing)
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)
             self.assertEqual(self.run_step(self.DISMISSED_LIST, env).returncode, 0)
-            result = self.run_step(self.RECONCILE, env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.calls(env, "gh api -X PATCH"), [])
-            self.assertIn(
-                "dispositions: reconcile reopened=0 redismissed=0 unchanged=1", result.stdout
-            )
+            result = self.run_step(self.RECONCILE, {**env, "STUB_GH_FAIL": "1"})
+            self.assertNotEqual(result.returncode, 0, "a refused write must stop the run")
+            self.assertIn("dispositions: redismiss alert=81 phase=reopen", result.stdout)
+            self.assertNotIn("phase=dismiss", result.stdout)
+            self.assertNotIn("reconcile reopened=", result.stdout)
 
     def test_a_push_counts_a_dismissal_whose_finding_is_gone_and_touches_nothing(self):
         gone = {

@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::hex;
@@ -111,23 +113,35 @@ impl NonceCache {
     /// The volume, or on-disk state that is not a nonce log. Both refuse the
     /// start: a server that cannot record what it accepts cannot promise
     /// that it will refuse it a second time.
-    pub fn open(journal_dir: &Path, now: u64, log: &Log) -> Result<NonceCache, StoreError> {
-        Self::sized(journal_dir, now, NONCE_CACHE_MAX, log)
+    pub fn open(
+        journal_dir: &Path,
+        now: u64,
+        reported: Arc<AtomicU64>,
+        log: &Log,
+    ) -> Result<NonceCache, StoreError> {
+        Self::sized(journal_dir, now, NONCE_CACHE_MAX, reported, log)
     }
 
     fn sized(
         journal_dir: &Path,
         now: u64,
         capacity: usize,
+        reported: Arc<AtomicU64>,
         log: &Log,
     ) -> Result<NonceCache, StoreError> {
-        let (durable, entries) = NonceLog::open(journal_dir, now, log)?;
+        let (durable, entries) = NonceLog::open(journal_dir, now, reported, log)?;
         Ok(NonceCache {
             seen: entries.into_iter().collect(),
             durable,
             log: log.clone(),
             capacity,
         })
+    }
+
+    /// Arm the durable log's crash point. Tests only.
+    #[cfg(test)]
+    fn set_fault(&self, fault: super::nonce_log::NonceFault) {
+        self.durable.set_fault(fault);
     }
 
     /// Remember `nonce` for `device`, or report the replay.
@@ -462,6 +476,16 @@ fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, no
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::super::nonce_log::NonceFault;
+
+    /// The accounting handle a nonce log publishes into. These tests judge
+    /// the log, not the journal that reads it, so each gets its own.
+    fn reported() -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(0))
+    }
+
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -514,8 +538,21 @@ mod tests {
     const DEVICE: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
     const OTHER: &str = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
 
-    fn nonce(n: u8) -> String {
-        format!("{n:032x}")
+    /// A distinct nonce per seed, DERIVED at runtime rather than written
+    /// down as one.
+    ///
+    /// Deterministic, so a test that expects a replay gets the same thirty-two
+    /// characters back for the same seed, and distinct per seed, which is the
+    /// only property any test here relies on. Derived rather than formatted
+    /// from the seed because a constant reaching a nonce is exactly what
+    /// `rust/hard-coded-cryptographic-value` exists to find: a fixture that
+    /// trips it costs a triage on every change to this file, and an alert
+    /// list that is mostly fixtures is one nobody reads. Nothing here is a
+    /// credential -- a nonce is a public request value that opens nothing --
+    /// but the analyser cannot know that, and neither can a reader skimming
+    /// the list.
+    fn nonce(seed: u8) -> String {
+        hex::encode(&sha256::sha256(&[seed])[..16])
     }
 
     /// A journal volume with the root the posture pass would have made.
@@ -556,7 +593,7 @@ mod tests {
     /// `NONCE_CACHE_MAX`; two is enough to reach the ceiling and the
     /// compaction that stands beyond it inside one test.
     fn cache(dir: &TempDir, now: u64, capacity: usize, log: &Log) -> NonceCache {
-        NonceCache::sized(dir.path(), now, capacity, log).expect("the nonce log opens")
+        NonceCache::sized(dir.path(), now, capacity, reported(), log).expect("the nonce log opens")
     }
 
     /// Accept five nonces at a capacity of two: two per window, with a
@@ -712,7 +749,7 @@ mod tests {
             format!("1000 {DEVICE} not-a-nonce\n1000 x y\n"),
         )
         .expect("foreign content");
-        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, &log) else {
+        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, reported(), &log) else {
             panic!("a log that is not a log refuses the start");
         };
         assert_eq!(e.code(), "corrupt");
@@ -734,7 +771,7 @@ mod tests {
         std::fs::write(&target, "sentinel\n").expect("the target");
         std::os::unix::fs::symlink(&target, log_file(&dir)).expect("the link is planted");
 
-        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, &log) else {
+        let Err(e) = NonceCache::sized(dir.path(), 1_000, NONCE_CACHE_MAX, reported(), &log) else {
             panic!("a link is never followed");
         };
         assert_eq!(e.code(), "corrupt");
@@ -784,6 +821,132 @@ mod tests {
             c.syncs(),
             3,
             "the record is made durable before the request is served"
+        );
+    }
+
+    /// The bytes the nonce log and its compaction temporary occupy, walked
+    /// independently of what the log publishes.
+    fn nonce_bytes_on_disk(dir: &TempDir) -> u64 {
+        let root = PathClass::JournalRoot.path(dir.path());
+        ["nonces", "nonces.tmp"]
+            .iter()
+            .map(|name| {
+                std::fs::symlink_metadata(root.join(name))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_log_publishes_what_it_occupies_on_the_journal_volume() {
+        // The nonce log rests on the journal volume and grows on every
+        // authenticated request. The journal's own survey deliberately
+        // leaves these two names alone, so if this number were not published
+        // the volume's watermark would never see the file at all.
+        let dir = volume("nonce-accounting");
+        let log = Log::buffered(LogLevel::Debug);
+        let handle = reported();
+        let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+            .expect("the nonce log opens");
+        assert_eq!(
+            handle.load(Ordering::Acquire),
+            nonce_bytes_on_disk(&dir),
+            "at the open"
+        );
+
+        let now = fill_to_the_threshold(&mut c);
+        let grown = handle.load(Ordering::Acquire);
+        assert!(grown > 0, "the log grew with the nonces it accepted");
+        assert_eq!(grown, nonce_bytes_on_disk(&dir), "and said so as it grew");
+
+        // The compaction rewrites the file SMALLER: the published number has
+        // to come down as well as up, or the volume looks permanently full.
+        c.remember(DEVICE, &nonce(6), now).expect("accepted");
+        assert!(
+            handle.load(Ordering::Acquire) < grown,
+            "the compaction freed bytes: {} is not below {grown}",
+            handle.load(Ordering::Acquire)
+        );
+        assert_eq!(
+            handle.load(Ordering::Acquire),
+            nonce_bytes_on_disk(&dir),
+            "after the compaction, temporary included"
+        );
+    }
+
+    /// `ENOSPC`, the same number on Linux and on macOS.
+    const ENOSPC: i32 = 28;
+
+    #[test]
+    fn a_write_that_failed_part_way_still_publishes_the_bytes_that_landed() {
+        // The claim this pins is that the figure is published BEFORE the
+        // error is returned. A volume that refuses half way through a line
+        // still grew the file, and a watermark that cannot see those bytes
+        // is a watermark that admits a write onto a full volume.
+        for fault in [
+            NonceFault::ShortWrite { code: ENOSPC },
+            NonceFault::SyncFails { code: ENOSPC },
+        ] {
+            let dir = volume("nonce-partial-write");
+            let log = Log::buffered(LogLevel::Debug);
+            let handle = reported();
+            let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+                .expect("the nonce log opens");
+            c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+            let before = handle.load(Ordering::Acquire);
+
+            c.set_fault(fault);
+            c.remember(DEVICE, &nonce(2), 1_000)
+                .expect_err("the volume refused");
+            c.set_fault(NonceFault::None);
+
+            let landed = handle.load(Ordering::Acquire);
+            assert!(
+                landed > before,
+                "{fault:?}: bytes landed before the error and were published: \
+                 {landed} is not above {before}"
+            );
+            assert_eq!(
+                landed,
+                nonce_bytes_on_disk(&dir),
+                "{fault:?}: and the figure is the volume's own"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compaction_leftover_is_counted_where_the_watermark_reads_it() {
+        // The residue of a compaction that died between its temporary and
+        // its rename. Those bytes are on the journal volume and stay there
+        // until the next compaction takes the name again, and the journal's
+        // own survey deliberately leaves this name alone, so the only thing
+        // that can see them is this log's own accounting.
+        let dir = volume("nonce-compaction-residue");
+        let log = Log::buffered(LogLevel::Debug);
+        let handle = reported();
+        let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+            .expect("the nonce log opens");
+        c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+        let clean = handle.load(Ordering::Acquire);
+
+        std::fs::write(
+            PathClass::JournalRoot.path(dir.path()).join("nonces.tmp"),
+            vec![b'x'; 512],
+        )
+        .expect("what a failed compaction leaves");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("accepted");
+
+        assert!(
+            handle.load(Ordering::Acquire) >= clean + 512,
+            "the leftover is counted: {} is not at least {}",
+            handle.load(Ordering::Acquire),
+            clean + 512
+        );
+        assert_eq!(
+            handle.load(Ordering::Acquire),
+            nonce_bytes_on_disk(&dir),
+            "and the number is the volume's own"
         );
     }
 
@@ -950,7 +1113,8 @@ mod tests {
         // The replacement a real compaction publishes, taken off a real
         // volume: a log opened, handed a live window, rewritten.
         let source = volume("nonce-rename-source");
-        let (mut durable, _) = NonceLog::open(source.path(), 1_000, &log).expect("the log opens");
+        let (mut durable, _) =
+            NonceLog::open(source.path(), 1_000, reported(), &log).expect("the log opens");
         let live: HashMap<Nonce, u64> = [
             ((DEVICE.to_string(), nonce(5)), 2_202 + NONCE_TTL_SECS),
             ((OTHER.to_string(), nonce(6)), 2_202 + NONCE_TTL_SECS),

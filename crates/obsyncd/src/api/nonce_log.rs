@@ -16,7 +16,7 @@
 //!
 //! Every accepted nonce is appended and fsynced BEFORE the request it
 //! authenticates is answered, for the reason a journal frame is
-//! (`docs/storage.md`, durability rule 4): a nonce the server has already
+//! (`docs/storage.md`, durability rule 6): a nonce the server has already
 //! acted on but not written down is a nonce a crash makes replayable.
 #![forbid(unsafe_code)]
 
@@ -25,6 +25,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(test)]
+use std::sync::Mutex;
 
 use crate::log::{Log, Val};
 use crate::storage::{PathClass, StoreError};
@@ -43,6 +48,32 @@ const FILE_MODE: u32 = 0o600;
 /// both 32 hex characters.
 pub type Nonce = (String, String);
 
+/// A crash point in the nonce log, armed by a test so the volume's own
+/// refusals can be proven rather than argued (AGENTS.md, "Testing doctrine").
+///
+/// Compiled only into the test build, like the storage engine's `Fault`: a
+/// switch that could skip a write or an fsync in the shipped binary is
+/// exactly the toggle requirement 4 forbids.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NonceFault {
+    /// No crash point armed.
+    #[default]
+    None,
+    /// Half the line lands, then the errno: what a full volume does to a
+    /// write that does not fit.
+    ShortWrite {
+        /// The `errno` the write returns.
+        code: i32,
+    },
+    /// The whole line lands and the fsync refuses, so the bytes are on the
+    /// volume and none of them is durable.
+    SyncFails {
+        /// The `errno` the fsync returns.
+        code: i32,
+    },
+}
+
 /// The file the accepted nonces are written to, held open for the life of
 /// the process.
 ///
@@ -53,11 +84,20 @@ pub struct NonceLog {
     /// The journal root, for the compaction's temporary file and rename.
     root: PathBuf,
     file: File,
+    /// What this log occupies on the JOURNAL volume, published after every
+    /// write so the volume's watermark and its dashboard see these bytes at
+    /// the moment they land rather than at the journal's next survey. It is
+    /// an absolute number, not a delta: a lost update cannot accumulate, and
+    /// the journal's own survey leaves these two names alone
+    /// (`storage/journal.rs`, `NONCE_FILE` and `NONCE_TMP`).
+    reported: Arc<AtomicU64>,
     /// Lines the file holds, live and expired alike: what the caller's
     /// compaction threshold is measured against.
     lines: usize,
     /// Appends since the last sweep summary.
     appended: u64,
+    #[cfg(test)]
+    fault: Mutex<NonceFault>,
     /// Durability steps taken. `fsync` leaves nothing a hermetic test can
     /// observe, so what a test can pin is that the step runs, once per
     /// accepted request; the count rises in exactly one place.
@@ -79,6 +119,7 @@ impl NonceLog {
     pub fn open(
         journal_dir: &Path,
         now: u64,
+        reported: Arc<AtomicU64>,
         log: &Log,
     ) -> Result<(NonceLog, Vec<(Nonce, u64)>), StoreError> {
         let root = PathClass::JournalRoot.path(journal_dir);
@@ -146,15 +187,51 @@ impl NonceLog {
             ],
         );
         Ok((
-            NonceLog {
-                root,
-                file,
-                lines,
-                appended: 0,
-                syncs: 0,
+            {
+                let log = NonceLog {
+                    root,
+                    file,
+                    reported,
+                    lines,
+                    appended: 0,
+                    syncs: 0,
+                    #[cfg(test)]
+                    fault: Mutex::new(NonceFault::None),
+                };
+                // What a restart inherits, said once before anything is
+                // written: the journal's survey ran before this and left
+                // these names to this number.
+                log.publish();
+                log
             },
             entries,
         ))
+    }
+
+    /// Arm a crash point for the next write. Tests only.
+    #[cfg(test)]
+    pub fn set_fault(&self, fault: NonceFault) {
+        *self.fault.lock().expect("fault lock") = fault;
+    }
+
+    #[cfg(test)]
+    fn armed(&self) -> NonceFault {
+        *self.fault.lock().expect("fault lock")
+    }
+
+    /// Publish what this log occupies on the journal volume.
+    ///
+    /// Two `stat`s: the open handle, and the compaction temporary by name.
+    /// BOTH names, because a compaction that fails leaves the temporary
+    /// behind and those bytes are on the volume exactly as the file's are.
+    /// Called after every write, the failing ones included: bytes that
+    /// landed before an error are still bytes, and a watermark that cannot
+    /// see them is a watermark that admits a write onto a full volume.
+    fn publish(&self) {
+        let live = self.file.metadata().map_or(0, |m| m.len());
+        let leftover = fs::symlink_metadata(self.root.join(TMP_NAME)).map_or(0, |m| m.len());
+        self.reported
+            .store(live.saturating_add(leftover), Ordering::Release);
     }
 
     /// Write one accepted nonce down and make it durable.
@@ -163,8 +240,23 @@ impl NonceLog {
     /// The volume. The caller refuses the request it came from: a request
     /// answered without its nonce recorded is one a crash makes replayable.
     pub fn append(&mut self, ts: u64, entry: &Nonce) -> io::Result<()> {
-        self.file.write_all(line(ts, entry).as_bytes())?;
-        self.fsync()?;
+        let text = line(ts, entry);
+        #[cfg(test)]
+        let wrote = match self.armed() {
+            NonceFault::ShortWrite { code } => self
+                .file
+                .write_all(&text.as_bytes()[..text.len() / 2])
+                .and(Err(io::Error::from_raw_os_error(code))),
+            _ => self.file.write_all(text.as_bytes()),
+        };
+        #[cfg(not(test))]
+        let wrote = self.file.write_all(text.as_bytes());
+        let synced = if wrote.is_ok() { self.fsync() } else { Ok(()) };
+        // Before either `?`: a short write that then failed still grew the
+        // file, and the volume's accounting has to see that.
+        self.publish();
+        wrote?;
+        synced?;
         self.lines += 1;
         self.appended += 1;
         Ok(())
@@ -172,7 +264,7 @@ impl NonceLog {
 
     /// Rewrite the file with the entries still inside the window.
     ///
-    /// The shape of a snapshot (`docs/storage.md`, durability rule 3): a
+    /// The shape of a snapshot (`docs/storage.md`, durability rule 5): a
     /// temporary file, fsynced, renamed onto the name, and the directory
     /// fsynced after it. A crash leaves the file it had or the file it was
     /// given, never half of either, so a compaction can never be the reason
@@ -181,6 +273,14 @@ impl NonceLog {
     /// # Errors
     /// The volume.
     pub fn compact(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
+        let outcome = self.compact_inner(live);
+        // A compaction that failed part way leaves the old file AND a
+        // temporary beside it; both are on the volume and both are counted.
+        self.publish();
+        outcome
+    }
+
+    fn compact_inner(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
         let mut body = String::new();
         for (entry, expiry) in live {
             body.push_str(&line(expiry.saturating_sub(NONCE_TTL_SECS), entry));
@@ -230,6 +330,10 @@ impl NonceLog {
 
     /// The durability step, and the only place the count rises.
     fn fsync(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        if let NonceFault::SyncFails { code } = self.armed() {
+            return Err(io::Error::from_raw_os_error(code));
+        }
         self.file.sync_all()?;
         self.syncs += 1;
         Ok(())

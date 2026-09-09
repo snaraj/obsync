@@ -33,7 +33,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -83,6 +83,75 @@ pub(crate) enum Fault {
     JournalMidAppend,
     /// Write the final journal frame with a corrupt payload.
     JournalTornFrame,
+    /// A real filesystem errno at the journal append. The process does NOT
+    /// die: the error returns and the journal must recover from it, which
+    /// is what separates this from [`Fault::JournalMidAppend`].
+    JournalAppendErrno {
+        /// The `errno` the write or the fsync returns.
+        code: i32,
+        /// Which half of the append fails.
+        at: AppendPhase,
+    },
+    /// The append fails at `at` AND the rollback that would undo it fails at
+    /// `rollback`: the two failures that put the journal in the faulted
+    /// state. One armed value, because the second failure only exists as a
+    /// consequence of the first.
+    JournalRecoveryFails {
+        /// The `errno` the failing append returns.
+        code: i32,
+        /// Which half of the append fails.
+        at: AppendPhase,
+        /// Which half of the rollback fails.
+        rollback: RollbackPhase,
+    },
+    /// A real filesystem errno at one phase of a chunk write. Each phase
+    /// leaves a different residue, and the test says which.
+    BlobErrno {
+        /// Where in the write the errno surfaces.
+        phase: BlobPhase,
+        /// The `errno` returned there.
+        code: i32,
+    },
+}
+
+/// Which half of a journal append a fault surfaces in.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AppendPhase {
+    /// The `write`: half the frame lands, then the errno. The segment is
+    /// left longer than the journal's durable length.
+    Write,
+    /// The `fsync`: the whole frame is on disk and none of it is durable.
+    Sync,
+}
+
+/// Which half of the rollback after a failed append a fault surfaces in.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RollbackPhase {
+    /// The `set_len` back to the durable length.
+    Truncate,
+    /// The `fsync` that makes that truncation durable. Truncating without
+    /// it leaves the journal believing a rollback that a power cut can
+    /// still undo.
+    Sync,
+}
+
+/// Which phase of a chunk write a fault surfaces in (docs/storage.md,
+/// durability rule 1). The residue differs per phase and the test says so.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BlobPhase {
+    /// The stream into the temp file.
+    Stream,
+    /// The `fsync` of the temp file.
+    Sync,
+    /// The `rename` into place.
+    Rename,
+    /// The directory fsyncs a quarantine move runs AFTER its rename, where
+    /// a failure means the bytes moved and the failure was in making that
+    /// durable -- the one case where an error does not mean nothing moved.
+    QuarantineSync,
 }
 
 /// The storage engine. One per process, shared by every request thread.
@@ -123,7 +192,7 @@ impl Store {
         let started = log.start("store_open", cfg.journal_capacity);
         let mirror_paths: Vec<PathBuf> = cfg.mirrors.iter().map(|m| m.path.clone()).collect();
         let (blobs, leftovers) = Blobs::open(&cfg.blobs_dir, &mirror_paths)?;
-        let mut journal = Journal::open(&cfg.journal_dir)?;
+        let mut journal = Journal::open(cfg, log.clone())?;
         let (snapshot, skipped) = journal.load_snapshot()?;
         let from_snapshot = snapshot.is_some();
         let mut index = snapshot.unwrap_or_default();
@@ -730,6 +799,9 @@ impl Store {
             bytes_used: used,
             bytes_free: self.cfg.blobs_capacity.saturating_sub(used),
             watermark_bytes: watermark,
+            // The blob volume's usage is the index's own running total, which
+            // is read from memory and cannot refuse.
+            usage_unverified: false,
         }];
         for mirror in &self.cfg.mirrors {
             all.push(VolumeStatus {
@@ -740,9 +812,20 @@ impl Store {
                 bytes_used: used,
                 bytes_free: self.cfg.blobs_capacity.saturating_sub(used),
                 watermark_bytes: watermark,
+                usage_unverified: false,
             });
         }
-        let journal_used = dir_bytes(&self.cfg.journal_dir);
+        // The journal's own accounting, not a walk of the volume: it is the
+        // number the journal watermark refuses against, and a dashboard that
+        // showed a different one would disagree with the refusal.
+        // One guard for both, so the figure and the word that qualifies it
+        // are read from the same state: a total taken before a failed survey
+        // and a flag taken after it would say the number is trustworthy when
+        // it is not.
+        let journal = self.journal();
+        let journal_used = journal.tracked_bytes();
+        let journal_unverified = journal.unverified().is_some();
+        drop(journal);
         all.push(VolumeStatus {
             role: "journal".to_string(),
             path: self.cfg.journal_dir.clone(),
@@ -751,6 +834,11 @@ impl Store {
             bytes_used: journal_used,
             bytes_free: self.cfg.journal_capacity.saturating_sub(journal_used),
             watermark_bytes: self.cfg.free_watermark.bytes_for(self.cfg.journal_capacity),
+            // The journal surveys a real directory, so its total is the one
+            // that can go stale: while this is true the figure beside it is
+            // the last one that was read successfully, and writes are being
+            // refused with `journal_unverified` until a survey succeeds.
+            usage_unverified: journal_unverified,
         });
         all
     }
@@ -920,8 +1008,29 @@ impl Store {
             );
             return Ok(true);
         }
-        let quarantine = self.journal().quarantine_dir();
-        self.blobs.quarantine(sid, &quarantine)?;
+        // ONE guard, held across the move AND the accounting that follows it.
+        // Every reader of the journal's usage takes this same lock -- the
+        // watermark check inside an append, a survey at a roll, `volumes()`
+        // for the dashboard -- so with the guard spanning both there is no
+        // interval in which the file has moved and the total has not, and
+        // none in which a survey counts the file and the update then counts
+        // it again. A lock around the addition alone would leave both.
+        let mut journal = self.journal();
+        let quarantine = journal.quarantine_dir();
+        let target = quarantine.join(sid.to_string());
+        // What stands at the destination BEFORE: a quarantine of the same sid
+        // that an earlier pass left, whose bytes the rename replaces.
+        let replaced = name_bytes(&target);
+
+        let outcome = self.blobs.quarantine(sid, &quarantine);
+        // Read the destination rather than assume the outcome. The move is a
+        // `rename`, but the two directory fsyncs come AFTER it, so an error
+        // here can perfectly well mean the bytes moved and the failure was
+        // in making that durable. Whatever is really at that name is what
+        // the volume really holds.
+        journal.quarantined(replaced, name_bytes(&target));
+        drop(journal);
+        outcome?;
         self.log.error(
             "chunk_quarantined",
             &[
@@ -988,6 +1097,83 @@ impl Store {
         self.journal().verify()
     }
 
+    /// Re-survey the journal volume, for a start-time write that landed on
+    /// it after this store opened.
+    ///
+    /// # Errors
+    /// The volume.
+    pub fn resurvey_journal(&self) -> Result<(), StoreError> {
+        self.journal().resurvey("start")
+    }
+
+    /// The handle the nonce log reports its own size on the journal volume
+    /// through (`api/nonce_log.rs`).
+    ///
+    /// That file is written on every authenticated request, so its bytes
+    /// cannot wait for the journal's next survey and cannot be counted by
+    /// taking the journal's mutex per request either. It owns its number and
+    /// publishes it here.
+    pub(crate) fn nonce_bytes(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.journal().nonce_bytes()
+    }
+
+    /// The kind of the failure that faulted the journal, if it is faulted.
+    ///
+    /// A faulted journal takes no more frames until a restart replays and
+    /// truncates its tail, so readiness must answer false while it is set:
+    /// the volumes can still take a probe write on a server that can no
+    /// longer acknowledge anything (AGENTS.md requirement 7).
+    pub fn journal_faulted(&self) -> Option<std::io::ErrorKind> {
+        self.journal().faulted()
+    }
+
+    /// The kind of the failure that refused the journal's last survey, if its
+    /// usage figure has not been re-read successfully since.
+    ///
+    /// Read-only: what readiness reports once [`Store::verify_journal_usage`]
+    /// has had its attempt, and what the dashboard shows beside the figure.
+    pub fn journal_usage_unverified(&self) -> Option<std::io::ErrorKind> {
+        self.journal().unverified()
+    }
+
+    /// Re-survey the journal volume IF its usage is unverified, and say
+    /// whether it is verified now.
+    ///
+    /// The recovery path that needs no write. A journal whose survey was
+    /// refused admits nothing until a survey succeeds, and until this exists
+    /// the only thing that could retry that survey was an append -- so an
+    /// operator who fixed the volume had no way to see the server come back
+    /// except by sending a write and watching it be accepted. Readiness calls
+    /// this, so a fixed volume shows up as `200` on the next probe.
+    ///
+    /// A no-op when the usage is verified, which is the ordinary case: this
+    /// is on an unauthenticated path, and it may not walk the volume on every
+    /// probe. When it does walk, the readiness cache bounds how often, and
+    /// only a COMPLETE survey clears the state.
+    pub fn verify_journal_usage(&self) -> Result<(), std::io::ErrorKind> {
+        let mut journal = self.journal();
+        if journal.unverified().is_none() {
+            return Ok(());
+        }
+        let outcome = journal.resurvey("readiness");
+        match outcome {
+            Ok(()) => Ok(()),
+            // The kind the survey recorded, which is the one that refused the
+            // walk just now rather than whatever refused an earlier one.
+            Err(_) => Err(journal.unverified().unwrap_or(std::io::ErrorKind::Other)),
+        }
+    }
+
+    /// Whether this store's journal mutex is currently held.
+    ///
+    /// Tests only, and true of a caller that holds it itself: `Mutex` is not
+    /// reentrant, so a `try_lock` from inside a guarded region fails. That is
+    /// what makes it a proof that a region spans what it claims to.
+    #[cfg(test)]
+    pub(crate) fn journal_guard_held(&self) -> bool {
+        self.journal.try_lock().is_err()
+    }
+
     /// Arm a crash point. Tests only.
     #[cfg(test)]
     pub(crate) fn set_fault(&self, fault: Fault) {
@@ -999,7 +1185,7 @@ impl Store {
 /// Append a frame at the next sequence and apply it to the index.
 ///
 /// Journal first, index second, always: the index may only hold what the
-/// journal already made durable (docs/storage.md, durability rule 4).
+/// journal already made durable (docs/storage.md, durability rule 6).
 fn append(
     journal: &mut Journal,
     index: &mut Index,
@@ -1048,10 +1234,16 @@ pub(crate) fn version_id_of(
 /// cannot (requirement 6, `Val::io`).
 pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
     match e {
-        StoreError::VolumeFull { free, watermark } => vec![
+        StoreError::VolumeFull { free, watermark }
+        | StoreError::JournalFull { free, watermark } => vec![
             ("free", Val::bytes(*free)),
             ("watermark", Val::bytes(*watermark)),
         ],
+        StoreError::JournalFaulted { io, rollback_io } => vec![
+            ("io", Val::io_kind(*io)),
+            ("rollback_io", Val::io_kind(*rollback_io)),
+        ],
+        StoreError::JournalUnverified { io } => vec![("io", Val::io_kind(*io))],
         StoreError::QuotaExceeded { used, quota } => {
             vec![("used", Val::bytes(*used)), ("quota", Val::bytes(*quota))]
         }
@@ -1073,29 +1265,21 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
     }
 }
 
+/// The bytes a name holds right now, or zero if nothing is there.
+///
+/// Zero rather than an error because this only ever feeds an accounting
+/// update: a name with nothing at it contributes nothing, which is the same
+/// answer either way.
+fn name_bytes(path: &Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |m| m.len())
+}
+
 /// Random bytes from the kernel. The one source of randomness in the server.
 fn random_bytes<const N: usize>() -> Result<[u8; N], StoreError> {
     let mut file = File::open("/dev/urandom")?;
     let mut out = [0u8; N];
     file.read_exact(&mut out)?;
     Ok(out)
-}
-
-/// Bytes occupied under a directory, for volume usage.
-fn dir_bytes(dir: &Path) -> u64 {
-    let mut total = 0;
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            total += dir_bytes(&path);
-        } else if let Ok(meta) = entry.metadata() {
-            total += meta.len();
-        }
-    }
-    total
 }
 
 /// The name of the lock file on the journal root.
