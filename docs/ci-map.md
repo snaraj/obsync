@@ -81,6 +81,36 @@ javascript-only was needed. `javascript-typescript` is that file's alias for
 Neither job needs a toolchain step, because build-mode `none` extracts from
 source.
 
+A third job, `dispositions`, decides what happens to the alerts those two
+produce. It needs `analyze`, holds `contents: read` and `security-events:
+write`, and runs on the pull request, on the main push, and on the weekly
+schedule alike.
+
+| Step | What it enforces |
+| --- | --- |
+| Wait for GitHub to index both analyses | Both SARIF uploads reach `processing_status: complete` (600 s budget, 15 s interval) before anything is judged. `analyze` returns when the SARIF is UPLOADED; a listing taken before indexing is empty, so without this step "no uncovered alert" would mean "no alert had arrived yet" and the job would pass on a finding nobody has seen. A `failed` upload or an exhausted budget is a refusal. |
+| List the open alerts on the analysed ref | `refs/pull/<n>/merge` on a pull request, `refs/heads/main` otherwise, paginated and slurped into ONE array, plus `git ls-files` as the tracked set. |
+| Validate the disposition file | `security/codeql-dispositions.json` parses closed: known keys only, an exact rule id, a glob with at least one literal segment that matches a tracked file, one of CodeQL's three reasons, a single-line comment whose composition with its disposition URL still fits GitHub's 280 characters, and no `used in tests` entry over product code. |
+| Refuse any open alert no disposition covers | **The gate.** Every open alert is classified covered or uncovered by rule, glob, and scope — `line_contains` reads the line CodeQL actually flagged; `within: test-module` accepts only a Rust line at or after the file's `#[cfg(test)]` marker. Any uncovered alert fails the job and is named. No `if:`: it runs on the pull request and on main alike. |
+| Dismiss every covered alert and require main to hold none | `push` only. Dismisses each covered alert through the API with the entry's reason and `"<comment> Disposition: <issue url>"`, then re-lists open alerts on main and fails, naming them, if any remain. |
+
+The invariant is that **`main` holds zero open code-scanning alerts**, enforced
+rather than checked, and the only way an alert goes quiet is a fix or a
+disposition entry that arrived through a reviewed PR carrying its own issue.
+Nothing is excluded from analysis — no `query-filters`, no `paths-ignore`, no
+`config-file` — so accepting a finding is always a written reason, never a
+narrower scan. An entry that matched no alert in a listing is reported as
+`stale`, informational: on a pull-request ref, where the alerts a disposition
+covers are normally already dismissed, every entry reports stale.
+
+Adding a disposition: open an issue that carries the reasoning, then a PR that
+adds one entry naming that issue as its `disposition`, with the narrowest glob
+and scope that cover the alert. `scripts/ci/codeql_dispositions.py` is offline
+and unit-tested; the workflow does the `gh api` I/O and the script decides.
+`dispositions` is in the CodeQL inventory `release_contract.py` authorizes a
+release against, so a version whose alerts were never judged cannot be
+published.
+
 Cancellation is guarded to pull requests only. The weekly schedule resolves to
 the default branch's head SHA, which is the concurrency group of a push run
 still analysing that same commit; cancelling it would leave that version
@@ -152,9 +182,15 @@ analyze (rust, none)
 application
 chart
 container
+dispositions
 gate
 security
 ```
+
+`dispositions` is new in v0.1.6 and the owner must add that context to the
+`Protect-Main` ruleset: `release_contract.py settings-preflight` compares the
+ruleset against `REQUIRED_STATUS_CHECKS`, and until the context is entered a
+PR can merge without the alerts on its ref having been judged.
 
 ## Zero-spend guardrails
 

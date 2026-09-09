@@ -1,0 +1,40 @@
+[
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/obsyncd/src/storage/mod.rs",
+    "line_contains": "WRAP_SALT",
+    "reason": "false positive",
+    "comment": "HKDF domain-separation label (docs/architecture.md 3.6); the secret is the input keying material, the salt is public by definition (RFC 5869 3.1)",
+    "disposition": "https://github.com/snaraj/obsync/issues/20"
+  },
+  {
+    "rule": "js/incomplete-url-substring-sanitization",
+    "path": "plugin/test/**",
+    "reason": "used in tests",
+    "comment": "test assertion on a string constant in the built bundle; no request is made from it",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/**/*.rs",
+    "within": "test-module",
+    "reason": "used in tests",
+    "comment": "test vector inside a #[cfg(test)] module",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/**/*.rs",
+    "within": "test-module",
+    "reason": "used in tests",
+    "comment": "test-only logging of synthetic values inside a #[cfg(test)] module",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/hard-coded-cryptographic-value",
+    "path": "crates/**/*_test.rs",
+    "reason": "used in tests",
+    "comment": "test vector in a whole-file test module, declared `#[cfg(test)] mod <name>_test;` by its parent and compiled into no shipped binary",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
+  }
+]

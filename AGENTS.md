@@ -236,6 +236,19 @@ leaves draft. Review depth is risk-based:
 - **Docs, comments, formatting** (requirement 10's no-artifact class) run
   the relevant checks; review is the coordinator's routing decision.
 
+**Code-scanning dispositions.** A CodeQL alert is resolved in exactly two
+ways: the finding is fixed, or a reviewed entry in
+`security/codeql-dispositions.json` accepts it with a rule, a scope, one of
+CodeQL's three reasons, the sentence the dismissal will carry, and the issue
+holding the reasoning. The `dispositions` job fails any PR whose ref carries an
+open alert no entry covers, and on `main` it dismisses every covered alert and
+then requires main to hold zero open alerts, which is a gate invariant rather
+than a habit. Nothing is excluded from analysis: no `query-filters`, no
+`paths-ignore`, no `config-file`. Dismissing an alert by hand — in the UI or
+through the API — is forbidden for everyone, the owner included, because a hand
+dismissal is unreviewed, absent from this repository, and invisible to the next
+reader.
+
 **Reviewer independence** is established by the POSTING ACTOR: a verdict
 receipt is posted by the `snaraj-agent-reviews[bot]` GitHub App, a principal
 granted Contents write in no repository. The signature line is lane

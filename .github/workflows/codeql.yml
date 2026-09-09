@@ -29,6 +29,14 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    # One output per language rather than one shared key: matrix legs merge
+    # their outputs into the same map, so two legs writing the SAME key would
+    # leave whichever finished last. The `dispositions` job refuses an empty id
+    # rather than judging alerts from an analysis it cannot prove was indexed,
+    # so the failure direction if a leg ever writes nothing is red.
+    outputs:
+      sarif-id-rust: ${{ steps.record.outputs.sarif-id-rust }}
+      sarif-id-javascript-typescript: ${{ steps.record.outputs.sarif-id-javascript-typescript }}
     strategy:
       fail-fast: false
       matrix:
@@ -56,4 +64,169 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
       - name: Analyze
+        id: analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - name: Record the SARIF id this analysis uploaded
+        id: record
+        env:
+          LANGUAGE: ${{ matrix.language }}
+          SARIF_ID: ${{ steps.analyze.outputs.sarif-id }}
+        run: |
+          set -euo pipefail
+          test -n "${SARIF_ID}"
+          printf 'sarif-id-%s=%s\n' "${LANGUAGE}" "${SARIF_ID}" >> "${GITHUB_OUTPUT}"
+          printf 'dispositions: uploaded language=%s sarif_id=%s\n' "${LANGUAGE}" "${SARIF_ID}"
+
+  # Dispositions as code (issue #22). CodeQL keeps scanning everything -- there
+  # is no `query-filters`, no `paths-ignore` and no `config-file` above, and
+  # adding one would be excluding code from analysis rather than accepting a
+  # finding. What is accepted is accepted in the tree, in
+  # security/codeql-dispositions.json, reviewed like every other change, and
+  # this job is what makes that file the ONLY way an alert goes quiet:
+  #
+  #   on a pull request  an open alert no entry covers fails the job by name,
+  #                      so a new real finding blocks the gate and the release
+  #                      chain until it is fixed or dispositioned;
+  #   on a push to main  every covered alert is dismissed through the API with
+  #                      the entry's reason and comment, and main is then
+  #                      required to hold zero open alerts.
+  #
+  # Nobody dismisses by hand, including the owner: a hand dismissal is
+  # unreviewed, unrecorded here, and invisible to the next reader.
+  dispositions:
+    needs: analyze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Wait for GitHub to index both analyses
+        # WITHOUT THIS STEP THE WHOLE JOB PASSES VACUOUSLY. `analyze` returns
+        # when the SARIF is UPLOADED; the alerts appear only once GitHub has
+        # processed it. A listing taken before that is empty, every entry looks
+        # stale, and "no uncovered alert" means "no alert had arrived yet" --
+        # green on a finding nobody has seen. So both uploads must reach
+        # processing_status `complete` before anything is judged, and a
+        # `failed` upload or an exhausted budget is a refusal, never a pass.
+        env:
+          SARIF_ID_RUST: ${{ needs.analyze.outputs.sarif-id-rust }}
+          SARIF_ID_JAVASCRIPT_TYPESCRIPT: ${{ needs.analyze.outputs.sarif-id-javascript-typescript }}
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          budget=600
+          interval=15
+          printf 'dispositions: START step=wait-for-indexing budget=%ds interval=%ds\n' "${budget}" "${interval}"
+          for language in rust javascript-typescript; do
+            case "${language}" in
+              rust) sarif_id="${SARIF_ID_RUST}" ;;
+              *) sarif_id="${SARIF_ID_JAVASCRIPT_TYPESCRIPT}" ;;
+            esac
+            if [ -z "${sarif_id}" ]; then
+              printf 'dispositions: DENY analysis not indexed; alerts cannot be judged (%s recorded no SARIF id)\n' "${language}" >&2
+              exit 1
+            fi
+            attempt=0
+            while :; do
+              status="$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/sarifs/${sarif_id}" --jq '.processing_status')"
+              if [ "${status}" = complete ]; then
+                printf 'dispositions: indexed language=%s attempts=%d elapsed=%ds\n' "${language}" "$(( attempt + 1 ))" "$(( SECONDS - started ))"
+                break
+              fi
+              if [ "${status}" = failed ]; then
+                printf 'dispositions: DENY analysis not indexed; alerts cannot be judged (%s processing status %s)\n' "${language}" "${status}" >&2
+                exit 1
+              fi
+              attempt=$(( attempt + 1 ))
+              if [ "${attempt}" -ge "$(( budget / interval ))" ] || [ "$(( SECONDS - started ))" -ge "${budget}" ]; then
+                printf 'dispositions: DENY analysis not indexed; alerts cannot be judged (%s still %s after %d attempts)\n' "${language}" "${status}" "${attempt}" >&2
+                exit 1
+              fi
+              sleep "${interval}"
+            done
+          done
+          printf 'dispositions: DONE step=wait-for-indexing duration=%ds decision=indexed\n' "$(( SECONDS - started ))"
+      - name: List the open alerts on the analysed ref
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
+            test -n "${PR_NUMBER}"
+            ref="refs/pull/${PR_NUMBER}/merge"
+          else
+            ref="refs/heads/main"
+          fi
+          printf 'dispositions: START step=list-open-alerts event=%s ref=%s\n' "${GITHUB_EVENT_NAME}" "${ref}"
+          printf '%s\n' "${ref}" > "${RUNNER_TEMP}/alerts-ref.txt"
+          git ls-files > "${RUNNER_TEMP}/tracked.txt"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${ref}&per_page=100" --jq '.[]' | jq -s . > "${RUNNER_TEMP}/alerts.json"
+          printf 'dispositions: DONE step=list-open-alerts ref=%s alerts=%s duration=%ds\n' "${ref}" "$(jq length "${RUNNER_TEMP}/alerts.json")" "$(( SECONDS - started ))"
+      - name: Validate the disposition file
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          printf 'dispositions: START step=validate-dispositions file=security/codeql-dispositions.json\n'
+          python3 -I -B scripts/ci/codeql_dispositions.py validate \
+            --dispositions security/codeql-dispositions.json \
+            --tracked "${RUNNER_TEMP}/tracked.txt"
+          printf 'dispositions: DONE step=validate-dispositions duration=%ds decision=valid\n' "$(( SECONDS - started ))"
+      - name: Refuse any open alert no disposition covers
+        # No `if:`. This is the gate, and it runs on the pull request and on
+        # main alike: a guard here would be the difference between a finding
+        # that blocks a merge and one that lands.
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          ref="$(cat "${RUNNER_TEMP}/alerts-ref.txt")"
+          printf 'dispositions: START step=check-coverage ref=%s\n' "${ref}"
+          python3 -I -B scripts/ci/codeql_dispositions.py check \
+            --dispositions security/codeql-dispositions.json \
+            --alerts "${RUNNER_TEMP}/alerts.json" \
+            --tree . \
+            --tracked "${RUNNER_TEMP}/tracked.txt" \
+            --ref "${ref}"
+          printf 'dispositions: DONE step=check-coverage ref=%s duration=%ds decision=covered\n' "${ref}" "$(( SECONDS - started ))"
+      - name: Dismiss every covered alert and require main to hold none
+        # Push only: a pull request must never mutate the repository's alert
+        # state, and the merge commit's own ref is not where the invariant
+        # lives. `check` above has already refused an uncovered alert, so the
+        # plan this executes can only name alerts an entry covers.
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          started="${SECONDS}"
+          printf 'dispositions: START step=dismiss-covered ref=refs/heads/main\n'
+          plan="${RUNNER_TEMP}/plan.jsonl"
+          python3 -I -B scripts/ci/codeql_dispositions.py plan \
+            --dispositions security/codeql-dispositions.json \
+            --alerts "${RUNNER_TEMP}/alerts.json" \
+            --tree . \
+            --tracked "${RUNNER_TEMP}/tracked.txt" > "${plan}"
+          dismissed=0
+          while IFS= read -r entry; do
+            number="$(jq -r .number <<<"${entry}")"
+            reason="$(jq -r .reason <<<"${entry}")"
+            comment="$(jq -r .comment <<<"${entry}")"
+            disposition="$(jq -r .disposition <<<"${entry}")"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" \
+              -f state=dismissed \
+              -f dismissed_reason="${reason}" \
+              -f dismissed_comment="${comment} Disposition: ${disposition}" > /dev/null
+            dismissed=$(( dismissed + 1 ))
+            printf 'dispositions: dismissed alert=%s reason=%s disposition=%s\n' "${number}" "${reason}" "${disposition}"
+          done < "${plan}"
+          remaining="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" --jq '.[] | "#\(.number) \(.rule.id) \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"')"
+          if [ -n "${remaining}" ]; then
+            printf 'dispositions: DENY main still holds open code-scanning alerts:\n%s\n' "${remaining}" >&2
+            exit 1
+          fi
+          printf 'dispositions: DONE step=dismiss-covered dismissed=%d remaining=0 duration=%ds decision=pass\n' "${dismissed}" "$(( SECONDS - started ))"
