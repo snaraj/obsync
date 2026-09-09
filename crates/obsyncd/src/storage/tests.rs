@@ -1647,6 +1647,99 @@ fn the_journal_guard_spans_the_quarantine_move() {
 }
 
 #[test]
+fn a_second_quarantine_of_the_same_sid_is_accounted_through_the_store() {
+    // The replacement case, driven through `Store::repair` rather than
+    // through `Journal::quarantined` directly. That distinction is the whole
+    // test: the unit-level one exercises the arithmetic, and leaves the
+    // STORE free to hand it a wrong `was` -- substituting zero for the
+    // destination's pre-move size survives it, because it never runs.
+    //
+    // Two rounds, and the second must land while the segment is already open
+    // so that nothing re-surveys and conceals the delta.
+    let dir = TempDir::new("store-quarantine-replace-live");
+    let cfg = config(&dir);
+    let big = vec![b'x'; 4096];
+    let sid = Sid::new(sha256(&big));
+
+    // Round one: a 4 KiB chunk rots at its own length and is quarantined.
+    {
+        let setup = ready(&cfg);
+        put(&setup, &big);
+        fs::write(setup.store.blobs.path(&sid), vec![b'r'; 4096]).expect("rot, same length");
+    }
+    let first_quarantine = {
+        let store = ready_existing(&cfg);
+        assert_eq!(
+            store.scrub_step(1 << 20).quarantined,
+            vec![sid],
+            "round one"
+        );
+        // The same chunk uploaded again -- the content hashes to the same
+        // sid, so this is the same name -- and rotted to a DIFFERENT length.
+        let account = store.account().expect("account").account_id;
+        store
+            .put_chunk(&account, &sid, big.len() as u64, &mut &big[..])
+            .expect("the chunk lands again");
+        fs::write(store.blobs.path(&sid), vec![b'r'; 100]).expect("rot, shorter this time");
+        quarantine_bytes(&cfg)
+    };
+
+    // Round two, on a store that has surveyed the 4 KiB quarantine at open
+    // and then opened its segment with an ordinary write.
+    let store = ready_existing(&cfg);
+    let device = store.devices()[0].device_id;
+    store
+        .update_device(&device, Some("open the segment".to_string()), None, None)
+        .expect("an ordinary write opens the segment");
+    let before = journal_used(&store);
+    assert_eq!(
+        before,
+        journal_root_bytes(&cfg),
+        "current before the replacement"
+    );
+
+    assert_eq!(
+        store.scrub_step(1 << 20).quarantined,
+        vec![sid],
+        "round two"
+    );
+    let quarantined = cfg.journal_dir.join("v1/quarantine").join(sid.to_string());
+    assert_eq!(
+        fs::metadata(&quarantined).expect("the quarantine").len(),
+        100,
+        "the shorter file replaced the longer one at the same name"
+    );
+    assert_eq!(
+        journal_used(&store),
+        journal_root_bytes(&cfg),
+        "and the accounting is the volume's own after a replacement"
+    );
+    // And the difference is where it should be. The whole-volume total also
+    // moves with the frames this round journalled, so the quarantine's own
+    // bytes are measured on their own: 4096 out, 100 in. Together with the
+    // equality above that pins the accounting to new MINUS old -- a
+    // replacement counted as an addition leaves the total 4096 too high,
+    // which the walk equality refuses.
+    assert_eq!(
+        (first_quarantine, quarantine_bytes(&cfg)),
+        (4096, 100),
+        "the quarantine holds the replacement and not both"
+    );
+}
+
+/// Bytes the quarantine directory holds, walked independently.
+fn quarantine_bytes(cfg: &StorageConfig) -> u64 {
+    let dir = cfg.journal_dir.join("v1/quarantine");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| e.metadata().expect("metadata").len())
+        .sum()
+}
+
+#[test]
 fn the_scrub_repairs_from_a_mirror_and_quarantines_what_it_cannot() {
     let dir = TempDir::new("store-scrub");
     let mut cfg = config(&dir);
