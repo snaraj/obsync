@@ -97,8 +97,32 @@ deny() {
         "${name}" >&2 || true
     fi
   done
+  # SPACE, which the server's own account cannot give. A volume with no room
+  # left refuses every write the start makes and exits `refusal=io_error`;
+  # so does a mount owned by somebody else. The log now names the kind
+  # (issue #19) and this names the number behind `StorageFull`: how much room
+  # the two volumes have, read from INSIDE them because the obsync image is
+  # distroless and carries no `df`, and how much the daemon itself is holding,
+  # because the volumes live in its filesystem and it is the one that ran out.
+  # Every command here is best-effort: the account of a refusal must never
+  # become a second refusal that hides the first.
+  printf 'image-smoke: --- volume space ---\n' >&2
+  docker run --rm --user 0 \
+    --volume "${blobs_volume}:/data/blobs" \
+    --volume "${journal_volume}:/data/journal" \
+    "${throwaway}" df -h /data/blobs /data/journal >&2 2>&1 || true
+  printf 'image-smoke: --- docker system df ---\n' >&2
+  docker system df >&2 2>&1 || true
   exit 1
 }
+
+# The throwaway that reads the volumes from inside: the compose path's own
+# digest-pinned terminator image. It has a shell and coreutils, the compose
+# smoke in the same job has already pulled it, and it is pinned by digest
+# there. Resolved HERE, beside the volume names, because `deny` reads both and
+# `deny` can fire from the first assertion onwards; property (6) below uses
+# the same value to weaken and re-read the volumes.
+throwaway="$(awk '$1 == "image:" && $2 ~ /^docker\.io\/library\/caddy@sha256:/ { print $2; exit }' deploy/compose/docker-compose.yml)"
 
 cleanup() {
   local status=$?
@@ -107,6 +131,9 @@ cleanup() {
   return "${status}"
 }
 trap cleanup EXIT
+
+[ -n "${throwaway}" ] \
+  || deny 'no digest-pinned throwaway image in deploy/compose/docker-compose.yml to read the volumes with'
 
 printf 'image-smoke: START image=%s ready_budget=%ds volumes=%s,%s\n' \
   "${image}" "${READY_BUDGET_SECONDS}" "${blobs_volume}" "${journal_volume}"
@@ -223,13 +250,8 @@ prove "hardening: the whole run was ${hardening}"
 # back at the required mode. Properties 1-5 keep their fresh-volume meaning
 # because this runs after them.
 #
-# The throwaway that weakens the files is the compose path's own pinned
-# terminator image: it has a shell and coreutils, it is already pulled by the
-# compose smoke in the same job, and it is pinned by digest there. The obsync
-# image is distroless and has neither.
-throwaway="$(awk '$1 == "image:" && $2 ~ /^docker\.io\/library\/caddy@sha256:/ { print $2; exit }' deploy/compose/docker-compose.yml)"
-[ -n "${throwaway}" ] \
-  || deny 'no digest-pinned throwaway image in deploy/compose/docker-compose.yml to weaken the volumes with'
+# The throwaway that weakens the files is the one resolved at the top, beside
+# the volume names.
 weakened="$(docker run --rm --user 0 \
   --volume "${blobs_volume}:/data/blobs" \
   --volume "${journal_volume}:/data/journal" \
