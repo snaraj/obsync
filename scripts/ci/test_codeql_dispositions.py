@@ -849,17 +849,42 @@ class CommandDecisions(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"was analysed on {PR_REF}", err)
 
-    def test_check_reports_drift_on_a_covered_dismissed_alert_without_failing(self):
+    def test_check_reports_drift_naming_the_fields_that_differ(self):
+        # The line has to say WHICH field drifted. Printing the reason alone
+        # made all 78 of main's records read `reason='used in tests'
+        # expected='used in tests'` -- a contradiction, because what differed
+        # was the comment.
+        record = entry()
+        stored_comment = "a sentence somebody typed into the UI"
+        for stored, fields, shows_reason in (
+            ({"dismissed_reason": "won't fix"}, "reason", True),
+            ({"dismissed_comment": stored_comment}, "comment", False),
+            ({"dismissed_reason": "won't fix", "dismissed_comment": stored_comment},
+             "reason,comment", True),
+        ):
+            with self.subTest(fields=fields):
+                code, out, _ = self.check(
+                    [record], [dismissed(81, record, line=2, **stored)], states="open,dismissed"
+                )
+                self.assertEqual(code, 0)
+                self.assertIn("covered #81", out)
+                self.assertIn(f"drift #81 entry=0 fields={fields}", out)
+                self.assertIn("drift=1", out)
+                # The stored comment is a whole sentence and never printed.
+                self.assertNotIn(stored_comment, out)
+                if shows_reason:
+                    self.assertIn("reason=\"won't fix\" expected='false positive'", out)
+                else:
+                    self.assertNotIn("expected=", out)
+
+    def test_check_reports_no_drift_when_the_record_already_agrees(self):
         record = entry()
         code, out, _ = self.check(
-            [record],
-            [dismissed(81, record, line=2, dismissed_reason="won't fix")],
-            states="open,dismissed",
+            [record], [dismissed(81, record, line=2)], states="open,dismissed"
         )
         self.assertEqual(code, 0)
-        self.assertIn("covered #81", out)
-        self.assertIn("drift #81 entry=0 reason=\"won't fix\" expected='false positive'", out)
-        self.assertIn("drift=1", out)
+        self.assertNotIn("drift #81", out)
+        self.assertIn("drift=0", out)
 
     def test_check_fails_on_a_dismissed_alert_no_entry_covers(self):
         # The base check's whole purpose: an acceptance the branch already
