@@ -35,10 +35,12 @@ inside the tree it was given.
 WHY THE SCOPES ARE NARROW. `line_contains` pins a disposition to the source
 line CodeQL actually flagged, so an entry over `storage/mod.rs` stops covering
 anything the moment the salt constant it names moves away from the alert.
-`within: test-module` covers a Rust file's `#[cfg(test)]` tail and nothing
-above it, so a test vector is dismissible and the same rule firing on product
-code in the same file is not. `used in tests` is refused outright over product
-code: the reason has to be true.
+`within: test-module` covers a Rust file's TRAILING `#[cfg(test)] mod` and
+nothing above it -- never merely the first `#[cfg(test)]`, which in this
+codebase sits on a fake clock at `api/auth.rs:59` -- so a test vector is
+dismissible and the same rule firing on product code in the same file is not.
+`used in tests` is refused outright over product code: the reason has to be
+true.
 
 Standard library only (requirement 5); no network, no environment reads, no
 clock. Refusals are `Refusal` exceptions carrying one sentence.
@@ -350,10 +352,60 @@ class Tree:
             return None
 
 
+def _next_content_line(lines: list[str], after: int) -> int | None:
+    for number in range(after + 1, len(lines) + 1):
+        if lines[number - 1].strip():
+            return number
+    return None
+
+
+def _closing_brace(lines: list[str], opened: int) -> int | None:
+    """The first top-level `}` after `opened`, in a file `cargo fmt` accepts."""
+    for number in range(opened + 1, len(lines) + 1):
+        if lines[number - 1].rstrip() == "}":
+            return number
+    return None
+
+
+def _only_trailing_comments(lines: list[str], after: int) -> bool:
+    return all(not line.strip() or line.strip().startswith("//") for line in lines[after:])
+
+
 def test_module_line(lines: list[str]) -> int | None:
-    """The 1-based line of the file's first `#[cfg(test)]` marker."""
+    """The 1-based line where the file's `#[cfg(test)]` MODULE opens.
+
+    NOT "the first `#[cfg(test)]` in the file". This codebase puts that
+    attribute on early items -- a fake clock at `api/auth.rs:59`, a helper
+    `fn dev` in `api/pairing.rs`, a fault enum and two `impl Store` blocks in
+    `storage/mod.rs` -- so a first-marker rule would declare everything below
+    line 59 of auth.rs "inside the test module" and a hard-coded value in
+    PRODUCT code at line 400 would be dismissible as a test vector. That is the
+    scope silently covering the thing it exists to exclude.
+
+    So the scope opens only where the test tail actually begins: a `#[cfg(test)]`
+    at top level whose next non-blank line is a top-level `mod ...`, and only
+    when that module is the LAST top-level item in the file -- after its closing
+    brace (or its `;`) nothing but blank lines and comments follow. An attribute
+    on any other item opens nothing, a `mod` that is not last opens nothing, and
+    a file with no qualifying module has no test tail at all. Every rejection
+    leaves alerts UNCOVERED, so the failure direction is a red gate.
+    """
     for number, line in enumerate(lines, start=1):
-        if line.strip().startswith(TEST_MODULE_MARKER):
+        if line.rstrip() != TEST_MODULE_MARKER:
+            continue
+        following = _next_content_line(lines, number)
+        if following is None:
+            continue
+        declaration = lines[following - 1].rstrip()
+        if not declaration.startswith("mod "):
+            continue
+        if declaration.endswith(";"):
+            end: int | None = following
+        elif declaration.endswith("{"):
+            end = _closing_brace(lines, following)
+        else:
+            end = None
+        if end is not None and _only_trailing_comments(lines, end):
             return number
     return None
 

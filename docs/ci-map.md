@@ -91,7 +91,7 @@ schedule alike.
 | Wait for GitHub to index both analyses | Both SARIF uploads reach `processing_status: complete` (600 s budget, 15 s interval) before anything is judged. `analyze` returns when the SARIF is UPLOADED; a listing taken before indexing is empty, so without this step "no uncovered alert" would mean "no alert had arrived yet" and the job would pass on a finding nobody has seen. A `failed` upload or an exhausted budget is a refusal. |
 | List the open alerts on the analysed ref | `refs/pull/<n>/merge` on a pull request, `refs/heads/main` otherwise, paginated and slurped into ONE array, plus `git ls-files` as the tracked set. |
 | Validate the disposition file | `security/codeql-dispositions.json` parses closed: known keys only, an exact rule id, a glob with at least one literal segment that matches a tracked file, one of CodeQL's three reasons, a single-line comment whose composition with its disposition URL still fits GitHub's 280 characters, and no `used in tests` entry over product code. |
-| Refuse any open alert no disposition covers | **The gate.** Every open alert is classified covered or uncovered by rule, glob, and scope — `line_contains` reads the line CodeQL actually flagged; `within: test-module` accepts only a Rust line at or after the file's `#[cfg(test)]` marker. Any uncovered alert fails the job and is named. No `if:`: it runs on the pull request and on main alike. |
+| Refuse any open alert no disposition covers | **The gate.** Every open alert is classified covered or uncovered by rule, glob, and scope — `line_contains` reads the line CodeQL actually flagged; `within: test-module` accepts only a Rust line at or after the file's TRAILING test module, which is a top-level `#[cfg(test)]` whose next line opens a `mod` that is the file's last top-level item. An attribute on any other item opens nothing: `api/auth.rs` carries `#[cfg(test)]` on a fake clock at line 59 and opens its module at 464, and reading the first attribute as the marker would make every product line below 59 dismissible as a test vector. Any uncovered alert fails the job and is named. No `if:`: it runs on the pull request and on main alike. |
 | Dismiss every covered alert and require main to hold none | `push` only. Dismisses each covered alert through the API with the entry's reason and `"<comment> Disposition: <issue url>"`, then re-lists open alerts on main and fails, naming them, if any remain. |
 
 The invariant is that **`main` holds zero open code-scanning alerts**, enforced
@@ -187,10 +187,16 @@ gate
 security
 ```
 
-`dispositions` is new in v0.1.6 and the owner must add that context to the
-`Protect-Main` ruleset: `release_contract.py settings-preflight` compares the
-ruleset against `REQUIRED_STATUS_CHECKS`, and until the context is entered a
-PR can merge without the alerts on its ref having been judged.
+`dispositions` is new in v0.1.6, and the ORDER of adding it to `Protect-Main`
+matters. The context is entered into the ruleset only AFTER the train that
+introduces the job has merged: a required context that no run reports blocks
+every pull request, and a pull request whose base predates the workflow change
+cannot report it. So the sequence is (1) merge this train, (2) the owner adds
+`dispositions` to the ruleset, (3) `release_contract.py settings-preflight`
+agrees with `REQUIRED_STATUS_CHECKS` again. Between (1) and (2) the job still
+runs and still fails on an uncovered alert on every pull request that carries
+the workflow; what is missing is only the ruleset's refusal to merge around a
+red one.
 
 ## Zero-spend guardrails
 

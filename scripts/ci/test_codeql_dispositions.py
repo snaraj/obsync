@@ -393,6 +393,151 @@ class SyntheticTree(unittest.TestCase):
                 self.assertIn("will not read", str(caught.exception))
 
 
+class StrictTestModuleMarker(unittest.TestCase):
+    """The scope opens at the trailing `#[cfg(test)] mod`, not at any attribute.
+
+    This is the mistake the scope exists to not make. `api/auth.rs` puts
+    `#[cfg(test)]` on a fake clock at line 59 and opens its test module at 464;
+    `storage/mod.rs` carries the attribute on a fault enum, on a method, and on
+    two `impl Store` blocks, and declares `mod tests;` near the top. Reading
+    "the first `#[cfg(test)]`" as the marker would make every product line
+    below it dismissible as a test vector -- the scope silently covering the
+    thing it exists to exclude.
+    """
+
+    # An early attribute on a product item, product code below it, and the real
+    # test module at the end. Line 4 is the attribute, 5 the struct, 8 a
+    # product constant, 10 the module attribute, 11 the module.
+    EARLY_ATTRIBUTE = "\n".join(
+        [
+            "//! a module",                                  # 1
+            "use crate::x;",                                 # 2
+            "",                                              # 3
+            "#[cfg(test)]",                                  # 4
+            "pub struct FakeClock;",                         # 5
+            "",                                              # 6
+            "/// product",                                   # 7
+            'const REAL_KEY: &[u8] = b"product";',           # 8
+            "",                                              # 9
+            "#[cfg(test)]",                                  # 10
+            "mod tests {",                                   # 11
+            '    const VECTOR: &str = "000102";',            # 12
+            "    fn t() {}",                                 # 13
+            "}",                                             # 14
+        ]
+    )
+    ONLY_ATTRIBUTE = "\n".join(
+        [
+            "#[cfg(test)]",                                  # 1
+            "pub struct FakeClock;",                         # 2
+            "",                                              # 3
+            'const REAL_KEY: &[u8] = b"product";',           # 4
+        ]
+    )
+    DECLARATION_NOT_LAST = "\n".join(
+        [
+            "#[cfg(test)]",                                  # 1
+            "mod tests;",                                    # 2
+            "",                                              # 3
+            'const REAL_KEY: &[u8] = b"product";',           # 4
+        ]
+    )
+    TRAILING_DECLARATION = "\n".join(
+        [
+            'const REAL_KEY: &[u8] = b"product";',           # 1
+            "",                                              # 2
+            "#[cfg(test)]",                                  # 3
+            "mod tests;",                                    # 4
+            "// nothing but comments after it",              # 5
+        ]
+    )
+    INDENTED_ATTRIBUTE = "\n".join(
+        [
+            "impl Clock {",                                  # 1
+            "    #[cfg(test)]",                              # 2
+            "    mod inner {}",                              # 3
+            "}",                                             # 4
+            'const REAL_KEY: &[u8] = b"product";',           # 5
+        ]
+    )
+    MODULE_THEN_MORE_CODE = "\n".join(
+        [
+            "#[cfg(test)]",                                  # 1
+            "mod tests {",                                   # 2
+            '    const VECTOR: &str = "0001";',              # 3
+            "}",                                             # 4
+            "",                                              # 5
+            'const REAL_KEY: &[u8] = b"product";',           # 6
+        ]
+    )
+
+    def marker(self, source: str) -> int | None:
+        return cd.test_module_line(source.splitlines())
+
+    def test_an_early_attribute_does_not_open_the_scope(self):
+        self.assertEqual(self.marker(self.EARLY_ATTRIBUTE), 10)
+
+    def test_a_file_whose_only_marker_is_an_attribute_opens_nothing(self):
+        for name in ("ONLY_ATTRIBUTE", "INDENTED_ATTRIBUTE"):
+            with self.subTest(source=name):
+                self.assertIsNone(self.marker(getattr(self, name)))
+
+    def test_a_module_that_is_not_the_last_top_level_item_opens_nothing(self):
+        for name in ("DECLARATION_NOT_LAST", "MODULE_THEN_MORE_CODE"):
+            with self.subTest(source=name):
+                self.assertIsNone(self.marker(getattr(self, name)))
+
+    def test_a_trailing_module_declaration_opens_the_scope(self):
+        self.assertEqual(self.marker(self.TRAILING_DECLARATION), 3)
+
+    def test_only_lines_inside_the_trailing_module_are_covered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "crates/obsyncd/src/api").mkdir(parents=True)
+            (root / "crates/obsyncd/src/api/auth.rs").write_text(
+                self.EARLY_ATTRIBUTE, encoding="utf-8"
+            )
+            tree = cd.Tree(root)
+            scoped = cd.load_entries(
+                [entry(path="crates/**/*.rs", within="test-module", reason="used in tests")],
+                TRACKED,
+            )[0]
+
+            def covered(line: int) -> bool:
+                hit = cd.load_alerts(
+                    [alert(path="crates/obsyncd/src/api/auth.rs", line=line)], cd.MAIN_REF
+                )[0]
+                return cd.covers(scoped, hit, tree)
+
+            # Between the early attribute and the module -- product code.
+            for line in (4, 5, 8, 9):
+                with self.subTest(line=line, expected="uncovered"):
+                    self.assertFalse(covered(line))
+            # The module and its body.
+            for line in (10, 11, 12, 13):
+                with self.subTest(line=line, expected="covered"):
+                    self.assertTrue(covered(line))
+
+    def test_a_file_with_no_trailing_module_covers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "crates/obsyncd/src/api").mkdir(parents=True)
+            (root / "crates/obsyncd/src/api/auth.rs").write_text(
+                self.ONLY_ATTRIBUTE, encoding="utf-8"
+            )
+            tree = cd.Tree(root)
+            scoped = cd.load_entries(
+                [entry(path="crates/**/*.rs", within="test-module", reason="used in tests")],
+                TRACKED,
+            )[0]
+            for line in (1, 2, 4):
+                with self.subTest(line=line):
+                    hit = cd.load_alerts(
+                        [alert(path="crates/obsyncd/src/api/auth.rs", line=line)], cd.MAIN_REF
+                    )[0]
+                    self.assertFalse(cd.covers(scoped, hit, tree))
+
+
 class CommandDecisions(unittest.TestCase):
     """`validate`, `check` and `plan` over files, with exit codes."""
 
@@ -637,6 +782,105 @@ class TheShippedFile(unittest.TestCase):
         hit = cd.load_alerts([alert(number=32, path=path, line=1)], cd.MAIN_REF)[0]
         covering = [e for e in self.entries if cd.covers(e, hit, self.tree)]
         self.assertEqual([e.reason for e in covering[:1]], ["used in tests"])
+
+    def test_the_scope_opens_below_the_early_attributes_in_the_shipped_tree(self):
+        # The property, not the line numbers: in every file the test-vector
+        # entry covers, the scope opens at the trailing test module, and in the
+        # two files that carry an early `#[cfg(test)]` on a product item it
+        # opens strictly below that attribute. `storage/mod.rs` declares
+        # `mod tests;` near the top and keeps going for a thousand lines, so it
+        # opens NO scope at all and its one alert is covered by the salt entry.
+        def markers(path: str) -> tuple[int | None, int | None]:
+            lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+            first = next(
+                (n for n, line in enumerate(lines, 1) if line.strip().startswith("#[cfg(test)]")),
+                None,
+            )
+            return cd.test_module_line(lines), first
+
+        for path in ("crates/obsyncd/src/api/auth.rs", "crates/obsyncd/src/api/pairing.rs"):
+            with self.subTest(path=path):
+                strict, first = markers(path)
+                self.assertIsNotNone(strict)
+                self.assertIsNotNone(first)
+                self.assertGreater(strict, first, "the scope must open below the early attribute")
+                opened = (ROOT / path).read_text(encoding="utf-8").splitlines()[strict]
+                self.assertTrue(opened.startswith("mod "), opened)
+        strict, first = markers("crates/obsync-core/src/hkdf.rs")
+        self.assertEqual(strict, first, "hkdf.rs opens with its test module")
+        self.assertIsNone(markers("crates/obsyncd/src/storage/mod.rs")[0])
+
+    def test_every_shipped_alert_class_is_covered_by_the_entry_that_claims_it(self):
+        # One synthetic alert per class the repository has actually produced,
+        # at a line located by content. `cli/check.rs` and `cli/export.rs` are
+        # PRODUCT code: their entries are `false positive` over the report
+        # printer, never `used in tests`.
+        def line_of(path: str, needle: str) -> int:
+            lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+            hits = [n for n, line in enumerate(lines, 1) if needle in line]
+            self.assertTrue(hits, f"{needle} not found in {path}")
+            return hits[0]
+
+        for rule, path, line, reason in (
+            (
+                CRYPTO_RULE,
+                "crates/obsyncd/src/storage/mod.rs",
+                line_of("crates/obsyncd/src/storage/mod.rs", "const WRAP_SALT"),
+                "false positive",
+            ),
+            (URL_RULE, "plugin/test/bundle.test.mjs", 1, "used in tests"),
+            (
+                CRYPTO_RULE,
+                "crates/obsyncd/src/api/auth.rs",
+                cd.test_module_line(
+                    (ROOT / "crates/obsyncd/src/api/auth.rs").read_text(encoding="utf-8").splitlines()
+                )
+                + 2,
+                "used in tests",
+            ),
+            (CRYPTO_RULE, "crates/obsyncd/src/api/server_test.rs", 1, "used in tests"),
+            (
+                LOGGING_RULE,
+                "crates/obsyncd/src/cli/check.rs",
+                line_of("crates/obsyncd/src/cli/check.rs", "chunks verified"),
+                "false positive",
+            ),
+            (
+                LOGGING_RULE,
+                "crates/obsyncd/src/cli/export.rs",
+                line_of("crates/obsyncd/src/cli/export.rs", "files written"),
+                "false positive",
+            ),
+        ):
+            with self.subTest(rule=rule, path=path):
+                hit = cd.load_alerts([alert(rule=rule, path=path, line=line)], cd.MAIN_REF)[0]
+                covering = [e for e in self.entries if cd.covers(e, hit, self.tree)]
+                self.assertTrue(covering, f"nothing covers {hit}")
+                self.assertEqual(covering[0].reason, reason)
+
+    def test_a_report_entry_covers_no_line_outside_the_report(self):
+        # `line_contains: "println!"` is only honest while every `println!` in
+        # those two files is the operator report. This is that claim, pinned:
+        # when it stops holding, the triage in issue #23 has to be redone.
+        for path, printer in (
+            ("crates/obsyncd/src/cli/check.rs", "impl CheckReport {"),
+            ("crates/obsyncd/src/cli/export.rs", "impl ExportReport {"),
+        ):
+            with self.subTest(path=path):
+                lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+                start = lines.index("    pub fn print(&self) {") + 1
+                self.assertIn(printer, lines)
+                end = next(n for n, line in enumerate(lines[start:], start + 1) if line == "    }")
+                printed = [n for n, line in enumerate(lines, 1) if "println!" in line]
+                self.assertTrue(printed)
+                self.assertEqual(
+                    [n for n in printed if not start <= n <= end],
+                    [],
+                    "every println! in this file must be inside the operator report",
+                )
+                # And a line that is not part of the report is not covered.
+                hit = cd.load_alerts([alert(rule=LOGGING_RULE, path=path, line=1)], cd.MAIN_REF)[0]
+                self.assertFalse(any(cd.covers(e, hit, self.tree) for e in self.entries))
 
     def test_no_shipped_entry_dismisses_product_code_as_used_in_tests(self):
         # The validator refuses it, and this is the same claim asserted over
@@ -1016,8 +1260,10 @@ class StepExecution(unittest.TestCase):
 
     def test_the_check_step_fails_the_job_on_one_uncovered_alert(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # A product-code logging alert in a file no entry names: exactly
+            # the new real finding this gate exists to stop.
             listing = self.covered_alerts() + [
-                alert(number=900, rule=LOGGING_RULE, path="crates/obsyncd/src/cli/check.rs", line=52)
+                alert(number=900, rule=LOGGING_RULE, path="crates/obsyncd/src/log.rs", line=1)
             ]
             env = self.stage(Path(tmp), alerts=listing)
             self.assertEqual(self.run_step(self.LIST, env).returncode, 0)

@@ -19,15 +19,7 @@
     "path": "crates/**/*.rs",
     "within": "test-module",
     "reason": "used in tests",
-    "comment": "test vector inside a #[cfg(test)] module",
-    "disposition": "https://github.com/snaraj/obsync/issues/22"
-  },
-  {
-    "rule": "rust/cleartext-logging",
-    "path": "crates/**/*.rs",
-    "within": "test-module",
-    "reason": "used in tests",
-    "comment": "test-only logging of synthetic values inside a #[cfg(test)] module",
+    "comment": "test vector inside the file's trailing #[cfg(test)] mod",
     "disposition": "https://github.com/snaraj/obsync/issues/22"
   },
   {
@@ -36,5 +28,21 @@
     "reason": "used in tests",
     "comment": "test vector in a whole-file test module, declared `#[cfg(test)] mod <name>_test;` by its parent and compiled into no shipped binary",
     "disposition": "https://github.com/snaraj/obsync/issues/22"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/check.rs",
+    "line_contains": "println!",
+    "reason": "false positive",
+    "comment": "CheckReport::print, the operator report: counts, posture class labels, octal modes, ciphertext chunk sids; every println! in this file is in that report",
+    "disposition": "https://github.com/snaraj/obsync/issues/23"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/export.rs",
+    "line_contains": "println!",
+    "reason": "false positive",
+    "comment": "ExportReport::print, the operator report: counts and ciphertext chunk sids; every println! in this file is in that report",
+    "disposition": "https://github.com/snaraj/obsync/issues/23"
   }
 ]
