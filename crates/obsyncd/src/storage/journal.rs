@@ -2300,6 +2300,131 @@ mod tests {
     }
 
     #[test]
+    fn admission_is_decided_on_the_total_the_retry_recovered() {
+        // Round 4 proved that an append retries a refused survey, and that a
+        // successful retry lets the frame through. It did NOT prove that the
+        // watermark then reads the number that retry produced: computing the
+        // free space before the retry and reusing it at the check left all
+        // 117 storage tests green, because the recovery case had room on
+        // both sides of its survey. That mutant admits a frame the recovered
+        // total must refuse, which is the entire reason the retry exists.
+        //
+        // So: a stale-LOW total that would admit, a survey that finds enough
+        // sentinel bytes to cross the threshold, and a refusal that must
+        // name the FRESH figure.
+
+        // What one frame really occupies, measured rather than written down:
+        // a frame-format change must not silently move the boundary this
+        // case is balanced on. Its own volume, so the real one starts empty.
+        let probe = TempDir::new("journal-recovered-total-probe");
+        let one_frame = {
+            let mut journal = open_journal(&probe);
+            journal.append(&record(1, account_frame())).expect("append");
+            journal.tracked_bytes()
+        };
+
+        // Capacity leaves SLACK above the watermark once one frame is in.
+        // SENTINEL is one byte more than that slack, so the fresh total is
+        // below the threshold and the stale one is not -- by a margin that
+        // does not depend on a frame's exact length.
+        const SLACK: u64 = 4096;
+        const SENTINEL: u64 = SLACK + 1;
+        let dir = TempDir::new("journal-recovered-total");
+        let mut cfg = storage_config(&dir);
+        cfg.journal_capacity = one_frame + SLACK + WATERMARK;
+        let mut journal =
+            Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("journal opens");
+
+        // One frame, so a segment is already OPEN: with it closed the next
+        // append would roll, and a roll surveys, which would hide exactly
+        // the question being asked.
+        journal
+            .append(&record(1, account_frame()))
+            .expect("there is room for the first frame");
+        assert_eq!(journal.tracked_bytes(), one_frame, "the stale-to-be total");
+        let durable = journal.segment_len;
+        let on_disk = segment_bytes(&dir);
+        assert!(durable > 0 && on_disk == durable, "a segment is open");
+
+        // The survey is refused, so the total above is now known to be
+        // stale. `resurvey` is the same entry point readiness and the start
+        // path use, and needs no index to reach it.
+        block_survey(&dir);
+        journal
+            .resurvey("test")
+            .expect_err("the quarantine walk refuses");
+        assert_eq!(
+            journal.unverified(),
+            Some(io::ErrorKind::NotADirectory),
+            "the total is stale by record, not by accident"
+        );
+
+        // The volume is fixed, and it has grown while nobody could look.
+        unblock_survey(&dir);
+        fs::write(
+            dir.path().join("journal/v1/sentinel"),
+            vec![7u8; SENTINEL as usize],
+        )
+        .expect("bytes the recovering survey must find");
+
+        // The append's retry succeeds, so the frame is judged -- and the
+        // judgement must use what that retry just read. Against the stale
+        // figure this frame fits; against the fresh one it cannot.
+        let refused = journal
+            .append(&record(2, account_frame()))
+            .expect_err("the recovered total is below the watermark");
+        match refused {
+            StoreError::JournalFull { free, watermark } => {
+                assert_eq!(
+                    free,
+                    cfg.journal_capacity - (one_frame + SENTINEL),
+                    "the refusal is decided on the total the retry recovered"
+                );
+                assert_eq!(
+                    free,
+                    WATERMARK - 1,
+                    "which is one byte under the threshold, by construction"
+                );
+                assert_ne!(
+                    free,
+                    cfg.journal_capacity - one_frame,
+                    "and NOT on the figure that was stale when the append began"
+                );
+                assert_eq!(
+                    watermark, WATERMARK,
+                    "and on the threshold it was measured against"
+                );
+            }
+            other => panic!("expected journal_full on the recovered total, got {other}"),
+        }
+        assert_eq!(
+            journal.unverified(),
+            None,
+            "the retry succeeded, so the accounting is verified -- the frame was refused on the numbers, not on the state"
+        );
+        assert_eq!(
+            journal.tracked_bytes(),
+            one_frame + SENTINEL,
+            "and the total it was refused against is the volume's own"
+        );
+
+        // Nothing was written: the durable length, the file on disk, and
+        // what a replay finds all still describe the one frame that landed.
+        assert_eq!(
+            journal.segment_len, durable,
+            "the durable length did not move"
+        );
+        assert_eq!(segment_bytes(&dir), on_disk, "and neither did the segment");
+        let (records, report) = replay_all(&mut journal);
+        assert_eq!(
+            seqs(&records),
+            vec![Seq(1)],
+            "exactly the frame that was acknowledged"
+        );
+        assert_eq!(report.truncated_bytes, 0, "and no torn tail to cut");
+    }
+
+    #[test]
     fn a_refused_survey_closes_admission_until_one_succeeds() {
         // The reviewer's double failure. A snapshot fails AND the survey that
         // would account for what it left behind fails too, so the totals are
