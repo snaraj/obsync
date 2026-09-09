@@ -4,7 +4,20 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
-## 0.1.4 - Unreleased
+## 0.1.5 - Unreleased
+
+- Every line that states a storage refusal now names the `io::ErrorKind`
+  behind it (`io=StorageFull`, `io=PermissionDenied`, `io=NotFound`) through
+  the one helper the request path already used, so the five fatal startup
+  refusals, the collection, unlink and scrub lines, the snapshot retries, the
+  expired-pairing sweep, the dropped `seen` event and the `check`/`export`
+  refusal say WHICH I/O stopped them instead of `refusal=io_error` alone.
+- The image smoke's `deny` adds the number behind that word: `df` of both
+  volumes read from inside the compose path's digest-pinned throwaway image,
+  and the daemon's own `docker system df`, both best-effort so neither can
+  mask the refusal they explain.
+
+## 0.1.4 - 2026-09-09
 
 - The chart's `deploymentReady` gates the replica count instead of only
   annotating it. False, the shipped default, renders every object with
