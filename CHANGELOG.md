@@ -19,6 +19,15 @@ advances exactly one patch (AGENTS.md, requirement 10).
   number, and the image smoke gained a ninth property that exhausts a real
   blob volume and requires the server's `io=StorageFull` account, its 503,
   and its recovery when the space comes back.
+- The `dispositions` reconciliation rewrites a stored justification with two
+  writes, `state=open` then `state=dismissed`: GitHub refuses a `dismissed`
+  write to an already-dismissed alert, which stopped the first live run on
+  `main` with 78 rewrites planned. Each write announces its phase; either write
+  failing is fatal to that run and blocks publication, and the next authorized
+  run converges from whatever state was left. The offline step harness is now
+  STATEFUL — it holds each alert's state, reason and comment, answers listings
+  from them, and refuses a second dismissal the way the API does — so the
+  single-write shape cannot pass the suite again.
 
 ## 0.1.6 - 2026-09-09
 

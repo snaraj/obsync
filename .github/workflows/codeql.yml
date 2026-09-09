@@ -301,6 +301,26 @@ jobs:
                 reopened=$(( reopened + 1 ))
                 printf 'dispositions: reopened alert=%s no entry covers it\n' "${number}" ;;
               redismiss)
+                # TWO writes, and the order is forced by the API: GitHub
+                # refuses `state=dismissed` on an alert that is already
+                # dismissed with `Alert is already dismissed. (HTTP 400)`, so
+                # rewriting a justification means reopening first. The first
+                # live run on e4aa059 sent one write and stopped on that 400
+                # with 78 rewrites planned (issue #26).
+                #
+                # EITHER write failing is fatal to this run. Under `set -e` the
+                # step exits and every later step is SKIPPED -- `check` and
+                # `dismiss-covered` do not repair it here, and publication is
+                # blocked, which is the correct outcome for a run that could
+                # not finish. A failed reopen leaves the record exactly as it
+                # was; a failure between the two leaves it open and
+                # unjustified. Either way the NEXT authorized run re-lists that
+                # record, revalidates it against this file, and converges,
+                # without assuming this one completed. Nothing suppresses the
+                # error to make a same-run repair sentence true.
+                printf 'dispositions: redismiss alert=%s phase=reopen\n' "${number}"
+                gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" -f state=open > /dev/null
+                printf 'dispositions: redismiss alert=%s phase=dismiss\n' "${number}"
                 gh api -X PATCH "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${number}" \
                   -f state=dismissed \
                   -f dismissed_reason="$(jq -r .reason <<<"${entry}")" \
