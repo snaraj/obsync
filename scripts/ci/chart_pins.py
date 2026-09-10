@@ -550,7 +550,7 @@ def pin_environment() -> None:
         ("storage.journal.size=4G", "a decimal journal claim reaches the server the same way"),
         ("storage.blobs.size=250GB", "a decimal SI suffix"),
         ("storage.blobs.size=250GiB", "the server's own spelling is not a Kubernetes quantity"),
-        ("storage.blobs.size=1.5Gi", "a fraction has no exact byte count"),
+        ("storage.blobs.size=1.5Gi", "the grammar admits whole units only"),
         ("storage.blobs.size=250", "a bare byte count is not a claim size"),
     ):
         refuse(override, because=because)

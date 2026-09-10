@@ -605,8 +605,10 @@ fn size(var: &'static str, value: &str) -> Result<u64, ConfigError> {
 /// `GB` -- are refused rather than read as binary: under that grammar a
 /// single letter is a power of a thousand, so accepting `250G` as 250 GiB
 /// would silently declare 7 % more capacity than the volume can hold and make
-/// the free-space watermark fire late. A fraction (`1.5Gi`) is refused for
-/// the same reason: it has no exact byte count in this table.
+/// the free-space watermark fire late. A fraction (`1.5Gi`) is refused for a
+/// different reason: it is an exact number of bytes, and this grammar
+/// deliberately admits one form -- whole units of one multiplier -- so a
+/// capacity is read the same way by every reader of it.
 fn parse_size(value: &str) -> Option<u64> {
     let value = value.trim();
     let end = value
@@ -939,20 +941,22 @@ mod tests {
 
     #[test]
     fn sizes_and_rates_use_binary_units() {
-        // Byte counts, not `250 * GIB`: a mutation of the table's multiplier
-        // moves the constant and the expectation together, so the literal is
-        // what actually pins the arithmetic.
+        // Byte counts, never `250 * GIB`: KIB..TIB are the parser's OWN
+        // constants, so an expectation written from one moves with the
+        // mutation it should catch -- `TIB = 1000 * GIB` parses `2Ti` as
+        // 2,147,483,648,000 and passes `Some(2 * TIB)`. Every count below is
+        // an independent literal for that reason.
         assert_eq!(parse_size("512"), Some(512));
         assert_eq!(parse_size("1B"), Some(1));
         assert_eq!(parse_size("4Mi"), Some(4_194_304));
         assert_eq!(parse_size("4MiB"), Some(4_194_304));
         assert_eq!(parse_size("250Gi"), Some(268_435_456_000));
         assert_eq!(parse_size("250GiB"), Some(268_435_456_000));
-        assert_eq!(parse_size("4KiB"), Some(4 * KIB));
-        assert_eq!(parse_size("4Ki"), Some(4 * KIB));
-        assert_eq!(parse_size("2TiB"), Some(2 * TIB));
-        assert_eq!(parse_size("2Ti"), Some(2 * TIB));
-        assert_eq!(parse_size("2 GiB"), Some(2 * GIB));
+        assert_eq!(parse_size("4KiB"), Some(4_096));
+        assert_eq!(parse_size("4Ki"), Some(4_096));
+        assert_eq!(parse_size("2TiB"), Some(2_199_023_255_552));
+        assert_eq!(parse_size("2Ti"), Some(2_199_023_255_552));
+        assert_eq!(parse_size("2 GiB"), Some(2_147_483_648));
         // The chart's own defaults, which is the whole reason `Gi` is here:
         // `Gi` and `GiB` are ONE multiplier and must agree byte for byte.
         assert_eq!(parse_size("250Gi"), parse_size("250GiB"));
@@ -978,11 +982,33 @@ mod tests {
         assert_eq!(parse_size("250GIB"), None);
         assert_eq!(parse_size("4mib"), None);
         assert_eq!(parse_size("512b"), None);
-        // No exact byte count in this table, and no number at all.
+        // A fraction is an exact byte count; it is refused because the
+        // grammar admits whole units only, deliberately.
         assert_eq!(parse_size("1.5Gi"), None);
+        // ...and this one is not a number at all.
         assert_eq!(parse_size("Gi"), None);
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("99999999999999999999GiB"), None);
+    }
+
+    #[test]
+    fn sizes_that_overflow_the_multiply_are_refused_not_wrapped() {
+        // The refused-forms test above already covers
+        // `99999999999999999999GiB`, whose PREFIX does not fit in a u64: it
+        // stops at the integer parse and never reaches the multiply. These
+        // reach it. 2^34 GiB and 2^24 TiB are each exactly 2^64 bytes, one
+        // past the largest u64, and a `wrapping_mul` there would hand the
+        // server a capacity of ZERO instead of refusing the start.
+        assert_eq!(parse_size("17179869184Gi"), None);
+        assert_eq!(parse_size("17179869184GiB"), None);
+        assert_eq!(parse_size("16777216Ti"), None);
+        // ...and the largest whole unit of each that still fits is a size,
+        // so the refusal is a boundary and not a ceiling that moved.
+        assert_eq!(
+            parse_size("17179869183Gi"),
+            Some(18_446_744_072_635_809_792)
+        );
+        assert_eq!(parse_size("16777215Ti"), Some(18_446_742_974_197_923_840));
     }
 
     #[test]

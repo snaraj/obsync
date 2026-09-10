@@ -32,9 +32,12 @@ advances exactly one patch (AGENTS.md, requirement 10).
   they are gone is that Kubernetes reads a single letter as a power of a
   thousand, so keeping them binary made `250G`-shaped input ambiguous in
   exactly the direction that over-states a volume and makes the free-space
-  watermark fire late. Decimal SI (`G`, `GB`) and fractions (`1.5Gi`) are
-  refused for the same reason, and the error text now names the accepted
-  forms.
+  watermark fire late. Decimal SI (`G`, `GB`) is refused for that reason;
+  a fraction (`1.5Gi`) is refused for a different one, that the grammar
+  deliberately admits whole units of one multiplier and nothing else -- the
+  value is an exact byte count, it is simply not a spelling this grammar has.
+  A whole-unit size whose product does not fit in 64 bits is refused rather
+  than wrapped. The error text now names the accepted forms.
 
 - **Chart.** `values.schema.json` admits only Kubernetes binary quantities
   for the claim sizes the server is told (`^[1-9][0-9]*(Ki|Mi|Gi|Ti)$`), so a
