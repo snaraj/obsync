@@ -89,7 +89,7 @@ its own `io=StorageFull` line, frees the space, and requires the server ready
 again without a restart.
 
 That property is only worth what its weakest half is worth, and every half of
-it can be quietly removed while the smoke still prints nine green lines:
+it can be quietly removed while the smoke still prints its green lines:
 
   - a blob volume created WITHOUT a size option can never be exhausted, so the
     fill succeeds, readiness stays true, and the property proves the opposite
@@ -132,9 +132,9 @@ is a comment and counts for nothing.
   6. recovery -- an executable line frees the volume through the throwaway,
      and an executable line requires `{"ready":true` afterwards under a
      refusal if it never comes.
-  7. the count -- the script calls `prove` exactly nine times, so the SUMMARY
-     line's `properties=` is nine and a property that returns without proving
-     anything cannot pass unnoticed.
+  7. the count -- the script calls `prove` exactly `PROPERTIES` times, so the
+     SUMMARY line's `properties=` is that number and a property that returns
+     without proving anything cannot pass unnoticed.
 """
 
 from __future__ import annotations
@@ -743,8 +743,10 @@ REGION_START = "${full_blobs}"
 # not the cleanup trap's `docker volume rm`, which names it far earlier.
 REGION_PROOF = "full blob volume:"
 # How many properties the script must prove. The SUMMARY prints the count it
-# reached, so this is the number a reader of the gate log sees.
-PROPERTIES = 9
+# reached, so this is the number a reader of the gate log sees. Property 10 is
+# the chart's own rendered environment, run on the shipped image; it stands
+# after property 9 so the region above keeps its meaning.
+PROPERTIES = 10
 # The line the server writes when a volume will not take the readiness probe.
 READINESS_LINE = "event=readiness decision=not_ready volume=blobs io=StorageFull"
 # The detail the wire refusal carries, and the code it carries it under.

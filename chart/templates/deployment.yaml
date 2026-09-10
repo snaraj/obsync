@@ -35,6 +35,13 @@ spec:
         {{- include "obsync.labels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- /* The Service is called obsync, so a kubelet with service links on
+      injects OBSYNC_SERVICE_HOST, OBSYNC_SERVICE_PORT and OBSYNC_PORT_* into
+      this pod -- and an unknown OBSYNC_* variable is a startup error by
+      design (crates/obsyncd/src/config.rs, ConfigError::Unknown), so the pod
+      would refuse to start on names Kubernetes added behind the operator.
+      Off, like the token above: nothing here reads either. */}}
+      enableServiceLinks: false
       serviceAccountName: obsync
       terminationGracePeriodSeconds: 30
       securityContext:

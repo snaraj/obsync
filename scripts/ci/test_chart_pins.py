@@ -121,14 +121,17 @@ class TheGateRunsEveryPin(unittest.TestCase):
 
     `test_each_pin_holds` iterates `PINS`, so deleting a registration would
     delete its own test. These pins name the registry independently: exactly
-    the four pins, each bound to its function; `all` invokes every one of
+    the five pins, each bound to its function; `all` invokes every one of
     them, readiness included; a readiness refusal fails the gate; and the
     hosted gate and `make check` run `all`, never a subset. None of them needs
     helm, so they run everywhere.
     """
 
-    def test_the_registry_names_exactly_the_four_pins_bound_to_their_functions(self):
-        self.assertEqual(list(chart_pins.PINS), ["ingress", "storage", "security", "readiness"])
+    def test_the_registry_names_exactly_the_five_pins_bound_to_their_functions(self):
+        self.assertEqual(
+            list(chart_pins.PINS),
+            ["ingress", "storage", "security", "readiness", "environment"],
+        )
         for name in chart_pins.PINS:
             self.assertIs(chart_pins.PINS[name], getattr(chart_pins, f"pin_{name}"))
 
@@ -137,7 +140,9 @@ class TheGateRunsEveryPin(unittest.TestCase):
         stubs = {name: (lambda n=name: calls.append(n)) for name in chart_pins.PINS}
         with mock.patch.dict(chart_pins.PINS, stubs), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(chart_pins.main(["all"]), 0)
-        self.assertEqual(calls, ["ingress", "storage", "security", "readiness"])
+        self.assertEqual(
+            calls, ["ingress", "storage", "security", "readiness", "environment"]
+        )
 
     def test_a_readiness_refusal_fails_the_all_gate_and_the_single_pin(self):
         def refuse_readiness() -> None:
@@ -158,6 +163,90 @@ class TheGateRunsEveryPin(unittest.TestCase):
         makefile = (root / "Makefile").read_text(encoding="utf-8")
         self.assertIn("python3 -B scripts/ci/chart_pins.py all", workflow)
         self.assertIn("python3 -B scripts/ci/chart_pins.py all", makefile)
+
+
+def rendered_pod(env: list[dict], links: object = False) -> list[dict]:
+    """One Deployment carrying the pod spec `env` mode reads."""
+    return [
+        {
+            "kind": "Deployment",
+            "spec": {
+                "template": {
+                    "spec": {
+                        "enableServiceLinks": links,
+                        "containers": [{"name": "obsync", "env": env}],
+                    }
+                }
+            },
+        }
+    ]
+
+
+class TheEmittedEnvironmentIsTheRender(unittest.TestCase):
+    """`env` mode is what `image-smoke.sh` STARTS THE SHIPPED IMAGE ON.
+
+    Its output is not a verdict, so nothing downstream re-derives it: a
+    variable it silently drops is a variable the smoke never passes, and the
+    server would then run on its own default for that variable while the
+    property reported the chart's environment proven. So every entry the
+    render carries must leave here as exactly one line, and an entry this
+    reader does not fully understand is a refusal rather than a skip.
+    """
+
+    def emit(self, documents: list[dict]) -> str:
+        out = io.StringIO()
+        with mock.patch.object(chart_pins, "render", return_value=documents):
+            with contextlib.redirect_stdout(out):
+                chart_pins.emit_environment()
+        return out.getvalue()
+
+    def test_every_entry_leaves_as_one_line_in_render_order(self):
+        emitted = self.emit(
+            rendered_pod(
+                [
+                    {"name": "OBSYNC_LISTEN", "value": "0.0.0.0:8080"},
+                    {"name": "OBSYNC_PUBLIC_URL", "value": ""},
+                    {"name": "OBSYNC_SERVER_KEY", "valueFrom": {"secretKeyRef": {}}},
+                ]
+            )
+        )
+        self.assertEqual(
+            emitted.splitlines(),
+            [
+                "podSpec enableServiceLinks=false",
+                "value OBSYNC_LISTEN=0.0.0.0:8080",
+                "value OBSYNC_PUBLIC_URL=",
+                "valueFrom OBSYNC_SERVER_KEY",
+            ],
+        )
+
+    def test_the_pod_spec_line_carries_what_was_rendered(self):
+        self.assertIn(
+            "podSpec enableServiceLinks=true", self.emit(rendered_pod([{"name": "A", "value": "b"}], links=True))
+        )
+        self.assertIn(
+            "podSpec enableServiceLinks=none", self.emit(rendered_pod([{"name": "A", "value": "b"}], links=None))
+        )
+
+    def test_an_entry_this_reader_cannot_carry_is_refused(self):
+        for env, because in (
+            ([{"name": "OBSYNC_X"}], "neither a value nor a valueFrom"),
+            ([{"value": "x"}], "no name"),
+            ([{"name": "", "value": "x"}], "an empty name"),
+            ([{"name": "OBSYNC_X", "value": "a\nb"}], "a value carrying a newline"),
+            ([], "an empty environment"),
+        ):
+            with self.subTest(because=because):
+                with self.assertRaises(chart_pins.PinError):
+                    self.emit(rendered_pod(env))
+
+    def test_a_second_container_is_refused(self):
+        documents = rendered_pod([{"name": "OBSYNC_X", "value": "1"}])
+        documents[0]["spec"]["template"]["spec"]["containers"].append(
+            {"name": "sidecar", "env": [{"name": "OBSYNC_Y", "value": "2"}]}
+        )
+        with self.assertRaises(chart_pins.PinError):
+            self.emit(documents)
 
 
 class TheMustFailHelperCanItselfFail(unittest.TestCase):

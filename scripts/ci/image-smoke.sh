@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # image-smoke -- run the SHIPPED image the way the README tells a stranger to
-# run it, and prove the nine properties that quick start, and the deployment
+# run it, and prove the ten properties that quick start, and the deployment
 # it becomes, depend on.
 #
 # WHY THIS EXISTS. The `container` job proved the image BUILDS and that its
@@ -45,11 +45,19 @@
 # volume. They are the states a deployment reaches later, and every one of
 # them was a refusal that had to be true rather than a start that had to work.
 #
+# Property 10 is the CHART's, and it is the only one whose inputs this script
+# does not choose: `helm template` renders the deployment, and the shipped
+# image is started on exactly the environment that render produces. Everything
+# above runs the image on values written here, so all nine could pass -- and
+# did -- while the chart's own defaults rendered a capacity the server refuses
+# to parse and a Service that made the kubelet inject names it exits on.
+#
 # It BUILDS NOTHING. The image reference is the argument, so the gate smokes
 # the exact bytes it just built and `make image` smokes the exact bytes it just
 # built, and neither can drift into smoking something else.
 #
-# Requires: docker, curl, tar. No registry access: the image is already local.
+# Requires: docker, curl, tar, helm and python3 (property 10 renders the
+# chart). No registry access: the image is already local.
 set -euo pipefail
 
 usage() {
@@ -81,10 +89,13 @@ holder="${container}-holder"
 second="${container}-second"
 unprepared="${container}-unprepared"
 full="${container}-full"
+charted="${container}-charted"
 blobs_volume="obsync-smoke-blobs-${run_id}"
 journal_volume="obsync-smoke-journal-${run_id}"
 full_blobs="obsync-smoke-full-blobs-${run_id}"
 full_journal="obsync-smoke-full-journal-${run_id}"
+chart_blobs_volume="obsync-smoke-chart-blobs-${run_id}"
+chart_journal_volume="obsync-smoke-chart-journal-${run_id}"
 started_at="$(date +%s)"
 
 proven=0
@@ -138,8 +149,8 @@ throwaway="$(awk '$1 == "image:" && $2 ~ /^docker\.io\/library\/caddy@sha256:/ {
 
 cleanup() {
   local status=$?
-  docker rm --force "${container}" "${restored}" "${holder}" "${second}" "${unprepared}" "${full}" >/dev/null 2>&1 || true
-  docker volume rm --force "${blobs_volume}" "${journal_volume}" "${full_blobs}" "${full_journal}" >/dev/null 2>&1 || true
+  docker rm --force "${container}" "${restored}" "${holder}" "${second}" "${unprepared}" "${full}" "${charted}" >/dev/null 2>&1 || true
+  docker volume rm --force "${blobs_volume}" "${journal_volume}" "${full_blobs}" "${full_journal}" "${chart_blobs_volume}" "${chart_journal_volume}" >/dev/null 2>&1 || true
   return "${status}"
 }
 trap cleanup EXIT
@@ -535,6 +546,111 @@ done
   || deny "the server did not become ready again within ${READY_BUDGET_SECONDS}s of the volume being freed: '${body}'"
 docker stop --time 10 "${full}" >/dev/null
 prove "full blob volume: an exhausted volume answered 503 not_ready and logged io=StorageFull without exiting, and the server was ready again once the space came back"
+
+# (10) THE CHART'S OWN ENVIRONMENT, run. Every property above configures the
+# image from constants written at the top of this file, so all of them can be
+# green while `helm install` renders a pod that cannot start -- which is
+# exactly what happened: `chart/values.yaml` declares the claim size as the
+# Kubernetes quantity `250Gi`, the deployment renders that verbatim into
+# OBSYNC_BLOBS_CAPACITY, and the server had no `Gi` in its size grammar. The
+# Service is called `obsync`, so a kubelet with service links on also injects
+# OBSYNC_SERVICE_HOST and OBSYNC_PORT_*, and an unknown OBSYNC_* name is a
+# startup error by design.
+#
+# So the values here come from `helm template`, READ FROM THE RENDER by
+# scripts/ci/chart_pins.py through the repository's fail-closed YAML reader,
+# and nothing about them is typed into this script: not a variable name, not
+# a value, not the directories the volumes are mounted at. A chart edit that
+# renders something the server refuses fails HERE, on the shipped bytes,
+# instead of on the first `helm install` an operator runs.
+#
+# OBSYNC_SERVER_KEY is the one variable the render supplies from elsewhere (a
+# Secret), and the server generates one at first boot when it is absent, so
+# the run below omits it -- and requires it to be the ONLY such variable,
+# because a second one would be a value this property silently stopped
+# passing.
+command -v helm >/dev/null \
+  || deny 'helm is not installed; property 10 renders the chart the deployment ships'
+command -v python3 >/dev/null \
+  || deny 'python3 is not installed; property 10 reads the render with scripts/ci/chart_pins.py'
+rendered="$(python3 -B scripts/ci/chart_pins.py env)" \
+  || deny 'helm template did not render an environment the chart pins could read'
+
+# (a) The pod spec, asserted on the render rather than on the values file.
+printf '%s\n' "${rendered}" | grep -Fqx 'podSpec enableServiceLinks=false' \
+  || { printf 'image-smoke: rendered environment:\n%s\n' "${rendered}" >&2; \
+       deny 'the rendered pod spec does not set enableServiceLinks: false, so the kubelet would inject OBSYNC_* names the server exits on'; }
+
+# (b) Every variable the render supplies literally, carried as rendered.
+chart_env=()
+while IFS= read -r line; do
+  case "${line}" in
+    'value '*) chart_env+=(--env "${line#value }") ;;
+  esac
+done <<< "${rendered}"
+for name in OBSYNC_LISTEN OBSYNC_BLOBS_DIR OBSYNC_JOURNAL_DIR OBSYNC_BLOBS_CAPACITY OBSYNC_JOURNAL_CAPACITY; do
+  printf '%s\n' "${rendered}" | grep -q "^value ${name}=" \
+    || deny "the render carries no ${name}; property 10 would start the server on defaults it did not render"
+done
+supplied="$(printf '%s\n' "${rendered}" | awk '$1 == "valueFrom" { print $2 }' | sort | tr '\n' ' ')"
+[ "${supplied}" = 'OBSYNC_SERVER_KEY ' ] \
+  || deny "the render supplies [${supplied}] from outside the manifest; property 10 passes only the literals and the server key is the only variable it may omit"
+
+# (c) The mount points are the render's too: the server is told where its
+# volumes are, and this mounts them exactly there.
+chart_blobs_dir="$(printf '%s\n' "${rendered}" | sed -n 's/^value OBSYNC_BLOBS_DIR=//p')"
+chart_journal_dir="$(printf '%s\n' "${rendered}" | sed -n 's/^value OBSYNC_JOURNAL_DIR=//p')"
+[ -n "${chart_blobs_dir}" ] && [ -n "${chart_journal_dir}" ] \
+  || deny 'the render names no blob or journal directory'
+# Property 10's own account, because `deny`'s cannot be this one: a server
+# that refuses its configuration exits before it publishes a port, and
+# "published no port" names the symptom while the CAUSE -- one line naming
+# the variable it could not read -- is in a log nothing would have printed.
+# That is the exact shape of the defect this property exists for, so it is
+# also the shape its failure has to explain (AGENTS.md requirement 12).
+charted_account() {
+  printf 'image-smoke: --- the environment helm template rendered ---\n%s\n' "${rendered}" >&2
+  printf 'image-smoke: --- the server it was given to (%s) ---\n' "${charted}" >&2
+  docker logs "${charted}" >&2 2>&1 || true
+  docker container inspect --format \
+    'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' \
+    "${charted}" >&2 || true
+}
+
+docker volume create "${chart_blobs_volume}" >/dev/null
+docker volume create "${chart_journal_volume}" >/dev/null
+docker run --detach --name "${charted}" \
+  --publish '127.0.0.1::8080' \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume "${chart_blobs_volume}:${chart_blobs_dir}" \
+  --volume "${chart_journal_volume}:${chart_journal_dir}" \
+  "${chart_env[@]}" \
+  "${image}" >/dev/null
+# Asked before the port, for the same reason property 1 asks it: a container
+# that has already exited has no published port either, and the refusal
+# should name what the server said rather than what the daemon could not find.
+status="$(docker container inspect --format '{{.State.Status}}' "${charted}")"
+[ "${status}" = running ] \
+  || { charted_account; deny "the shipped image is ${status} moments after starting on the environment the chart renders; it never served"; }
+charted_port="$(docker port "${charted}" 8080/tcp | head -n 1)" \
+  || { charted_account; deny 'the server on the chart-rendered environment published no port for 8080/tcp'; }
+ready=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  status="$(docker container inspect --format '{{.State.Status}}' "${charted}" 2>/dev/null || true)"
+  [ "${status}" = running ] \
+    || { charted_account; deny "the shipped image stopped before it was ready on the chart-rendered environment (status=${status:-gone})"; }
+  body="$(curl --silent --show-error --max-time 2 "http://${charted_port}/readyz" 2>/dev/null || true)"
+  case "${body}" in
+    '{"ready":true'*) ready="${body}"; break ;;
+  esac
+  sleep 1
+done
+[ -n "${ready}" ] \
+  || { charted_account; deny "no {\"ready\":true from the chart-rendered environment within ${READY_BUDGET_SECONDS}s"; }
+docker stop --time 10 "${charted}" >/dev/null
+prove "chart environment: the shipped image reached ${ready} on the $(( ${#chart_env[@]} / 2 )) variables helm template renders, with enableServiceLinks: false and the server key the only value the manifest supplies from elsewhere"
 
 printf 'image-smoke: SUMMARY image=%s properties=%d duration=%ds decision=pass\n' \
   "${image}" "${proven}" "$(( $(date +%s) - started_at ))"

@@ -312,6 +312,12 @@ jobs:
           test "$(jq -c '.[0].Config.Entrypoint' "${inspected}")" = '["/usr/local/bin/obsyncd"]'
           test "$(jq -c '.[0].Config.Cmd' "${inspected}")" = '["serve"]'
           test "$(jq -c '.[0].Config.ExposedPorts | keys' "${inspected}")" = '["8080/tcp"]'
+      - name: Install checksum-verified tools
+        # For `helm` alone: the smoke's tenth property renders the chart this
+        # release ships and starts the image on exactly that environment, so
+        # this job needs the renderer the `chart` job uses. Same pinned,
+        # checksum-verified script, so both jobs render with the same helm.
+        run: ./scripts/ci/install-tools.sh
       - name: Prove the shipped image actually serves
         # Everything above proves the image BUILDS and that its config SAYS
         # nonroot. Neither requires it to work. This runs the bytes that were
