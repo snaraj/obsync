@@ -12,6 +12,10 @@ THREE PINS, each named by the property it holds:
             Secret or ConfigMap volume, no CSI inline volume.
   security  the pod and container security context is the one requirement 4
             fixes, and a values override cannot weaken any part of it.
+  environment
+            the rendered process environment is one the SERVER can parse: the
+            claim sizes it is told are Kubernetes binary quantities, and the
+            kubelet adds no OBSYNC_* name of its own.
 
 HOW THESE READ THE RENDER -- the security-critical part. They do NOT count
 `- from:` lines and inspect the first: that is bypassable. A second ingress
@@ -508,13 +512,115 @@ def pin_readiness() -> None:
     refuse("deploymentReady=1", because="the schema admits only a boolean")
 
 
-PINS = {"ingress": pin_ingress, "storage": pin_storage, "security": pin_security, "readiness": pin_readiness}
+def _container_environment(pod: dict[str, Any]) -> list[dict[str, Any]]:
+    """The one container's env list, exactly as rendered."""
+    containers = pod["containers"]
+    if len(containers) != 1:
+        raise PinError(f"the pod renders {len(containers)} containers, not 1")
+    environment = containers[0]["env"]
+    if not isinstance(environment, list) or not environment:
+        raise PinError("the container renders no environment")
+    return environment
+
+
+def pin_environment() -> None:
+    """What the pod's process environment is, and what may put a name in it.
+
+    The server refuses an OBSYNC_* variable it does not know
+    (`ConfigError::Unknown`) and refuses a capacity it cannot parse, so both
+    halves of "the chart's own defaults start the server" are decided by the
+    RENDER: which names arrive, and what the size ones say. This pin holds the
+    render; `scripts/ci/image-smoke.sh` runs the result.
+    """
+    pod = only(render(*ACTIVE), "Deployment")["spec"]["template"]["spec"]
+
+    # (a) The kubelet injects OBSYNC_SERVICE_HOST, OBSYNC_SERVICE_PORT and
+    # OBSYNC_PORT_* for a Service called `obsync` unless service links are
+    # off, and every one of those is an unknown OBSYNC_* name the server
+    # exits on. The Service keeps its name; the injection is what goes.
+    equals(pod.get("enableServiceLinks"), False, "the pod service-link setting")
+    print("chart-pins environment: (a) service links are off, so no OBSYNC_* name is injected")
+
+    # (b) One string has to satisfy two readers -- the API server, which
+    # takes a Kubernetes quantity, and obsync, which takes a binary size --
+    # so the schema admits only their intersection. Each refusal below is a
+    # value that renders a pod which cannot start.
+    for override, because in (
+        ("storage.blobs.size=250G", "250G is decimal: 7 % less than the volume, and no size to the server"),
+        ("storage.journal.size=4G", "a decimal journal claim reaches the server the same way"),
+        ("storage.blobs.size=250GB", "a decimal SI suffix"),
+        ("storage.blobs.size=250GiB", "the server's own spelling is not a Kubernetes quantity"),
+        ("storage.blobs.size=1.5Gi", "the grammar admits whole units only"),
+        ("storage.blobs.size=250", "a bare byte count is not a claim size"),
+    ):
+        refuse(override, because=because)
+    print("chart-pins environment: (b) every quantity one of the two readers refuses is refused here")
+
+    # (c) ...and the pattern admits the grammar it is supposed to admit, and
+    # that value reaches the process. A pattern that refused everything would
+    # pass (b) and fail here.
+    grown = only(render(*ACTIVE, "storage.blobs.size=500Gi"), "Deployment")["spec"]["template"][
+        "spec"
+    ]
+    environment = {
+        entry["name"]: entry.get("value")
+        for entry in _container_environment(grown)
+        if "value" in entry
+    }
+    equals(environment["OBSYNC_BLOBS_CAPACITY"], "500Gi", "an accepted claim size at the process")
+    print("chart-pins environment: (c) an accepted binary quantity renders through to the process")
+
+
+def emit_environment() -> None:
+    """Print the rendered pod environment for a caller that RUNS it.
+
+    `scripts/ci/image-smoke.sh` starts the shipped image on exactly these
+    values, so this prints the render and never a copy of it: one
+    `podSpec <field>=<value>` line, one `value <NAME>=<value>` line per
+    literal variable, and one `valueFrom <NAME>` line per variable the
+    cluster supplies from somewhere else.
+    """
+    pod = only(render(*ACTIVE), "Deployment")["spec"]["template"]["spec"]
+    lines = [f"podSpec enableServiceLinks={str(pod.get('enableServiceLinks')).lower()}"]
+    for entry in _container_environment(pod):
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise PinError(f"the container renders an unnamed environment entry: {entry!r}")
+        if "value" in entry:
+            value = entry["value"]
+            if not isinstance(value, str):
+                value = "true" if value is True else "false" if value is False else str(value)
+            if "\n" in value:
+                raise PinError(f"{name} renders a value carrying a newline; it cannot be emitted")
+            lines.append(f"value {name}={value}")
+        elif "valueFrom" in entry:
+            lines.append(f"valueFrom {name}")
+        else:
+            raise PinError(f"{name} renders with neither a value nor a valueFrom")
+    print("\n".join(lines))
+
+
+PINS = {
+    "ingress": pin_ingress,
+    "storage": pin_storage,
+    "security": pin_security,
+    "readiness": pin_readiness,
+    "environment": pin_environment,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
-    parser.add_argument("pin", choices=(*PINS, "all"))
+    parser.add_argument("pin", choices=(*PINS, "all", "env"))
     args = parser.parse_args(argv)
+    if args.pin == "env":
+        # Output, not a verdict: the caller runs what this prints.
+        try:
+            emit_environment()
+        except (PinError, KeyError, IndexError, TypeError, miniyaml.YamlError) as exc:
+            print(f"DENY: the rendered environment could not be read: {exc}", file=sys.stderr)
+            return 1
+        return 0
     selected = list(PINS) if args.pin == "all" else [args.pin]
     try:
         for name in selected:

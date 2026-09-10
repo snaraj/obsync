@@ -588,11 +588,27 @@ fn number(var: &'static str, value: &str, min: u32, max: u32) -> Result<u32, Con
 fn size(var: &'static str, value: &str) -> Result<u64, ConfigError> {
     parse_size(value).ok_or(invalid(
         var,
-        "expected a size such as 512, 4MiB, 2GiB or 250GiB",
+        "expected a size such as 512, 4MiB, 4Mi, 250GiB or 250Gi \
+         (binary units only, spelled exactly)",
     ))
 }
 
-/// `250GiB`, `4MiB`, `512`. Binary units only: `KB` would be ambiguous.
+/// `250Gi`, `250GiB`, `4Mi`, `4MiB`, `512`. Binary units only, and the chart
+/// is the reason both spellings are here: a Kubernetes quantity writes the
+/// binary multiplier `Gi`, so the claim size an operator states in
+/// `chart/values.yaml` is the string the server is handed, and `Gi` MUST mean
+/// exactly what `GiB` means.
+///
+/// ONE SPELLING PER MULTIPLIER, matched case-sensitively after trimming.
+/// `Gi`, `GiB` and `B` are sizes; `gi`, `GIB`, `gib` and `b` are not. The
+/// decimal SI suffixes Kubernetes also admits -- `k`, `M`, `G`, `T`, `KB`,
+/// `GB` -- are refused rather than read as binary: under that grammar a
+/// single letter is a power of a thousand, so accepting `250G` as 250 GiB
+/// would silently declare 7 % more capacity than the volume can hold and make
+/// the free-space watermark fire late. A fraction (`1.5Gi`) is refused for a
+/// different reason: it is an exact number of bytes, and this grammar
+/// deliberately admits one form -- whole units of one multiplier -- so a
+/// capacity is read the same way by every reader of it.
 fn parse_size(value: &str) -> Option<u64> {
     let value = value.trim();
     let end = value
@@ -602,19 +618,19 @@ fn parse_size(value: &str) -> Option<u64> {
         return None;
     }
     let n: u64 = value[..end].parse().ok()?;
-    let unit = value[end..].trim().to_ascii_lowercase();
-    let multiplier = match unit.as_str() {
-        "" | "b" => 1,
-        "k" | "kib" => KIB,
-        "m" | "mib" => MIB,
-        "g" | "gib" => GIB,
-        "t" | "tib" => TIB,
+    let multiplier = match value[end..].trim() {
+        "" | "B" => 1,
+        "Ki" | "KiB" => KIB,
+        "Mi" | "MiB" => MIB,
+        "Gi" | "GiB" => GIB,
+        "Ti" | "TiB" => TIB,
         _ => return None,
     };
     n.checked_mul(multiplier)
 }
 
-/// `5%,2GiB`, `5%`, or `2GiB`: the refusal threshold is the larger term.
+/// `5%,2GiB`, `5%`, or `2Gi`: the refusal threshold is the larger term. The
+/// size term is `parse_size`'s grammar, so it takes `Gi` as well as `GiB`.
 fn watermark(value: &str) -> Result<Watermark, ConfigError> {
     let bad = invalid(
         "OBSYNC_FREE_WATERMARK",
@@ -842,6 +858,23 @@ mod tests {
             parse(&[("OBSYNC_FSYNC", "off")]),
             Err(ConfigError::Unknown("OBSYNC_FSYNC".to_string()))
         );
+        // The names a kubelet injects for a Service called `obsync` when
+        // service links are on. The chart now renders `enableServiceLinks:
+        // false` so they are never injected; this pins that the refusal that
+        // would catch them is exactly as strict as it was, because removing
+        // the injector must never become a reason to admit the names.
+        for injected in [
+            ("OBSYNC_SERVICE_HOST", "10.0.0.1"),
+            ("OBSYNC_SERVICE_PORT", "8080"),
+            ("OBSYNC_PORT", "tcp://10.0.0.1:8080"),
+            ("OBSYNC_PORT_8080_TCP_ADDR", "10.0.0.1"),
+        ] {
+            assert_eq!(
+                parse(&[injected]),
+                Err(ConfigError::Unknown(injected.0.to_string())),
+                "an injected service-link variable is still a startup error"
+            );
+        }
     }
 
     #[test]
@@ -908,17 +941,74 @@ mod tests {
 
     #[test]
     fn sizes_and_rates_use_binary_units() {
+        // Byte counts, never `250 * GIB`: KIB..TIB are the parser's OWN
+        // constants, so an expectation written from one moves with the
+        // mutation it should catch -- `TIB = 1000 * GIB` parses `2Ti` as
+        // 2,147,483,648,000 and passes `Some(2 * TIB)`. Every count below is
+        // an independent literal for that reason.
         assert_eq!(parse_size("512"), Some(512));
         assert_eq!(parse_size("1B"), Some(1));
-        assert_eq!(parse_size("4KiB"), Some(4 * KIB));
-        assert_eq!(parse_size("4mib"), Some(4 * MIB));
-        assert_eq!(parse_size("250GiB"), Some(250 * GIB));
-        assert_eq!(parse_size("2TiB"), Some(2 * TIB));
-        assert_eq!(parse_size("2 GiB"), Some(2 * GIB));
-        assert_eq!(parse_size("2GB"), None);
-        assert_eq!(parse_size("GiB"), None);
+        assert_eq!(parse_size("4Mi"), Some(4_194_304));
+        assert_eq!(parse_size("4MiB"), Some(4_194_304));
+        assert_eq!(parse_size("250Gi"), Some(268_435_456_000));
+        assert_eq!(parse_size("250GiB"), Some(268_435_456_000));
+        assert_eq!(parse_size("4KiB"), Some(4_096));
+        assert_eq!(parse_size("4Ki"), Some(4_096));
+        assert_eq!(parse_size("2TiB"), Some(2_199_023_255_552));
+        assert_eq!(parse_size("2Ti"), Some(2_199_023_255_552));
+        assert_eq!(parse_size("2 GiB"), Some(2_147_483_648));
+        // The chart's own defaults, which is the whole reason `Gi` is here:
+        // `Gi` and `GiB` are ONE multiplier and must agree byte for byte.
+        assert_eq!(parse_size("250Gi"), parse_size("250GiB"));
+        assert_eq!(parse_size("4Gi"), parse_size("4GiB"));
+    }
+
+    #[test]
+    fn decimal_fractional_and_misspelled_sizes_are_refused() {
+        // Decimal SI: Kubernetes reads `G` as a power of a thousand, so
+        // reading it as binary here would declare 7 % more capacity than the
+        // volume holds. Refused, never guessed at.
+        assert_eq!(parse_size("250G"), None);
+        assert_eq!(parse_size("250GB"), None);
+        assert_eq!(parse_size("4k"), None);
+        assert_eq!(parse_size("4M"), None);
+        // The single letters this grammar used to read as binary. Dropping
+        // them is the point: one spelling per multiplier.
+        assert_eq!(parse_size("250g"), None);
+        assert_eq!(parse_size("64m"), None);
+        assert_eq!(parse_size("4t"), None);
+        // Case is part of the spelling.
+        assert_eq!(parse_size("250gi"), None);
+        assert_eq!(parse_size("250GIB"), None);
+        assert_eq!(parse_size("4mib"), None);
+        assert_eq!(parse_size("512b"), None);
+        // A fraction is an exact byte count; it is refused because the
+        // grammar admits whole units only, deliberately.
+        assert_eq!(parse_size("1.5Gi"), None);
+        // ...and this one is not a number at all.
+        assert_eq!(parse_size("Gi"), None);
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("99999999999999999999GiB"), None);
+    }
+
+    #[test]
+    fn sizes_that_overflow_the_multiply_are_refused_not_wrapped() {
+        // The refused-forms test above already covers
+        // `99999999999999999999GiB`, whose PREFIX does not fit in a u64: it
+        // stops at the integer parse and never reaches the multiply. These
+        // reach it. 2^34 GiB and 2^24 TiB are each exactly 2^64 bytes, one
+        // past the largest u64, and a `wrapping_mul` there would hand the
+        // server a capacity of ZERO instead of refusing the start.
+        assert_eq!(parse_size("17179869184Gi"), None);
+        assert_eq!(parse_size("17179869184GiB"), None);
+        assert_eq!(parse_size("16777216Ti"), None);
+        // ...and the largest whole unit of each that still fits is a size,
+        // so the refusal is a boundary and not a ceiling that moved.
+        assert_eq!(
+            parse_size("17179869183Gi"),
+            Some(18_446_744_072_635_809_792)
+        );
+        assert_eq!(parse_size("16777215Ti"), Some(18_446_742_974_197_923_840));
     }
 
     #[test]
@@ -929,6 +1019,26 @@ mod tests {
         assert_eq!(watermark("5%").expect("percent only").bytes, 0);
         assert_eq!(watermark("2GiB").expect("size only").percent, 0);
         assert_eq!(watermark("2GiB,5%").expect("either order").percent, 5);
+    }
+
+    #[test]
+    fn the_watermark_reads_the_same_size_grammar() {
+        // `OBSYNC_FREE_WATERMARK` shares `parse_size`, so the Kubernetes
+        // spelling works here too and the dropped single letters are gone
+        // here too. Exact byte counts, for the same reason as above.
+        assert_eq!(watermark("2Gi").expect("Gi size term").bytes, 2_147_483_648);
+        assert_eq!(
+            watermark("2GiB").expect("GiB size term").bytes,
+            2_147_483_648
+        );
+        assert_eq!(
+            watermark("5%,2Gi").expect("both terms").bytes,
+            2_147_483_648
+        );
+        assert_eq!(watermark("5%,2Gi").expect("both terms").percent, 5);
+        assert!(watermark("1%,2g").is_err(), "a decimal-letter size term");
+        assert!(watermark("64m").is_err(), "a decimal-letter size term");
+        assert!(watermark("2gib").is_err(), "a misspelled size term");
     }
 
     #[test]

@@ -641,6 +641,21 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_MAX_CONNECTIONS` | `256` | Concurrent connections (one thread each; long-polls are cheap) |
 | `OBSYNC_LOG` | `info` | `error`, `info`, `debug` |
 
+Sizes (`OBSYNC_BLOBS_CAPACITY`, `OBSYNC_JOURNAL_CAPACITY`, the size term of
+`OBSYNC_FREE_WATERMARK`, `OBSYNC_SCRUB_RATE`) are binary and are spelled
+exactly one way each: a bare byte count (`512`), `B`, the Kubernetes binary
+suffixes `Ki`, `Mi`, `Gi`, `Ti`, or their long forms `KiB`, `MiB`, `GiB`,
+`TiB`. `Gi` and `GiB` are the same multiplier, which is what lets the chart
+hand the server the claim size an operator writes for Kubernetes. Everything
+else is refused rather than guessed at: the decimal SI suffixes (`k`, `M`,
+`G`, `GB`) because Kubernetes reads them as powers of a thousand, a fraction
+(`1.5Gi`) because the grammar admits whole units only -- one form per
+multiplier, deliberately, though the value itself is an exact byte count --
+and any other spelling (`gi`, `GIB`) because one spelling per multiplier is
+what keeps `250G` from ever meaning 250 GiB. A size whose whole-unit product
+does not fit in 64 bits (`17179869184Gi`, exactly 2^64 bytes) is refused
+rather than wrapped.
+
 ## 10. Reference deployment (the reference node)
 
 **Private and owner-only** (owner ruling 2026-09-07). A single-node cluster

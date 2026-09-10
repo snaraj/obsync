@@ -26,6 +26,11 @@
       "type": "string",
       "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti|Pi|Ei|k|K|M|G|T|P|E)?$"
     },
+    "claimSize": {
+      "description": "A claim size the SERVER is also told (OBSYNC_*_CAPACITY, chart/values.yaml). Kubernetes binary quantities only, so the one string is valid to both readers: the API server's decimal suffixes would over-state the volume by 7 per cent and make the free-space watermark fire late, and the server's own KiB/MiB/GiB/TiB spelling is not a quantity the API server accepts.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti)$"
+    },
     "kubernetesName": {
       "type": "string",
       "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
@@ -41,7 +46,7 @@
       "required": ["className", "size", "capacity"],
       "properties": {
         "className": { "$ref": "#/definitions/kubernetesName" },
-        "size": { "$ref": "#/definitions/storageQuantity" },
+        "size": { "$ref": "#/definitions/claimSize" },
         "capacity": { "$ref": "#/definitions/storageQuantity" }
       }
     },

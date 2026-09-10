@@ -4,6 +4,58 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.10 - Unreleased
+
+- The chart's own defaults could not start the server, and both halves of
+  that are fixed here. `chart/values.yaml` declares each claim as a
+  Kubernetes quantity (`250Gi`, `4Gi`) and the Deployment renders it verbatim
+  into `OBSYNC_BLOBS_CAPACITY` / `OBSYNC_JOURNAL_CAPACITY`, but the server's
+  size grammar knew only `KiB`/`MiB`/`GiB`/`TiB` and lower-cased what it read,
+  so `Gi` was not a size and the pod exited on its own chart's defaults. The
+  Service is named `obsync`, so a kubelet with service links on also injected
+  `OBSYNC_SERVICE_HOST`, `OBSYNC_SERVICE_PORT` and `OBSYNC_PORT_*` -- and an
+  unknown `OBSYNC_*` name is a startup error by design, which is a second
+  refusal on the same first boot.
+
+- **Size grammar, one spelling per multiplier.** `parse_size` (and therefore
+  `OBSYNC_BLOBS_CAPACITY`, `OBSYNC_JOURNAL_CAPACITY`, `OBSYNC_SCRUB_RATE` and
+  the size term of `OBSYNC_FREE_WATERMARK`) now accepts a bare byte count
+  (`512`), `B`, the Kubernetes binary suffixes `Ki`, `Mi`, `Gi`, `Ti`, and
+  their long forms `KiB`, `MiB`, `GiB`, `TiB`; `Gi` and `GiB` are the same
+  multiplier. The suffix is matched case-sensitively after trimming.
+  COMPATIBILITY, for both `OBSYNC_*_CAPACITY` and `OBSYNC_FREE_WATERMARK`:
+  the single letters `k`, `m`, `g`, `t` and every lower- or upper-case
+  spelling (`gib`, `GIB`, `4mib`, `512b`) are DROPPED and now refuse the
+  start. A value using one must be rewritten -- `250g` becomes `250Gi`,
+  `1%,2g` becomes `1%,2Gi`, `64m` becomes `64Mi`. Nothing in this repository,
+  its charts, its compose file or its README used a dropped form. The reason
+  they are gone is that Kubernetes reads a single letter as a power of a
+  thousand, so keeping them binary made `250G`-shaped input ambiguous in
+  exactly the direction that over-states a volume and makes the free-space
+  watermark fire late. Decimal SI (`G`, `GB`) is refused for that reason;
+  a fraction (`1.5Gi`) is refused for a different one, that the grammar
+  deliberately admits whole units of one multiplier and nothing else -- the
+  value is an exact byte count, it is simply not a spelling this grammar has.
+  A whole-unit size whose product does not fit in 64 bits is refused rather
+  than wrapped. The error text now names the accepted forms.
+
+- **Chart.** `values.schema.json` admits only Kubernetes binary quantities
+  for the claim sizes the server is told (`^[1-9][0-9]*(Ki|Mi|Gi|Ti)$`), so a
+  decimal `250G` -- or the server's own `250GiB`, which the API server would
+  refuse -- fails `helm lint` instead of rendering a pod that cannot start.
+  The Deployment sets `enableServiceLinks: false` beside its existing
+  `automountServiceAccountToken: false`; the Service keeps its name and the
+  server's refusal of unknown `OBSYNC_*` names is unchanged and retested.
+
+- **The gate now runs the chart against the binary.** `image-smoke.sh` gains
+  a tenth property: `helm template` renders the deployment, the rendered
+  environment is read from that render through the fail-closed YAML reader
+  (`scripts/ci/chart_pins.py env` -- no variable name, value or mount path is
+  typed into the smoke), and the SHIPPED image is started on exactly those
+  values and must answer `/readyz`. `chart_pins.py environment` holds the
+  render side: service links off, and every quantity either reader refuses is
+  refused by the schema. The container job installs the pinned helm for it.
+
 ## 0.1.9 - Unreleased
 
 - Two exact pins advance, each confirmed from its source before it was
