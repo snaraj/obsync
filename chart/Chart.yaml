@@ -2,6 +2,6 @@ apiVersion: v2
 name: obsync
 description: Self-hosted, end-to-end encrypted live sync server for Obsidian
 type: application
-version: 0.1.8
-appVersion: "0.1.8"
+version: 0.1.9
+appVersion: "0.1.9"
 kubeVersion: ">=1.36.0"

@@ -4,6 +4,24 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.9 - Unreleased
+
+- Two exact pins advance, each confirmed from its source before it was
+  written rather than from the proposal text. The runtime base
+  `gcr.io/distroless/static-debian13:nonroot` moves from `sha256:f7f8f729...`
+  to `sha256:1c2c046b...`: `docker buildx imagetools inspect` resolves that
+  tag today to index digest `sha256:1c2c046b...`, and an anonymous registry
+  HEAD accepting only the index media types returns the same
+  `docker-content-digest`. That digest is the multi-arch INDEX, which is what
+  a `FROM` must name for both production platforms; the per-architecture
+  manifests beneath it (`sha256:e754765a...` amd64, `sha256:9381e9b7...`
+  arm64/v8, and four others) are different digests, and pinning one would
+  break the other platform. `docker/setup-qemu-action` moves from `96fe6ef7`
+  (v4.2.0) to `1f40c722` (v4.3.0) in the release publisher, with the version
+  comment updated; the tag `v4.3.0` in that repository is a lightweight tag
+  resolving to exactly that commit. The `library/node` major bump is held
+  under issue #32 and the node stage is untouched here.
+
 ## 0.1.8 - Unreleased
 
 - A dismissed alert GitHub has stamped `fixed_at` is skipped, counted and
