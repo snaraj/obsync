@@ -599,6 +599,12 @@ scan. A local move across the boundary is a deletion from the selected
 source or creation at the selected destination; it never transfers a
 remembered excluded file identity into the selection.
 
+Unloading the plugin invalidates pending startup and scope-change
+continuations. A cancelled folder change cannot restart sync or replace a
+newer load's engine or state. A local data write already issued may still
+finish; cancellation asks the user to check the saved selection after
+restart, without claiming either a successful change or an undone write.
+
 **No blind history replay.** Once this device has sync history, its
 selection may only narrow. Adding folders or returning to whole-vault mode
 is refused with an explanation: the skipped history has not been applied,

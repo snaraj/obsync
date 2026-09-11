@@ -546,6 +546,8 @@ export default class ObsyncPlugin extends Plugin {
   updateAvailable: string | null = null;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
+  /** Invalidates continuations from an earlier load, including a load with no engine yet. */
+  private lifecycle: object | null = {};
   private changingScope = false;
   private readonly manualFetches = new Set<Promise<string>>();
 
@@ -554,10 +556,14 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   override async onload(): Promise<void> {
-    this.state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
+    const generation = this.lifecycle = {};
+    this.changingScope = false;
+    const state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
       this.log("state decision=refused reason=load_failed");
       throw error;
     });
+    if (!this.isCurrent(generation)) return;
+    this.state = state;
     this.host = new ObsidianHost(this);
     this.transport = new Transport({
       request: (request) => requestUrl(request),
@@ -607,12 +613,14 @@ export default class ObsyncPlugin extends Plugin {
 
     this.registerVaultEvents();
     if (this.state.paired) await this.startEngine();
-    void this.checkForUpdate();
+    if (this.isCurrent(generation)) void this.checkForUpdate();
   }
 
   override onunload(): void {
-    this.engine?.stop();
+    this.lifecycle = null;
+    const engine = this.engine;
     this.engine = null;
+    engine?.stop();
   }
 
   private registerVaultEvents(): void {
@@ -658,20 +666,30 @@ export default class ObsyncPlugin extends Plugin {
 
   // --- lifecycle ---------------------------------------------------------
 
+  private isCurrent(generation: object | null): boolean {
+    return generation !== null && generation === this.lifecycle;
+  }
+
   async startEngine(): Promise<void> {
-    if (!this.state.paired || this.changingScope) return;
+    const generation = this.lifecycle;
+    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope) return;
     const previous = this.engine;
     await previous?.stopAndWait();
-    if (this.changingScope || this.engine !== previous) return;
-    this.engine = new SyncEngine({
+    if (!this.isCurrent(generation) || this.changingScope || this.engine !== previous) return;
+    const engine: SyncEngine = new SyncEngine({
       state: this.state,
       transport: this.transport,
       host: this.host,
-      onStatus: (status) => this.setStatus(status),
+      onStatus: (status) => {
+        if (this.engine === engine) this.setStatus(status);
+      },
     });
+    this.engine = engine;
     try {
-      await this.engine.start();
+      await engine.start();
     } catch (error) {
+      engine.stop();
+      if (this.engine !== engine) return;
       this.engine = null;
       this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
@@ -708,6 +726,14 @@ export default class ObsyncPlugin extends Plugin {
 
   /** A local scope change never alters policy on the server or replays old versions. */
   async saveSyncFolders(value: string[] | undefined): Promise<void> {
+    const generation = this.lifecycle;
+    const assertActive = (): void => {
+      if (!this.isCurrent(generation)) {
+        throw new Error("obsync: plugin unloaded during the folder change; restart Obsidian to check the saved selection.");
+      }
+    };
+    assertActive();
+    const state = this.state;
     let folders: string[] | undefined;
     try {
       folders = value === undefined ? undefined : parseSyncFolders(value);
@@ -716,9 +742,9 @@ export default class ObsyncPlugin extends Plugin {
       throw error;
     }
     const assertChange = (): void => {
-      const used = this.state.data.lastSeq !== 0 || Object.keys(this.state.data.files).length !== 0 ||
-        Object.keys(this.state.data.remoteOnly).length !== 0;
-      if (used && expandsSyncScope(this.state.data.syncFolders, folders)) {
+      const used = state.data.lastSeq !== 0 || Object.keys(state.data.files).length !== 0 ||
+        Object.keys(state.data.remoteOnly).length !== 0;
+      if (used && expandsSyncScope(state.data.syncFolders, folders)) {
         this.log("scope decision=refused reason=expansion_requires_resync");
         throw new Error(SCOPE_EXPANSION_MESSAGE);
       }
@@ -730,24 +756,31 @@ export default class ObsyncPlugin extends Plugin {
       // Scope changes take effect only after old work is quiescent. A
       // stopped long poll may finish, but must not advance its cursor.
       await this.engine?.stopAndWait();
+      assertActive();
       this.engine = null;
       await Promise.allSettled(this.manualFetches);
+      assertActive();
       assertChange();
-      const previous = this.state.data.syncFolders;
-      this.state.data.syncFolders = folders;
+      const previous = state.data.syncFolders;
+      state.data.syncFolders = folders;
       try {
-        await this.state.save();
+        await state.save();
       } catch (error) {
-        this.state.data.syncFolders = previous;
+        state.data.syncFolders = previous;
         throw error;
       }
+      assertActive();
       this.log(`scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0}`);
     } catch (error) {
-      this.log("scope decision=failed reason=not_saved");
-      this.setStatus({ kind: "error", message: "Folder selection was not saved. Sync is stopped; retry before restarting Obsidian." });
+      if (this.isCurrent(generation)) {
+        this.log("scope decision=failed reason=not_saved");
+        this.setStatus({ kind: "error", message: "Folder selection was not saved. Sync is stopped; retry before restarting Obsidian." });
+      } else {
+        this.log("scope decision=cancelled reason=plugin_unloaded");
+      }
       throw error;
     } finally {
-      this.changingScope = false;
+      if (this.isCurrent(generation)) this.changingScope = false;
     }
     await this.startEngine();
   }
@@ -909,15 +942,17 @@ export default class ObsyncPlugin extends Plugin {
    * a key pinned in the installed plugin are a v0.2 item.
    */
   async checkForUpdate(): Promise<void> {
-    if (this.state.data.serverUrl === "") return;
+    const generation = this.lifecycle;
+    if (!this.isCurrent(generation) || this.state.data.serverUrl === "") return;
     try {
       const remote = await this.transport.pluginManifest();
+      if (!this.isCurrent(generation)) return;
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
       this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
       new Notice(`obsync: ${updateMessage(remote.version, this.manifest.version)}`, 15000);
     } catch (error) {
-      this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
+      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

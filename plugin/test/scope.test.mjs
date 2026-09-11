@@ -531,3 +531,265 @@ test("a queued rename survives a scope-change stop and is published on the next 
   r.server.releaseFeed();
   await finished;
 });
+
+/** Real plugin lifecycle and engine ownership; only host UI and pending I/O are replaced. */
+async function lifecyclePlugin(t) {
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const Engine = box.require(join(box.home, "build/sync/engine.js")).SyncEngine;
+  const instance = new Plugin();
+  const r = await fakeState();
+  const logs = [], statuses = [], mounts = [];
+  instance.state = r.state;
+  instance.log = (line) => logs.push(line);
+  instance.host = { log: (line) => logs.push(line) };
+  instance.setStatus = (status) => statuses.push(status);
+  instance.manifest = { version: "0.1.11" };
+  instance.app = { vault: { adapter: {}, on: () => ({}) } };
+  instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
+  for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
+    instance[method] = () => mounts.push(method);
+  }
+  instance.loadData = async () => ({});
+  instance.saveData = async () => undefined;
+  return { instance, Engine, logs, statuses, mounts, ...r };
+}
+
+test("disabling during a scope save cancels the selection and never starts another engine", async (t) => {
+  const { instance, Engine, state, saved, statuses } = await lifecyclePlugin(t);
+  let starts = 0;
+  Engine.prototype.start = async () => { starts++; };
+  const active = deferred();
+  instance.engine = { stop: () => undefined, stopAndWait: () => active.promise };
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*check the saved selection/);
+  instance.onunload();
+  active.resolve();
+  await saving;
+  assert.equal(starts, 0);
+  assert.equal(instance.engine, null);
+  assert.equal(state.data.syncFolders, undefined);
+  assert.equal(saved(), null);
+  assert.deepEqual(statuses, [], "cancelled work must not update an unloaded UI");
+});
+
+test("disabling while a manual download drains prevents the pending scope from being saved", async (t) => {
+  const { instance, state, saved } = await lifecyclePlugin(t);
+  const download = deferred();
+  instance.manualFetches.add(download.promise);
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded/);
+  await new Promise(setImmediate);
+  instance.onunload();
+  download.resolve("done");
+  await saving;
+  assert.equal(saved(), null);
+  assert.equal(state.data.syncFolders, undefined);
+  assert.equal(instance.engine, null);
+});
+
+test("an already-issued scope write may finish after unload but cannot report success or restart", async (t) => {
+  const { instance, Engine, state, saved, logs, statuses } = await lifecyclePlugin(t);
+  let starts = 0;
+  Engine.prototype.start = async () => { starts++; };
+  const entered = deferred(), write = deferred();
+  const save = state.save.bind(state);
+  state.save = async () => { entered.resolve(); await write.promise; await save(); };
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*check the saved selection/);
+  await entered.promise;
+  instance.onunload();
+  write.resolve();
+  await saving;
+  assert.deepEqual(saved().syncFolders, ["Notes"], "a persistence operation already issued cannot be recalled");
+  assert.equal(starts, 0);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(logs, ["scope decision=cancelled reason=plugin_unloaded"]);
+});
+
+test("a cancelled scope save cannot clear a later load's engine or unlock its active scope edit", async (t) => {
+  const { instance, saved } = await lifecyclePlugin(t);
+  const oldWork = deferred(), newWork = deferred();
+  t.after(() => { oldWork.resolve(); newWork.resolve(); });
+  instance.engine = { stop: () => undefined, stopAndWait: () => oldWork.promise };
+  const oldSave = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded/);
+  instance.onunload();
+  await instance.onload();
+  const replacement = { stop: () => undefined, stopAndWait: () => newWork.promise };
+  instance.engine = replacement;
+  const newSave = instance.saveSyncFolders([]);
+  oldWork.resolve();
+  await oldSave;
+  assert.equal(instance.engine, replacement, "an earlier continuation cannot clear a new engine");
+  let refusal;
+  const competing = instance.saveSyncFolders(["Notes"]).catch((error) => { refusal = error; });
+  await new Promise(setImmediate);
+  assert.match(refusal?.message ?? "", /already being saved/);
+  assert.equal(saved(), null, "the old state was never written");
+  newWork.resolve();
+  await newSave;
+  await competing;
+  assert.deepEqual(instance.state.data.syncFolders, []);
+});
+
+test("a failed old scope write cannot roll back the selection loaded by a new plugin lifecycle", async (t) => {
+  const { instance, state, statuses } = await lifecyclePlugin(t);
+  const entered = deferred(), write = deferred();
+  state.save = async () => { entered.resolve(); await write.promise; throw new Error("STORE SENTINEL"); };
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /STORE SENTINEL/);
+  await entered.promise;
+  instance.onunload();
+  instance.loadData = async () => ({ syncFolders: ["Archive"] });
+  await instance.onload();
+  statuses.length = 0;
+  write.resolve();
+  await saving;
+  assert.deepEqual(instance.state.data.syncFolders, ["Archive"]);
+  assert.equal(state.data.syncFolders, undefined);
+  assert.deepEqual(statuses, []);
+});
+
+test("callbacks invoked after unload do not inspect state, start sync or save a selection", async (t) => {
+  const { instance } = await lifecyclePlugin(t);
+  instance.onunload();
+  Object.defineProperty(instance, "state", { get: () => assert.fail("state was accessed after teardown") });
+  await instance.startEngine();
+  await instance.syncNow();
+  await instance.checkForUpdate();
+  await assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded/);
+  assert.equal(instance.syncContext(), null);
+  await assert.rejects(instance.fetchRemoteOnly("SENTINEL"), /not running/);
+});
+
+test("unload cancels startup even when there was no previous engine to drain", async (t) => {
+  const { instance, Engine } = await lifecyclePlugin(t);
+  let starts = 0;
+  Engine.prototype.start = async () => { starts++; };
+  const starting = instance.startEngine();
+  instance.onunload();
+  await starting;
+  assert.equal(starts, 0);
+  assert.equal(instance.engine, null);
+});
+
+test("unload drops engine ownership before its stop callback can update the UI", async (t) => {
+  const { instance, Engine, statuses } = await lifecyclePlugin(t);
+  Engine.prototype.start = async () => undefined;
+  await instance.startEngine();
+  instance.engine.onStatus({ kind: "syncing", pending: 1 });
+  assert.deepEqual(statuses, [{ kind: "syncing", pending: 1 }]);
+  statuses.length = 0;
+  instance.onunload();
+  assert.deepEqual(statuses, []);
+  assert.equal(instance.engine, null);
+});
+
+test("reload cannot reactivate a pending startup from an earlier lifecycle", async (t) => {
+  const { instance, Engine } = await lifecyclePlugin(t);
+  let starts = 0;
+  Engine.prototype.start = async () => { starts++; };
+  const loaded = deferred();
+  instance.loadData = async () => loaded.promise;
+  const starting = instance.startEngine();
+  instance.onunload();
+  const loading = instance.onload();
+  await starting;
+  assert.equal(starts, 0);
+  loaded.resolve({});
+  await loading;
+  assert.equal(instance.engine, null);
+});
+
+test("an unloaded or superseded state load cannot mount UI, replace state or check for updates", async (t) => {
+  const { instance, state, mounts } = await lifecyclePlugin(t);
+  const first = deferred(), second = deferred();
+  let loads = 0, updates = 0;
+  instance.loadData = async () => (++loads === 1 ? first.promise : second.promise);
+  instance.checkForUpdate = async () => { updates++; };
+  const oldLoad = instance.onload();
+  const newLoad = instance.onload();
+  first.resolve({ syncFolders: ["Notes"] });
+  await oldLoad;
+  assert.equal(instance.state, state);
+  assert.deepEqual(mounts, []);
+  instance.onunload();
+  second.resolve({});
+  await newLoad;
+  assert.deepEqual(mounts, []);
+  assert.equal(updates, 0);
+});
+
+test("unloading during paired startup suppresses late engine status and the startup update probe", async (t) => {
+  const { instance, Engine, state, statuses } = await lifecyclePlugin(t);
+  const entered = deferred(), startup = deferred();
+  let updates = 0;
+  instance.loadData = async () => structuredClone(state.data);
+  instance.checkForUpdate = async () => { updates++; };
+  Engine.prototype.start = async function () {
+    entered.resolve();
+    await startup.promise;
+    this.onStatus({ kind: "syncing", pending: 1 });
+  };
+  const loading = instance.onload();
+  await entered.promise;
+  instance.onunload();
+  statuses.length = 0;
+  startup.resolve();
+  await loading;
+  assert.deepEqual(statuses, []);
+  assert.equal(updates, 0);
+  assert.equal(instance.engine, null);
+});
+
+test("a late startup failure or status cannot clear or overwrite a replacement engine", async (t) => {
+  const { instance, Engine, state, statuses } = await lifecyclePlugin(t);
+  const entered = deferred(), startup = deferred();
+  let starts = 0;
+  Engine.prototype.start = async function () {
+    if (++starts === 1) {
+      entered.resolve();
+      await startup.promise;
+      this.onStatus({ kind: "error", message: "STALE SENTINEL" });
+      throw new Error("STALE SENTINEL");
+    }
+    this.onStatus({ kind: "syncing", pending: 1 });
+  };
+  const starting = instance.startEngine();
+  await entered.promise;
+  instance.onunload();
+  instance.loadData = async () => structuredClone(state.data);
+  await instance.onload();
+  const replacement = instance.engine;
+  assert.ok(replacement);
+  assert.deepEqual(statuses.at(-1), { kind: "syncing", pending: 1 }, "the live status control reached the UI");
+  statuses.length = 0;
+  startup.resolve();
+  await starting;
+  assert.equal(instance.engine, replacement);
+  assert.deepEqual(statuses, []);
+  instance.onunload();
+});
+
+test("failed active startup stops its engine and reports the failure", async (t) => {
+  const { instance, Engine, statuses } = await lifecyclePlugin(t);
+  let stops = 0;
+  const stop = Engine.prototype.stop;
+  Engine.prototype.stop = function () { stops++; return stop.call(this); };
+  Engine.prototype.start = async () => { throw new Error("START SENTINEL"); };
+  await instance.startEngine();
+  assert.equal(stops, 1);
+  assert.equal(instance.engine, null);
+  assert.deepEqual(statuses.at(-1), { kind: "error", message: "START SENTINEL" });
+});
+
+test("update probes finishing after unload cannot notify or log a new result", async (t) => {
+  const { instance, logs } = await lifecyclePlugin(t);
+  const success = deferred(), failure = deferred();
+  let calls = 0;
+  instance.transport = { pluginManifest: async () => (++calls === 1 ? success.promise : failure.promise) };
+  const first = instance.checkForUpdate(), second = instance.checkForUpdate();
+  instance.onunload();
+  success.resolve({ version: "9.0.0" });
+  failure.resolve(Promise.reject(new Error("UPDATE SENTINEL")));
+  await Promise.all([first, second]);
+  assert.equal(instance.updateAvailable, null);
+  assert.deepEqual(logs, []);
+});

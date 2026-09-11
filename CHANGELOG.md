@@ -18,6 +18,11 @@ advances exactly one patch (AGENTS.md, requirement 10).
   move local files into an already selected folder and run Sync now to add
   content within the same vault. The selection does not revoke access to
   previously shared content or sandbox Obsidian, its plugins or the local OS.
+- Disabling the plugin cancels pending startup and folder-change
+  continuations, so a delayed transfer or local save cannot restart sync
+  after unload. Stale startup results cannot replace a newer engine or its
+  status; an already-issued local write may finish and must be checked after
+  restart.
 
 ## 0.1.10 - Unreleased
 
