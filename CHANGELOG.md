@@ -4,6 +4,11 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.13 - Unreleased
+
+- Use Private Sync as the community plugin display name and link the maintainer profile.
+- Compile against the official Obsidian 1.7.2 API declarations and declare the same minimum application version.
+
 ## 0.1.12 - Unreleased
 
 - Use the distinct `obsync-private-sync` installation and pairing-link identity

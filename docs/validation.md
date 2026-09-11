@@ -27,7 +27,7 @@ readiness.
 ## Install through the production path
 
 On each required platform, open the intended vault and use Settings →
-Community plugins → Browse → Obsync → Install → Enable. Record the installed
+Community plugins → Browse → Private Sync → Install → Enable. Record the installed
 version and match it to the reviewed, immutable release. Directory acceptance
 is a prerequisite; a manual file copy, development preview or local archive
 check does not satisfy this installation result. Use normally trusted HTTPS

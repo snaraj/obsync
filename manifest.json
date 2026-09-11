@@ -1,10 +1,10 @@
 {
   "id": "obsync-private-sync",
-  "name": "Obsync",
-  "version": "0.1.12",
-  "minAppVersion": "1.7.0",
+  "name": "Private Sync",
+  "version": "0.1.13",
+  "minAppVersion": "1.7.2",
   "description": "Self-hosted, end-to-end encrypted live sync for your own obsync server.",
   "author": "Samuel Naranjo",
-  "authorUrl": "https://github.com/snaraj/obsync",
+  "authorUrl": "https://github.com/snaraj",
   "isDesktopOnly": false
 }
