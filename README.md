@@ -1,4 +1,4 @@
-# obsync
+# Private Sync
 
 Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md).
 One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
@@ -17,9 +17,9 @@ here on the first release._
 
 ## Get syncing
 
-Run your own server, then install Obsync from Obsidian’s Community Plugins
+Run your own server, then install Private Sync from Obsidian’s Community Plugins
 browser on each device and pair them. The plugin needs an account on your
-own server. There is no Obsync subscription or hosted account. Obsidian uses
+own server. There is no Private Sync subscription or hosted account. Obsidian uses
 its directory and GitHub to install and update the plugin; encrypted sync
 uses only the server and optional network provider you configure.
 
@@ -211,11 +211,11 @@ Copy `obsync-root.crt` to each device and install it:
 ### 2. Set up this computer (the first device)
 
 1. In your vault, open Settings → Community plugins and allow community
-   plugins. Select Browse and search for **Obsync**.
-2. Select **Install**, then **Enable**. If Obsync is not in Browse, its
+   plugins. Select Browse and search for **Private Sync**.
+2. Select **Install**, then **Enable**. If Private Sync is not in Browse, its
    directory listing is not yet available. No hidden folders or manual file
    copies are part of installation.
-3. Open the obsync settings tab. Set **Server URL** to your public URL. If an
+3. Open the Private Sync settings tab. Set **Server URL** to your public URL. If an
    access-controlled edge sits in front of the server, paste its headers
    under **Edge service-token headers**, one per line as `Name: value`.
 4. Under **Sync folders on this device**, choose **Selected folders only**
@@ -237,7 +237,7 @@ Copy `obsync-root.crt` to each device and install it:
 
 ### 3. Pair your phone
 
-1. In the phone's local vault, install and enable **Obsync** through Settings →
+1. In the phone's local vault, install and enable **Private Sync** through Settings →
    Community plugins → Browse. Set the same **Server URL** and connect to
    its private network if needed. The server must provide HTTPS trusted by
    the phone. Choose and save this phone's folder selection before pairing;
@@ -290,7 +290,7 @@ from the **Devices** list in the plugin settings.
 
 ### Restore a retained version
 
-Open **Obsync: Restore from history** in the command palette. Optionally
+Open **Private Sync: Restore from history** in the command palette. Optionally
 enter part of a filename, select **Restart search**, then **Load next**.
 Versions appear oldest first, including retained content of deleted notes.
 Each click checks at most 20 records; an empty filtered page can still have

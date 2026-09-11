@@ -98,7 +98,7 @@ test("the shipped bundle has no path that installs code served by the server", (
     assert.equal(bundle.includes(marker), false, `the bundle still carries ${marker}`);
   }
   assert.ok(bundle.includes("Settings → Community plugins →"), "updates stay in Obsidian's plugin manager");
-  assert.ok(bundle.includes("Check for updates, then update Obsync."));
+  assert.ok(bundle.includes("Check for updates, then update Private Sync."));
 });
 
 test("no ingress, tunnel or access provider is named in the shipped code", () => {

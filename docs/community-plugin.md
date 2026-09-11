@@ -1,21 +1,21 @@
 # Community plugin distribution
 
-Obsync installs and updates through Obsidian's Community Plugins browser on
-desktop and mobile. The server does not install client code. If Obsync is
+Private Sync installs and updates through Obsidian's Community Plugins browser on
+desktop and mobile. The server does not install client code. If Private Sync is
 not listed in Browse, the directory entry is not yet available; manual
 placement of plugin files is not the production installation path.
 
 The directory identity is `obsync-private-sync`; the displayed name is
-Obsync. A pre-directory build using a different ID is a separate installation.
+Private Sync. A pre-directory build using a different ID is a separate installation.
 The plugin does not read or import another installation's settings. Preserve
 its recovery material before removing it, then configure the native install's
-folder selection and pair it through Obsync settings.
+folder selection and pair it through Private Sync settings.
 
 ## Install and connect
 
 1. Open the vault to sync. In Settings → Community plugins, allow community
-   plugins, select Browse, search for Obsync, then Install and Enable.
-2. Open Obsync settings and enter the HTTPS server address supplied by the
+   plugins, select Browse, search for Private Sync, then Install and Enable.
+2. Open Private Sync settings and enter the HTTPS server address supplied by the
    operator. The certificate must already be trusted by the device. Connect
    to the server's private network when it requires one.
 3. Save the folders this device should sync before setup or pairing. For a
@@ -27,7 +27,7 @@ folder selection and pair it through Obsync settings.
 
 Updates use Settings → Community plugins → Check for updates. Obsidian
 downloads the release's `main.js`, `manifest.json` and `styles.css` from
-GitHub. Obsync does not fetch or execute code from the sync server, install a
+GitHub. Private Sync does not fetch or execute code from the sync server, install a
 loader, or update itself. Its server-version notice points to Obsidian's
 plugin manager. A new install and a subsequent native update both require
 real-device validation; an archive test alone proves neither.
