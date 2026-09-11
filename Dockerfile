@@ -16,7 +16,7 @@
 # node:24.19.0-trixie-slim TAG has since moved to other bytes, which is
 # precisely why the reference below is a digest.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:24.19.0-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.8-trixie-slim@sha256:14bf3eac4bf209d906d3c41256597d3ab1f926b2e93a79e9bdfe1efd32454239 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
