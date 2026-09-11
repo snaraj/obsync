@@ -159,7 +159,7 @@ Two jobs, and the split is enforced by permissions rather than convention:
   one successful protected-main PR-gate run with the exact job inventory, plus
   one successful exact-SHA CodeQL run with both matrix jobs.
 - `publish` (`contents: write`, `packages: write`, `id-token: write`) creates
-  or verifies the annotated `vX.Y.Z` tag at the exact source SHA, builds and
+  or verifies the annotated `X.Y.Z` release tag at the exact source SHA, builds and
   pushes `linux/amd64` and `linux/arm64`, **scans the resolved digest for
   HIGH/CRITICAL before signing it**, signs image and OCI chart keyless,
   substitutes the resolved digest into the chart values before packaging,

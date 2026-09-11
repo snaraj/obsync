@@ -9,7 +9,8 @@ owner; expect a reply within a week.
 
 ## Supported versions
 
-Only the latest released version (the newest `vX.Y.Z` tag) is supported.
+Only the latest released version (the newest `X.Y.Z` release) is supported.
+Legacy releases through `v0.1.10` retain their original prefixed tags.
 Fixes ship as new versions, never as re-tags.
 
 ## Posture (what you can rely on)

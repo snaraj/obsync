@@ -115,6 +115,8 @@ test("the manifest ships the values Obsidian and the release path expect", () =>
   // declare; the release contract pins that number to the repository's
   // other locks. A literal here would break on every release.
   const source = JSON.parse(readFileSync(join(plugin, "..", "manifest.json"), "utf8"));
+  assert.deepEqual(readFileSync(join(plugin, "dist", "manifest.json")),
+    readFileSync(join(plugin, "..", "manifest.json")), "the complete canonical manifest is copied byte for byte");
   const pkg = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
   assert.equal(manifest.version, source.version);
   assert.equal(manifest.version, pkg.version);

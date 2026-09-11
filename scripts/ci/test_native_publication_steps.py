@@ -74,6 +74,8 @@ if tool == 'gh':
         state['release'] = dict(id=42, author=actor, tag_name=args[2], name=argument('--title'),
                                 body=Path(argument('--notes-file')).read_text(), draft=True,
                                 immutable=False, prerelease=False, assets=[])
+        if scenario.startswith('release-id:'):
+            state['release']['id'] = json.loads(scenario.split(':', 1)[1])
         done(1 if scenario == 'lost-create-response' else 0)
     if args[:2] == ['release', 'edit']:
         assert args[2] == os.environ['TAG'] and '--draft=false' in args
@@ -92,6 +94,8 @@ if url.netloc == 'ghcr.io':
     done(output='Docker-Content-Digest: ' + state['aliases'][url.path] + '\r\n')
 output = Path(argument('--output'))
 if '--data-binary' in args:
+    record('upload-request')
+    path.write_text(json.dumps(state))
     assert url.scheme == 'https' and url.netloc == 'uploads.github.com'
     assert url.path == '/repos/snaraj/obsync/releases/42/assets'
     name = parse_qs(url.query)['name'][0]
@@ -245,6 +249,16 @@ class NativePublicationSteps(unittest.TestCase):
                 state = json.loads(self.state.read_text())
                 self.assertNotIn('publish', state['calls'])
                 self.assertFalse(state['release']['immutable'])
+
+    def test_invalid_release_ids_refuse_before_any_asset_request(self):
+        for release_id in [None, True, '42', 0, -1, 1.5]:
+            with self.subTest(release_id=release_id):
+                self.state.write_text(json.dumps(dict(release=None, files={}, calls=[])))
+                result = self.run_step('release-id:' + json.dumps(release_id))
+                self.assertNotEqual(result.returncode, 0)
+                calls = json.loads(self.state.read_text())['calls']
+                self.assertNotIn('upload-request', calls)
+                self.assertNotIn('publish', calls)
 
     def test_image_tag_wiring_remains_separate_from_the_native_release_tag(self):
         image_state = self.steps['Classify an absent, complete, or burned image tag']
