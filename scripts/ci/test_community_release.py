@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import io
@@ -46,6 +47,48 @@ def native_arguments(data=None):
 
 
 class NativeReleaseEvidence(unittest.TestCase):
+    def test_cli_reads_at_most_the_archive_budget_plus_one_byte(self):
+        data = bundle()
+        budget = contract.PLUGIN_BUNDLE_MAX_BYTES
+        requested = []
+
+        class Reader(io.BytesIO):
+            def read(self, size=-1):
+                requested.append(size)
+                if size < 0 or size > contract.PLUGIN_BUNDLE_MAX_BYTES + 1:
+                    raise AssertionError("unbounded archive input read")
+                return super().read(size)
+
+        class InputPath:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def open(self, mode):
+                if mode != "rb":
+                    raise AssertionError("archive input must be binary")
+                return Reader(self.payload)
+
+            def read_bytes(self):
+                with self.open("rb") as stream:
+                    return stream.read()
+
+        try:
+            contract.PLUGIN_BUNDLE_MAX_BYTES = len(data)
+            for extra in [b"", b"trailing bytes beyond the budget"]:
+                with self.subTest(oversize=bool(extra)):
+                    args = argparse.Namespace(**native_arguments(data))
+                    args.plugin_bundle = InputPath(data + extra)
+                    parsed = contract._manifest_arguments(args)
+                    self.assertEqual(requested[-1], len(data) + 1)
+                    if extra:
+                        self.assertEqual(len(parsed["plugin_bundle"]), len(data) + 1)
+                        with self.assertRaisesRegex(contract.ContractError, "bounded plugin bundle"):
+                            contract.build_release_manifest(**parsed)
+                    else:
+                        contract.build_release_manifest(**parsed)
+        finally:
+            contract.PLUGIN_BUNDLE_MAX_BYTES = budget
+
     def test_legacy_evidence_and_notes_are_byte_identical_to_the_previous_publisher(self):
         record = contract.build_release_manifest(**manifest_arguments())
         self.assertEqual(hashlib.sha256(contract._canonical_json(record)).hexdigest(),

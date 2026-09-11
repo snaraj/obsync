@@ -1729,6 +1729,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _manifest_arguments(args: argparse.Namespace) -> dict:
+    plugin_bundle = None
+    if args.plugin_bundle:
+        with args.plugin_bundle.open("rb") as stream:
+            # Read one extra byte so an oversized file cannot be accepted as
+            # a valid prefix, without allocating the rest of the input first.
+            plugin_bundle = stream.read(PLUGIN_BUNDLE_MAX_BYTES + 1)
     return {
         "repository": args.repository,
         "source_sha": args.source_sha,
@@ -1739,7 +1745,7 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
         "chart": args.chart,
         "chart_digest": args.chart_digest,
         "plugin_digest": args.plugin_digest,
-        "plugin_bundle": args.plugin_bundle.read_bytes() if args.plugin_bundle else None,
+        "plugin_bundle": plugin_bundle,
     }
 
 
