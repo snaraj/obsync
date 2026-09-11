@@ -5,7 +5,7 @@ One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-> Status: pre-release. The first validated release is `v0.1.0`.
+> Status: pre-release. Native directory installation and v1 device acceptance are pending.
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
      the dashboard and the plugin once they render. Placeholders until then. -->
@@ -17,9 +17,11 @@ here on the first release._
 
 ## Get syncing
 
-The whole path from nothing to a phone and a computer live-syncing the same
-vault. Ten minutes; every step is manual by design, and nothing here needs an
-account with anyone but yourself.
+Run your own server, then install Obsync from Obsidian’s Community Plugins
+browser on each device and pair them. The plugin needs an account on your
+own server. There is no Obsync subscription or hosted account. Obsidian uses
+its directory and GitHub to install and update the plugin; encrypted sync
+uses only the server and optional network provider you configure.
 
 ### 1. Run the server
 
@@ -41,10 +43,10 @@ on the device, and no key that decrypts them ever crosses the wire
 (`docs/architecture.md` section 2.1). "Files of any size" is a promise about
 this server; a provider on the path has its own terms.
 
-Deploy by digest, never by tag. Every Release is signed keyless by this
-repository's publisher and carries `obsync-vX.Y.Z-release-manifest.json`,
-which names the image digest, the chart digest, and the plugin bundle's
-SHA-256. Verify the signature with cosign, read the digest from the verified
+Deploy by digest, never by tag. The image and chart are signed keyless by
+this repository’s publisher. New releases carry
+`obsync-X.Y.Z-release-manifest.json`, which names their digests and the
+SHA-256 of the plugin bundle and each native installation file. Verify the signature with cosign, read the digest from the verified
 payload (it must match the manifest on the Release page), and run exactly
 that digest:
 
@@ -208,29 +210,39 @@ Copy `obsync-root.crt` to each device and install it:
 
 ### 2. Set up this computer (the first device)
 
-1. Download `obsync-plugin-v0.1.0.zip` from the matching GitHub Release and
-   unzip its three files (`main.js`, `manifest.json`, `styles.css`) into
-   `<your vault>/.obsidian/plugins/obsync/`.
-2. In Obsidian: Settings, Community plugins, turn off Restricted mode, enable
-   **obsync**.
+1. In your vault, open Settings → Community plugins and allow community
+   plugins. Select Browse and search for **Obsync**.
+2. Select **Install**, then **Enable**. If Obsync is not in Browse, its
+   directory listing is not yet available. No hidden folders or manual file
+   copies are part of installation.
 3. Open the obsync settings tab. Set **Server URL** to your public URL. If an
    access-controlled edge sits in front of the server, paste its headers
    under **Edge service-token headers**, one per line as `Name: value`.
-4. Under **First-time setup**, paste the setup token. The plugin creates the
+4. Under **Sync folders on this device**, choose **Selected folders only**
+   if the vault also contains code or files you do not want shared. Enter
+   relative folders such as `Notes`, one per line, and click **Save on this
+   device** before setup or pairing. An empty selected list syncs no files;
+   **Whole vault** retains the existing default. Select the final folders
+   now: after sync has history, the selection may only narrow. To stage a
+   first sync within one vault, keep personal files in an excluded folder,
+   test disposable notes inside the selected folder, then move the personal
+   files in and run **Sync now**.
+5. Under **First-time setup**, paste the setup token. The plugin creates the
    account and this device, generates the vault key on this computer, and
    shows the **recovery phrase** (24 words). Write it down and keep it off
    this machine: without any paired device and without this phrase, the vault
    is unrecoverable by design. The server never sees the key.
-5. Sync starts. The status bar shows the state; the command **Sync now**
+6. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
 ### 3. Pair your phone
 
-1. Put the same three plugin files into the vault on the phone. iOS and
-   iPadOS: the Files app, On My iPhone, Obsidian, your vault, `.obsidian`,
-   `plugins`, create `obsync`, paste the files, restart Obsidian, enable the
-   plugin. Android: any file manager, same folder. Set the same **Server
-   URL** (and edge headers).
+1. In the phone's local vault, install and enable **Obsync** through Settings →
+   Community plugins → Browse. Set the same **Server URL** and connect to
+   its private network if needed. The server must provide HTTPS trusted by
+   the phone. Choose and save this phone's folder selection before pairing;
+   the selection is local and is not copied by the pairing code. Files keep
+   their relative folder names.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
    an `obsidian://obsync/pair?code=...` link you can send yourself.
@@ -247,7 +259,7 @@ Copy `obsync-root.crt` to each device and install it:
 On any paired computer, run **Open dashboard**: it mints a one-time sign-in
 link to the dashboard, where you see every device (type, address, country,
 last sign-in, last edit), storage per volume, scrub and garbage-collection
-state, and the install files with their hashes. Revoke a lost device there or
+state, and installation guidance. Revoke a lost device there or
 from the **Devices** list in the plugin settings.
 
 ### What syncs and what does not (v0.1)
@@ -258,6 +270,13 @@ from the **Devices** list in the plugin settings.
   criteria in `docs/architecture.md` section 5.
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
+- A saved folder selection limits obsync's reads, writes and deletions on
+  this device. Narrowing keeps excluded local files and server history.
+  It does not sandbox Obsidian or other plugins, or revoke a paired device's
+  access to content already shared. Keep administration code outside
+  selected folders. Expansion of a used device's selection is refused;
+  moving local files into an already selected folder and running **Sync
+  now** is the supported way to add content within the same vault.
 - On phones, files above **Largest file to download** (512 MiB by default)
   stay on the server and are listed by **Show remote-only files** for
   on-demand fetch; **Total to keep on this device** defaults to 50 GiB. Both
@@ -265,8 +284,33 @@ from the **Devices** list in the plugin settings.
 - Every edit is kept as a version for 30 days and at least the last 10
   versions per file; conflicts never discard an edit (text merges cleanly or
   you get a conflict copy).
-- Updates are manual: the plugin tells you when the server runs a newer
-  version, and you install that Release the same way as the first time.
+- Update through Settings → Community plugins → Check for updates on each
+  device. The plugin never installs code from the sync server. See
+  [installation trust and distribution](docs/community-plugin.md).
+
+### Restore a retained version
+
+Open **Obsync: Restore from history** in the command palette. Optionally
+enter part of a filename, select **Restart search**, then **Load next**.
+Versions appear oldest first, including retained content of deleted notes.
+Each click checks at most 20 records; an empty filtered page can still have
+more history after it. Select **Restore a copy** on a content version to
+create a uniquely named sibling inside the currently selected folder.
+Deletion markers themselves contain no file bytes.
+
+The original file, unsynced edits and original history remain unchanged.
+The notice first confirms a local copy and requests ordinary sync; check
+sync status for upload failures. Device size/budget limits apply to the
+additional copy. Desktop streams into a temporary file and publishes only
+to an unoccupied name; a filesystem without that primitive is refused.
+Mobile buffers the verified file and uses Obsidian's create-only API.
+
+Cancel prevents later work, but Obsidian cannot abort a network request or
+local create already dispatched. A late create may finish; check any copy
+path named in an error before retrying. The network API buffers responses
+before a size check is possible. Reopening history does not start another
+manual request until the outstanding one settles. These are platform
+limits, not a claim of power-loss or real-device validation.
 
 ## What it does
 

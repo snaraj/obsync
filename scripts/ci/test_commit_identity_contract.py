@@ -41,7 +41,9 @@ class TheCleanCaseIsAccepted(unittest.TestCase):
         self.assertEqual(contract.refusals([commit()]), [])
 
     def test_every_roster_signature_is_accepted(self):
-        for signature in contract.LANE_SIGNATURES:
+        # Specify the documented lanes independently: iterating the validator's
+        # own tuple cannot detect an omitted lane.
+        for signature in ("- Fable5.1", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6"):
             with self.subTest(signature=signature):
                 self.assertEqual(
                     contract.refusals([commit(body=f"Subject\n\nBody.\n\n{signature}")]), []
@@ -94,6 +96,32 @@ class TrailerRefusals(unittest.TestCase):
 
 
 class SignatureRefusals(unittest.TestCase):
+    def test_gpt6_near_matches_and_unknown_lanes_are_refused(self):
+        for signature in (
+            "- GPT6",
+            "- gpt-6",
+            "- GPT-60",
+            "- GPT-7",
+            "- UnknownLane",
+            " - GPT-6",
+            "- GPT-6 (adversarial reviewer)",
+            "- GPT-6\nafterword",
+        ):
+            with self.subTest(signature=signature):
+                self.assertIn(
+                    "signature", rules([commit(body=f"Subject\n\nBody.\n\n{signature}")])
+                )
+
+    def test_gpt6_acceptance_does_not_lift_other_identity_rules(self):
+        body = "Subject\n\nBody.\n\n- GPT-6"
+        self.assertEqual(rules([commit(author=STRANGER, body=body)]), {"identity"})
+        self.assertEqual(rules([commit(committer=STRANGER, body=body)]), {"identity"})
+        for trailer in ("Co-Authored-By: Someone", "Claude-Session: sentinel", "Signed-off-by: Someone"):
+            with self.subTest(trailer=trailer):
+                self.assertEqual(
+                    rules([commit(body=f"Subject\n\n{trailer}\n\n- GPT-6")]), {"trailer"}
+                )
+
     def test_a_missing_or_foreign_signature_is_refused(self):
         for body in (
             "Subject only",

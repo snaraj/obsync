@@ -52,6 +52,7 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, FileRecord, VersionAck, VersionPost } from "../transport";
+import { assertSyncPath } from "../syncScope";
 import { assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
@@ -120,7 +121,7 @@ async function uploadMissing(
  * on every other device.
  */
 export async function pushFile(context: SyncContext, path: string, force = false): Promise<PushOutcome> {
-  assertVaultPath(path);
+  assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
   if (!stat) throw new Error(`push: ${path} disappeared`);
   const record = context.state.fileByPath(path);
@@ -223,6 +224,7 @@ export async function postManifest(
   manifest: Manifest,
   bytes: number,
 ): Promise<{ versionId: string; ack: VersionAck }> {
+  assertSyncPath(manifest.path, context.state.data.syncFolders);
   const binder = await contentVersionId(fileId, parents, sids);
   const { nonce, ciphertext } = await encryptManifest(
     context.manifestKey,

@@ -63,7 +63,7 @@ GITHUB_MERGE_EMAIL = "noreply@github.com"
 # The AGENTS.md "Agent labels" roster, signature side. A signature and its
 # label move together; adding an agent means editing this tuple and the
 # contract in the same PR.
-LANE_SIGNATURES = ("- Fable5.1", "- Opus5", "- Sonnet5", "- 5.6 Sol")
+LANE_SIGNATURES = ("- Fable5.1", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6")
 
 RULES = ("identity", "trailer", "signature")
 

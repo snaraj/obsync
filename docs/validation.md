@@ -24,21 +24,28 @@ a publicly trusted certificate are optional conveniences layered on top; each
 is validated only if it is actually deployed, and never as a condition of
 readiness.
 
-## Install (first time, manual by design)
+## Install through the production path
 
-Community-plugin restricted mode must be off. Copy `main.js`,
-`manifest.json`, and `styles.css` (downloaded from the dashboard's Install
-page or the GitHub Release) into `<vault>/.obsidian/plugins/obsync/`:
+On each required platform, open the intended vault and use Settings →
+Community plugins → Browse → Obsync → Install → Enable. Record the installed
+version and match it to the reviewed, immutable release. Directory acceptance
+is a prerequisite; a manual file copy, development preview or local archive
+check does not satisfy this installation result. Use normally trusted HTTPS
+for the production device campaign, with private connectivity when deployed.
 
-- **macOS / Windows / Linux:** Finder or Explorer; then Settings →
-  Community plugins → enable obsync.
-- **iOS / iPadOS:** the Files app → On My iPhone → Obsidian → `<vault>` →
-  `.obsidian` (hidden folders are visible in Files) → `plugins` → create
-  `obsync` → paste the three files; restart Obsidian; enable the plugin.
-- **Android:** any file manager on the vault folder; same layout.
+Before setup or pairing, save the final **Sync folders on this device**
+selection independently on each device. For a staged first sync in one
+vault, keep personal files in an excluded staging folder and validate only
+disposable notes inside the selected folder. After acceptance, move the
+personal files into that selected folder and run **Sync now**. This needs
+no expansion, state reset or re-pairing over existing files. Narrowing a
+used selection is supported; expansion requires safe current-head resync,
+which this version does not implement.
 
-Updates are manual as well: the plugin says when the server runs a newer
-version; install the matching GitHub Release the same way.
+Validate a subsequent update using Community plugins → Check for updates.
+Confirm the installed version, preserved pairing and folder selection, then
+repeat bidirectional note sync. Local bundle equality is not native-update
+evidence.
 
 ## Scenarios
 
@@ -59,6 +66,15 @@ version; install the matching GitHub Release the same way.
 | V13 | Off-LAN sync from iPhone over cellular, over the private path (VPN back to the network, or the deployed tunnel if one exists) | edits sync both ways with no public route in use |
 | V14 | Dashboard from a phone browser | usable at 390 px wide |
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
+
+For V8, after verifying the original tombstone on the required devices, use
+the native **Restore from history** command, find a retained content version
+of that deleted note, and select **Restore a copy**. Verify the recovered
+bytes under its new sibling name locally and after ordinary sync on the
+other devices. Preserve and compare any current unsynced original before
+and after the action. The deletion marker and original history must remain
+unchanged. A local-copy notice or an operator API script alone does not
+satisfy this native-device evidence.
 
 ## Routes
 

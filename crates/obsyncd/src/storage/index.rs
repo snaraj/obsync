@@ -1,9 +1,9 @@
 //! The in-memory index: what the journal replays into and what queries read.
 //!
-//! docs/architecture.md §6.1: the journal is the source of truth and the
-//! index is derived. Every mutation therefore goes through [`Index::apply`],
-//! on the live path and on the replay path alike, so a replayed store and a
-//! running store cannot drift: there is only one implementation of each rule.
+//! docs/architecture.md §6.1: journalled metadata is derived through
+//! [`Index::apply`] on both the live and replay paths. Chunk inventory is
+//! derived from primary-volume files, updated with each physical mutation
+//! under the SID lock and rebuilt by the startup scan, not by scrub summaries.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ pub(crate) struct Index {
 }
 
 impl Index {
-    /// Apply one journal record. This is the only way the index changes.
+    /// Apply one journal record to the derived metadata.
     pub(crate) fn apply(&mut self, record: &Record) {
         if record.seq > self.seq {
             self.seq = record.seq;
@@ -199,9 +199,10 @@ impl Index {
                 self.last_gc = Some(summary.clone());
             }
             Frame::Scrub { summary } => {
-                for sid in &summary.quarantined {
-                    self.forget_chunk(sid);
-                }
+                // A summary records what that pass completed. Inventory is
+                // changed under the SID lock with the physical operation,
+                // and rebuilt from the blob volume on startup. Forgetting
+                // here could discard a reupload that beat this later frame.
                 self.last_scrub = Some(summary.clone());
             }
         }
@@ -301,6 +302,16 @@ impl Index {
     pub(crate) fn forget_chunk(&mut self, sid: &Sid) {
         if let Some(meta) = self.chunks.remove(sid) {
             self.used_bytes = self.used_bytes.saturating_sub(meta.len);
+        }
+    }
+
+    /// A scrub observes the actual length, which corruption may have changed.
+    /// Keep age and verification history while correcting usage even if the
+    /// subsequent quarantine is refused.
+    pub(crate) fn resize_chunk(&mut self, sid: &Sid, len: u64) {
+        if let Some(meta) = self.chunks.get_mut(sid) {
+            self.used_bytes = self.used_bytes.saturating_sub(meta.len).saturating_add(len);
+            meta.len = len;
         }
     }
 

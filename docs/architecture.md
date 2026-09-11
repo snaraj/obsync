@@ -568,20 +568,130 @@ returns immediately when a new frame lands.
    the mobile per-file ceiling exists. Both facts are stated in the
    settings UI.
 
+### 6.2.1 Device-local folder selection
+
+Before pairing a vault that contains more than notes, select the folders
+obsync may touch under **Sync folders on this device**. The optional
+`syncFolders` field lives only in the local plugin data: missing keeps the
+existing whole-vault behavior, `[]` syncs no files, and a list such as
+`["Notes", "Attachments"]` syncs descendants of those relative folders.
+The exact folder name is a directory, never an admitted file; `NotesExtra/`
+does not match `Notes`. Absolute, traversing, hidden or otherwise malformed
+entries are refused as a whole. A malformed persisted selection stops the
+plugin loading instead of falling back to the whole vault.
+
+The selection is independent of the domain map and download ceilings. It
+never travels in pairing, the map, device policy or heartbeat, and a paired
+device cannot change another device's selection. In selected mode the host
+starts at the named cached folders rather than enumerating the vault. Both
+the engine and host check scope before file operations; the desktop walk
+may inspect selected directories and their ancestors, but no unrelated
+subtree. Remote manifests, remembered sources for rename/delete/conflict,
+on-demand downloads and merge ancestors must all be in scope. Excluded
+remote changes are logged and skipped without fetching content, touching
+the filesystem or adding a remote-only entry; the feed continues.
+
+Saving waits for current transfers and manual downloads to finish, stops
+queued work, persists the selection, then rescans. Excluded files, history
+and local records stay intact; their absence from a scoped scan cannot
+create a tombstone. An unposted rename retains a dirty record for the next
+scan. A local move across the boundary is a deletion from the selected
+source or creation at the selected destination; it never transfers a
+remembered excluded file identity into the selection.
+
+Unloading the plugin invalidates pending startup and scope-change
+continuations. A cancelled folder change cannot restart sync or replace a
+newer load's engine or state. A local data write already issued may still
+finish; cancellation asks the user to check the saved selection after
+restart, without claiming either a successful change or an undone write.
+
+**No blind history replay.** Once this device has sync history, its
+selection may only narrow. Adding folders or returning to whole-vault mode
+is refused with an explanation: the skipped history has not been applied,
+and rewinding the chronological feed could overwrite newer local notes.
+To add local content within the same vault, move it into a folder already
+selected and run **Sync now**. For a staged first sync, select the final
+folder before pairing, keep personal files in an excluded staging folder
+within the vault, validate disposable files inside the selected folder,
+then move in the personal files. A different selection for an existing
+shared vault needs a fresh local vault configured before pairing; deleting
+plugin state or re-pairing over existing files is not a safe resync recipe.
+Automatic reconciliation of current heads on expansion is not implemented.
+
+This limits obsync's file operations, not the Obsidian application, another
+plugin, an OS process or a paired device's access to previously uploaded
+content. It is not a recipient permission or an OS sandbox. Keep executable
+administration files outside selected folders; a remote edit inside a
+selected folder is still untrusted content. Desktop and mobile apply the
+same selection; the existing platform filesystem and memory limits remain.
+
+### 6.2.2 Native retained-history recovery
+
+**Restore from history** reads the retained change feed with its own cursor,
+never `State.lastSeq`, and never calls the feed application path. Each
+click performs at most 20 serial, single-attempt requests with `wait=0` and
+`limit=1`, stopping after five seconds plus the current request. One
+contract-conforming response is under 6 MiB (at most 120 MiB cumulatively
+per click); only one full response and 20 compact row descriptors are held.
+The first response fixes the scan's head. Cursor progress is validated and
+later records above that boundary are discarded. GC removes pruned versions
+from the feed; retained content of deleted files remains browseable.
+
+The selected version is fetched again by exact file/version id and checked
+against the protocol id, authenticated manifest, domain and current folder
+selection. A new sibling name is refused if occupied or remembered by local
+file/remote-only state. Restore drains existing sync and manual downloads,
+blocks competing starts/fetches/restores, and measures scoped local bytes
+before download and again immediately before publication. Current policy
+is checked again at the write boundary. External file writers can still
+change usage between measurement and publication: this is device policy
+admission, not an atomic filesystem quota.
+
+Desktop creates an exclusive mode-0600 hidden sibling temporary file, streams
+and verifies content, flushes it, and publishes with a same-directory hard
+link that cannot replace a destination. It syncs the destination directory
+and retains directory/inode confinement checks. Unsupported publication
+primitives are errors; there is no overwriting fallback. Abort removes only
+the attempt's temporary inode. A crash can leave a hidden temporary file;
+it is excluded from sync, and recovery never automatically deletes unknown
+temporary names. Mobile holds the completed file in memory and calls
+`Vault.createBinary`, which rejects an existing destination. It exposes no
+streaming writer or fsync primitive.
+
+History operations are invalidated on modal close, unload, engine/identity
+replacement and scope change. A same-instance reload waits for older
+restore/manual-download settlement before loading state, then only the
+current load generation resumes sync, including after publication errors.
+Network cancellation detaches the waiter,
+but a shared outstanding-request guard prevents another manual request
+until the old one settles. `requestUrl` exposes neither abort nor streaming
+or a pre-buffer byte ceiling; the size check runs before JSON parsing, after
+Obsidian has buffered the response. A local publication already dispatched
+must settle. It is never undone after cancellation: success is a local-copy
+receipt, and an uncertain outcome names the path to check.
+
+The copy is untracked and receives no pull echo marker. Ordinary watcher
+ingestion/reconciliation gives it a fresh file id and posts its own history;
+the original heads remain unchanged. Ordinary startup runs separately so
+its retries cannot delay the local-copy receipt. That notice does not claim
+remote sync. Native desktop/mobile validation and V8 evidence remain
+separate from source and isolated tests.
+
 ### 6.3 Updates
 
 The plugin never installs code it fetched from the server: a server or a
 TLS terminator that could replace both the bytes and the hash it serves
 would otherwise gain the vault key at the next reload. In v0.1 the plugin
 only compares its version with `GET /v1/plugin/manifest` on start and
-tells the user when the server runs a newer one; the user installs the
-matching GitHub Release (whose evidence manifest carries the bundle's
-SHA-256) by copying the three files into `.obsidian/plugins/obsync/`, as
-on the first install. The server still serves the bundle at
-`GET /v1/plugin/{manifest,bundle,styles}` as a convenience copy for the
-Install page, with hashes to compare against the Release. Signed updates
-verified against a key pinned in the installed plugin are a v0.2 item
-that needs an owner decision on signing-key custody.
+tells the user when the server runs a newer one. Installation and updates
+use Obsidian's Community Plugins browser, which downloads the three native
+files from the matching GitHub Release. The server still exposes
+`GET /v1/plugin/{manifest,bundle,styles}` for compatibility and diagnostics;
+the plugin never fetches code through them. The release's v2 evidence binds
+the individual files to the same ZIP and build as the server. The native
+installer does not document verification of this project's Cosign evidence;
+see `docs/community-plugin.md` for the actual client trust model. A separate
+pinned-key verifier is not part of this installation path.
 
 ## 7. Storage, durability, replication
 

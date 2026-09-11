@@ -168,7 +168,7 @@ pub(crate) struct Journal {
     unverified: Option<io::ErrorKind>,
     log: Log,
     #[cfg(test)]
-    fault: Mutex<Fault>,
+    fault: Arc<Mutex<Fault>>,
 }
 
 impl Journal {
@@ -177,6 +177,13 @@ impl Journal {
         let root = cfg.journal_dir.join("v1");
         make_dir(&root.join("journal"))?;
         make_dir(&root.join("index"))?;
+        // Quarantine temps can survive a failed copy/cleanup or a crash.
+        // They are never the only durable copy: the primary is not removed
+        // until a final quarantine name and its directories are synced.
+        let removed = clean_quarantine_temps(&root.join("quarantine"))?;
+        if removed > 0 {
+            log.info("quarantine_tmp_removed", &[("files", Val::count(removed))]);
+        }
         let mut journal = Journal {
             root,
             segment: None,
@@ -191,7 +198,7 @@ impl Journal {
             unverified: None,
             log,
             #[cfg(test)]
-            fault: Mutex::new(Fault::None),
+            fault: Arc::new(Mutex::new(Fault::None)),
         };
         journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
         journal.measure_volume("open")?;
@@ -207,7 +214,7 @@ impl Journal {
     /// - the open segment's DURABLE length, owned by `append`;
     /// - everything else the last walk surveyed (the other segments, the
     ///   snapshots, the credentials, the lock), owned by `measure_volume`;
-    /// - the quarantine, owned by the scrub through [`Journal::quarantined`];
+    /// - the quarantine, remeasured by the scrub before and after each attempt;
     /// - the nonce log, owned by the API lane through the handle
     ///   [`Journal::nonce_bytes`] returns.
     ///
@@ -247,21 +254,26 @@ impl Journal {
         self.measure_volume(at)
     }
 
-    /// Account for what a quarantine attempt did to one name.
-    ///
-    /// `was` and `now` are that name's size before and after, read off the
-    /// volume both times. Two numbers rather than one because there are four
-    /// outcomes and only this shape covers them all: a move onto an empty
-    /// name (0 to N), a move onto a quarantine an earlier pass left (M to N,
-    /// and M is no longer there), a `rename` that refused (0 to 0), and a
-    /// move whose directory fsync then failed (0 to N, because the bytes did
-    /// move). The caller holds the journal guard across the move and this
-    /// call, so no survey and no watermark reader sees a state between them.
-    pub(crate) fn quarantined(&mut self, was: u64, now: u64) {
-        self.quarantine_bytes = self
-            .quarantine_bytes
-            .saturating_add(now)
-            .saturating_sub(was);
+    /// Admit the PEAK copy space, including the old destination and every
+    /// leftover. A replacement still needs one complete extra copy before
+    /// its destination can be replaced. The caller retains the journal guard
+    /// until it remeasures all residue, whatever the operation's outcome.
+    pub(crate) fn admit_quarantine(&mut self, bytes: u64) -> Result<(), StoreError> {
+        self.measure_volume("quarantine_before")
+            .map_err(|_| StoreError::JournalUnverified {
+                io: self.unverified.expect("a refused survey records its kind"),
+            })?;
+        let free = self.capacity.saturating_sub(self.tracked_bytes());
+        if free
+            .checked_sub(bytes)
+            .is_none_or(|remaining| remaining < self.watermark)
+        {
+            return Err(StoreError::JournalFull {
+                free,
+                watermark: self.watermark,
+            });
+        }
+        Ok(())
     }
 
     /// The kind of the failure that faulted this journal, if it is faulted.
@@ -283,10 +295,9 @@ impl Journal {
 
     /// Re-survey the part of the volume nobody keeps a running total for.
     ///
-    /// A walk, but of `O(segments + snapshots)` entries rather than of a
-    /// vault, and only where the set of those files changes: the open, a
-    /// roll, the end of a replay, and the prune every snapshot ends in. The
-    /// APPEND path is what may not walk, and it does not.
+    /// A walk of journal entries, snapshots and quarantine residue rather
+    /// than a vault: at open, a roll, replay, snapshot prune, and around a
+    /// quarantine attempt. An ordinary verified APPEND does not walk.
     ///
     /// The quarantine is re-measured here too, because this is the one place
     /// that can correct it: a start after a crash mid-quarantine, or after
@@ -341,6 +352,10 @@ impl Journal {
     /// that was never true of the volume at any instant, and worse than
     /// either of the two it was made from.
     fn survey_volume(&mut self) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if let Fault::JournalSurveyErrno { code } = *self.fault.lock().expect("fault lock") {
+            return Err(StoreError::Io(io::Error::from_raw_os_error(code)));
+        }
         let mut skip = vec![self.quarantine_dir(), self.root.join(NONCE_FILE)];
         skip.push(self.root.join(NONCE_TMP));
         if self.segment.is_some() {
@@ -362,6 +377,13 @@ impl Journal {
     /// Where quarantined chunks go (docs/storage.md, on-disk layout).
     pub(crate) fn quarantine_dir(&self) -> PathBuf {
         self.root.join("quarantine")
+    }
+
+    /// Arm a survey failure during a quarantine that already holds the
+    /// journal guard, without making the test itself take that guard again.
+    #[cfg(test)]
+    pub(crate) fn fault_handle(&self) -> Arc<Mutex<Fault>> {
+        Arc::clone(&self.fault)
     }
 
     fn segment_path(&self, number: u32) -> PathBuf {
@@ -906,6 +928,31 @@ fn read_exact_or_end(file: &mut File, buf: &mut [u8]) -> Result<Option<()>, Stor
         }
     }
     Ok(Some(()))
+}
+
+fn clean_quarantine_temps(dir: &Path) -> Result<u64, StoreError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(StoreError::Io(e)),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(".tmp-"))
+            && entry.file_type()?.is_file()
+        {
+            fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        fsync_dir(dir)?;
+    }
+    Ok(removed)
 }
 
 fn make_dir(path: &Path) -> Result<(), StoreError> {
@@ -2099,7 +2146,48 @@ mod tests {
     }
 
     #[test]
-    fn the_quarantine_is_counted_between_surveys_and_re_measured_at_one() {
+    fn quarantine_admission_rejects_capacity_underflow_with_zero_watermark() {
+        let dir = TempDir::new("quarantine-zero-watermark");
+        let mut cfg = storage_config(&dir);
+        cfg.journal_capacity = 64;
+        cfg.free_watermark = crate::config::Watermark {
+            percent: 1,
+            bytes: 0,
+        };
+        assert_eq!(
+            cfg.free_watermark.bytes_for(cfg.journal_capacity),
+            0,
+            "a positive percent-only watermark can round down to zero"
+        );
+        let mut journal = Journal::open(&cfg, Log::buffered(LogLevel::Debug)).expect("open");
+        let quarantine = journal.quarantine_dir();
+        fs::create_dir_all(&quarantine).expect("quarantine");
+        fs::write(quarantine.join("retained-sentinel"), [b'q'; 60]).expect("existing bytes");
+        journal
+            .admit_quarantine(4)
+            .expect("exact remaining capacity fits");
+        for requested in [5, u64::MAX] {
+            assert!(
+                matches!(
+                    journal.admit_quarantine(requested),
+                    Err(StoreError::JournalFull {
+                        free: 4,
+                        watermark: 0
+                    })
+                ),
+                "a copy larger than remaining capacity must refuse even at watermark zero"
+            );
+        }
+        assert_eq!(journal.tracked_bytes(), 60);
+        assert_eq!(
+            volume_total(&dir),
+            60,
+            "admission never writes the requested copy"
+        );
+    }
+
+    #[test]
+    fn the_quarantine_is_remeasured_after_each_attempt_and_at_start() {
         let dir = TempDir::new("journal-quarantine-accounting");
         let mut journal = open_journal(&dir);
         journal.append(&record(1, account_frame())).expect("append");
@@ -2110,7 +2198,9 @@ mod tests {
         let quarantine = journal.quarantine_dir();
         fs::create_dir_all(&quarantine).expect("quarantine");
         fs::write(quarantine.join("sentinel"), b"rot").expect("quarantined");
-        journal.quarantined(0, 3);
+        journal
+            .resurvey("quarantine_after")
+            .expect("account the attempt");
         assert_eq!(journal.tracked_bytes(), before + 3);
         assert_eq!(journal.tracked_bytes(), volume_total(&dir));
 
@@ -2151,7 +2241,9 @@ mod tests {
         let quarantine = journal.quarantine_dir();
         fs::create_dir_all(&quarantine).expect("quarantine");
         fs::write(quarantine.join("sentinel"), vec![b'q'; 64]).expect("quarantined");
-        journal.quarantined(0, 64);
+        journal
+            .resurvey("quarantine_after")
+            .expect("account the attempt");
         assert_eq!(
             journal.tracked_bytes(),
             volume_total(&dir),

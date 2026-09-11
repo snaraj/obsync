@@ -9,8 +9,9 @@
 //! Concurrency: one mutex over the journal writer, one over the index, and a
 //! condition variable on the index for the long-poll change feed. Writes take
 //! the journal first and then the index, always in that order; reads take the
-//! index alone. Streaming a chunk body and hashing during a scrub happen with
-//! no lock held, so a slow upload never blocks the feed.
+//! index alone. A fixed table of SID locks serializes chunk mutation before
+//! either lock; GC takes the table in order. Streaming and hashing hold only
+//! a SID lock, so a slow upload never blocks the feed.
 //!
 //! Free space: the standard library exposes no `statvfs`, and running `df`
 //! from library code would make the server depend on a shell. The watermark
@@ -112,6 +113,11 @@ pub(crate) enum Fault {
         /// The `errno` returned there.
         code: i32,
     },
+    /// A refused journal usage survey, including metadata reads.
+    JournalSurveyErrno { code: i32 },
+    /// Force a pre-existing quarantine temporary name, testing exclusive
+    /// creation and cleanup ownership without depending on random collisions.
+    QuarantineTempCollision,
 }
 
 /// Which half of a journal append a fault surfaces in.
@@ -148,10 +154,22 @@ pub(crate) enum BlobPhase {
     Sync,
     /// The `rename` into place.
     Rename,
-    /// The directory fsyncs a quarantine move runs AFTER its rename, where
-    /// a failure means the bytes moved and the failure was in making that
-    /// durable -- the one case where an error does not mean nothing moved.
+    /// Copying into a quarantine-local temporary file.
+    QuarantineCopy,
+    /// The quarantine copy's file fsync.
+    QuarantineFileSync,
+    /// Publishing the quarantine-local temporary file.
+    QuarantinePublish,
+    /// The quarantine directory's fsync after publication.
     QuarantineSync,
+    /// Persisting the quarantine directory's name in its parent.
+    QuarantineParentSync,
+    /// Removing the primary, after the quarantine copy is durable.
+    QuarantineRemove,
+    /// Persisting removal from the primary directory.
+    QuarantineSourceSync,
+    /// A failed partial copy whose temporary-file cleanup also fails.
+    QuarantineCleanup,
 }
 
 /// The storage engine. One per process, shared by every request thread.
@@ -163,9 +181,14 @@ pub struct Store {
     /// Dropping the store releases it.
     _lock: File,
     blobs: Blobs,
+    /// Bounded SID serialization, including publication and inventory. A
+    /// striped table avoids an unbounded map of locks controlled by uploads.
+    chunk_locks: [Mutex<()>; 256],
     journal: Mutex<Journal>,
     index: Mutex<Index>,
     changed: Condvar,
+    #[cfg(test)]
+    before_scrub_summary: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Store {
@@ -235,9 +258,12 @@ impl Store {
             log,
             _lock: lock,
             blobs,
+            chunk_locks: std::array::from_fn(|_| Mutex::new(())),
             journal: Mutex::new(journal),
             index: Mutex::new(index),
             changed: Condvar::new(),
+            #[cfg(test)]
+            before_scrub_summary: Mutex::new(None),
         })
     }
 
@@ -256,6 +282,26 @@ impl Store {
 
     fn journal(&self) -> MutexGuard<'_, Journal> {
         self.journal.lock().expect("journal lock")
+    }
+
+    fn chunk_guard(&self, sid: &Sid) -> MutexGuard<'_, ()> {
+        self.chunk_locks[usize::from(sid.as_bytes()[0])]
+            .lock()
+            .expect("chunk lock")
+    }
+
+    /// GC must never hold most stripes while waiting on one slow upload.
+    /// Try once in order, releasing all acquired guards on contention.
+    fn try_all_chunks(&self) -> Option<Vec<MutexGuard<'_, ()>>> {
+        let mut guards = Vec::with_capacity(self.chunk_locks.len());
+        for lock in &self.chunk_locks {
+            match lock.try_lock() {
+                Ok(guard) => guards.push(guard),
+                Err(std::sync::TryLockError::WouldBlock) => return None,
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("chunk lock poisoned"),
+            }
+        }
+        Some(guards)
     }
 
     /// The one-time pad a device secret rests under.
@@ -341,6 +387,7 @@ impl Store {
         declared_len: u64,
         body: &mut dyn Read,
     ) -> Result<PutOutcome, StoreError> {
+        let _chunk = self.chunk_guard(sid);
         {
             let index = self.index();
             let stored = index.account().ok_or(StoreError::NotSetUp)?;
@@ -349,9 +396,25 @@ impl Store {
             }
             if index.chunks.contains_key(sid) {
                 drop(index);
-                self.blobs.drain(sid, declared_len, body)?;
-                return Ok(PutOutcome::Existed);
+                match self.blobs.open_chunk(sid) {
+                    Ok(_) => {
+                        self.blobs.drain(sid, declared_len, body)?;
+                        return Ok(PutOutcome::Existed);
+                    }
+                    Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // A prior unlink whose directory fsync failed retains
+                        // conservative inventory. Never drain recovery bytes
+                        // against it: persist the absence before replacing it.
+                        self.blobs.sync_absence(sid)?;
+                        self.index().forget_chunk(sid);
+                    }
+                    Err(e) => return Err(e),
+                }
             }
+        }
+        {
+            let index = self.index();
+            let stored = index.account().ok_or(StoreError::NotSetUp)?;
             let watermark = self.cfg.free_watermark.bytes_for(self.cfg.blobs_capacity);
             let free = self.cfg.blobs_capacity.saturating_sub(index.used_bytes);
             if free.saturating_sub(declared_len) < watermark {
@@ -853,6 +916,17 @@ impl Store {
         // Budget zero: collection is bounded by what retention releases, not
         // by bytes, and the SUMMARY line carries the duration it took.
         let started = self.log.start("gc", 0);
+        let Some(_chunks) = self.try_all_chunks() else {
+            self.log
+                .info("gc_skipped", &[("decision", Val::word("chunks_busy"))]);
+            return GcSummary {
+                started: now,
+                duration_ms: started.elapsed_ms(),
+                chunks_collected: 0,
+                bytes_collected: 0,
+                chunks_retained: self.index().chunks.len() as u64,
+            };
+        };
         let mut journal = self.journal();
         let mut index = self.index();
         let plan = gc::plan(&index, &self.cfg, now);
@@ -905,7 +979,7 @@ impl Store {
     ///
     /// A chunk whose content no longer matches its sid is repaired from a
     /// mirror when one holds a good copy, and quarantined when none does. The
-    /// hashing happens with no lock held.
+    /// hashing holds only the SID lock, never the journal or index lock.
     pub fn scrub_step(&self, budget_bytes: u64) -> ScrubSummary {
         let started = self.log.start("scrub", budget_bytes);
         let now = UnixMs::now();
@@ -915,43 +989,71 @@ impl Store {
         let mut bytes = 0;
         let mut mismatches = 0;
         let mut repaired = 0;
+        let mut failed = false;
         let mut quarantined = Vec::new();
-        let mut good = Vec::new();
-        for (sid, len) in candidates {
-            match self.blobs.verify_primary(&sid) {
-                Ok(Some(true)) => {
+        for (sid, _) in candidates {
+            let _chunk = self.chunk_guard(&sid);
+            if !self.index().chunks.contains_key(&sid) {
+                continue;
+            }
+            match self.blobs.verify_primary_measured(&sid) {
+                Ok(Some((true, len))) => {
                     verified += 1;
                     bytes += len;
-                    good.push(sid);
+                    self.mark_verified(&sid);
                 }
-                Ok(Some(false)) => {
+                Ok(Some((false, len))) => {
                     mismatches += 1;
                     bytes += len;
                     match self.repair(&sid) {
                         Ok(true) => {
                             repaired += 1;
-                            good.push(sid);
+                            self.mark_verified(&sid);
                         }
                         Ok(false) => quarantined.push(sid),
                         Err(e) => {
+                            failed = true;
                             let mut fields =
                                 vec![("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))];
                             fields.extend(error_fields(&e));
                             self.log.error("scrub_repair_failed", &fields);
-                            quarantined.push(sid);
                         }
                     }
                 }
-                // Gone from the volume: either a collection took it while the
-                // hashing ran, or it never landed. The index reconciles below.
-                Ok(None) => {}
+                // A failed primary-directory fsync can leave an absent name
+                // conservatively indexed. Make that absence durable before
+                // forgetting it. This is recovery of a missing chunk, not a
+                // claim that an earlier failed quarantine succeeded.
+                Ok(None) => match self.blobs.sync_absence(&sid) {
+                    Ok(()) => {
+                        self.index().forget_chunk(&sid);
+                        self.log.error("chunk_missing", &[("sid", Val::sid(&sid))]);
+                    }
+                    Err(e) => {
+                        failed = true;
+                        let mut fields = vec![("sid", Val::sid(&sid))];
+                        fields.extend(error_fields(&e));
+                        self.log.error("scrub_missing_failed", &fields);
+                    }
+                },
                 Err(e) => {
+                    failed = true;
                     let mut fields =
                         vec![("sid", Val::sid(&sid)), ("decision", Val::word(e.code()))];
                     fields.extend(error_fields(&e));
                     self.log.error("scrub_read_failed", &fields);
                 }
             }
+        }
+
+        #[cfg(test)]
+        if let Some(hook) = self
+            .before_scrub_summary
+            .lock()
+            .expect("scrub hook")
+            .clone()
+        {
+            hook();
         }
 
         let mut summary = ScrubSummary {
@@ -965,12 +1067,9 @@ impl Store {
         };
         let mut journal = self.journal();
         let mut index = self.index();
-        for sid in good {
-            if let Some(meta) = index.chunks.get_mut(&sid) {
-                meta.last_verified = UnixMs::now();
-            }
-        }
-        summary.complete_pass = scrub::candidates(&index, budget_bytes).is_empty();
+        summary.complete_pass = !failed
+            && journal.unverified().is_none()
+            && scrub::candidates(&index, budget_bytes).is_empty();
         if summary.complete_pass {
             index.scrub_cursor = UnixMs::now();
         }
@@ -999,7 +1098,15 @@ impl Store {
         summary
     }
 
-    /// Repair one bad chunk from a mirror, or quarantine it.
+    /// Called while the SID lock still excludes a replacement upload.
+    fn mark_verified(&self, sid: &Sid) {
+        if let Some(meta) = self.index().chunks.get_mut(sid) {
+            meta.last_verified = UnixMs::now();
+        }
+    }
+
+    /// Repair one bad chunk from a mirror, or quarantine it. The caller holds
+    /// the SID lock through this operation and its inventory update.
     fn repair(&self, sid: &Sid) -> Result<bool, StoreError> {
         if self.blobs.repair_from_mirror(sid)? {
             self.log.warn(
@@ -1008,29 +1115,26 @@ impl Store {
             );
             return Ok(true);
         }
-        // ONE guard, held across the move AND the accounting that follows it.
-        // Every reader of the journal's usage takes this same lock -- the
-        // watermark check inside an append, a survey at a roll, `volumes()`
-        // for the dashboard -- so with the guard spanning both there is no
-        // interval in which the file has moved and the total has not, and
-        // none in which a survey counts the file and the update then counts
-        // it again. A lock around the addition alone would leave both.
+        // One journal guard spans admission, the copy/removal and accounting.
+        // Re-measure on every exit, including temporary residue and a failed
+        // destination sync. A refused survey marks the usage unverified; an
+        // unreadable name must never be mistaken for zero bytes.
         let mut journal = self.journal();
         let quarantine = journal.quarantine_dir();
-        let target = quarantine.join(sid.to_string());
-        // What stands at the destination BEFORE: a quarantine of the same sid
-        // that an earlier pass left, whose bytes the rename replaces.
-        let replaced = name_bytes(&target);
-
-        let outcome = self.blobs.quarantine(sid, &quarantine);
-        // Read the destination rather than assume the outcome. The move is a
-        // `rename`, but the two directory fsyncs come AFTER it, so an error
-        // here can perfectly well mean the bytes moved and the failure was
-        // in making that durable. Whatever is really at that name is what
-        // the volume really holds.
-        journal.quarantined(replaced, name_bytes(&target));
+        let (mut source, len) = self.blobs.open_chunk(sid)?;
+        self.index().resize_chunk(sid, len);
+        journal.admit_quarantine(len)?;
+        let outcome = self.blobs.quarantine(sid, &mut source, &quarantine);
+        let measured = journal.resurvey("quarantine_after");
+        // Inventory follows the blob volume, independently of whether the
+        // journal can record the later summary. A successful reupload must
+        // not be discarded because that summary failed to append.
+        if outcome.is_ok() {
+            self.index().forget_chunk(sid);
+        }
         drop(journal);
         outcome?;
+        measured?;
         self.log.error(
             "chunk_quarantined",
             &[
@@ -1184,8 +1288,9 @@ impl Store {
 
 /// Append a frame at the next sequence and apply it to the index.
 ///
-/// Journal first, index second, always: the index may only hold what the
-/// journal already made durable (docs/storage.md, durability rule 6).
+/// Journalled metadata changes only after the record is durable
+/// (docs/storage.md, durability rule 6). Chunk inventory separately follows
+/// durable primary-volume operations and the startup scan.
 fn append(
     journal: &mut Journal,
     index: &mut Index,
@@ -1263,15 +1368,6 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
         StoreError::Io(e) => vec![("io", Val::io(e))],
         _ => Vec::new(),
     }
-}
-
-/// The bytes a name holds right now, or zero if nothing is there.
-///
-/// Zero rather than an error because this only ever feeds an accounting
-/// update: a name with nothing at it contributes nothing, which is the same
-/// answer either way.
-fn name_bytes(path: &Path) -> u64 {
-    std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
 /// Random bytes from the kernel. The one source of randomness in the server.

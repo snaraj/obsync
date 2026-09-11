@@ -65,7 +65,7 @@ jobs:
             --header 'Accept: application/vnd.github+json' \
             --header "X-GitHub-Api-Version: ${api_version}" \
             "repos/${GITHUB_REPOSITORY}/releases/latest" > "${release_json}"
-          tag="$(jq -er '.tag_name | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' "${release_json}")"
+          tag="$(jq -er '.tag_name | select(test("^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' "${release_json}")"
           download_asset "obsync-${tag}-release-manifest.json" "${manifest}"
           download_asset "obsync-plugin-${tag}.zip" "${bundle}"
 
@@ -74,10 +74,12 @@ jobs:
           main_run_id="$(jq -er '.main_run_id' "${manifest}")"
           version="$(jq -er '.release.version' "${manifest}")"
           image_digest="$(jq -er '.artifacts.image.digest' "${manifest}")"
+          image_tag="$(jq -er '.artifacts.image.tag' "${manifest}")"
           chart_digest="$(jq -er '.artifacts.chart.digest' "${manifest}")"
           plugin_digest="$(jq -er '.artifacts.plugin_bundle.digest' "${manifest}")"
           test "${repository}" = "${GITHUB_REPOSITORY}"
-          test "${tag}" = "v${version}"
+          test "${tag}" = "$(jq -er '.release.tag' "${manifest}")"
+          test "${image_tag}" = "v${version}"
           # The asset the Release serves TODAY must still hash to the digest the
           # sealed manifest recorded at publication.
           test "sha256:$(sha256sum "${bundle}" | awk '{print $1}')" = "${plugin_digest}"
@@ -86,7 +88,7 @@ jobs:
                     --main-run-id "${main_run_id}" --version "${version}"
                     --image "${IMAGE}" --image-digest "${image_digest}"
                     --chart "${CHART}" --chart-digest "${chart_digest}"
-                    --plugin-digest "${plugin_digest}")
+                    --plugin-digest "${plugin_digest}" --plugin-bundle "${bundle}")
           python3 -B scripts/ci/release_contract.py manifest-record \
             --manifest "${manifest}" "${contract[@]}"
           python3 -B scripts/ci/release_contract.py release-notes \
@@ -95,6 +97,16 @@ jobs:
             --release-json "${release_json}" --tag "${tag}" \
             --title "obsync ${tag}" --body "${notes}" \
             --manifest "${manifest}" --plugin-digest "${plugin_digest}"
+          # The v2 inventory was required above by its version, never by the
+          # presence of these files. Bind actual downloads to the same ZIP.
+          if jq -e '.artifacts | has("plugin_files")' "${manifest}" >/dev/null; then
+            for member in main.js manifest.json styles.css; do
+              observed="${RUNNER_TEMP}/audit-${member}"
+              download_asset "${member}" "${observed}"
+              expected="$(jq -er --arg name "${member}" '.artifacts.plugin_files[$name].digest' "${manifest}")"
+              test "sha256:$(sha256sum "${observed}" | awk '{print $1}')" = "${expected}"
+            done
+          fi
 
           gh api --method GET \
             --header 'Accept: application/vnd.github+json' \
@@ -105,6 +117,15 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" --source-sha "${source_sha}")" = "${source_sha}"
           git cat-file -e "${source_sha}^{commit}"
           git merge-base --is-ancestor "${source_sha}" HEAD
+          intent="${RUNNER_TEMP}/audit-source-intent.json"
+          python3 -B scripts/ci/release_contract.py release-window \
+            --repository . --head "${source_sha}" > "${intent}"
+          # Both fields derive from one source version, and manifest-record
+          # already checked the canonical version/tag pair. The version check
+          # is a backstop to that dependency; removing BOTH comparisons must
+          # admit the coherent wrong-source fixture and fail its test.
+          test "$(jq -er '.version' "${intent}")" = "${version}"
+          test "$(jq -er '.tag' "${intent}")" = "${tag}"
 
           gh api --method GET \
             --header 'Accept: application/vnd.github+json' \
@@ -146,7 +167,7 @@ jobs:
               | awk 'tolower($1) == "docker-content-digest:" {gsub("\r", "", $2); print $2}' \
               | tail -n 1
           }
-          test "$(alias_digest "${IMAGE#ghcr.io/}" "${tag}" \
+          test "$(alias_digest "${IMAGE#ghcr.io/}" "${image_tag}" \
             'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json')" \
             = "${image_digest}"
           test "$(alias_digest "${CHART#ghcr.io/}" "${version}" \

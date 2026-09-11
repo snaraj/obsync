@@ -350,7 +350,8 @@ pub struct ScrubSummary {
     pub bytes_verified: u64,
     /// Chunks whose content did not match their sid.
     pub mismatches: u64,
-    /// Mismatches that no mirror could repair; moved to `quarantine/`.
+    /// Mismatches durably quarantined and accounted during this step. This
+    /// historical list is not a current inventory: a later upload can heal it.
     pub quarantined: Vec<Sid>,
     /// Whether this step finished a full pass over the volume.
     pub complete_pass: bool,

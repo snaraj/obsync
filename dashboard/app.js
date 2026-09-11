@@ -379,8 +379,6 @@ function runJob(button, path, started) {
 
 async function loadPlugin() {
   const manifest = await get('/v1/plugin/manifest');
-  setText(el('sha-bundle'), manifest.bundle_sha256);
-  setText(el('sha-styles'), manifest.styles_sha256);
   setText(el('plugin-version'), manifest.version ? `version ${manifest.version}` : L.DASH);
 }
 

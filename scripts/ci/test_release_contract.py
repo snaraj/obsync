@@ -68,7 +68,7 @@ def locks(version: str, history: list[str] | None = None) -> dict[str, str]:
             "image:\n  repository: ghcr.io/snaraj/obsync\n"
             f"  tag: v{version}\n  digest: {SENTINEL}\n"
         ),
-        "plugin/manifest.json": json.dumps({"id": "obsync", "version": version}) + "\n",
+        "manifest.json": json.dumps({"id": "obsync", "version": version}) + "\n",
         "CHANGELOG.md": changelog,
     }
 
@@ -160,7 +160,7 @@ class TheSevenLocks(unittest.TestCase):
                     f"  tag: v0.1.5\n  digest: {SENTINEL}\n"
                 )
             },
-            "plugin manifest": {"plugin/manifest.json": '{"id": "obsync", "version": "0.1.5"}\n'},
+            "plugin manifest": {"manifest.json": '{"id": "obsync", "version": "0.1.5"}\n'},
             "changelog": {"CHANGELOG.md": "# Changelog\n\n## 0.1.5 - Unreleased\n\n- x\n"},
         }
         for lock, mutation in mutations.items():
@@ -180,8 +180,8 @@ class TheSevenLocks(unittest.TestCase):
         for mutation in (
             {"Cargo.toml": "this is not toml ==="},
             {"Cargo.toml": "[workspace]\nmembers = []\n"},
-            {"plugin/manifest.json": "{not json"},
-            {"plugin/manifest.json": '{"id": "obsync"}'},
+            {"manifest.json": "{not json"},
+            {"manifest.json": '{"id": "obsync"}'},
             {"chart/values.yaml": "image:\n  tag: v0.1.4\nimage:\n  tag: v0.1.4\n"},
         ):
             with self.subTest(mutation=sorted(mutation)):
@@ -419,7 +419,7 @@ class TheGenesisRange(GenesisFixture):
                 self.repository.git("clean", "-qfd")
 
     def test_locks_disagreeing_at_head_deny(self):
-        snapshot = {**locks("0.1.0"), "plugin/manifest.json": locks("0.1.1")["plugin/manifest.json"]}
+        snapshot = {**locks("0.1.0"), "manifest.json": locks("0.1.1")["manifest.json"]}
         head = self.repository.commit({**snapshot, "src.rs": "x\n"}, "disagreeing")
         with self.assertRaises(contract.ContractError):
             self.classify(head)
@@ -432,7 +432,7 @@ class TheGenesisRange(GenesisFixture):
         # trusting its own walk.
         self.repository.commit({**locks("0.1.0"), "src.rs": "a\n"}, "all seven at 0.1.0")
         head = self.repository.commit(
-            {"plugin/manifest.json": locks("0.1.1")["plugin/manifest.json"]}, "edit one lock"
+            {"manifest.json": locks("0.1.1")["manifest.json"]}, "edit one lock"
         )
         with self.assertRaises(contract.ContractError):
             self.classify(head)
@@ -745,6 +745,10 @@ class EventAndRunRecords(unittest.TestCase):
 
 
 class PublisherAuthority(GitFixture):
+    def setUp(self):
+        super().setUp()
+        self.base = self.repository.commit(locks("0.1.11", ["0.1.0"]), "native publication locks")
+
     def arguments(self, **overrides: str) -> dict:
         base = {
             "source_sha": self.base,
@@ -761,7 +765,23 @@ class PublisherAuthority(GitFixture):
 
     def test_the_authorized_publisher_resolves_its_intent(self):
         intent = contract.validate_publisher(self.root, **self.arguments())
-        self.assertEqual((intent.source_sha, intent.tag), (self.base, "v0.1.0"))
+        self.assertEqual((intent.source_sha, intent.tag), (self.base, "0.1.11"))
+
+    def test_publisher_refuses_duplicate_and_dangling_legacy_manifests(self):
+        legacy = self.root / "plugin/manifest.json"
+        legacy.parent.mkdir(exist_ok=True)
+        legacy.write_text((self.root / "manifest.json").read_text())
+        with self.assertRaisesRegex(contract.ContractError, "canonical root"):
+            contract.validate_publisher(self.root, **self.arguments())
+        legacy.unlink()
+        legacy.symlink_to("missing-manifest.json")
+        with self.assertRaisesRegex(contract.ContractError, "canonical root"):
+            contract.validate_publisher(self.root, **self.arguments())
+
+    def test_migrated_publisher_cannot_republish_legacy_versions(self):
+        self.base = self.repository.commit(locks("0.1.10", ["0.1.0"]))
+        with self.assertRaisesRegex(contract.ContractError, "cannot publish a legacy"):
+            contract.validate_publisher(self.root, **self.arguments())
 
     def test_every_unauthorized_shape_denies(self):
         for override in (

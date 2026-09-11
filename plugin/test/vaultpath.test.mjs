@@ -123,6 +123,7 @@ function desktopHost({ files = [] } = {}) {
     remove: async (path) => removed.push(path),
   };
   const plugin = {
+    state: { data: {} },
     app: {
       vault: {
         adapter,

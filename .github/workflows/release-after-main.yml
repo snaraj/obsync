@@ -102,7 +102,7 @@ jobs:
             artifact) ;;
             no-artifact)
               retained_tag="$(jq -er '.tag' <<<"${rederived}")"
-              [[ "${retained_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+              [[ "${retained_tag}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
               # THE ANCHOR THE VERDICT CANNOT CHOOSE. A verdict naming a base
               # INSIDE this push would make a genuine artifact merge re-derive
               # as documentation, skipping a release silently -- the wrong
@@ -132,7 +132,7 @@ jobs:
               [[ "${previous_head}" =~ ^[0-9a-f]{40}$ ]]
               test "${previous_head}" != "${COMPLETED_SHA}"
               git merge-base --is-ancestor "${previous_head}" "${COMPLETED_SHA}"
-              for lock in VERSION Cargo.toml chart/Chart.yaml chart/values.yaml plugin/manifest.json CHANGELOG.md; do
+              for lock in VERSION Cargo.toml chart/Chart.yaml chart/values.yaml manifest.json plugin/manifest.json CHANGELOG.md; do
                 if ! git diff --quiet "${previous_head}" "${COMPLETED_SHA}" -- "${lock}"; then
                   printf 'DENY: %s changed since the last gated main head %s; this is not a documentation-only push\n' \
                     "${lock}" "${previous_head}" >&2
@@ -187,7 +187,7 @@ jobs:
           source_sha="$(jq -er '.source_sha' <<<"${intent}")"
           version="$(jq -er '.version' <<<"${intent}")"
           test "${source_sha}" = "${COMPLETED_SHA}"
-          test "$(jq -er '.tag' <<<"${intent}")" = "v${version}"
+          test "$(jq -er '.tag' <<<"${intent}")" = "${version}"
           printf 'source_sha=%s\nversion=%s\n' "${source_sha}" "${version}" >> "${GITHUB_OUTPUT}"
       - name: Dispatch the successful-main-bound publisher explicitly
         if: steps.classify.outputs.class == 'artifact'

@@ -23,6 +23,15 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 
 ## Deliberate non-goals
 
+The plugin's device-local folder selection additionally confines its own
+file reads, writes and deletions to selected folders, including remembered
+rename sources and conflict/history paths (`docs/architecture.md` 6.2.1).
+It does not restrict Obsidian's own vault indexing, other plugins, the local
+OS, or what a paired device can read from content already uploaded. Every
+paired device still holds the owner key and account-wide API authority.
+Keep administration code outside selected folders, and treat shared note
+content as untrusted when opening links or copying commands from it.
+
 - Recipients and multi-user access: out of scope in v0.1; the server is
   owner-only. Every paired device is the owner, so no adversary row below
   describes a second person with partial access, because v0.1 cannot

@@ -22,6 +22,7 @@
 
 import { Policy, defaultPolicy } from "./policy";
 import { isVaultPath } from "./vaultPath";
+import { parseSyncFolders } from "./syncScope";
 
 /** Obsidian's `Plugin` provides exactly this pair. */
 export interface Store {
@@ -64,6 +65,8 @@ export interface ObsyncData {
   /** File id to the file this device declined to materialise. */
   remoteOnly: Record<string, RemoteOnlyRecord>;
   policy: Policy;
+  /** Only this device may set it. Missing = whole vault; [] = no files. */
+  syncFolders?: string[];
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -101,6 +104,9 @@ function num(value: unknown, fallback: number): number {
 export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   const data = defaultData(isMobile);
   if (!isRecord(loaded)) return data;
+  // A damaged restriction must never fall back to the whole vault. Refuse
+  // loading rather than dropping this field like an optional preference.
+  if (Object.hasOwn(loaded, "syncFolders")) data.syncFolders = parseSyncFolders(loaded["syncFolders"]);
   data.vrk = typeof loaded["vrk"] === "string" ? loaded["vrk"] : null;
   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;
   data.deviceSecret = typeof loaded["deviceSecret"] === "string" ? loaded["deviceSecret"] : null;

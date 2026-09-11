@@ -44,6 +44,7 @@ import {
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, vaultPathRefusal } from "../vaultPath";
+import { inSyncScope } from "../syncScope";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
 
@@ -77,6 +78,8 @@ export interface VaultHost {
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
   writer(path: string): Promise<VaultWriter>;
+  /** Publish a new file only; an occupied destination must never be replaced. */
+  createWriter(path: string, size: number, check: () => void): Promise<VaultWriter>;
   trash(path: string): Promise<void>;
   notify(message: string): void;
   log(line: string): void;
@@ -148,8 +151,10 @@ export class SyncEngine {
   private active = 0;
   private draining = false;
   private running = false;
+  private cancelled = false;
   private feed: Promise<void> | null = null;
   private heartbeatHandle: unknown = null;
+  private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -180,7 +185,18 @@ export class SyncEngine {
   }
 
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    this.cancelled = false;
+    return this.track(this.startLoops());
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.inFlight.add(work);
+    void work.then(() => this.inFlight.delete(work), () => this.inFlight.delete(work));
+    return work;
+  }
+
+  private async startLoops(): Promise<void> {
     const { state, transport, host } = this.options;
     const vrk = state.data.vrk;
     const deviceId = state.data.deviceId;
@@ -200,13 +216,15 @@ export class SyncEngine {
       throw new DomainMapError("more_than_one_domain");
     }
     const domainKey = await deriveDomainKey(key, domainId);
+    const manifestKey = await deriveManifestKey(domainKey, domainId);
+    if (this.cancelled) return;
     const deviceNames = new Map<string, string>();
     this.contextValue = {
       state,
       transport,
       host,
       domainKey,
-      manifestKey: await deriveManifestKey(domainKey, domainId),
+      manifestKey,
       domainId,
       mapFileId: mapKeys.fileId,
       deviceId,
@@ -223,11 +241,13 @@ export class SyncEngine {
       `engine start platform=${host.platform} concurrency=${this.contextValue.concurrency} seq=${state.data.lastSeq}`,
     );
     await this.heartbeat();
+    if (!this.running) return;
     await this.reconcile();
-    this.feed = this.feedLoop();
+    if (this.running) this.feed = this.track(this.feedLoop());
   }
 
   stop(): void {
+    this.cancelled = true;
     this.running = false;
     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
     this.pending.clear();
@@ -235,6 +255,13 @@ export class SyncEngine {
     this.heartbeatHandle = null;
     this.options.host.log("engine stop");
     this.status({ kind: "idle" });
+  }
+
+  /** Quiesce before changing local scope; retain enough state to retry queued work. */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
+    await this.options.state.save();
   }
 
   get started(): boolean {
@@ -260,7 +287,8 @@ export class SyncEngine {
    * — and `.git/**` out of the vault's history (`vaultPath.ts`).
    */
   private tracked(path: string, event: string): boolean {
-    const refusal = vaultPathRefusal(path);
+    const refusal = vaultPathRefusal(path) ??
+      (inSyncScope(path, this.options.state.data.syncFolders) ? null : "outside_sync_scope");
     if (refusal === null) return true;
     this.options.host.log(`watch path_class=file decision=not_synced reason=${refusal} event=${event}`);
     return false;
@@ -292,11 +320,23 @@ export class SyncEngine {
    * of downloading a copy and deleting the original.
    */
   renamed(from: string, to: string): void {
-    if (!this.running || !this.tracked(from, "rename_from") || !this.tracked(to, "rename_to")) return;
+    if (!this.running) return;
+    const source = this.tracked(from, "rename_from");
+    const target = this.tracked(to, "rename_to");
+    if (vaultPathRefusal(from) !== null || vaultPathRefusal(to) !== null) return;
+    // A local move across the boundary is a remove/create within the
+    // selected folders. Never transfer a remembered outside identity in.
+    if (!source || !target) {
+      if (source) this.deleted(from);
+      if (target) this.changed(to);
+      return;
+    }
     const context = this.need();
     const record = context.state.fileByPath(from);
     if (record) {
-      context.state.setFile(to, record);
+      // Persist the need to publish the new name. A stopped/failed queue
+      // must not make a restart mistake an unposted rename for unchanged bytes.
+      context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
       context.state.forgetPath(from);
       void context.state.save();
     }
@@ -318,10 +358,11 @@ export class SyncEngine {
   }
 
   private debounce(path: string, tries: number): void {
+    if (!this.running) return;
     const existing = this.pending.get(path);
     if (existing) this.timers.clear(existing.handle);
     const handle = this.timers.set(() => {
-      void this.settle(path, tries);
+      void this.track(this.settle(path, tries));
     }, tries === 0 ? DEBOUNCE_MS : RECHECK_MS);
     this.pending.set(path, { handle, tries });
   }
@@ -379,8 +420,9 @@ export class SyncEngine {
   }
 
   private enqueue(path: string): void {
+    if (!this.running) return;
     if (!this.queue.includes(path)) this.queue.push(path);
-    void this.drain();
+    void this.track(this.drain());
   }
 
   // --- push queue --------------------------------------------------------
@@ -469,11 +511,17 @@ export class SyncEngine {
         for (const change of page.changes) {
           if (!this.running) break;
           await applyChange(context, change);
+          context.state.data.lastSeq = change.seq;
+        }
+        if (!this.running) {
+          await context.state.save();
+          return;
         }
         context.state.data.lastSeq = page.seq;
         await context.state.save();
         if (page.changes.length > 0) this.status({ kind: "idle" });
       } catch (error) {
+        if (!this.running) return;
         if (error instanceof ApiError && error.code === "seq_ahead") {
           context.host.log("feed decision=resync reason=seq_ahead");
           context.state.data.lastSeq = 0;
@@ -496,13 +544,18 @@ export class SyncEngine {
    * vault no longer has. This is what makes an edit made while Obsidian was
    * closed, or a file deleted in Finder, reach the server.
    */
-  async reconcile(): Promise<void> {
+  reconcile(): Promise<void> {
+    return this.track(this.reconcileLocal());
+  }
+
+  private async reconcileLocal(): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
     let queued = 0;
     let skipped = 0;
     for (const file of await context.host.list()) {
+      if (!this.running) return;
       if (!this.tracked(file.path, "reconcile") || !(await context.host.syncable(file.path))) {
         skipped++;
         continue;
@@ -514,6 +567,7 @@ export class SyncEngine {
       queued++;
     }
     for (const path of Object.keys(context.state.data.files)) {
+      if (!this.running) return;
       if (seen.has(path)) continue;
       if (!this.tracked(path, "reconcile_state") || !(await context.host.syncable(path))) {
         skipped++;
@@ -552,7 +606,7 @@ export class SyncEngine {
     }
     if (this.running) {
       this.heartbeatHandle = this.timers.set(() => {
-        void this.heartbeat();
+        void this.track(this.heartbeat());
       }, HEARTBEAT_MS);
     }
   }

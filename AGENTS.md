@@ -66,7 +66,8 @@ Numbered for citation, repo-scoped, none negotiable in code:
    co-author or session trailers of any kind. Agent-authored commit messages
    and PR bodies end with the ACTING agent's own signature, exactly matching
    its agent label in the roster below (`- Fable5.1` ↔ `fable5.1`,
-   `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`, `- 5.6 Sol` ↔ `5.6-sol`).
+   `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`, `- 5.6 Sol` ↔ `5.6-sol`,
+   `- GPT-6` ↔ `gpt-6`).
 4. **Fail-closed doctrine — never weaken.** No security behavior may be made
    toggleable: no boolean, env var, build flag, or config field may silently
    disable encryption, request authentication, replay protection, fsync,
@@ -121,16 +122,20 @@ Numbered for citation, repo-scoped, none negotiable in code:
     exactly one patch from its current protected base in ALL lockstep locks:
     `VERSION`, the workspace `version` in `Cargo.toml`, chart `version` and
     `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
-    `plugin/manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
+    root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
     A range whose every commit is confined to the closed documentation
     allowlist — root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown
     files under `docs/` — classifies no-artifact and advances nothing. The
     classifier has exactly two verdicts and no flag; a non-allowlisted path
     with an unchanged version denies. Successful main CI dispatches the
-    publisher, which creates the annotated `vX.Y.Z` tag at the exact merged
+    publisher, which creates the annotated `X.Y.Z` tag at the exact merged
     SHA, emits the signed multi-arch image (linux/amd64, linux/arm64), the
-    signed OCI chart, the plugin bundle as a Release asset with its SHA-256
-    in the evidence manifest, and one immutable GitHub Release. Images
+    signed OCI chart, the plugin bundle and individual `main.js`,
+    `manifest.json`, `styles.css` assets with their SHA-256 values in the
+    evidence manifest, and one immutable GitHub Release. Releases through
+    `v0.1.10` retain their original prefixed tags and v1 evidence for audit;
+    new publication requires the root manifest and v2 evidence. Image tags
+    remain `vX.Y.Z`. Images
     deploy by digest; publication is never deployment.
 11. **No secrets, no private facts, no personal data.** No credential,
     token, private host fact, address, device identifier, or personal data
@@ -318,7 +323,7 @@ is evidence, never authority.
 - **Agent labels.** Every agent-created PR and issue carries `agent-authored`
   AND the acting agent's own label: `fable5.1` (Claude Fable 5.1, `D97706`),
   `opus5` (Claude Opus 5), `sonnet5` (Claude Sonnet 5, `0EA5E9`), `5.6-sol`
-  (ChatGPT 5.6 Sol). Body signature must match the label.
+  (ChatGPT 5.6 Sol), `gpt-6` (Codex GPT-6). Body signature must match the label.
 - **PR budget.** At most 3 agent PRs open by default. The owner authorized
   the bootstrap wave (core, server, plugin, scaffold, dashboard) to run in
   parallel on 2026-09-07; that override does not carry forward.

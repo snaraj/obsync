@@ -149,7 +149,8 @@ jobs:
         run: |
           set -euo pipefail
           IFS= read -r version < VERSION
-          printf 'version=%s\ntag=v%s\n' "${version}" "${version}" >> "${GITHUB_OUTPUT}"
+          printf 'version=%s\ntag=%s\nimage_tag=v%s\n' \
+            "${version}" "${version}" "${version}" >> "${GITHUB_OUTPUT}"
       - name: Create or verify the exact annotated tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -228,7 +229,7 @@ jobs:
       - name: Classify an absent, complete, or burned image tag
         id: image_state
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ steps.release.outputs.image_tag }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -308,7 +309,7 @@ jobs:
           # Semantic version only: the commit SHA lives in labels, never as a
           # human-facing tag (package-page clarity is a product feature).
           tags: |
-            ${{ env.IMAGE }}:${{ steps.release.outputs.tag }}
+            ${{ env.IMAGE }}:${{ steps.release.outputs.image_tag }}
           labels: |
             org.opencontainers.image.title=obsync
             org.opencontainers.image.description=Self-hosted, end-to-end encrypted live sync server for Obsidian
@@ -598,10 +599,13 @@ jobs:
             zip -X -D -q -9 "${bundle}" -@ )
           unzip -l "${bundle}"
           for member in main.js manifest.json styles.css; do
-            unzip -l "${bundle}" | grep -qE " ${member}\$"
+            # Consume the full listing: grep -q can close the pipe early and
+            # make a correct archive fail with SIGPIPE under pipefail.
+            unzip -l "${bundle}" | grep -E " ${member}\$" >/dev/null
           done
-          printf 'path=%s\nname=obsync-plugin-%s.zip\ndigest=sha256:%s\n' \
-            "${bundle}" "${TAG}" "$(sha256sum "${bundle}" | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
+          printf 'path=%s\ndirectory=%s\nname=obsync-plugin-%s.zip\ndigest=sha256:%s\n' \
+            "${bundle}" "${export_dir}" "${TAG}" \
+            "$(sha256sum "${bundle}" | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
       - name: Build the deterministic release evidence manifest
         id: manifest
         env:
@@ -610,6 +614,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           CHART_DIGEST: ${{ steps.chart.outputs.digest }}
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
+          PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
         run: |
           set -euo pipefail
           name="obsync-${TAG}-release-manifest.json"
@@ -619,7 +624,7 @@ jobs:
                   --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}"
                   --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}"
                   --chart "${CHART}" --chart-digest "${CHART_DIGEST}"
-                  --plugin-digest "${PLUGIN_DIGEST}")
+                  --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}")
             if [ "${command}" = release-manifest ]; then
               python3 -B scripts/ci/release_contract.py "${command}" --output "${path}" "${args[@]}"
             else
@@ -636,6 +641,7 @@ jobs:
           CHART_DIGEST: ${{ steps.chart.outputs.digest }}
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
           PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
+          PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
         run: |
           set -euo pipefail
@@ -646,7 +652,7 @@ jobs:
             --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}" \
             --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}" \
             --chart "${CHART}" --chart-digest "${CHART_DIGEST}" \
-            --plugin-digest "${PLUGIN_DIGEST}"
+            --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}"
           existing="${RUNNER_TEMP}/existing-release.json"
           releases_page="${RUNNER_TEMP}/existing-releases-page.json"
           api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
@@ -698,7 +704,9 @@ jobs:
 
           verify_asset_bytes() {
             local url observed
-            for asset in "${MANIFEST_PATH}" "${PLUGIN_PATH}"; do
+            for asset in "${MANIFEST_PATH}" "${PLUGIN_PATH}" \
+              "${PLUGIN_DIRECTORY}/main.js" "${PLUGIN_DIRECTORY}/manifest.json" \
+              "${PLUGIN_DIRECTORY}/styles.css"; do
               url="$(jq -er --arg name "$(basename "${asset}")" \
                 '.assets[] | select(.name == $name) | .url' "${existing}")"
               observed="${RUNNER_TEMP}/observed-$(basename "${asset}")"
@@ -714,7 +722,7 @@ jobs:
 
           state="$(classify_release)"
           if [ "${state}" = absent ]; then
-            if ! gh release create "${TAG}" "${MANIFEST_PATH}" "${PLUGIN_PATH}" \
+            if ! gh release create "${TAG}" \
               --draft --verify-tag --title "obsync ${TAG}" --notes-file "${notes}"; then
               printf 'draft Release create did not succeed; checking exact server state\n' >&2
             fi
@@ -734,9 +742,32 @@ jobs:
             # A response can be lost after draft metadata creation but before
             # the asset upload. Resume only that exact zero-asset draft, then
             # reclassify the authoritative REST inventory before publishing.
-            if ! gh release upload "${TAG}" "${MANIFEST_PATH}" "${PLUGIN_PATH}" --clobber; then
-              printf 'asset upload did not succeed; checking exact server state\n' >&2
-            fi
+            release_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "${existing}")"
+            # Explicit MIME types make the five-file inventory independent of
+            # the runner's filename database. Never overwrite an existing asset.
+            for asset in "${MANIFEST_PATH}" "${PLUGIN_PATH}" \
+              "${PLUGIN_DIRECTORY}/main.js" "${PLUGIN_DIRECTORY}/manifest.json" \
+              "${PLUGIN_DIRECTORY}/styles.css"; do
+              name="$(basename "${asset}")"
+              case "${name}" in
+                *.json) content_type=application/json ;;
+                *.zip) content_type=application/zip ;;
+                main.js) content_type=application/javascript ;;
+                styles.css) content_type=text/css ;;
+                *) exit 1 ;;
+              esac
+              if ! curl --fail-with-body --silent --show-error \
+                --proto '=https' --tlsv1.2 \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'X-GitHub-Api-Version: 2026-03-10' \
+                --header "Authorization: Bearer ${GH_TOKEN}" \
+                --header "Content-Type: ${content_type}" \
+                --data-binary "@${asset}" --output "${RUNNER_TEMP}/uploaded-asset.json" \
+                "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${name}"; then
+                printf 'asset upload outcome uncertain; checking exact server state\n' >&2
+                break
+              fi
+            done
             verified=false
             for attempt in 1 2 3 4 5; do
               state="$(classify_release)"

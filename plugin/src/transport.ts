@@ -58,6 +58,14 @@ export interface HttpResponse {
 
 export type RequestFn = (request: HttpRequest) => Promise<HttpResponse>;
 
+/** A manual read can be cancelled logically; requestUrl itself cannot abort. */
+export interface ReadControl {
+  check(): void;
+  wait<T>(work: Promise<T>): Promise<T>;
+}
+
+export const HISTORY_RESPONSE_BYTES = 6 * 1024 * 1024;
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -134,6 +142,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
   { method: "GET", path: /^\/v1\/changes$/, idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/files/${ID}$`), idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/files/${ID}/versions/${SID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}$`), idempotent: true },
   { method: "GET", path: /^\/v1\/plugin\/manifest$/, idempotent: true },
@@ -324,6 +333,9 @@ function toArrayBuffer(bytes: Bytes): ArrayBuffer {
 }
 
 export class Transport {
+  // Shared across modal close/reopen. Cancellation discards a late result,
+  // but cannot permit a second buffered request before the first settles.
+  private manualRead: Promise<Attempt> | null = null;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
@@ -376,7 +388,7 @@ export class Transport {
    * would be refused `401 replayed_nonce` — a refusal this client would have
    * manufactured itself.
    */
-  private async attempt(method: string, target: string, sending: Prepared): Promise<Attempt> {
+  private async attempt(method: string, target: string, sending: Prepared, check = (): void => undefined): Promise<Attempt> {
     const headers = { ...sending.headers };
     if (sending.device) {
       const ts = Math.floor(this.now() / 1000);
@@ -385,6 +397,7 @@ export class Transport {
       headers["X-Obsync-Nonce"] = nonce;
       headers["X-Obsync-Sig"] = await signRequest(sending.device.secret, method, target, ts, nonce, sending.digest);
     }
+    check();
     try {
       const response = await this.options.request({
         url: sending.url,
@@ -456,6 +469,45 @@ export class Transport {
 
   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {
     return decode<T>(await this.call(method, target, options));
+  }
+
+  /** One attempt, one outstanding manual request, and a post-buffer ceiling. */
+  private async readOnce(target: string, control: ReadControl, maxBytes: number, json?: unknown): Promise<HttpResponse> {
+    const started = this.now();
+    try {
+      control.check();
+      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      const method = json === undefined ? "GET" : "POST";
+      const sending = await this.prepare(target, { auth: "device", json });
+      control.check();
+      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      const pending = this.attempt(method, target, sending, () => control.check());
+      this.manualRead = pending;
+      void pending.finally(() => {
+        if (this.manualRead === pending) this.manualRead = null;
+      }).catch(() => undefined);
+      const outcome = await control.wait(pending);
+      control.check();
+      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.");
+      const response = outcome.response;
+      const metadata = target.startsWith("/v1/changes?") || target.startsWith("/v1/files/");
+      if (response.arrayBuffer.byteLength > maxBytes ||
+          (metadata && (response.text.length > maxBytes || utf8(response.text).length > maxBytes))) {
+        throw new ApiError(response.status, "response_too_large", "History response exceeds its byte budget.");
+      }
+      return this.settle(method, target, response, 1, started);
+    } catch (error) {
+      this.log(`history_http decision=refused budget_bytes=${maxBytes} duration_ms=${this.now() - started}`);
+      throw error;
+    }
+  }
+
+  async historyChanges(since: number, control: ReadControl): Promise<unknown> {
+    return decode<unknown>(await this.readOnce(`/v1/changes?since=${since}&wait=0&limit=1`, control, HISTORY_RESPONSE_BYTES));
+  }
+
+  async historyVersion(fileId: string, versionId: string, control: ReadControl): Promise<unknown> {
+    return decode<unknown>(await this.readOnce(`/v1/files/${fileId}/versions/${versionId}`, control, HISTORY_RESPONSE_BYTES));
   }
 
   /** The same, for a route that must not be repeated. */
@@ -563,8 +615,11 @@ export class Transport {
     await this.call("PUT", `/v1/chunks/${sid}`, { auth: "device", binary: ciphertext });
   }
 
-  async getChunk(sid: string): Promise<Bytes> {
-    const response = await this.call("GET", `/v1/chunks/${sid}`, { auth: "device" });
+  async getChunk(sid: string, control?: ReadControl): Promise<Bytes> {
+    const target = `/v1/chunks/${sid}`;
+    const response = control
+      ? await this.readOnce(target, control, 8 * 1024 * 1024 + 16)
+      : await this.call("GET", target, { auth: "device" });
     return new Uint8Array(response.arrayBuffer);
   }
 
@@ -574,8 +629,8 @@ export class Transport {
    * latency is made of. A missing sid comes back as a zero-length part with
    * `X-Obsync-Missing: 1` and is returned as `null`.
    */
-  async getChunks(sids: string[]): Promise<(Bytes | null)[]> {
-    const response = await this.call("POST", "/v1/chunks/get", {
+  async getChunks(sids: string[], control?: ReadControl): Promise<(Bytes | null)[]> {
+    const response = control ? await this.readOnce("/v1/chunks/get", control, 33 * 1024 * 1024, { sids }) : await this.call("POST", "/v1/chunks/get", {
       auth: "device",
       json: { sids },
     });

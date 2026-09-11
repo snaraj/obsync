@@ -131,6 +131,11 @@ and a test asserts every route it emits appears there.
 
 ## Devices
 
+The plugin's `syncFolders` selection is local-only and is not a field of
+device policy, heartbeat, pairing or the domain map. It grants no API
+permission and cannot be expanded by another device; all paired devices
+retain the account-wide authority described below.
+
 - `GET /v1/devices` → `{"devices":[{"device_id","name","platform",
   "app_version","created","last_seen","last_sign_in","last_edit",
   "address","country","policy":{"per_file_max_bytes","total_budget_bytes"},
@@ -250,9 +255,11 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   `{"bundle_sha256":"<64hex>","styles_sha256":"<64hex>"}`.
 - `GET /v1/plugin/bundle` → `main.js`; `GET /v1/plugin/styles` →
   `styles.css`. Unauthenticated: the bundle is public source. These are a
-  convenience copy for the Install page; the trusted source of plugin code
-  is the GitHub Release whose evidence manifest carries the bundle's
-  SHA-256. The plugin never fetches code from this endpoint.
+  compatibility and diagnostic endpoints. Native installation and updates
+  use Obsidian's Community Plugins browser and the matching GitHub Release;
+  v2 release evidence binds the individual files to the bundle. The plugin
+  never fetches code from these endpoints. The native installer does not
+  document verification of this project's release evidence.
 
 ## Limits and headers
 

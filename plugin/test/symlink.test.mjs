@@ -76,6 +76,7 @@ async function vault({ fs: injected } = {}) {
     remove: async (path) => unlinkSync(join(root, path)),
   };
   const plugin = {
+    state: { data: {} },
     app: { vault: { adapter, getFiles: () => [], getAbstractFileByPath: () => null } },
     log: (line) => logs.push(line),
   };

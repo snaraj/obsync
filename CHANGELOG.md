@@ -4,6 +4,57 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.11 - Unreleased
+
+- Prepare native installation and updates through Obsidian's Community
+  Plugins browser. Keep one root manifest, publish the three individual
+  plugin files from the same build as the ZIP, and bind every asset in v2
+  release evidence. New GitHub tags match the unprefixed plugin version;
+  image tags retain their prefix. Existing immutable releases retain their
+  original audit contract. Directory acceptance and device validation remain
+  separate prerequisites for production use.
+- Align the commit-signature validator with the documented GPT-6 lane while
+  retaining exact-match, identity and trailer refusals.
+- Add a folder selection saved only on this device. Existing dedicated
+  vaults retain whole-vault sync; selected folders admit only descendants,
+  and an explicit empty selection syncs no files. Scoped scans start at the
+  selected folders. Push, pull, on-demand downloads, remembered rename and
+  deletion sources, conflict copies and merge history obey the selection
+  before file access. Invalid persisted selections refuse loading.
+- Saving a narrower selection waits for active transfers, preserves files
+  and state, and never rewinds the feed. Queued renames remain publishable
+  after restart. Expansion after a device has sync history is refused;
+  move local files into an already selected folder and run Sync now to add
+  content within the same vault. The selection does not revoke access to
+  previously shared content or sandbox Obsidian, its plugins or the local OS.
+- Complete native folder-selection saves without returning a thenable UI
+  component to a Promise continuation, including handled save failures.
+- Disabling the plugin cancels pending startup and folder-change
+  continuations, so a delayed transfer or local save cannot restart sync
+  after unload. Stale startup results cannot replace a newer engine or its
+  status; an already-issued local write may finish and must be checked after
+  restart.
+- Add **Restore from history** to the native command palette. It browses
+  retained versions, including deleted notes, with a separate bounded read
+  cursor and restores verified content as a new sibling file. Existing
+  files, unsynced edits and original history are preserved; the new copy
+  uses ordinary sync with a fresh identity. Folder selection and current
+  device limits apply, including local bytes added during the download.
+- History reads make one attempt at a time; cancellation discards late
+  results and blocks replacement reads until the outstanding request
+  settles. A dispatched local create is preserved and reported separately
+  from remote sync. Desktop publishes without replacing a destination;
+  mobile uses Obsidian's create-only API. Neither platform silently falls
+  back to an overwriting write.
+- Resume sync after a same-instance reload waits for prior history recovery
+  and manual-download work, without loading state ahead of their saves.
+- Quarantine damaged chunks across separate blob and journal mounts using
+  a synced copy on the destination volume before removing the primary.
+  Reserve peak copy space, account failed-copy residue, and retain failed
+  operations for recovery without claiming quarantine or losing inventory.
+  Recovery uploads and delayed scrub summaries cannot discard each other;
+  concurrent GC skips a busy chunk pass without holding partial locks.
+
 ## 0.1.10 - Unreleased
 
 - The chart's own defaults could not start the server, and both halves of

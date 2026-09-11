@@ -272,71 +272,27 @@
 
   <section id="page-install" class="page" hidden aria-labelledby="install-h">
     <h1 id="install-h">Install</h1>
-    <p>
-      The first install on a device is manual by design, and so is every update: the plugin tells
-      you when this server runs a newer version, and you install the matching GitHub Release the
-      same way. Community-plugin restricted mode must be off in Obsidian.
-    </p>
-    <h2>Files</h2>
-    <p class="note">A convenience copy served by this server, built from the same commit as the
-      running binary. The trusted source is the GitHub Release: compare each SHA-256 below with the
-      Release's evidence manifest before installing.</p>
-    <div class="scroller">
-      <table class="grid" id="plugin-table">
-        <caption class="visually-hidden">Plugin files and their hashes</caption>
-        <thead>
-          <tr>
-            <th scope="col">File</th>
-            <th scope="col">Download</th>
-            <th scope="col">SHA-256</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row"><code>main.js</code></th>
-            <td><a href="/v1/plugin/bundle" download="main.js">Download bundle</a></td>
-            <td><code id="sha-bundle" class="mono skel">&nbsp;</code></td>
-          </tr>
-          <tr>
-            <th scope="row"><code>styles.css</code></th>
-            <td><a href="/v1/plugin/styles" download="styles.css">Download styles</a></td>
-            <td><code id="sha-styles" class="mono skel">&nbsp;</code></td>
-          </tr>
-          <tr>
-            <th scope="row"><code>manifest.json</code></th>
-            <td><a href="/v1/plugin/manifest" download="manifest.json">Download manifest</a></td>
-            <td><code id="plugin-version" class="mono skel">&nbsp;</code></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h2>Steps</h2>
-    <p>Put all three files in <code>&lt;vault&gt;/.obsidian/plugins/obsync/</code>.</p>
-    <h3>macOS, Windows, Linux</h3>
+    <p>Install Obsync inside Obsidian on each computer, phone, or tablet.</p>
     <ol class="prose">
-      <li>Download the three files above.</li>
-      <li>In Finder or Explorer, open the vault folder, then <code>.obsidian</code>, then
-        <code>plugins</code>. Create a folder called <code>obsync</code> if it is not there.</li>
-      <li>Copy the three files in.</li>
-      <li>In Obsidian: Settings → Community plugins → enable <em>obsync</em>.</li>
+      <li>Open your vault and go to Settings → Community plugins.</li>
+      <li>Allow community plugins, select Browse, search for <strong>Obsync</strong>,
+        then select Install and Enable.</li>
+      <li>Open Obsync settings, enter your server's HTTPS address, and save the folders
+        you want this device to sync.</li>
+      <li>For your first device, complete First-time setup and keep the recovery phrase safe.
+        For another device, use Pair a new device on a paired device, enter its pairing
+        code here, then approve the new device there.</li>
     </ol>
-    <h3>iOS and iPadOS</h3>
-    <ol class="prose">
-      <li>Download the three files in Safari; they land in Files.</li>
-      <li>Files → On My iPhone (or iPad) → Obsidian → your vault → <code>.obsidian</code> (hidden
-        folders are visible in Files) → <code>plugins</code> → create <code>obsync</code>.</li>
-      <li>Paste the three files in, then restart Obsidian and enable the plugin.</li>
-    </ol>
-    <h3>Android</h3>
-    <ol class="prose">
-      <li>Download the three files.</li>
-      <li>With any file manager, open the vault folder and use the same
-        <code>.obsidian/plugins/obsync/</code> layout.</li>
-      <li>Restart Obsidian and enable the plugin.</li>
-    </ol>
-    <p class="note">Then open the plugin, paste a pairing code from an already-paired device, and
-      approve it there. A brand-new vault instead runs setup with the server's setup token.</p>
+    <p class="note">If Obsync is not in Browse, its directory listing is not yet available.
+      Installation does not require copying plugin folders manually.</p>
+    <h2>Updates</h2>
+    <p>In Settings → Community plugins, select Check for updates and update Obsync.
+      Your vault and pairing stay in place. Each device manages its own plugin updates.</p>
+    <p>Server plugin <span id="plugin-version" class="mono skel">&nbsp;</span>.</p>
+    <h2>Connection</h2>
+    <p>Your server needs an HTTPS certificate your device trusts. If your server uses
+      private connectivity, connect to that network before pairing or syncing.
+      Certificate errors must be fixed by the server operator.</p>
   </section>
 
   <section id="page-logs" class="page" hidden aria-labelledby="logs-h">

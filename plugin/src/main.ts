@@ -56,12 +56,15 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource, bytesSource } from "./chunker";
 import { State } from "./state";
+import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
+import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import { HistoryModal } from "./ui/history";
 import {
   FinalComponent,
   PathResolver,
@@ -84,12 +87,15 @@ interface NodeFileHandle {
   /** `fstat`: the identity of the OPEN file, which no later swap can change. */
   stat(): Promise<PathStat>;
   close(): Promise<void>;
+  sync(): Promise<void>;
+  utimes(atime: number, mtime: number): Promise<void>;
 }
 interface NodeFs {
   promises: {
-    open(path: string, flags: string): Promise<NodeFileHandle>;
+    open(path: string, flags: string, mode?: number): Promise<NodeFileHandle>;
     mkdir(path: string, options: { recursive: boolean }): Promise<string | undefined>;
     rename(from: string, to: string): Promise<void>;
+    link(from: string, to: string): Promise<void>;
     unlink(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
@@ -135,21 +141,15 @@ function walker(fs: NodeFs): PathWalker {
   };
 }
 
-/** The GitHub Release that carries a version's plugin bundle and its hashes. */
-export function releaseUrl(version: string): string {
-  return `https://github.com/snaraj/obsync/releases/tag/v${version}`;
-}
-
 /**
  * The one sentence the notice and the settings tab both show when the server
- * runs a newer plugin than this device. It names the file to install and
- * where it comes from, because obsync will not install it for the user: a
- * server that could serve the code could serve any code.
+ * runs a newer plugin than this device. Obsidian's plugin manager owns
+ * installation and updates; this server can never supply executable code.
  */
 export function updateMessage(server: string, local: string): string {
   return (
-    `Server runs ${server}, you have ${local}; update from the GitHub Release ` +
-    `(obsync-plugin-v${server}.zip) and reinstall: ${releaseUrl(server)}`
+    `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
+    "Check for updates, then update Obsync."
   );
 }
 
@@ -219,6 +219,7 @@ export class ObsidianHost implements VaultHost {
    * nothing here to walk.
    */
   async syncable(path: string): Promise<boolean> {
+    if (!inSyncScope(path, this.plugin.state.data.syncFolders)) return false;
     const desktop = this.desktop;
     if (desktop === null) return isVaultPath(path);
     try {
@@ -249,6 +250,33 @@ export class ObsidianHost implements VaultHost {
 
   /** Every vault file whose path this device may sync, and no other. */
   async list(): Promise<VaultStat[]> {
+    const folders = this.plugin.state.data.syncFolders;
+    if (folders !== undefined) {
+      const files: VaultStat[] = [];
+      const visit = async (entry: TAbstractFile): Promise<void> => {
+        if (entry instanceof TFile) {
+          if (inSyncScope(entry.path, folders)) files.push({ path: entry.path, mtime: entry.stat.mtime, size: entry.stat.size });
+        } else if (entry instanceof TFolder && inSyncTree(entry.path, folders)) {
+          // Refuse a linked folder before walking its cached children. No
+          // whole-vault inventory or stat of an excluded subtree is needed.
+          if (this.desktop !== null) {
+            try {
+              await this.confine(this.desktop, entry.path, ["directory"]);
+            } catch (error) {
+              if (!(error instanceof VaultPathError)) throw error;
+              this.log(`list decision=not_synced reason=${error.refusal}`);
+              return;
+            }
+          }
+          for (const child of entry.children) await visit(child);
+        }
+      };
+      for (const folder of folders) {
+        const entry = this.plugin.app.vault.getAbstractFileByPath(folder);
+        if (entry instanceof TFolder) await visit(entry);
+      }
+      return files;
+    }
     const files = this.plugin.app.vault.getFiles();
     const synced = files.filter((file) => isVaultPath(file.path));
     if (synced.length !== files.length) {
@@ -263,7 +291,7 @@ export class ObsidianHost implements VaultHost {
    * add a lookup to race.
    */
   async stat(path: string): Promise<VaultStat | null> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) {
       const found = await this.confine(desktop, path, ["absent", "file"]);
@@ -292,7 +320,7 @@ export class ObsidianHost implements VaultHost {
   }
 
   async read(path: string): Promise<Bytes> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
@@ -318,7 +346,7 @@ export class ObsidianHost implements VaultHost {
    * never lands in memory. Mobile has no such API and buffers the file once.
    */
   source(path: string, size: number): ByteSource {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       let cached: Bytes | null = null;
@@ -360,7 +388,7 @@ export class ObsidianHost implements VaultHost {
    * `writeBinary` once, which is the strongest primitive the adapter has.
    */
   async writer(path: string): Promise<VaultWriter> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) return this.desktopWriter(desktop, path);
     const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
@@ -387,6 +415,113 @@ export class ObsidianHost implements VaultHost {
       abort: async () => {
         parts.length = 0;
       },
+    };
+  }
+
+  /** Recovery has no overwrite fallback, on either platform. */
+  async createWriter(path: string, size: number, check: () => void): Promise<VaultWriter> {
+    const guard = (): void => { check(); assertSyncPath(path, this.plugin.state.data.syncFolders); };
+    guard();
+    const desktop = this.desktop;
+    const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+    if (desktop === null) {
+      let bytes = new Uint8Array(size);
+      let at = 0;
+      return {
+        write: async (part) => {
+          guard();
+          if (at + part.length > bytes.length) throw new Error("Restore exceeded its byte budget.");
+          bytes.set(part, at);
+          at += part.length;
+        },
+        commit: async (mtime) => {
+          guard();
+          if (at !== size) throw new Error("Restore content is incomplete.");
+          const vault = this.plugin.app.vault;
+          if (folder !== "" && !(await vault.adapter.exists(folder))) {
+            guard();
+            await vault.adapter.mkdir(folder);
+          }
+          guard();
+          try {
+            // The public Vault primitive rejects an existing file; the
+            // adapter's writeBinary would silently replace it.
+            const file = await vault.createBinary(path, bytes.buffer, { mtime });
+            return { path: file.path, mtime: file.stat.mtime, size: file.stat.size };
+          } catch {
+            throw new CopyPublicationError(path);
+          }
+        },
+        abort: async () => { bytes = new Uint8Array(0); },
+      };
+    }
+    const fs = desktop.fs;
+    if (folder !== "") {
+      const before = await this.confine(desktop, folder, ["absent", "directory"]);
+      guard();
+      await fs.promises.mkdir(before.target, { recursive: true });
+      guard();
+    }
+    const found = await this.confine(desktop, path, ["absent"]);
+    guard();
+    const parent = found.target.slice(0, found.target.lastIndexOf(desktop.path.sep));
+    const temp = `${parent}${desktop.path.sep}.obsync-restore-${hex(randomBytes(16))}.tmp`;
+    const handle = await fs.promises.open(temp, "wx", 0o600);
+    let opened: PathStat;
+    try { opened = await handle.stat(); } catch (error) { await handle.close(); throw error; }
+    let open = true;
+    let at = 0;
+    const discard = async (): Promise<void> => {
+      try {
+        if (open) await handle.close();
+        open = false;
+        if (sameFile(opened, await walker(fs).lstat(temp))) await fs.promises.unlink(temp);
+      } catch { this.log("history decision=temp_cleanup_failed"); }
+    };
+    const bind = async (): Promise<void> => {
+      guard();
+      const refusal = await chainRefusal(found.chain, walker(fs));
+      if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
+      guard();
+    };
+    try { await bind(); } catch (error) { await discard(); throw error; }
+    return {
+      write: async (bytes) => {
+        await bind();
+        if (at + bytes.length > size) throw new Error("Restore exceeded its byte budget.");
+        let offset = 0;
+        while (offset < bytes.length) {
+          guard();
+          const result = await handle.write(bytes.subarray(offset));
+          if (result.bytesWritten <= 0 || result.bytesWritten > bytes.length - offset) throw new Error("Restore write made no valid progress.");
+          offset += result.bytesWritten;
+        }
+        at += bytes.length;
+      },
+      commit: async (mtime) => {
+        await bind();
+        if (at !== size) throw new Error("Restore content is incomplete.");
+        await handle.utimes(mtime / 1000, mtime / 1000);
+        await handle.sync();
+        await bind();
+        await handle.close();
+        open = false;
+        guard();
+        try {
+          // link is atomic and cannot replace a destination, even one that
+          // appeared after preflight. Never fall back to rename/copyFile.
+          await fs.promises.link(temp, found.target);
+          // From here on, failure/cancellation preserves the published copy.
+          const directory = await fs.promises.open(parent, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
+          const refusal = await chainRefusal(found.chain, walker(fs));
+          const landed = await walker(fs).lstat(found.target);
+          if (refusal !== null || !sameFile(opened, landed)) throw new Error("Restore publication identity changed.");
+          const stat = landed as PathStat;
+          return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+        } catch { throw new CopyPublicationError(path); }
+      },
+      abort: discard,
     };
   }
 
@@ -478,7 +613,7 @@ export class ObsidianHost implements VaultHost {
    * finding it afterwards is the signal that the name moved under us.
    */
   async trash(path: string): Promise<void> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {
@@ -517,13 +652,35 @@ export default class ObsyncPlugin extends Plugin {
   updateAvailable: string | null = null;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
+  /** Invalidates continuations from an earlier load, including a load with no engine yet. */
+  private lifecycle: object | null = {};
+  private changingScope = false;
+  private readonly manualFetches = new Set<Promise<string>>();
+  private readonly histories = new Set<HistoryBrowser>();
+  private restoring: HistoryOperation | null = null;
+  private manualRestore: Promise<{ path: string; syncRequested: boolean }> | null = null;
 
   get isMobile(): boolean {
     return Platform.isMobile;
   }
 
   override async onload(): Promise<void> {
-    this.state = await State.open(this, Platform.isMobile);
+    const generation = this.lifecycle = {};
+    this.changingScope = false;
+    // A same-instance reload owns resumption after older writers settle.
+    // They may still persist the old State, so wait before taking a snapshot.
+    const settling: Promise<unknown>[] = [...this.manualFetches];
+    if (this.manualRestore !== null) settling.push(this.manualRestore);
+    if (settling.length !== 0) {
+      await Promise.allSettled(settling);
+      if (!this.isCurrent(generation)) return;
+    }
+    const state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
+      this.log("state decision=refused reason=load_failed");
+      throw error;
+    });
+    if (!this.isCurrent(generation)) return;
+    this.state = state;
     this.host = new ObsidianHost(this);
     this.transport = new Transport({
       request: (request) => requestUrl(request),
@@ -540,6 +697,7 @@ export default class ObsyncPlugin extends Plugin {
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
+    this.addCommand({ id: "restore-history", name: "Restore from history", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
       name: "Pair a new device",
@@ -573,12 +731,15 @@ export default class ObsyncPlugin extends Plugin {
 
     this.registerVaultEvents();
     if (this.state.paired) await this.startEngine();
-    void this.checkForUpdate();
+    if (this.isCurrent(generation)) void this.checkForUpdate();
   }
 
   override onunload(): void {
-    this.engine?.stop();
+    this.lifecycle = null;
+    this.cancelHistories();
+    const engine = this.engine;
     this.engine = null;
+    engine?.stop();
   }
 
   private registerVaultEvents(): void {
@@ -624,18 +785,31 @@ export default class ObsyncPlugin extends Plugin {
 
   // --- lifecycle ---------------------------------------------------------
 
+  private isCurrent(generation: object | null): boolean {
+    return generation !== null && generation === this.lifecycle;
+  }
+
   async startEngine(): Promise<void> {
-    if (!this.state.paired) return;
-    this.engine?.stop();
-    this.engine = new SyncEngine({
+    const generation = this.lifecycle;
+    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+    this.cancelHistories();
+    const previous = this.engine;
+    await previous?.stopAndWait();
+    if (!this.isCurrent(generation) || this.changingScope || this.restoring !== null || this.engine !== previous) return;
+    const engine: SyncEngine = new SyncEngine({
       state: this.state,
       transport: this.transport,
       host: this.host,
-      onStatus: (status) => this.setStatus(status),
+      onStatus: (status) => {
+        if (this.engine === engine) this.setStatus(status);
+      },
     });
+    this.engine = engine;
     try {
-      await this.engine.start();
+      await engine.start();
     } catch (error) {
+      engine.stop();
+      if (this.engine !== engine) return;
       this.engine = null;
       this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
@@ -646,6 +820,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
+    if (this.changingScope || this.restoring !== null) return;
     if (!this.engine) {
       await this.startEngine();
       return;
@@ -654,13 +829,152 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   syncContext(): SyncContext | null {
-    return this.engine?.context ?? null;
+    return this.changingScope || this.restoring !== null ? null : this.engine?.context ?? null;
+  }
+
+  private cancelHistories(): void {
+    for (const browser of this.histories) browser.operation.cancel();
+    this.histories.clear();
+  }
+
+  openHistory(): HistoryBrowser {
+    const context = this.syncContext();
+    if (!context) throw new Error("Start sync on this paired device before opening history.");
+    const generation = this.lifecycle;
+    const engine = this.engine;
+    const { deviceId, vrk, serverUrl } = this.state.data;
+    const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
+      !this.changingScope && (this.restoring === null || this.restoring === operation) &&
+      this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
+    const browser = new HistoryBrowser(context, operation);
+    this.histories.add(browser);
+    return browser;
+  }
+
+  closeHistory(browser: HistoryBrowser): void {
+    browser.operation.cancel();
+    this.histories.delete(browser);
+  }
+
+  restoreHistory(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
+    browser.operation.check();
+    if (!this.histories.has(browser) || this.restoring !== null) throw new Error("Another recovery operation owns this device. Wait or cancel it first.");
+    this.restoring = browser.operation;
+    for (const other of this.histories) if (other !== browser) other.operation.cancel();
+    const work = this.restoreHistoryOwned(browser, entry);
+    this.manualRestore = work;
+    void work.finally(() => { if (this.manualRestore === work) this.manualRestore = null; }).catch(() => undefined);
+    return work;
+  }
+
+  private async restoreHistoryOwned(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
+    const generation = this.lifecycle;
+    const previous = this.engine;
+    let created: VaultStat | null = null;
+    let syncRequested = false;
+    try {
+      // No self-deadlock: the restore is held separately from older Fetches.
+      await previous?.stopAndWait();
+      browser.operation.check();
+      await browser.operation.wait(Promise.allSettled(this.manualFetches));
+      browser.operation.check();
+      created = await restoreCopy(browser, entry);
+    } catch (error) {
+      this.log(`history decision=restore_failed reason=${error instanceof CopyPublicationError ? "publication_may_exist" : "refused_or_cancelled"}`);
+      throw error;
+    } finally {
+      if (this.restoring === browser.operation) this.restoring = null;
+      this.closeHistory(browser);
+      if (this.isCurrent(generation) && !this.changingScope && this.engine === previous) {
+        // Ordinary startup may wait on network retries. Do not withhold a
+        // completed local-copy receipt while that independent work settles.
+        const restart = this.startEngine();
+        syncRequested = created !== null;
+        void restart.then(() => {
+          if (created && this.isCurrent(generation) && !this.changingScope && this.engine?.started) {
+            // No pull echo marker or historical identity: ordinary push
+            // gives this new local file a fresh id and empty parents.
+            this.engine.changed(created.path);
+          }
+        }).catch(() => this.log("history decision=sync_pending reason=restart_failed"));
+      }
+    }
+    return { path: (created as VaultStat).path, syncRequested };
   }
 
   async fetchRemoteOnly(fileId: string): Promise<string> {
     const context = this.syncContext();
     if (!context) throw new Error("obsync is not running on this device");
-    return fetchRemoteOnly(context, fileId);
+    const fetch = fetchRemoteOnly(context, fileId);
+    this.manualFetches.add(fetch);
+    try {
+      return await fetch;
+    } finally {
+      this.manualFetches.delete(fetch);
+    }
+  }
+
+  /** A local scope change never alters policy on the server or replays old versions. */
+  async saveSyncFolders(value: string[] | undefined): Promise<void> {
+    const generation = this.lifecycle;
+    const assertActive = (): void => {
+      if (!this.isCurrent(generation)) {
+        throw new Error("obsync: plugin unloaded during the folder change; restart Obsidian to check the saved selection.");
+      }
+    };
+    assertActive();
+    const state = this.state;
+    let folders: string[] | undefined;
+    try {
+      folders = value === undefined ? undefined : parseSyncFolders(value);
+    } catch (error) {
+      this.log("scope decision=refused reason=invalid_selection");
+      throw error;
+    }
+    const assertChange = (): void => {
+      const used = state.data.lastSeq !== 0 || Object.keys(state.data.files).length !== 0 ||
+        Object.keys(state.data.remoteOnly).length !== 0;
+      if (used && expandsSyncScope(state.data.syncFolders, folders)) {
+        this.log("scope decision=refused reason=expansion_requires_resync");
+        throw new Error(SCOPE_EXPANSION_MESSAGE);
+      }
+    };
+    assertChange();
+    if (this.changingScope) throw new Error("obsync: a folder selection is already being saved.");
+    this.changingScope = true;
+    this.cancelHistories();
+    try {
+      // Scope changes take effect only after old work is quiescent. A
+      // stopped long poll may finish, but must not advance its cursor.
+      await this.engine?.stopAndWait();
+      assertActive();
+      this.engine = null;
+      await Promise.allSettled(this.manualFetches);
+      await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+      assertActive();
+      assertChange();
+      const previous = state.data.syncFolders;
+      state.data.syncFolders = folders;
+      try {
+        await state.save();
+      } catch (error) {
+        state.data.syncFolders = previous;
+        throw error;
+      }
+      assertActive();
+      this.log(`scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0}`);
+    } catch (error) {
+      if (this.isCurrent(generation)) {
+        this.log("scope decision=failed reason=not_saved");
+        this.setStatus({ kind: "error", message: "Folder selection was not saved. Sync is stopped; retry before restarting Obsidian." });
+      } else {
+        this.log("scope decision=cancelled reason=plugin_unloaded");
+      }
+      throw error;
+    } finally {
+      if (this.isCurrent(generation)) this.changingScope = false;
+    }
+    await this.startEngine();
   }
 
   // --- identity and keys -------------------------------------------------
@@ -741,7 +1055,7 @@ export default class ObsyncPlugin extends Plugin {
     }
     this.log(`device decision=revoked self=${deviceId === this.state.data.deviceId}`);
     if (deviceId === this.state.data.deviceId) {
-      this.engine?.stop();
+      await this.engine?.stopAndWait();
       this.engine = null;
       this.setStatus({ kind: "error", message: "this device was revoked" });
     }
@@ -815,20 +1129,21 @@ export default class ObsyncPlugin extends Plugin {
    * replace the bytes AND the hash that is supposed to check them; installing
    * that would hand it the vault key at the next reload. This device
    * therefore reads ONE unauthenticated field — the version — and tells the
-   * user where the trusted copy is. It never fetches the bundle, and nothing
-   * in this plugin writes into `.obsidian/plugins/`. Signed updates against
-   * a key pinned in the installed plugin are a v0.2 item.
+   * user to open Obsidian's plugin manager. It never fetches the bundle, and
+   * nothing in this plugin writes into `.obsidian/plugins/`.
    */
   async checkForUpdate(): Promise<void> {
-    if (this.state.data.serverUrl === "") return;
+    const generation = this.lifecycle;
+    if (!this.isCurrent(generation) || this.state.data.serverUrl === "") return;
     try {
       const remote = await this.transport.pluginManifest();
+      if (!this.isCurrent(generation)) return;
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
       this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
       new Notice(`obsync: ${updateMessage(remote.version, this.manifest.version)}`, 15000);
     } catch (error) {
-      this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
+      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

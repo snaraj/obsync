@@ -315,7 +315,8 @@ test("a multipart response without a boundary is refused", async () => {
  * the server sees and must therefore appear in `CALLS` below, which is what
  * stops a new endpoint from arriving unclassified.
  */
-const INTERNAL = ["constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once"];
+const INTERNAL = ["constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once", "readOnce"];
+const READ_CONTROL = { check() {}, wait: (work) => work };
 
 /** Every route-emitting method, arguments that make it emit, and its verdict. */
 const CALLS = [
@@ -338,6 +339,8 @@ const CALLS = [
   ["postVersion", [FILE_ID, VERSION_POST], false],
   ["getFile", [FILE_ID], true],
   ["changes", [7, 0], true],
+  ["historyChanges", [7, READ_CONTROL], true, true],
+  ["historyVersion", [FILE_ID, SID, READ_CONTROL], true, true],
   ["dashboardLoginLink", [], false],
   ["pluginManifest", [], true],
 ];
@@ -374,7 +377,7 @@ test("every route this client emits is classified, and sent as its verdict says"
     "a method that reaches the server must state the route it emits",
   );
 
-  for (const [name, args, idempotent] of CALLS) {
+  for (const [name, args, idempotent, manual] of CALLS) {
     const answered = always(200, '{"missing":[],"devices":[],"versions":[],"heads":[],"changes":[]}');
     await answered.transport[name](...args);
     assert.ok(answered.sent.length > 0, `${name} sent nothing`);
@@ -389,7 +392,10 @@ test("every route this client emits is classified, and sent as its verdict says"
     // settles, and the send either retries or reports its one attempt lost.
     const unsettled = always(503, "");
     const result = await unsettled.transport[name](...args).catch((error) => error);
-    if (idempotent) {
+    if (manual) {
+      assert.equal(unsettled.sent.length, 1, `${name}: manual read requires an explicit retry`);
+      assert.equal(result.code, "unreachable");
+    } else if (idempotent) {
       assert.ok(unsettled.sent.length > 1, `${name}: a repeatable route is retried`);
       assert.equal(result.code, "unreachable", `${name}: and gives up saying so`);
     } else {
