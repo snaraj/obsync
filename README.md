@@ -245,7 +245,7 @@ Copy `obsync-root.crt` to each device and install it:
    their relative folder names.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
-   an `obsidian://obsync/pair?code=...` link you can send yourself.
+   an `obsidian://obsync-private-sync/pair?code=...` link you can send yourself.
 3. On the phone, paste the code under **Pairing code** and tap **Pair this
    device**, or open the link.
 4. Back on the computer, approve the device by its name when asked. The phone

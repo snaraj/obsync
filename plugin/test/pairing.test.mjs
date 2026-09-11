@@ -59,8 +59,10 @@ test("a code survives the way people retype it, and a short one is refused", () 
 test("the pairing link is an obsidian URI carrying the code", () => {
   const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, new Uint8Array(16));
   const link = pairing.pairingLink(code);
-  assert.equal(link.startsWith("obsidian://obsync/pair?code="), true);
+  assert.equal(link.startsWith("obsidian://obsync-private-sync/pair?code="), true);
   assert.equal(new URL(link).searchParams.get("code"), code);
+  const manifest = JSON.parse(readFileSync(join(here, "..", "..", "manifest.json"), "utf8"));
+  assert.equal(new URL(link).hostname, manifest.id);
 });
 
 test("the envelope opens only with the right pairing secret and id", async () => {

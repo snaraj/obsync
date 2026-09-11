@@ -4,6 +4,14 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.12 - Unreleased
+
+- Use the distinct `obsync-private-sync` installation and pairing-link identity
+  while retaining the Obsync display name. Native installs keep their own
+  settings; no other plugin folder or protocol action is adopted. Release
+  verification preserves the original ID through 0.1.11 and requires the new
+  ID thereafter.
+
 ## 0.1.11 - Unreleased
 
 - Prepare native installation and updates through Obsidian's Community

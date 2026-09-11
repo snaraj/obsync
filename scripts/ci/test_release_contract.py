@@ -68,7 +68,10 @@ def locks(version: str, history: list[str] | None = None) -> dict[str, str]:
             "image:\n  repository: ghcr.io/snaraj/obsync\n"
             f"  tag: v{version}\n  digest: {SENTINEL}\n"
         ),
-        "manifest.json": json.dumps({"id": "obsync", "version": version}) + "\n",
+        "manifest.json": json.dumps({
+            "id": "obsync" if tuple(map(int, version.split("."))) <= (0, 1, 11) else "obsync-private-sync",
+            "version": version,
+        }) + "\n",
         "CHANGELOG.md": changelog,
     }
 

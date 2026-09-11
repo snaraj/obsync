@@ -29,7 +29,10 @@ def digest(data):
 def bundle(version=VERSION, files=None):
     contents = {
         "main.js": b"module.exports = class NativeFixture {};\n",
-        "manifest.json": json.dumps({"id": "obsync", "version": version}).encode(),
+        "manifest.json": json.dumps({
+            "id": "obsync" if tuple(map(int, version.split("."))) <= (0, 1, 11) else "obsync-private-sync",
+            "version": version,
+        }).encode(),
         "styles.css": b".obsync-fixture { display: block; }\n",
     }
     if files is not None:
@@ -47,6 +50,38 @@ def native_arguments(data=None):
 
 
 class NativeReleaseEvidence(unittest.TestCase):
+    def test_plugin_identity_is_closed_at_the_directory_transition(self):
+        for version, expected_id in (("0.1.10", "obsync"), ("0.1.11", "obsync"),
+                                     ("0.1.12", "obsync-private-sync"),
+                                     ("0.2.0", "obsync-private-sync"), ("1.0.0", "obsync-private-sync")):
+            parsed = contract.Version.parse(version)
+            with self.subTest(version=version):
+                self.assertEqual(parsed.plugin_id, expected_id)
+                contract.validate_snapshot(locks(version))
+                data = bundle(version)
+                contract.plugin_asset_records(data, parsed, digest(data))
+            for wrong_id in ("obsync", "obsync-private-sync", "another", None):
+                if wrong_id == expected_id:
+                    continue
+                with self.subTest(version=version, wrong_id=wrong_id):
+                    manifest = json.dumps({"version": version} if wrong_id is None else
+                                          {"id": wrong_id, "version": version}).encode()
+                    files = locks(version)
+                    files["manifest.json"] = manifest.decode()
+                    with self.assertRaisesRegex(contract.ContractError, "manifest identity"):
+                        contract.validate_snapshot(files)
+                    data = bundle(version, {"main.js": b"fixture", "manifest.json": manifest,
+                                            "styles.css": b"fixture"})
+                    with self.assertRaisesRegex(contract.ContractError, "manifest identity"):
+                        contract.plugin_asset_records(data, parsed, digest(data))
+
+    def test_valid_plugin_id_cannot_hide_a_different_bundle_version(self):
+        for expected, wrong in (("0.1.11", "0.1.10"), ("0.1.12", "0.2.0")):
+            with self.subTest(expected=expected, wrong=wrong):
+                data = bundle(wrong)
+                with self.assertRaisesRegex(contract.ContractError, "manifest identity/version"):
+                    contract.plugin_asset_records(data, contract.Version.parse(expected), digest(data))
+
     def test_cli_reads_at_most_the_archive_budget_plus_one_byte(self):
         data = bundle()
         budget = contract.PLUGIN_BUNDLE_MAX_BYTES
