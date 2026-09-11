@@ -131,6 +131,11 @@ and a test asserts every route it emits appears there.
 
 ## Devices
 
+The plugin's `syncFolders` selection is local-only and is not a field of
+device policy, heartbeat, pairing or the domain map. It grants no API
+permission and cannot be expanded by another device; all paired devices
+retain the account-wide authority described below.
+
 - `GET /v1/devices` → `{"devices":[{"device_id","name","platform",
   "app_version","created","last_seen","last_sign_in","last_edit",
   "address","country","policy":{"per_file_max_bytes","total_budget_bytes"},

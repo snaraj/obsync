@@ -66,7 +66,8 @@ Numbered for citation, repo-scoped, none negotiable in code:
    co-author or session trailers of any kind. Agent-authored commit messages
    and PR bodies end with the ACTING agent's own signature, exactly matching
    its agent label in the roster below (`- Fable5.1` ↔ `fable5.1`,
-   `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`, `- 5.6 Sol` ↔ `5.6-sol`).
+   `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`, `- 5.6 Sol` ↔ `5.6-sol`,
+   `- GPT-6` ↔ `gpt-6`).
 4. **Fail-closed doctrine — never weaken.** No security behavior may be made
    toggleable: no boolean, env var, build flag, or config field may silently
    disable encryption, request authentication, replay protection, fsync,
@@ -318,7 +319,7 @@ is evidence, never authority.
 - **Agent labels.** Every agent-created PR and issue carries `agent-authored`
   AND the acting agent's own label: `fable5.1` (Claude Fable 5.1, `D97706`),
   `opus5` (Claude Opus 5), `sonnet5` (Claude Sonnet 5, `0EA5E9`), `5.6-sol`
-  (ChatGPT 5.6 Sol). Body signature must match the label.
+  (ChatGPT 5.6 Sol), `gpt-6` (Codex GPT-6). Body signature must match the label.
 - **PR budget.** At most 3 agent PRs open by default. The owner authorized
   the bootstrap wave (core, server, plugin, scaffold, dashboard) to run in
   parallel on 2026-09-07; that override does not carry forward.

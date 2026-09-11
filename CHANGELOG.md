@@ -4,6 +4,21 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.11 - Unreleased
+
+- Add a folder selection saved only on this device. Existing dedicated
+  vaults retain whole-vault sync; selected folders admit only descendants,
+  and an explicit empty selection syncs no files. Scoped scans start at the
+  selected folders. Push, pull, on-demand downloads, remembered rename and
+  deletion sources, conflict copies and merge history obey the selection
+  before file access. Invalid persisted selections refuse loading.
+- Saving a narrower selection waits for active transfers, preserves files
+  and state, and never rewinds the feed. Queued renames remain publishable
+  after restart. Expansion after a device has sync history is refused;
+  move local files into an already selected folder and run Sync now to add
+  content within the same vault. The selection does not revoke access to
+  previously shared content or sandbox Obsidian, its plugins or the local OS.
+
 ## 0.1.10 - Unreleased
 
 - The chart's own defaults could not start the server, and both halves of

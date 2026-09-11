@@ -5,10 +5,10 @@
  *
  * Nothing here can turn a security property off. There is no "encrypt"
  * toggle, no "sign requests" toggle and no "verify" toggle, because those
- * are not settings (AGENTS.md requirement 4); the only knobs are the server
- * address, the edge headers an access-controlled deployment requires, and
- * the two ceilings, which are device policy and are shown with their
- * consequence.
+ * are not settings (AGENTS.md requirement 4); the settings are the server
+ * address, the edge headers an access-controlled deployment requires, the
+ * device-local folder selection, and the two ceilings, which are device
+ * policy and are shown with their consequence.
  *
  * PROVIDER NEUTRALITY. No ingress, tunnel or access provider is named here
  * or anywhere under `plugin/src`; the edge headers are a name/value list the
@@ -39,6 +39,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     containerEl.empty();
     this.server(containerEl);
     this.version(containerEl);
+    this.scope(containerEl);
     this.device(containerEl);
     this.devices(containerEl);
     this.vaultKey(containerEl);
@@ -114,6 +115,41 @@ export class ObsyncSettingTab extends PluginSettingTab {
           void this.plugin.openDashboard();
         }),
       );
+  }
+
+  private scope(containerEl: HTMLElement): void {
+    const folders = this.plugin.state.data.syncFolders;
+    let selected = folders !== undefined;
+    let text = folders?.join("\n") ?? "";
+    new Setting(containerEl).setName("Sync folders on this device").setHeading();
+    new Setting(containerEl)
+      .setName("Current selection")
+      .setDesc(folders === undefined ? "Whole vault, except hidden and symlinked paths." :
+        folders.length === 0 ? "No files are synced on this device." : `Only files inside: ${folders.join(", ")}.`);
+    new Setting(containerEl)
+      .setName("Folder selection")
+      .setDesc("This stays on this device. Choose folders before pairing a vault that also contains code or other private files. Other paired devices cannot expand this selection.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("whole", "Whole vault")
+        .addOption("selected", "Selected folders only")
+        .setValue(selected ? "selected" : "whole")
+        .onChange((value) => { selected = value === "selected"; }));
+    new Setting(containerEl)
+      .setName("Selected folders")
+      .setDesc("One relative folder per line, for example Notes. No leading or trailing slash or whitespace. An empty list with Selected folders only syncs nothing. Files keep these folder names on every device.")
+      .addTextArea((area) => area.setPlaceholder("Notes\nAttachments").setValue(text).onChange((value) => { text = value; }));
+    new Setting(containerEl)
+      .setDesc("Saving waits for active transfers and then rescans. Removed folders and their history are kept. After sync has started, this selection can only be narrowed. To sync more local files in this vault, move them into an already selected folder and run Sync now. A different selection needs a fresh vault configured before pairing. Previously shared content remains readable by paired devices.")
+      .addButton((button) => button.setButtonText("Save on this device").onClick(() => {
+        button.setDisabled(true).setButtonText("Waiting for transfers…");
+        const next = selected ? text.split(/\r?\n/).filter((line) => line !== "") : undefined;
+        void this.plugin.saveSyncFolders(next).then(() => {
+          new Notice("obsync: folder selection saved on this device.");
+          this.display();
+        }).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : String(error), 10000);
+        }).finally(() => button.setDisabled(false).setButtonText("Save on this device"));
+      }));
   }
 
   private device(containerEl: HTMLElement): void {

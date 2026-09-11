@@ -56,6 +56,7 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource, bytesSource } from "./chunker";
 import { State } from "./state";
+import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
@@ -219,6 +220,7 @@ export class ObsidianHost implements VaultHost {
    * nothing here to walk.
    */
   async syncable(path: string): Promise<boolean> {
+    if (!inSyncScope(path, this.plugin.state.data.syncFolders)) return false;
     const desktop = this.desktop;
     if (desktop === null) return isVaultPath(path);
     try {
@@ -249,6 +251,33 @@ export class ObsidianHost implements VaultHost {
 
   /** Every vault file whose path this device may sync, and no other. */
   async list(): Promise<VaultStat[]> {
+    const folders = this.plugin.state.data.syncFolders;
+    if (folders !== undefined) {
+      const files: VaultStat[] = [];
+      const visit = async (entry: TAbstractFile): Promise<void> => {
+        if (entry instanceof TFile) {
+          if (inSyncScope(entry.path, folders)) files.push({ path: entry.path, mtime: entry.stat.mtime, size: entry.stat.size });
+        } else if (entry instanceof TFolder && inSyncTree(entry.path, folders)) {
+          // Refuse a linked folder before walking its cached children. No
+          // whole-vault inventory or stat of an excluded subtree is needed.
+          if (this.desktop !== null) {
+            try {
+              await this.confine(this.desktop, entry.path, ["directory"]);
+            } catch (error) {
+              if (!(error instanceof VaultPathError)) throw error;
+              this.log(`list decision=not_synced reason=${error.refusal}`);
+              return;
+            }
+          }
+          for (const child of entry.children) await visit(child);
+        }
+      };
+      for (const folder of folders) {
+        const entry = this.plugin.app.vault.getAbstractFileByPath(folder);
+        if (entry instanceof TFolder) await visit(entry);
+      }
+      return files;
+    }
     const files = this.plugin.app.vault.getFiles();
     const synced = files.filter((file) => isVaultPath(file.path));
     if (synced.length !== files.length) {
@@ -263,7 +292,7 @@ export class ObsidianHost implements VaultHost {
    * add a lookup to race.
    */
   async stat(path: string): Promise<VaultStat | null> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) {
       const found = await this.confine(desktop, path, ["absent", "file"]);
@@ -292,7 +321,7 @@ export class ObsidianHost implements VaultHost {
   }
 
   async read(path: string): Promise<Bytes> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
@@ -318,7 +347,7 @@ export class ObsidianHost implements VaultHost {
    * never lands in memory. Mobile has no such API and buffers the file once.
    */
   source(path: string, size: number): ByteSource {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       let cached: Bytes | null = null;
@@ -360,7 +389,7 @@ export class ObsidianHost implements VaultHost {
    * `writeBinary` once, which is the strongest primitive the adapter has.
    */
   async writer(path: string): Promise<VaultWriter> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) return this.desktopWriter(desktop, path);
     const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
@@ -478,7 +507,7 @@ export class ObsidianHost implements VaultHost {
    * finding it afterwards is the signal that the name moved under us.
    */
   async trash(path: string): Promise<void> {
-    assertVaultPath(path);
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {
@@ -517,13 +546,18 @@ export default class ObsyncPlugin extends Plugin {
   updateAvailable: string | null = null;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
+  private changingScope = false;
+  private readonly manualFetches = new Set<Promise<string>>();
 
   get isMobile(): boolean {
     return Platform.isMobile;
   }
 
   override async onload(): Promise<void> {
-    this.state = await State.open(this, Platform.isMobile);
+    this.state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
+      this.log("state decision=refused reason=load_failed");
+      throw error;
+    });
     this.host = new ObsidianHost(this);
     this.transport = new Transport({
       request: (request) => requestUrl(request),
@@ -625,8 +659,10 @@ export default class ObsyncPlugin extends Plugin {
   // --- lifecycle ---------------------------------------------------------
 
   async startEngine(): Promise<void> {
-    if (!this.state.paired) return;
-    this.engine?.stop();
+    if (!this.state.paired || this.changingScope) return;
+    const previous = this.engine;
+    await previous?.stopAndWait();
+    if (this.changingScope || this.engine !== previous) return;
     this.engine = new SyncEngine({
       state: this.state,
       transport: this.transport,
@@ -646,6 +682,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
+    if (this.changingScope) return;
     if (!this.engine) {
       await this.startEngine();
       return;
@@ -654,13 +691,65 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   syncContext(): SyncContext | null {
-    return this.engine?.context ?? null;
+    return this.changingScope ? null : this.engine?.context ?? null;
   }
 
   async fetchRemoteOnly(fileId: string): Promise<string> {
     const context = this.syncContext();
     if (!context) throw new Error("obsync is not running on this device");
-    return fetchRemoteOnly(context, fileId);
+    const fetch = fetchRemoteOnly(context, fileId);
+    this.manualFetches.add(fetch);
+    try {
+      return await fetch;
+    } finally {
+      this.manualFetches.delete(fetch);
+    }
+  }
+
+  /** A local scope change never alters policy on the server or replays old versions. */
+  async saveSyncFolders(value: string[] | undefined): Promise<void> {
+    let folders: string[] | undefined;
+    try {
+      folders = value === undefined ? undefined : parseSyncFolders(value);
+    } catch (error) {
+      this.log("scope decision=refused reason=invalid_selection");
+      throw error;
+    }
+    const assertChange = (): void => {
+      const used = this.state.data.lastSeq !== 0 || Object.keys(this.state.data.files).length !== 0 ||
+        Object.keys(this.state.data.remoteOnly).length !== 0;
+      if (used && expandsSyncScope(this.state.data.syncFolders, folders)) {
+        this.log("scope decision=refused reason=expansion_requires_resync");
+        throw new Error(SCOPE_EXPANSION_MESSAGE);
+      }
+    };
+    assertChange();
+    if (this.changingScope) throw new Error("obsync: a folder selection is already being saved.");
+    this.changingScope = true;
+    try {
+      // Scope changes take effect only after old work is quiescent. A
+      // stopped long poll may finish, but must not advance its cursor.
+      await this.engine?.stopAndWait();
+      this.engine = null;
+      await Promise.allSettled(this.manualFetches);
+      assertChange();
+      const previous = this.state.data.syncFolders;
+      this.state.data.syncFolders = folders;
+      try {
+        await this.state.save();
+      } catch (error) {
+        this.state.data.syncFolders = previous;
+        throw error;
+      }
+      this.log(`scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0}`);
+    } catch (error) {
+      this.log("scope decision=failed reason=not_saved");
+      this.setStatus({ kind: "error", message: "Folder selection was not saved. Sync is stopped; retry before restarting Obsidian." });
+      throw error;
+    } finally {
+      this.changingScope = false;
+    }
+    await this.startEngine();
   }
 
   // --- identity and keys -------------------------------------------------
@@ -741,7 +830,7 @@ export default class ObsyncPlugin extends Plugin {
     }
     this.log(`device decision=revoked self=${deviceId === this.state.data.deviceId}`);
     if (deviceId === this.state.data.deviceId) {
-      this.engine?.stop();
+      await this.engine?.stopAndWait();
       this.engine = null;
       this.setStatus({ kind: "error", message: "this device was revoked" });
     }

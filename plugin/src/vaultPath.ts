@@ -85,6 +85,7 @@ export type VaultPathRefusal =
   | "blank_segment"
   | "hidden_segment"
   | "outside_root"
+  | "outside_sync_scope"
   | "symlink_component"
   | "not_a_directory"
   | "not_a_file"

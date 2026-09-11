@@ -72,7 +72,8 @@ import {
 } from "../crypto";
 import { ChangeRecord } from "../transport";
 import { admissionReason, admit } from "../policy";
-import { VaultPathError, assertVaultPath, isVaultPath, vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
+import { assertSyncPath, inSyncScope } from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
 
@@ -250,6 +251,7 @@ export async function decryptRecordManifest(
   // -- the feed, an on-demand fetch, a conflict head, a merge base -- comes
   // through here, so none of them can forget to bind it.
   bindManifestToRecord(record, manifest, context.domainId);
+  assertSyncPath(manifest.path, context.state.data.syncFolders);
   return manifest;
 }
 
@@ -265,6 +267,7 @@ export async function decryptRecordManifest(
  * fail LATER than this one, after the bytes had been written.
  */
 async function* chunkPlaintexts(context: SyncContext, manifest: Manifest): AsyncGenerator<Bytes> {
+  assertSyncPath(manifest.path, context.state.data.syncFolders);
   let index = 0;
   while (index < manifest.chunks.length) {
     const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
@@ -376,7 +379,13 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     // what the filesystem says its path IS (`VaultPathError` — a symlinked
     // folder, a raced temp file). Skip the version, keep the feed moving.
     if (error instanceof ManifestError) return refuse(context, change, error.reason);
-    if (error instanceof VaultPathError) return refuse(context, change, error.refusal);
+    if (error instanceof VaultPathError) {
+      if (error.refusal === "outside_sync_scope") {
+        context.host.log(`pull path_class=manifest decision=not_synced reason=outside_sync_scope file=${change.file_id} seq=${change.seq}`);
+        return "skipped";
+      }
+      return refuse(context, change, error.refusal);
+    }
     throw error;
   }
 }
@@ -384,6 +393,9 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   const manifest = await decryptRecordManifest(context, change);
   const localPath = context.state.pathByFileId(change.file_id);
+  // A remembered source can be outside the new scope even when the remote
+  // destination is inside it. Refuse before a delete, conflict read or write.
+  if (localPath !== undefined) assertSyncPath(localPath, context.state.data.syncFolders);
   const local = localPath === undefined ? undefined : context.state.fileByPath(localPath);
 
   if (manifest.deleted) {
@@ -440,6 +452,8 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
  * because the user asked for this one by name.
  */
 export async function fetchRemoteOnly(context: SyncContext, fileId: string): Promise<string> {
+  const remembered = context.state.pathByFileId(fileId) ?? context.state.data.remoteOnly[fileId]?.path;
+  if (remembered !== undefined) assertSyncPath(remembered, context.state.data.syncFolders);
   const file = await context.transport.getFile(fileId);
   const head = file.versions.find((version) => version.version_id === (file.heads[0] ?? ""));
   if (!head) throw new Error("remote-only: the file has no readable head");
@@ -640,7 +654,7 @@ async function postMerged(
  */
 export function remoteOnlyList(context: SyncContext): { fileId: string; path: string; size: number; why: string }[] {
   const policy = context.state.data.policy;
-  const listable = Object.entries(context.state.data.remoteOnly).filter(([, record]) => isVaultPath(record.path));
+  const listable = Object.entries(context.state.data.remoteOnly).filter(([, record]) => inSyncScope(record.path, context.state.data.syncFolders));
   return listable.map(([fileId, record]) => {
     const admission = admit(policy, context.state.localBytes(), record.size);
     return {

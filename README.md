@@ -216,21 +216,35 @@ Copy `obsync-root.crt` to each device and install it:
 3. Open the obsync settings tab. Set **Server URL** to your public URL. If an
    access-controlled edge sits in front of the server, paste its headers
    under **Edge service-token headers**, one per line as `Name: value`.
-4. Under **First-time setup**, paste the setup token. The plugin creates the
+4. Under **Sync folders on this device**, choose **Selected folders only**
+   if the vault also contains code or files you do not want shared. Enter
+   relative folders such as `Notes`, one per line, and click **Save on this
+   device** before setup or pairing. An empty selected list syncs no files;
+   **Whole vault** retains the existing default. Select the final folders
+   now: after sync has history, the selection may only narrow. To stage a
+   first sync within one vault, keep personal files in an excluded folder,
+   test disposable notes inside the selected folder, then move the personal
+   files in and run **Sync now**.
+5. Under **First-time setup**, paste the setup token. The plugin creates the
    account and this device, generates the vault key on this computer, and
    shows the **recovery phrase** (24 words). Write it down and keep it off
    this machine: without any paired device and without this phrase, the vault
    is unrecoverable by design. The server never sees the key.
-5. Sync starts. The status bar shows the state; the command **Sync now**
+6. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
 ### 3. Pair your phone
 
-1. Put the same three plugin files into the vault on the phone. iOS and
-   iPadOS: the Files app, On My iPhone, Obsidian, your vault, `.obsidian`,
-   `plugins`, create `obsync`, paste the files, restart Obsidian, enable the
-   plugin. Android: any file manager, same folder. Set the same **Server
-   URL** (and edge headers).
+1. Put the same three plugin files into the vault on the phone under
+   `.obsidian/plugins/obsync/`, then restart Obsidian and enable the plugin.
+   iOS and iPadOS do not expose `.obsidian` in Files by default; use a file
+   editor that can access hidden folders. [Obsidian's configuration-folder
+   guide](https://obsidian.md/help/configuration-folder) names Taio and
+   Textastic. On Android, enable **Show hidden files** in a file manager.
+   Set the same **Server
+   URL** (and edge headers). Choose and save this phone's folder selection
+   before pairing; the selection is local to each device and is not copied
+   by the pairing code. Files keep their relative folder names.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
    an `obsidian://obsync/pair?code=...` link you can send yourself.
@@ -258,6 +272,13 @@ from the **Devices** list in the plugin settings.
   criteria in `docs/architecture.md` section 5.
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
+- A saved folder selection limits obsync's reads, writes and deletions on
+  this device. Narrowing keeps excluded local files and server history.
+  It does not sandbox Obsidian or other plugins, or revoke a paired device's
+  access to content already shared. Keep administration code outside
+  selected folders. Expansion of a used device's selection is refused;
+  moving local files into an already selected folder and running **Sync
+  now** is the supported way to add content within the same vault.
 - On phones, files above **Largest file to download** (512 MiB by default)
   stay on the server and are listed by **Show remote-only files** for
   on-demand fetch; **Total to keep on this device** defaults to 50 GiB. Both

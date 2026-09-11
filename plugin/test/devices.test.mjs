@@ -167,7 +167,7 @@ test("revoking this device stops syncing and says so in the status", async () =>
     policy: {},
   });
   let stopped = false;
-  instance.engine = { stop: () => (stopped = true) };
+  instance.engine = { stopAndWait: async () => (stopped = true) };
 
   await instance.revokeDevice(KEYS.deviceId);
 

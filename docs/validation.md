@@ -32,10 +32,23 @@ page or the GitHub Release) into `<vault>/.obsidian/plugins/obsync/`:
 
 - **macOS / Windows / Linux:** Finder or Explorer; then Settings →
   Community plugins → enable obsync.
-- **iOS / iPadOS:** the Files app → On My iPhone → Obsidian → `<vault>` →
-  `.obsidian` (hidden folders are visible in Files) → `plugins` → create
-  `obsync` → paste the three files; restart Obsidian; enable the plugin.
-- **Android:** any file manager on the vault folder; same layout.
+- **iOS / iPadOS:** Files does not provide default access to `.obsidian`.
+  Use a file editor that supports hidden folders to place the three files
+  under `<vault>/.obsidian/plugins/obsync/`, then restart Obsidian and enable
+  the plugin. [Obsidian's configuration-folder
+  guide](https://obsidian.md/help/configuration-folder) names Taio and
+  Textastic for this access (verified 2026-09-11).
+- **Android:** enable **Show hidden files** in a file manager on the vault
+  folder; same layout.
+
+Before setup or pairing, save the final **Sync folders on this device**
+selection independently on each device. For a staged first sync in one
+vault, keep personal files in an excluded staging folder and validate only
+disposable notes inside the selected folder. After acceptance, move the
+personal files into that selected folder and run **Sync now**. This needs
+no expansion, state reset or re-pairing over existing files. Narrowing a
+used selection is supported; expansion requires safe current-head resync,
+which this version does not implement.
 
 Updates are manual as well: the plugin says when the server runs a newer
 version; install the matching GitHub Release the same way.
