@@ -1,4 +1,4 @@
-# obsync
+# Private Sync
 
 Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md).
 One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
