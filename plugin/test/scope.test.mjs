@@ -556,6 +556,15 @@ async function lifecyclePlugin(t) {
   return { instance, Engine, logs, statuses, mounts, ...r };
 }
 
+test("startup registers only the native installation's pairing actions", async (t) => {
+  const { instance } = await lifecyclePlugin(t);
+  const handlers = new Map();
+  instance.registerObsidianProtocolHandler = (action, handler) => handlers.set(action, handler);
+  await instance.onload();
+  t.after(() => instance.onunload());
+  assert.deepEqual([...handlers.keys()], ["obsync-private-sync", "obsync-private-sync/pair"]);
+});
+
 test("disabling during a scope save cancels the selection and never starts another engine", async (t) => {
   const { instance, Engine, state, saved, statuses } = await lifecyclePlugin(t);
   let starts = 0;

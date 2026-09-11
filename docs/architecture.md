@@ -281,7 +281,7 @@ that phrase the vault is unrecoverable by design.
    `POST /v1/pairing`, receives `{pairing_id, enroll_token}` (10-minute
    expiry), generates a 16-byte pairing secret `PS` locally, and shows one
    code: `base32(pairing_id || enroll_token || PS)`, as text, as a copy
-   button, and as an `obsidian://obsync/pair?code=…` link. `PS` never
+   button, and as an `obsidian://obsync-private-sync/pair?code=…` link. `PS` never
    reaches the server.
 2. On the new device the user pastes or opens the code. The plugin claims
    the pairing (`POST /v1/pairing/{id}/claim` with the enroll token and

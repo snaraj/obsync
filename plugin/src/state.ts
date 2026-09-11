@@ -2,7 +2,7 @@
  * Local device state, persisted in the plugin's own data file.
  *
  * WHERE THE VAULT ROOT KEY LIVES. `vrk` (and the device secret) sit in
- * `<vault>/.obsidian/plugins/obsync/data.json`, inside the vault, exactly as
+ * `<vault>/.obsidian/plugins/obsync-private-sync/data.json`, inside the vault, exactly as
  * every Obsidian sync plugin must: a plugin has no dependency-free path to
  * an OS keychain (Keychain, Credential Manager, Keystore) — those need
  * native modules, which AGENTS.md requirement 5 forbids, and mobile

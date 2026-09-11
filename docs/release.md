@@ -61,6 +61,11 @@ requires the root manifest and v2 evidence. A missing new asset never selects
 legacy behavior. The audit also checks the source commit's complete release
 locks, so a manifest cannot choose an older publication format for new code.
 
+The plugin ID is version-bound independently of the GitHub tag format:
+releases through 0.1.11 retain `obsync`; releases from 0.1.12 require
+`obsync-private-sync` in both the source manifest and bounded plugin archive.
+Downloaded metadata cannot select a different identity or an older format.
+
 Native installation and the first directory submission are described in
 [Community plugin distribution](community-plugin.md). Publication alone does
 not prove directory acceptance, installation, or device synchronization.

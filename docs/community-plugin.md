@@ -5,6 +5,12 @@ desktop and mobile. The server does not install client code. If Obsync is
 not listed in Browse, the directory entry is not yet available; manual
 placement of plugin files is not the production installation path.
 
+The directory identity is `obsync-private-sync`; the displayed name is
+Obsync. A pre-directory build using a different ID is a separate installation.
+The plugin does not read or import another installation's settings. Preserve
+its recovery material before removing it, then configure the native install's
+folder selection and pair it through Obsync settings.
+
 ## Install and connect
 
 1. Open the vault to sync. In Settings → Community plugins, allow community

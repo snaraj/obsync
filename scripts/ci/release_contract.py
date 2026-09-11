@@ -152,6 +152,12 @@ class Version:
     def legacy(self) -> bool:
         return (self.major, self.minor, self.patch) <= (0, 1, 10)
 
+    @property
+    def plugin_id(self) -> str:
+        # The first native release remains immutable. Later releases use the
+        # distinct directory identity; downloaded metadata cannot select it.
+        return "obsync" if (self.major, self.minor, self.patch) <= (0, 1, 11) else "obsync-private-sync"
+
 
 @dataclass(frozen=True)
 class ReleaseIntent:
@@ -312,7 +318,10 @@ def _lock_version(path: str, text: str) -> Version:
             raise ContractError("manifest.json is not valid JSON") from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
             raise ContractError("manifest.json has no version string")
-        return Version.parse(manifest["version"])
+        version = Version.parse(manifest["version"])
+        if manifest.get("id") != version.plugin_id:
+            raise ContractError("plugin manifest identity does not match the release version")
+        return version
 
     if path == "CHANGELOG.md":
         return parse_changelog(text)[0][0]
@@ -1125,7 +1134,7 @@ def plugin_asset_records(bundle: bytes | None, version: Version, digest: str) ->
                 }
                 if item.filename == "manifest.json":
                     manifest = _object(json.loads(content), "plugin manifest")
-                    if manifest.get("id") != "obsync" or manifest.get("version") != str(version):
+                    if manifest.get("id") != version.plugin_id or manifest.get("version") != str(version):
                         raise ContractError("plugin manifest identity/version does not match the release")
             return records
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, UnicodeDecodeError,

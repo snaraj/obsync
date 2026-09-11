@@ -18,7 +18,7 @@
  * `PS` never reaches the server, so the server — and the TLS terminator in
  * front of it — sees only ciphertext of the vault key. The code itself is
  * the whole secret: it is shown as text, as a copy button and as an
- * `obsidian://obsync/pair?code=…` link, and it expires in ten minutes.
+ * `obsidian://obsync-private-sync/pair?code=…` link, and it expires in ten minutes.
  *
  * FIRST DEVICE. `newVault()` generates the 32-byte `VRK` on the device and
  * `recoveryPhrase()` renders it as 24 BIP-0039 words with the standard 8-bit
@@ -50,6 +50,8 @@ export const ENROLL_TOKEN_BYTES = 32;
 export const PAIRING_SECRET_BYTES = 16;
 export const VRK_BYTES = 32;
 export const PHRASE_WORDS = 24;
+/** The directory identity also owns the pairing URI action. */
+export const PAIRING_ACTION = "obsync-private-sync";
 
 export interface PairingCode {
   pairingId: string;
@@ -83,7 +85,7 @@ export function decodePairingCode(code: string): PairingCode {
 }
 
 export function pairingLink(code: string): string {
-  return `obsidian://obsync/pair?code=${encodeURIComponent(code)}`;
+  return `obsidian://${PAIRING_ACTION}/pair?code=${encodeURIComponent(code)}`;
 }
 
 export function newPairingSecret(): Bytes {

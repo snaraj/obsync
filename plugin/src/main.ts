@@ -61,7 +61,7 @@ import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
-import { newVaultKey } from "./pairing";
+import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
@@ -720,14 +720,14 @@ export default class ObsyncPlugin extends Plugin {
       callback: () => new StatusModal(this.app, this).open(),
     });
 
-    // Obsidian routes `obsidian://obsync/pair?code=…` by the action segment;
-    // both spellings are registered so a pasted link works either way.
+    // Use the installation identity for both URI spellings without also
+    // claiming the old generic action used by pre-directory installations.
     const pair = (params: Record<string, string>): void => {
       const code = params["code"];
       if (code) new PairClaimModal(this.app, this, code).open();
     };
-    this.registerObsidianProtocolHandler("obsync", pair);
-    this.registerObsidianProtocolHandler("obsync/pair", pair);
+    this.registerObsidianProtocolHandler(PAIRING_ACTION, pair);
+    this.registerObsidianProtocolHandler(`${PAIRING_ACTION}/pair`, pair);
 
     this.registerVaultEvents();
     if (this.state.paired) await this.startEngine();
