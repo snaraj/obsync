@@ -122,16 +122,20 @@ Numbered for citation, repo-scoped, none negotiable in code:
     exactly one patch from its current protected base in ALL lockstep locks:
     `VERSION`, the workspace `version` in `Cargo.toml`, chart `version` and
     `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
-    `plugin/manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
+    root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
     A range whose every commit is confined to the closed documentation
     allowlist — root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown
     files under `docs/` — classifies no-artifact and advances nothing. The
     classifier has exactly two verdicts and no flag; a non-allowlisted path
     with an unchanged version denies. Successful main CI dispatches the
-    publisher, which creates the annotated `vX.Y.Z` tag at the exact merged
+    publisher, which creates the annotated `X.Y.Z` tag at the exact merged
     SHA, emits the signed multi-arch image (linux/amd64, linux/arm64), the
-    signed OCI chart, the plugin bundle as a Release asset with its SHA-256
-    in the evidence manifest, and one immutable GitHub Release. Images
+    signed OCI chart, the plugin bundle and individual `main.js`,
+    `manifest.json`, `styles.css` assets with their SHA-256 values in the
+    evidence manifest, and one immutable GitHub Release. Releases through
+    `v0.1.10` retain their original prefixed tags and v1 evidence for audit;
+    new publication requires the root manifest and v2 evidence. Image tags
+    remain `vX.Y.Z`. Images
     deploy by digest; publication is never deployment.
 11. **No secrets, no private facts, no personal data.** No credential,
     token, private host fact, address, device identifier, or personal data

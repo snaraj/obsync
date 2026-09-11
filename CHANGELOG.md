@@ -6,6 +6,13 @@ advances exactly one patch (AGENTS.md, requirement 10).
 
 ## 0.1.11 - Unreleased
 
+- Prepare native installation and updates through Obsidian's Community
+  Plugins browser. Keep one root manifest, publish the three individual
+  plugin files from the same build as the ZIP, and bind every asset in v2
+  release evidence. New GitHub tags match the unprefixed plugin version;
+  image tags retain their prefix. Existing immutable releases retain their
+  original audit contract. Directory acceptance and device validation remain
+  separate prerequisites for production use.
 - Align the commit-signature validator with the documented GPT-6 lane while
   retaining exact-match, identity and trailer refusals.
 - Add a folder selection saved only on this device. Existing dedicated

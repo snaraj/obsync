@@ -82,7 +82,7 @@ async function main() {
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
   await writeFile(join(distDir, "main.js"), bundle);
-  await writeFile(join(distDir, "manifest.json"), await readFile(join(root, "manifest.json")));
+  await writeFile(join(distDir, "manifest.json"), await readFile(join(root, "..", "manifest.json")));
   await writeFile(join(distDir, "styles.css"), await readFile(join(root, "styles.css")));
 
   for (const name of ["main.js", "manifest.json", "styles.css"]) {

@@ -6,7 +6,7 @@ Dated 2026-09-07. Requirement 10 in `AGENTS.md`, made operational.
 
 `VERSION`, `Cargo.toml` workspace `version`, `chart/Chart.yaml` `version`
 and `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
-`plugin/manifest.json` `version`, and the `CHANGELOG.md` heading `X.Y.Z`.
+root `manifest.json` `version`, and the `CHANGELOG.md` heading `X.Y.Z`.
 `scripts/ci/release_contract.py` walks every commit in `base..head` and
 denies skips, reversions, and mixed ranges without exactly one patch.
 
@@ -41,9 +41,29 @@ workflow path, push event, main branch, source SHA, and PR-gate job
 inventory; then its write/packages/OIDC job builds the multi-arch image
 (linux/amd64, linux/arm64) with checksum-pinned tools, signs image and OCI
 chart keyless (identity `refs/heads/main` of this repository), attaches
-`obsync-plugin-vX.Y.Z.zip` (main.js, manifest.json, styles.css) with its
-SHA-256 in the evidence manifest, scans source and final image for
+`obsync-plugin-X.Y.Z.zip` and the individual `main.js`, `manifest.json`, and
+`styles.css` files from the same image build. The v2 evidence manifest binds
+the ZIP digest and each file's digest, size and content type. The publisher
+requires the exact five-asset inventory and reads every uploaded byte back
+before immutable publication. It scans source and final image for
 high/critical findings, and publishes one immutable Release.
+
+The GitHub tag is exactly the root manifest version, `X.Y.Z`, as required by
+Obsidian's native installer. Container image tags remain `vX.Y.Z`; chart tags
+remain `X.Y.Z`. These names are distinct inputs, and the scheduled audit
+rebinds each alias to the digest in the sealed evidence.
+
+Releases through `v0.1.10` are immutable history. The read-only audit retains
+their exact v1 schema, notes, two-asset inventory and prefixed tags. The
+historical Git reader accepts `plugin/manifest.json` only for those versions
+and rejects duplicate manifests. Publishing with the migrated workflow
+requires the root manifest and v2 evidence. A missing new asset never selects
+legacy behavior. The audit also checks the source commit's complete release
+locks, so a manifest cannot choose an older publication format for new code.
+
+Native installation and the first directory submission are described in
+[Community plugin distribution](community-plugin.md). Publication alone does
+not prove directory acceptance, installation, or device synchronization.
 
 ## Governance receipt
 

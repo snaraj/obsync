@@ -27,6 +27,7 @@ RUN test "$(node --version)" = "v24.19.0" && \
     test "$(npm --version)" = "11.17.0" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
+COPY manifest.json /src/manifest.json
 RUN npm run build && npm test
 
 # ---------------------------------------------------------------------------

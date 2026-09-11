@@ -683,14 +683,15 @@ The plugin never installs code it fetched from the server: a server or a
 TLS terminator that could replace both the bytes and the hash it serves
 would otherwise gain the vault key at the next reload. In v0.1 the plugin
 only compares its version with `GET /v1/plugin/manifest` on start and
-tells the user when the server runs a newer one; the user installs the
-matching GitHub Release (whose evidence manifest carries the bundle's
-SHA-256) by copying the three files into `.obsidian/plugins/obsync/`, as
-on the first install. The server still serves the bundle at
-`GET /v1/plugin/{manifest,bundle,styles}` as a convenience copy for the
-Install page, with hashes to compare against the Release. Signed updates
-verified against a key pinned in the installed plugin are a v0.2 item
-that needs an owner decision on signing-key custody.
+tells the user when the server runs a newer one. Installation and updates
+use Obsidian's Community Plugins browser, which downloads the three native
+files from the matching GitHub Release. The server still exposes
+`GET /v1/plugin/{manifest,bundle,styles}` for compatibility and diagnostics;
+the plugin never fetches code through them. The release's v2 evidence binds
+the individual files to the same ZIP and build as the server. The native
+installer does not document verification of this project's Cosign evidence;
+see `docs/community-plugin.md` for the actual client trust model. A separate
+pinned-key verifier is not part of this installation path.
 
 ## 7. Storage, durability, replication
 

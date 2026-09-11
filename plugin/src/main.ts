@@ -141,21 +141,15 @@ function walker(fs: NodeFs): PathWalker {
   };
 }
 
-/** The GitHub Release that carries a version's plugin bundle and its hashes. */
-export function releaseUrl(version: string): string {
-  return `https://github.com/snaraj/obsync/releases/tag/v${version}`;
-}
-
 /**
  * The one sentence the notice and the settings tab both show when the server
- * runs a newer plugin than this device. It names the file to install and
- * where it comes from, because obsync will not install it for the user: a
- * server that could serve the code could serve any code.
+ * runs a newer plugin than this device. Obsidian's plugin manager owns
+ * installation and updates; this server can never supply executable code.
  */
 export function updateMessage(server: string, local: string): string {
   return (
-    `Server runs ${server}, you have ${local}; update from the GitHub Release ` +
-    `(obsync-plugin-v${server}.zip) and reinstall: ${releaseUrl(server)}`
+    `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
+    "Check for updates, then update Obsync."
   );
 }
 
@@ -1135,9 +1129,8 @@ export default class ObsyncPlugin extends Plugin {
    * replace the bytes AND the hash that is supposed to check them; installing
    * that would hand it the vault key at the next reload. This device
    * therefore reads ONE unauthenticated field — the version — and tells the
-   * user where the trusted copy is. It never fetches the bundle, and nothing
-   * in this plugin writes into `.obsidian/plugins/`. Signed updates against
-   * a key pinned in the installed plugin are a v0.2 item.
+   * user to open Obsidian's plugin manager. It never fetches the bundle, and
+   * nothing in this plugin writes into `.obsidian/plugins/`.
    */
   async checkForUpdate(): Promise<void> {
     const generation = this.lifecycle;

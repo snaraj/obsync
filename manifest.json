@@ -1,6 +1,6 @@
 {
   "id": "obsync",
-  "name": "obsync",
+  "name": "Obsync",
   "version": "0.1.11",
   "minAppVersion": "1.7.0",
   "description": "Self-hosted, end-to-end encrypted live sync for your own obsync server.",

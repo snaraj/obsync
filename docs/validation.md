@@ -24,22 +24,14 @@ a publicly trusted certificate are optional conveniences layered on top; each
 is validated only if it is actually deployed, and never as a condition of
 readiness.
 
-## Install (first time, manual by design)
+## Install through the production path
 
-Community-plugin restricted mode must be off. Copy `main.js`,
-`manifest.json`, and `styles.css` (downloaded from the dashboard's Install
-page or the GitHub Release) into `<vault>/.obsidian/plugins/obsync/`:
-
-- **macOS / Windows / Linux:** Finder or Explorer; then Settings →
-  Community plugins → enable obsync.
-- **iOS / iPadOS:** Files does not provide default access to `.obsidian`.
-  Use a file editor that supports hidden folders to place the three files
-  under `<vault>/.obsidian/plugins/obsync/`, then restart Obsidian and enable
-  the plugin. [Obsidian's configuration-folder
-  guide](https://obsidian.md/help/configuration-folder) names Taio and
-  Textastic for this access (verified 2026-09-11).
-- **Android:** enable **Show hidden files** in a file manager on the vault
-  folder; same layout.
+On each required platform, open the intended vault and use Settings →
+Community plugins → Browse → Obsync → Install → Enable. Record the installed
+version and match it to the reviewed, immutable release. Directory acceptance
+is a prerequisite; a manual file copy, development preview or local archive
+check does not satisfy this installation result. Use normally trusted HTTPS
+for the production device campaign, with private connectivity when deployed.
 
 Before setup or pairing, save the final **Sync folders on this device**
 selection independently on each device. For a staged first sync in one
@@ -50,8 +42,10 @@ no expansion, state reset or re-pairing over existing files. Narrowing a
 used selection is supported; expansion requires safe current-head resync,
 which this version does not implement.
 
-Updates are manual as well: the plugin says when the server runs a newer
-version; install the matching GitHub Release the same way.
+Validate a subsequent update using Community plugins → Check for updates.
+Confirm the installed version, preserved pairing and folder selection, then
+repeat bidirectional note sync. Local bundle equality is not native-update
+evidence.
 
 ## Scenarios
 

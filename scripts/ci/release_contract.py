@@ -7,7 +7,7 @@ the same functions, so a release decision cannot drift into prose.
 
 THE SEVEN LOCKSTEP LOCKS. `VERSION`, the workspace `version` in `Cargo.toml`,
 `chart/Chart.yaml` `version` and `appVersion`, `chart/values.yaml` `image.tag`
-(`vX.Y.Z`), `plugin/manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z`
+(`vX.Y.Z`), root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z`
 heading. Six files, seven facts, one number.
 
 THE CLASSIFIER HAS TWO VERDICTS AND NO FLAG. A range whose every commit is
@@ -24,11 +24,14 @@ import argparse
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import re
+import stat
 import subprocess
 import sys
 import tomllib
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -86,6 +89,11 @@ REQUIRED_STATUS_CHECKS = (
 )
 
 RELEASE_MANIFEST_SCHEMA = "https://github.com/snaraj/obsync/schemas/release-manifest/v1"
+COMMUNITY_MANIFEST_SCHEMA = "https://github.com/snaraj/obsync/schemas/release-manifest/v2"
+PLUGIN_FILES = {"main.js": "application/javascript", "manifest.json": "application/json", "styles.css": "text/css"}
+# A plugin bundle is executable code, not vault content. Bound untrusted
+# archive reads during the read-only release audit; never extract paths.
+PLUGIN_BUNDLE_MAX_BYTES = 16 * 1024 * 1024
 RELEASE_MANIFEST_WORKFLOW = EXPECTED_PUBLISHER_PATH
 RELEASE_MANIFEST_PLATFORMS = ["linux/amd64", "linux/arm64"]
 TRIVY_VERSION = "0.72.0"
@@ -101,7 +109,7 @@ RELEASE_LOCK_PATHS = (
     "Cargo.toml",
     "chart/Chart.yaml",
     "chart/values.yaml",
-    "plugin/manifest.json",
+    "manifest.json",
     "CHANGELOG.md",
 )
 _DIFF_MODES = frozenset({"000000", "100644", "100755"})
@@ -132,7 +140,17 @@ class Version:
 
     @property
     def tag(self) -> str:
+        # Existing immutable releases retain their exact names and evidence.
+        # New releases must match Obsidian's manifest version without a prefix.
+        return self.image_tag if self.legacy else str(self)
+
+    @property
+    def image_tag(self) -> str:
         return f"v{self}"
+
+    @property
+    def legacy(self) -> bool:
+        return (self.major, self.minor, self.patch) <= (0, 1, 10)
 
 
 @dataclass(frozen=True)
@@ -287,13 +305,13 @@ def _lock_version(path: str, text: str) -> Version:
             raise ContractError("chart image tag must be vX.Y.Z")
         return Version.parse(tag[1:])
 
-    if path == "plugin/manifest.json":
+    if path == "manifest.json":
         try:
             manifest = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ContractError("plugin/manifest.json is not valid JSON") from exc
+            raise ContractError("manifest.json is not valid JSON") from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
-            raise ContractError("plugin/manifest.json has no version string")
+            raise ContractError("manifest.json has no version string")
         return Version.parse(manifest["version"])
 
     if path == "CHANGELOG.md":
@@ -307,6 +325,8 @@ def validate_snapshot(files: Mapping[str, str]) -> ReleaseIntent:
     missing = sorted(set(RELEASE_LOCK_PATHS).difference(files))
     if missing:
         raise ContractError(f"release snapshot is missing: {', '.join(missing)}")
+    if "plugin/manifest.json" in files:
+        raise ContractError("release snapshot must have one canonical root manifest")
 
     version = Version.parse(files["VERSION"])
     for path in RELEASE_LOCK_PATHS:
@@ -388,6 +408,16 @@ def _git(repository: Path, *args: str) -> str:
 
 
 def _git_file(repository: Path, revision: str, path: str) -> str:
+    if path == "manifest.json":
+        present = set(_git(repository, "ls-tree", "-r", "--name-only", revision,
+                           "--", "manifest.json", "plugin/manifest.json").splitlines())
+        if len(present) > 1:
+            raise ContractError("committed tree has duplicate plugin manifests")
+        if present == {"plugin/manifest.json"}:
+            version = _version_at(repository, revision)
+            if version is None or not version.legacy:
+                raise ContractError("new release requires the root plugin manifest")
+            path = "plugin/manifest.json"
     completed = subprocess.run(
         ["git", "-C", str(repository), "show", f"{revision}:{path}"],
         check=False,
@@ -416,9 +446,16 @@ def _version_at(repository: Path, revision: str) -> Version | None:
 def _locks_present(repository: Path, revision: str) -> set[str]:
     """Which of the release locks exist at one revision."""
     listed = _git(
-        repository, "ls-tree", "-r", "--name-only", revision, "--", *RELEASE_LOCK_PATHS
+        repository, "ls-tree", "-r", "--name-only", revision, "--", *RELEASE_LOCK_PATHS,
+        "plugin/manifest.json"
     )
-    return set(listed.splitlines()) & set(RELEASE_LOCK_PATHS)
+    present = set(listed.splitlines())
+    if "plugin/manifest.json" in present:
+        if "manifest.json" in present:
+            raise ContractError("committed tree has duplicate plugin manifests")
+        present.remove("plugin/manifest.json")
+        present.add("manifest.json")
+    return present & set(RELEASE_LOCK_PATHS)
 
 
 def _linear_commits(repository: Path, base_sha: str, head_sha: str) -> list[str]:
@@ -961,8 +998,13 @@ def validate_publisher(
     validate_release_destinations(repository, image, chart)
     if source_sha != checkout_sha:
         raise ContractError("publisher source SHA does not equal the authorized checkout")
+    if (root / "plugin/manifest.json").exists() or (root / "plugin/manifest.json").is_symlink():
+        raise ContractError("publisher requires one canonical root plugin manifest")
     files = {path: (root / path).read_text(encoding="utf-8") for path in RELEASE_LOCK_PATHS}
-    return ReleaseIntent(source_sha=source_sha, version=validate_snapshot(files).version)
+    version = validate_snapshot(files).version
+    if version.legacy:
+        raise ContractError("migrated publisher cannot publish a legacy release")
+    return ReleaseIntent(source_sha=source_sha, version=version)
 
 
 # --------------------------------------------------------------------------
@@ -1036,16 +1078,59 @@ def classify_tag_state(
     return "exact"
 
 
+def release_version(tag: str) -> Version:
+    parsed = Version.parse(tag[1:] if tag.startswith("v") else tag)
+    if parsed.tag != tag:
+        raise ContractError("release tag does not match the version's publication format")
+    return parsed
+
+
 def release_manifest_asset_name(tag: str) -> str:
-    if not re.fullmatch(r"v" + SEMVER_RE.pattern[1:-1], tag):
-        raise ContractError("release manifest tag is malformed")
+    release_version(tag)
     return f"obsync-{tag}-release-manifest.json"
 
 
 def plugin_bundle_asset_name(tag: str) -> str:
-    if not re.fullmatch(r"v" + SEMVER_RE.pattern[1:-1], tag):
-        raise ContractError("plugin bundle tag is malformed")
+    release_version(tag)
     return f"obsync-plugin-{tag}.zip"
+
+
+def plugin_asset_records(bundle: bytes | None, version: Version, digest: str) -> dict:
+    """Bind the native install files to the exact, bounded three-file archive."""
+    if bundle is None or not 0 < len(bundle) <= PLUGIN_BUNDLE_MAX_BYTES:
+        raise ContractError("native plugin release requires a bounded plugin bundle")
+    if "sha256:" + hashlib.sha256(bundle).hexdigest() != digest:
+        raise ContractError("plugin bundle bytes do not match the expected digest")
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            members = archive.infolist()
+            if sorted(item.filename for item in members) != sorted(PLUGIN_FILES):
+                raise ContractError("plugin bundle must contain exactly the three native files")
+            if sum(item.file_size for item in members) > PLUGIN_BUNDLE_MAX_BYTES:
+                raise ContractError("expanded plugin bundle exceeds the audit budget")
+            records = {}
+            for item in members:
+                # Directory spelling is also excluded by the closed inventory;
+                # keep this backstop if that inventory is ever extended.
+                if (item.flag_bits & 1 or item.is_dir() or
+                        stat.S_IFMT(item.external_attr >> 16) not in {0, stat.S_IFREG}):
+                    raise ContractError("plugin bundle members must be ordinary unencrypted files")
+                content = archive.read(item)
+                if not content:
+                    raise ContractError("native plugin files must be nonempty")
+                records[item.filename] = {
+                    "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+                    "size": len(content),
+                    "content_type": PLUGIN_FILES[item.filename],
+                }
+                if item.filename == "manifest.json":
+                    manifest = _object(json.loads(content), "plugin manifest")
+                    if manifest.get("id") != "obsync" or manifest.get("version") != str(version):
+                        raise ContractError("plugin manifest identity/version does not match the release")
+            return records
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, UnicodeDecodeError,
+            json.JSONDecodeError) as exc:
+        raise ContractError("plugin bundle is unreadable") from exc
 
 
 def build_release_manifest(
@@ -1059,6 +1144,7 @@ def build_release_manifest(
     chart: str,
     chart_digest: str,
     plugin_digest: str,
+    plugin_bundle: bytes | None = None,
 ) -> dict[str, object]:
     """The one canonical, deterministic publication evidence asset."""
     validate_release_destinations(repository, image, chart)
@@ -1069,6 +1155,9 @@ def build_release_manifest(
     image_digest = require_publishable_digest(image_digest, "release manifest image digest")
     chart_digest = require_publishable_digest(chart_digest, "release manifest chart digest")
     plugin_digest = _require_digest(plugin_digest, "release manifest plugin bundle digest")
+    files = None
+    if not parsed.legacy or plugin_bundle is not None:
+        files = plugin_asset_records(plugin_bundle, parsed, plugin_digest)
     identity = f"https://github.com/{repository}/{RELEASE_MANIFEST_WORKFLOW}@refs/heads/main"
     policy = {
         "scanner": "trivy",
@@ -1077,8 +1166,8 @@ def build_release_manifest(
         "ignore_unfixed": False,
         "result": "pass",
     }
-    return {
-        "schema": RELEASE_MANIFEST_SCHEMA,
+    manifest = {
+        "schema": RELEASE_MANIFEST_SCHEMA if parsed.legacy else COMMUNITY_MANIFEST_SCHEMA,
         "repository": repository,
         "source_sha": source_sha,
         "main_run_id": main_run_id,
@@ -1087,7 +1176,7 @@ def build_release_manifest(
         "artifacts": {
             "image": {
                 "repository": image,
-                "tag": parsed.tag,
+                "tag": parsed.image_tag,
                 "digest": image_digest,
                 "platforms": list(RELEASE_MANIFEST_PLATFORMS),
                 "signature_identity": identity,
@@ -1109,6 +1198,9 @@ def build_release_manifest(
             "image": {**copy.deepcopy(policy), "target": f"{image}@{image_digest}"},
         },
     }
+    if not parsed.legacy:
+        manifest["artifacts"]["plugin_files"] = files
+    return manifest
 
 
 def validate_release_manifest_record(
@@ -1123,6 +1215,7 @@ def validate_release_manifest_record(
     chart: str,
     chart_digest: str,
     plugin_digest: str,
+    plugin_bundle: bytes | None = None,
 ) -> None:
     expected = build_release_manifest(
         repository=repository,
@@ -1134,6 +1227,7 @@ def validate_release_manifest_record(
         chart=chart,
         chart_digest=chart_digest,
         plugin_digest=plugin_digest,
+        plugin_bundle=plugin_bundle,
     )
     if manifest != expected:
         raise ContractError("release manifest is not the exact canonical evidence record")
@@ -1176,8 +1270,7 @@ def _validate_release_assets(
     assets: object, *, tag: str, manifest: bytes, plugin_digest: str
 ) -> None:
     records = _array(assets, "GitHub Release assets")
-    if len(records) != 2:
-        raise ContractError("GitHub Release must carry exactly the manifest and the plugin bundle")
+    version = release_version(tag)
     expected = {
         release_manifest_asset_name(tag): {
             "content_type": "application/json",
@@ -1191,6 +1284,27 @@ def _validate_release_assets(
             "digest": _require_digest(plugin_digest, "plugin bundle digest"),
         },
     }
+    if not version.legacy:
+        evidence = _object(json.loads(manifest), "release evidence")
+        if evidence.get("schema") != COMMUNITY_MANIFEST_SCHEMA:
+            raise ContractError("native plugin release requires the v2 evidence schema")
+        artifacts = _object(evidence.get("artifacts"), "release artifacts")
+        files = _object(artifacts.get("plugin_files"), "native plugin assets")
+        if set(files) != set(PLUGIN_FILES):
+            raise ContractError("release evidence requires exactly the three native plugin files")
+        for name, content_type in PLUGIN_FILES.items():
+            record = _object(files[name], "native plugin asset")
+            size = record.get("size")
+            if (isinstance(size, bool) or not isinstance(size, int) or
+                    not 0 < size <= PLUGIN_BUNDLE_MAX_BYTES or
+                    record.get("content_type") != content_type):
+                raise ContractError("native plugin asset size or content type is invalid")
+            expected[name] = {
+                "digest": _require_digest(record.get("digest"), "native plugin asset digest"),
+                "size": size, "content_type": content_type, "state": "uploaded",
+            }
+    if len(records) != len(expected):
+        raise ContractError("GitHub Release must carry the exact versioned asset inventory")
     seen: set[str] = set()
     for raw in records:
         asset = _object(raw, "GitHub Release asset")
@@ -1596,6 +1710,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--chart", required=True)
         command.add_argument("--chart-digest", required=True)
         command.add_argument("--plugin-digest", required=True)
+        command.add_argument("--plugin-bundle", type=Path)
 
     artifact = commands.add_parser("artifact-state")
     artifact.add_argument("--present", choices=("true", "false"), required=True)
@@ -1624,6 +1739,7 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
         "chart": args.chart,
         "chart_digest": args.chart_digest,
         "plugin_digest": args.plugin_digest,
+        "plugin_bundle": args.plugin_bundle.read_bytes() if args.plugin_bundle else None,
     }
 
 

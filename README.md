@@ -5,7 +5,7 @@ One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-> Status: pre-release. The first validated release is `v0.1.0`.
+> Status: pre-release. Native directory installation and v1 device acceptance are pending.
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
      the dashboard and the plugin once they render. Placeholders until then. -->
@@ -17,9 +17,11 @@ here on the first release._
 
 ## Get syncing
 
-The whole path from nothing to a phone and a computer live-syncing the same
-vault. Ten minutes; every step is manual by design, and nothing here needs an
-account with anyone but yourself.
+Run your own server, then install Obsync from Obsidian’s Community Plugins
+browser on each device and pair them. The plugin needs an account on your
+own server. There is no Obsync subscription or hosted account. Obsidian uses
+its directory and GitHub to install and update the plugin; encrypted sync
+uses only the server and optional network provider you configure.
 
 ### 1. Run the server
 
@@ -41,10 +43,10 @@ on the device, and no key that decrypts them ever crosses the wire
 (`docs/architecture.md` section 2.1). "Files of any size" is a promise about
 this server; a provider on the path has its own terms.
 
-Deploy by digest, never by tag. Every Release is signed keyless by this
-repository's publisher and carries `obsync-vX.Y.Z-release-manifest.json`,
-which names the image digest, the chart digest, and the plugin bundle's
-SHA-256. Verify the signature with cosign, read the digest from the verified
+Deploy by digest, never by tag. The image and chart are signed keyless by
+this repository’s publisher. New releases carry
+`obsync-X.Y.Z-release-manifest.json`, which names their digests and the
+SHA-256 of the plugin bundle and each native installation file. Verify the signature with cosign, read the digest from the verified
 payload (it must match the manifest on the Release page), and run exactly
 that digest:
 
@@ -208,11 +210,11 @@ Copy `obsync-root.crt` to each device and install it:
 
 ### 2. Set up this computer (the first device)
 
-1. Download `obsync-plugin-v0.1.0.zip` from the matching GitHub Release and
-   unzip its three files (`main.js`, `manifest.json`, `styles.css`) into
-   `<your vault>/.obsidian/plugins/obsync/`.
-2. In Obsidian: Settings, Community plugins, turn off Restricted mode, enable
-   **obsync**.
+1. In your vault, open Settings → Community plugins and allow community
+   plugins. Select Browse and search for **Obsync**.
+2. Select **Install**, then **Enable**. If Obsync is not in Browse, its
+   directory listing is not yet available. No hidden folders or manual file
+   copies are part of installation.
 3. Open the obsync settings tab. Set **Server URL** to your public URL. If an
    access-controlled edge sits in front of the server, paste its headers
    under **Edge service-token headers**, one per line as `Name: value`.
@@ -235,16 +237,12 @@ Copy `obsync-root.crt` to each device and install it:
 
 ### 3. Pair your phone
 
-1. Put the same three plugin files into the vault on the phone under
-   `.obsidian/plugins/obsync/`, then restart Obsidian and enable the plugin.
-   iOS and iPadOS do not expose `.obsidian` in Files by default; use a file
-   editor that can access hidden folders. [Obsidian's configuration-folder
-   guide](https://obsidian.md/help/configuration-folder) names Taio and
-   Textastic. On Android, enable **Show hidden files** in a file manager.
-   Set the same **Server
-   URL** (and edge headers). Choose and save this phone's folder selection
-   before pairing; the selection is local to each device and is not copied
-   by the pairing code. Files keep their relative folder names.
+1. In the phone's local vault, install and enable **Obsync** through Settings →
+   Community plugins → Browse. Set the same **Server URL** and connect to
+   its private network if needed. The server must provide HTTPS trusted by
+   the phone. Choose and save this phone's folder selection before pairing;
+   the selection is local and is not copied by the pairing code. Files keep
+   their relative folder names.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
    an `obsidian://obsync/pair?code=...` link you can send yourself.
@@ -261,7 +259,7 @@ Copy `obsync-root.crt` to each device and install it:
 On any paired computer, run **Open dashboard**: it mints a one-time sign-in
 link to the dashboard, where you see every device (type, address, country,
 last sign-in, last edit), storage per volume, scrub and garbage-collection
-state, and the install files with their hashes. Revoke a lost device there or
+state, and installation guidance. Revoke a lost device there or
 from the **Devices** list in the plugin settings.
 
 ### What syncs and what does not (v0.1)
@@ -286,8 +284,9 @@ from the **Devices** list in the plugin settings.
 - Every edit is kept as a version for 30 days and at least the last 10
   versions per file; conflicts never discard an edit (text merges cleanly or
   you get a conflict copy).
-- Updates are manual: the plugin tells you when the server runs a newer
-  version, and you install that Release the same way as the first time.
+- Update through Settings → Community plugins → Check for updates on each
+  device. The plugin never installs code from the sync server. See
+  [installation trust and distribution](docs/community-plugin.md).
 
 ### Restore a retained version
 

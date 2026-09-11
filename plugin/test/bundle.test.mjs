@@ -21,7 +21,6 @@ import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const plugin = join(dirname(fileURLToPath(import.meta.url)), "..");
-const RELEASE_URL_PREFIX = "https://github.com/snaraj/obsync/releases/tag/v";
 
 function build() {
   return execFileSync(process.execPath, ["build.mjs"], { cwd: plugin, encoding: "utf8" });
@@ -83,13 +82,11 @@ test("the bundle carries the whole plugin and nothing from the build machine", (
     /(?:^|[\s"`(=,;:])\/(?:Users|home|root|private|var|tmp|src|opt|mnt|data)\/[A-Za-z0-9._/-]+/g,
   );
   assert.deepEqual(leaked, null, `an absolute build path leaked into the artifact: ${leaked}`);
-  // The ONE external URL the bundle may carry is the project's own GitHub
-  // Release, and it is displayed, never fetched: v0.1 has no self-update
-  // (docs/architecture.md 6.3), so the only host this code contacts is the
-  // server the user configured. Every other URL still fails here.
+  // Obsidian owns plugin distribution. Shipped client code names no external
+  // service; only syntax and documentation examples are literal URLs here.
   for (const url of bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? []) {
     const allowed =
-      url === "https://" || url.includes("example.") || url.startsWith(RELEASE_URL_PREFIX);
+      url === "https://" || url.includes("example.");
     assert.ok(allowed, `the bundle reaches for ${url}`);
   }
 });
@@ -100,7 +97,8 @@ test("the shipped bundle has no path that installs code served by the server", (
   for (const marker of ["/v1/plugin/bundle", "/v1/plugin/styles", "installUpdate", "configDir"]) {
     assert.equal(bundle.includes(marker), false, `the bundle still carries ${marker}`);
   }
-  assert.ok(bundle.includes(RELEASE_URL_PREFIX), "it points at the Release instead");
+  assert.ok(bundle.includes("Settings → Community plugins →"), "updates stay in Obsidian's plugin manager");
+  assert.ok(bundle.includes("Check for updates, then update Obsync."));
 });
 
 test("no ingress, tunnel or access provider is named in the shipped code", () => {
@@ -116,7 +114,7 @@ test("the manifest ships the values Obsidian and the release path expect", () =>
   // The shipped manifest carries the version the plugin's own sources
   // declare; the release contract pins that number to the repository's
   // other locks. A literal here would break on every release.
-  const source = JSON.parse(readFileSync(join(plugin, "manifest.json"), "utf8"));
+  const source = JSON.parse(readFileSync(join(plugin, "..", "manifest.json"), "utf8"));
   const pkg = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
   assert.equal(manifest.version, source.version);
   assert.equal(manifest.version, pkg.version);
