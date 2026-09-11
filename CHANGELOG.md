@@ -6,6 +6,8 @@ advances exactly one patch (AGENTS.md, requirement 10).
 
 ## 0.1.11 - Unreleased
 
+- Align the commit-signature validator with the documented GPT-6 lane while
+  retaining exact-match, identity and trailer refusals.
 - Add a folder selection saved only on this device. Existing dedicated
   vaults retain whole-vault sync; selected folders admit only descendants,
   and an explicit empty selection syncs no files. Scoped scans start at the
