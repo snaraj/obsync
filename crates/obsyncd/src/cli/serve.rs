@@ -294,7 +294,7 @@ fn scrub_thread(app: &Arc<App>) -> JoinHandle<()> {
                     app.log.error(
                         "scrub_mismatch",
                         &[
-                            ("decision", Val::word("quarantined")),
+                            ("decision", Val::word("mismatch")),
                             ("mismatches", Val::count(summary.mismatches)),
                             ("quarantined", Val::count(summary.quarantined.len() as u64)),
                         ],

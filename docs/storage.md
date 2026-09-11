@@ -33,6 +33,7 @@ code change.
 <journal>/v1/server.key                      only when OBSYNC_SERVER_KEY is unset, 0600
 <journal>/v1/setup-token                     first-boot and recovery login, 0600
 <journal>/v1/quarantine/<sid>                chunks that failed a scrub
+<journal>/v1/quarantine/.tmp-<unique>         interrupted quarantine copies
 ```
 
 ## Volume posture
@@ -321,11 +322,58 @@ carry `account_id`.
 
 - Every upload is verified against its `sid` while streaming.
 - The scrub thread re-hashes blobs at `OBSYNC_SCRUB_RATE`, oldest-verified
-  first, and moves a mismatch to `quarantine/`, logs it, and marks it in the
-  dashboard. A quarantined chunk that a client re-uploads is replaced.
+  first, repairs a mismatch from a healthy mirror when available, and
+  otherwise preserves it in `quarantine/` using the sequence below.
 - Every read verifies size; the client verifies the plaintext hash from the
   manifest after decryption, so a corrupted chunk can never be written into
   a vault.
+
+Quarantine works when the blob and journal roots are separate mounted
+volumes. Under the chunk's SID lock and the journal guard, the server opens
+the primary, corrects its indexed length to the observed length, surveys
+journal usage, and checks room for a complete additional copy above the
+journal watermark. An existing quarantine copy still counts during this
+check; replacing it is not a credit against peak space. Capacity remains
+declared capacity minus tracked bytes, not a physical free-space probe.
+If the source cannot be opened or measured before mutation, the scrub logs
+the failure and retains its last observed inventory for retry. That value
+is not a fresh filesystem measurement; this repair does not add a new blob
+usage survey or readiness state.
+
+The primary is copied to an exclusive `.tmp-<unique>` file inside the
+quarantine directory. The copy is fsynced, renamed to `<sid>` within that
+same directory, and both the quarantine directory and its parent are
+fsynced. Only then is the primary unlinked and its parent fsynced. Mirrors
+are left alone. Every failed stage logs its error kind. Before a durable
+destination exists, failure preserves the primary. Failed temporary cleanup
+leaves counted residue; startup removes only regular quarantine temporary
+files, syncs the directory and logs the number removed.
+
+A failed quarantine never appears in that step's `quarantined` list. If
+the primary remains, its inventory and observed bytes remain, and a later
+scrub retries. Failure after unlink but before its directory fsync retains
+conservative inventory; the next scrub or a recovery upload must sync the
+absence before forgetting that entry. An upload cannot return `existed`
+for an absent primary. On restart, the primary-volume scan rebuilds chunk
+inventory; it counts both copies when both remain. A retained primary can
+need extra destination headroom for a retry even when an earlier complete
+copy already exists in quarantine.
+
+After durable removal, inventory is updated before the SID lock is released,
+even if the later summary frame cannot be appended. The frame format is
+unchanged: scrub summaries are historical reports and do not remove a
+subsequent reupload from inventory. Old recorded summaries are preserved as
+recorded claims; they are not fresh evidence that files were moved. An
+operator can reupload the verified original ciphertext after quarantine;
+the normal upload verification still applies. Unchanged client files do not
+automatically trigger that reupload.
+
+Uploads and scrub use a fixed table of 256 SID locks before taking journal
+or index locks. Streaming and hashing hold no journal or index lock. A
+hash-prefix collision can serialize unrelated uploads; it does not change
+their identities or admission rules. GC tries the whole table once in
+order, releases every acquired lock and logs `gc_skipped
+decision=chunks_busy` if any is busy, then retries on its next scheduled run.
 
 ## Garbage collection
 
@@ -383,24 +431,20 @@ quietly balanced the books would be worse than one that did not.
 | the last segment, truncated (replay) | every start | none: it removes bytes | the survey, re-run before replay returns |
 | `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left, which nothing later removes | the survey, re-run by the prune a successful call ends in AND on every failing exit, before the original error is returned |
 | `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | whatever was removed before one removal failed | the survey, re-run at the end and on every failing exit, before the original error is returned |
-| `quarantine/<sid>` | a scrub mismatch no mirror can repair | the bytes may have MOVED and the failure be in the directory fsyncs that follow the rename | the destination's size read after the attempt, minus what stood at that name before it, applied under the same journal guard the move is made under |
+| `quarantine/<sid>` and `.tmp-<unique>` | a scrub mismatch no mirror can repair | partial temporary bytes, a published copy beside the retained primary, or a durable copy after primary removal | a complete survey before admission and on every operation exit, under the same journal guard as the copy and removal; a refused survey marks usage unverified |
 | `nonces` | every authenticated request | a partial line from a short write | the log publishes the absolute size of both its names after every write, the failing ones included |
 | `nonces.tmp` → `nonces` (compaction) | when the log passes twice the nonce ceiling | a `nonces.tmp` a failed compaction left | the same publish, which counts the temporary BY NAME so that leftover is seen |
 | `server.key` | first boot | a partial key refuses the start | the survey at `Journal::open`, which runs after it |
 | `setup-token` | first boot | a partial token refuses the start | a survey `cli::serve` runs after it, being the last write the volume takes before the server serves |
 | `lock` | every start | none: it is empty | the survey at `Journal::open`, which runs after it |
 
-The survey walks `O(segments + snapshots)` entries, never a vault, and it does
-not follow symlinks, so it cannot wander off the volume it is measuring.
-
-The quarantine move is the one writer whose ordering matters, because it
-changes the volume from OUTSIDE the journal's own code. The journal guard is
-taken before the move and released after the accounting, so the move and the
-number that describes it are one transition: no survey can run between them
-and count the file twice, and no watermark check can read the total between
-them and see the volume as emptier than it is. Serialization by construction
-is half of that; the other half is a test that the guard is really held while
-the file moves, which is what the hook inside the move measures.
+The survey walks journal entries, snapshots and quarantine residue, never a
+vault, and does not follow symlinks. Quarantine holds the journal guard
+across peak-space admission, copy, removal and the final survey. No watermark
+reader or other survey can observe the operation between its file changes
+and accounting. On any refused survey, usage stays at its last measured
+value with `usage_unverified=true`; unreadable metadata is never zero bytes.
+The append path retries that survey and refuses admission if it still fails.
 
 ### When the survey itself fails
 

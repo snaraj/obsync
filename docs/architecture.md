@@ -625,6 +625,58 @@ administration files outside selected folders; a remote edit inside a
 selected folder is still untrusted content. Desktop and mobile apply the
 same selection; the existing platform filesystem and memory limits remain.
 
+### 6.2.2 Native retained-history recovery
+
+**Restore from history** reads the retained change feed with its own cursor,
+never `State.lastSeq`, and never calls the feed application path. Each
+click performs at most 20 serial, single-attempt requests with `wait=0` and
+`limit=1`, stopping after five seconds plus the current request. One
+contract-conforming response is under 6 MiB (at most 120 MiB cumulatively
+per click); only one full response and 20 compact row descriptors are held.
+The first response fixes the scan's head. Cursor progress is validated and
+later records above that boundary are discarded. GC removes pruned versions
+from the feed; retained content of deleted files remains browseable.
+
+The selected version is fetched again by exact file/version id and checked
+against the protocol id, authenticated manifest, domain and current folder
+selection. A new sibling name is refused if occupied or remembered by local
+file/remote-only state. Restore drains existing sync and manual downloads,
+blocks competing starts/fetches/restores, and measures scoped local bytes
+before download and again immediately before publication. Current policy
+is checked again at the write boundary. External file writers can still
+change usage between measurement and publication: this is device policy
+admission, not an atomic filesystem quota.
+
+Desktop creates an exclusive mode-0600 hidden sibling temporary file, streams
+and verifies content, flushes it, and publishes with a same-directory hard
+link that cannot replace a destination. It syncs the destination directory
+and retains directory/inode confinement checks. Unsupported publication
+primitives are errors; there is no overwriting fallback. Abort removes only
+the attempt's temporary inode. A crash can leave a hidden temporary file;
+it is excluded from sync, and recovery never automatically deletes unknown
+temporary names. Mobile holds the completed file in memory and calls
+`Vault.createBinary`, which rejects an existing destination. It exposes no
+streaming writer or fsync primitive.
+
+History operations are invalidated on modal close, unload, engine/identity
+replacement and scope change. A same-instance reload waits for older
+restore/manual-download settlement before loading state, then only the
+current load generation resumes sync, including after publication errors.
+Network cancellation detaches the waiter,
+but a shared outstanding-request guard prevents another manual request
+until the old one settles. `requestUrl` exposes neither abort nor streaming
+or a pre-buffer byte ceiling; the size check runs before JSON parsing, after
+Obsidian has buffered the response. A local publication already dispatched
+must settle. It is never undone after cancellation: success is a local-copy
+receipt, and an uncertain outcome names the path to check.
+
+The copy is untracked and receives no pull echo marker. Ordinary watcher
+ingestion/reconciliation gives it a fresh file id and posts its own history;
+the original heads remain unchanged. Ordinary startup runs separately so
+its retries cannot delay the local-copy receipt. That notice does not claim
+remote sync. Native desktop/mobile validation and V8 evidence remain
+separate from source and isolated tests.
+
 ### 6.3 Updates
 
 The plugin never installs code it fetched from the server: a server or a

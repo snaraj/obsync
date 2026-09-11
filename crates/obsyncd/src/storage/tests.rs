@@ -1576,19 +1576,14 @@ fn the_journal_watermark_counts_a_quarantine_no_append_wrote() {
         sid
     };
 
-    // Capacity chosen against what the volume already holds, so there is
-    // room for an ordinary frame now and none once four kilobytes land in
-    // the quarantine: the refusal has to be caused by the quarantine and by
-    // nothing else.
+    // Exactly enough headroom for the copy, including the watermark, but
+    // none for its summary frame. Physical inventory and journal accounting
+    // must remain truthful even when recording the completed operation fails.
     let mut tight = cfg.clone();
-    tight.journal_capacity = WATERMARK + journal_root_bytes(&cfg) + 2048;
+    tight.journal_capacity = WATERMARK + journal_root_bytes(&cfg) + 4096;
     let log = Log::buffered(LogLevel::Debug);
     let store = open_with(&tight, [7u8; 32], log.clone());
     let device = store.devices()[0].device_id;
-    store
-        .update_device(&device, Some("before".to_string()), None, None)
-        .expect("there is room before the quarantine");
-
     let summary = store.scrub_step(1 << 20);
     assert_eq!(
         summary.quarantined,
@@ -1613,12 +1608,9 @@ fn the_journal_watermark_counts_a_quarantine_no_append_wrote() {
 }
 
 #[test]
-fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
-    // The two directory fsyncs run AFTER the rename, so an error there means
-    // the bytes DID move and the failure was in making that durable. The
-    // comment this replaces claimed the opposite, and the accounting believed
-    // it. Two outcomes are checked: the error still reaches the caller, and
-    // the volume's usage is the volume's own either way.
+fn a_quarantine_whose_destination_sync_fails_preserves_and_accounts_both_copies() {
+    // Publication on the destination is not durability. A refused directory
+    // fsync must preserve the primary and count the extra destination bytes.
     let dir = TempDir::new("store-quarantine-sync-fault");
     let cfg = config(&dir);
     let sid = {
@@ -1642,11 +1634,19 @@ fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
     let summary = store.scrub_step(1 << 20);
     store.set_fault(Fault::None);
 
-    // 1. The bytes really moved, even though the call failed.
+    // 1. The destination exists, but the primary is still intact.
     let quarantined = cfg.journal_dir.join("v1/quarantine").join(sid.to_string());
     assert!(
         quarantined.is_file(),
         "the rename happened before the fsync refused"
+    );
+    assert_eq!(
+        fs::read(store.blobs.path(&sid)).expect("primary retained"),
+        b"rot"
+    );
+    assert!(
+        store.chunk_exists(&sid),
+        "a failed operation retains inventory"
     );
     // 2. The residue is accounted for.
     assert_eq!(
@@ -1670,24 +1670,15 @@ fn a_quarantine_whose_sync_fails_after_the_move_is_still_accounted() {
     );
     assert_eq!(
         summary.quarantined,
-        vec![sid],
-        "and the scrub still reports the chunk as one it could not repair"
+        Vec::<Sid>::new(),
+        "a failed operation must not claim quarantine"
     );
 }
 
 #[test]
 fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
-    // The FORMULA, not the wiring. This drives `Journal::quarantined`
-    // directly with two sizes, which proves the arithmetic of a replacement
-    // and says nothing about whether `Store::repair` reads the right ones --
-    // substituting zero for the pre-move size leaves this test green. The
-    // end-to-end proof is `a_second_quarantine_of_the_same_sid_is_accounted
-    // _through_the_store`, and the two are kept apart on purpose: a test
-    // that exercises a unit under a caller the product never uses is a test
-    // of the unit, and should not be presented as anything else.
-    //
-    // The same sid quarantined twice: the second rename replaces the first
-    // file, so the volume gains the difference and not the whole of it.
+    // The survey replaces its total, including an existing destination:
+    // replacing a larger file must subtract the old bytes, not add twice.
     let dir = TempDir::new("store-quarantine-replace");
     let cfg = config(&dir);
     let store = ready_existing(&cfg);
@@ -1698,7 +1689,9 @@ fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
     fs::write(&name, vec![b'o'; 900]).expect("what an earlier pass left");
     {
         let mut journal = store.journal();
-        journal.quarantined(0, 900);
+        journal
+            .resurvey("quarantine_after")
+            .expect("measure first copy");
     }
     assert_eq!(journal_used(&store), journal_root_bytes(&cfg), "before");
 
@@ -1707,7 +1700,9 @@ fn a_quarantine_that_replaces_one_already_there_counts_the_difference() {
     fs::write(&name, vec![b'n'; 120]).expect("the replacement");
     {
         let mut journal = store.journal();
-        journal.quarantined(900, 120);
+        journal
+            .resurvey("quarantine_after")
+            .expect("measure replacement");
     }
     assert_eq!(
         journal_used(&store),
@@ -1765,14 +1760,8 @@ fn the_journal_guard_spans_the_quarantine_move() {
 
 #[test]
 fn a_second_quarantine_of_the_same_sid_is_accounted_through_the_store() {
-    // The replacement case, driven through `Store::repair` rather than
-    // through `Journal::quarantined` directly. That distinction is the whole
-    // test: the unit-level one exercises the arithmetic, and leaves the
-    // STORE free to hand it a wrong `was` -- substituting zero for the
-    // destination's pre-move size survives it, because it never runs.
-    //
-    // Two rounds, and the second must land while the segment is already open
-    // so that nothing re-surveys and conceals the delta.
+    // Drive replacement through the store with an already-open segment, so
+    // the attempt itself must refresh accounting before an ordinary append.
     let dir = TempDir::new("store-quarantine-replace-live");
     let cfg = config(&dir);
     let big = vec![b'x'; 4096];
@@ -2355,3 +2344,5 @@ fn widen(root: &std::path::Path) {
     }
     chmod(root, WEAK_DIR);
 }
+
+mod recovery;

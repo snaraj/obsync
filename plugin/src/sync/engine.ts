@@ -78,6 +78,8 @@ export interface VaultHost {
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
   writer(path: string): Promise<VaultWriter>;
+  /** Publish a new file only; an occupied destination must never be replaced. */
+  createWriter(path: string, size: number, check: () => void): Promise<VaultWriter>;
   trash(path: string): Promise<void>;
   notify(message: string): void;
   log(line: string): void;

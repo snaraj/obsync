@@ -150,6 +150,16 @@ export class FakeHost {
     };
   }
 
+  async createWriter(path, size, check) {
+    const writer = await this.writer(path);
+    return { write: async (bytes) => { check(); await writer.write(bytes); },
+      commit: async (mtime) => {
+        check();
+        if (this.files.has(path)) throw new Error("destination exists");
+        return writer.commit(mtime);
+      }, abort: writer.abort };
+  }
+
   async trash(path) {
     this.trashed.push(path);
     this.files.delete(path);
@@ -365,6 +375,11 @@ export class FakeServer {
       return this.json(201, { seq: version.seq, heads: file.heads, conflicted: file.heads.length > 1 });
     }
 
+    const versionGet = /^\/v1\/files\/([0-9a-f]{32})\/versions\/([0-9a-f]{64})$/.exec(path);
+    if (versionGet) {
+      const version = this.files.get(versionGet[1])?.versions.find((v) => v.version_id === versionGet[2]);
+      return version ? this.json(200, version) : this.error(404, "unknown_version");
+    }
     const fileGet = /^\/v1\/files\/([0-9a-f]{32})$/.exec(path);
     if (fileGet) {
       const file = this.files.get(fileGet[1]);
@@ -381,10 +396,14 @@ export class FakeServer {
 
     if (path === "/v1/changes") {
       const since = Number(new URLSearchParams(query).get("since") ?? 0);
-      const changes = this.journal.filter((frame) => frame.seq > since);
+      const params = new URLSearchParams(query);
+      const limit = Number(params.get("limit") ?? 1000);
+      const remaining = this.journal.filter((frame) => frame.seq > since);
+      const changes = remaining.slice(0, limit);
       if (changes.length > 0) {
-        return this.json(200, { seq: changes[changes.length - 1].seq, head_seq: this.seq, changes });
+        return this.json(200, { seq: remaining.length > limit ? changes[changes.length - 1].seq : this.seq, head_seq: this.seq, changes });
       }
+      if (Number(params.get("wait") ?? 0) === 0) return this.json(200, { seq: this.seq, head_seq: this.seq, changes: [] });
       // A real long poll: hold until the test lands a frame or releases it.
       return new Promise((resolve) => {
         this.feedWaiters.push(() => resolve(this.json(200, { seq: since, head_seq: this.seq, changes: [] })));

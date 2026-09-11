@@ -225,28 +225,32 @@ impl Blobs {
 
     /// Re-hash a stored chunk. `None` when it is not on the volume.
     pub(crate) fn verify(&self, volume: &Path, sid: &Sid) -> Result<Option<bool>, StoreError> {
+        Ok(self.verify_measured(volume, sid)?.map(|(valid, _)| valid))
+    }
+
+    fn verify_measured(&self, volume: &Path, sid: &Sid) -> Result<Option<(bool, u64)>, StoreError> {
         let path = Blobs::chunk_path(volume, sid);
         let mut file = match File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::Io(e)),
         };
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; BUF];
-        loop {
-            match file.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => hasher.update(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(StoreError::Io(e)),
-            }
-        }
-        Ok(Some(Sid::new(hasher.finalize()) == *sid))
+        let (digest, bytes) = hash_stream(&mut file, None)?;
+        Ok(Some((Sid::new(digest) == *sid, bytes)))
     }
 
     /// Re-hash the primary copy.
     pub(crate) fn verify_primary(&self, sid: &Sid) -> Result<Option<bool>, StoreError> {
         self.verify(&self.root, sid)
+    }
+
+    /// Re-hash the primary and report the bytes actually read. Corruption
+    /// can change a file's length after its indexed size was last observed.
+    pub(crate) fn verify_primary_measured(
+        &self,
+        sid: &Sid,
+    ) -> Result<Option<(bool, u64)>, StoreError> {
+        self.verify_measured(&self.root, sid)
     }
 
     /// Replace a bad primary copy from the first mirror that hashes correctly.
@@ -270,25 +274,87 @@ impl Blobs {
         Ok(false)
     }
 
-    /// Move a bad primary copy into `quarantine`, leaving the mirrors alone.
-    pub(crate) fn quarantine(&self, sid: &Sid, quarantine: &Path) -> Result<(), StoreError> {
+    /// Preserve a bad primary on the quarantine volume before removing it.
+    /// `source` was opened and measured for admission under the caller's SID
+    /// lock. Every rename stays inside the quarantine directory, so separate
+    /// mounted volumes work without an EXDEV fallback or a durability gap.
+    pub(crate) fn quarantine(
+        &self,
+        sid: &Sid,
+        source: &mut File,
+        quarantine: &Path,
+    ) -> Result<(), StoreError> {
         make_dir(quarantine)?;
         let target = quarantine.join(sid.to_string());
-        fs::rename(self.path(sid), &target)?;
-        // The bytes have moved. Everything below can still fail, and the
-        // caller accounts for the destination as it really is afterwards
-        // rather than for what this returns.
+        let tmp = quarantine.join(format!(".tmp-{}", tmp_name()));
         #[cfg(test)]
-        {
-            let hook = self.mid_move.lock().expect("mid-move hook").clone();
-            if let Some(hook) = hook {
-                hook();
+        let tmp = if *self.fault.lock().expect("fault lock") == Fault::QuarantineTempCollision {
+            quarantine.join(".tmp-collision")
+        } else {
+            tmp
+        };
+        // Only an attempt that created this name owns its cleanup. A refused
+        // create_new must neither overwrite nor delete a pre-existing file.
+        let mut output = create(&tmp)?;
+        let outcome = (|| {
+            // A partial-copy fault leaves real bytes, not an empty stand-in.
+            #[cfg(test)]
+            {
+                let mut prefix = [0u8; 2];
+                let read = source.read(&mut prefix)?;
+                output.write_all(&prefix[..read])?;
+                self.errno_at(BlobPhase::QuarantineCopy)?;
+                self.errno_at(BlobPhase::QuarantineCleanup)?;
             }
-            self.errno_at(BlobPhase::QuarantineSync)?;
+            io::copy(source, &mut output)?;
+            #[cfg(test)]
+            self.errno_at(BlobPhase::QuarantineFileSync)?;
+            output.sync_all()?;
+            drop(output);
+            #[cfg(test)]
+            self.errno_at(BlobPhase::QuarantinePublish)?;
+            fs::rename(&tmp, &target)?;
+            // The destination now exists but is not yet durable. The primary
+            // must still hold the original bytes at every failure above and
+            // through BOTH destination directory fsyncs below.
+            #[cfg(test)]
+            {
+                let hook = self.mid_move.lock().expect("mid-move hook").clone();
+                if let Some(hook) = hook {
+                    hook();
+                }
+                self.errno_at(BlobPhase::QuarantineSync)?;
+            }
+            fsync_dir(quarantine)?;
+            #[cfg(test)]
+            self.errno_at(BlobPhase::QuarantineParentSync)?;
+            fsync_parent(quarantine)?;
+            #[cfg(test)]
+            self.errno_at(BlobPhase::QuarantineRemove)?;
+            fs::remove_file(self.path(sid))?;
+            self.sync_absence(sid)
+        })();
+        // A temp is never the sole durable copy: removal of the primary is
+        // after publication. Cleanup is best effort; the caller measures any
+        // residue even when cleanup itself refuses, and startup retries it.
+        if outcome.is_err() {
+            #[cfg(test)]
+            if self.errno_at(BlobPhase::QuarantineCleanup).is_err() {
+                return outcome;
+            }
+            if fs::remove_file(&tmp).is_ok() {
+                let _ = fsync_dir(quarantine);
+            }
         }
-        fsync_dir(quarantine)?;
-        fsync_parent(&self.path(sid))?;
-        Ok(())
+        outcome
+    }
+
+    /// Persist an absent primary name before the caller removes inventory.
+    /// The caller's SID lock excludes upload, scrub and GC while doing so.
+    pub(crate) fn sync_absence(&self, sid: &Sid) -> Result<(), StoreError> {
+        #[cfg(test)]
+        self.errno_at(BlobPhase::QuarantineSourceSync)?;
+        fsync_parent(&self.path(sid))
     }
 
     /// Install the mid-move hook. Tests only.
@@ -622,7 +688,10 @@ mod tests {
             .expect("write lands");
 
         let quarantine = dir.path().join("quarantine");
-        store.quarantine(&sid, &quarantine).expect("quarantined");
+        let (mut source, _) = store.open_chunk(&sid).expect("primary");
+        store
+            .quarantine(&sid, &mut source, &quarantine)
+            .expect("quarantined");
         assert!(!store.path(&sid).exists(), "gone from the primary");
         assert!(
             quarantine.join(sid.to_string()).is_file(),

@@ -18,11 +18,33 @@ advances exactly one patch (AGENTS.md, requirement 10).
   move local files into an already selected folder and run Sync now to add
   content within the same vault. The selection does not revoke access to
   previously shared content or sandbox Obsidian, its plugins or the local OS.
+- Complete native folder-selection saves without returning a thenable UI
+  component to a Promise continuation, including handled save failures.
 - Disabling the plugin cancels pending startup and folder-change
   continuations, so a delayed transfer or local save cannot restart sync
   after unload. Stale startup results cannot replace a newer engine or its
   status; an already-issued local write may finish and must be checked after
   restart.
+- Add **Restore from history** to the native command palette. It browses
+  retained versions, including deleted notes, with a separate bounded read
+  cursor and restores verified content as a new sibling file. Existing
+  files, unsynced edits and original history are preserved; the new copy
+  uses ordinary sync with a fresh identity. Folder selection and current
+  device limits apply, including local bytes added during the download.
+- History reads make one attempt at a time; cancellation discards late
+  results and blocks replacement reads until the outstanding request
+  settles. A dispatched local create is preserved and reported separately
+  from remote sync. Desktop publishes without replacing a destination;
+  mobile uses Obsidian's create-only API. Neither platform silently falls
+  back to an overwriting write.
+- Resume sync after a same-instance reload waits for prior history recovery
+  and manual-download work, without loading state ahead of their saves.
+- Quarantine damaged chunks across separate blob and journal mounts using
+  a synced copy on the destination volume before removing the primary.
+  Reserve peak copy space, account failed-copy residue, and retain failed
+  operations for recovery without claiming quarantine or losing inventory.
+  Recovery uploads and delayed scrub summaries cannot discard each other;
+  concurrent GC skips a busy chunk pass without holding partial locks.
 
 ## 0.1.10 - Unreleased
 

@@ -289,6 +289,30 @@ from the **Devices** list in the plugin settings.
 - Updates are manual: the plugin tells you when the server runs a newer
   version, and you install that Release the same way as the first time.
 
+### Restore a retained version
+
+Open **Obsync: Restore from history** in the command palette. Optionally
+enter part of a filename, select **Restart search**, then **Load next**.
+Versions appear oldest first, including retained content of deleted notes.
+Each click checks at most 20 records; an empty filtered page can still have
+more history after it. Select **Restore a copy** on a content version to
+create a uniquely named sibling inside the currently selected folder.
+Deletion markers themselves contain no file bytes.
+
+The original file, unsynced edits and original history remain unchanged.
+The notice first confirms a local copy and requests ordinary sync; check
+sync status for upload failures. Device size/budget limits apply to the
+additional copy. Desktop streams into a temporary file and publishes only
+to an unoccupied name; a filesystem without that primitive is refused.
+Mobile buffers the verified file and uses Obsidian's create-only API.
+
+Cancel prevents later work, but Obsidian cannot abort a network request or
+local create already dispatched. A late create may finish; check any copy
+path named in an error before retrying. The network API buffers responses
+before a size check is possible. Reopening history does not start another
+manual request until the outstanding one settles. These are platform
+limits, not a claim of power-loss or real-device validation.
+
 ## What it does
 
 - Syncs a vault across every Obsidian platform (macOS, Windows, Linux, iOS,

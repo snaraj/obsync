@@ -73,6 +73,15 @@ version; install the matching GitHub Release the same way.
 | V14 | Dashboard from a phone browser | usable at 390 px wide |
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
 
+For V8, after verifying the original tombstone on the required devices, use
+the native **Restore from history** command, find a retained content version
+of that deleted note, and select **Restore a copy**. Verify the recovered
+bytes under its new sibling name locally and after ordinary sync on the
+other devices. Preserve and compare any current unsynced original before
+and after the action. The deletion marker and original history must remain
+unchanged. A local-copy notice or an operator API script alone does not
+satisfy this native-device evidence.
+
 ## Routes
 
 Two independent routes to a validated MVP, and either one alone satisfies

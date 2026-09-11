@@ -148,7 +148,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
           this.display();
         }).catch((error: unknown) => {
           new Notice(error instanceof Error ? error.message : String(error), 10000);
-        }).finally(() => button.setDisabled(false).setButtonText("Save on this device"));
+        }).finally(() => {
+          // Obsidian components are thenable. Never return one to a Promise.
+          button.setDisabled(false).setButtonText("Save on this device");
+        });
       }));
   }
 

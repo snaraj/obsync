@@ -60,9 +60,11 @@ import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope,
 import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
+import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey } from "./pairing";
 import { ObsyncSettingTab } from "./ui/settings";
 import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import { HistoryModal } from "./ui/history";
 import {
   FinalComponent,
   PathResolver,
@@ -85,12 +87,15 @@ interface NodeFileHandle {
   /** `fstat`: the identity of the OPEN file, which no later swap can change. */
   stat(): Promise<PathStat>;
   close(): Promise<void>;
+  sync(): Promise<void>;
+  utimes(atime: number, mtime: number): Promise<void>;
 }
 interface NodeFs {
   promises: {
-    open(path: string, flags: string): Promise<NodeFileHandle>;
+    open(path: string, flags: string, mode?: number): Promise<NodeFileHandle>;
     mkdir(path: string, options: { recursive: boolean }): Promise<string | undefined>;
     rename(from: string, to: string): Promise<void>;
+    link(from: string, to: string): Promise<void>;
     unlink(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
@@ -419,6 +424,113 @@ export class ObsidianHost implements VaultHost {
     };
   }
 
+  /** Recovery has no overwrite fallback, on either platform. */
+  async createWriter(path: string, size: number, check: () => void): Promise<VaultWriter> {
+    const guard = (): void => { check(); assertSyncPath(path, this.plugin.state.data.syncFolders); };
+    guard();
+    const desktop = this.desktop;
+    const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+    if (desktop === null) {
+      let bytes = new Uint8Array(size);
+      let at = 0;
+      return {
+        write: async (part) => {
+          guard();
+          if (at + part.length > bytes.length) throw new Error("Restore exceeded its byte budget.");
+          bytes.set(part, at);
+          at += part.length;
+        },
+        commit: async (mtime) => {
+          guard();
+          if (at !== size) throw new Error("Restore content is incomplete.");
+          const vault = this.plugin.app.vault;
+          if (folder !== "" && !(await vault.adapter.exists(folder))) {
+            guard();
+            await vault.adapter.mkdir(folder);
+          }
+          guard();
+          try {
+            // The public Vault primitive rejects an existing file; the
+            // adapter's writeBinary would silently replace it.
+            const file = await vault.createBinary(path, bytes.buffer, { mtime });
+            return { path: file.path, mtime: file.stat.mtime, size: file.stat.size };
+          } catch {
+            throw new CopyPublicationError(path);
+          }
+        },
+        abort: async () => { bytes = new Uint8Array(0); },
+      };
+    }
+    const fs = desktop.fs;
+    if (folder !== "") {
+      const before = await this.confine(desktop, folder, ["absent", "directory"]);
+      guard();
+      await fs.promises.mkdir(before.target, { recursive: true });
+      guard();
+    }
+    const found = await this.confine(desktop, path, ["absent"]);
+    guard();
+    const parent = found.target.slice(0, found.target.lastIndexOf(desktop.path.sep));
+    const temp = `${parent}${desktop.path.sep}.obsync-restore-${hex(randomBytes(16))}.tmp`;
+    const handle = await fs.promises.open(temp, "wx", 0o600);
+    let opened: PathStat;
+    try { opened = await handle.stat(); } catch (error) { await handle.close(); throw error; }
+    let open = true;
+    let at = 0;
+    const discard = async (): Promise<void> => {
+      try {
+        if (open) await handle.close();
+        open = false;
+        if (sameFile(opened, await walker(fs).lstat(temp))) await fs.promises.unlink(temp);
+      } catch { this.log("history decision=temp_cleanup_failed"); }
+    };
+    const bind = async (): Promise<void> => {
+      guard();
+      const refusal = await chainRefusal(found.chain, walker(fs));
+      if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
+      guard();
+    };
+    try { await bind(); } catch (error) { await discard(); throw error; }
+    return {
+      write: async (bytes) => {
+        await bind();
+        if (at + bytes.length > size) throw new Error("Restore exceeded its byte budget.");
+        let offset = 0;
+        while (offset < bytes.length) {
+          guard();
+          const result = await handle.write(bytes.subarray(offset));
+          if (result.bytesWritten <= 0 || result.bytesWritten > bytes.length - offset) throw new Error("Restore write made no valid progress.");
+          offset += result.bytesWritten;
+        }
+        at += bytes.length;
+      },
+      commit: async (mtime) => {
+        await bind();
+        if (at !== size) throw new Error("Restore content is incomplete.");
+        await handle.utimes(mtime / 1000, mtime / 1000);
+        await handle.sync();
+        await bind();
+        await handle.close();
+        open = false;
+        guard();
+        try {
+          // link is atomic and cannot replace a destination, even one that
+          // appeared after preflight. Never fall back to rename/copyFile.
+          await fs.promises.link(temp, found.target);
+          // From here on, failure/cancellation preserves the published copy.
+          const directory = await fs.promises.open(parent, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
+          const refusal = await chainRefusal(found.chain, walker(fs));
+          const landed = await walker(fs).lstat(found.target);
+          if (refusal !== null || !sameFile(opened, landed)) throw new Error("Restore publication identity changed.");
+          const stat = landed as PathStat;
+          return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+        } catch { throw new CopyPublicationError(path); }
+      },
+      abort: discard,
+    };
+  }
+
   /**
    * The desktop write, confined at every step.
    *
@@ -550,6 +662,9 @@ export default class ObsyncPlugin extends Plugin {
   private lifecycle: object | null = {};
   private changingScope = false;
   private readonly manualFetches = new Set<Promise<string>>();
+  private readonly histories = new Set<HistoryBrowser>();
+  private restoring: HistoryOperation | null = null;
+  private manualRestore: Promise<{ path: string; syncRequested: boolean }> | null = null;
 
   get isMobile(): boolean {
     return Platform.isMobile;
@@ -558,6 +673,14 @@ export default class ObsyncPlugin extends Plugin {
   override async onload(): Promise<void> {
     const generation = this.lifecycle = {};
     this.changingScope = false;
+    // A same-instance reload owns resumption after older writers settle.
+    // They may still persist the old State, so wait before taking a snapshot.
+    const settling: Promise<unknown>[] = [...this.manualFetches];
+    if (this.manualRestore !== null) settling.push(this.manualRestore);
+    if (settling.length !== 0) {
+      await Promise.allSettled(settling);
+      if (!this.isCurrent(generation)) return;
+    }
     const state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
       this.log("state decision=refused reason=load_failed");
       throw error;
@@ -580,6 +703,7 @@ export default class ObsyncPlugin extends Plugin {
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
+    this.addCommand({ id: "restore-history", name: "Restore from history", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
       name: "Pair a new device",
@@ -618,6 +742,7 @@ export default class ObsyncPlugin extends Plugin {
 
   override onunload(): void {
     this.lifecycle = null;
+    this.cancelHistories();
     const engine = this.engine;
     this.engine = null;
     engine?.stop();
@@ -672,10 +797,11 @@ export default class ObsyncPlugin extends Plugin {
 
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope) return;
+    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+    this.cancelHistories();
     const previous = this.engine;
     await previous?.stopAndWait();
-    if (!this.isCurrent(generation) || this.changingScope || this.engine !== previous) return;
+    if (!this.isCurrent(generation) || this.changingScope || this.restoring !== null || this.engine !== previous) return;
     const engine: SyncEngine = new SyncEngine({
       state: this.state,
       transport: this.transport,
@@ -700,7 +826,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
-    if (this.changingScope) return;
+    if (this.changingScope || this.restoring !== null) return;
     if (!this.engine) {
       await this.startEngine();
       return;
@@ -709,7 +835,77 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   syncContext(): SyncContext | null {
-    return this.changingScope ? null : this.engine?.context ?? null;
+    return this.changingScope || this.restoring !== null ? null : this.engine?.context ?? null;
+  }
+
+  private cancelHistories(): void {
+    for (const browser of this.histories) browser.operation.cancel();
+    this.histories.clear();
+  }
+
+  openHistory(): HistoryBrowser {
+    const context = this.syncContext();
+    if (!context) throw new Error("Start sync on this paired device before opening history.");
+    const generation = this.lifecycle;
+    const engine = this.engine;
+    const { deviceId, vrk, serverUrl } = this.state.data;
+    const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
+      !this.changingScope && (this.restoring === null || this.restoring === operation) &&
+      this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
+    const browser = new HistoryBrowser(context, operation);
+    this.histories.add(browser);
+    return browser;
+  }
+
+  closeHistory(browser: HistoryBrowser): void {
+    browser.operation.cancel();
+    this.histories.delete(browser);
+  }
+
+  restoreHistory(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
+    browser.operation.check();
+    if (!this.histories.has(browser) || this.restoring !== null) throw new Error("Another recovery operation owns this device. Wait or cancel it first.");
+    this.restoring = browser.operation;
+    for (const other of this.histories) if (other !== browser) other.operation.cancel();
+    const work = this.restoreHistoryOwned(browser, entry);
+    this.manualRestore = work;
+    void work.finally(() => { if (this.manualRestore === work) this.manualRestore = null; }).catch(() => undefined);
+    return work;
+  }
+
+  private async restoreHistoryOwned(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
+    const generation = this.lifecycle;
+    const previous = this.engine;
+    let created: VaultStat | null = null;
+    let syncRequested = false;
+    try {
+      // No self-deadlock: the restore is held separately from older Fetches.
+      await previous?.stopAndWait();
+      browser.operation.check();
+      await browser.operation.wait(Promise.allSettled(this.manualFetches));
+      browser.operation.check();
+      created = await restoreCopy(browser, entry);
+    } catch (error) {
+      this.log(`history decision=restore_failed reason=${error instanceof CopyPublicationError ? "publication_may_exist" : "refused_or_cancelled"}`);
+      throw error;
+    } finally {
+      if (this.restoring === browser.operation) this.restoring = null;
+      this.closeHistory(browser);
+      if (this.isCurrent(generation) && !this.changingScope && this.engine === previous) {
+        // Ordinary startup may wait on network retries. Do not withhold a
+        // completed local-copy receipt while that independent work settles.
+        const restart = this.startEngine();
+        syncRequested = created !== null;
+        void restart.then(() => {
+          if (created && this.isCurrent(generation) && !this.changingScope && this.engine?.started) {
+            // No pull echo marker or historical identity: ordinary push
+            // gives this new local file a fresh id and empty parents.
+            this.engine.changed(created.path);
+          }
+        }).catch(() => this.log("history decision=sync_pending reason=restart_failed"));
+      }
+    }
+    return { path: (created as VaultStat).path, syncRequested };
   }
 
   async fetchRemoteOnly(fileId: string): Promise<string> {
@@ -752,6 +948,7 @@ export default class ObsyncPlugin extends Plugin {
     assertChange();
     if (this.changingScope) throw new Error("obsync: a folder selection is already being saved.");
     this.changingScope = true;
+    this.cancelHistories();
     try {
       // Scope changes take effect only after old work is quiescent. A
       // stopped long poll may finish, but must not advance its cursor.
@@ -759,6 +956,7 @@ export default class ObsyncPlugin extends Plugin {
       assertActive();
       this.engine = null;
       await Promise.allSettled(this.manualFetches);
+      await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
       assertActive();
       assertChange();
       const previous = state.data.syncFolders;
