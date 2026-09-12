@@ -642,22 +642,35 @@ export const KEYS = {
   deviceSecret: "0f".repeat(32),
 };
 
-/** A `State` over an in-memory data file. */
+/** Test-only native store: exact get/set operations, no enumeration surface. */
+export function memorySecrets() {
+  const held = new Map();
+  return {
+    getSecret: (id) => held.get(id) ?? null,
+    setSecret: (id, value) => { held.set(id, value); },
+  };
+}
+
+/** A `State` over in-memory metadata and a test-only native secret store. */
 export async function fakeState(isMobile = false) {
   const { State } = require("../build/state.js");
   let stored = null;
+  let written = false;
   const store = {
     loadData: async () => stored,
     saveData: async (value) => {
       stored = JSON.parse(JSON.stringify(value));
+      written = true;
     },
   };
-  const state = await State.open(store, isMobile);
+  const state = await State.open(store, isMobile, memorySecrets());
   state.data.vrk = KEYS.vrk;
   state.data.deviceId = KEYS.deviceId;
   state.data.deviceSecret = KEYS.deviceSecret;
   state.data.serverUrl = "https://sync.example.invalid";
-  return { state, saved: () => stored };
+  // Callers observe writes made by their operation, after fixture setup.
+  written = false;
+  return { state, saved: () => written ? stored : null };
 }
 
 /**

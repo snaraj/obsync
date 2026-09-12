@@ -1,8 +1,8 @@
 /**
  * Device pairing and vault-key custody, `docs/architecture.md` 4.
  *
- * Obsidian has no identity API, so "signed in" means "this device is
- * paired". Two roles live here:
+ * Obsidian sign-in does not authorize this server. Each device pairs once,
+ * then sync runs automatically. Two roles live here:
  *
  * - CREATOR (an already-paired device): mints a pairing through the server,
  *   generates the 16-byte pairing secret `PS` LOCALLY, shows the code, polls

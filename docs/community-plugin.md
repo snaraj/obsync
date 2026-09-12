@@ -13,6 +13,10 @@ folder selection and pair it through Self Hosted Private Sync settings.
 
 ## Install and connect
 
+Obsidian 1.12.4 or newer is required. Signing in to Obsidian does not enroll
+a device with the self-hosted server: pair each device once, then sync runs
+automatically.
+
 1. Open the vault to sync. In Settings → Community plugins, allow community
    plugins, select Browse, search for Self Hosted Private Sync, then Install and Enable.
 2. Open Self Hosted Private Sync settings and enter the HTTPS server address supplied by the
@@ -31,6 +35,32 @@ GitHub. Self Hosted Private Sync does not fetch or execute code from the sync se
 loader, or update itself. Its server-version notice points to Obsidian's
 plugin manager. A new install and a subsequent native update both require
 real-device validation; an archive test alone proves neither.
+
+## Device credentials and recovery
+
+The plugin keeps its vault key, device secret and edge header values in one
+exact owned native SecretStorage entry. Plugin data holds only its reference
+and nonsecret bookkeeping. Existing settings migrate only after a verified
+secret write. A bounded previous credential record allows reload after an
+interrupted metadata update without guessing or silently creating a new key.
+
+If storage is unavailable or cannot be verified, sync stops with an error.
+Keep the vault, its settings and recovery phrase intact, check Obsidian's
+secret storage, then reload. Do not delete the reference or repeat account
+setup. An incomplete enrollment can finish approval in its already-open pairing
+dialog. After approval, the existing recovery phrase can restore its key;
+the phrase does not approve a pending device. Closing or restarting Obsidian
+does not resume a pending dialog because the pairing code is not persisted.
+Do not repeat server setup to recover this state. Other plugin installations are
+never imported automatically.
+
+The public API provides no crash-durable transaction across secret storage
+and plugin data. Immediate readback is not app-restart persistence proof.
+An interrupted first migration can leave an unreferenced native entry; the
+plugin does not enumerate or automatically delete native secrets. Storage is
+vault-local and shared with other trusted plugins, without a promise of
+universal OS encryption. See [credential custody](architecture.md#device-local-credential-custody)
+and the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage).
 
 ## Trust and network use
 

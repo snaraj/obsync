@@ -238,28 +238,33 @@ export class PairClaimModal extends Modal {
     if (this.waiting) return;
     try {
       this.waiting = true;
+      const { state, transport, assertCurrent } = this.plugin.captureSession();
       const parsed = decodePairingCode(this.code);
       const credential = value(
-        await this.plugin.transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
+        await transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
           name: this.plugin.deviceName(),
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
         }),
         "claiming the pairing",
       );
-      this.plugin.state.data.deviceId = credential.device_id;
-      this.plugin.state.data.deviceSecret = credential.device_secret;
-      await this.plugin.state.save();
+      assertCurrent();
+      state.data.deviceId = credential.device_id;
+      state.data.deviceSecret = credential.device_secret;
+      await state.save();
+      assertCurrent();
+      if (!this.waiting) return;
       this.contentEl.createEl("p", { text: "Waiting for approval on the other device…" });
       while (this.waiting) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         if (!this.waiting) return;
+        assertCurrent();
         // Status belongs to the creator. The claimant may only collect its
         // envelope; an explicit not_approved refusal has not consumed it.
         let sealed: PairingEnvelope;
         try {
           sealed = value(
-            await this.plugin.transport.pairingEnvelope(parsed.pairingId),
+            await transport.pairingEnvelope(parsed.pairingId),
             "collecting the sealed vault key",
           );
         } catch (error) {
@@ -273,8 +278,11 @@ export class PairClaimModal extends Modal {
         // spent it: the vault key is gone and this pairing cannot complete.
         // `value` above makes that terminal; only not_approved polls again.
         const envelope = await openEnvelope(parsed.pairingSecret, parsed.pairingId, sealed.envelope, sealed.nonce);
-        this.plugin.state.data.vrk = envelope.vrk;
-        await this.plugin.state.save();
+        assertCurrent();
+        state.data.vrk = envelope.vrk;
+        await state.save();
+        assertCurrent();
+        if (!this.waiting) return;
         await this.plugin.restartEngine();
         this.plugin.log("pairing role=claimant decision=paired");
         new Notice("obsync: this device is paired. The first sync is running.");

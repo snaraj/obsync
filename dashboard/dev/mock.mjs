@@ -397,8 +397,6 @@ const PLUGIN = {
       styles_sha256: 'c'.repeat(64),
     }),
   ],
-  '/v1/plugin/bundle': ['text/javascript; charset=utf-8', '// mock plugin bundle\n'],
-  '/v1/plugin/styles': ['text/css; charset=utf-8', '/* mock plugin styles */\n'],
 };
 
 /* ---- the server ---------------------------------------------------------- */

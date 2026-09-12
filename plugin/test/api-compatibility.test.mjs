@@ -13,13 +13,15 @@ test("the declared minimum uses the unmodified official API baseline", () => {
   const vendor = join(plugin, "vendor", "obsidian");
   const version = readFileSync(join(vendor, "VERSION"), "utf8").trim();
   const manifest = JSON.parse(readFileSync(join(plugin, "..", "manifest.json"), "utf8"));
-  assert.equal(version, "1.7.2");
-  assert.equal(manifest.minAppVersion, version);
+  assert.equal(version, "1.12.3");
+  assert.equal(manifest.minAppVersion, "1.12.4");
   assert.equal(createHash("sha256").update(readFileSync(join(vendor, "obsidian.d.ts"))).digest("hex"),
-    "422eb0b21da5c69aef689cbfc643f2b953b5b31537328e01022490a3944b5830");
+    "8dc0a334e2e927b7512f9d21be2a8d1934128cc7d3e2ce7d48164fe951f9e81e");
+  assert.equal(createHash("sha256").update(readFileSync(join(vendor, "LICENSE.md"))).digest("hex"),
+    "c7e9eeb6640ebb1c22d8888f6d2c771b1f058a54e6216d69c7e2224b3cbad394");
 });
 
-test("the real compiler accepts supported APIs and rejects a newer runtime API", (t) => {
+test("the real compiler accepts native secret get/set and rejects an undeclared operation", (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "obsync-api-compatibility-"));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
   const fixture = join(scratch, "fixture.ts");
@@ -43,13 +45,14 @@ test("the real compiler accepts supported APIs and rejects a newer runtime API",
 declare const plugin: Plugin;
 declare const file: TFile;
 const contents: Promise<string> = plugin.app.vault.read(file);
+const secret: string | null = plugin.app.secretStorage.getSecret("obsync-test");
+plugin.app.secretStorage.setSecret("obsync-test", "fixture");
 void contents;
+void secret;
 `);
   assert.equal(supported.status, 0, supported.output);
-  // BooleanValue was added in Obsidian 1.10. A real import proves that an
-  // accidental return to newer declarations cannot hide behind skipLibCheck.
-  const newer = compile('import { BooleanValue } from "obsidian";\nvoid BooleanValue;\n');
+  const newer = compile('import { App } from "obsidian";\ndeclare const app: App;\napp.secretStorage.deleteSecret("obsync-test");\n');
   assert.equal(newer.status, 2, newer.output);
-  assert.match(newer.output, /error TS2305: Module '"obsidian"' has no exported member 'BooleanValue'\./);
+  assert.match(newer.output, /error TS2339: Property 'deleteSecret' does not exist on type 'SecretStorage'\./);
   assert.equal(newer.output.match(/error TS\d+:/g)?.length, 1, newer.output);
 });

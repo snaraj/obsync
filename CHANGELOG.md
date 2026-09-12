@@ -4,6 +4,19 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.16 - Unreleased
+
+- Store device credentials, vault keys and edge headers in one owned native
+  SecretStorage entry, keeping only a reference and bookkeeping in plugin
+  data. Migrate existing settings after verified secret writes, retain a
+  bounded prior credential record for interrupted updates, and stop sync on
+  unavailable or unverified persistence. Require Obsidian 1.12.4 or newer.
+- Remove obsolete server plugin-code download endpoints. Native Community
+  Plugins installation and updates remain the supported distribution path;
+  packaged assets and historical release verification remain intact.
+- Align current pairing, credential custody, recovery and installation
+  guidance with the implemented behavior and remove numbered feature promises.
+
 ## 0.1.15 - Unreleased
 
 - Let a new device wait for approval through its own envelope endpoint,

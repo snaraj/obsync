@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { FakeTimers, fakeState, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, fakeState, rig, sandbox, memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
@@ -340,6 +340,7 @@ test("a used device refuses expansion before stopping, saving or restarting", as
 test("an unused device can select folders or an explicit empty scope before pairing", async (t) => {
   const { instance, state, saved } = await plugin(t);
   state.data.deviceId = null;
+  state.data.deviceSecret = null;
   await instance.saveSyncFolders([]);
   assert.deepEqual(saved().syncFolders, []);
   await instance.saveSyncFolders(["Notes", "Attachments"]);
@@ -352,9 +353,10 @@ test("invalid saved scope refuses plugin startup with a visible state decision",
   const { instance } = await plugin(t);
   const logs = [];
   instance.log = (line) => logs.push(line);
+  instance.app = { secretStorage: memorySecrets() };
   instance.loadData = async () => ({ syncFolders: null });
   await assert.rejects(instance.onload(), /sync folders must be a list/);
-  assert.deepEqual(logs, ["state decision=refused reason=load_failed"]);
+  assert.deepEqual(logs, ["state decision=stopped reason=invalid_sync_folders"]);
   assert.equal(instance.engine, null);
 });
 
@@ -546,7 +548,7 @@ async function lifecyclePlugin(t) {
   instance.host = { log: (line) => logs.push(line) };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
-  instance.app = { vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
   instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);

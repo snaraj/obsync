@@ -51,12 +51,6 @@ function hostileServer({ version = "9.9.9", fail = false } = {}) {
           styles_sha256: sha256(""),
         });
       }
-      if (target === "/v1/plugin/bundle") {
-        return { status: 200, headers: {}, text: ATTACKER_BUNDLE, arrayBuffer: new ArrayBuffer(0) };
-      }
-      if (target === "/v1/plugin/styles") {
-        return { status: 200, headers: {}, text: "", arrayBuffer: new ArrayBuffer(0) };
-      }
       return json(404, { error: "not_found" });
     },
   };

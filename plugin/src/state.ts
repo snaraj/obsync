@@ -1,28 +1,37 @@
 /**
- * Local device state, persisted in the plugin's own data file.
- *
- * WHERE THE VAULT ROOT KEY LIVES. `vrk` (and the device secret) sit in
- * `<vault>/.obsidian/plugins/obsync-private-sync/data.json`, inside the vault, exactly as
- * every Obsidian sync plugin must: a plugin has no dependency-free path to
- * an OS keychain (Keychain, Credential Manager, Keystore) — those need
- * native modules, which AGENTS.md requirement 5 forbids, and mobile
- * Obsidian exposes no such API at all. The consequence is stated in
- * `docs/threat-model.md`: a device that is read by its own operating system
- * or by another app with vault access is outside the model. Nothing here
- * ever leaves the device: `transport` sends state fields to the server only
- * as the protocol's opaque ids.
+ * Local bookkeeping lives in the plugin data file. The vault key, device
+ * credential and edge headers live in one plugin-owned SecretStorage entry.
+ * Only its exact validated ID is read or written; other secrets are never
+ * enumerated. The native store is shared with trusted plugins in this vault,
+ * not an isolation boundary against those plugins or the local OS.
  *
  * The layout is compact on purpose — one entry per vault path, one per
  * remote-only file — because it is rewritten on every save.
  *
- * PLATFORM. Identical on desktop and mobile: Obsidian's `loadData`/
- * `saveData` are the only persistence used, and saves are serialised here so
- * two sync loops cannot interleave a half-written state.
+ * PLATFORM. Obsidian 1.12.4 or newer is required. Unavailable secret storage
+ * stops loading or saving; plaintext is never a fallback. Immediate secret
+ * readback and awaited saveData do not promise a crash-durable transaction
+ * across the two host stores. The bounded previous credential record allows
+ * reload to select the revision named by metadata after an interrupted write;
+ * an unknown revision or identity mismatch stops loading.
  */
 
 import { Policy, defaultPolicy } from "./policy";
 import { isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
+import { hex, randomBytes } from "./crypto";
+
+/** The supported native API surface; deliberately no enumeration method. */
+export interface SecretStore {
+  getSecret(id: string): string | null;
+  setSecret(id: string, value: string): void;
+}
+
+export class StateStorageError extends Error {
+  constructor(readonly reason: string, message?: string) {
+    super(message ?? `Credential storage could not be verified (${reason}). Sync is stopped. Keep this vault and its settings intact, check Obsidian secret storage, then reload. Do not repeat server setup or delete the credential reference.`);
+  }
+}
 
 /** Obsidian's `Plugin` provides exactly this pair. */
 export interface Store {
@@ -96,10 +105,61 @@ function num(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+type Credentials = Pick<ObsyncData, "vrk" | "deviceId" | "deviceSecret" | "edgeHeaders">;
+interface CredentialRevision extends Credentials { revision: number; serverUrl: string; }
+interface SecretEnvelope {
+  version: 1;
+  installationId: string;
+  current: CredentialRevision;
+  previous: CredentialRevision | null;
+}
+
+function credentials(loaded: Record<string, unknown>): Credentials {
+  const field = (name: string, bytes: number): string | null => {
+    const value = loaded[name];
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "string" || !new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(value)) {
+      throw new StateStorageError("invalid_credentials");
+    }
+    return value;
+  };
+  const vrk = field("vrk", 32), deviceId = field("deviceId", 16), deviceSecret = field("deviceSecret", 32);
+  if ((deviceId === null) !== (deviceSecret === null)) throw new StateStorageError("incomplete_credential");
+  const headers = loaded["edgeHeaders"] === undefined ? [] : loaded["edgeHeaders"];
+  if (!Array.isArray(headers) || headers.some((header) => !isRecord(header) ||
+    typeof header["name"] !== "string" || typeof header["value"] !== "string")) {
+    throw new StateStorageError("invalid_edge_headers");
+  }
+  return { vrk, deviceId, deviceSecret, edgeHeaders: headers.map((header) => ({ name: header.name, value: header.value })) };
+}
+
+function secretRef(installationId: string): string {
+  if (!/^[0-9a-f]{32}$/.test(installationId)) throw new StateStorageError("invalid_installation");
+  return `obsync-private-sync-v1-${installationId}`;
+}
+
+function readEnvelope(raw: string, installationId: string): SecretEnvelope {
+  const envelope: unknown = JSON.parse(raw);
+  const fields = ["version", "installationId", "current", "previous"];
+  if (!isRecord(envelope) || Object.keys(envelope).length !== fields.length ||
+    fields.some((key) => !Object.hasOwn(envelope, key)) || envelope["version"] !== 1 ||
+    envelope["installationId"] !== installationId) throw new StateStorageError("invalid_envelope");
+  const record = (value: unknown): CredentialRevision => {
+    const fields = ["revision", "serverUrl", "deviceId", "deviceSecret", "vrk", "edgeHeaders"];
+    if (!isRecord(value) || Object.keys(value).length !== fields.length || fields.some((key) => !Object.hasOwn(value, key)) ||
+      typeof value["serverUrl"] !== "string" || typeof value["revision"] !== "number" ||
+      !Number.isSafeInteger(value["revision"]) || value["revision"] < 1) throw new StateStorageError("invalid_envelope");
+    return { revision: value["revision"], serverUrl: value["serverUrl"], ...credentials(value) };
+  };
+  const current = record(envelope["current"]);
+  const previous = envelope["previous"] === null ? null : record(envelope["previous"]);
+  if (previous !== null && previous.revision >= current.revision) throw new StateStorageError("invalid_envelope");
+  return { version: 1, installationId, current, previous };
+}
+
 /**
- * Merge a loaded data file onto the defaults, dropping anything of the wrong
- * shape. A corrupt or partial file must degrade to "resync from scratch",
- * never to a crash on load or to a half-typed object handed to the engine.
+ * Parse noncritical bookkeeping onto defaults. State.open validates identity
+ * and credential persistence separately before this data reaches the engine.
  */
 export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   const data = defaultData(isMobile);
@@ -161,32 +221,135 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
  *
  * `save()` never runs two writes at once and never drops the newest state:
  * a save requested while one is in flight re-runs the write afterwards once,
- * whatever the number of requests. That is the atomicity available to a
- * plugin — Obsidian's `saveData` replaces the file — and it is what keeps a
- * push loop and a pull loop from writing over each other.
+ * whatever the number of requests. Each write uses a detached snapshot, with
+ * a matching credential revision. Any persistence failure blocks this state
+ * until reload; callers must not keep syncing from uncertain credentials.
  */
 export class State {
   private pending = false;
   private flushing: Promise<void> | null = null;
+  private failure: StateStorageError | null = null;
 
-  constructor(
+  private constructor(
     private readonly store: Store,
     public data: ObsyncData,
+    private readonly secrets: SecretStore,
+    private readonly installationId: string,
+    private record: CredentialRevision | null,
+    private envelope: SecretEnvelope | null,
+    private serializedSecret: string | null,
+    private readonly onFailure: (error: StateStorageError) => void,
   ) {}
 
-  static async open(store: Store, isMobile: boolean): Promise<State> {
-    return new State(store, parseData(await store.loadData(), isMobile));
+  static async open(
+    store: Store, isMobile: boolean, secrets: SecretStore,
+    onFailure: (error: StateStorageError) => void = () => {},
+    isCurrent: () => boolean = () => true,
+  ): Promise<State> {
+    let state: State;
+    let migrate = false;
+    try {
+      if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
+        throw new StateStorageError("unavailable");
+      }
+      const loaded = await store.loadData();
+      if (!isCurrent()) throw new StateStorageError("inactive_load");
+      if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");
+      const metadata = loaded ?? {};
+      let data: ObsyncData;
+      try { data = parseData(metadata, isMobile); }
+      catch (error) {
+        throw new StateStorageError("invalid_sync_folders", error instanceof Error ? error.message : "Invalid saved folder selection; sync is stopped.");
+      }
+      const versioned = ["storageVersion", "installationId", "credentialRef", "credentialRevision"]
+        .some((key) => Object.hasOwn(metadata, key));
+      if (versioned) {
+        const id = metadata["installationId"], revision = metadata["credentialRevision"];
+        if (metadata["storageVersion"] !== 1 || typeof id !== "string" ||
+          typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 ||
+          typeof metadata["serverUrl"] !== "string" ||
+          ["vrk", "deviceSecret", "edgeHeaders"].some((key) => Object.hasOwn(metadata, key))) {
+          throw new StateStorageError("invalid_metadata");
+        }
+        const ref = secretRef(id);
+        if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
+        const raw = secrets.getSecret(ref);
+        if (raw === null) throw new StateStorageError("missing_secret");
+        const envelope = readEnvelope(raw, id);
+        const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
+        if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
+          throw new StateStorageError("identity_mismatch");
+        }
+        Object.assign(data, credentials({ ...selected }));
+        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure);
+      } else {
+        Object.assign(data, credentials(metadata));
+        const id = hex(randomBytes(16));
+        if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
+        state = new State(store, data, secrets, id, null, null, null, onFailure);
+        migrate = true;
+      }
+    } catch (error) {
+      const failure = error instanceof StateStorageError ? error : new StateStorageError("load_failed");
+      onFailure(failure);
+      throw failure;
+    }
+    if (migrate) await state.save();
+    return state;
   }
 
-  save(): Promise<void> {
+  assertAvailable(): void {
+    if (this.failure !== null) throw this.failure;
+  }
+
+  /** Let a replacement plugin load wait for an already-dispatched metadata write. */
+  settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
+
+  private async persist(snapshot: ObsyncData): Promise<void> {
+    if (typeof snapshot.serverUrl !== "string") throw new StateStorageError("invalid_server");
+    const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
+    const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });
+    const ref = secretRef(this.installationId);
+    if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
+    const payload = { serverUrl: snapshot.serverUrl, ...verified };
+    const previousPayload = this.record === null ? null : { serverUrl: this.record.serverUrl, ...credentials({ ...this.record }) };
+    let selected: CredentialRevision;
+    if (this.record !== null && JSON.stringify(payload) === JSON.stringify(previousPayload)) {
+      selected = this.record;
+    } else {
+      const revision = (this.envelope?.current.revision ?? 0) + 1;
+      if (!Number.isSafeInteger(revision)) throw new StateStorageError("revision_exhausted");
+      selected = { revision, ...payload };
+      const envelope: SecretEnvelope = { version: 1, installationId: this.installationId, current: selected, previous: this.record };
+      const serialized = JSON.stringify(envelope);
+      try { this.secrets.setSecret(ref, serialized); }
+      catch { throw new StateStorageError("secret_write_failed"); }
+      if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
+      this.envelope = envelope;
+      this.serializedSecret = serialized;
+    }
+    try {
+      await this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
+        credentialRef: ref, credentialRevision: selected.revision });
+    } catch { throw new StateStorageError("metadata_write_failed"); }
+    this.record = selected;
+  }
+
+  async save(): Promise<void> {
+    this.assertAvailable();
     this.pending = true;
     if (this.flushing) return this.flushing;
     this.flushing = (async () => {
       try {
         while (this.pending) {
           this.pending = false;
-          await this.store.saveData(this.data);
+          await this.persist(JSON.parse(JSON.stringify(this.data)) as ObsyncData);
         }
+      } catch (error) {
+        this.failure = error instanceof StateStorageError ? error : new StateStorageError("save_failed");
+        this.pending = false;
+        this.onFailure(this.failure);
+        throw this.failure;
       } finally {
         this.flushing = null;
       }
@@ -196,7 +359,7 @@ export class State {
 
   /** True once this device holds a vault key and a device credential. */
   get paired(): boolean {
-    return this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null;
+    return this.failure === null && this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null;
   }
 
   fileByPath(path: string): FileRecord | undefined {

@@ -48,7 +48,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   /**
    * What to do when the server runs a newer plugin. obsync never installs
    * code the server serves (`docs/architecture.md` 6.3), so this line is the
-   * whole update path: it names both versions, the Release asset and its URL.
+   * whole update path: it names both versions and Obsidian's plugin manager.
    */
   private version(containerEl: HTMLElement): void {
     const line = this.plugin.updateLine();
@@ -72,7 +72,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
               return;
             }
             this.plugin.state.data.serverUrl = url;
-            void this.plugin.state.save();
+            // State reports persistence failure and stops sync through its host hook.
+            void this.plugin.state.save().catch(() => {});
           }),
       );
     new Setting(containerEl)
@@ -92,7 +93,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
                 name: line.slice(0, line.indexOf(":")).trim(),
                 value: line.slice(line.indexOf(":") + 1).trim(),
               }));
-            void this.plugin.state.save();
+            void this.plugin.state.save().catch(() => {});
           }),
       );
     new Setting(containerEl)
@@ -163,7 +164,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc(
         data.deviceId === null
           ? "This device is not paired yet. Pair it from a device that already syncs this vault, or set up a new server below."
-          : `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`,
+          : this.plugin.state.paired
+            ? `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`
+            : "This device has an enrollment but no verified vault key. Finish approval on the existing device, then restore the recovery phrase if needed. A pending dialog does not resume after app restart; do not repeat server setup.",
       )
       .addButton((button) =>
         button.setButtonText("Pair this device").onClick(() => {

@@ -1003,3 +1003,16 @@ test("startup reconciliation tombstones a file deleted while Obsidian was closed
   assert.equal(state.fileByPath("Removed.md"), undefined);
   engine.stop();
 });
+
+test("a failed rename bookkeeping save is handled and stops the engine", async () => {
+  const r = await rig(), timers = new FakeTimers();
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers });
+  r.host.seed("Old.md", "stable content", 1000);
+  await engine.start();
+  await timers.run(1000, () => r.state.fileByPath("Old.md") !== undefined);
+  r.state.save = async () => { throw new Error("fixture rename persistence failed"); };
+  engine.renamed("Old.md", "New.md");
+  await new Promise(setImmediate);
+  assert.equal(engine.started, false);
+  assert.ok(r.host.logs.includes("rename decision=failed reason=state_not_saved"));
+});

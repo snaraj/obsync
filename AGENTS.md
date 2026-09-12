@@ -28,8 +28,9 @@ nothing here depends on them.
 
 obsync is self-hosted, end-to-end encrypted live sync for Obsidian: one
 dependency-free Rust binary (`obsyncd`) that stores ciphertext chunks and
-encrypted manifests on local volumes, serves a sync API, a dashboard, and its
-own plugin bundle; plus an Obsidian plugin that encrypts on the device and
+encrypted manifests on local volumes, serves a sync API, a dashboard, and
+plugin-version metadata; plus an Obsidian plugin, distributed through
+Obsidian's native Community Plugins installer, that encrypts on the device and
 talks to that server on every Obsidian platform. Files of any size follow one
 path, bounded only by the backing volume. The reference deployment is a
 single-node Kubernetes cluster on a Raspberry Pi reached over private

@@ -7,6 +7,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
+import { memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { State, defaultData, parseData } = require("../build/state.js");
@@ -17,6 +18,7 @@ function store() {
   let held = null;
   return {
     writes,
+    secrets: memorySecrets(),
     loadData: async () => held,
     saveData: async (value) => {
       writes.push(JSON.parse(JSON.stringify(value)));
@@ -72,7 +74,7 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
 
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
-  const state = await State.open(backing, false);
+  const state = await State.open(backing, false, backing.secrets);
   state.data.lastSeq = 1;
   const first = state.save();
   state.data.lastSeq = 2;
@@ -83,12 +85,12 @@ test("saves serialise and never lose the newest state", async () => {
 
   assert.ok(backing.writes.length <= 3, "requests coalesce");
   assert.equal(backing.writes[backing.writes.length - 1].lastSeq, 3, "the last write holds the newest state");
-  const reloaded = await State.open(backing, false);
+  const reloaded = await State.open(backing, false, backing.secrets);
   assert.equal(reloaded.data.lastSeq, 3);
 });
 
 test("the file index answers by path and by file id", async () => {
-  const state = await State.open(store(), false);
+  const state = await State.open(store(), false, memorySecrets());
   state.setFile("a/b.md", { fileId: "f1", versionId: "v1", mtime: 1, size: 10, sha256: "s1" });
   state.setFile("c.md", { fileId: "f2", versionId: "v2", mtime: 2, size: 20, sha256: "s2" });
   assert.equal(state.fileByPath("a/b.md").fileId, "f1");
@@ -101,14 +103,14 @@ test("the file index answers by path and by file id", async () => {
 });
 
 test("recording a file clears its remote-only entry", async () => {
-  const state = await State.open(store(), false);
+  const state = await State.open(store(), false, memorySecrets());
   state.data.remoteOnly["f1"] = { path: "big.bin", size: 99 };
   state.setFile("big.bin", { fileId: "f1", versionId: "v", mtime: 1, size: 99, sha256: "s" });
   assert.equal(state.data.remoteOnly["f1"], undefined);
 });
 
 test("paired means a key, a device and a secret", async () => {
-  const state = await State.open(store(), false);
+  const state = await State.open(store(), false, memorySecrets());
   assert.equal(state.paired, false);
   state.data.vrk = "aa".repeat(32);
   assert.equal(state.paired, false);

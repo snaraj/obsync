@@ -125,8 +125,8 @@ fn feed_domain_and_admin_routes_resolve() {
 #[test]
 fn plugin_and_dashboard_routes_resolve() {
     assert_eq!(route("GET", "/v1/plugin/manifest"), Route::PluginManifest);
-    assert_eq!(route("GET", "/v1/plugin/bundle"), Route::PluginBundle);
-    assert_eq!(route("GET", "/v1/plugin/styles"), Route::PluginStyles);
+    assert!(resolve("GET", "/v1/plugin/bundle").is_none());
+    assert!(resolve("GET", "/v1/plugin/styles").is_none());
     assert_eq!(
         route("GET", "/"),
         Route::DashboardFile("index.html".to_string())

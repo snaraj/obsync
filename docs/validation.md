@@ -1,6 +1,6 @@
 # Device validation plan
 
-Dated 2026-09-07. The MVP is validated when every step below passes on
+Dated 2026-09-12. The MVP is validated when every step below passes on
 iPhone, iPad, Windows, and macOS against the reference deployment, plus the
 LAN path from a desktop.
 
@@ -52,20 +52,25 @@ evidence.
 | # | Scenario | Pass condition |
 | --- | --- | --- |
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
-| V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform and country |
+| V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
 | V3 | Type in a note on iPhone | appears on the other three within 3 s |
-| V4 | Rename and move a folder on Windows | mirrored everywhere, no duplicates |
+| V4 | Rename and move a populated folder on Windows, wholly inside every participating device’s selected folders | mirrored everywhere, no duplicates |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
 | V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
 | V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; fewer than 8 MiB re-sent |
 | V8 | Delete a file on iPad | tombstone everywhere; restorable from history within retention |
 | V9 | Revoke the iPad from the dashboard | its next request fails; other devices unaffected |
-| V10 | Restart the server pod mid-sync | clients resume; `/readyz` truthful during replay |
+| V10 | Restart the server pod mid-sync | clients resume; readiness is unavailable during startup replay and becomes successful only after replay completes |
 | V11 | Fill the blob volume to the watermark | uploads refused with a visible message; nothing corrupted |
 | V12 | Scrub with one blob corrupted by hand on the host | chunk quarantined, dashboard alert, client re-uploads |
 | V13 | Off-LAN sync from iPhone over cellular, over the private path (VPN back to the network, or the deployed tunnel if one exists) | edits sync both ways with no public route in use |
 | V14 | Dashboard from a phone browser | usable at 390 px wide |
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
+| V16 | Native credential persistence on each required platform, after fresh setup and after upgrading legacy paired state | restart Obsidian; the same device resumes bidirectional sync without setup or re-pairing, preserving folder selection |
+
+For V16, record the Obsidian version (at least 1.12.4), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
+
+V7 and V12 remain unproven acceptance requirements. The configured concurrent uploads do not establish the V7 retransmission bound. The current scrub reports damage, but an unchanged synced local file is not automatically re-uploaded by reconciliation; V12 therefore requires the repair tracked in [issue #51](https://github.com/snaraj/obsync/issues/51) and live validation before it can pass.
 
 For V8, after verifying the original tombstone on the required devices, use
 the native **Restore from history** command, find a retained content version
