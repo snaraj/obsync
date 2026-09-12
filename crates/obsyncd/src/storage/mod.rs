@@ -34,6 +34,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -1169,26 +1170,39 @@ impl Store {
         self.index().last_scrub.clone()
     }
 
-    /// Re-hash every stored chunk (`obsyncd check`).
+    /// Re-hash every inventoried or retained-version chunk (`obsyncd check`).
     ///
     /// Returns how many chunks were read, how many bytes, and which failed.
     pub fn verify_chunks(&self) -> Result<(u64, u64, Vec<Sid>), StoreError> {
-        let chunks: Vec<(Sid, u64)> = self
-            .index()
-            .chunks
-            .iter()
-            .map(|(sid, meta)| (*sid, meta.len))
-            .collect();
+        let chunks: BTreeSet<Sid> = {
+            let index = self.index();
+            // One SID per distinct chunk already described by the store;
+            // repeated references do not multiply hashing or memory. Include
+            // non-head history: absence from the volume is not proof that a
+            // retained version no longer needs its ciphertext.
+            index
+                .chunks
+                .keys()
+                .copied()
+                .chain(
+                    index
+                        .files
+                        .values()
+                        .flat_map(|file| &file.versions)
+                        .flat_map(|version| version.sids.iter().copied()),
+                )
+                .collect()
+        };
         let mut count = 0;
         let mut bytes = 0;
         let mut bad = Vec::new();
-        for (sid, len) in chunks {
-            match self.blobs.verify_primary(&sid)? {
-                Some(true) => {
+        for sid in chunks {
+            match self.blobs.verify_primary_measured(&sid)? {
+                Some((true, len)) => {
                     count += 1;
                     bytes += len;
                 }
-                Some(false) | None => bad.push(sid),
+                Some((false, _)) | None => bad.push(sid),
             }
         }
         Ok((count, bytes, bad))
