@@ -79,6 +79,22 @@ function expectedSignature(request, method, target, body) {
   return createHmac("sha256", Buffer.from(DEVICE_SECRET_HEX, "hex")).update(preimage).digest("hex");
 }
 
+test("heartbeat and device policy updates use the server's v1 fields without changing name-only updates", async () => {
+  const { transport, sent } = harness([{ status: 204 }, { status: 200, text: "{}" }, { status: 200, text: "{}" }]);
+  const policy = { perFileMaxBytes: 536870912, totalBudgetBytes: 53687091200 };
+  const wire = { per_file_max_bytes: 536870912, total_budget_bytes: 53687091200 };
+  assert.equal((await transport.heartbeat("0.1.15", policy)).outcome, "ok");
+  assert.equal((await transport.patchDevice(DEVICE_ID, { name: "Tablet", policy })).outcome, "ok");
+  assert.equal((await transport.patchDevice(DEVICE_ID, { name: "Desktop" })).outcome, "ok");
+  assert.deepEqual(sent.map((request) => JSON.parse(request.body)), [
+    { app_version: "0.1.15", policy: wire }, { name: "Tablet", policy: wire }, { name: "Desktop" },
+  ]);
+  for (const request of sent) {
+    assert.equal(request.headers["X-Obsync-Sig"], expectedSignature(request, request.method,
+      request.url.slice(SERVER.length), request.body));
+  }
+});
+
 test("a device call is signed over its method, target and body", async () => {
   const { transport, sent } = harness([{ status: 201, text: JSON.stringify({ seq: 9, heads: [], conflicted: false }) }]);
   const version = {

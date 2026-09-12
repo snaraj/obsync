@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      attestations: read
     steps:
       - name: Check out protected main with complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,11 +98,13 @@ jobs:
             --release-json "${release_json}" --tag "${tag}" \
             --title "obsync ${tag}" --body "${notes}" \
             --manifest "${manifest}" --plugin-digest "${plugin_digest}"
+          native_directory="${RUNNER_TEMP}/audit-native-plugin"
+          mkdir -p "${native_directory}"
           # The v2 inventory was required above by its version, never by the
           # presence of these files. Bind actual downloads to the same ZIP.
           if jq -e '.artifacts | has("plugin_files")' "${manifest}" >/dev/null; then
             for member in main.js manifest.json styles.css; do
-              observed="${RUNNER_TEMP}/audit-${member}"
+              observed="${native_directory}/${member}"
               download_asset "${member}" "${observed}"
               expected="$(jq -er --arg name "${member}" '.artifacts.plugin_files[$name].digest' "${manifest}")"
               test "sha256:$(sha256sum "${observed}" | awk '{print $1}')" = "${expected}"
@@ -126,6 +129,13 @@ jobs:
           # admit the coherent wrong-source fixture and fail its test.
           test "$(jq -er '.version' "${intent}")" = "${version}"
           test "$(jq -er '.tag' "${intent}")" = "${tag}"
+
+          # The source version was rebound above. Missing new provenance never
+          # selects the historical path, and a classification error is fatal.
+          native_provenance="$(python3 -B -c 'from scripts.ci.release_contract import Version; import sys; print(str(Version.parse(sys.argv[1]) >= Version(0, 1, 15)).lower())' "${version}")"
+          if [ "${native_provenance}" = true ]; then
+            ./scripts/ci/verify-native-provenance.sh "${native_directory}" "${source_sha}"
+          fi
 
           gh api --method GET \
             --header 'Accept: application/vnd.github+json' \

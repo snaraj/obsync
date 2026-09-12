@@ -655,6 +655,7 @@ test("the engine queues, debounces and pushes what the watcher reports", async (
   await engine.start();
   await timers.run(1000, () => state.fileByPath("Existing.md") !== undefined);
   assert.equal(server.heartbeats, 1);
+  assert.ok(host.logs.includes("heartbeat decision=reported policy_schema=v1"));
   assert.equal(state.fileByPath("Existing.md") !== undefined, true, "startup reconciliation pushed it");
 
   host.seed("New.md", "typed just now", 2000);

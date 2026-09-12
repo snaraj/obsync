@@ -4,6 +4,21 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.15 - Unreleased
+
+- Let a new device wait for approval through its own envelope endpoint,
+  preserving one-time collection and stopping when the pairing dialog closes.
+- Encode device policy using the existing v1 API field names, so heartbeats
+  and device-setting updates report both ceilings successfully to the server.
+- Use Self Hosted Private Sync as the community plugin display name, preserving
+  the installation ID and device pairing protocol.
+- Publish GitHub Actions SLSA build provenance for the three native plugin
+  assets and verify it against the authorized protected-main source before
+  sealing the release. Revalidate that provenance in the read-only release
+  audit while preserving historical releases and existing release evidence.
+- Refuse publication when the dispatch workflow commit differs from the
+  authorized source, so native provenance cannot name a different build.
+
 ## 0.1.14 - Unreleased
 
 - Return a failed process status for incomplete check and export reports.

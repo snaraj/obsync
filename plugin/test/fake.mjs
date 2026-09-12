@@ -191,7 +191,7 @@ export class FakeServer {
         app_version: "0.1.0",
         last_seen: 0,
         revoked: false,
-        policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 },
+        policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
       },
     ];
     this.requests = [];
@@ -266,6 +266,12 @@ export class FakeServer {
     if (path.startsWith("/v1/plugin/")) return this.json(200, { version: "0.1.0", bundle_sha256: "", styles_sha256: "" });
     this.verify(request, target);
 
+    // Match the Rust device parser before acknowledging a heartbeat or PATCH.
+    if (path === "/v1/devices/heartbeat" || (request.method === "PATCH" && path.startsWith("/v1/devices/"))) {
+      const policy = json().policy;
+      if (policy != null && ["per_file_max_bytes", "total_budget_bytes"].some((key) =>
+        !Number.isSafeInteger(policy[key]) || policy[key] < 0)) return this.error(400, "bad_request");
+    }
     if (path === "/v1/devices/heartbeat") {
       this.heartbeats++;
       return this.json(204, {});

@@ -598,6 +598,7 @@ export class SyncEngine {
       // request to answer a question nothing asks.
       const beat = await context.transport.heartbeat(context.host.appVersion, context.state.data.policy);
       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
+      else context.host.log("heartbeat decision=reported policy_schema=v1");
       const { devices } = await context.transport.devices();
       context.deviceNames.clear();
       for (const device of devices) context.deviceNames.set(device.device_id, device.name);

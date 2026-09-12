@@ -119,6 +119,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      attestations: write
     env:
       SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
       MAIN_RUN_ID: ${{ inputs.main_run_id }}
@@ -136,6 +137,7 @@ jobs:
             --root . \
             --source-sha "${SOURCE_SHA}" \
             --checkout-sha "$(git rev-parse HEAD)" \
+            --workflow-sha "${GITHUB_SHA}" \
             --ref "${GITHUB_REF}" \
             --event-name "${GITHUB_EVENT_NAME}" \
             --repository "${GITHUB_REPOSITORY}" \
@@ -606,6 +608,24 @@ jobs:
           printf 'path=%s\ndirectory=%s\nname=obsync-plugin-%s.zip\ndigest=sha256:%s\n' \
             "${bundle}" "${export_dir}" "${TAG}" \
             "$(sha256sum "${bundle}" | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
+      - name: Attest the native plugin build
+        # Native provenance derives its source from the OIDC workflow SHA,
+        # already bound to SOURCE_SHA before the first publication write.
+        id: native_attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.plugin.outputs.directory }}/main.js
+            ${{ steps.plugin.outputs.directory }}/manifest.json
+            ${{ steps.plugin.outputs.directory }}/styles.css
+          create-storage-record: false
+          push-to-registry: false
+      - name: Verify the native build provenance before release publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
+          ATTESTATION_BUNDLE: ${{ steps.native_attestation.outputs.bundle-path }}
+        run: ./scripts/ci/verify-native-provenance.sh "${PLUGIN_DIRECTORY}" "${SOURCE_SHA}" "${ATTESTATION_BUNDLE}"
       - name: Build the deterministic release evidence manifest
         id: manifest
         env:

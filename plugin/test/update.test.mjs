@@ -125,7 +125,7 @@ test("the notice and the settings line direct updates to Obsidian's plugin manag
   assert.equal(notices.length, 1);
   const notice = notices[0];
   assert.match(notice, /Server runs 9\.9\.9, you have 0\.1\.0/);
-  assert.match(notice, /Settings → Community plugins → Check for updates, then update Private Sync/);
+  assert.match(notice, /Settings → Community plugins → Check for updates, then update Self Hosted Private Sync/);
   assert.doesNotMatch(notice, /\.zip|reinstall|releases\/tag|\/v1\/plugin\/bundle/);
   assert.equal(instance.updateAvailable, "9.9.9");
   assert.equal(instance.updateLine(), notice.replace(/^obsync: /, ""), "the settings tab says the same thing");

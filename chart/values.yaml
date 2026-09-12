@@ -27,7 +27,7 @@ image:
   # ignores the tag; the tag is what an operator reads in `kubectl describe
   # pod`. It is one of the seven lockstep locks (requirement 10), so a chart
   # claiming one release can never ship the tag of another.
-  tag: v0.1.14
+  tag: v0.1.15
   # Fail-closed sentinel, and it stays that way in git: a syntactically valid
   # digest no registry can resolve, so a chart deployed with this value fails
   # at pull time instead of resolving something unverified. The publisher
