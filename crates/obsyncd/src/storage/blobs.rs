@@ -240,6 +240,7 @@ impl Blobs {
     }
 
     /// Re-hash the primary copy.
+    #[cfg(test)]
     pub(crate) fn verify_primary(&self, sid: &Sid) -> Result<Option<bool>, StoreError> {
         self.verify(&self.root, sid)
     }

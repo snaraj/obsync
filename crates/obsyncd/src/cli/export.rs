@@ -47,6 +47,11 @@ pub struct ExportReport {
 }
 
 impl ExportReport {
+    /// Whether every chunk selected for export could be read.
+    pub fn ok(&self) -> bool {
+        self.missing.is_empty()
+    }
+
     /// Print the counts for an operator.
     pub fn print(&self) {
         println!("files written:  {}", self.files);
@@ -58,6 +63,7 @@ impl ExportReport {
             println!("  {sid}");
         }
         println!("content: ciphertext (plaintext export lands with AES-GCM)");
+        println!("result: {}", if self.ok() { "ok" } else { "FAILED" });
     }
 }
 
@@ -190,7 +196,11 @@ pub fn run(
             ("chunks", Val::count(report.chunks)),
             ("bytes", Val::bytes(report.bytes)),
             ("missing", Val::count(report.missing.len() as u64)),
-            ("decision", Val::word("ciphertext")),
+            ("payload", Val::word("ciphertext")),
+            (
+                "decision",
+                Val::word(if report.ok() { "ok" } else { "failed" }),
+            ),
         ],
     );
     Ok(report)

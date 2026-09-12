@@ -104,6 +104,112 @@ fn file(n: u8) -> FileId {
     FileId::new([n; 16])
 }
 
+#[test]
+fn recovery_check_covers_retained_history_and_deduplicates_references_after_reopen() {
+    for snapshot in [false, true] {
+        let dir = TempDir::new("check-retained-history");
+        let cfg = config(&dir);
+        let setup = ready(&cfg);
+        let old = put(&setup, b"old ciphertext");
+        let tail = put(&setup, b"tail ciphertext");
+        let middle = put(&setup, b"middle ciphertext");
+        let other = put(&setup, b"other ciphertext");
+        let current = put(&setup, b"current ciphertext");
+        let stray = put(&setup, b"unreferenced ciphertext");
+        let first = setup
+            .store
+            .append_version(version(
+                &setup,
+                file(1),
+                "old",
+                &[],
+                &[old, old, tail],
+                false,
+            ))
+            .expect("first");
+        let second = setup
+            .store
+            .append_version(version(
+                &setup,
+                file(1),
+                "middle",
+                &first.heads,
+                &[middle],
+                false,
+            ))
+            .expect("middle history");
+        setup
+            .store
+            .append_version(version(
+                &setup,
+                file(1),
+                "current",
+                &second.heads,
+                &[current],
+                false,
+            ))
+            .expect("current");
+        setup
+            .store
+            .append_version(version(&setup, file(2), "shared", &[], &[current], false))
+            .expect("shared reference");
+        setup
+            .store
+            .append_version(version(&setup, file(3), "other", &[], &[other], false))
+            .expect("later file");
+        assert_eq!(
+            setup.store.verify_chunks().expect("complete"),
+            (6, 103, vec![])
+        );
+        if snapshot {
+            setup.store.snapshot().expect("snapshot");
+        }
+        let lost_paths: Vec<_> = [old, tail, middle, other]
+            .iter()
+            .map(|sid| setup.store.blobs.path(sid))
+            .collect();
+        let stray_path = setup.store.blobs.path(&stray);
+        drop(setup);
+
+        // Only this disposable fixture loses chunks in early/later files,
+        // versions and SID positions and receives a damaged unreferenced
+        // chunk. Every loss must remain visible after scan and replay.
+        for path in lost_paths {
+            fs::remove_file(path).expect("fixture loss");
+        }
+        fs::write(stray_path, b"changed").expect("fixture damage");
+        let store = open(&cfg);
+        assert!(
+            !store.chunk_exists(&old),
+            "scan cannot inventory an absent chunk"
+        );
+        let mut expected = vec![old, tail, middle, other, stray];
+        expected.sort();
+        assert_eq!(store.verify_chunks().expect("report"), (1, 18, expected));
+    }
+}
+
+#[test]
+fn recovery_check_measures_verified_bytes_and_refuses_read_errors() {
+    let dir = TempDir::new("check-measured");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    assert_eq!(setup.store.verify_chunks().expect("empty"), (0, 0, vec![]));
+    let sid = put(&setup, b"ciphertext");
+    setup.store.index().chunks.get_mut(&sid).expect("chunk").len = 999;
+    assert_eq!(
+        setup.store.verify_chunks().expect("measured"),
+        (1, 10, vec![])
+    );
+    let path = setup.store.blobs.path(&sid);
+    fs::remove_file(&path).expect("fixture file");
+    fs::create_dir(&path).expect("unreadable chunk fixture");
+    assert!(
+        setup.store.verify_chunks().is_err(),
+        "I/O failures are not clean reports"
+    );
+}
+
 /// Everything the store would serve, rendered so two stores can be compared.
 fn fingerprint(store: &Store) -> String {
     let (files, _) = store.files_page(None, 1000);

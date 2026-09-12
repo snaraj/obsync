@@ -352,8 +352,10 @@ should suggest otherwise.
 device: `obsyncd export --domain <id> --key <hex> --out <dir>` reconstructs
 that domain's stored ciphertext from the volumes -- file records carry their
 domain in clear (5.1 item 4), so the filter is exact -- and the operator
-decrypts it on a device that holds the key. It is the same binary and touches the server's
-data read-only.
+decrypts it on a device that holds the key. It is the same binary; opening
+storage performs the recovery and posture changes described in
+[Offline check and recovery verdicts](storage.md#offline-check-and-recovery-verdicts).
+Use a restored copy with the server stopped, preserving the pristine backup.
 
 **Phase 2 adds recipients**, and ships only when both of these hold:
 

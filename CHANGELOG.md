@@ -4,6 +4,12 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.14 - Unreleased
+
+- Return a failed process status for incomplete check and export reports.
+- Verify ciphertext references from every retained version during offline checks,
+  including missing history-only chunks, and count each verified chunk once.
+
 ## 0.1.13 - Unreleased
 
 - Use Private Sync as the community plugin display name and link the maintainer profile.

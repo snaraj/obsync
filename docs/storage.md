@@ -494,11 +494,48 @@ reporting it.
 - **Export (v0.1):** `obsyncd export --domain` writes that domain's stored
   CIPHERTEXT, which the operator decrypts on a device holding the key; the
   server implements no AES and never could write plaintext
-  (`docs/architecture.md` 3 and 5.1). `obsyncd check` verifies every blob
-  and journal frame and prints a report. Both are the offline recovery path.
+  (`docs/architecture.md` 3 and 5.1). Its payload assembles a selected newest
+  head; retained-version metadata in the manifest is not a backup of every
+  historical payload. Its accepted `--key` argument does not decrypt content.
+  Both export and check are offline recovery tools, not a full restore proof.
 
-Backups are the operator's decision; the layout is plain files so any
-file-level backup tool captures a consistent state after a snapshot.
+### Offline check and recovery verdicts
+
+`obsyncd check` hashes the primary copy of every inventoried chunk and every
+SID referenced by a retained version, including older non-head versions.
+It deduplicates SIDs, so repeated references count once, and counts verified
+bytes from the actual hash read. A missing referenced chunk fails even when
+the volume scan cannot inventory it. Corrupt chunks fail; other read errors
+refuse the command. The additional SID set is bounded by the distinct
+inventory and retained references already described by the in-memory store;
+chunk contents are streamed, never collected in that set.
+
+Both commands print their report before exiting. Check exits zero only with
+no failed chunks or frames; export exits zero only with no missing selected
+chunks. An incomplete report prints `result: FAILED`, emits
+`cli_failed decision=integrity_failed`, and exits 1. I/O or storage refusals
+also exit 1; invalid configuration or arguments exit 2. Require successful
+completion and `result: ok`, then compare counts and recovered state with the
+backup baseline. An empty, internally consistent store can legitimately
+return zero; that does not prove that the expected backup was restored.
+
+Run either command with the server stopped and on a dedicated restored copy,
+preserving the pristine backup. Opening storage enforces posture, creates
+missing layout or a volume-backed server key, removes temporary leftovers,
+may fall back to an older snapshot, and truncates a torn final journal tail
+before checking the remaining frames. Check is not a read-only forensic scan.
+For a lossless restore drill, separately reconcile `store_open` sequence,
+skipped snapshots, truncated bytes, removed temps and strays against the
+baseline; `result: ok` does not waive unexpected recovery changes.
+
+Back up both complete volume trees from one quiescent application state or
+coordinated filesystem snapshot, including journal segments, snapshots, nonce
+log and recovery credentials. When `OBSYNC_SERVER_KEY` is supplied externally,
+the server does not persist it in `server.key`; preserve that same external
+key through the operator's protected backup custody. Hash/CRC checking does
+not verify this key. Full existing-device recovery also needs an authenticated
+read using the restored device state, and plaintext recovery needs the client
+vault key or recovery phrase. The server key cannot decrypt vault contents.
 
 ## Encryption at rest
 

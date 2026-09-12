@@ -29,8 +29,8 @@ Configuration is environment only; docs/architecture.md lists every variable.";
 
 /// Run one subcommand. Returns the process exit code.
 ///
-/// Standard output carries exactly one thing, the version line; everything
-/// else is a structured log line on standard error.
+/// Standard output carries the version or an operator report; structured
+/// diagnostics go to standard error.
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         None | Some("serve") => serve::run(),
@@ -82,7 +82,18 @@ fn report<T: Report>(outcome: Result<T, StoreError>, job: &'static str, log: &Lo
     match outcome {
         Ok(report) => {
             report.print();
-            0
+            if report.ok() {
+                0
+            } else {
+                log.error(
+                    "cli_failed",
+                    &[
+                        ("job", Val::word(job)),
+                        ("decision", Val::word("integrity_failed")),
+                    ],
+                );
+                1
+            }
         }
         Err(e) => {
             let mut fields = vec![("job", Val::word(job)), ("decision", Val::word(e.code()))];
@@ -96,17 +107,25 @@ fn report<T: Report>(outcome: Result<T, StoreError>, job: &'static str, log: &Lo
 
 /// What a subcommand's report can do: print itself for an operator.
 trait Report {
+    /// A completed traversal can still report incomplete or corrupt data.
+    fn ok(&self) -> bool;
     /// Print the counts on standard output.
     fn print(&self);
 }
 
 impl Report for check::CheckReport {
+    fn ok(&self) -> bool {
+        check::CheckReport::ok(self)
+    }
     fn print(&self) {
         check::CheckReport::print(self);
     }
 }
 
 impl Report for export::ExportReport {
+    fn ok(&self) -> bool {
+        export::ExportReport::ok(self)
+    }
     fn print(&self) {
         export::ExportReport::print(self);
     }
@@ -208,6 +227,53 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn recovery_reports_drive_exit_status_and_failure_log() {
+        for (bad_chunks, bad_frames) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let value = check::CheckReport {
+                posture: Vec::new(),
+                chunks: 2,
+                bytes: 8,
+                bad_chunks: vec![crate::types::Sid::new([0; 32]); bad_chunks],
+                segments: 1,
+                frames: 3,
+                bad_frames,
+            };
+            let log = Log::buffered(LogLevel::Info);
+            let failed = bad_chunks != 0 || bad_frames != 0;
+            assert_eq!(report(Ok(value), "check", &log), i32::from(failed));
+            let lines = log.captured();
+            if failed {
+                assert!(
+                    lines.contains("event=cli_failed job=check decision=integrity_failed"),
+                    "{lines}"
+                );
+                assert_eq!(lines.lines().count(), 1);
+            } else {
+                assert!(lines.is_empty());
+            }
+        }
+        for missing in [0, 1] {
+            let value = export::ExportReport {
+                files: 1,
+                versions: 1,
+                chunks: 1,
+                bytes: 4,
+                missing: vec![crate::types::Sid::new([0; 32]); missing],
+            };
+            let log = Log::buffered(LogLevel::Info);
+            assert_eq!(report(Ok(value), "export", &log), i32::from(missing != 0));
+            if missing != 0 {
+                assert!(
+                    log.captured()
+                        .contains("job=export decision=integrity_failed")
+                );
+            } else {
+                assert!(log.captured().is_empty());
+            }
+        }
     }
 
     /// `check` and `export` refuse through the same helper, so the one line
