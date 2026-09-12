@@ -756,6 +756,7 @@ class PublisherAuthority(GitFixture):
         base = {
             "source_sha": self.base,
             "checkout_sha": self.base,
+            "workflow_sha": self.base,
             "ref": "refs/heads/main",
             "event_name": "workflow_dispatch",
             "repository": REPOSITORY,
@@ -796,6 +797,8 @@ class PublisherAuthority(GitFixture):
             {"image": "ghcr.io/someone/else"},
             {"chart": "ghcr.io/someone/charts/else"},
             {"checkout_sha": "b" * 40},
+            {"workflow_sha": "b" * 40},
+            {"workflow_sha": "not-a-sha"},
             {"source_sha": "not-a-sha"},
         ):
             with self.subTest(override=sorted(override)):

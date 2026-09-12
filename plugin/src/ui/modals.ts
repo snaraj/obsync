@@ -30,7 +30,7 @@ import {
   sealEnvelope,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
-import { Sent, lostMessage } from "../transport";
+import { ApiError, PairingEnvelope, Sent, lostMessage } from "../transport";
 
 function fail(error: unknown): void {
   new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
@@ -250,31 +250,39 @@ export class PairClaimModal extends Modal {
       this.plugin.state.data.deviceId = credential.device_id;
       this.plugin.state.data.deviceSecret = credential.device_secret;
       await this.plugin.state.save();
-      const statusEl = this.contentEl.createEl("p", { text: "Waiting for approval on the other device…" });
+      this.contentEl.createEl("p", { text: "Waiting for approval on the other device…" });
       while (this.waiting) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        const status = await this.plugin.transport.pairingStatus(parsed.pairingId);
-        if (status.state === "expired") {
-          statusEl.setText("The pairing expired before it was approved.");
-          return;
+        if (!this.waiting) return;
+        // Status belongs to the creator. The claimant may only collect its
+        // envelope; an explicit not_approved refusal has not consumed it.
+        let sealed: PairingEnvelope;
+        try {
+          sealed = value(
+            await this.plugin.transport.pairingEnvelope(parsed.pairingId),
+            "collecting the sealed vault key",
+          );
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 409 && error.code === "not_approved") {
+            this.plugin.log("pairing role=claimant decision=waiting reason=not_approved");
+            continue;
+          }
+          throw error;
         }
-        if (status.state !== "approved") continue;
         // The envelope is handed over exactly once, so a lost answer has
         // spent it: the vault key is gone and this pairing cannot complete.
-        // Say so; the user starts a new one on the other device.
-        const sealed = value(
-          await this.plugin.transport.pairingEnvelope(parsed.pairingId),
-          "collecting the sealed vault key",
-        );
+        // `value` above makes that terminal; only not_approved polls again.
         const envelope = await openEnvelope(parsed.pairingSecret, parsed.pairingId, sealed.envelope, sealed.nonce);
         this.plugin.state.data.vrk = envelope.vrk;
         await this.plugin.state.save();
         await this.plugin.restartEngine();
+        this.plugin.log("pairing role=claimant decision=paired");
         new Notice("obsync: this device is paired. The first sync is running.");
         this.close();
         return;
       }
     } catch (error) {
+      this.plugin.log(`pairing role=claimant decision=failed reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);
       fail(error);
     } finally {
       this.waiting = false;

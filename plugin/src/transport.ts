@@ -41,6 +41,11 @@ import { Bytes, bodyHash, hex, randomBytes, signRequest, unhex, utf8 } from "./c
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
 
+/** Device-local policy uses camelCase; the existing v1 API uses snake_case. */
+function policyBody(policy: Policy): { per_file_max_bytes: number; total_budget_bytes: number } {
+  return { per_file_max_bytes: policy.perFileMaxBytes, total_budget_bytes: policy.totalBudgetBytes };
+}
+
 export interface HttpRequest {
   url: string;
   method: string;
@@ -583,7 +588,10 @@ export class Transport {
   }
 
   patchDevice(deviceId: string, patch: { name?: string; policy?: Policy }): Promise<Sent<DeviceRecord>> {
-    return this.once("PATCH", `/v1/devices/${deviceId}`, { auth: "device", json: patch });
+    return this.once("PATCH", `/v1/devices/${deviceId}`, {
+      auth: "device",
+      json: { ...patch, policy: patch.policy === undefined ? undefined : policyBody(patch.policy) },
+    });
   }
 
   revokeDevice(deviceId: string): Promise<Sent<void>> {
@@ -593,7 +601,7 @@ export class Transport {
   heartbeat(appVersion: string, policy: Policy): Promise<Sent<void>> {
     return this.once("POST", "/v1/devices/heartbeat", {
       auth: "device",
-      json: { app_version: appVersion, policy },
+      json: { app_version: appVersion, policy: policyBody(policy) },
     });
   }
 

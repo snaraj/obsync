@@ -48,6 +48,18 @@ requires the exact five-asset inventory and reads every uploaded byte back
 before immutable publication. It scans source and final image for
 high/critical findings, and publishes one immutable Release.
 
+From 0.1.15, the publisher also creates GitHub Actions SLSA v1 build
+provenance for `main.js`, `manifest.json` and `styles.css`. The dispatch
+workflow SHA must equal the authorized source SHA before any publication
+write, because GitHub's provenance derives that identity from the workflow.
+The orchestrator dispatches against `main`; if `main` advances before that
+dispatch binds its workflow commit, publication of the superseded source is
+refused before the first tag or artifact write. Automatic publication requires
+the dispatch context to match the validated source.
+The exported bytes are verified against the attestation bundle before release
+publication; the read-only audit later verifies downloaded bytes through the
+attestation API. This adds no Release asset and preserves earlier evidence.
+
 The GitHub tag is exactly the root manifest version, `X.Y.Z`, as required by
 Obsidian's native installer. Container image tags remain `vX.Y.Z`; chart tags
 remain `X.Y.Z`. These names are distinct inputs, and the scheduled audit

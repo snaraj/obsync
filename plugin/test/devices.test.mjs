@@ -65,8 +65,8 @@ test("saving this device sends the name AND both ceilings, and keeps them", asyn
   const body = JSON.parse(patch.json);
   assert.equal(body.name, "Kitchen iPad", "the name is trimmed");
   assert.deepEqual(body.policy, {
-    perFileMaxBytes: 512 * 1024 * 1024,
-    totalBudgetBytes: 50 * 1024 * 1024 * 1024,
+    per_file_max_bytes: 512 * 1024 * 1024,
+    total_budget_bytes: 50 * 1024 * 1024 * 1024,
   });
   assert.equal(server.devices[0].name, "Kitchen iPad");
   assert.deepEqual(server.devices[0].policy, body.policy);
@@ -76,6 +76,19 @@ test("saving this device sends the name AND both ceilings, and keeps them", asyn
   assert.equal(instance.deviceName(), "Kitchen iPad");
   const reloaded = await fakeState(false);
   assert.equal(typeof reloaded.state.data.deviceName, "object", "a fresh device has no chosen name");
+});
+
+test("the server model refuses invalid policy fields before acknowledging heartbeat or settings", async () => {
+  const { instance, server } = await plugin();
+  for (const field of ["perFileMaxBytes", "totalBudgetBytes"]) {
+    for (const invalid of [-1, 0.5]) {
+      const policy = { perFileMaxBytes: 512, totalBudgetBytes: 1024, [field]: invalid };
+      await assert.rejects(() => instance.transport.heartbeat("0.1.15", policy), ApiError);
+      assert.equal(server.heartbeats, 0);
+      await assert.rejects(() => instance.transport.patchDevice(KEYS.deviceId, { name: "Unconfirmed", policy }), ApiError);
+      assert.equal(server.devices[0].name, "test-device");
+    }
+  }
 });
 
 test("clearing the name restores the default rather than sending an empty one", async () => {
@@ -103,7 +116,7 @@ test("the device list is what the server reports", async () => {
     app_version: "0.1.0",
     last_seen: 1757200000000,
     revoked: false,
-    policy: { perFileMaxBytes: 536870912, totalBudgetBytes: 53687091200 },
+    policy: { per_file_max_bytes: 536870912, total_budget_bytes: 53687091200 },
   });
   const devices = await instance.listDevices();
   assert.equal(devices.length, 2);

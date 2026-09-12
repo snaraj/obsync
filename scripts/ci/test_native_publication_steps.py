@@ -64,6 +64,27 @@ if tool in ('cosign', 'trivy'):
     assert args[-1] in state['signed_targets']
     record(tool + ':' + args[-1]); done()
 if tool == 'gh':
+    if args[:2] == ['attestation', 'verify']:
+        member = Path(args[2])
+        record('attestation:' + member.name)
+        path.write_text(json.dumps(state))
+        expected = state['provenance']
+        required = {
+            '--repo': 'snaraj/obsync',
+            '--signer-workflow': 'snaraj/obsync/.github/workflows/release-publisher.yml',
+            '--cert-identity': 'https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main',
+            '--cert-oidc-issuer': 'https://token.actions.githubusercontent.com',
+            '--source-ref': 'refs/heads/main',
+            '--source-digest': expected['source_sha'],
+            '--signer-digest': expected['source_sha'],
+            '--predicate-type': 'https://slsa.dev/provenance/v1',
+        }
+        assert all(argument(flag) == value for flag, value in required.items())
+        assert '--deny-self-hosted-runners' in args
+        assert hashlib.sha256(member.read_bytes()).hexdigest() == expected['files'][member.name]
+        if '--bundle' in args:
+            assert Path(argument('--bundle')).read_text() == 'SENTINEL-BUILD-BUNDLE'
+        done(1 if scenario == 'attestation:' + member.name else 0)
     if args[:2] == ['api', '--method'] and args[2] == 'GET':
         record('read-api:' + args[-1])
         done(output=json.dumps(state['api'][args[-1]]))
@@ -286,10 +307,12 @@ class NativePublicationSteps(unittest.TestCase):
         source_sha = repo.commit(old)
         if not contract.Version.parse(version).legacy:
             repo.git('rm', 'plugin/manifest.json')
-            source_sha = repo.commit(locks(source_version or version, ['0.1.10']))
+            for patch in range(11, contract.Version.parse(source_version or version).patch + 1):
+                source_sha = repo.commit(locks(f'0.1.{patch}', [f'0.1.{old}' for old in range(patch - 1, 9, -1)]))
         scripts = source / 'scripts/ci'
         scripts.mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', scripts)
+        shutil.copy2(ROOT / 'scripts/ci/verify-native-provenance.sh', scripts)
         data = bundle(version)
         args = {**native_arguments(data), 'source_sha': source_sha, 'version': version}
         evidence = contract.build_release_manifest(**args)
@@ -328,6 +351,8 @@ class NativePublicationSteps(unittest.TestCase):
                               f'/v2/snaraj/charts/obsync/manifests/{version}': args['chart_digest']},
                      signed_targets=[args['image'] + '@' + args['image_digest'],
                                      args['chart'] + '@' + args['chart_digest']])
+        state['provenance'] = dict(source_sha=source_sha, files={
+            name: digest(content).split(':')[1] for name, content in files.items() if name in contract.PLUGIN_FILES})
         self.state.write_text(json.dumps(state))
         self.audit_root = source
         self.audit_environment = {**self.env, 'TAG': tag, 'GHCR_PASSWORD': 'SENTINEL',
@@ -342,7 +367,7 @@ class NativePublicationSteps(unittest.TestCase):
                               capture_output=True, text=True, timeout=30)
 
     def test_read_only_audit_revalidates_legacy_and_native_releases(self):
-        for version in ['0.1.10', VERSION]:
+        for version in ['0.1.10', VERSION, '0.1.14', '0.1.15']:
             with self.subTest(version=version):
                 self.prepare_audit(version)
                 result = self.run_audit()
@@ -352,6 +377,84 @@ class NativePublicationSteps(unittest.TestCase):
                                  2 if version == '0.1.10' else 5)
                 self.assertEqual(len([call for call in calls if call.startswith('cosign:')]), 2)
                 self.assertEqual(len([call for call in calls if call.startswith('trivy:')]), 1)
+                self.assertEqual([call for call in calls if call.startswith('attestation:')],
+                                 ['attestation:' + name for name in contract.PLUGIN_FILES] if version == '0.1.15' else [])
+
+    def test_new_release_audit_refuses_missing_native_build_provenance(self):
+        for member in contract.PLUGIN_FILES:
+            with self.subTest(member=member):
+                self.prepare_audit('0.1.15')
+                result = self.run_audit('attestation:' + member)
+                self.assertNotEqual(result.returncode, 0)
+                calls = json.loads(self.state.read_text())['calls']
+                self.assertIn('attestation:' + member, calls)
+                self.assertFalse(any(call.startswith('cosign:') for call in calls))
+
+    def test_native_verifier_binds_each_exported_file_and_propagates_refusals(self):
+        self.prepare_audit('0.1.15')
+        state = json.loads(self.state.read_text())
+        directory = Path(self.env['PLUGIN_DIRECTORY'])
+        for member in contract.PLUGIN_FILES:
+            (directory / member).write_bytes(base64.b64decode(state['files'][member]))
+        proof = self.root / 'build-bundle.json'
+        proof.write_text('SENTINEL-BUILD-BUNDLE')
+        verify = self.steps['Verify the native build provenance before release publication']
+        result = subprocess.run(['bash', '-e'], input=verify['run'], cwd=ROOT,
+                                env={**self.env, 'SOURCE_SHA': state['provenance']['source_sha'],
+                                     'ATTESTATION_BUNDLE': str(proof)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.state.read_text())['calls'],
+                         ['attestation:' + name for name in contract.PLUGIN_FILES])
+        command = ['bash', str(ROOT / 'scripts/ci/verify-native-provenance.sh'),
+                   str(directory), state['provenance']['source_sha'], str(proof)]
+        for scenario in ['', *['attestation:' + member for member in contract.PLUGIN_FILES]]:
+            with self.subTest(scenario=scenario):
+                result = subprocess.run(command, env={**self.env, 'MODEL_SCENARIO': scenario},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, not scenario, result.stderr)
+        for source, repository in [('invalid', 'snaraj/obsync'), (state['provenance']['source_sha'], 'other/repo')]:
+            before = json.loads(self.state.read_text())['calls']
+            command[3] = source
+            result = subprocess.run(command, env={**self.env, 'GITHUB_REPOSITORY': repository}, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(self.state.read_text())['calls'], before)
+        command[3] = 'f' * 40
+        self.assertNotEqual(subprocess.run(command, env=self.env, capture_output=True).returncode, 0)
+        command[3] = state['provenance']['source_sha']
+        proof.write_text('')
+        before = json.loads(self.state.read_text())['calls']
+        self.assertNotEqual(subprocess.run(command, env=self.env, capture_output=True).returncode, 0)
+        self.assertEqual(json.loads(self.state.read_text())['calls'], before)
+
+    def test_native_provenance_is_mandatory_between_export_and_release(self):
+        document = miniyaml.load_one(WORKFLOW.read_text())
+        publish = document['jobs']['publish']
+        self.assertEqual(publish['permissions'], {'contents': 'write', 'packages': 'write',
+                                                  'id-token': 'write', 'attestations': 'write'})
+        steps = publish['steps']
+        attest = self.steps['Attest the native plugin build']
+        self.assertEqual(attest['uses'], 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6')
+        self.assertEqual([line.strip() for line in attest['with']['subject-path'].splitlines()],
+                         ['${{ steps.plugin.outputs.directory }}/' + name for name in contract.PLUGIN_FILES])
+        self.assertEqual({key: value for key, value in attest['with'].items() if key != 'subject-path'},
+                         {'create-storage-record': False, 'push-to-registry': False})
+        verify = self.steps['Verify the native build provenance before release publication']
+        self.assertEqual(verify['env'], {
+            'GH_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
+            'PLUGIN_DIRECTORY': '${{ steps.plugin.outputs.directory }}',
+            'ATTESTATION_BUNDLE': '${{ steps.native_attestation.outputs.bundle-path }}'})
+        for step in [attest, verify]:
+            self.assertNotIn('if', step)
+            self.assertNotIn('continue-on-error', step)
+        export = self.steps['Export the plugin bundle from the image build']
+        release = self.steps['Stage, verify, and publish the exact GitHub release']
+        self.assertLess(steps.index(export), steps.index(attest))
+        self.assertLess(steps.index(attest), steps.index(verify))
+        self.assertLess(steps.index(verify), steps.index(release))
+        self.assertEqual(steps[-1]['name'], 'Re-bind the immutable Release to the exact annotated tag')
+        bind = self.steps['Bind protected workflow, authorized checkout, and committed locks']
+        self.assertIn('--workflow-sha "${GITHUB_SHA}"', bind['run'])
+        self.assertLess(steps.index(bind), steps.index(self.steps['Create or verify the exact annotated tag']))
 
     def test_audit_refuses_changed_native_bytes_and_a_coherent_but_wrong_source_version(self):
         for member in contract.PLUGIN_FILES:

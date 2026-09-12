@@ -988,6 +988,7 @@ def validate_publisher(
     root: Path,
     source_sha: str,
     checkout_sha: str,
+    workflow_sha: str,
     ref: str,
     event_name: str,
     repository: str,
@@ -1005,6 +1006,8 @@ def validate_publisher(
     if workflow_ref != f"{repository}/{EXPECTED_PUBLISHER_PATH}@refs/heads/main":
         raise ContractError("publisher workflow identity is not protected main")
     validate_release_destinations(repository, image, chart)
+    if source_sha != workflow_sha:
+        raise ContractError("publisher workflow SHA does not equal the authorized source")
     if source_sha != checkout_sha:
         raise ContractError("publisher source SHA does not equal the authorized checkout")
     if (root / "plugin/manifest.json").exists() or (root / "plugin/manifest.json").is_symlink():
@@ -1659,6 +1662,7 @@ def _parser() -> argparse.ArgumentParser:
     publisher.add_argument("--root", type=Path, required=True)
     publisher.add_argument("--source-sha", required=True)
     publisher.add_argument("--checkout-sha", required=True)
+    publisher.add_argument("--workflow-sha", required=True)
     publisher.add_argument("--ref", required=True)
     publisher.add_argument("--event-name", required=True)
     publisher.add_argument("--repository", required=True)
@@ -1827,6 +1831,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.root,
                     args.source_sha,
                     args.checkout_sha,
+                    args.workflow_sha,
                     args.ref,
                     args.event_name,
                     args.repository,

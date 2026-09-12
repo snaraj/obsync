@@ -149,7 +149,7 @@ function walker(fs: NodeFs): PathWalker {
 export function updateMessage(server: string, local: string): string {
   return (
     `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
-    "Check for updates, then update Private Sync."
+    "Check for updates, then update Self Hosted Private Sync."
   );
 }
 

@@ -98,7 +98,7 @@ test("the shipped bundle has no path that installs code served by the server", (
     assert.equal(bundle.includes(marker), false, `the bundle still carries ${marker}`);
   }
   assert.ok(bundle.includes("Settings → Community plugins →"), "updates stay in Obsidian's plugin manager");
-  assert.ok(bundle.includes("Check for updates, then update Private Sync."));
+  assert.ok(bundle.includes("Check for updates, then update Self Hosted Private Sync."));
 });
 
 test("no ingress, tunnel or access provider is named in the shipped code", () => {
@@ -111,6 +111,7 @@ test("no ingress, tunnel or access provider is named in the shipped code", () =>
 test("the manifest ships the values Obsidian and the release path expect", () => {
   const manifest = JSON.parse(readFileSync(join(plugin, "dist", "manifest.json"), "utf8"));
   assert.equal(manifest.id, "obsync-private-sync");
+  assert.equal(manifest.name, "Self Hosted Private Sync");
   // The shipped manifest carries the version the plugin's own sources
   // declare; the release contract pins that number to the repository's
   // other locks. A literal here would break on every release.
