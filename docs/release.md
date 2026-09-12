@@ -78,6 +78,14 @@ releases through 0.1.11 retain `obsync`; releases from 0.1.12 require
 `obsync-private-sync` in both the source manifest and bounded plugin archive.
 Downloaded metadata cannot select a different identity or an older format.
 
+The native provenance verifier uses an exact certificate identity containing
+the repository, workflow path and main ref. GitHub CLI makes that selector
+mutually exclusive with `--signer-workflow`; combining them refuses the
+command before any cryptographic verification. The separate repository,
+source ref/digest, signer digest, issuer, hosted-runner and SLSA-v1 checks
+remain required. The local argument regression invokes real `gh` against a
+malformed local bundle; live signed-attestation verification is separate.
+
 Native installation and the first directory submission are described in
 [Community plugin distribution](community-plugin.md). Publication alone does
 not prove directory acceptance, installation, or device synchronization.

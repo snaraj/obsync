@@ -6,6 +6,11 @@ advances exactly one patch (AGENTS.md, requirement 10).
 
 ## 0.1.16 - Unreleased
 
+- Fix native provenance verification by using the exact certificate identity
+  without the mutually exclusive workflow selector. Retain repository,
+  source, signer, issuer, hosted-runner and SLSA constraints, with a real CLI
+  argument regression alongside the publication model.
+
 - Store device credentials, vault keys and edge headers in one owned native
   SecretStorage entry, keeping only a reference and bookkeeping in plugin
   data. Migrate existing settings after verified secret writes, retain a

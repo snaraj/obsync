@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -71,7 +72,6 @@ if tool == 'gh':
         expected = state['provenance']
         required = {
             '--repo': 'snaraj/obsync',
-            '--signer-workflow': 'snaraj/obsync/.github/workflows/release-publisher.yml',
             '--cert-identity': 'https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main',
             '--cert-oidc-issuer': 'https://token.actions.githubusercontent.com',
             '--source-ref': 'refs/heads/main',
@@ -425,6 +425,38 @@ class NativePublicationSteps(unittest.TestCase):
         before = json.loads(self.state.read_text())['calls']
         self.assertNotEqual(subprocess.run(command, env=self.env, capture_output=True).returncode, 0)
         self.assertEqual(json.loads(self.state.read_text())['calls'], before)
+
+    def test_native_verifier_arguments_reach_the_real_gh_bundle_parser(self):
+        # A local malformed bundle makes real gh stop after argument admission.
+        # This proves CLI compatibility, not cryptography; a custom local root
+        # and empty gh configuration keep this probe offline and credential-free.
+        gh = shutil.which('gh')
+        self.assertIsNotNone(gh, 'GitHub CLI is required for the native verifier argument regression')
+        directory = self.root / 'parser-native'
+        directory.mkdir()
+        for member in contract.PLUGIN_FILES:
+            (directory / member).write_text('PARSER-SENTINEL')
+        proof = self.root / 'parser-bundle.json'
+        proof.write_text('PARSER-SENTINEL')
+        trusted = self.root / 'parser-root.json'
+        trusted.write_text('{}')
+        bins = self.root / 'real-cli'
+        bins.mkdir()
+        wrapper = bins / 'gh'
+        wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(gh) + ' "$@" --custom-trusted-root ' +
+                           shlex.quote(str(trusted)) + '\n')
+        wrapper.chmod(0o755)
+        config = self.root / 'empty-gh-config'
+        config.mkdir()
+        result = subprocess.run(['bash', str(ROOT / 'scripts/ci/verify-native-provenance.sh'),
+                                 str(directory), 'a' * 40, str(proof)],
+                                env={**os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'],
+                                     'GITHUB_REPOSITORY': 'snaraj/obsync', 'GH_CONFIG_DIR': str(config),
+                                     'GH_TOKEN': '', 'GITHUB_TOKEN': ''},
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('bundle content could not be parsed', result.stderr)
+        self.assertNotIn('mutually exclusive', result.stderr)
 
     def test_native_provenance_is_mandatory_between_export_and_release(self):
         document = miniyaml.load_one(WORKFLOW.read_text())
