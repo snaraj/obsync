@@ -102,6 +102,7 @@ mod tests {
             for verb in ["check", "export"] {
                 let mut command = Command::new(env!("CARGO_BIN_EXE_obsyncd"));
                 command
+                    .current_dir(&fixture.0)
                     .env_clear()
                     .env("OBSYNC_BLOBS_DIR", &cfg.blobs_dir)
                     .env("OBSYNC_JOURNAL_DIR", &cfg.journal_dir)
@@ -109,6 +110,11 @@ mod tests {
                     .env("OBSYNC_JOURNAL_CAPACITY", cfg.journal_capacity.to_string())
                     .env("OBSYNC_SERVER_KEY", "09".repeat(32))
                     .arg(verb);
+                // Preserve only the coverage collector's output destination;
+                // no ambient application configuration enters the process.
+                if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                    command.env("LLVM_PROFILE_FILE", profile);
+                }
                 if verb == "export" {
                     command
                         .args([
