@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { FakeTimers, fakeState, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, fakeState, rig, sandbox, memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
@@ -340,6 +340,7 @@ test("a used device refuses expansion before stopping, saving or restarting", as
 test("an unused device can select folders or an explicit empty scope before pairing", async (t) => {
   const { instance, state, saved } = await plugin(t);
   state.data.deviceId = null;
+  state.data.deviceSecret = null;
   await instance.saveSyncFolders([]);
   assert.deepEqual(saved().syncFolders, []);
   await instance.saveSyncFolders(["Notes", "Attachments"]);
@@ -352,9 +353,10 @@ test("invalid saved scope refuses plugin startup with a visible state decision",
   const { instance } = await plugin(t);
   const logs = [];
   instance.log = (line) => logs.push(line);
+  instance.app = { secretStorage: memorySecrets() };
   instance.loadData = async () => ({ syncFolders: null });
   await assert.rejects(instance.onload(), /sync folders must be a list/);
-  assert.deepEqual(logs, ["state decision=refused reason=load_failed"]);
+  assert.deepEqual(logs, ["state decision=stopped reason=invalid_sync_folders"]);
   assert.equal(instance.engine, null);
 });
 
@@ -546,7 +548,7 @@ async function lifecyclePlugin(t) {
   instance.host = { log: (line) => logs.push(line) };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
-  instance.app = { vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
   instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);
@@ -614,19 +616,22 @@ test("an already-issued scope write may finish after unload but cannot report su
   assert.deepEqual(logs, ["scope decision=cancelled reason=plugin_unloaded"]);
 });
 
-test("a cancelled scope save cannot clear a later load's engine or unlock its active scope edit", async (t) => {
+test("a cancelled scope save drains before a later load owns its engine and scope edit", async (t) => {
   const { instance, saved } = await lifecyclePlugin(t);
   const oldWork = deferred(), newWork = deferred();
   t.after(() => { oldWork.resolve(); newWork.resolve(); });
   instance.engine = { stop: () => undefined, stopAndWait: () => oldWork.promise };
   const oldSave = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded/);
   instance.onunload();
-  await instance.onload();
+  let loaded = false;
+  const loading = instance.onload().then(() => { loaded = true; });
+  await new Promise(setImmediate);
+  assert.equal(loaded, false, "the replacement must wait for the old engine drain");
+  oldWork.resolve();
+  await Promise.all([oldSave, loading]);
   const replacement = { stop: () => undefined, stopAndWait: () => newWork.promise };
   instance.engine = replacement;
   const newSave = instance.saveSyncFolders([]);
-  oldWork.resolve();
-  await oldSave;
   assert.equal(instance.engine, replacement, "an earlier continuation cannot clear a new engine");
   let refusal;
   const competing = instance.saveSyncFolders(["Notes"]).catch((error) => { refusal = error; });
@@ -784,7 +789,7 @@ test("failed active startup stops its engine and reports the failure", async (t)
   Engine.prototype.stop = function () { stops++; return stop.call(this); };
   Engine.prototype.start = async () => { throw new Error("START SENTINEL"); };
   await instance.startEngine();
-  assert.equal(stops, 1);
+  assert.equal(stops, 2, "admission stops immediately and stopAndWait also stops before draining");
   assert.equal(instance.engine, null);
   assert.deepEqual(statuses.at(-1), { kind: "error", message: "START SENTINEL" });
 });

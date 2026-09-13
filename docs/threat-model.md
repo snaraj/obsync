@@ -1,6 +1,6 @@
 # Threat model
 
-Dated 2026-09-07. Assets, adversaries, what holds, what does not.
+Dated 2026-09-12. Assets, adversaries, what holds, what does not.
 
 ## Assets
 
@@ -14,9 +14,9 @@ Dated 2026-09-07. Assets, adversaries, what holds, what does not.
 | Adversary | Can see or do | Cannot |
 | --- | --- | --- |
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
-| TLS terminator / edge operator | request metadata, ciphertext, and every credential in clear: the device secret once at pairing (v1), the dashboard session cookie, the recovery sign-in link | read content, names, or keys; replace plugin code (the plugin never installs served code; updates come from the signed Release) |
-| Server operator or stolen volumes | ciphertext, sizes, version graph, device activity | decrypt anything; device secrets are wrapped under the server key |
-| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); act after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
+| TLS terminator / edge operator | request metadata, ciphertext, and credentials in clear at the terminator: the device secret at setup/pairing, dashboard session cookies and recovery sign-in links | read vault content, names or vault keys; replace client code through the sync server (installation uses Obsidian's directory and GitHub assets, with the client trust limits in `docs/community-plugin.md`) |
+| Server operator or stolen volumes | ciphertext, sizes, version graph, device activity; wrapped device credentials can be recovered if the server wrapping key is also available | decrypt vault content without a device-held vault key |
+| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); make new authenticated server requests after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves; outlive its pairing (expiry destroys it, and so does the next start, since pairings do not survive one) |
 | Other cluster tenant, or another account on the host | nothing (default-deny NetworkPolicy, non-root pod, volume roots 0700 and credential files 0600, measured and corrected on every start, `docs/storage.md`) | reach the API or the volumes, or read the recovery login or the wrapping key off a restored or bind-mounted volume |
 | Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, `docs/protocol.md`) |
@@ -38,9 +38,19 @@ content as untrusted when opening links or copying commands from it.
   express one. The acceptance criteria that gate phase 2 are in
   `docs/architecture.md` section 5.
 - Hiding file counts, sizes, timing, and version-graph shape from the
-  server. Size padding is a v0.3 option.
+  server. Size padding is deferred.
 - Recovering a vault after every device and the recovery phrase are lost.
 - Protecting a device against its own operating system.
+
+Device credentials, vault keys and edge headers use Obsidian's native
+SecretStorage rather than plaintext plugin data. The exact owned reference
+and a matching device/server revision are required on load; there is no
+plaintext fallback or search through other secrets. Current and previous
+credential records are retained in a bounded envelope for interrupted
+metadata updates. SecretStorage is shared with trusted plugins in the vault,
+not isolated from those plugins or the OS. Universal OS encryption and a
+crash-durable transaction with plugin data are not documented API guarantees.
+Native app-restart persistence remains separate acceptance evidence.
 
 ## Controls by requirement
 
@@ -60,7 +70,7 @@ content as untrusted when opening links or copying commands from it.
 ## Residual risks recorded for v1
 
 1. Every credential crosses the TLS terminator in clear: the device secret
-   once at pairing (fixed by X25519 in v0.2) and the dashboard session cookie
+   at setup/pairing and the dashboard session cookie
    and recovery link for as long as sessions exist. The terminator is in the
    trust base for credentials and out of it for content
    (`docs/architecture.md` 2.1, choice 1).

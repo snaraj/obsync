@@ -211,6 +211,9 @@ Copy `obsync-root.crt` to each device and install it:
 
 ### 2. Set up this computer (the first device)
 
+Use Obsidian 1.12.4 or newer on each device. Credentials and vault keys use
+Obsidian's native secret storage; unavailable storage stops setup and sync.
+
 1. In your vault, open Settings → Community plugins and allow community
    plugins. Select Browse and search for **Self Hosted Private Sync**.
 2. Select **Install**, then **Enable**. If Self Hosted Private Sync is not in Browse, its
@@ -235,6 +238,15 @@ Copy `obsync-root.crt` to each device and install it:
    is unrecoverable by design. The server never sees the key.
 6. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
+
+Existing installations migrate their own credentials before removing them
+from plugin data. Keep the vault and recovery phrase intact if a storage
+error appears. Check Obsidian's secret storage and reload; do not delete the
+credential reference or repeat server setup. A partially enrolled device
+still needs approval before an existing recovery phrase can restore sync.
+A pending pairing dialog does not resume after app restart. Secret storage is
+shared with other trusted plugins in that vault and is not an OS or plugin
+isolation boundary. Native restart persistence is a separate validation step.
 
 ### 3. Pair your phone
 
@@ -263,10 +275,10 @@ last sign-in, last edit), storage per volume, scrub and garbage-collection
 state, and installation guidance. Revoke a lost device there or
 from the **Devices** list in the plugin settings.
 
-### What syncs and what does not (v0.1)
+### What syncs and what does not
 
 - obsync syncs one person's vault across their own devices. Every device you
-  pair is you, and v0.1 has no second person in it: giving anyone else
+  pair has owner access; the current runtime has no recipient role. Giving anyone else
   access to part of a vault is phase 2 work, gated on the acceptance
   criteria in `docs/architecture.md` section 5.
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced

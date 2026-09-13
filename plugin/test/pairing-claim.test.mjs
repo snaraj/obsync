@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { KEYS, sandbox } from "./fake.mjs";
 
-async function claimant(t, response, onWait = () => {}, beforeKeySave = async () => {}) {
+async function claimant(t, response, onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { PairClaimModal } = box.require(join(box.home, "build/ui/modals.js"));
@@ -16,12 +16,14 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
   const sealed = await pairing.sealEnvelope(secret, id, { vrk: KEYS.vrk });
   const calls = [], saves = [], logs = [];
   let restarted = 0, waits = 0;
-  const plugin = {
-    state: { data: { vrk: null }, save: async () => {
-      const snapshot = { ...plugin.state.data };
-      if (snapshot.vrk !== null) await beforeKeySave({ saves, restartCalls: () => restarted });
+  const state = { data: { vrk: null, serverUrl: "https://sync.example.invalid" }, assertAvailable() {}, save: async () => {
+      const snapshot = { ...state.data };
+      if (snapshot.vrk !== null) await beforeKeySave({ saves, plugin, restartCalls: () => restarted });
       saves.push(snapshot);
-    } },
+    } };
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const plugin = Object.assign(new Plugin(), {
+    state,
     manifest: { version: "0.1.15" }, deviceName: () => "Tablet", platformName: () => "ios",
     log: (line) => logs.push(line), restartEngine: async () => {
       restarted++;
@@ -31,15 +33,16 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
       pairingClaim: async (pairingId, enrollToken) => {
         assert.equal(pairingId, id); assert.equal(enrollToken, token);
         calls.push("claim");
+        await beforeClaim(plugin);
         return { outcome: "ok", value: { device_id: KEYS.deviceId, device_secret: KEYS.deviceSecret } };
       },
       pairingStatus: async () => { calls.push("creator-status"); throw new Error("creator-only route"); },
       pairingEnvelope: async (pairingId) => {
         assert.equal(pairingId, id); calls.push("envelope");
-        return response({ ApiError, sealed, attempt: calls.filter((call) => call === "envelope").length });
+        return response({ ApiError, sealed, plugin, modal, attempt: calls.filter((call) => call === "envelope").length });
       },
     },
-  };
+  });
   const modal = new PairClaimModal({}, plugin, pairing.encodePairingCode(id, token, secret));
   modal.contentEl = { createEl: () => ({}), empty: () => {} };
   modal.close = () => modal.onClose();
@@ -47,11 +50,11 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
   globalThis.window = { setTimeout: (resolve, delay) => {
     assert.equal(delay, 2000);
     assert.ok(++waits <= 3, "terminal outcomes must not poll indefinitely");
-    onWait(modal, waits); resolve();
+    onWait(modal, waits, plugin); resolve();
   } };
   t.after(() => { globalThis.window = previousWindow; });
   await modal.claim();
-  return { calls, saves, logs, notices, restarted, state: plugin.state.data };
+  return { calls, saves, logs, notices, restarted, state: state.data, current: plugin.state.data };
 }
 
 test("a claimant waits on its envelope, then saves the approved key before restarting sync", async (t) => {
@@ -137,4 +140,30 @@ test("closing while waiting leaves the one-time envelope unconsumed", async (t) 
   assert.deepEqual(result.calls, ["claim"]);
   assert.equal(result.state.vrk, null);
   assert.equal(result.restarted, 0);
+});
+
+for (const stage of ["claim", "envelope", "key save"]) {
+  test(`a superseded ${stage} completion cannot adopt credentials or restart the replacement session`, async (t) => {
+    const replacement = { data: { vrk: "replacement sentinel", serverUrl: "https://new.example.invalid" }, save: () => assert.fail("replacement state must not be written") };
+    const replace = (plugin) => { plugin.state = replacement; plugin.lifecycle = {}; };
+    const result = await claimant(t, ({ sealed, plugin }) => {
+      if (stage === "envelope") replace(plugin);
+      return { outcome: "ok", value: sealed };
+    }, undefined, async ({ plugin }) => { if (stage === "key save") replace(plugin); },
+    async (plugin) => { if (stage === "claim") replace(plugin); });
+    assert.deepEqual(result.current, replacement.data);
+    assert.equal(result.restarted, 0);
+    assert.equal(result.saves.length, stage === "claim" ? 0 : stage === "envelope" ? 1 : 2);
+    assert.ok(result.notices.some((notice) => notice.includes("previous plugin session is inactive")));
+  });
+}
+
+test("closing during an already-dispatched envelope preserves its key without starting another session", async (t) => {
+  const result = await claimant(t, ({ sealed, modal }) => {
+    modal.onClose();
+    return { outcome: "ok", value: sealed };
+  });
+  assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
+  assert.equal(result.restarted, 0);
+  assert.deepEqual(result.calls, ["claim", "envelope"]);
 });

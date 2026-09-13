@@ -654,6 +654,9 @@ export default class ObsyncPlugin extends Plugin {
   private statusValue: EngineStatus = { kind: "idle" };
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
+  private stateLoad: Promise<State | null> | null = null;
+  /** Retain stopped writers even after the active engine reference is cleared. */
+  private readonly engineTeardowns = new Set<Promise<void>>();
   private changingScope = false;
   private readonly manualFetches = new Set<Promise<string>>();
   private readonly histories = new Set<HistoryBrowser>();
@@ -667,29 +670,45 @@ export default class ObsyncPlugin extends Plugin {
   override async onload(): Promise<void> {
     const generation = this.lifecycle = {};
     this.changingScope = false;
+    this.teardownEngine();
     // A same-instance reload owns resumption after older writers settle.
     // They may still persist the old State, so wait before taking a snapshot.
-    const settling: Promise<unknown>[] = [...this.manualFetches];
+    const settling: Promise<unknown>[] = [...this.manualFetches, ...this.engineTeardowns];
+    if (this.stateLoad !== null) settling.push(this.stateLoad);
+    if (this.state) settling.push(this.state.settled());
     if (this.manualRestore !== null) settling.push(this.manualRestore);
     if (settling.length !== 0) {
       await Promise.allSettled(settling);
       if (!this.isCurrent(generation)) return;
     }
-    const state = await State.open(this, Platform.isMobile).catch((error: unknown) => {
-      this.log("state decision=refused reason=load_failed");
+    const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
+      if (!this.isCurrent(generation)) return;
+      this.teardownEngine();
+      this.cancelHistories();
+      this.log(`state decision=stopped reason=${error.reason}`);
+      if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
+      new Notice(error.message, 15000);
+    }, () => this.isCurrent(generation)).catch((error: unknown) => {
+      if (!this.isCurrent(generation)) return null;
       throw error;
     });
-    if (!this.isCurrent(generation)) return;
+    const state = await loading;
+    if (this.stateLoad === loading) this.stateLoad = null;
+    if (!this.isCurrent(generation) || state === null) return;
     this.state = state;
     this.host = new ObsidianHost(this);
     this.transport = new Transport({
-      request: (request) => requestUrl(request),
-      serverUrl: () => this.state.data.serverUrl,
+      request: (request) => {
+        state.assertAvailable();
+        if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
+        return requestUrl(request);
+      },
+      serverUrl: () => state.data.serverUrl,
       device: () => {
-        const { deviceId, deviceSecret } = this.state.data;
+        const { deviceId, deviceSecret } = state.data;
         return deviceId && deviceSecret ? { id: deviceId, secret: unhex(deviceSecret) } : null;
       },
-      edgeHeaders: () => this.state.data.edgeHeaders,
+      edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
     });
     this.statusEl = this.addStatusBarItem();
@@ -737,9 +756,7 @@ export default class ObsyncPlugin extends Plugin {
   override onunload(): void {
     this.lifecycle = null;
     this.cancelHistories();
-    const engine = this.engine;
-    this.engine = null;
-    engine?.stop();
+    this.teardownEngine();
   }
 
   private registerVaultEvents(): void {
@@ -789,6 +806,34 @@ export default class ObsyncPlugin extends Plugin {
     return generation !== null && generation === this.lifecycle;
   }
 
+  private teardownEngine(): void {
+    const engine = this.engine;
+    if (engine === null) return;
+    this.engine = null;
+    engine.stop();
+    // stopAndWait drains in-flight work before its final State save. That save
+    // may reject after a storage failure; retain the drain until it settles.
+    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch(() => {
+      this.log("engine decision=stopped reason=teardown_save_failed");
+    });
+    this.engineTeardowns.add(teardown);
+    void teardown.then(() => this.engineTeardowns.delete(teardown));
+  }
+
+  /** Bind asynchronous enrollment/recovery work to the session that issued it. */
+  captureSession(): { state: State; transport: Transport; assertCurrent: () => void } {
+    const generation = this.lifecycle, state = this.state, transport = this.transport;
+    const serverUrl = state.data.serverUrl;
+    const assertCurrent = (): void => {
+      state.assertAvailable();
+      if (!this.isCurrent(generation) || this.state !== state || this.transport !== transport || state.data.serverUrl !== serverUrl) {
+        throw new Error("The previous plugin session is inactive. Its one-time response was not adopted; check the existing enrollment before trying again.");
+      }
+    };
+    assertCurrent();
+    return { state, transport, assertCurrent };
+  }
+
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
     if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
@@ -808,9 +853,8 @@ export default class ObsyncPlugin extends Plugin {
     try {
       await engine.start();
     } catch (error) {
-      engine.stop();
-      if (this.engine !== engine) return;
-      this.engine = null;
+      if (this.engine !== engine) { engine.stop(); return; }
+      this.teardownEngine();
       this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   }
@@ -1009,22 +1053,25 @@ export default class ObsyncPlugin extends Plugin {
    * (`docs/architecture.md` section 8), and keep both locally.
    */
   async saveDeviceSettings(name: string): Promise<void> {
-    const deviceId = this.state.data.deviceId;
+    const { state, transport, assertCurrent } = this.captureSession();
+    const deviceId = state.data.deviceId;
     if (deviceId === null) throw new Error("this device is not paired yet");
     const trimmed = name.trim();
     // An emptied field means "go back to the default", not "keep whatever
     // name I had": the fallback is the DERIVED name, never the stored one.
-    const saved = await this.transport.patchDevice(deviceId, {
+    const saved = await transport.patchDevice(deviceId, {
       name: trimmed === "" ? this.defaultDeviceName() : trimmed,
-      policy: this.state.data.policy,
+      policy: state.data.policy,
     });
+    assertCurrent();
     // A rename is not repeatable, and there is nothing to reconcile against:
     // the name the user typed is not a fact this device can check for, only
     // one the server can confirm. Say so and keep the local copy unchanged,
     // so a retry sends the same thing rather than a half-applied pair.
     if (saved.outcome === "lost") throw new Error(lostMessage("saving this device's settings", saved));
-    this.state.data.deviceName = trimmed === "" ? null : trimmed;
-    await this.state.save();
+    state.data.deviceName = trimmed === "" ? null : trimmed;
+    await state.save();
+    assertCurrent();
     this.log(`device decision=updated name_len=${trimmed.length}`);
   }
 
@@ -1069,35 +1116,44 @@ export default class ObsyncPlugin extends Plugin {
    * path belongs to has exactly one source (`docs/architecture.md` 5.1).
    */
   async adoptVaultKey(vrk: string): Promise<void> {
-    this.state.data.vrk = vrk;
-    await this.state.save();
+    const { state, assertCurrent } = this.captureSession();
+    state.data.vrk = vrk;
+    await state.save();
+    assertCurrent();
     await this.startEngine();
   }
 
   /**
-   * First-time setup: the one-time token the server printed at first boot
+   * First-time setup: the token the server writes privately at first boot
    * creates the account and enrols this device.
    */
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
     try {
-      const enrolled = await this.transport.setup(setupToken, accountName, {
+      const { state, transport, assertCurrent } = this.captureSession();
+      if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
+        throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
+      }
+      const enrolled = await transport.setup(setupToken, accountName, {
         name: this.deviceName(),
         platform: this.platformName(),
         app_version: this.manifest.version,
       });
+      assertCurrent();
       // Setup is not repeatable and the credential it mints exists nowhere
       // else: a lost answer means this device may have been enrolled with a
       // secret it never received. There is nothing to read back without a
-      // credential, so say exactly that. The token is spent either way, and
-      // the server's `409 already_set_up` will say so on the next attempt.
+      // credential, so say exactly that. Setup cannot be repeated; the token
+      // remains the dashboard's recovery sign-in, not a second enrollment.
       if (enrolled.outcome === "lost") throw new Error(lostMessage("creating the account", enrolled));
       const result = enrolled.value;
-      this.state.data.deviceId = result.device_id;
-      this.state.data.deviceSecret = result.device_secret;
-      await this.state.save();
+      state.data.deviceId = result.device_id;
+      state.data.deviceSecret = result.device_secret;
+      await state.save();
+      assertCurrent();
       new Notice("obsync: account created and this device enrolled.");
-      if (this.state.data.vrk === null) {
+      if (state.data.vrk === null) {
         await this.adoptVaultKey(hex(newVaultKey()));
+        assertCurrent();
         new RecoveryPhraseModal(this.app, this, true).open();
       } else {
         await this.startEngine();
@@ -1123,14 +1179,10 @@ export default class ObsyncPlugin extends Plugin {
   // --- update notice -----------------------------------------------------
 
   /**
-   * v0.1 HAS NO SELF-UPDATE, by decision (`docs/architecture.md` 6.3). The
-   * manifest, the bundle and the stylesheet all come from the same
-   * unauthenticated endpoint, so a hostile server or TLS terminator could
-   * replace the bytes AND the hash that is supposed to check them; installing
-   * that would hand it the vault key at the next reload. This device
-   * therefore reads ONE unauthenticated field — the version — and tells the
-   * user to open Obsidian's plugin manager. It never fetches the bundle, and
-   * nothing in this plugin writes into `.obsidian/plugins/`.
+   * Obsidian's native plugin manager owns installation and updates. This
+   * device reads only the server's unauthenticated version metadata and
+   * directs the user to that manager. The server serves no executable plugin
+   * endpoint, and this plugin never writes its own installed code.
    */
   async checkForUpdate(): Promise<void> {
     const generation = this.lifecycle;

@@ -260,6 +260,12 @@ test('dev/mock.mjs answers every endpoint app.js calls', () => {
   assert.deepEqual(missingMockRoutes(APP_JS, MOCK), []);
 });
 
+test('dev/mock.mjs does not advertise retired plugin byte routes', () => {
+  for (const route of ['/v1/plugin/bundle', '/v1/plugin/styles']) {
+    assert.equal(MOCK.includes(route), false, route);
+  }
+});
+
 // The <gc> and <scrub> summaries and the storage scrub object, field for
 // field, as docs/protocol.md pins them under "Dashboard (admin) API". The
 // second half is the half that matters: these are the names this lane read

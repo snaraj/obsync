@@ -1,10 +1,10 @@
-//! The plugin bundle the server ships with, read once at start
+//! Metadata for the plugin bundle the server ships with, read once at start
 //! (`docs/architecture.md` 6.3).
 //!
-//! The three files come from `OBSYNC_PLUGIN_DIR`, are held in memory, and are
-//! hashed once so `GET /v1/plugin/manifest` can pin the bundle a device is
-//! about to install. A deployment without the directory serves `404` and says
-//! so in one log line at start (requirement 12).
+//! The three files come from `OBSYNC_PLUGIN_DIR` and are hashed once for
+//! `GET /v1/plugin/manifest`; only metadata is retained. A deployment without
+//! the directory serves `404` and says so in one log line at start
+//! (requirement 12).
 #![forbid(unsafe_code)]
 
 use std::path::Path;
@@ -22,14 +22,10 @@ pub const BUNDLE_FILE: &str = "main.js";
 /// The plugin stylesheet.
 pub const STYLES_FILE: &str = "styles.css";
 
-/// The loaded bundle, or nothing when the directory is absent or incomplete.
+/// Release metadata, or nothing when the directory is absent or incomplete.
 pub struct PluginDist {
     /// `manifest.json`, parsed, with the two hashes added.
     manifest: Option<Value>,
-    /// `main.js`.
-    bundle: Option<Vec<u8>>,
-    /// `styles.css`.
-    styles: Option<Vec<u8>>,
 }
 
 impl Default for PluginDist {
@@ -39,13 +35,9 @@ impl Default for PluginDist {
 }
 
 impl PluginDist {
-    /// A server with no plugin bundle to serve.
+    /// A server with no plugin metadata to serve.
     pub fn unavailable() -> Self {
-        Self {
-            manifest: None,
-            bundle: None,
-            styles: None,
-        }
+        Self { manifest: None }
     }
 
     /// Read the three files, hash the two assets, and fold the hashes into the
@@ -89,8 +81,6 @@ impl PluginDist {
         );
         Self {
             manifest: Some(Value::Object(fields)),
-            bundle: Some(bundle),
-            styles: Some(styles),
         }
     }
 
@@ -111,17 +101,7 @@ impl PluginDist {
         self.manifest.as_ref()
     }
 
-    /// `main.js`.
-    pub fn bundle(&self) -> Option<&[u8]> {
-        self.bundle.as_deref()
-    }
-
-    /// `styles.css`.
-    pub fn styles(&self) -> Option<&[u8]> {
-        self.styles.as_deref()
-    }
-
-    /// Whether the server has a bundle to serve.
+    /// Whether the server has plugin metadata to serve.
     pub fn is_available(&self) -> bool {
         self.manifest.is_some()
     }

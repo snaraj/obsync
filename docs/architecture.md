@@ -61,9 +61,9 @@ and each request's HMAC. The terminator is therefore inside the trust base
 for CREDENTIALS and outside it for CONTENT. Chunk and manifest bodies are
 ciphertext it cannot read, and no key that would decrypt them travels the
 wire in either direction, so a terminator that recorded everything still
-holds no vault content. The phase-2 X25519 pairing agreement (section 4.4)
-is the fix for the pairing half and is first in line: after it the terminator
-sees only public values there. Nothing removes a terminator from the session
+holds no vault content. A deferred X25519 pairing agreement (section 4.4)
+could remove the terminator from that device-credential exchange; it is not
+implemented by the current protocol. Nothing removes a terminator from the session
 path; reading cookies is what terminating TLS means.
 
 Strip the terminator entirely and the server's own authentication still
@@ -258,7 +258,8 @@ file with mode 0600 elsewhere.
 
 ## 4. Devices, pairing, identity
 
-Obsidian has no identity API, so "signed in" means "this device is paired."
+Signing in to Obsidian does not authorize the self-hosted server. Each device
+explicitly pairs once; ordinary sync then runs automatically.
 
 ### 4.1 First device
 
@@ -291,11 +292,11 @@ that phrase the vault is unrecoverable by design.
    polling this pairing's envelope (`409 not_approved`). A claimant has no
    authority of any kind until step 3.
 3. The paired device polls the pairing, shows "Approve <name> on
-   <platform>?", and on approval encrypts `{VRK, domains}` with `K_pair =
+   <platform>?", and on approval encrypts `{VRK}` with `K_pair =
    HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
    envelope. The server stores it for one fetch.
 4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and stores `VRK` in the plugin's data store. Sync starts. Approval
+   `PS`, and persists `VRK` through the native secret store before sync starts. Approval
    is what activates the device; rejection, or expiry of an unapproved
    pairing, destroys the pending credential.
 
@@ -311,6 +312,58 @@ one an expiry takes.
 The dashboard can display pairing instructions but cannot approve a device:
 it holds no `VRK`. Approval is always from a paired Obsidian instance.
 
+### Device-local credential custody
+
+Obsidian 1.12.4 or newer is required; the vendored official API package is
+pinned separately to 1.12.3. The plugin uses only the public SecretStorage
+`getSecret` and `setSecret` operations for its exact owned entry. A validated,
+random installation ID determines that entry's name. No secret inventory or
+other plugin installation is read or imported.
+
+The entry contains one versioned envelope with current and previous valid
+credential records: vault root key, device secret and optional edge headers,
+bound to the installation, server URL, device ID and a credential revision.
+Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
+selects only the record named by metadata with the matching server/device
+identity; missing, malformed or mismatched data stops loading instead of
+resetting identity or generating another key. Key-only recovery and
+credential-only enrollment are preserved as incomplete states. Approval can
+finish in an already-open pairing dialog. Its pairing code is not persisted,
+so app restart does not resume that dialog. A recovery phrase can restore
+the key after device approval; it does not authorize a pending device.
+
+Existing plaintext settings migrate by writing and reading back the owned
+entry before replacing metadata. Saves use detached snapshots and serialize
+concurrent requests. Bookkeeping-only saves do not rewrite secret bytes.
+Credential changes retain the previous valid record so failed metadata writes
+can reload the prior identity; if metadata actually reached storage despite
+an uncertain acknowledgement, reload selects its recorded new revision.
+Only those two records are retained. Any failure stops the active engine,
+blocks further transport and reports an actionable error until reload. Reload
+waits for earlier metadata writes and migration to settle before reading a
+new snapshot. A stopped engine’s drain remains owned across failure and
+unload until its in-flight work and final save settle; a replacement load
+waits for it even after the active engine reference is cleared. Recovery
+dialogs bind their session when opened, before phrase derivation, and closing
+a dialog invalidates its later UI continuation. Closing cannot undo a local
+write already dispatched by the user’s action. Setup, pairing and key-recovery continuations are bound to the
+state, transport, server URL and plugin session that started them; a
+superseded response cannot overwrite a new session’s identity. Shutdown can
+still lose a one-time server response. Closing a pairing dialog after an
+envelope request was dispatched preserves a received key in the same active
+session, without restarting sync or issuing another collection request.
+An interrupted first migration can leave an unreferenced native entry;
+the plugin never inventories or automatically deletes native secrets.
+
+The public `setSecret` call is synchronous and documents no crash-durable
+transaction with `saveData`. Immediate readback is verification of the host
+API result, not proof of persistence across app or OS failure. Native app
+restart checks remain required on supported platforms. SecretStorage is
+vault-local and shared with other trusted plugins; this does not promise
+universal OS encryption or isolation from those plugins or the local OS.
+See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
+and [API baseline](../plugin/vendor/obsidian/README.md).
+
 ### 4.3 Revocation and recovery
 
 The dashboard and any paired device can revoke a device; the server drops
@@ -320,12 +373,12 @@ device compromise is a phase-2 operation (re-encrypt manifests and
 re-derive domain keys; chunks under a domain whose key is rotated are
 re-uploaded lazily).
 
-### 4.4 Known v1 trade-off and its fix
+### 4.4 Credential transport trade-off
 
-The device secret crosses the TLS terminator once at pairing. Phase 2
-replaces the issued secret with an X25519 agreement (WebCrypto on the
-device, a homegrown constant-time X25519 in `obsync-core`) so the
-terminator sees only public values.
+The device secret crosses the TLS terminator at setup or pairing, so the
+terminator is trusted for credentials. A key-agreement enrollment protocol
+is deferred and requires its own protocol and cryptographic review; it is
+not part of the current authentication path.
 
 ### 4.5 Dashboard sign-in
 
@@ -334,9 +387,8 @@ v1: a paired device mints a single-use dashboard link (`POST
 sign-in, valid for the life of the server and stored only on the journal
 volume.
 Sessions are `HttpOnly`, `SameSite=Strict` cookies with a double-submit
-CSRF header. Phase 2 adds passkeys (WebAuthn): the server gains ECDSA P-256
-verification and a CBOR/COSE subset in `obsync-core`, verify-only, tested
-against the WebAuthn test vectors. YubiKeys are passkeys.
+CSRF header. Passkey sign-in is deferred; the current dashboard does not
+register or authenticate WebAuthn credentials.
 
 ## 5. Sharing (phase 2)
 
@@ -683,13 +735,13 @@ separate from source and isolated tests.
 
 The plugin never installs code it fetched from the server: a server or a
 TLS terminator that could replace both the bytes and the hash it serves
-would otherwise gain the vault key at the next reload. In v0.1 the plugin
+would otherwise gain the vault key at the next reload. The plugin
 only compares its version with `GET /v1/plugin/manifest` on start and
 tells the user when the server runs a newer one. Installation and updates
 use Obsidian's Community Plugins browser, which downloads the three native
-files from the matching GitHub Release. The server still exposes
-`GET /v1/plugin/{manifest,bundle,styles}` for compatibility and diagnostics;
-the plugin never fetches code through them. The release's v2 evidence binds
+files from the matching GitHub Release. The server retains only
+`GET /v1/plugin/manifest` for version metadata; the obsolete bundle and style
+HTTP routes return 404. Packaged files remain build and release inputs. The release's v2 evidence binds
 the individual files to the same ZIP and build as the server. The native
 installer does not document verification of this project's Cosign evidence;
 see `docs/community-plugin.md` for the actual client trust model. A separate
@@ -811,15 +863,15 @@ unless a firewall or the router's forwarding rules refuse it. The compose file r
 defaults it to nothing. `README.md`, "Any network, no provider", is its
 install path.
 
-## 11. Phases
+## 11. Current and deferred scope
 
-1. **v0.1.x — MVP:** core primitives, server (storage, journal, API, feed,
-   GC, scrub, dashboard v1, CLI), plugin (watch, chunk, encrypt, push, pull,
-   conflicts, policy, pairing, version notice), chart, CI, release path,
-   three device validation, first benchmark table.
-2. **v0.2.x:** X25519 pairing, passkeys, signed plugin updates against a
-   pinned key, Cloudflare Access JWT verification from a mounted JWKS,
-   `VRK` rotation, QR pairing codes, and recipients under the section 5
-   acceptance criteria.
-3. **v0.3.x:** replica server mode, size padding option, text compression
-   opt-in, multi-account.
+The implemented runtime provides owner-only encrypted sync, pairing,
+version notices, device policy, history recovery, server storage and a local
+dashboard. Native install/update, app-restart credential persistence and
+multi-device acceptance are separate validation results in `docs/validation.md`.
+
+Key-agreement enrollment, passkeys, vault-key rotation, recipient grants,
+replica servers, size padding and multi-account support are deferred without
+numbered release promises. Sharing remains subject to section 5's acceptance
+criteria. Native Obsidian distribution owns client updates; a separate
+server-fed updater is not part of this design.

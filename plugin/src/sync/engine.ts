@@ -283,7 +283,7 @@ export class SyncEngine {
    * The gate every watcher event and every reconciliation entry passes: a
    * path that is not a canonical relative vault path is not synced, in either
    * direction, and the refusal is visible. This is what keeps `.obsidian/**`
-   * — this plugin's own bundle and its `data.json`, which holds the vault key
+   * — this plugin's own bundle and its bookkeeping `data.json`
    * — and `.git/**` out of the vault's history (`vaultPath.ts`).
    */
   private tracked(path: string, event: string): boolean {
@@ -338,7 +338,10 @@ export class SyncEngine {
       // must not make a restart mistake an unposted rename for unchanged bytes.
       context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
       context.state.forgetPath(from);
-      void context.state.save();
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        this.options.host.log("rename decision=failed reason=state_not_saved");
+      });
     }
     const entry = this.pending.get(from);
     if (entry) {

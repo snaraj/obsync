@@ -289,7 +289,7 @@ pub struct App {
     pub clock: Arc<dyn Clock>,
     /// Static dashboard files, read once at start.
     pub dashboard: Dashboard,
-    /// Plugin bundle, read once at start.
+    /// Plugin release metadata, read once at start.
     pub plugin: PluginDist,
     /// Set by the signal handler; makes `/readyz` false and drains.
     pub shutdown: Arc<AtomicBool>,
@@ -678,8 +678,6 @@ impl App {
             Route::AdminScrubRun => admin::scrub_run(self, req),
             Route::AdminLogs => admin::logs(self, req),
             Route::PluginManifest => plugin::manifest(self),
-            Route::PluginBundle => plugin::bundle(self),
-            Route::PluginStyles => plugin::styles(self),
             Route::DashboardFile(name) => self.dashboard.serve(&name),
         }
     }
@@ -878,10 +876,6 @@ pub enum Route {
     AdminLogs,
     /// `GET /v1/plugin/manifest`
     PluginManifest,
-    /// `GET /v1/plugin/bundle`
-    PluginBundle,
-    /// `GET /v1/plugin/styles`
-    PluginStyles,
     /// A dashboard static file (`index.html`, `app.css`, `app.js`, `lib.js`).
     DashboardFile(String),
 }
@@ -963,8 +957,6 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("GET", ["v1", "admin", "logs"]) => (Route::AdminLogs, "/v1/admin/logs"),
 
         ("GET", ["v1", "plugin", "manifest"]) => (Route::PluginManifest, "/v1/plugin/manifest"),
-        ("GET", ["v1", "plugin", "bundle"]) => (Route::PluginBundle, "/v1/plugin/bundle"),
-        ("GET", ["v1", "plugin", "styles"]) => (Route::PluginStyles, "/v1/plugin/styles"),
 
         ("GET", []) => (Route::DashboardFile("index.html".to_string()), "/"),
         ("GET", [name]) if matches!(*name, "index.html" | "app.css" | "app.js" | "lib.js") => (

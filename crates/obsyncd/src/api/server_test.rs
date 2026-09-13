@@ -2163,14 +2163,11 @@ fn a_device_is_renamed_and_a_control_character_in_a_name_is_refused() {
 }
 
 #[test]
-fn plugin_endpoints_are_absent_without_a_bundle_and_public_with_one() {
+fn plugin_metadata_remains_public_while_byte_routes_are_absent() {
     let bare = Harness::start("plugin-none");
     let res = Req::get("/v1/plugin/manifest").send(bare.addr);
     assert_eq!(res.status, 404);
     assert_eq!(res.code(), "plugin_unavailable");
-    assert_eq!(Req::get("/v1/plugin/bundle").send(bare.addr).status, 404);
-    assert_eq!(Req::get("/v1/plugin/styles").send(bare.addr).status, 404);
-
     let h = Harness::start_with(
         "plugin",
         Setup {
@@ -2182,20 +2179,21 @@ fn plugin_endpoints_are_absent_without_a_bundle_and_public_with_one() {
     assert_eq!(manifest.status, 200, "{}", manifest.text());
     let v = manifest.json();
     assert_eq!(v.get("id").and_then(Value::as_str), Some("obsync"));
-    let bundle_hash = v
-        .get("bundle_sha256")
-        .and_then(Value::as_str)
-        .expect("bundle_sha256")
-        .to_string();
-
-    let bundle = Req::get("/v1/plugin/bundle").send(h.addr);
-    assert_eq!(bundle.status, 200);
     assert_eq!(
-        hex::encode(&sha256::sha256(&bundle.body)),
-        bundle_hash,
-        "the manifest pins it"
+        v.get("bundle_sha256").and_then(Value::as_str),
+        Some(hex::encode(&sha256::sha256(b"export default {};")).as_str())
     );
-    assert_eq!(Req::get("/v1/plugin/styles").send(h.addr).status, 200);
+    assert_eq!(
+        v.get("styles_sha256").and_then(Value::as_str),
+        Some(hex::encode(&sha256::sha256(b".obsync{}")).as_str())
+    );
+    for addr in [bare.addr, h.addr] {
+        for path in ["/v1/plugin/bundle", "/v1/plugin/styles"] {
+            let res = Req::get(path).send(addr);
+            assert_eq!(res.status, 404, "{path}");
+            assert_eq!(res.code(), "not_found", "{path}");
+        }
+    }
 }
 
 #[test]

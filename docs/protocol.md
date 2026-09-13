@@ -253,13 +253,13 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
 
 - `GET /v1/plugin/manifest` → the plugin's `manifest.json` plus
   `{"bundle_sha256":"<64hex>","styles_sha256":"<64hex>"}`.
-- `GET /v1/plugin/bundle` → `main.js`; `GET /v1/plugin/styles` →
-  `styles.css`. Unauthenticated: the bundle is public source. These are a
-  compatibility and diagnostic endpoints. Native installation and updates
-  use Obsidian's Community Plugins browser and the matching GitHub Release;
-  v2 release evidence binds the individual files to the bundle. The plugin
-  never fetches code from these endpoints. The native installer does not
-  document verification of this project's release evidence.
+  This version metadata is unauthenticated.
+- The retired `GET /v1/plugin/bundle` and `GET /v1/plugin/styles` routes
+  return `404 not_found`. Native installation and updates use Obsidian's
+  Community Plugins browser and the matching GitHub Release. Packaged native
+  files and their ZIP remain build/release inputs; v2 release evidence binds
+  their bytes. The plugin never fetches executable code from its server. The
+  native installer does not document verification of this project's evidence.
 
 ## Limits and headers
 
