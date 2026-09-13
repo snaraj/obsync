@@ -38,6 +38,7 @@
  */
 
 import { Bytes, bodyHash, hex, randomBytes, signRequest, unhex, utf8 } from "./crypto";
+import { CHUNK_CIPHERTEXT_MAX } from "./chunker";
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
 
@@ -626,7 +627,7 @@ export class Transport {
   async getChunk(sid: string, control?: ReadControl): Promise<Bytes> {
     const target = `/v1/chunks/${sid}`;
     const response = control
-      ? await this.readOnce(target, control, 8 * 1024 * 1024 + 16)
+      ? await this.readOnce(target, control, CHUNK_CIPHERTEXT_MAX)
       : await this.call("GET", target, { auth: "device" });
     return new Uint8Array(response.arrayBuffer);
   }

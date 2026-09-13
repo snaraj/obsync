@@ -54,14 +54,14 @@ use self::render::s;
 /// JSON request bodies are refused above this size (`docs/protocol.md`,
 /// "Limits and headers").
 pub const JSON_BODY_LIMIT: u64 = 4 * 1024 * 1024;
-/// Chunk upload bodies are refused above this size.
-pub const CHUNK_BODY_LIMIT: u64 = 8 * 1024 * 1024;
+/// Maximum ciphertext: 8 MiB plaintext plus the existing 16-byte AES-GCM tag.
+pub const CHUNK_BODY_LIMIT: u64 = 8 * 1024 * 1024 + 16;
 /// `POST /v1/chunks/exists` accepts at most this many sids.
 pub const EXISTS_MAX_SIDS: usize = 4096;
 /// `POST /v1/chunks/get` accepts at most this many sids.
 pub const MULTIPART_MAX_SIDS: usize = 64;
-/// A batched multipart fetch is refused above this assembled size; the client
-/// falls back to `GET /v1/chunks/{sid}`, which streams.
+/// A batched multipart fetch is refused above this total ciphertext size;
+/// framing is additional. Clients must split larger batches.
 pub const MULTIPART_MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 /// Longest long-poll a change-feed request may ask for, in seconds.
 pub const CHANGES_MAX_WAIT_SECS: u64 = 55;

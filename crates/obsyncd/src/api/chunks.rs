@@ -80,7 +80,7 @@ pub fn put(
         return Err(ApiError::new(
             413,
             "body_too_large",
-            "a chunk is at most 8 MiB",
+            "chunk ciphertext is at most 8 MiB plus the 16-byte authentication tag",
         ));
     }
 
@@ -147,8 +147,8 @@ pub fn get(
 /// response, one part per requested sid in request order.
 ///
 /// A batch whose parts would exceed [`MULTIPART_MAX_TOTAL_BYTES`] is refused
-/// rather than buffered: the client falls back to `GET /v1/chunks/{sid}`,
-/// which streams and never holds a chunk in memory.
+/// rather than buffered: clients must split the request into smaller batches
+/// or use `GET /v1/chunks/{sid}`, which streams.
 ///
 /// # Errors
 /// `400 bad_request`, `413 batch_too_large`, plus the authentication refusals.
