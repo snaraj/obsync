@@ -70,7 +70,7 @@ evidence.
 
 For V16, record the Obsidian version (at least 1.12.4), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
 
-V7 and V12 remain unproven acceptance requirements. The configured concurrent uploads do not establish the V7 retransmission bound. The current scrub reports damage, but an unchanged synced local file is not automatically re-uploaded by reconciliation; V12 therefore requires the repair tracked in [issue #51](https://github.com/snaraj/obsync/issues/51) and live validation before it can pass.
+V7 and V12 remain unproven acceptance requirements. The configured concurrent uploads do not establish the V7 retransmission bound. The client repair implemented for [issue #51](https://github.com/snaraj/obsync/issues/51) must pass the isolated scrub and required native-device scenarios below before V12 can pass; local synthetic tests alone do not establish that result.
 
 For V8, after verifying the original tombstone on the required devices, use
 the native **Restore from history** command, find a retained content version
@@ -80,6 +80,25 @@ other devices. Preserve and compare any current unsynced original before
 and after the action. The deletion marker and original history must remain
 unchanged. A local-copy notice or an operator API script alone does not
 satisfy this native-device evidence.
+
+For V12, use an isolated disposable file and an explicitly authorized storage
+fault; never alter an owner's existing blob merely to exercise this scenario.
+Record whether a healthy mirror repaired the chunk or the server quarantined
+it and removed its SID from inventory. To prove client restoration, keep a
+matching, already synchronized local copy unchanged, observe its automatic
+repair, and verify the restored bytes from another device. Compare the file
+identity, heads, version history and deletion state before and after. Retain
+the scrub/quarantine evidence. A source that is absent or edited must remain
+an explicit unresolved result, not a successful repair.
+
+The background client walk checks one bounded unit per second and rests five
+minutes between walks; **Sync now** advances one unit. Desktop range reads can
+repair chunks of large files. The non-streaming Obsidian adapter, including
+mobile, refuses automatic content reads when the whole local file exceeds
+8 MiB and reports that it needs a matching source on a device with safe range
+reads. Record that capability limitation explicitly; it does not satisfy
+large-file restoration using only non-streaming devices, and it does not
+waive V12 or replace real-device results with a synthetic test.
 
 ## Routes
 

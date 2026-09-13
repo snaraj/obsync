@@ -73,6 +73,7 @@ export class FakeHost {
     /** Paths the host refuses to sync at all, as a symlinked folder is. */
     this.unsyncable = new Set();
     this.isMobile = isMobile;
+    this.supportsRangeReads = !isMobile;
     this.platform = platform;
     this.appVersion = appVersion;
     this.deviceName = deviceName;

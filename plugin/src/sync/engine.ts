@@ -1,9 +1,9 @@
 /**
  * The sync engine, `docs/architecture.md` 6.2 item 1.
  *
- * Three loops share one state: the vault watcher (debounced, guarded
- * against half-written files), the push queue (bounded concurrency), and
- * the change-feed long poll. The engine owns everything Obsidian-shaped
+ * The vault watcher (debounced, guarded against half-written files), push
+ * queue (bounded concurrency), change-feed long poll and incremental chunk
+ * repair share one state. The engine owns everything Obsidian-shaped
  * through the `VaultHost` port, so the whole engine is testable against a
  * hand-written fake vault and a fake transport, with no Obsidian import
  * anywhere under `sync/`.
@@ -47,6 +47,7 @@ import { VaultPathError, vaultPathRefusal } from "../vaultPath";
 import { inSyncScope } from "../syncScope";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
+import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
 export interface VaultStat {
   path: string;
@@ -64,6 +65,8 @@ export interface VaultWriter {
 /** Everything the engine needs from Obsidian, so `sync/` imports none of it. */
 export interface VaultHost {
   readonly isMobile: boolean;
+  /** True only when source() can read a range without buffering the entire file. */
+  readonly supportsRangeReads?: boolean;
   readonly platform: string;
   readonly appVersion: string;
   readonly deviceName: string;
@@ -154,6 +157,10 @@ export class SyncEngine {
   private cancelled = false;
   private feed: Promise<void> | null = null;
   private heartbeatHandle: unknown = null;
+  private repairHandle: unknown = null;
+  private repair: ChunkRepair | null = null;
+  private repairWork: Promise<void> | null = null;
+  private repairNoticeShown = false;
   private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(private readonly options: EngineOptions) {
@@ -243,7 +250,12 @@ export class SyncEngine {
     await this.heartbeat();
     if (!this.running) return;
     await this.reconcile();
-    if (this.running) this.feed = this.track(this.feedLoop());
+    if (this.running) {
+      const context = this.need();
+      this.repair = new ChunkRepair(context, () => this.running && this.contextValue === context);
+      this.repairHandle = this.timers.set(() => { void this.repairTick(); }, REPAIR_TICK_MS);
+      this.feed = this.track(this.feedLoop());
+    }
   }
 
   stop(): void {
@@ -253,6 +265,10 @@ export class SyncEngine {
     this.pending.clear();
     if (this.heartbeatHandle !== null) this.timers.clear(this.heartbeatHandle);
     this.heartbeatHandle = null;
+    if (this.repairHandle !== null) this.timers.clear(this.repairHandle);
+    this.repairHandle = null;
+    this.repair?.cancel();
+    this.repair = null;
     this.options.host.log("engine stop");
     this.status({ kind: "idle" });
   }
@@ -589,6 +605,54 @@ export class SyncEngine {
   async syncNow(): Promise<void> {
     await this.reconcile();
     await this.drain();
+    await this.repairTick();
+  }
+
+  /** One worker shared by the timer and Sync now; dispatched writes are drained on stop. */
+  private repairTick(): Promise<void> {
+    if (this.repairWork !== null) return this.repairWork;
+    if (!this.running || this.repair === null) return Promise.resolve();
+    if (this.repairHandle !== null) this.timers.clear(this.repairHandle);
+    this.repairHandle = null;
+    const repair = this.repair;
+    const work = this.track(this.repairStep(repair));
+    this.repairWork = work;
+    const clear = (): void => { if (this.repairWork === work) this.repairWork = null; };
+    void work.then(clear, clear);
+    return work;
+  }
+
+  private async repairStep(repair: ChunkRepair): Promise<void> {
+    let delay = REPAIR_TICK_MS;
+    const host = this.options.host;
+    const started = this.nowFn();
+    const budget = (): string => `budget_sids=${REPAIR_BATCH_SIDS} budget_chunks=1 duration_ms=${this.nowFn() - started}`;
+    try {
+      const result = await repair.step();
+      if (!this.running || this.repair !== repair) return;
+      if (result.kind === "idle") delay = REPAIR_SCAN_MS;
+      if (result.kind === "repaired") host.log(`repair decision=verified bytes=${result.bytes} ${budget()}`);
+      else if (result.kind !== "unresolved") host.log(`repair decision=${result.kind} ${budget()}`);
+      if (result.kind === "unresolved") {
+        host.log(`repair decision=unresolved reason=${result.reason} ${budget()}`);
+        const message = result.reason === "range_read_unavailable"
+          ? "Server repair needs a device with safe file-range reads for a file larger than 8 MiB. Keep a synced desktop online; this device cannot automatically supply that file."
+          : "Server repair could not restore a missing chunk from this device's current files. Keep another synced device online and check the server scrub report.";
+        this.status({ kind: "error", message });
+        if (!this.repairNoticeShown) { host.notify(`obsync: ${message}`); this.repairNoticeShown = true; }
+      }
+    } catch {
+      // Do not expose a source path or untrusted transport/manifest error.
+      if (this.running && this.repair === repair) {
+        host.log(`repair decision=deferred reason=read_or_write_failed ${budget()}`);
+        this.status({ kind: "error", message: "Server repair could not verify a retained file. It will retry; check connectivity and the server scrub report." });
+        delay = REPAIR_SCAN_MS;
+      }
+    } finally {
+      if (this.running && this.repair === repair) {
+        this.repairHandle = this.timers.set(() => { void this.repairTick(); }, delay);
+      }
+    }
   }
 
   private async heartbeat(): Promise<void> {

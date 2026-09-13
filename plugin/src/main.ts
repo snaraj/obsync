@@ -236,6 +236,10 @@ export class ObsidianHost implements VaultHost {
     return Platform.isMobile;
   }
 
+  get supportsRangeReads(): boolean {
+    return this.desktop !== null;
+  }
+
   get platform(): string {
     return this.plugin.platformName();
   }

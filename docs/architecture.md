@@ -731,6 +731,48 @@ its retries cannot delay the local-copy receipt. That notice does not claim
 remote sync. Native desktop/mobile validation and V8 evidence remain
 separate from source and isolated tests.
 
+### 6.2.3 Automatic restoration after scrub quarantine
+
+After scrub quarantines a bad primary chunk without a healthy mirror, the
+server removes that SID from its inventory. Each running client walks its
+remembered, selected local versions independently of watcher events and
+`(mtime, size)` reconciliation. It authenticates the exact retained version
+and manifest, then asks which of its SIDs are absent. A healthy file requires
+no local content read. A missing chunk is regenerated from its authenticated
+offset and length only when the current local record, selection and stat
+still match. Its CID and SID must match the retained manifest before the
+signed, idempotent ciphertext PUT; an exact SID readback is required before
+the client reports restoration. No version, tombstone, file identity, feed
+cursor or selection is changed by this worker, and server quarantine evidence
+is retained.
+
+Work is incremental: at most one retained-version metadata read, 64 chunk
+entries audited, and one chunk restored per step. The authenticated manifest
+stays in memory across that file's batches. Steps run one second apart during
+a walk, with five minutes between complete walks; **Sync now** advances one
+step immediately. Completion time therefore depends on the number of files,
+chunk batches, missing chunks and request latency. There is one repair worker
+per engine, and stopping the engine cancels further work and drains an
+already dispatched write before a replacement engine starts.
+
+The host declares whether it can serve bounded ranges without buffering the
+whole file. The native desktop filesystem host can; the Obsidian adapter
+fallback, including mobile, cannot. Automatic repair on that fallback reads
+only files whose entire size fits `CHUNK_MAX` (8 MiB). Larger missing-file
+sources produce a visible capability refusal before any content read; a
+synced desktop with range access is needed to supply them. This is a bound on
+new background work, not a changed upload/download policy or an 8 MiB process
+memory claim. Ordinary uploads retain their existing behavior. Automatic
+repair of larger files using only non-streaming devices remains unsupported.
+
+An absent, edited or unreadable source is not reconstructed or silently
+marked healthy. The client reports an unresolved repair or a deferred
+verification, without logging a clear path or content. A later walk can
+retry after another matching source becomes available. This walk covers the
+versions remembered by this device; it is not a global retained-history loss
+audit. Server scrub/mirror results and actual native multi-device restoration
+remain separate acceptance evidence.
+
 ### 6.3 Updates
 
 The plugin never installs code it fetched from the server: a server or a
