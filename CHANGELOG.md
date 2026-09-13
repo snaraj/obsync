@@ -4,6 +4,20 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.17 - Unreleased
+
+- Automatically audit remembered selected-file chunks and restore missing
+  ciphertext from an intact local copy after scrub quarantine. Authenticate
+  the retained manifest, preserve chunk identity, and verify restored bytes
+  without creating another file version or changing history or tombstones.
+- Bound each repair step to 64 chunk entries and at most one chunk upload;
+  share one tracked worker between the background timer and Sync now, cancel
+  reads on stop, and drain already dispatched writes before replacement loads.
+- Report unavailable or changed repair sources. Devices without bounded range
+  reads refuse automatic reads of source files above 8 MiB; larger files need
+  a matching source on a device with bounded range reads. Native-device V12
+  acceptance remains a separate validation requirement.
+
 ## 0.1.16 - Unreleased
 
 - Fix native provenance verification by using the exact certificate identity
