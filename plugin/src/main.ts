@@ -655,6 +655,8 @@ export default class ObsyncPlugin extends Plugin {
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
   private stateLoad: Promise<State | null> | null = null;
+  /** Retain stopped writers even after the active engine reference is cleared. */
+  private readonly engineTeardowns = new Set<Promise<void>>();
   private changingScope = false;
   private readonly manualFetches = new Set<Promise<string>>();
   private readonly histories = new Set<HistoryBrowser>();
@@ -668,11 +670,11 @@ export default class ObsyncPlugin extends Plugin {
   override async onload(): Promise<void> {
     const generation = this.lifecycle = {};
     this.changingScope = false;
+    this.teardownEngine();
     // A same-instance reload owns resumption after older writers settle.
     // They may still persist the old State, so wait before taking a snapshot.
-    const settling: Promise<unknown>[] = [...this.manualFetches];
+    const settling: Promise<unknown>[] = [...this.manualFetches, ...this.engineTeardowns];
     if (this.stateLoad !== null) settling.push(this.stateLoad);
-    if (this.engine !== null) settling.push(this.engine.stopAndWait());
     if (this.state) settling.push(this.state.settled());
     if (this.manualRestore !== null) settling.push(this.manualRestore);
     if (settling.length !== 0) {
@@ -681,8 +683,7 @@ export default class ObsyncPlugin extends Plugin {
     }
     const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
       if (!this.isCurrent(generation)) return;
-      this.engine?.stop();
-      this.engine = null;
+      this.teardownEngine();
       this.cancelHistories();
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
@@ -755,9 +756,7 @@ export default class ObsyncPlugin extends Plugin {
   override onunload(): void {
     this.lifecycle = null;
     this.cancelHistories();
-    const engine = this.engine;
-    this.engine = null;
-    engine?.stop();
+    this.teardownEngine();
   }
 
   private registerVaultEvents(): void {
@@ -807,6 +806,20 @@ export default class ObsyncPlugin extends Plugin {
     return generation !== null && generation === this.lifecycle;
   }
 
+  private teardownEngine(): void {
+    const engine = this.engine;
+    if (engine === null) return;
+    this.engine = null;
+    engine.stop();
+    // stopAndWait drains in-flight work before its final State save. That save
+    // may reject after a storage failure; retain the drain until it settles.
+    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch(() => {
+      this.log("engine decision=stopped reason=teardown_save_failed");
+    });
+    this.engineTeardowns.add(teardown);
+    void teardown.then(() => this.engineTeardowns.delete(teardown));
+  }
+
   /** Bind asynchronous enrollment/recovery work to the session that issued it. */
   captureSession(): { state: State; transport: Transport; assertCurrent: () => void } {
     const generation = this.lifecycle, state = this.state, transport = this.transport;
@@ -840,9 +853,8 @@ export default class ObsyncPlugin extends Plugin {
     try {
       await engine.start();
     } catch (error) {
-      engine.stop();
-      if (this.engine !== engine) return;
-      this.engine = null;
+      if (this.engine !== engine) { engine.stop(); return; }
+      this.teardownEngine();
       this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   }

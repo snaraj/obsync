@@ -364,6 +364,7 @@ export class RecoveryPhraseModal extends Modal {
 /** Restore a vault key from its 24 words, or start a brand-new vault. */
 export class VaultKeyModal extends Modal {
   private phrase = "";
+  private opened: object | null = null;
 
   constructor(
     app: App,
@@ -373,6 +374,14 @@ export class VaultKeyModal extends Modal {
   }
 
   override onOpen(): void {
+    const opened = this.opened = {};
+    let session: ReturnType<ObsyncPlugin["captureSession"]>;
+    try { session = this.plugin.captureSession(); }
+    catch (error) { fail(error); return; }
+    const assertCurrent = (): void => {
+      session.assertCurrent();
+      if (this.opened !== opened) throw new Error("This vault-key dialog was closed. Open it again before restoring a key.");
+    };
     this.setTitle("Vault key");
     this.contentEl.createEl("p", {
       text: "Start a new vault key on this device, or restore one from its 24-word recovery phrase. A new key means a new vault: existing devices will not read it.",
@@ -384,31 +393,35 @@ export class VaultKeyModal extends Modal {
     );
     new Setting(this.contentEl)
       .addButton((button) =>
-        button.setButtonText("Restore").onClick(() => {
-          void (async () => {
-            try {
-              const entropy = await entropyFromPhrase(normalisePhrase(this.phrase));
-              await this.plugin.adoptVaultKey(hex(entropy));
-              new Notice("obsync: vault key restored.");
-              this.close();
-            } catch (error) {
-              fail(error);
-            }
-          })();
+        button.setButtonText("Restore").onClick(async () => {
+          try {
+            assertCurrent();
+            const entropy = await entropyFromPhrase(normalisePhrase(this.phrase));
+            assertCurrent();
+            await this.plugin.adoptVaultKey(hex(entropy));
+            assertCurrent();
+            new Notice("obsync: vault key restored.");
+            this.close();
+          } catch (error) {
+            fail(error);
+          }
         }),
       )
       .addButton((button) =>
-        button.setButtonText("Create a new vault key").onClick(() => {
-          void (async () => {
+        button.setButtonText("Create a new vault key").onClick(async () => {
+          try {
+            assertCurrent();
             await this.plugin.adoptVaultKey(hex(newVaultKey()));
+            assertCurrent();
             this.close();
             new RecoveryPhraseModal(this.app, this.plugin, true).open();
-          })();
+          } catch (error) { fail(error); }
         }),
       );
   }
 
   override onClose(): void {
+    this.opened = null;
     this.contentEl.empty();
   }
 }

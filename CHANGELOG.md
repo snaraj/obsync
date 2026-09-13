@@ -15,7 +15,9 @@ advances exactly one patch (AGENTS.md, requirement 10).
   SecretStorage entry, keeping only a reference and bookkeeping in plugin
   data. Migrate existing settings after verified secret writes, retain a
   bounded prior credential record for interrupted updates, and stop sync on
-  unavailable or unverified persistence. Require Obsidian 1.12.4 or newer.
+  unavailable or unverified persistence. Bind recovery dialogs before phrase
+  derivation and drain stopped engine work before replacement loads. Require
+  Obsidian 1.12.4 or newer.
 - Remove obsolete server plugin-code download endpoints. Native Community
   Plugins installation and updates remain the supported distribution path;
   packaged assets and historical release verification remain intact.

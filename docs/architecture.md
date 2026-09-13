@@ -341,7 +341,12 @@ an uncertain acknowledgement, reload selects its recorded new revision.
 Only those two records are retained. Any failure stops the active engine,
 blocks further transport and reports an actionable error until reload. Reload
 waits for earlier metadata writes and migration to settle before reading a
-new snapshot. Setup, pairing and key-recovery continuations are bound to the
+new snapshot. A stopped engine’s drain remains owned across failure and
+unload until its in-flight work and final save settle; a replacement load
+waits for it even after the active engine reference is cleared. Recovery
+dialogs bind their session when opened, before phrase derivation, and closing
+a dialog invalidates its later UI continuation. Closing cannot undo a local
+write already dispatched by the user’s action. Setup, pairing and key-recovery continuations are bound to the
 state, transport, server URL and plugin session that started them; a
 superseded response cannot overwrite a new session’s identity. Shutdown can
 still lose a one-time server response. Closing a pairing dialog after an
