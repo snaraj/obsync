@@ -1491,6 +1491,94 @@ fn a_chunk_uploads_downloads_and_serves_a_range() {
 }
 
 #[test]
+fn maximal_ciphertext_uploads_and_one_extra_byte_is_refused() {
+    let h = Harness::start("ciphertext-ceiling");
+    let cred = h.setup_account();
+    // Independent wire bound, not the implementation constant under test.
+    let body = vec![0x51; 8 * 1024 * 1024 + 16];
+    let (_, sid) = chunk(&body);
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+    let get = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(get.status, 200);
+    assert_eq!(get.body, body);
+
+    let oversized = vec![0x52; body.len() + 1];
+    let (_, refused_sid) = chunk(&oversized);
+    let req = Req::new("PUT", &format!("/v1/chunks/{refused_sid}")).sign_with(
+        &cred,
+        NOW,
+        &nonce(),
+        &refused_sid,
+    );
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    let mut head = format!("PUT {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        oversized.len()
+    ));
+    // An early refusal may close the socket while the complete ordinary body
+    // is still being sent. Read its decision concurrently instead of making
+    // a successful client write a prerequisite for observing that decision.
+    let mut writer = stream.try_clone().expect("writer");
+    let send = std::thread::spawn(move || {
+        writer.write_all(head.as_bytes())?;
+        writer.write_all(&oversized)
+    });
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw) {
+        // Some platforms reset after delivering the early refusal with
+        // unread request bytes. The complete parsed decision is still required.
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    let _ = send.join().expect("writer joined");
+    let refused = Res::parse(&raw);
+    assert_eq!(refused.status, 413, "{}", refused.text());
+    assert_eq!(refused.code(), "body_too_large");
+    assert!(refused.text().contains("16-byte authentication tag"));
+    let absent = Req::get(&format!("/v1/chunks/{refused_sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(absent.status, 404, "refused bytes were not stored");
+}
+
+#[test]
+fn multipart_ciphertext_budget_accepts_exactly_32_mib_and_refuses_more() {
+    let h = Harness::start("multipart-ceiling");
+    let cred = h.setup_account();
+    for (length, expected) in [(8 * 1024 * 1024, 200), (8 * 1024 * 1024 + 16, 413)] {
+        let body = vec![0x53; length];
+        let (_, sid) = chunk(&body);
+        let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+            .raw_body(&body)
+            .sign_with(&cred, NOW, &nonce(), &sid)
+            .send(h.addr);
+        assert_eq!(put.status, 201, "{}", put.text());
+        let res = Req::post("/v1/chunks/get")
+            .body(&format!(r#"{{"sids":["{sid}","{sid}","{sid}","{sid}"]}}"#))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, expected, "length={length}");
+        if expected == 200 {
+            assert!(res.body.len() > 32 * 1024 * 1024, "framing is additional");
+        } else {
+            assert_eq!(res.code(), "batch_too_large");
+        }
+    }
+}
+
+#[test]
 fn a_body_that_does_not_hash_to_the_sid_is_refused() {
     let h = Harness::start("chunk-mismatch");
     let cred = h.setup_account();

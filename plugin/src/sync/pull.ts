@@ -57,7 +57,7 @@
  */
 
 import type { SyncContext } from "./engine";
-import { CHUNK_MAX, CHUNK_MIN } from "../chunker";
+import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
 import {
   Bytes,
   contentVersionId,
@@ -79,13 +79,13 @@ import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
- * chunk ceiling, never from the lengths a manifest declares: a declared length
+ * ciphertext ceiling including its authentication tag, never from the lengths a manifest declares: a declared length
  * is a number another device chose, so budgeting by it would let a chunk list
  * of zeros pull 64 maximum-size chunks into one 32 MiB budget. The wire cap is
  * 64 sids (`transport.ts`); this one is lower and is the one that holds.
  */
 const BATCH_BYTES = 32 << 20;
-const BATCH_SIDS = Math.max(1, Math.floor(BATCH_BYTES / CHUNK_MAX));
+const BATCH_SIDS = Math.max(1, Math.floor(BATCH_BYTES / CHUNK_CIPHERTEXT_MAX));
 
 export type ApplyResult =
   | "echo"

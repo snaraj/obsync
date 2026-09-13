@@ -4,6 +4,13 @@ All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one patch (AGENTS.md, requirement 10).
 
+## 0.1.18 - Unreleased
+
+- Accept maximal encrypted chunks within the fixed 8 MiB plaintext plus
+  16-byte authentication-tag upload ceiling. Budget pulls by ciphertext size
+  so three maximal chunks fit the unchanged 32 MiB multipart payload ceiling.
+  Preserve chunk identities, history and ordinary four-upload concurrency.
+
 ## 0.1.17 - Unreleased
 
 - Automatically audit remembered selected-file chunks and restore missing

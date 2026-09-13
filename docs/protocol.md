@@ -153,7 +153,8 @@ retain the account-wide authority described below.
 - `POST /v1/chunks/exists` `{"sids":["<64hex>",…]}` (≤ 4096) → `{"missing":
   ["<64hex>",…]}`.
 - `PUT /v1/chunks/{sid}` body = raw ciphertext, `Content-Length` required,
-  ≤ 8 MiB. The server hashes while streaming to a temp file and refuses
+  ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
+  declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
   the watermark, `507 quota_exceeded` over the account quota. Success `201`
   (new) or `200` (already present). Idempotent.
@@ -162,7 +163,11 @@ retain the account-wide authority described below.
 - `POST /v1/chunks/get` `{"sids":[…]}` (≤ 64) → `multipart/mixed`, one
   part per sid in request order, each with `X-Obsync-Sid` and
   `Content-Length`; a missing sid yields a zero-length part with
-  `X-Obsync-Missing: 1`. Cuts request count over a proxied hop.
+  `X-Obsync-Missing: 1`. The sum of stored ciphertext lengths must be
+  ≤ 32 MiB, excluding multipart framing, or the response is `413 batch_too_large`.
+  Clients budget by the ciphertext maximum: the plugin fetches at most three
+  chunks per batch, while ordinary upload concurrency remains four on desktop.
+  Cuts request count over a proxied hop.
 
 ## Files and versions
 
@@ -263,7 +268,8 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
 
 ## Limits and headers
 
-- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB; chunk bodies ≤ 8 MiB.
+- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB; chunk ciphertext
+  bodies ≤ 8 MiB + 16 bytes.
 - Heads per file record ≤ 64; versions per file record ≤
   `OBSYNC_RETENTION_VERSIONS` plus one per head; sids per version ≤ 65,536;
   parents per version ≤ 64; `manifest_ct` ≤ 1 MiB of base64.

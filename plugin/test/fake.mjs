@@ -307,6 +307,9 @@ export class FakeServer {
     }
     if (path === "/v1/chunks/get") {
       const { sids } = json();
+      if (sids.reduce((total, sid) => total + (this.chunks.get(sid)?.length ?? 0), 0) > 32 * 1024 * 1024) {
+        return this.error(413, "batch_too_large");
+      }
       const boundary = "obsyncfake";
       const parts = [];
       for (const sid of sids) {
@@ -328,6 +331,7 @@ export class FakeServer {
     if (path.startsWith("/v1/chunks/")) {
       const sid = path.slice("/v1/chunks/".length);
       if (request.method === "PUT") {
+        if (body.length > 8 * 1024 * 1024 + 16) return this.error(413, "body_too_large");
         if (sha256(body) !== sid) return this.error(422, "sid_mismatch", "the body does not hash to its sid");
         this.chunks.set(sid, new Uint8Array(body));
         return this.json(201, {});

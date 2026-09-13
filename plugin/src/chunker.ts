@@ -33,6 +33,8 @@ import { Bytes, concat, sha256, utf8 } from "./crypto";
 export const CHUNK_MIN = 1 << 20;
 export const CHUNK_TARGET = 4 << 20;
 export const CHUNK_MAX = 8 << 20;
+/** Wire bytes include the existing 128-bit AES-GCM authentication tag. */
+export const CHUNK_CIPHERTEXT_MAX = CHUNK_MAX + 16;
 export const GEAR_SEED = "obsync/v1/gear";
 /** Top 22 bits of a 32-bit word: one expected cut per `CHUNK_TARGET` bytes. */
 export const GEAR_MASK = 0xfffffc00;

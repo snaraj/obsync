@@ -319,6 +319,19 @@ test("a batched chunk fetch maps parts back to nulls for missing sids", async ()
   assert.equal(bodies[1], null);
 });
 
+test("controlled chunk reads accept the existing tag and reject one extra ciphertext byte", async () => {
+  const maximum = 8 * 1024 * 1024 + 16;
+  const body = new Uint8Array(maximum).fill(81);
+  const { transport, sent } = harness([
+    { status: 200, body: body.buffer },
+    { status: 200, body: new ArrayBuffer(maximum + 1) },
+  ]);
+  const control = { check() {}, wait: (work) => work };
+  assert.deepEqual(await transport.getChunk(SID, control), body);
+  await assert.rejects(transport.getChunk(SID, control), (error) => error.code === "response_too_large");
+  assert.equal(sent.length, 2, "the refused read was not retried");
+});
+
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);
