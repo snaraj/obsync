@@ -246,8 +246,7 @@ test("multi-chunk restore uses bounded verified batches and ordinary engine reco
   assert.deepEqual(parts, new Array(5).fill(2 << 20));
   assert.deepEqual(Buffer.from(r.host.files.get(stat.path).bytes), Buffer.concat(original));
   const batches = r.server.requests.filter((q) => q.target === "/v1/chunks/get");
-  assert.equal(batches.length, 1);
-  assert.equal(JSON.parse(batches[0].json).sids.length, 4);
+  assert.deepEqual(batches.map((q) => JSON.parse(q.json).sids.length), [3, 2]);
   const timers = new FakeTimers();
   const feed = deferred();
   r.transport.changes = async () => feed.promise;

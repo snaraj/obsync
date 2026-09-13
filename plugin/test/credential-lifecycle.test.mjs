@@ -21,7 +21,7 @@ async function fixture(t, initial = null) {
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
-  instance.manifest = { version: "0.1.17" };
+  instance.manifest = { version: "0.1.18" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };
   instance.log = (line) => logs.push(line);

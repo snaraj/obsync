@@ -437,12 +437,48 @@ test("a consistent manifest still applies, single chunk and many", async () => {
   assert.equal(state.fileByPath("Attachments/big.bin").versionId, pushed.versionId);
 
   // The memory bound, measured rather than asserted in a comment: a batch is
-  // capped at 32 MiB / CHUNK_MAX = 4 chunks, counted at the CEILING, so this
+  // capped at floor(32 MiB / (CHUNK_MAX + 16)) = 3 chunks, counted at the CEILING, so this
   // file takes two requests. Budgeting by the declared lengths would have put
   // all five (21 MiB declared) into one, and a chunk list of zeros into one
   // of 64.
   const batches = fetchSizes(server.requests.slice(before));
-  assert.deepEqual(batches, [4, 1], `two fetches, capped by count: ${batches.join(",")}`);
+  assert.deepEqual(batches, [3, 2], `two fetches, capped by count: ${batches.join(",")}`);
+});
+
+test("four distinct maximal encrypted chunks fit bounded pulls with the existing tag", async () => {
+  const { host, server, state, context } = await rig();
+  const original = new Uint8Array(4 * CHUNK_MAX);
+  for (let i = 0; i < 4; i++) original.fill(17 * (i + 1), i * CHUNK_MAX, (i + 1) * CHUNK_MAX);
+  host.seed("Attachments/maximal.bin", original, 1000);
+  const pushed = await pushFile(context, "Attachments/maximal.bin");
+  assert.equal(pushed.status, "pushed");
+  const frame = server.journal.find((entry) => entry.version_id === pushed.versionId);
+  assert.equal(new Set(frame.sids).size, 4, "ordinary CDC produces four distinct chunks");
+  assert.deepEqual(frame.sids.map((sid) => server.chunks.get(sid).length), new Array(4).fill(8 * 1024 * 1024 + 16));
+  await assert.rejects(context.transport.getChunks(frame.sids), (error) => error.code === "batch_too_large");
+  state.forgetPath("Attachments/maximal.bin");
+  host.files.delete("Attachments/maximal.bin");
+  const written = [];
+  const create = host.writer.bind(host);
+  host.writer = async (...args) => {
+    const writer = await create(...args);
+    return { ...writer, write: async (part) => { written.push(part.length); await writer.write(part); } };
+  };
+  const before = server.requests.length;
+  assert.equal(await applyChange(context, { ...frame, device_id: OTHER_DEVICE }), "applied");
+  assert.deepEqual(fetchSizes(server.requests.slice(before)), [3, 1]);
+  assert.deepEqual(written, new Array(4).fill(CHUNK_MAX));
+  assert.deepEqual(host.files.get("Attachments/maximal.bin").bytes, original);
+  assert.equal(state.fileByPath("Attachments/maximal.bin").versionId, pushed.versionId);
+  assert.equal(server.files.get(frame.file_id).versions.length, 1);
+});
+
+test("the fake wire contract rejects one byte above the ciphertext upload ceiling", async () => {
+  const { server, context } = await rig();
+  const body = new Uint8Array(8 * 1024 * 1024 + 17).fill(81);
+  const sid = c.hex(await c.sha256(body));
+  await assert.rejects(context.transport.putChunk(sid, body), (error) => error.code === "body_too_large");
+  assert.equal(server.chunks.has(sid), false);
 });
 
 test("what an honest device posts is exactly what its manifest says", async () => {
