@@ -120,7 +120,10 @@ Numbered for citation, repo-scoped, none negotiable in code:
    wave, 2026-09-07).
 10. **Every artifact merge releases after the gate; deploy remains
     separate.** Every PR whose range touches any artifact surface advances
-    exactly one patch from its current protected base in ALL lockstep locks:
+    exactly one SemVer STEP from its current protected base — one patch
+    (`X.Y.Z+1`), one minor (`X.Y+1.0`), or one major (`X+1.0.0`), never a
+    skip and never a step that leaves a field below the advanced one
+    non-zero — in ALL lockstep locks:
     `VERSION`, the workspace `version` in `Cargo.toml`, chart `version` and
     `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
     root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
@@ -337,12 +340,13 @@ is evidence, never authority.
 - **Commits.** Detailed bodies to the review evidence standard: problem,
   mechanism, enumerated changes, evidence, `+/−` accounting, signed per lane.
 - **Dependabot** covers `github-actions` and `docker` only; there is no
-  package ecosystem to update. Dependency PRs obey the same next-patch,
+  package ecosystem to update. Dependency PRs obey the same release-step,
   changelog, exact-head review, and base-freshness controls.
 - **Merge readiness.** Draft remains Draft until every check is green at the
   exact head, the base equals current `main`, all findings are resolved, a
-  fresh exact-head APPROVE receipt exists, the next patch still follows that
-  base for an artifact PR, and the automatic release consequence is proven.
+  fresh exact-head APPROVE receipt exists, the next release step still follows
+  that base for an artifact PR, and the automatic release consequence is
+  proven.
   Only the coordinator flips Ready.
 
 ## Parallel agents in one checkout
@@ -366,10 +370,10 @@ Several agents work this repository at once. Git worktrees under
 2. **Branch from `origin/main`** after `git fetch origin`; grammar
    `<lane>-<effort>/<issue#>-<topic>` (e.g. `opus5-high/12-storage-engine`),
    effort in `low | med | high | xhigh | max`. A branch with no issue states
-   why in its PR body. Reserve the exact next patch when the change touches
-   any artifact surface. If another PR lands first, re-cut a fresh branch
-   from current `main`, carry the diff, take the new next patch, supersede
-   the stale PR; never rewrite published history.
+   why in its PR body. Reserve the exact next release step when the change
+   touches any artifact surface. If another PR lands first, re-cut a fresh
+   branch from current `main`, carry the diff, take the new release step,
+   supersede the stale PR; never rewrite published history.
 3. **Build the change** inside the requirements. Mutate every guard you
    add before hand-off: delete or invert it locally, prove the suite goes
    red, restore. The reviewer's mutation matrix is the second pass.

@@ -161,7 +161,7 @@ jobs:
               ;;
           esac
           printf 'class=%s\n' "${claimed_class}" >> "${GITHUB_OUTPUT}"
-      - name: Bind event, source, and exact next patch
+      - name: Bind event, source, and exact release step
         if: steps.classify.outputs.class == 'artifact'
         id: release
         env:
