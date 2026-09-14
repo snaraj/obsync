@@ -21,7 +21,7 @@
  * mobile reads whole files through the vault adapter.
  */
 
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes } from "../policy";
 import { ConfirmModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
@@ -143,7 +143,18 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc("Saving waits for active transfers and then rescans. Removed folders and their history are kept. After sync has started, this selection can only be narrowed. To sync more local files in this vault, move them into an already selected folder and run Sync now. A different selection needs a fresh vault configured before pairing. Previously shared content remains readable by paired devices.")
       .addButton((button) => button.setButtonText("Save on this device").onClick(() => {
         button.setDisabled(true).setButtonText("Waiting for transfers…");
-        const next = selected ? text.split(/\r?\n/).filter((line) => line !== "") : undefined;
+        // The host's own path normalisation, on what a PERSON typed here: a
+        // leading or trailing slash, a doubled separator and a backslash are
+        // typos the host canonicalises, not refusals worth discarding the
+        // whole selection for. Blank lines are dropped before normalising so
+        // nothing empty is ever handed to it. A path that arrives from
+        // ANOTHER DEVICE is never normalised -- `vaultPath` refuses those
+        // shapes outright -- and whatever comes back here still goes through
+        // `parseSyncFolders`, so `/`, `..` and every hidden segment stay
+        // refused.
+        const next = selected
+          ? text.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => normalizePath(line))
+          : undefined;
         void this.plugin.saveSyncFolders(next).then(() => {
           new Notice("obsync: folder selection saved on this device.");
           this.display();

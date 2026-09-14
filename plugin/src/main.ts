@@ -624,9 +624,14 @@ export class ObsidianHost implements VaultHost {
       found = await this.confine(desktop, path, ["absent", "file"]);
       if (found.final === "absent") return;
     }
-    const file = this.plugin.app.vault.getAbstractFileByPath(path);
+    // `FileManager.trashFile` honours the user's own "Deleted files"
+    // preference -- system bin, the vault's `.trash`, or permanent -- where
+    // `Vault.trash(file, true)` overrode it with the system bin. The file
+    // lookup is file-only on purpose: a folder standing where a remote
+    // manifest names a file must never be deleted with its contents.
+    const file = this.plugin.app.vault.getFileByPath(path);
     if (file) {
-      await this.plugin.app.vault.trash(file, true);
+      await this.plugin.app.fileManager.trashFile(file);
     } else {
       await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
     }

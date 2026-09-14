@@ -5,15 +5,35 @@ One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-> Status: pre-release. Native directory installation and v1 device acceptance are pending.
+Listed in Obsidian's community plugin directory as **Self Hosted Private
+Sync** (plugin id `obsync-private-sync`): install it from Settings →
+Community plugins → Browse, on every platform Obsidian runs on. Device
+acceptance for 1.0.0 is a separate result and is planned in
+[`docs/validation.md`](docs/validation.md).
+
+> [!IMPORTANT]
+> This plugin syncs to a server **you** run. There is no hosted service and no
+> account with anyone but yourself: without your own `obsyncd` reachable over
+> HTTPS, the plugin has nothing to sync to.
+
+> [!IMPORTANT]
+> Back up your vault before the first sync, and keep the 24-word recovery
+> phrase somewhere other than the device that generated it. The server stores
+> ciphertext only and cannot recover a vault for you.
+
+> [!IMPORTANT]
+> Do not run this plugin alongside another sync solution on the same vault —
+> Obsidian Sync, a file-syncing cloud folder, or another sync plugin. Two
+> writers on one vault produce conflicts neither of them can reconcile.
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
-     the dashboard and the plugin once they render. Placeholders until then. -->
+     the dashboard and the plugin once they render. Placeholders until then.
+     captures: V2 devices, V3 sync -->
 
 ## Screenshots
 
 _Dashboard overview, devices table, and the plugin's sync status will appear
-here on the first release._
+here once the owner supplies captures from a validated device run._
 
 ## Get syncing
 
@@ -274,6 +294,45 @@ link to the dashboard, where you see every device (type, address, country,
 last sign-in, last edit), storage per volume, scrub and garbage-collection
 state, and installation guidance. Revoke a lost device there or
 from the **Devices** list in the plugin settings.
+
+### Commands and the status bar
+
+Every command is under **Self Hosted Private Sync** in the command palette
+(`plugin/src/main.ts`):
+
+| Command | What it does |
+| --- | --- |
+| Sync now | Forces one pass instead of waiting for the watcher |
+| Show sync status | What the engine is doing, and why it is not doing more |
+| Pair a new device | Mints a one-time pairing code on this device |
+| Show recovery phrase | Re-displays the 24 words, from this device's own key |
+| Restore from history | Browses retained versions and restores one as a copy |
+| Show remote-only files | Lists files above this device's ceilings, to fetch on demand |
+| Open dashboard | Mints a one-time dashboard sign-in link |
+
+The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
+`obsync: syncing <n>` while `n` files are in flight, `obsync: offline` when the
+server is unreachable, and `obsync: error — <reason>` when sync has stopped.
+
+### If something looks wrong
+
+- **The status bar says `offline`.** The device cannot reach the server:
+  check the URL in settings, the certificate, and the private network if the
+  deployment needs one. Mobile Obsidian refuses plain HTTP entirely.
+- **Sync stopped with an error.** The plugin stops rather than guessing. The
+  message names the cause; `Show sync status` repeats it. Credential-storage
+  failures are covered in
+  [installation trust and distribution](docs/community-plugin.md).
+- **A file is not syncing.** Hidden folders (`.obsidian`, `.git`), symlinked
+  folders, and anything outside this device's folder selection are excluded by
+  design — see *What syncs and what does not* below.
+- **A large file did not arrive on a phone.** It is above that device's
+  ceiling and is listed under `Show remote-only files`, to fetch on demand.
+- **The server refuses to start or reports `not_ready`.** The volume posture
+  and every refusal it can raise are in
+  [`docs/storage.md`](docs/storage.md); the protocol is in
+  [`docs/protocol.md`](docs/protocol.md) and the design in
+  [`docs/architecture.md`](docs/architecture.md).
 
 ### What syncs and what does not
 

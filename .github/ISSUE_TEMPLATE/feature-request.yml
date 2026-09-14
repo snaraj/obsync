@@ -1,0 +1,36 @@
+name: Feature request
+description: Something the server or the plugin should do and does not
+labels: ["features"]
+assignees: ["snaraj"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `AGENTS.md` is this repository's contract: zero spend, no external
+        service, no runtime dependency, nothing that can turn a security
+        property off, and deletion over addition. A request that needs one of
+        those is a decision for the repository owner, so say which requirement
+        yours touches if it touches one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you cannot do today, and what you do instead.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The smallest change that would solve it.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints it touches
+      description: >
+        Any new dependency, external service, spend, setting that would weaken
+        a security property, or Obsidian API it would need.
+    validations:
+      required: false

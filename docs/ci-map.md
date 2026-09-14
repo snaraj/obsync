@@ -15,9 +15,9 @@ emptying the configuration cannot also drop the context that names the socket.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `security` | `python3 -B -m unittest discover -s scripts/ci -p 'test_*.py' -v` | The contract suites hold: seven locks, two-verdict classifier, publication state machines, governance receipt, workflow integrity, the YAML reader, the chart pin logic, the commit identity rules, the ninth image-smoke property. |
+| `security` | `python3 -B -m unittest discover -s scripts/ci -p 'test_*.py' -v` | The contract suites hold: seven locks, two-verdict classifier, publication state machines, governance receipt, workflow integrity, the YAML reader, the chart pin logic, the commit identity rules, the ninth image-smoke property, and the `versions.json` ledger this head publishes under (`test_versions_json.py` reads the committed `versions.json` and `manifest.json`, so a head whose installer ledger contradicts its own manifest floor cannot reach `main`). |
 | `security` | `scripts/ci/commit_identity_contract.py` over the event's range | Author and committer are the owner noreply identity, no trailer of any kind, and the last line is a roster signature. The secret scans read blobs and cannot see any of this. |
-| `security` | `release_contract.py transition` over the event's range | Every commit in `base..head` advances all seven locks exactly one patch, or the whole range is confined to the documentation allowlist and advances nothing. |
+| `security` | `release_contract.py transition` over the event's range | Every commit in `base..head` advances all seven locks exactly one SemVer step -- one patch, one minor, or one major -- or the whole range is confined to the documentation allowlist and advances nothing. |
 | `security` | `upload-artifact` of the transition verdict (main pushes) | The orchestrator learns which RANGE this push validated; the push base is unrecoverable from git alone once later merges land. |
 | `security` | `scripts/ci/install-tools.sh` | gitleaks, helm, trivy, cosign, and actionlint arrive at pinned versions with SHA-256-verified bytes and assert their own version afterwards. |
 | `security` | `actionlint` | The workflows parse and their shell bodies pass shellcheck. |

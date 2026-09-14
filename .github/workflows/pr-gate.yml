@@ -66,7 +66,7 @@ jobs:
           fi
           python3 -B scripts/ci/commit_identity_contract.py \
             --repository . --base "${base_sha}" --head "${head_sha}"
-      - name: Enforce one exact patch from the protected base
+      - name: Enforce one exact release step from the protected base
         # The seven lockstep locks (docs/release.md), walked over every commit
         # in the range this event contributes. Two verdicts and no flag.
         if: github.event_name != 'workflow_dispatch'

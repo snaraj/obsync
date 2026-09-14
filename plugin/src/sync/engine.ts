@@ -136,9 +136,13 @@ export const RECHECK_MS = 400;
 export const HEARTBEAT_MS = 60 * 60 * 1000;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
+// The host's own timers. Obsidian runs the desktop app inside Electron, where
+// the bare globals are Node's and hand back a `Timeout` object rather than the
+// numeric handle every other Obsidian surface expects; `window` is the one
+// spelling that means the same thing on desktop and on mobile.
 const defaultTimers: Timers = {
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  set: (fn, ms) => window.setTimeout(fn, ms),
+  clear: (handle) => window.clearTimeout(handle as number),
 };
 
 export class SyncEngine {

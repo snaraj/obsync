@@ -102,6 +102,13 @@ unprefixed version as the tag and carry the three individual plugin files.
 The publisher supplies them from the same build as the server's bundle and
 verifies their hashes before sealing the release.
 
+The default branch also carries root `versions.json`, the ledger the installer
+reads to offer an older Obsidian the newest release it can actually run. This
+plugin's floor has moved twice (1.7.0 at 0.1.11, 1.7.2 at 0.1.13, 1.12.4 at
+0.1.16), so without the ledger an Obsidian below 1.12.4 is offered nothing at
+all rather than 0.1.14. It is held as a release follower rather than a lock;
+`docs/release.md` states the rule and the gate that enforces it.
+
 After the owner merges and the release is verified, sign in to
 `community.obsidian.md` with the maintainer's Obsidian account, connect the
 GitHub account, and submit `https://github.com/snaraj/obsync` under Plugins →

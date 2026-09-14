@@ -1,0 +1,24 @@
+# What this repository already is, written down so an editor stops guessing.
+# Nothing reads this file at build time: the enforced facts are `cargo fmt`
+# for Rust and review for everything else (AGENTS.md, "Build, test, and
+# release flows"). It is a convenience, never a gate.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{rs,py}]
+indent_size = 4
+
+[Makefile]
+# Make requires a real tab at the start of every recipe line.
+indent_style = tab
+
+[*.md]
+# A Markdown hard line break is two trailing spaces; trimming them edits prose.
+trim_trailing_whitespace = false

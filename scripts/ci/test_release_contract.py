@@ -192,22 +192,36 @@ class TheSevenLocks(unittest.TestCase):
                     contract.validate_snapshot({**locks("0.1.4"), **mutation})
 
 
-class TheNextPatchBackstop(unittest.TestCase):
+class TheReleaseStepBackstop(unittest.TestCase):
     """A backstop the range walk reaches only after the mainline check passes.
 
-    `_monotonic_transitions` refuses a skipped patch first, so this guard is
+    `_monotonic_transitions` refuses a skipped step first, so this guard is
     never the one that reddens a real range -- which is exactly why it is
     exercised directly here. A backstop nothing can turn red is decoration, and
     decoration next to real checks teaches a reader to trust the wrong thing.
     """
 
-    def test_only_the_exact_next_patch_is_accepted(self):
+    def test_exactly_one_semver_step_is_accepted(self):
         base = contract.Version.parse("0.1.4")
-        contract.require_next_patch(base, contract.Version.parse("0.1.5"))
-        for head in ("0.1.4", "0.1.6", "0.2.0", "1.0.0", "0.1.3"):
-            with self.subTest(head=head):
+        for head in ("0.1.5", "0.2.0", "1.0.0"):
+            with self.subTest(accepted=head):
+                contract.require_release_step(base, contract.Version.parse(head))
+        # Standing still, every skip, every reversion, and every "step" that
+        # leaves a field below the advanced one non-zero.
+        for head in ("0.1.4", "0.1.6", "0.1.3", "0.2.1", "0.3.0", "1.0.1", "1.1.0", "2.0.0"):
+            with self.subTest(denied=head):
                 with self.assertRaises(contract.ContractError):
-                    contract.require_next_patch(base, contract.Version.parse(head))
+                    contract.require_release_step(base, contract.Version.parse(head))
+
+    def test_the_refusal_names_every_admissible_version(self):
+        # An author who reads "must be exact next patch 0.1.19" changes the
+        # version; an author who reads all three learns 1.0.0 is reachable.
+        with self.assertRaises(contract.ContractError) as refusal:
+            contract.require_release_step(
+                contract.Version.parse("0.1.18"), contract.Version.parse("0.3.0")
+            )
+        for admissible in ("0.1.19", "0.2.0", "1.0.0"):
+            self.assertIn(admissible, str(refusal.exception))
 
     def test_versions_order_by_precedence_not_by_string(self):
         self.assertLess(contract.Version.parse("0.1.9"), contract.Version.parse("0.1.10"))
@@ -292,7 +306,7 @@ class TheClassifier(GitFixture):
         with self.assertRaises(contract.ContractError):
             self.classify(self.base, skipped)
 
-    def test_two_patch_boundaries_in_one_range_deny(self):
+    def test_two_release_boundaries_in_one_range_deny(self):
         first = self.repository.commit({**locks("0.1.1", ["0.1.0"]), "src.rs": "a\n"}, "one")
         second = self.repository.commit(
             {**locks("0.1.2", ["0.1.1", "0.1.0"]), "src.rs": "b\n"}, "two"
@@ -300,12 +314,12 @@ class TheClassifier(GitFixture):
         self.assertEqual(self.classify(self.base, first)["tag"], "v0.1.1")
         with self.assertRaises(contract.ContractError) as refusal:
             self.classify(self.base, second)
-        # The message matters, and not for tidiness: "exactly one patch
+        # The message matters, and not for tidiness: "exactly one release
         # boundary" tells an author their RANGE spans two releases, where the
-        # next-patch backstop underneath would only say the head version is
+        # release-step backstop underneath would only say the head version is
         # wrong -- and would send them to change the version rather than to
         # re-cut the branch.
-        self.assertIn("exactly one patch boundary", str(refusal.exception))
+        self.assertIn("exactly one release boundary", str(refusal.exception))
 
     def test_a_multi_commit_rebase_range_is_one_release(self):
         # A squash merge is one commit; an allowed rebase merge installs
@@ -347,6 +361,83 @@ class TheClassifier(GitFixture):
             {**locks("0.1.2", ["0.1.1", "0.1.0"]), "src.rs": "b\n"}, "two"
         )
         self.assertEqual(self.classify(first, second, first_parent=True)["tag"], "v0.1.2")
+
+
+class TheReleaseStepRanges(unittest.TestCase):
+    """Minor and major steps through the very walk a patch step takes.
+
+    The base is this repository's real shape when the rule was generalised --
+    0.1.18, past the `Version.legacy` tag threshold -- so the tags these ranges
+    claim are the bare ones Obsidian's installer requires rather than the
+    `v`-prefixed names releases through 0.1.10 keep. The root commit carries
+    all seven locks, so the whole mainline is one boundary per range and every
+    assertion below can be taken with `--first-parent`, the way the push and
+    the publisher take it.
+    """
+
+    LADDER = [f"0.1.{patch}" for patch in range(17, 10, -1)]
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.repository = Repository(Path(self._directory.name))
+        self.root = self.repository.root
+        self.base = self.repository.commit(
+            {**locks("0.1.18", self.LADDER), "src.rs": "fn main() {}\n"}, "base"
+        )
+
+    def head(self, version: str) -> str:
+        return self.repository.commit(
+            {**locks(version, ["0.1.18", *self.LADDER]), "src.rs": f"// {version}\n"},
+            f"release {version}",
+        )
+
+    def classify(self, head: str) -> dict:
+        return contract.classify_transition(self.root, self.base, head, first_parent=True)
+
+    def test_a_patch_step_classifies_artifact(self):
+        verdict = self.classify(self.head("0.1.19"))
+        self.assertEqual((verdict["class"], verdict["tag"]), ("artifact", "0.1.19"))
+
+    def test_a_minor_step_classifies_artifact(self):
+        verdict = self.classify(self.head("0.2.0"))
+        self.assertEqual((verdict["class"], verdict["version"], verdict["tag"]),
+                         ("artifact", "0.2.0", "0.2.0"))
+
+    def test_a_major_step_reaches_1_0_0_with_the_names_the_installer_reads(self):
+        # The whole point of the generalisation: 1.0.0 must be reachable, and
+        # the three names a release is published under must be the 1.0.0 ones.
+        head = self.head("1.0.0")
+        verdict = self.classify(head)
+        self.assertEqual((verdict["class"], verdict["version"], verdict["tag"]),
+                         ("artifact", "1.0.0", "1.0.0"))
+        one = contract.Version.parse("1.0.0")
+        self.assertEqual((one.plugin_id, one.image_tag), ("obsync-private-sync", "v1.0.0"))
+        window = contract.discover_transition_window(self.root, head)
+        self.assertEqual((window.base_sha, window.intent.tag), (self.base, "1.0.0"))
+
+    def test_a_skip_or_an_incomplete_step_denies(self):
+        # 0.1.21 and 0.3.0 skip; 2.0.0 skips a major; 1.1.0, 1.0.1 and 0.2.1
+        # advance a field without zeroing the fields below it, which is the
+        # mutant a "compare only the advanced field" rule would let through.
+        for version in ("0.1.21", "0.3.0", "2.0.0", "1.1.0", "1.0.1", "0.2.1"):
+            with self.subTest(version=version):
+                head = self.head(version)
+                with self.assertRaises(contract.ContractError):
+                    self.classify(head)
+                self.repository.git("reset", "-q", "--hard", self.base)
+                self.repository.git("clean", "-qfd")
+
+    def test_two_release_boundaries_in_one_range_still_deny(self):
+        # A minor step and a major step in one range is still two releases.
+        first = self.head("0.2.0")
+        second = self.repository.commit(
+            {**locks("1.0.0", ["0.2.0", "0.1.18", *self.LADDER]), "src.rs": "// two\n"}, "major"
+        )
+        self.assertEqual(self.classify(first)["tag"], "0.2.0")
+        with self.assertRaises(contract.ContractError) as refusal:
+            self.classify(second)
+        self.assertIn("exactly one release boundary", str(refusal.exception))
 
 
 class GenesisFixture(unittest.TestCase):
@@ -478,7 +569,7 @@ class TheGenesisRange(GenesisFixture):
         with self.assertRaises(contract.ContractError) as refusal:
             contract.classify_transition(self.root, base, head, first_parent=False)
         self.assertNotIn("genesis", str(refusal.exception))
-        self.assertIn("without one exact release patch", str(refusal.exception))
+        self.assertIn("without one exact release step", str(refusal.exception))
 
     def test_the_second_release_uses_the_ordinary_rules_again(self):
         # The lock-less root is still in the mainline forever, so the genesis

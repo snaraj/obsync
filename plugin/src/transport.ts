@@ -350,7 +350,8 @@ export class Transport {
 
   constructor(private readonly options: TransportOptions) {
     this.now = options.now ?? (() => Date.now());
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    // `window` rather than the bare global: see `defaultTimers` in sync/engine.
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => window.setTimeout(resolve, ms)));
     this.random = options.random ?? (() => Math.random());
     this.log = options.log ?? (() => undefined);
     this.maxAttempts = options.maxAttempts ?? 8;

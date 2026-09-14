@@ -13,9 +13,10 @@ heading. Six files, seven facts, one number.
 THE CLASSIFIER HAS TWO VERDICTS AND NO FLAG. A range whose every commit is
 confined to root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown under
 `docs/` is `no-artifact` and must advance nothing. Anything else is `artifact`
-and must advance every lock exactly one patch from its protected base. A
-non-allowlisted path with an unchanged version denies; there is no third path
-and no environment variable that reaches one.
+and must advance every lock exactly ONE SEMVER STEP from its protected base --
+one patch, one minor, or one major, and nothing else. A non-allowlisted path
+with an unchanged version denies; there is no third path and no environment
+variable that reaches one.
 """
 
 from __future__ import annotations
@@ -181,10 +182,28 @@ def require_sha(raw: object, field: str) -> str:
     return raw
 
 
-def require_next_patch(base: Version, head: Version) -> None:
-    expected = Version(base.major, base.minor, base.patch + 1)
-    if head != expected:
-        raise ContractError(f"head version {head} must be exact next patch {expected}")
+def release_steps(base: Version) -> tuple[Version, Version, Version]:
+    """The three versions exactly one SemVer step above `base`.
+
+    ONE STEP, NEVER A SKIP, is the rule the release path actually needs; "one
+    patch" was an over-narrow spelling of it that no 1.0.0 could ever satisfy.
+    A step zeroes every field below the one it advances, so `X.Y+1.1` and
+    `X+1.0.1` are not steps and deny beside `X.Y.Z+2`.
+    """
+    return (
+        Version(base.major, base.minor, base.patch + 1),
+        Version(base.major, base.minor + 1, 0),
+        Version(base.major + 1, 0, 0),
+    )
+
+
+def require_release_step(base: Version, head: Version) -> None:
+    admissible = release_steps(base)
+    if head not in admissible:
+        rendered = ", ".join(str(version) for version in admissible)
+        raise ContractError(
+            f"head version {head} must be exactly one release step from {base}: {rendered}"
+        )
 
 
 def _object(value: object, field: str) -> Mapping[str, object]:
@@ -505,7 +524,7 @@ def _first_parent_history(repository: Path, head_sha: str) -> list[str]:
 def _monotonic_transitions(
     repository: Path, base_sha: str, commits: list[str]
 ) -> list[tuple[str, str, Version]]:
-    """Classify every exact patch boundary; refuse skip, reversion, deletion."""
+    """Classify every release boundary; refuse skip, reversion, deletion."""
     current = _version_at(repository, base_sha)
     if current is None:
         raise ContractError("release transition base must contain VERSION")
@@ -516,15 +535,18 @@ def _monotonic_transitions(
         if observed == current:
             previous = commit
             continue
-        expected = Version(current.major, current.minor, current.patch + 1)
-        if observed != expected:
+        step = next(
+            (candidate for candidate in release_steps(current) if candidate == observed), None
+        )
+        if step is None:
             rendered = "absent" if observed is None else str(observed)
+            admissible = ", ".join(str(version) for version in release_steps(current))
             raise ContractError(
                 f"commit {commit} version {rendered} must remain at {current} "
-                f"or advance exactly once to {expected}"
+                f"or advance exactly one release step to one of: {admissible}"
             )
-        transitions.append((previous, commit, expected))
-        current = expected
+        transitions.append((previous, commit, step))
+        current = step
         previous = commit
     return transitions
 
@@ -713,7 +735,7 @@ def classify_transition(
     if offending:
         if not _monotonic_transitions(repository, base_sha, commits):
             raise ContractError(
-                "artifact-surface paths changed without one exact release patch: "
+                "artifact-surface paths changed without one exact release step: "
                 + ", ".join(sorted(set(offending))[:8])
             )
         intent = validate_transition(repository, base_sha, head_sha, first_parent=first_parent)
@@ -735,7 +757,7 @@ def classify_transition(
     boundaries = _monotonic_transitions(repository, base_sha, commits)
     if boundaries:
         raise ContractError(
-            "documentation-only range must contain exactly 0 one-patch boundaries; "
+            "documentation-only range must contain exactly 0 release boundaries; "
             f"found {len(boundaries)}"
         )
     for path in RELEASE_LOCK_PATHS:
@@ -762,7 +784,7 @@ def validate_transition(
     commits = _linear_commits(repository, base_sha, head_sha)
     transitions = _monotonic_transitions(repository, base_sha, commits)
     if len(transitions) != 1:
-        raise ContractError("release range must contain exactly one patch boundary")
+        raise ContractError("release range must contain exactly one release boundary")
     if first_parent:
         history = _validated_history_transitions(repository, head_sha)
         if not history or history[-1] != transitions[0]:
@@ -773,7 +795,7 @@ def validate_transition(
     require_appended_changelog(
         _git_file(repository, base_sha, "CHANGELOG.md"), head_files["CHANGELOG.md"]
     )
-    require_next_patch(base_version, head.version)
+    require_release_step(base_version, head.version)
     return ReleaseIntent(source_sha=head_sha, version=head.version)
 
 
@@ -784,13 +806,13 @@ def discover_transition_window(repository: Path, head_sha: str) -> TransitionWin
         raise ContractError("head SHA did not resolve exactly")
     transitions = _validated_history_transitions(repository, head_sha)
     if not transitions:
-        raise ContractError("release history contains no patch boundary")
+        raise ContractError("release history contains no release boundary")
     head = validate_snapshot(
         {path: _git_file(repository, head_sha, path) for path in RELEASE_LOCK_PATHS}
     )
     base_sha, _commit, transition_version = transitions[-1]
     if transition_version != head.version:
-        raise ContractError("release head does not retain the last patch boundary")
+        raise ContractError("release head does not retain the last release boundary")
     return TransitionWindow(
         base_sha=base_sha, intent=ReleaseIntent(source_sha=head_sha, version=head.version)
     )
