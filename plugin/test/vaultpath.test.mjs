@@ -15,7 +15,7 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join, resolve } from "node:path";
@@ -116,24 +116,37 @@ function desktopHost({ files = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "obsync-vault-"));
   const logs = [];
   const removed = [];
+  const trashed = [];
+  const systemTrashed = [];
   const adapter = {
     getBasePath: () => root,
     stat: async () => null,
     readBinary: async () => new ArrayBuffer(0),
-    remove: async (path) => removed.push(path),
+    remove: async (path) => { removed.push(path); rmSync(join(root, path), { force: true }); },
   };
+  const known = new Map(files.map((file) => [file.path, file]));
   const plugin = {
     state: { data: {} },
     app: {
+      // The real one applies the user's "Deleted files" preference; what is
+      // modelled here is that it is the call, and that the file goes away.
+      fileManager: {
+        trashFile: async (file) => {
+          trashed.push(file.path);
+          rmSync(join(root, file.path), { force: true });
+        },
+      },
       vault: {
         adapter,
         getFiles: () => files,
         getAbstractFileByPath: () => null,
+        getFileByPath: (path) => known.get(path) ?? null,
+        trash: async (file) => systemTrashed.push(file.path),
       },
     },
     log: (line) => logs.push(line),
   };
-  return { host: new ObsidianHost(plugin), root, logs, removed };
+  return { host: new ObsidianHost(plugin), root, logs, removed, trashed, systemTrashed };
 }
 
 test("the desktop writer lands a file inside the vault, atomically", async () => {
@@ -198,4 +211,39 @@ test("the vault listing drops what this device may not sync", async () => {
     ["Notes/Ideas.md"],
   );
   assert.ok(logs.some((line) => line.includes("decision=skipped_unsyncable files=2")), logs.join(" "));
+});
+
+test("a deletion follows the user's own trash preference, and must really remove the file", async () => {
+  // `Vault.trash(file, true)` always used the OS bin, overriding the vault's
+  // "Deleted files" setting. `FileManager.trashFile` is the call that respects
+  // it -- and the post-delete identity check still requires the file to be
+  // gone, so a trash that silently kept it is refused rather than reported.
+  const stat = { mtime: 1000, size: 7 };
+  const { host, root, trashed, systemTrashed, removed } = desktopHost({
+    files: [{ path: "Notes/Doomed.md", stat }],
+  });
+  mkdirSync(join(root, "Notes"));
+  writeFileSync(join(root, "Notes", "Doomed.md"), "doomed\n");
+
+  await host.trash("Notes/Doomed.md");
+
+  assert.deepEqual(trashed, ["Notes/Doomed.md"]);
+  assert.deepEqual(systemTrashed, [], "Vault.trash would override the user's preference");
+  assert.deepEqual(removed, [], "the adapter fallback is only for a path the vault does not know");
+  assert.equal(existsSync(join(root, "Notes", "Doomed.md")), false, "the file is gone");
+});
+
+test("a vault that does not know the path falls back to the adapter, not to a folder delete", async () => {
+  // A folder standing where a remote manifest names a FILE must never be
+  // deleted with its contents: the lookup is file-only, so this path reaches
+  // the adapter and nothing recursive happens.
+  const { host, root, trashed, removed } = desktopHost();
+  mkdirSync(join(root, "Notes"));
+  writeFileSync(join(root, "Notes", "Unknown.md"), "unknown\n");
+
+  await host.trash("Notes/Unknown.md");
+
+  assert.deepEqual(trashed, [], "nothing was handed to the trash preference");
+  assert.deepEqual(removed, ["Notes/Unknown.md"]);
+  assert.equal(existsSync(join(root, "Notes", "Unknown.md")), false);
 });

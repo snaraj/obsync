@@ -2,7 +2,42 @@
 
 All notable changes to obsync are recorded here. The format follows
 Keep a Changelog; versions follow SemVer. Every artifact-classified merge
-advances exactly one patch (AGENTS.md, requirement 10).
+advances exactly one SemVer step -- one patch, one minor, or one major
+(AGENTS.md, requirement 10).
+
+## 0.1.19 - Unreleased
+
+- Generalise the release rule from "exactly one patch" to exactly one SemVer
+  step, so a minor (`X.Y+1.0`) and a major (`X+1.0.0`) advance are admissible
+  from a protected base and 1.0.0 is reachable without editing the gate in the
+  pull request the gate must pass. Every skip, reversion, mixed range, second
+  boundary in one range, and step that leaves a lower field non-zero
+  (`X.Y+1.1`, `X+1.0.1`) stays denied, and the refusal now names all three
+  admissible versions.
+- Add root `versions.json`, the ledger Obsidian's community-plugin installer
+  reads to offer an older Obsidian the newest release it can actually run, and
+  hold it as a release follower: the head row must carry exactly root
+  `manifest.json`'s `minAppVersion`, the rows must ascend, and no row may name
+  a version above the head. The recorded floors are the ones each published
+  release's own manifest declared.
+- Follow the vault's own "Deleted files" preference when sync removes a file,
+  through `FileManager.trashFile`, instead of always using the operating
+  system bin. The file lookup is file-only, so a folder standing where a
+  remote manifest names a file is never deleted with its contents.
+- Normalise the folder selection a person types in settings through the host's
+  `normalizePath`, so a trailing slash or a doubled separator is a typo rather
+  than a refusal that discards the whole selection. Paths that arrive from
+  another device are still refused, never normalised.
+- Schedule the engine's timers and the transport's backoff through
+  `window`, the one spelling that means the same thing in Obsidian's desktop
+  Electron runtime and on mobile.
+- State the truth in `README.md`: the plugin is listed in Obsidian's community
+  directory as Self Hosted Private Sync, installed from Settings → Community
+  plugins → Browse. Add the commands and status-bar legend, a troubleshooting
+  section, and the three callouts a self-hosted sync plugin owes a new reader.
+- Add the repository conventions established plugins share: issue templates
+  for a bug report and a feature request, `.editorconfig`, and a
+  `CONTRIBUTING.md` that points at the contract.
 
 ## 0.1.18 - Unreleased
 

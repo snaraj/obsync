@@ -1,0 +1,46 @@
+name: Bug report
+description: Something the server or the plugin does that it should not
+labels: ["bug"]
+assignees: ["snaraj"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste a credential, a setup token, a recovery phrase, a private
+        hostname or an address into this form. Every refusal this project makes
+        is logged as one structured line naming its decision; that line, with
+        any private value removed, is what this report needs.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Plugin version, server version, Obsidian version, and platform.
+      placeholder: "plugin 0.1.19, server 0.1.19, Obsidian 1.12.4, iOS 19"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        The plugin's log lines (developer console) or the server's, redacted.
+        `Show sync status` in the command palette names the current state.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: No credential, token, recovery phrase, private hostname or address is in this report.
+          required: true
+        - label: No other sync solution is running on this vault.
+          required: true

@@ -8,29 +8,49 @@ Dated 2026-09-07. Requirement 10 in `AGENTS.md`, made operational.
 and `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
 root `manifest.json` `version`, and the `CHANGELOG.md` heading `X.Y.Z`.
 `scripts/ci/release_contract.py` walks every commit in `base..head` and
-denies skips, reversions, and mixed ranges without exactly one patch.
+denies skips, reversions, and mixed ranges without exactly one release step.
+A STEP is one patch (`X.Y.Z+1`), one minor (`X.Y+1.0`), or one major
+(`X+1.0.0`), and nothing else: a step zeroes every field below the one it
+advances, so `X.Y+1.1` and `X+1.0.1` deny beside `X.Y.Z+2`. One step at a
+time, never a skip, is the whole rule -- which is what makes 1.0.0 reachable
+from 0.Y.Z without a gate edit in the pull request that needs the gate.
 
-Three followers move with the locks and are held by gates, not by the
+Four followers move with the locks and are held by gates, not by the
 classifier: `plugin/package.json` `version` and its two copies in
 `package-lock.json` (the plugin's bundle test compares the built manifest to
-both sources), and `Cargo.lock`, refreshed by `cargo check` (`--locked` in the
-image and gate refuses a stale one).
+both sources); `Cargo.lock`, refreshed by `cargo check` (`--locked` in the
+image and gate refuses a stale one); and root `versions.json`.
+
+`versions.json` is the ledger Obsidian's community-plugin installer reads to
+decide WHICH release a given Obsidian version may install: the newest plugin
+version whose recorded `minAppVersion` that app satisfies. It is not an eighth
+lock, because it does not carry one version — it accumulates one row per
+published version and its older rows must not move when the head advances.
+`scripts/ci/versions_json.py` decides and `scripts/ci/test_versions_json.py`
+runs it over the committed tree in the `security` job and in `make check`: the
+head version must be the last row and must carry exactly root
+`manifest.json`'s `minAppVersion`, every key and value must be a bare `X.Y.Z`,
+the rows must ascend, and no row may name a version above the head. A gap is
+admissible and 0.1.15 is one: it was built but never published, so a row for
+it would promise the installer a download that does not exist. The floors this
+plugin has published are 1.7.0 (0.1.11-0.1.12), 1.7.2 (0.1.13-0.1.14) and
+1.12.4 (0.1.16 onwards), each read from that release's own `manifest.json`.
 
 ## Classifier
 
 Two verdicts, no flag: `artifact` (any path outside the documentation
-allowlist changed, and every lock advanced exactly one patch) or
+allowlist changed, and every lock advanced exactly one release step) or
 `no-artifact` (every commit confined to root `AGENTS.md`, `README.md`,
 `.gitignore`, and Markdown under `docs/`; no lock touched).
 
 **Genesis.** A range whose base carries NONE of the seven locks — the state a
-repository born from GitHub's own root commit is in, which the one-patch rule
-cannot classify because there is no version to advance — is `artifact` only if
-the head carries all seven locks agreeing on one version, every commit that
-introduces a lock introduces it at that same version, and no commit removes
-one; anything else from a lock-less base denies by name. A base carrying any
-lock takes the ordinary rules unchanged, so genesis governs exactly one range
-and is unreachable once `main` has a `VERSION`.
+repository born from GitHub's own root commit is in, which the release-step
+rule cannot classify because there is no version to advance — is `artifact`
+only if the head carries all seven locks agreeing on one version, every commit
+that introduces a lock introduces it at that same version, and no commit
+removes one; anything else from a lock-less base denies by name. A base
+carrying any lock takes the ordinary rules unchanged, so genesis governs
+exactly one range and is unreachable once `main` has a `VERSION`.
 
 ## Publisher
 

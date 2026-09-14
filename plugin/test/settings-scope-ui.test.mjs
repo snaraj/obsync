@@ -60,3 +60,53 @@ for (const failure of [false, true]) test(`native scope Save ${failure ? "failur
   assert.equal(displays, failure ? 0 : 1);
   assert.deepEqual(obsidian.notices, [failure ? "SAVE FAILURE SENTINEL" : "obsync: folder selection saved on this device."]);
 });
+
+test("the typed folder selection reaches the save through the host's normalizePath", async (t) => {
+  // A person typing `Notes/` or `/Attachments//Sub` has made a typo, not a
+  // security claim: the host's own normaliser canonicalises what THIS device's
+  // owner typed, and `parseSyncFolders` still judges the result. A path that
+  // arrives from another device is never normalised anywhere.
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true }));
+  const obsidian = box.require("obsidian");
+  const seen = [];
+  obsidian.normalizePath = (path) => {
+    seen.push(path);
+    return path.trim().replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+  };
+  const buttons = [];
+  let typed;
+  let mode;
+  class Component {
+    setDisabled() { return this; }
+    setButtonText(value) { this.text = value; return this; }
+    setValue() { return this; }
+    setPlaceholder() { return this; }
+    addOption() { return this; }
+    onChange(fn) { this.change = fn; return this; }
+    onClick(fn) { this.click = fn; return this; }
+  }
+  Object.assign(obsidian.Setting.prototype, {
+    setName() { return this; }, setDesc() { return this; }, setHeading() { return this; },
+    addDropdown(fn) { mode = new Component(); fn(mode); return this; },
+    addTextArea(fn) { typed = new Component(); fn(typed); return this; },
+    addButton(fn) { const button = new Component(); buttons.push(button); fn(button); return this; },
+  });
+  const saved = [];
+  const plugin = {
+    state: { data: { syncFolders: undefined } },
+    saveSyncFolders: (folders) => { saved.push(folders); return Promise.resolve(); },
+  };
+  const { ObsyncSettingTab } = box.require(join(box.home, "build/ui/settings.js"));
+  const tab = new ObsyncSettingTab({}, plugin);
+  tab.display = () => {};
+  tab.scope({});
+
+  mode.change("selected");
+  typed.change("Notes/\n   \n/Attachments//Sub\n");
+  buttons.find((button) => button.text === "Save on this device").click();
+  await new Promise(setImmediate);
+
+  assert.deepEqual(seen, ["Notes/", "/Attachments//Sub"], "the blank line never reached the normaliser");
+  assert.deepEqual(saved, [["Notes", "Attachments/Sub"]]);
+});
