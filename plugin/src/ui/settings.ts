@@ -144,12 +144,14 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText("Save on this device").onClick(() => {
         button.setDisabled(true).setButtonText("Waiting for transfers…");
         // The host's own path normalisation, on what a PERSON typed here: a
-        // trailing slash or a doubled separator is a typo, not a refusal
-        // worth discarding the whole selection for. Blank lines are dropped
-        // before normalising so nothing empty is ever handed to it. A path
-        // that arrives from ANOTHER DEVICE is never normalised -- `vaultPath`
-        // refuses those shapes outright -- and whatever comes back here still
-        // goes through `parseSyncFolders`, so `/` and `..` stay refused.
+        // leading or trailing slash, a doubled separator and a backslash are
+        // typos the host canonicalises, not refusals worth discarding the
+        // whole selection for. Blank lines are dropped before normalising so
+        // nothing empty is ever handed to it. A path that arrives from
+        // ANOTHER DEVICE is never normalised -- `vaultPath` refuses those
+        // shapes outright -- and whatever comes back here still goes through
+        // `parseSyncFolders`, so `/`, `..` and every hidden segment stay
+        // refused.
         const next = selected
           ? text.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => normalizePath(line))
           : undefined;

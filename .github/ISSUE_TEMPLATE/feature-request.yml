@@ -1,6 +1,6 @@
 name: Feature request
 description: Something the server or the plugin should do and does not
-labels: ["enhancement"]
+labels: ["features"]
 assignees: ["snaraj"]
 body:
   - type: markdown

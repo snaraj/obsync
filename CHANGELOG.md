@@ -25,9 +25,9 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   system bin. The file lookup is file-only, so a folder standing where a
   remote manifest names a file is never deleted with its contents.
 - Normalise the folder selection a person types in settings through the host's
-  `normalizePath`, so a trailing slash or a doubled separator is a typo rather
-  than a refusal that discards the whole selection. Paths that arrive from
-  another device are still refused, never normalised.
+  `normalizePath`, so a leading or trailing slash, a doubled separator or a
+  backslash is a typo rather than a refusal that discards the whole selection.
+  Paths that arrive from another device are still refused, never normalised.
 - Schedule the engine's timers and the transport's backoff through
   `window`, the one spelling that means the same thing in Obsidian's desktop
   Electron runtime and on mobile.

@@ -45,16 +45,33 @@ class AWellFormedLedger(unittest.TestCase):
         self.assertEqual(versions.validate_versions(ledger(), manifest()), LEDGER)
 
     def test_a_gap_for_an_unpublished_version_is_admissible(self):
-        # 0.1.15 built but was never released; a ledger row for it would
-        # promise the installer a download that does not exist.
-        self.assertNotIn("0.1.12", versions.validate_versions(ledger(), manifest()))
+        # 0.1.15 was built but never released, so a row for it would promise
+        # the installer a download that does not exist. The subject is that
+        # the call does NOT raise over a ledger whose gap IS 0.1.15, and the
+        # returned rows are the proof that the gap was accepted rather than
+        # quietly filled in.
+        resolved = versions.validate_versions(
+            json.dumps({"0.1.14": "1.7.2", "0.1.16": "1.12.4"}),
+            manifest(version="0.1.16"),
+        )
+        self.assertEqual(resolved, {"0.1.14": "1.7.2", "0.1.16": "1.12.4"})
 
 
 class TheLedgerShape(unittest.TestCase):
     def test_a_document_that_is_not_a_populated_object_is_refused(self):
-        for text in ("{not json", "[]", '"0.1.14"', "{}", "null"):
+        # Each case asserts the refusal it names. `{}` is the reason: "no entry
+        # for the head version" would refuse an empty ledger too, so a bare
+        # assertRaises cannot tell the emptiness guard from decoration, and
+        # deleting that guard would leave this test green.
+        for text, refusal in (
+            ("{not json", "versions.json is not valid JSON"),
+            ("[]", "must be a JSON object"),
+            ('"0.1.14"', "must be a JSON object"),
+            ("null", "must be a JSON object"),
+            ("{}", "empty"),
+        ):
             with self.subTest(text=text):
-                with self.assertRaises(versions.VersionsError):
+                with self.assertRaisesRegex(versions.VersionsError, refusal):
                     versions.validate_versions(text, manifest())
 
     def test_a_duplicated_key_is_refused_rather_than_silently_last_wins(self):
@@ -66,20 +83,36 @@ class TheLedgerShape(unittest.TestCase):
             versions.validate_versions(text, manifest())
 
     def test_a_key_or_a_floor_that_is_not_a_bare_version_is_refused(self):
-        for mutation in (
-            {"v0.1.14": "1.12.4"},
-            {"0.1": "1.12.4"},
-            {"0.1.14": "v1.12.4"},
-            {"0.1.14": "1.12"},
-            {"0.1.14": "1.12.4-beta"},
-            {"0.1.14": 1},
-            {"0.1.14": None},
+        # Every case here names the SHAPE rule, so every case asserts that
+        # refusal rather than any refusal: with a bare assertRaises, relaxing
+        # SEMVER_RE to make the third component optional left this suite green
+        # because the ordering check and the head-floor comparison answered
+        # first. The last two cases exist because no other guard CAN answer
+        # them -- a two-part key placed FIRST has no predecessor to be
+        # compared against, and a two-part floor on a row that is not the head
+        # is never compared with the manifest -- so the shape rule is the only
+        # verdict available for either one.
+        def appended(mutation):
+            # A new key lands LAST in insertion order; an existing one keeps
+            # its place, which is what separates the two groups below.
+            return json.dumps({**LEDGER, **mutation})
+
+        for label, text in (
+            ("prefixed key", appended({"v0.1.14": "1.12.4"})),
+            ("two-part key, last", appended({"0.1": "1.12.4"})),
+            ("prefixed floor", appended({"0.1.14": "v1.12.4"})),
+            ("two-part floor on the head row", appended({"0.1.14": "1.12"})),
+            ("pre-release floor", appended({"0.1.14": "1.12.4-beta"})),
+            ("numeric floor", appended({"0.1.14": 1})),
+            ("null floor", appended({"0.1.14": None})),
+            ("two-part key, first", json.dumps(
+                {"0.1": "1.7.0", "0.1.13": "1.7.2", "0.1.14": "1.12.4"})),
+            ("two-part floor on an older row", json.dumps(
+                {"0.1.11": "1.7", "0.1.13": "1.7.2", "0.1.14": "1.12.4"})),
         ):
-            with self.subTest(mutation=sorted(mutation)):
-                with self.assertRaises(versions.VersionsError):
-                    versions.validate_versions(
-                        json.dumps({**LEDGER, **mutation}), manifest()
-                    )
+            with self.subTest(refusal=label):
+                with self.assertRaisesRegex(versions.VersionsError, "bare X.Y.Z"):
+                    versions.validate_versions(text, manifest())
 
     def test_keys_out_of_ascending_order_are_refused(self):
         # String order puts 0.1.9 after 0.1.10; precedence does not, and the
@@ -106,16 +139,20 @@ class TheHeadRow(unittest.TestCase):
             versions.validate_versions(ledger(**{"0.1.14": "1.7.2"}), manifest())
 
     def test_an_unreadable_manifest_refuses_before_the_ledger_is_judged(self):
-        for text in (
-            "{not json",
-            "[]",
-            json.dumps({"version": "0.1.14"}),
-            json.dumps({"minAppVersion": "1.12.4"}),
-            json.dumps({**MANIFEST, "version": "v0.1.14"}),
-            json.dumps({**MANIFEST, "minAppVersion": "1.12"}),
+        # The floor's own shape check is why these assert their message: a
+        # ledger VALUE must already be bare, so `ledger[head] != floor` would
+        # refuse a manifest floor of "1.12" for the wrong reason and deleting
+        # the manifest-side check would leave this test green.
+        for text, refusal in (
+            ("{not json", "manifest.json is not valid JSON"),
+            ("[]", "manifest.json must be a JSON object"),
+            (json.dumps({"version": "0.1.14"}), "minAppVersion must be a bare"),
+            (json.dumps({"minAppVersion": "1.12.4"}), "version must be a bare"),
+            (json.dumps({**MANIFEST, "version": "v0.1.14"}), "version must be a bare"),
+            (json.dumps({**MANIFEST, "minAppVersion": "1.12"}), "minAppVersion must be a bare"),
         ):
             with self.subTest(manifest=text[:32]):
-                with self.assertRaises(versions.VersionsError):
+                with self.assertRaisesRegex(versions.VersionsError, refusal):
                     versions.validate_versions(ledger(), text)
 
 

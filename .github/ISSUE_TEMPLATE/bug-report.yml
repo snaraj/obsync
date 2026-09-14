@@ -1,6 +1,6 @@
 name: Bug report
 description: Something the server or the plugin does that it should not
-labels: ["bug"]
+labels: ["fix"]
 assignees: ["snaraj"]
 body:
   - type: markdown
