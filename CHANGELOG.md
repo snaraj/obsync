@@ -65,9 +65,12 @@ which carries every V1 through V16 outcome in its own row.
   WARP client delivered SSH but not a second port to the same host.
 - Devices, operating systems, Obsidian versions, plugin version, server
   commit: a MacBook Pro on macOS 26.6 with Obsidian 1.13.7 and plugin 0.1.18
-  (paired first); an iPhone 15 Pro Max on iOS 26.6.1 with Obsidian mobile and
-  plugin 0.1.19 installed from the community directory; server `obsyncd`
-  0.1.19 from release commit `e47e3d4`.
+  (paired first); an iPhone 15 Pro Max on iOS 26.6.1 whose Obsidian version
+  was not recorded during the run, with plugin 0.1.19 installed from the
+  community directory; server `obsyncd` 0.1.19 from release commit `e47e3d4`.
+  The run was driven by the coordinator agent lane with the owner at the
+  keyboard for the passcode, the local-network prompt, the firewall changes,
+  and one live edit.
 - Passed: the production-path install on both devices; V1 first-time setup and
   device enrollment (setup token accepted, recovery phrase shown, device
   listed); V2 pairing the phone (one-time code pasted on the phone, approved

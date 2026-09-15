@@ -28,6 +28,10 @@ plus one row per scenario:
 - **Devices.** One line per device: model, operating-system version, and
   Obsidian version (1.12.4 or newer). Devices are identified by ROLE -- "first
   desktop", "phone", "tablet" -- never by a device name, serial, or account.
+  A field the run did not capture is written `not recorded during the run`
+  and left there. Reading it off the device afterwards records TODAY's state
+  as though it were the run's, and a value deduced from something else is a
+  deduction, not an observation: both are worse than the gap they fill.
 - **Scenarios.** Every scenario in `docs/validation.md` with `pass`, `fail`,
   or `not attempted`; the measured timing wherever the pass condition names
   one; and one sentence of what was observed. Silence is not a pass.
