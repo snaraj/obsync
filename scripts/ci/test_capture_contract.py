@@ -8,50 +8,58 @@ was written for one document earlier: prose that is a control needs a control.
 
 The captures are also the one place in this repository where requirement 11 is
 enforced on PIXELS rather than on text, and the review that superseded pull
-request #66 found a device-identifier fragment in one of them. A suite cannot
-read pixels, but it can pin the things that go silently wrong around them: a
-capture that is referenced and not committed (the README renders a broken
-image to every reader), a capture that is committed and not referenced (an
-unreviewed image published for nothing), the two documents drifting into
-different orders or different names, a file that cannot render at all, and a
-file over the ceiling the convention sets -- which is the convention's own
-proxy for "this is a full-screen capture that wanted cropping", and a
-full-screen capture is how the private fact gets in.
+request #66 found a device-identifier fragment in one of them. No suite reads
+pixels. This one reads everything around them.
 
-WHAT THE FIRST VERSION OF THIS FILE GOT WRONG, because each repair below is
-one of its own surviving mutants and the reason the rule is now written the
-way it is:
+WHAT THIS SUITE ESTABLISHES, exactly and only:
 
-  * THE CEILING COULD BE RAISED WITHOUT A FAILURE. The over-ceiling fixture
-    was `b"\\0" * SIZE_CEILING`, generated from the very constant it was meant
-    to police, so doubling `SIZE_CEILING` moved the fixture with it and all
-    nine tests stayed green. A policy number's test may not be written in
-    terms of the policy number. The ceiling is now the literal `409600`,
-    asserted against that literal and against the convention's own "400 KB"
-    sentence, and the negative fixture is a hard-coded `409601` bytes that no
-    edit to the constant can drag along.
+  1. FRAMING AND INTEGRITY. Each committed capture is a PNG datastream whose
+     signature, chunk lengths, four-letter chunk types and CRC-32 values are
+     self-consistent, with `IHDR` first, `IEND` last and empty, and no byte
+     after it.
+  2. A DECODABLE GRID OF THE DECLARED SIZE. The header's colour type, bit
+     depth, compression method, filter method and interlace method name one
+     supported form; the concatenated `IDAT` bodies are one complete deflate
+     stream with nothing after it; and it inflates to EXACTLY
+     `height * (1 + rowbytes)` bytes with a legal filter byte (0-4) leading
+     every row. It does not decode pixels: the grid is the property, and the
+     point is that a file which cannot produce one is refused.
+  3. THE SIZE CEILING. Each capture is at most 409,600 bytes, and the
+     convention still states the sentence that number comes from.
+  4. THE README'S DECLARED FORM. Inside one bounded section of README.md the
+     five captures are displayed, each alone on its line, in the convention's
+     order, with non-empty alternative text, and none of the constructs that
+     turn an image into literal text appears anywhere in that section.
+  5. SET EQUALITY. What `docs/captures/` holds, what README.md displays, and
+     what the convention's table names are the same five names in the same
+     order -- no extra committed capture, no missing one.
 
-  * A CAPTURE COULD BE EIGHT BYTES. The check was `blob.startswith(PNG_MAGIC)`,
-    so the eight signature bytes alone passed as an image: no header, no pixel
-    data, no terminator, and nothing a browser will draw. A "this is a PNG"
-    rule that a file with no PNG in it satisfies is the vacuous assertion the
-    review protocol calls a finding. The file is now WALKED -- signature, then
-    every chunk's declared length, type, and CRC-32 -- and must be a complete
-    image: `IHDR` first with plausible dimensions, at least one `IDAT`, `IEND`
-    last, and not one byte after it. The walk is bounded by the file: every
-    step advances at least twelve bytes, and a chunk that does not fit is a
-    refusal rather than a read past the end.
+It establishes nothing about what the images CONTAIN. Requirement 11 on the
+pixels is a human reading every region before the commit, recorded in the pull
+request; this file cannot and does not stand in for it.
 
-  * HIDING EVERY SCREENSHOT WAS INVISIBLE. References were counted as raw
-    substrings, so wrapping all five image lines in one HTML comment, or
-    deleting the `!` that makes a link an image, removed every rendered
-    capture from the README while the count stayed five. What is pinned is
-    what a READER SEES: HTML comments, fenced blocks and inline code are
-    removed first, and only the markdown image form counts.
+THE DECLARED DOCUMENT FORM, and why it is a form rather than a markdown
+parser. The first version of this rule counted `](docs/captures/...)` as a raw
+substring, so an HTML comment around the five lines hid every screenshot with
+the count unchanged. The second stripped comments, fenced blocks and inline
+code -- and a tilde fence, three spaces of indentation, an escaped `\\!`, or a
+`<pre>` walked straight through it, because "what markdown renders" is a
+specification this repository is not going to reimplement in a contract suite.
+So the supported form is DECLARED and narrow: the capture section is the lines
+from `## Get synced in five steps` to the next line beginning `## `, it holds
+exactly five image lines matching one anchored pattern, and any line in it
+carrying a backtick, a tilde fence, a `<pre`, an HTML comment opener, an
+escaped bang or an `<img` is refused outright rather than interpreted. A
+construct nobody has thought of yet is refused too, because the pattern admits
+a line and nothing else admits one. `docs/captures/README.md` states the same
+form, so the rule is readable where the captures are documented.
 
-EVERY RULE HAS A NEGATIVE TEST. `MutatedDocumentsAreRefused` re-runs the same
-functions over the real text and the real bytes with one property broken, in
-memory, never on disk. Standard library only (requirement 5).
+EVERY RULE HAS A NEGATIVE TEST, and every negative has a POSITIVE TWIN: the
+malformed fixture is a mutation of a datastream this suite accepts, so no
+refusal can be passing for the wrong reason. Mutations happen in memory, never
+on disk. A guard whose removal raises instead of refusing is not proven, so
+every mutation runs through `refusing()`, which turns an exception into a
+named assertion failure. Standard library only (requirement 5).
 """
 
 from __future__ import annotations
@@ -61,7 +69,7 @@ import struct
 import unittest
 import zlib
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 CAPTURES = ROOT / "docs" / "captures"
@@ -79,82 +87,140 @@ NAMES = (
 )
 # "A capture over about 400 KB is a full-screen capture that wanted cropping"
 # (docs/captures/README.md). 400 KiB is that sentence as a number, written as
-# the literal it is: see the module docstring for why it is not `400 * 1024`.
+# the literal it is: a policy number's test may not be written in terms of the
+# policy number, or raising the policy raises the test with it.
 SIZE_CEILING = 409600
 # The sentence the ceiling comes from. If the convention stops saying it, the
 # number here has lost its source and this suite says so.
 CEILING_SENTENCE = "400 KB"
+
+# ---- the declared README form --------------------------------------------
+
+CAPTURE_SECTION = "## Get synced in five steps"
+# Constructs that turn an image into literal text, or smuggle one past an
+# anchored pattern. Refused wherever they appear in the capture section.
+FORBIDDEN_IN_SECTION = ("`", "~~~", "<pre", "<!--", "\\!", "<img")
+# One image, alone on its line, with alternative text that is not empty.
+IMAGE_LINE_RE = re.compile(
+    r"^\s*!\[[^\]]+\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)\s*$"
+)
+# Any other way a line can mention a capture: a link with no bang, an image
+# with empty alternative text, an image sharing its line with prose.
+MENTION = "](docs/captures/"
+
+# ---- the declared PNG form -----------------------------------------------
+
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 # A chunk is 4 length bytes, 4 type bytes, its body, and 4 CRC bytes.
 CHUNK_OVERHEAD = 12
+IHDR_LENGTH = 13
+# Colour type -> (the bit depths PNG allows with it, samples per pixel).
+# Anything outside this table -- colour type 5 or 7, bit depth 3, 16-bit
+# palette -- is refused rather than guessed at.
+COLOUR_FORMS: dict[int, tuple[frozenset[int], int]] = {
+    0: (frozenset({1, 2, 4, 8, 16}), 1),  # greyscale
+    2: (frozenset({8, 16}), 3),  # truecolour
+    3: (frozenset({1, 2, 4, 8}), 1),  # indexed, requires PLTE before IDAT
+    4: (frozenset({8, 16}), 2),  # greyscale with alpha
+    6: (frozenset({8, 16}), 4),  # truecolour with alpha
+}
+# PLTE holds 1..256 three-byte entries.
+MAX_PALETTE_BYTES = 768
 # No screenshot of any screen anyone owns is larger than this on a side. It is
 # a sanity bound on a parsed integer, not a policy about displays.
 MAX_DIMENSION = 40000
-
-_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(docs/captures/([^)\s]+)\)")
-_TABLE_RE = re.compile(r"^\| `([^`]+\.png)` \|", re.MULTILINE)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_FENCED_RE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+# The inflate budget. A header may declare a grid far larger than the file that
+# carries it, and this suite must not be the thing that tries to allocate it.
+# 64 MiB, written as the literal it is, for the same reason as SIZE_CEILING.
+MAX_IMAGE_BYTES = 67108864
+# Compressed input is fed in pieces this size, with the OUTPUT bounded per
+# call, so a small file declaring an enormous grid cannot inflate past budget.
+INFLATE_PIECE = 65536
 _CHUNK_TYPE_RE = re.compile(rb"[A-Za-z]{4}")
 
 
-def displayed(markdown: str) -> str:
-    """The markdown a reader actually sees rendered.
-
-    Order matters: a comment may contain a fence and a fence may contain a
-    backtick. Removing the outermost construct first is what keeps a nested
-    one from resurfacing as visible text.
-    """
-    without_comments = _HTML_COMMENT_RE.sub("", markdown)
-    without_fences = _FENCED_RE.sub("", without_comments)
-    return _INLINE_CODE_RE.sub("", without_fences)
+def capture_section(readme: str) -> list[str] | None:
+    """The declared bounded section, or None when the heading is gone."""
+    lines = readme.splitlines()
+    try:
+        start = lines.index(CAPTURE_SECTION)
+    except ValueError:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return lines[start:end]
 
 
 def referenced(readme: str) -> list[str]:
-    """Every capture README.md DISPLAYS, in the order it displays them.
+    """Every capture the declared section DISPLAYS, in the order it does."""
+    section = capture_section(readme)
+    if section is None:
+        return []
+    return [
+        match.group(1)
+        for match in (IMAGE_LINE_RE.match(line) for line in section)
+        if match
+    ]
 
-    Only the image form counts. A bare link renders as text the reader must
-    click, not as the screenshot this section leads with, and a commented-out
-    or fenced image renders as nothing at all.
-    """
-    return _IMAGE_RE.findall(displayed(readme))
+
+def section_refusals(readme: str) -> list[str]:
+    """Refuse anything but the declared form inside the capture section."""
+    section = capture_section(readme)
+    if section is None:
+        return [f"README.md has no `{CAPTURE_SECTION}` section"]
+    found: list[str] = []
+    for offset, line in enumerate(section):
+        for token in FORBIDDEN_IN_SECTION:
+            if token in line:
+                found.append(
+                    f"the capture section carries {token!r} on its line {offset}, "
+                    "which can render an image as literal text"
+                )
+        if IMAGE_LINE_RE.match(line) is None and MENTION in line:
+            found.append(
+                f"the capture section names a capture on its line {offset} in a "
+                f"form the declared one does not admit: {line.strip()!r}"
+            )
+    shown = referenced(readme)
+    if shown != list(NAMES):
+        found.append(
+            "the capture section must DISPLAY exactly the five captures, each "
+            f"alone on its line, in order, not {shown}"
+        )
+    return found
 
 
 def tabled(convention: str) -> list[str]:
     """Every capture the convention's own table names, in its order."""
-    return _TABLE_RE.findall(convention)
+    return re.findall(r"^\| `([^`]+\.png)` \|", convention, re.MULTILINE)
 
 
-def png_refusals(name: str, blob: bytes | None) -> list[str]:
-    """Refuse anything that is not one complete, self-consistent PNG.
+def _chunks(name: str, blob: bytes) -> tuple[list[tuple[bytes, bytes]], list[str]]:
+    """Walk the datastream into chunks, or say why it is not one.
 
-    Every branch returns rather than continuing, because after the first
-    inconsistency the offsets this walk computes are no longer meaningful and
-    a second message would be a guess. `blob is None` is answered HERE, and
-    not only by the caller, so that deleting the caller's own missing-file
-    branch still produces this refusal rather than an attribute error on
-    `None` -- a guard whose removal crashes has not been proven to refuse.
+    Framing only: lengths that fit, four-letter types, CRC-32 over type and
+    body, IHDR first, IEND last, nothing after it. What the chunks MEAN is
+    `_image`'s question.
     """
-    if blob is None:
-        return [f"{name} is referenced but not committed"]
-    if not blob.startswith(PNG_MAGIC):
-        return [f"{name} does not begin with the PNG signature"]
     size = len(blob)
     offset = len(PNG_MAGIC)
-    types: list[bytes] = []
-    dimensions: tuple[int, int] | None = None
+    chunks: list[tuple[bytes, bytes]] = []
     while offset < size:
         if size - offset < CHUNK_OVERHEAD:
-            return [f"{name} ends mid-chunk, {size - offset} bytes after byte {offset}"]
+            return [], [
+                f"{name} ends mid-chunk, {size - offset} bytes after byte {offset}"
+            ]
         (length,) = struct.unpack(">I", blob[offset : offset + 4])
         kind = blob[offset + 4 : offset + 8]
         if not _CHUNK_TYPE_RE.fullmatch(kind):
-            return [
+            return [], [
                 f"{name} has a chunk at byte {offset} whose type is not four letters"
             ]
         if length > size - offset - CHUNK_OVERHEAD:
-            return [
+            return [], [
                 f"{name} declares a {length}-byte {kind.decode()} chunk at byte "
                 f"{offset} that does not fit in {size} bytes"
             ]
@@ -163,41 +229,162 @@ def png_refusals(name: str, blob: bytes | None) -> list[str]:
             ">I", blob[offset + 8 + length : offset + CHUNK_OVERHEAD + length]
         )
         if zlib.crc32(kind + body) & 0xFFFFFFFF != declared:
-            return [f"{name} chunk {kind.decode()} at byte {offset} fails its CRC-32"]
-        if kind == b"IHDR":
-            if length != 13:
-                return [f"{name} has a {length}-byte IHDR, which must be 13"]
-            dimensions = struct.unpack(">II", body[:8])
-        types.append(kind)
+            return [], [f"{name} chunk {kind.decode()} at byte {offset} fails its CRC-32"]
+        chunks.append((kind, body))
         # Every chunk advances the walk by at least CHUNK_OVERHEAD, so this
         # loop is bounded by the file size and cannot spin on a zero-length
         # chunk or read past the end.
         offset += CHUNK_OVERHEAD + length
         if kind == b"IEND":
             break
-    if not types:
-        return [f"{name} is the PNG signature and nothing else"]
-    if types[0] != b"IHDR":
-        return [f"{name} begins with {types[0].decode()} rather than IHDR"]
-    if dimensions is None or not all(0 < side <= MAX_DIMENSION for side in dimensions):
-        return [f"{name} declares implausible dimensions {dimensions}"]
-    if b"IDAT" not in types:
-        return [f"{name} carries no IDAT chunk, so it has no image in it"]
-    if types[-1] != b"IEND":
-        return [f"{name} never reaches IEND, so it is truncated"]
+    if not chunks:
+        return [], [f"{name} is the PNG signature and nothing else"]
+    if chunks[0][0] != b"IHDR":
+        return [], [f"{name} begins with {chunks[0][0].decode()} rather than IHDR"]
+    if chunks[-1][0] != b"IEND":
+        return [], [f"{name} never reaches IEND, so it is truncated"]
     if offset != size:
-        return [f"{name} carries {size - offset} bytes after IEND"]
+        return [], [f"{name} carries {size - offset} bytes after IEND"]
+    return chunks, []
+
+
+def _inflate(name: str, stream: bytes, expected: int) -> tuple[bytes, list[str]]:
+    """Inflate the IDAT stream under a hard output budget."""
+    budget = expected + 1
+    decompressor = zlib.decompressobj()
+    out = bytearray()
+    pending = stream
+    try:
+        while len(out) < budget and not decompressor.eof:
+            if decompressor.unconsumed_tail:
+                feed = decompressor.unconsumed_tail
+            elif pending:
+                feed, pending = pending[:INFLATE_PIECE], pending[INFLATE_PIECE:]
+            else:
+                break
+            # max_length is never 0 here: zlib reads 0 as "no limit", and the
+            # loop condition keeps `budget - len(out)` at 1 or more.
+            out += decompressor.decompress(feed, budget - len(out))
+    except zlib.error as error:
+        return b"", [f"{name} IDAT data is not a valid deflate stream ({error})"]
+    if len(out) > expected:
+        return b"", [
+            f"{name} IDAT data inflates past the {expected} bytes its header "
+            "declares"
+        ]
+    if not decompressor.eof:
+        return b"", [
+            f"{name} IDAT deflate stream never terminates; it yielded "
+            f"{len(out)} of the {expected} bytes its header declares"
+        ]
+    trailing = len(decompressor.unused_data) + len(pending)
+    if trailing:
+        return b"", [f"{name} carries {trailing} bytes after the IDAT deflate stream"]
+    if len(out) != expected:
+        return b"", [
+            f"{name} IDAT data inflates to {len(out)} bytes, not the {expected} "
+            "its header declares"
+        ]
+    return bytes(out), []
+
+
+def _image(name: str, chunks: Sequence[tuple[bytes, bytes]]) -> list[str]:
+    """Refuse a framed datastream that is not one decodable image."""
+    kinds = [kind for kind, _ in chunks]
+    if kinds.count(b"IHDR") != 1:
+        return [f"{name} carries {kinds.count(b'IHDR')} IHDR chunks, which must be 1"]
+    if len(chunks[0][1]) != IHDR_LENGTH:
+        return [
+            f"{name} has a {len(chunks[0][1])}-byte IHDR, which must be {IHDR_LENGTH}"
+        ]
+    width, height, depth, colour, compression, filtering, interlace = struct.unpack(
+        ">IIBBBBB", chunks[0][1]
+    )
+    if not all(0 < side <= MAX_DIMENSION for side in (width, height)):
+        return [f"{name} declares implausible dimensions {(width, height)}"]
+    if compression != 0:
+        return [f"{name} declares compression method {compression}; PNG defines 0"]
+    if filtering != 0:
+        return [f"{name} declares filter method {filtering}; PNG defines 0"]
+    if interlace != 0:
+        return [
+            f"{name} declares interlace method {interlace}; this form supports 0, "
+            "and a screenshot is never interlaced"
+        ]
+    if colour not in COLOUR_FORMS:
+        return [f"{name} declares colour type {colour}, which PNG does not define"]
+    depths, channels = COLOUR_FORMS[colour]
+    if depth not in depths:
+        return [
+            f"{name} declares bit depth {depth} with colour type {colour}, which "
+            f"allows {sorted(depths)}"
+        ]
+    if b"IDAT" not in kinds:
+        return [f"{name} carries no IDAT chunk, so it has no image in it"]
+    first_idat = kinds.index(b"IDAT")
+    last_idat = len(kinds) - 1 - kinds[::-1].index(b"IDAT")
+    if any(kind != b"IDAT" for kind in kinds[first_idat : last_idat + 1]):
+        return [f"{name} has a non-IDAT chunk between its IDAT chunks"]
+    palettes = [index for index, kind in enumerate(kinds) if kind == b"PLTE"]
+    if len(palettes) > 1:
+        return [f"{name} carries {len(palettes)} PLTE chunks, which must be at most 1"]
+    if palettes and colour in (0, 4):
+        return [f"{name} carries a PLTE chunk with greyscale colour type {colour}"]
+    if colour == 3 and (not palettes or palettes[0] > first_idat):
+        return [f"{name} has colour type 3 with no PLTE chunk before its first IDAT"]
+    if palettes:
+        palette = chunks[palettes[0]][1]
+        if not palette or len(palette) % 3 or len(palette) > MAX_PALETTE_BYTES:
+            return [f"{name} has a {len(palette)}-byte PLTE chunk, which must be 3 to "
+                    f"{MAX_PALETTE_BYTES} bytes in three-byte entries"]
+        if colour == 3 and len(palette) // 3 > 1 << depth:
+            return [
+                f"{name} has {len(palette) // 3} palette entries, more than the "
+                f"{1 << depth} its {depth}-bit indices can name"
+            ]
+    if chunks[-1][1]:
+        return [f"{name} has a {len(chunks[-1][1])}-byte IEND, which must be empty"]
+    rowbytes = -(-(width * channels * depth) // 8)
+    expected = height * (1 + rowbytes)
+    if expected > MAX_IMAGE_BYTES:
+        return [
+            f"{name} declares a {expected}-byte grid, over the {MAX_IMAGE_BYTES}-byte "
+            "budget this suite will inflate"
+        ]
+    raw, refused = _inflate(
+        name, b"".join(body for kind, body in chunks if kind == b"IDAT"), expected
+    )
+    if refused:
+        return refused
+    for row in range(height):
+        filter_byte = raw[row * (1 + rowbytes)]
+        if filter_byte > 4:
+            return [
+                f"{name} row {row} carries filter byte {filter_byte}; PNG defines 0 to 4"
+            ]
     return []
+
+
+def png_refusals(name: str, blob: bytes | None) -> list[str]:
+    """Refuse anything that is not one complete, decodable PNG.
+
+    `blob is None` is answered HERE, and not only by the caller, so that
+    deleting the caller's own missing-file branch still produces this refusal
+    rather than an attribute error on `None`.
+    """
+    if blob is None:
+        return [f"{name} is referenced but not committed"]
+    if not blob.startswith(PNG_MAGIC):
+        return [f"{name} does not begin with the PNG signature"]
+    chunks, refused = _chunks(name, blob)
+    if refused:
+        return refused
+    return _image(name, chunks)
 
 
 def refusals(readme: str, convention: str, files: Mapping[str, bytes]) -> list[str]:
     """Every way the capture set goes wrong. Empty means the set is intact."""
-    found: list[str] = []
-    if referenced(readme) != list(NAMES):
-        found.append(
-            "README.md must DISPLAY exactly the five captures in order, not "
-            f"{referenced(readme)}"
-        )
+    found = section_refusals(readme)
     if tabled(convention) != list(NAMES):
         found.append(
             "docs/captures/README.md must table exactly the five captures in "
@@ -228,6 +415,9 @@ def documents() -> tuple[str, str]:
     return README.read_text(encoding="utf-8"), CONVENTION.read_text(encoding="utf-8")
 
 
+# ---- fixtures: every negative below is a mutation of one of these ----------
+
+
 def chunk(kind: bytes, body: bytes) -> bytes:
     return (
         struct.pack(">I", len(body))
@@ -237,24 +427,76 @@ def chunk(kind: bytes, body: bytes) -> bytes:
     )
 
 
-IHDR = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-IDAT = chunk(b"IDAT", zlib.compress(b"\x00\x00"))
-IEND = chunk(b"IEND", b"")
-# One complete one-by-one greyscale PNG, built here rather than committed, so
-# every structural case below is a mutation of something this suite ACCEPTS.
-TINY_PNG = PNG_MAGIC + IHDR + IDAT + IEND
+def ihdr(
+    width: int = 1,
+    height: int = 1,
+    depth: int = 8,
+    colour: int = 0,
+    compression: int = 0,
+    filtering: int = 0,
+    interlace: int = 0,
+) -> bytes:
+    return chunk(
+        b"IHDR",
+        struct.pack(
+            ">IIBBBBB", width, height, depth, colour, compression, filtering, interlace
+        ),
+    )
+
+
+def rows(
+    width: int = 1, height: int = 1, depth: int = 8, colour: int = 0, filter_byte: int = 0
+) -> bytes:
+    """The raw filtered scanlines a grid of this shape must inflate to."""
+    rowbytes = -(-(width * COLOUR_FORMS[colour][1] * depth) // 8)
+    return bytes([filter_byte] + [0] * rowbytes) * height
+
+
+def assemble(*parts: bytes, iend: bytes = b"") -> bytes:
+    return PNG_MAGIC + b"".join(parts) + chunk(b"IEND", iend)
+
+
+GREY = assemble(ihdr(), chunk(b"IDAT", zlib.compress(rows())))
+RGB = assemble(
+    ihdr(2, 2, 8, 2), chunk(b"IDAT", zlib.compress(rows(2, 2, 8, 2)))
+)
+INDEXED = assemble(
+    ihdr(4, 2, 2, 3),
+    chunk(b"PLTE", bytes(12)),
+    chunk(b"IDAT", zlib.compress(rows(4, 2, 2, 3))),
+)
+GREY_ALPHA = assemble(
+    ihdr(2, 2, 16, 4), chunk(b"IDAT", zlib.compress(rows(2, 2, 16, 4)))
+)
+RGBA = assemble(
+    ihdr(3, 3, 8, 6), chunk(b"IDAT", zlib.compress(rows(3, 3, 8, 6)))
+)
+_SPLIT = zlib.compress(rows(8, 8, 8, 6))
+MULTI_IDAT = assemble(
+    ihdr(8, 8, 8, 6),
+    chunk(b"IDAT", _SPLIT[: len(_SPLIT) // 2]),
+    chunk(b"IDAT", _SPLIT[len(_SPLIT) // 2 :]),
+)
+POSITIVES = {
+    "grey.png": GREY,
+    "rgb.png": RGB,
+    "indexed.png": INDEXED,
+    "grey-alpha.png": GREY_ALPHA,
+    "rgba.png": RGBA,
+    "multi-idat.png": MULTI_IDAT,
+}
 # The over-ceiling fixture's size, written as a literal that derives from
 # nothing: an edit to SIZE_CEILING cannot drag it along.
 OVER_CEILING = 409601
 
 
 def png_of_at_least(size: int) -> bytes:
-    """A valid PNG padded to at least `size` bytes by an ancillary chunk."""
-    padding = size - len(TINY_PNG) - CHUNK_OVERHEAD - len(b"pad\x00")
-    grown = (
-        TINY_PNG[: -len(IEND)]
-        + chunk(b"tEXt", b"pad\x00" + b"x" * max(padding, 0))
-        + IEND
+    """A complete, decodable PNG padded past `size` by an ancillary chunk."""
+    padding = size - len(GREY) - CHUNK_OVERHEAD - len(b"pad\x00")
+    grown = assemble(
+        ihdr(),
+        chunk(b"tEXt", b"pad\x00" + b"x" * max(padding, 0)),
+        chunk(b"IDAT", zlib.compress(rows())),
     )
     assert len(grown) >= size, (len(grown), size)
     return grown
@@ -268,19 +510,29 @@ class CaptureSetIsIntact(unittest.TestCase):
     def test_the_five_are_the_files_on_disk(self):
         self.assertEqual(sorted(NAMES), sorted(committed()))
 
-    def test_the_ceiling_is_the_documented_number(self):
-        # The assertion that makes RAISING the ceiling a failing test. Written
-        # twice on purpose: the literal a reader checks against the
-        # convention, and the arithmetic that says what the literal means.
+    def test_the_policy_numbers_are_the_documented_ones(self):
+        # The assertions that make RAISING a bound a failing test. Each is
+        # written against a literal, never against the constant it polices.
         self.assertEqual(409600, SIZE_CEILING)
         self.assertEqual(400 * 1024, SIZE_CEILING)
         self.assertEqual(409601, OVER_CEILING)
+        self.assertEqual(40000, MAX_DIMENSION)
+        self.assertEqual(67108864, MAX_IMAGE_BYTES)
+        self.assertEqual(64 * 1024 * 1024, MAX_IMAGE_BYTES)
         self.assertIn(CEILING_SENTENCE, documents()[1])
 
-    def test_the_fixture_pngs_are_accepted(self):
-        # Non-vacuity for every structural case below: the thing each one
-        # mutates is something this walk actually accepts.
-        self.assertEqual([], png_refusals("tiny.png", TINY_PNG))
+    def test_the_declared_form_is_stated_where_the_captures_are_documented(self):
+        convention = documents()[1]
+        self.assertIn(CAPTURE_SECTION, convention)
+        for token in FORBIDDEN_IN_SECTION:
+            self.assertIn(token, convention, f"the convention does not name {token!r}")
+
+    def test_every_positive_fixture_is_accepted(self):
+        # Non-vacuity for every structural case below: each mutates one of
+        # these, and each of these is a datastream this suite accepts.
+        for name, blob in POSITIVES.items():
+            with self.subTest(fixture=name):
+                self.assertEqual([], png_refusals(name, blob))
         self.assertEqual([], png_refusals("padded.png", png_of_at_least(OVER_CEILING)))
 
 
@@ -290,54 +542,129 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         self.files = committed()
         self.assertEqual([], refusals(self.readme, self.convention, self.files))
 
+    def refusing(self, readme, convention, files, case: str) -> list[str]:
+        """Run the control, turning any exception into a named failure.
+
+        A guard whose removal raises has not been shown to refuse anything.
+        This is where that distinction is enforced, so the three removals the
+        review found dying by exception -- a missing blob, a chunk list that
+        never filled, the declared-length bound -- fail with a message.
+        """
+        try:
+            return refusals(readme, convention, files)
+        except Exception as error:  # noqa: BLE001 - the point is to name it
+            self.fail(f"the capture control raised {error!r} on {case} instead of refusing it")
+
     def kills(self, found: list[str], needle: str) -> None:
         self.assertTrue(
             [line for line in found if needle in line],
             f"{needle!r} was not refused after the mutation: {found}",
         )
 
-    # ---- what the README DISPLAYS -----------------------------------------
+    def with_capture(self, name: str, blob: bytes, needle: str, case: str) -> None:
+        files = dict(self.files, **{name: blob})
+        self.kills(self.refusing(self.readme, self.convention, files, case), needle)
+
+    def with_readme(self, readme: str, needle: str, case: str) -> None:
+        self.kills(self.refusing(readme, self.convention, self.files, case), needle)
+
+    # ---- the declared README form -----------------------------------------
+
+    def section_span(self) -> tuple[int, int]:
+        lines = self.readme.splitlines()
+        start = lines.index(CAPTURE_SECTION)
+        end = next(
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("## ")
+        )
+        return start, end
+
+    def rewrite_section(self, rewrite) -> str:
+        lines = self.readme.splitlines()
+        start, end = self.section_span()
+        return "\n".join(lines[:start] + rewrite(lines[start:end]) + lines[end:]) + "\n"
 
     def test_dropping_a_readme_image_is_refused(self):
         readme = self.readme.replace(f"](docs/captures/{NAMES[4]})", "]()", 1)
-        self.kills(refusals(readme, self.convention, self.files), "in order")
+        self.with_readme(readme, "in order", "a dropped image")
 
     def test_reordering_the_readme_images_is_refused(self):
         readme = self.readme.replace(
             f"](docs/captures/{NAMES[0]})", f"](docs/captures/{NAMES[1]})", 1
         )
-        self.kills(refusals(readme, self.convention, self.files), "in order")
+        self.with_readme(readme, "in order", "reordered images")
 
     def test_commenting_out_every_image_is_refused(self):
-        marker = f"](docs/captures/{NAMES[4]})"
-        first = self.readme.index("![")
-        last = self.readme.index(marker) + len(marker)
-        readme = (
-            self.readme[:first]
-            + "<!--\n"
-            + self.readme[first:last]
-            + "\n-->"
-            + self.readme[last:]
-        )
-        self.assertEqual([], referenced(readme))
-        self.kills(refusals(readme, self.convention, self.files), "in order")
+        def rewrite(section):
+            # After the heading, so the comment opens INSIDE the section.
+            return [section[0], "<!--"] + section[1:] + ["-->"]
 
-    def test_turning_an_image_into_a_link_is_refused(self):
-        readme = self.readme.replace("![The recovery-phrase", "[The recovery-phrase", 1)
-        self.kills(refusals(readme, self.convention, self.files), "in order")
+        self.with_readme(self.rewrite_section(rewrite), "'<!--'", "HTML-commented images")
 
-    def test_fencing_an_image_is_refused(self):
-        marker = f"](docs/captures/{NAMES[1]})"
-        end = self.readme.index(marker) + len(marker)
-        start = self.readme.rindex("![", 0, end)
-        readme = (
-            self.readme[:start]
-            + "```\n"
-            + self.readme[start:end]
-            + "\n```"
-            + self.readme[end:]
+    def test_tilde_fencing_every_image_is_refused(self):
+        def rewrite(section):
+            out = []
+            for line in section:
+                if IMAGE_LINE_RE.match(line):
+                    out += ["   ~~~", line, "   ~~~"]
+                else:
+                    out.append(line)
+            return out
+
+        self.with_readme(self.rewrite_section(rewrite), "'~~~'", "tilde-fenced images")
+
+    def test_escaping_an_image_marker_is_refused(self):
+        readme = self.readme.replace("![The recovery-phrase", "\\![The recovery-phrase", 1)
+        self.with_readme(readme, "'\\\\!'", "an escaped image marker")
+
+    def test_wrapping_an_image_in_pre_is_refused(self):
+        def rewrite(section):
+            out = []
+            for line in section:
+                if IMAGE_LINE_RE.match(line) and NAMES[1] in line:
+                    out += ["<pre>", line, "</pre>"]
+                else:
+                    out.append(line)
+            return out
+
+        self.with_readme(self.rewrite_section(rewrite), "'<pre'", "a pre-wrapped image")
+
+    def test_an_image_inside_inline_code_is_refused(self):
+        readme = self.readme.replace(
+            f"![The Pair a new device", f"`![The Pair a new device", 1
         )
-        self.kills(refusals(readme, self.convention, self.files), "in order")
+        self.with_readme(readme, "'`'", "an inline-coded image")
+
+    def test_an_img_tag_in_the_section_is_refused(self):
+        def rewrite(section):
+            return section + ['<img src="docs/captures/01-install-from-directory.png">']
+
+        self.with_readme(self.rewrite_section(rewrite), "'<img'", "an img tag")
+
+    def test_empty_alternative_text_is_refused(self):
+        readme = re.sub(
+            r"!\[[^\]]+\]\(docs/captures/" + re.escape(NAMES[2]) + r"\)",
+            f"![](docs/captures/{NAMES[2]})",
+            self.readme,
+            count=1,
+        )
+        self.with_readme(readme, "does not admit", "empty alternative text")
+
+    def test_moving_an_image_out_of_the_section_is_refused(self):
+        line = next(
+            candidate
+            for candidate in self.readme.splitlines()
+            if IMAGE_LINE_RE.match(candidate) and NAMES[3] in candidate
+        )
+        readme = self.readme.replace(line + "\n", "", 1).replace(
+            "## Get syncing\n", line + "\n\n## Get syncing\n", 1
+        )
+        self.with_readme(readme, "in order", "an image moved out of the section")
+
+    def test_losing_the_section_heading_is_refused(self):
+        readme = self.readme.replace(CAPTURE_SECTION, "## Getting started", 1)
+        self.with_readme(readme, "has no", "a renamed section heading")
 
     # ---- what the convention tables ---------------------------------------
 
@@ -350,80 +677,239 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             flags=re.MULTILINE,
         )
         self.kills(
-            refusals(self.readme, convention, self.files), "docs/captures/README.md"
+            self.refusing(self.readme, convention, self.files, "a dropped table row"),
+            "docs/captures/README.md",
         )
 
     def test_losing_the_ceiling_sentence_is_refused(self):
         convention = self.convention.replace(CEILING_SENTENCE, "some megabytes")
-        self.kills(refusals(self.readme, convention, self.files), "no longer states")
+        self.kills(
+            self.refusing(self.readme, convention, self.files, "a lost ceiling sentence"),
+            "no longer states",
+        )
 
     # ---- what is committed ------------------------------------------------
 
     def test_an_uncommitted_capture_is_refused(self):
         files = {name: blob for name, blob in self.files.items() if name != NAMES[3]}
-        found = refusals(self.readme, self.convention, files)
+        found = self.refusing(self.readme, self.convention, files, "a missing capture")
         self.kills(found, "is referenced but not committed")
         self.kills(found, NAMES[3])
 
     def test_an_unreferenced_capture_is_refused(self):
-        files = dict(self.files, **{"06-stray.png": TINY_PNG})
-        self.kills(refusals(self.readme, self.convention, files), "referenced nowhere")
+        files = dict(self.files, **{"06-stray.png": GREY})
+        self.kills(
+            self.refusing(self.readme, self.convention, files, "a stray capture"),
+            "referenced nowhere",
+        )
 
     def test_a_capture_over_the_ceiling_is_refused(self):
-        files = dict(self.files, **{NAMES[0]: png_of_at_least(OVER_CEILING)})
-        self.kills(refusals(self.readme, self.convention, files), "ceiling")
+        self.with_capture(
+            NAMES[0], png_of_at_least(OVER_CEILING), "ceiling", "an oversize capture"
+        )
 
-    # ---- what a capture must BE -------------------------------------------
+    # ---- framing ----------------------------------------------------------
 
     def test_a_capture_that_is_not_a_png_is_refused(self):
-        files = dict(self.files, **{NAMES[1]: b"GIF89a" + b"\0" * 64})
-        self.kills(refusals(self.readme, self.convention, files), "PNG signature")
+        self.with_capture(NAMES[1], b"GIF89a" + bytes(64), "PNG signature", "a GIF")
 
     def test_a_signature_only_capture_is_refused(self):
-        files = dict(self.files, **{NAMES[0]: PNG_MAGIC})
-        self.kills(
-            refusals(self.readme, self.convention, files), "signature and nothing else"
+        self.with_capture(
+            NAMES[0], PNG_MAGIC, "signature and nothing else", "a signature-only file"
         )
 
     def test_a_capture_truncated_after_ihdr_is_refused(self):
-        files = dict(self.files, **{NAMES[2]: PNG_MAGIC + IHDR})
-        self.kills(refusals(self.readme, self.convention, files), "no IDAT chunk")
+        self.with_capture(
+            NAMES[2], PNG_MAGIC + ihdr(), "never reaches IEND", "a header-only file"
+        )
 
     def test_a_capture_with_no_iend_is_refused(self):
-        files = dict(self.files, **{NAMES[3]: PNG_MAGIC + IHDR + IDAT})
-        self.kills(refusals(self.readme, self.convention, files), "never reaches IEND")
+        blob = PNG_MAGIC + ihdr() + chunk(b"IDAT", zlib.compress(rows()))
+        self.with_capture(NAMES[3], blob, "never reaches IEND", "a file with no IEND")
+
+    def test_a_capture_with_no_idat_is_refused(self):
+        # Framed correctly -- IHDR first, empty IEND last, nothing after it --
+        # and carrying no image at all. Only the IDAT rule can catch this one.
+        self.with_capture(
+            NAMES[1], assemble(ihdr()), "no IDAT chunk", "a header and a terminator"
+        )
 
     def test_a_capture_with_a_corrupt_crc_is_refused(self):
-        broken = bytearray(TINY_PNG)
-        broken[len(PNG_MAGIC) + len(IHDR) - 1] ^= 0xFF
-        files = dict(self.files, **{NAMES[4]: bytes(broken)})
-        self.kills(refusals(self.readme, self.convention, files), "fails its CRC-32")
+        broken = bytearray(GREY)
+        broken[len(PNG_MAGIC) + CHUNK_OVERHEAD + IHDR_LENGTH - 1] ^= 0xFF
+        self.with_capture(NAMES[4], bytes(broken), "fails its CRC-32", "a corrupt CRC")
 
     def test_a_capture_with_trailing_bytes_is_refused(self):
-        files = dict(self.files, **{NAMES[0]: TINY_PNG + b"appended"})
-        self.kills(refusals(self.readme, self.convention, files), "bytes after IEND")
+        self.with_capture(
+            NAMES[0], GREY + b"appended", "bytes after IEND", "trailing bytes"
+        )
 
     def test_a_capture_with_an_overlong_chunk_length_is_refused(self):
-        broken = bytearray(TINY_PNG)
+        broken = bytearray(GREY)
         struct.pack_into(">I", broken, len(PNG_MAGIC), 1 << 30)
-        files = dict(self.files, **{NAMES[1]: bytes(broken)})
-        self.kills(refusals(self.readme, self.convention, files), "does not fit")
+        self.with_capture(
+            NAMES[1], bytes(broken), "does not fit", "an overlong declared length"
+        )
 
     def test_a_capture_ending_mid_chunk_is_refused(self):
-        files = dict(self.files, **{NAMES[2]: TINY_PNG[:-4]})
-        self.kills(refusals(self.readme, self.convention, files), "ends mid-chunk")
+        self.with_capture(NAMES[2], GREY[:-4], "ends mid-chunk", "a mid-chunk end")
 
     def test_a_capture_with_a_non_letter_chunk_type_is_refused(self):
-        broken = bytearray(TINY_PNG)
+        broken = bytearray(GREY)
         broken[len(PNG_MAGIC) + 4] = 0x31
-        files = dict(self.files, **{NAMES[3]: bytes(broken)})
-        self.kills(refusals(self.readme, self.convention, files), "not four letters")
+        self.with_capture(
+            NAMES[3], bytes(broken), "not four letters", "a numeric chunk type"
+        )
+
+    def test_a_capture_not_beginning_with_ihdr_is_refused(self):
+        blob = assemble(
+            chunk(b"pHYs", bytes(9)), ihdr(), chunk(b"IDAT", zlib.compress(rows()))
+        )
+        self.with_capture(NAMES[4], blob, "rather than IHDR", "pHYs before IHDR")
+
+    # ---- the header -------------------------------------------------------
+
+    def test_a_capture_with_a_short_ihdr_is_refused(self):
+        blob = assemble(
+            chunk(b"IHDR", struct.pack(">IIBBBB", 1, 1, 8, 0, 0, 0)),
+            chunk(b"IDAT", zlib.compress(rows())),
+        )
+        self.with_capture(NAMES[0], blob, "which must be 13", "a 12-byte IHDR")
+
+    def test_a_capture_with_two_ihdr_chunks_is_refused(self):
+        blob = assemble(ihdr(), ihdr(), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(NAMES[1], blob, "IHDR chunks, which must be 1", "two IHDRs")
 
     def test_a_capture_with_zero_dimensions_is_refused(self):
-        header = chunk(b"IHDR", struct.pack(">IIBBBBB", 0, 1, 8, 0, 0, 0, 0))
-        files = dict(self.files, **{NAMES[4]: PNG_MAGIC + header + IDAT + IEND})
-        self.kills(
-            refusals(self.readme, self.convention, files), "implausible dimensions"
+        blob = assemble(ihdr(0, 1), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(
+            NAMES[2], blob, "implausible dimensions", "a zero-width header"
+        )
+
+    def test_a_capture_wider_than_the_bound_is_refused(self):
+        self.assertEqual(40000, MAX_DIMENSION)
+        blob = assemble(ihdr(40001, 1), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(
+            NAMES[3], blob, "implausible dimensions", "a 40001-pixel width"
+        )
+
+    def test_a_capture_declaring_a_grid_over_budget_is_refused(self):
+        self.assertEqual(67108864, MAX_IMAGE_BYTES)
+        blob = assemble(
+            ihdr(MAX_DIMENSION, MAX_DIMENSION, 8, 6),
+            chunk(b"IDAT", zlib.compress(rows())),
+        )
+        self.with_capture(NAMES[4], blob, "budget this suite will inflate", "a huge grid")
+
+    def test_a_capture_with_an_unknown_colour_type_is_refused(self):
+        blob = assemble(ihdr(1, 1, 8, 7), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(NAMES[0], blob, "colour type 7", "colour type 7")
+
+    def test_a_capture_with_an_illegal_bit_depth_is_refused(self):
+        blob = assemble(ihdr(1, 1, 3, 0), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(NAMES[1], blob, "bit depth 3", "bit depth 3")
+
+    def test_a_capture_declaring_another_compression_method_is_refused(self):
+        blob = assemble(
+            ihdr(compression=1), chunk(b"IDAT", zlib.compress(rows()))
+        )
+        self.with_capture(
+            NAMES[2], blob, "compression method 1", "compression method 1"
+        )
+
+    def test_a_capture_declaring_another_filter_method_is_refused(self):
+        blob = assemble(ihdr(filtering=1), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(NAMES[3], blob, "filter method 1", "filter method 1")
+
+    def test_an_interlaced_capture_is_refused(self):
+        blob = assemble(ihdr(interlace=1), chunk(b"IDAT", zlib.compress(rows())))
+        self.with_capture(NAMES[4], blob, "interlace method 1", "an Adam7 image")
+
+    # ---- palette and chunk order ------------------------------------------
+
+    def test_an_indexed_capture_without_a_palette_is_refused(self):
+        blob = assemble(
+            ihdr(4, 2, 2, 3), chunk(b"IDAT", zlib.compress(rows(4, 2, 2, 3)))
+        )
+        self.with_capture(NAMES[0], blob, "no PLTE chunk", "indexed with no palette")
+
+    def test_a_palette_after_the_first_idat_is_refused(self):
+        blob = assemble(
+            ihdr(4, 2, 2, 3),
+            chunk(b"IDAT", zlib.compress(rows(4, 2, 2, 3))),
+            chunk(b"PLTE", bytes(12)),
+        )
+        self.with_capture(NAMES[1], blob, "before its first IDAT", "a late palette")
+
+    def test_a_truecolour_palette_of_the_wrong_length_is_refused(self):
+        blob = assemble(
+            ihdr(2, 2, 8, 2),
+            chunk(b"PLTE", bytes(10)),
+            chunk(b"IDAT", zlib.compress(rows(2, 2, 8, 2))),
+        )
+        self.with_capture(NAMES[2], blob, "three-byte entries", "a 10-byte palette")
+
+    def test_a_greyscale_palette_is_refused(self):
+        blob = assemble(
+            ihdr(), chunk(b"PLTE", bytes(3)), chunk(b"IDAT", zlib.compress(rows()))
+        )
+        self.with_capture(
+            NAMES[3], blob, "PLTE chunk with greyscale", "a greyscale palette"
+        )
+
+    def test_non_consecutive_idat_chunks_are_refused(self):
+        split = zlib.compress(rows(8, 8, 8, 6))
+        blob = assemble(
+            ihdr(8, 8, 8, 6),
+            chunk(b"IDAT", split[: len(split) // 2]),
+            chunk(b"tEXt", b"gap\x00"),
+            chunk(b"IDAT", split[len(split) // 2 :]),
+        )
+        self.with_capture(
+            NAMES[4], blob, "between its IDAT chunks", "a gap between IDATs"
+        )
+
+    def test_a_nonempty_iend_is_refused(self):
+        blob = assemble(
+            ihdr(), chunk(b"IDAT", zlib.compress(rows())), iend=b"tail"
+        )
+        self.with_capture(NAMES[0], blob, "IEND, which must be empty", "a nonempty IEND")
+
+    # ---- the image data ---------------------------------------------------
+
+    def test_an_empty_idat_is_refused(self):
+        blob = assemble(ihdr(), chunk(b"IDAT", b""))
+        self.assertEqual(57, len(blob))
+        self.with_capture(NAMES[1], blob, "never terminates", "an empty IDAT")
+
+    def test_idat_that_is_not_deflate_is_refused(self):
+        blob = assemble(ihdr(), chunk(b"IDAT", b"not-deflate"))
+        self.with_capture(
+            NAMES[2], blob, "not a valid deflate stream", "non-deflate IDAT bytes"
+        )
+
+    def test_a_deflate_stream_one_byte_short_is_refused(self):
+        blob = assemble(ihdr(), chunk(b"IDAT", zlib.compress(rows())[:-1]))
+        self.with_capture(NAMES[3], blob, "never terminates", "a truncated deflate stream")
+
+    def test_a_deflate_stream_with_one_extra_row_is_refused(self):
+        blob = assemble(ihdr(1, 1), chunk(b"IDAT", zlib.compress(rows(1, 2))))
+        self.with_capture(NAMES[4], blob, "inflates", "one row too many")
+
+    def test_a_grid_one_row_short_is_refused(self):
+        blob = assemble(ihdr(1, 2), chunk(b"IDAT", zlib.compress(rows(1, 1))))
+        self.with_capture(NAMES[0], blob, "inflates to", "one row too few")
+
+    def test_an_illegal_filter_byte_is_refused(self):
+        blob = assemble(
+            ihdr(), chunk(b"IDAT", zlib.compress(rows(filter_byte=5)))
+        )
+        self.with_capture(NAMES[1], blob, "filter byte 5", "filter byte 5")
+
+    def test_bytes_after_the_deflate_stream_are_refused(self):
+        blob = assemble(ihdr(), chunk(b"IDAT", zlib.compress(rows()) + b"extra"))
+        self.with_capture(
+            NAMES[2], blob, "after the IDAT deflate stream", "bytes after the stream"
         )
 
 

@@ -73,7 +73,8 @@ below, and all five assume your own server is already running.
 
 The dashboard's device list and its revoke button are documented under
 [See your devices](#4-see-your-devices) and were not exercised in the 1.0.0
-device run (`docs/validation-runs/2026-09-14.md`).
+device run recorded in
+[docs/validation-runs/2026-09-14.md](docs/validation-runs/2026-09-14.md).
 
 ## Get syncing
 

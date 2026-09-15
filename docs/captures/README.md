@@ -23,6 +23,28 @@ and 03 from V1, 04 from V2, 05 from V3. They are taken during a real
 validation run and belong to the run recorded in
 `docs/validation-runs/<date>.md`.
 
+## How README.md displays them
+
+`scripts/ci/test_capture_contract.py` refuses anything but this form, so
+it is written here rather than only in the suite. The CAPTURE SECTION is
+the lines of `README.md` from `## Get synced in five steps` up to the next
+line beginning `## `. Inside it:
+
+- exactly five image lines, in the order of the table above, each ALONE on
+  its line and matching `![<alt>](docs/captures/<name>)` with alternative
+  text that is not empty;
+- no line may carry a backtick, a `~~~` fence, a `<pre` tag, an HTML
+  comment opener `<!--`, an escaped `\![`, or an `<img` tag. Each of those
+  renders an image as literal text or hides it altogether, and the section
+  is where the screenshots have to actually appear;
+- any other mention of `docs/captures/` -- a link with no `!`, an image
+  with empty alternative text, an image sharing a line with prose -- is
+  refused rather than counted.
+
+Outside that section README.md may say whatever it likes; this is a form
+for one section, not a markdown policy. Renaming the heading is a change
+to this convention and to the suite, in one pull request.
+
 ## How to take them
 
 1. Use a DISPOSABLE vault with disposable notes, on a device paired for the
