@@ -82,18 +82,33 @@ specification that decide it:
 What survives that pass is the visible document. The heading must be in it --
 its absence is a refusal in its own words, not a fallback to counting nothing
 -- and the section is the lines from it to the next line beginning `## `.
-Inside the section: exactly five image lines, each alone on its line, indented
-by EXACTLY the three spaces that continue its numbered list item, carrying
-alternative text that is not empty and ending at the closing parenthesis; no
-line beginning with four spaces or a tab, which would open an indented code
-block whatever it contained; and no backtick, `~~~`, `<pre`, escaped bang or
-`<img` anywhere in it, matched WITHOUT CASE, for the ones that can still
-appear part-way along a line the block pass keeps.
 
-A construct nobody has thought of yet is refused too, because one anchored
-pattern admits a line and nothing else admits one. `docs/captures/README.md`
-states the same form, so the rule is readable where the captures are
-documented.
+INSIDE the section the rule is a WHITELIST, not a list of things to look out
+for. Four rounds of blacklists each missed a construct -- a tilde fence, an
+escaped bang, an uppercase `<PRE>`, and finally a `<div>` immediately above
+each image, which is an HTML block of type 6 and turns the image under it into
+raw HTML while every image line and the blank line above the heading stay
+exactly as written. Types 6 and 7 are precisely the two `visible()` cannot
+remove, because they end at a blank line rather than at a marker; both can only
+BEGIN with `<`; and no shape this grammar admits carries a `<` anywhere. So
+they cannot start inside the section at all, which is a property of the
+grammar rather than one more name on a list. Every line must be exactly one of:
+
+  * the heading;
+  * a blank line;
+  * a step opener, `1.` to `5.` and a bold run;
+  * a continuation line, EXACTLY three spaces (a fourth, or a tab, would open
+    an indented code block) and then text;
+  * an unindented prose line, which may not begin with `#` or `!`;
+  * an image line, which must have a blank line on each side.
+
+Every one of those shapes forbids a backtick, a tilde, a backslash and a `<`
+in any position, so inline code, a fence, an escaped marker and raw HTML are
+all refused by the same rule rather than by four.
+
+A construct nobody has thought of yet is refused too, because these six shapes
+admit a line and nothing else admits one. `docs/captures/README.md` states the
+same form, so the rule is readable where the captures are documented.
 
 EVERY RULE HAS A NEGATIVE TEST, and every negative has a POSITIVE TWIN: the
 malformed fixture is a mutation of a datastream this suite accepts, so no
@@ -138,26 +153,40 @@ CEILING_SENTENCE = "400 KB"
 # ---- the declared README form --------------------------------------------
 
 CAPTURE_SECTION = "## Get synced in five steps"
-# Constructs that turn an image into literal text, or smuggle one past an
-# anchored pattern. Refused wherever they appear in the capture section, and
-# matched WITHOUT CASE: `<PRE>` hides an image exactly as well as `<pre>`.
-# An HTML comment opener is NOT in this list, and that is deliberate:
-# `visible()` has already removed every comment from the whole file, so
-# such a token can never reach this section. An entry here would be a
-# control that cannot fire, which is the thing this file keeps deleting.
-FORBIDDEN_IN_SECTION = ("`", "~~~", "<pre", "\\!", "<img")
 # One image, alone on its line, indented by exactly the three spaces that
 # continue a numbered list item, with alternative text that is not empty and
-# no trailing whitespace. Eight spaces would make it an indented code block.
+# no trailing whitespace.
 IMAGE_LINE_RE = re.compile(
     r"^ {3}!\[[^\]]+\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
 )
-# Four spaces or a tab open an indented code block in CommonMark, whatever
-# they contain. No line of this section may start one.
-INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)")
+# THE SECTION GRAMMAR. Every line of the capture section must match exactly one
+# of these shapes; anything else is refused by name. It is a WHITELIST because
+# three rounds of blacklists each missed a construct: a tilde fence, an escaped
+# bang, an uppercase `<PRE>`, and finally a `<div>` around each image, which is
+# an HTML block of CommonMark type 6 and turns the image under it into raw HTML
+# (https://spec.commonmark.org/0.31.2/#html-blocks). Types 6 and 7 are the two
+# kinds `visible()` cannot remove, because they end at a blank line rather than
+# a marker -- and they can only BEGIN with `<`. No shape below admits a `<`
+# anywhere, so neither type can start inside this section at all. The same
+# classes exclude a backtick, a tilde and a backslash for the same reason.
+SECTION_LINES = (
+    ("a blank line", re.compile(r"^$")),
+    # `1. **Install from Community plugins.** In Settings ...`
+    ("a step opener", re.compile(r"^[1-5]\. \*\*[^<`~\\]+$")),
+    # Three spaces continue a list item. A fourth would open an indented code
+    # block, and a tab would too, so neither can lead a line here.
+    ("a continuation line", re.compile(r"^ {3}[^ \t<`~\\!][^<`~\\]*$")),
+    # The paragraphs before the first step and after the last image. The
+    # look-ahead keeps this shape DISJOINT from the step opener above, so a
+    # step line that lost its bold run is refused rather than quietly read as
+    # a paragraph -- and so neither shape is redundant with the other.
+    ("a prose line", re.compile(r"^(?![1-5]\. )[^ \t<`~\\!#][^<`~\\]*$")),
+    ("an image line", IMAGE_LINE_RE),
+)
 # Any other way a line can mention a capture: a link with no bang, an image
 # with empty alternative text, an image sharing its line with prose.
 MENTION = "](docs/captures/"
+
 # A fenced code block (CommonMark 4.5): up to three spaces of indent, then a
 # run of at least three backticks or tildes. A BACKTICK fence's info string may
 # not itself contain a backtick; a tilde fence's may. It closes at the first
@@ -313,7 +342,7 @@ def displayed_names(section: Sequence[str]) -> list[str]:
 
 
 def section_refusals(readme: str) -> list[str]:
-    """Refuse anything but the declared form inside the capture section."""
+    """Refuse anything but the declared grammar inside the capture section."""
     section = capture_section(readme)
     if section is None:
         # Not a fallback and not a shrug: a heading that is absent from the
@@ -323,31 +352,34 @@ def section_refusals(readme: str) -> list[str]:
             "the visible README"
         ]
     found: list[str] = []
-    # Types 6 and 7 of CommonMark 4.6 end at the next BLANK LINE, so a block
-    # of either kind that opened above the heading has already closed if the
-    # line above the heading is blank. Requiring that blank line is what makes
-    # those two kinds unable to hide this section, and it costs a document
-    # nothing: a heading wants the blank line anyway.
+    # HTML blocks of CommonMark types 6 and 7 end at the next BLANK LINE rather
+    # than at a marker, so `visible()` cannot remove them and one that opened
+    # above the heading could still be running at it. Requiring the line above
+    # the heading to be blank closes that, and the grammar below -- which
+    # admits no `<` on any line -- stops either type starting inside.
     above = preceding_line(readme)
     if above is None or above.strip():
         found.append(
             f"the line above `{CAPTURE_SECTION}` must be blank, so that no HTML "
             f"block ending at a blank line can still be open, not {above!r}"
         )
-    lowered = [token.lower() for token in FORBIDDEN_IN_SECTION]
     for offset, line in enumerate(section):
-        for token, needle in zip(FORBIDDEN_IN_SECTION, lowered):
-            if needle in line.lower():
-                found.append(
-                    f"the capture section carries {token!r} on its line {offset}, "
-                    "which can render an image as literal text"
-                )
-        if INDENTED_CODE_RE.match(line):
+        if offset == 0:
+            continue  # the heading, by construction of `capture_section`
+        if not any(pattern.match(line) for _, pattern in SECTION_LINES):
             found.append(
-                f"the capture section indents its line {offset} by four spaces or "
-                "a tab, which opens an indented code block"
+                f"the capture section's line {offset} is none of the shapes the "
+                f"declared grammar admits: {line!r}"
             )
-        if IMAGE_LINE_RE.match(line) is None and MENTION in line:
+        elif IMAGE_LINE_RE.match(line):
+            before = section[offset - 1] if offset else ""
+            after = section[offset + 1] if offset + 1 < len(section) else ""
+            if before != "" or after != "":
+                found.append(
+                    f"the capture section's image on line {offset} must have a "
+                    f"blank line on each side, not {before!r} and {after!r}"
+                )
+        elif MENTION in line:
             found.append(
                 f"the capture section names a capture on its line {offset} in a "
                 f"form the declared one does not admit: {line.strip()!r}"
@@ -744,10 +776,19 @@ class CaptureSetIsIntact(unittest.TestCase):
         self.assertIn(CEILING_SENTENCE, documents()[1])
 
     def test_the_declared_form_is_stated_where_the_captures_are_documented(self):
+        # The rule is only readable if it is written where the captures are.
         convention = documents()[1]
         self.assertIn(CAPTURE_SECTION, convention)
-        for token in FORBIDDEN_IN_SECTION:
-            self.assertIn(token, convention, f"the convention does not name {token!r}")
+        for phrase in (
+            "https://spec.commonmark.org/0.31.2/#fenced-code-blocks",
+            "https://spec.commonmark.org/0.31.2/#html-blocks",
+            "types 6 and 7",
+            "blank line",
+            "three spaces",
+        ):
+            self.assertIn(phrase, convention, f"the convention does not state {phrase!r}")
+        for _, pattern in SECTION_LINES:
+            self.assertTrue(pattern.pattern, "every shape is a real pattern")
 
     def test_every_positive_fixture_is_accepted(self):
         # Non-vacuity for every structural case below: each mutates one of
@@ -928,7 +969,210 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         readme = self.readme.replace(
             f"](docs/captures/{NAMES[4]})", f"](docs/captures/{NAMES[4]}) <PRE>", 1
         )
-        self.with_readme(readme, "'<pre'", "an uppercase pre tag on an image line")
+        self.with_readme(readme, "declared grammar admits", "an uppercase pre tag on an image line")
+
+    # ---- the section grammar ---------------------------------------------
+
+    def wrap_images(self, opener: str, closer: str) -> str:
+        """Each image line wrapped in raw HTML, with no blank line between."""
+
+        def rewrite(section):
+            out = []
+            for line in section:
+                if IMAGE_LINE_RE.match(line):
+                    out += [opener, line, closer]
+                else:
+                    out.append(line)
+            return out
+
+        return self.rewrite_section(rewrite)
+
+    def test_raw_html_around_each_image_is_refused(self):
+        # CommonMark HTML blocks of types 6 and 7 end at a blank line, so
+        # `visible()` cannot remove them -- and with no blank line between the
+        # tag and the image, the image is raw HTML rather than a screenshot.
+        # The grammar admits no `<` on any line, which is what stops them.
+        for label, opener, closer in (
+            ("a div", "<div>", "</div>"),
+            ("a details element", "<details>", "</details>"),
+            ("an unknown element", "<custom>", "</custom>"),
+            ("an indented div", "   <div>", "   </div>"),
+        ):
+            with self.subTest(wrapper=label):
+                self.with_readme(
+                    self.wrap_images(opener, closer), "declared grammar admits", label
+                )
+
+    def test_a_step_opener_carrying_a_tag_is_refused(self):
+        readme = self.readme.replace(
+            "1. **Install from Community plugins.**", "1. **Install <b>now</b>.**", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "a tag in a step opener")
+
+    def test_a_step_without_its_bold_title_is_refused(self):
+        # A numbered line with no bold run is a malformed step, not a stray
+        # paragraph: the prose shape excludes `1. ` precisely so that the two
+        # shapes are disjoint and neither can stand in for the other.
+        readme = self.readme.replace(
+            "1. **Install from Community plugins.**", "1. Install from Community plugins.", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "a step with no bold title")
+
+    def test_an_indented_prose_line_is_refused(self):
+        # Eight spaces open an indented code block, so the sentence under a
+        # step would stop being a sentence. Neither the continuation shape nor
+        # the prose shape may admit an indent this deep.
+        readme = self.readme.replace(
+            "   Browse, search for", "        Browse, search for", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "an eight-space prose line")
+
+    def test_an_image_with_no_blank_line_before_it_is_refused(self):
+        marker = f"](docs/captures/{NAMES[2]})"
+        line = next(
+            candidate
+            for candidate in self.readme.splitlines()
+            if IMAGE_LINE_RE.match(candidate) and NAMES[2] in candidate
+        )
+        readme = self.readme.replace("\n\n" + line, "\n" + line, 1)
+        self.with_readme(readme, "blank line on each side", "no blank line above")
+
+    def test_an_image_with_no_blank_line_after_it_is_refused(self):
+        line = next(
+            candidate
+            for candidate in self.readme.splitlines()
+            if IMAGE_LINE_RE.match(candidate) and NAMES[1] in candidate
+        )
+        readme = self.readme.replace(line + "\n\n", line + "\n", 1)
+        self.with_readme(readme, "blank line on each side", "no blank line below")
+
+    def test_a_prose_line_carrying_a_tag_is_refused(self):
+        readme = self.readme.replace(
+            "device run recorded in", "device run <b>recorded</b> in", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "a tag in prose")
+
+    def test_a_prose_line_carrying_a_backtick_is_refused(self):
+        readme = self.readme.replace(
+            "device run recorded in", "device run `recorded` in", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "code in prose")
+
+    def test_a_comment_directly_above_the_heading_is_accepted(self):
+        # The comment is gone from the reduced document, so the line above the
+        # heading is the blank line that was above the COMMENT. A rule reading
+        # the original text would see the comment and refuse a correct README.
+        readme = self.readme.replace(
+            CAPTURE_SECTION, "<!-- an aside -->\n" + CAPTURE_SECTION, 1
+        )
+        self.assertEqual(
+            [], self.refusing(readme, self.convention, self.files, "a comment above")
+        )
+
+    # ---- how a fence closes ----------------------------------------------
+
+    def test_a_fence_closes_only_on_its_own_terms(self):
+        # Each row: what closes the opener, and what does not. The negative is
+        # asserted through the whole contract -- an opener that never closes
+        # swallows the section -- and the positive proves the closer this
+        # parser accepts is one a reader's parser accepts too.
+        cases = (
+            ("a shorter closer", "````", "````", "```"),
+            ("a longer closer", "```", "`````", "``"),
+            ("the other fence character", "~~~", "~~~", "```"),
+            ("a closer carrying text", "```", "```", "``` trailing"),
+            ("an indented closer", "```", "   ```", "\t```"),
+        )
+        for label, opener, closes, does_not in cases:
+            with self.subTest(case=label, outcome="closes"):
+                readme = self.above(opener, "sample", closes)
+                self.assertIn(CAPTURE_SECTION, visible(readme))
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, label)
+                )
+            with self.subTest(case=label, outcome="does not close"):
+                self.with_readme(
+                    self.above(opener, "sample", does_not),
+                    "hidden or missing",
+                    "not closed by " + label,
+                )
+
+    def test_a_short_run_is_not_a_fence(self):
+        # One or two backticks are inline code, not a fence. If they opened
+        # one, this unclosed line would swallow the rest of the document.
+        for run in ("`", "``", "~", "~~"):
+            with self.subTest(run=run):
+                readme = self.above(run)
+                self.assertIn(CAPTURE_SECTION, visible(readme))
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, run)
+                )
+
+    def test_a_backtick_fence_with_a_backtick_in_its_info_is_not_a_fence(self):
+        readme = self.above("``` a ` b")
+        self.assertIn(CAPTURE_SECTION, visible(readme))
+        self.assertEqual(
+            [], self.refusing(readme, self.convention, self.files, "a backtick info")
+        )
+
+    def test_a_tilde_fence_may_carry_a_backtick_in_its_info(self):
+        # The rule above is about BACKTICK fences only, which is why this one
+        # does open, and does swallow what follows it.
+        self.with_readme(
+            self.above("~~~ a ` b"), "hidden or missing", "a tilde fence with backticks"
+        )
+
+    # ---- how an HTML block closes ----------------------------------------
+
+    HTML_CLOSERS = (
+        ("a pre block", "<pre>", "</pre>", "</div>"),
+        ("a script block", "<script>", "</script>", "</div>"),
+        ("a style block", "<style>", "</style>", "</div>"),
+        ("a textarea block", "<textarea>", "</textarea>", "</div>"),
+        ("a processing instruction", "<?php", "?>", "-->"),
+        ("a CDATA section", "<![CDATA[", "]]>", "-->"),
+        ("a declaration", "<!DOCTYPE", ">", "no marker here"),
+        ("an HTML comment", "<!--", "-->", "?>"),
+    )
+
+    def test_an_html_block_closes_only_on_its_own_marker(self):
+        for label, opener, closes, does_not in self.HTML_CLOSERS:
+            with self.subTest(block=label, outcome="closes"):
+                readme = self.above(opener, "sample", closes)
+                self.assertIn(CAPTURE_SECTION, visible(readme))
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, label)
+                )
+            with self.subTest(block=label, outcome="does not close"):
+                self.with_readme(
+                    self.enclosed(opener, does_not),
+                    "hidden or missing",
+                    "not closed by " + label,
+                )
+
+    # ---- the inflate allowance across calls ------------------------------
+
+    def test_the_inflate_allowance_shrinks_with_every_call(self):
+        # One call cannot show a CUMULATIVE cap. This stream needs four feeds,
+        # and each one must be offered only what is left of the budget: the
+        # mutation that passes the whole budget every time produces 131,055
+        # bytes here instead of 70,001.
+        expected = 70000  # 8 rows of 8749 samples: 8 * (1 + 8749)
+        blob = assemble(
+            ihdr(8749, 8), chunk(b"IDAT", _REAL_ZLIB.compress(bytes(200000), 0))
+        )
+        recorder = _BoundedDecompressor(expected + 1)
+        previous = globals()["zlib"]
+        globals()["zlib"] = _ZlibWithBoundedInflate(recorder)
+        try:
+            found = png_refusals(NAMES[0], blob)
+        finally:
+            globals()["zlib"] = previous
+        self.kills(found, "inflates past")
+        self.assertGreaterEqual(len(recorder.calls), 2, "one call proves no cap")
+        for limit, produced in recorder.calls:
+            self.assertEqual(expected + 1 - produced, limit)
+        self.assertLessEqual(recorder.produced, expected + 1)
 
     def test_a_non_blank_line_above_the_heading_is_refused(self):
         # CommonMark HTML blocks of types 6 and 7 end at the next blank line,
@@ -967,7 +1211,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         found = self.refusing(
             self.rewrite_section(rewrite), self.convention, self.files, "indented images"
         )
-        self.kills(found, "indented code block")
+        self.kills(found, "declared grammar admits")
         self.kills(found, "in order")
 
     def test_a_tab_indented_image_is_refused(self):
@@ -984,7 +1228,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
                 self.files,
                 "a tab-indented image",
             ),
-            "indented code block",
+            "declared grammar admits",
         )
 
     def test_uppercase_pre_wrapping_an_image_is_refused(self):
@@ -1019,17 +1263,17 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         readme = self.readme.replace(
             f"](docs/captures/{NAMES[2]})", f"](docs/captures/{NAMES[2]}) ~~~", 1
         )
-        self.with_readme(readme, "'~~~'", "a tilde run on an image line")
+        self.with_readme(readme, "declared grammar admits", "a tilde run on an image line")
 
     def test_a_pre_tag_on_an_image_line_is_refused(self):
         readme = self.readme.replace(
             f"](docs/captures/{NAMES[3]})", f"](docs/captures/{NAMES[3]}) <pre>", 1
         )
-        self.with_readme(readme, "'<pre'", "a pre tag on an image line")
+        self.with_readme(readme, "declared grammar admits", "a pre tag on an image line")
 
     def test_escaping_an_image_marker_is_refused(self):
         readme = self.readme.replace("![The recovery-phrase", "\\![The recovery-phrase", 1)
-        self.with_readme(readme, "'\\\\!'", "an escaped image marker")
+        self.with_readme(readme, "declared grammar admits", "an escaped image marker")
 
     def test_wrapping_an_image_in_pre_is_refused(self):
         def rewrite(section):
@@ -1047,7 +1291,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         readme = self.readme.replace(
             f"![The Pair a new device", f"`![The Pair a new device", 1
         )
-        self.with_readme(readme, "'`'", "an inline-coded image")
+        self.with_readme(readme, "declared grammar admits", "an inline-coded image")
 
     def test_turning_an_image_into_a_link_is_refused(self):
         # The `!` is the whole difference between a screenshot and a line of
@@ -1062,7 +1306,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             f"](docs/captures/{NAMES[0]})\n", f"](docs/captures/{NAMES[0]}) \n", 1
         )
         found = self.refusing(readme, self.convention, self.files, "a trailing space")
-        self.kills(found, "does not admit")
+        self.kills(found, "declared grammar admits")
         self.kills(found, "in order")
 
     def test_an_image_naming_an_unknown_capture_is_refused(self):
@@ -1073,7 +1317,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # than counting a sixth capture and complaining about the order.
         self.kills(
             self.refusing(readme, self.convention, self.files, "an unknown capture name"),
-            "does not admit",
+            "declared grammar admits",
         )
 
     def test_a_png_named_outside_the_convention_table_is_refused_by_nothing(self):
@@ -1089,7 +1333,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         def rewrite(section):
             return section + ['<img src="docs/captures/01-install-from-directory.png">']
 
-        self.with_readme(self.rewrite_section(rewrite), "'<img'", "an img tag")
+        self.with_readme(self.rewrite_section(rewrite), "declared grammar admits", "an img tag")
 
     def test_empty_alternative_text_is_refused(self):
         readme = re.sub(
@@ -1098,7 +1342,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             self.readme,
             count=1,
         )
-        self.with_readme(readme, "does not admit", "empty alternative text")
+        self.with_readme(readme, "declared grammar admits", "empty alternative text")
 
     def test_moving_an_image_out_of_the_section_is_refused(self):
         line = next(

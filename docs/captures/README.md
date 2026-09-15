@@ -57,25 +57,37 @@ screenshots with the section itself unchanged.
 The CAPTURE SECTION is the lines of that visible text from
 `## Get synced in five steps` up to the next line beginning `## `. If the
 heading is not in the visible text at all, the README has no screenshots in it
-and that is a refusal, not an empty count.
+and that is a refusal, not an empty count. The line above the heading must be
+blank.
 
-Inside the section:
+Inside the section, every line must be exactly one of six shapes. This is a
+WHITELIST, and it is one deliberately: four rounds of "no backtick, no tilde,
+no `<pre`" lists each missed a construct, the last of them a `<div>` on the
+line directly above each image. That is an HTML block of type 6, which ends at
+a blank line rather than at a marker, so the pass above cannot remove it -- and
+it turns the image under it into raw HTML with every image line unchanged.
+Types 6 and 7 can only BEGIN with `<`, and no shape below admits a `<`
+anywhere, so neither can start in this section at all.
 
-- exactly five image lines, in the order of the table above, each ALONE on its
-  line, indented by EXACTLY the three spaces that continue its numbered list
-  item, matching `![<alt>](docs/captures/<name>)` with alternative text that is
-  not empty and nothing after the closing parenthesis;
-- no line may begin with four spaces or a tab. In CommonMark that opens an
-  indented code block whatever it contains, so eight spaces turn all five
-  screenshots into code samples without changing a character of the image
-  syntax;
-- no line may carry a backtick, a `~~~` run, a `<pre` tag, an escaped `\![`,
-  or an `<img` tag, in EITHER case: `<PRE>` hides an image exactly as well as
-  `<pre>`. These catch the same constructs part-way along a line, where they
-  are inline HTML rather than a block;
-- any other mention of `docs/captures/` -- a link with no `!`, an image with
-  empty alternative text, an image sharing a line with prose -- is refused
-  rather than counted.
+| Shape | What it looks like |
+| --- | --- |
+| the heading | `## Get synced in five steps` |
+| a blank line | empty, no spaces |
+| a step opener | `1.` to `5.`, a space, then a bold run |
+| a continuation line | EXACTLY three spaces, then text that does not start with `!` |
+| a prose line | no indent, and does not start with `#` or `!` |
+| an image line | three spaces, then `![<alt>](docs/captures/<name>)`, with a BLANK LINE on each side |
+
+Every shape but the heading forbids a backtick, a tilde, a backslash and a `<`
+in any position. A fourth space or a tab is refused too: in CommonMark that
+opens an indented code block whatever it contains, so eight spaces would turn
+all five screenshots into code samples without changing a character of the
+image syntax.
+
+There must be exactly five image lines, in the order of the table above, each
+with alternative text that is not empty. Any other mention of
+`docs/captures/` -- a link with no `!`, an image with empty alternative text,
+an image sharing a line with prose -- is refused rather than counted.
 
 Outside that section README.md may say whatever it likes, including the
 comment that records this rule and the fenced blocks of the quick start; this
