@@ -27,13 +27,53 @@ acceptance for 1.0.0 is a separate result and is planned in
 > writers on one vault produce conflicts neither of them can reconcile.
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
-     the dashboard and the plugin once they render. Placeholders until then.
-     captures: V2 devices, V3 sync -->
+     the plugin and the dashboard. The five files below are committed PNGs from
+     a validated device run; docs/captures/README.md holds the convention and
+     the redaction rules. A change to what either surface renders asks the
+     owner for fresh captures. -->
 
-## Screenshots
+## Get synced in five steps
 
-_Dashboard overview, devices table, and the plugin's sync status will appear
-here once the owner supplies captures from a validated device run._
+The path this release was validated on, from an empty vault to two devices in
+sync. Each step is written out in full under [Get syncing](#get-syncing)
+below, and all five assume your own server is already running.
+
+1. **Install from Community plugins.** In Settings → Community plugins →
+   Browse, search for **Self Hosted Private Sync** and select Install, then
+   Enable — the same way every other Obsidian plugin arrives, on every
+   platform.
+
+   ![Obsidian's Community plugins browser showing Self Hosted Private Sync with its Install button](docs/captures/01-install-from-directory.png)
+
+2. **Point it at your server and set it up.** Open the plugin's settings tab,
+   set **Server URL** to your own server, choose and save which folders this
+   device syncs, then paste your setup token under **First-time setup**.
+
+   ![The plugin settings tab scrolled to the saved folder selection, Pairing, and the First-time setup token field](docs/captures/02-first-time-setup.png)
+
+3. **Keep the recovery phrase.** Setup generates the vault key on this device
+   and shows a 24-word phrase once: write it down and keep it somewhere other
+   than this device, because the server holds ciphertext only and cannot
+   recover a vault for you.
+
+   ![The recovery-phrase dialog shown after first-time setup, its words obscured](docs/captures/03-recovery-phrase.png)
+
+4. **Pair a second device with a one-time code.** Run **Pair a new device** on
+   the first device, enter the code it shows on the second within ten minutes,
+   and approve the device by name — the vault key travels encrypted under a
+   pairing secret the server never sees.
+
+   ![The Pair a new device dialog on the first device, its one-time code obscured](docs/captures/04-pair-a-new-device.png)
+
+5. **Edit on either device and watch it land.** Type in a note on one device
+   and it appears on the other within seconds, in both directions, with the
+   status bar showing what sync is doing.
+
+   ![The disposable note carrying both devices' edits, with the sync status bar visible](docs/captures/05-sync-both-ways.png)
+
+The dashboard's device list and its revoke button are documented under
+[See your devices](#4-see-your-devices) and were not exercised in the 1.0.0
+device run (`docs/validation-runs/2026-09-14.md`).
 
 ## Get syncing
 
