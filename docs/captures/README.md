@@ -77,9 +77,16 @@ anywhere, so neither can start in this section at all.
 | a continuation line | EXACTLY three spaces, then text that does not start with `!` |
 | a prose line | no indent, and does not start with `#` or `!` |
 | an image line | three spaces, then `![<alt>](docs/captures/<name>)`, with a BLANK LINE on each side |
+| an alt text | a letter or digit, then letters, digits, spaces, commas, periods, apostrophes and hyphens |
 
 Every shape but the heading forbids a backtick, a tilde, a backslash and a `<`
-in any position. A fourth space or a tab is refused too: in CommonMark that
+in any position -- including the alternative text, which is written as the
+characters it ADMITS rather than the one it excludes. Written as "anything but
+a `]`" it let an unmatched `[` stand before the closing bracket, and a
+backslash escape that bracket; under
+[CommonMark's link-text rules](https://spec.commonmark.org/0.31.2/#links),
+applied to [images](https://spec.commonmark.org/0.31.2/#images), neither of
+those is an image any more. A fourth space or a tab is refused too: in CommonMark that
 opens an indented code block whatever it contains, so eight spaces would turn
 all five screenshots into code samples without changing a character of the
 image syntax.

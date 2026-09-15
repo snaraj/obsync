@@ -100,11 +100,19 @@ grammar rather than one more name on a list. Every line must be exactly one of:
   * a continuation line, EXACTLY three spaces (a fourth, or a tab, would open
     an indented code block) and then text;
   * an unindented prose line, which may not begin with `#` or `!`;
-  * an image line, which must have a blank line on each side.
+  * an image line, whose alternative text is a POSITIVE class -- a letter or
+    a digit, then letters, digits, spaces, commas, periods, apostrophes and
+    hyphens -- and which must have a blank line on each side.
 
 Every one of those shapes forbids a backtick, a tilde, a backslash and a `<`
 in any position, so inline code, a fence, an escaped marker and raw HTML are
-all refused by the same rule rather than by four.
+all refused by the same rule rather than by four. The alternative text was the
+last hole in that sentence: written as "anything but a `]`" it admitted all
+four, and it admitted an unmatched `[` before the closing bracket -- which is
+not an image at all under CommonMark's link-text bracket rules -- and a
+backslash escaping that bracket. A description of a screenshot needs letters,
+digits, spaces and four marks of punctuation; naming them is shorter than
+naming what they are not, and it cannot be incomplete.
 
 A construct nobody has thought of yet is refused too, because these six shapes
 admit a line and nothing else admits one. `docs/captures/README.md` states the
@@ -154,10 +162,21 @@ CEILING_SENTENCE = "400 KB"
 
 CAPTURE_SECTION = "## Get synced in five steps"
 # One image, alone on its line, indented by exactly the three spaces that
-# continue a numbered list item, with alternative text that is not empty and
-# no trailing whitespace.
+# continue a numbered list item, and ending at the closing parenthesis.
+#
+# The alternative text is a POSITIVE class, not "anything but a bracket". A
+# negated class let a `[` stand immediately before the closing `]` -- five
+# descriptions that are no longer images under CommonMark's link-text bracket
+# rules (https://spec.commonmark.org/0.31.2/#links, applied to images by
+# https://spec.commonmark.org/0.31.2/#images) -- and let a backslash escape
+# the closing bracket of the fifth. It also readmitted the backtick, tilde,
+# backslash and `<` that every other shape in this grammar forbids. Alt text
+# is a sentence describing a screenshot: letters, digits, spaces and four
+# punctuation marks say everything one needs to, and it must START with a
+# letter or a digit.
+ALT_TEXT = r"[A-Za-z0-9][A-Za-z0-9 ,.\'-]*"
 IMAGE_LINE_RE = re.compile(
-    r"^ {3}!\[[^\]]+\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
+    r"^ {3}!\[" + ALT_TEXT + r"\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
 )
 # THE SECTION GRAMMAR. Every line of the capture section must match exactly one
 # of these shapes; anything else is refused by name. It is a WHITELIST because
@@ -1001,6 +1020,126 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             with self.subTest(wrapper=label):
                 self.with_readme(
                     self.wrap_images(opener, closer), "declared grammar admits", label
+                )
+
+    # ---- what the alternative text may say --------------------------------
+
+    ALT_ANCHOR = "The recovery-phrase dialog shown after first-time setup"
+
+    def test_a_bracket_before_every_closing_bracket_is_refused(self):
+        # The reviewer's fixture: `![alt[](docs/captures/...)`. Under
+        # CommonMark's bracket rules that is not an image any more, and the
+        # negated class this grammar used to carry admitted all five.
+        readme = self.readme
+        for name in NAMES:
+            readme = readme.replace(f"]({MENTION[2:]}{name})", f"[]({MENTION[2:]}{name})", 1)
+        self.with_readme(readme, "declared grammar admits", "a bracket in every alt")
+
+    def test_an_escaped_closing_bracket_is_refused(self):
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[4]})", f"\\](docs/captures/{NAMES[4]})", 1
+        )
+        self.with_readme(readme, "declared grammar admits", "an escaped closing bracket")
+
+    def test_alternative_text_admits_only_the_declared_characters(self):
+        cases = {
+            "a backtick": "`",
+            "an angle bracket": "<",
+            "a tilde": "~",
+            "a backslash": "\\",
+            "an opening bracket": "[",
+            "a closing bracket": "]",
+            "an underscore": "_",
+            "an asterisk": "*",
+        }
+        for label, character in cases.items():
+            with self.subTest(character=label):
+                readme = self.readme.replace(
+                    self.ALT_ANCHOR, self.ALT_ANCHOR + character, 1
+                )
+                self.with_readme(readme, "declared grammar admits", label)
+
+    def test_alternative_text_admits_the_declared_punctuation(self):
+        # The positive twin for the class above: each of these is what a
+        # sentence describing a screenshot actually needs.
+        for label, character in {
+            "a comma": ",",
+            "a period": ".",
+            "an apostrophe": "'",
+            "a hyphen": "-",
+            "a space": " ",
+            "a digit": "4",
+        }.items():
+            with self.subTest(character=label):
+                readme = self.readme.replace(
+                    self.ALT_ANCHOR, self.ALT_ANCHOR + character + "x", 1
+                )
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, label)
+                )
+
+    def test_empty_alternative_text_or_a_leading_space_is_refused(self):
+        for label, replacement in {
+            "empty alternative text": "",
+            "a leading space": " " + self.ALT_ANCHOR,
+            "a leading hyphen": "-" + self.ALT_ANCHOR,
+        }.items():
+            with self.subTest(alt=label):
+                readme = self.readme.replace(self.ALT_ANCHOR, replacement, 1)
+                self.with_readme(readme, "declared grammar admits", label)
+
+    # ---- every excluded character, in every shape, in both positions ------
+
+    # (shape, position, the character refused there, an admitted one)
+    EXCLUSIONS = (
+        ("a step opener", "first", "`"), ("a step opener", "first", "~"),
+        ("a step opener", "first", "\\"), ("a step opener", "first", "<"),
+        ("a step opener", "later", "`"), ("a step opener", "later", "~"),
+        ("a step opener", "later", "\\"), ("a step opener", "later", "<"),
+        ("a continuation line", "first", "~"), ("a continuation line", "first", "\t"),
+        ("a continuation line", "first", "<"), ("a continuation line", "first", "`"),
+        ("a continuation line", "first", "\\"), ("a continuation line", "first", "!"),
+        ("a continuation line", "first", " "),
+        ("a continuation line", "later", "<"), ("a continuation line", "later", "`"),
+        ("a continuation line", "later", "~"), ("a continuation line", "later", "\\"),
+        ("a prose line", "first", "`"), ("a prose line", "first", "~"),
+        ("a prose line", "first", "\\"), ("a prose line", "first", "!"),
+        ("a prose line", "first", "#"), ("a prose line", "first", "<"),
+        ("a prose line", "first", "\t"), ("a prose line", "first", " "),
+        ("a prose line", "later", "~"), ("a prose line", "later", "\\"),
+        ("a prose line", "later", "<"), ("a prose line", "later", "`"),
+    )
+    # Where each shape is exercised, and what "first" and "later" mean in it.
+    SHAPE_ANCHORS = {
+        "a step opener": ("1. **Install from Community plugins.**", "1. **", "Install ", "from Community plugins.**"),
+        "a continuation line": ("   Browse, search for", "   ", "Browse, ", "search for"),
+        "a prose line": ("The path this release was validated on,", "", "The path ", "this release was validated on,"),
+    }
+
+    def shaped(self, shape: str, position: str, character: str) -> str:
+        anchor, head, middle, tail = self.SHAPE_ANCHORS[shape]
+        if position == "first":
+            return self.readme.replace(anchor, head + character + middle + tail, 1)
+        return self.readme.replace(anchor, head + middle + character + tail, 1)
+
+    def test_every_excluded_character_is_refused_in_every_shape(self):
+        for shape, position, character in self.EXCLUSIONS:
+            with self.subTest(shape=shape, position=position, character=character):
+                self.with_readme(
+                    self.shaped(shape, position, character),
+                    "declared grammar admits",
+                    f"{character!r} {position} in {shape}",
+                )
+
+    def test_an_admitted_character_in_the_same_place_is_accepted(self):
+        # The positive twin for every row above: the position itself is fine,
+        # so each refusal above is about the CHARACTER and nothing else.
+        for shape, position, _ in self.EXCLUSIONS:
+            with self.subTest(shape=shape, position=position):
+                readme = self.shaped(shape, position, "X")
+                self.assertEqual(
+                    [],
+                    self.refusing(readme, self.convention, self.files, shape),
                 )
 
     def test_a_step_opener_carrying_a_tag_is_refused(self):
