@@ -12,19 +12,19 @@
 
 # ---------------------------------------------------------------------------
 # plugin -- the Obsidian plugin bundle, built by its own homegrown bundler.
-# The digest is the one the sibling repository pins for this exact tag; the
-# node:24.19.0-trixie-slim TAG has since moved to other bytes, which is
-# precisely why the reference below is a digest.
+# The exact-patch tag and multi-arch digest were resolved together; the digest
+# is the immutable build input and the tag states the Node version a reader
+# should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:24.19.0-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.8.2-trixie-slim@sha256:14bf3eac4bf209d906d3c41256597d3ab1f926b2e93a79e9bdfe1efd32454239 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
 # that image is the separately reviewed package-manager pin. `--ignore-scripts`
 # is not optional: it is the difference between installing a compiler and
 # executing arbitrary install hooks (requirement 5).
-RUN test "$(node --version)" = "v24.19.0" && \
-    test "$(npm --version)" = "11.17.0" && \
+RUN test "$(node --version)" = "v26.8.2" && \
+    test "$(npm --version)" = "11.19.1" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
 COPY manifest.json /src/manifest.json

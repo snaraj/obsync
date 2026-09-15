@@ -35,10 +35,8 @@ plugin: ## Build and test the plugin
 	cd plugin && npm ci --ignore-scripts --no-audit --no-fund && npm run build && npm test
 
 dashboard: ## Test the dashboard's pure functions
-	# The GLOB, not the directory: on the pinned Node 24.19.0 a directory
-	# argument is run as a module rather than searched, so `node --test
-	# dashboard/test/` fails with MODULE_NOT_FOUND. Verified in the pinned
-	# node:24.19.0-trixie-slim image, 2026-09-07.
+	# The explicit glob names the dashboard test files without relying on
+	# Node's directory-discovery behavior. Verified with pinned Node 26.8.2.
 	node --test dashboard/test/*.test.mjs
 
 chart: ## Helm lint, render, and the rendered pins

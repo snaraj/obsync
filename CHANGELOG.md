@@ -5,6 +5,14 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 0.1.20 - Unreleased
+
+- Upgrade the plugin build toolchain from Node 24.19.0 with npm 11.17.0 to
+  exact Node 26.8.2 with npm 11.19.1, and pin the matching multi-architecture
+  image digest in the container build.
+- Upgrade the CodeQL Action initialization and analysis steps from 4.37.9 to
+  4.38.0 at one immutable upstream commit.
+
 ## 0.1.19 - Unreleased
 
 - Generalise the release rule from "exactly one patch" to exactly one SemVer
