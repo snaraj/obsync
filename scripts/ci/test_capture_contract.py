@@ -1,4 +1,4 @@
-"""The five README captures are a control, not a caption.
+r"""The five README captures are a control, not a caption.
 
 WHY. `docs/captures/README.md` says "README.md references exactly these names,
 in this order". Nothing enforced it. The sentence was deleted from README.md in
@@ -39,20 +39,38 @@ pixels is a human reading every region before the commit, recorded in the pull
 request; this file cannot and does not stand in for it.
 
 THE DECLARED DOCUMENT FORM, and why it is a form rather than a markdown
-parser. The first version of this rule counted `](docs/captures/...)` as a raw
-substring, so an HTML comment around the five lines hid every screenshot with
-the count unchanged. The second stripped comments, fenced blocks and inline
-code -- and a tilde fence, three spaces of indentation, an escaped `\\!`, or a
-`<pre>` walked straight through it, because "what markdown renders" is a
-specification this repository is not going to reimplement in a contract suite.
-So the supported form is DECLARED and narrow: the capture section is the lines
-from `## Get synced in five steps` to the next line beginning `## `, it holds
-exactly five image lines matching one anchored pattern, and any line in it
-carrying a backtick, a tilde fence, a `<pre`, an HTML comment opener, an
-escaped bang or an `<img` is refused outright rather than interpreted. A
-construct nobody has thought of yet is refused too, because the pattern admits
-a line and nothing else admits one. `docs/captures/README.md` states the same
-form, so the rule is readable where the captures are documented.
+parser. Three versions of this rule have been walked through. The first
+counted `](docs/captures/...)` as a raw substring, so an HTML comment around
+the five lines hid every screenshot with the count unchanged. The second
+stripped comments, column-zero fences and inline code, and a `~~~` fence, an
+escaped `\!`, and a `<pre>` walked through that. The third bounded a section
+and declared what may stand in it -- and an HTML comment opened on the line
+ABOVE the heading hid the whole section from outside the lines being read,
+eight spaces turned each image into an indented code block, and `<PRE>` in
+capitals matched nothing. "What markdown renders" is a specification this
+repository is not going to reimplement in a contract suite, so the form stays
+declared and narrow, but it is now read in the document's own visible context:
+
+  * EVERY HTML COMMENT IS REMOVED FROM THE WHOLE FILE FIRST, closed
+    (`<!--` to `-->`) or unclosed and running to the end of it, and the
+    heading must still be there afterwards. A heading absent from the visible
+    document is a README with no screenshots in it, and that is a refusal, not
+    a fallback to counting nothing.
+  * THE SECTION is the lines from `## Get synced in five steps` to the next
+    line beginning `## `, in that visible text.
+  * EACH IMAGE LINE is indented by EXACTLY the three spaces that continue its
+    numbered list item, carries alternative text that is not empty, and ends
+    at the closing parenthesis. Four spaces or a tab open an indented code
+    block in CommonMark whatever they contain, so any line of the section
+    starting with one is refused on its own.
+  * A BACKTICK, a `~~~` fence, a `<pre`, an HTML comment opener, an escaped
+    bang or an `<img` is refused wherever it appears in the section, matched
+    WITHOUT CASE, because `<PRE>` hides an image exactly as well as `<pre>`.
+
+A construct nobody has thought of yet is refused too, because one anchored
+pattern admits a line and nothing else admits one. `docs/captures/README.md`
+states the same form, so the rule is readable where the captures are
+documented.
 
 EVERY RULE HAS A NEGATIVE TEST, and every negative has a POSITIVE TWIN: the
 malformed fixture is a mutation of a datastream this suite accepts, so no
@@ -98,15 +116,30 @@ CEILING_SENTENCE = "400 KB"
 
 CAPTURE_SECTION = "## Get synced in five steps"
 # Constructs that turn an image into literal text, or smuggle one past an
-# anchored pattern. Refused wherever they appear in the capture section.
-FORBIDDEN_IN_SECTION = ("`", "~~~", "<pre", "<!--", "\\!", "<img")
-# One image, alone on its line, with alternative text that is not empty.
+# anchored pattern. Refused wherever they appear in the capture section, and
+# matched WITHOUT CASE: `<PRE>` hides an image exactly as well as `<pre>`.
+# An HTML comment opener is NOT in this list, and that is deliberate:
+# `visible()` has already removed every comment from the whole file, so
+# such a token can never reach this section. An entry here would be a
+# control that cannot fire, which is the thing this file keeps deleting.
+FORBIDDEN_IN_SECTION = ("`", "~~~", "<pre", "\\!", "<img")
+# One image, alone on its line, indented by exactly the three spaces that
+# continue a numbered list item, with alternative text that is not empty and
+# no trailing whitespace. Eight spaces would make it an indented code block.
 IMAGE_LINE_RE = re.compile(
-    r"^\s*!\[[^\]]+\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)\s*$"
+    r"^ {3}!\[[^\]]+\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
 )
+# Four spaces or a tab open an indented code block in CommonMark, whatever
+# they contain. No line of this section may start one.
+INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)")
 # Any other way a line can mention a capture: a link with no bang, an image
 # with empty alternative text, an image sharing its line with prose.
 MENTION = "](docs/captures/"
+# An HTML comment, closed or running to the end of the file. The second shape
+# matters because an unclosed opener hides everything after it, and a reader
+# of the rendered page sees exactly nothing from that point on.
+_CLOSED_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_UNCLOSED_COMMENT_RE = re.compile(r"<!--.*\Z", re.DOTALL)
 
 # ---- the declared PNG form -----------------------------------------------
 
@@ -139,9 +172,21 @@ INFLATE_PIECE = 65536
 _CHUNK_TYPE_RE = re.compile(rb"[A-Za-z]{4}")
 
 
+def visible(readme: str) -> str:
+    """README.md with every HTML comment gone, closed or not.
+
+    The whole document, not the section: the reproducer that closed the last
+    round put `<!--` on the line ABOVE the heading and `-->` below the last
+    image, so the opener sat outside the inspected lines and every screenshot
+    vanished with the section itself unchanged. A section cannot be read
+    without the context that decides whether it renders at all.
+    """
+    return _UNCLOSED_COMMENT_RE.sub("", _CLOSED_COMMENT_RE.sub("", readme))
+
+
 def capture_section(readme: str) -> list[str] | None:
-    """The declared bounded section, or None when the heading is gone."""
-    lines = readme.splitlines()
+    """The declared bounded section as a READER sees it, or None if hidden."""
+    lines = visible(readme).splitlines()
     try:
         start = lines.index(CAPTURE_SECTION)
     except ValueError:
@@ -154,11 +199,8 @@ def capture_section(readme: str) -> list[str] | None:
     return lines[start:end]
 
 
-def referenced(readme: str) -> list[str]:
-    """Every capture the declared section DISPLAYS, in the order it does."""
-    section = capture_section(readme)
-    if section is None:
-        return []
+def displayed_names(section: Sequence[str]) -> list[str]:
+    """Every capture the section DISPLAYS, in the order it displays them."""
     return [
         match.group(1)
         for match in (IMAGE_LINE_RE.match(line) for line in section)
@@ -170,21 +212,32 @@ def section_refusals(readme: str) -> list[str]:
     """Refuse anything but the declared form inside the capture section."""
     section = capture_section(readme)
     if section is None:
-        return [f"README.md has no `{CAPTURE_SECTION}` section"]
+        # Not a fallback and not a shrug: a heading that is absent from the
+        # visible document is a README with no screenshots in it.
+        return [
+            f"the capture section `{CAPTURE_SECTION}` is hidden or missing from "
+            "the visible README"
+        ]
     found: list[str] = []
+    lowered = [token.lower() for token in FORBIDDEN_IN_SECTION]
     for offset, line in enumerate(section):
-        for token in FORBIDDEN_IN_SECTION:
-            if token in line:
+        for token, needle in zip(FORBIDDEN_IN_SECTION, lowered):
+            if needle in line.lower():
                 found.append(
                     f"the capture section carries {token!r} on its line {offset}, "
                     "which can render an image as literal text"
                 )
+        if INDENTED_CODE_RE.match(line):
+            found.append(
+                f"the capture section indents its line {offset} by four spaces or "
+                "a tab, which opens an indented code block"
+            )
         if IMAGE_LINE_RE.match(line) is None and MENTION in line:
             found.append(
                 f"the capture section names a capture on its line {offset} in a "
                 f"form the declared one does not admit: {line.strip()!r}"
             )
-    shown = referenced(readme)
+    shown = displayed_names(section)
     if shown != list(NAMES):
         found.append(
             "the capture section must DISPLAY exactly the five captures, each "
@@ -255,15 +308,13 @@ def _inflate(name: str, stream: bytes, expected: int) -> tuple[bytes, list[str]]
     out = bytearray()
     pending = stream
     try:
-        while len(out) < budget and not decompressor.eof:
-            if decompressor.unconsumed_tail:
-                feed = decompressor.unconsumed_tail
-            elif pending:
-                feed, pending = pending[:INFLATE_PIECE], pending[INFLATE_PIECE:]
-            else:
-                break
+        while pending and len(out) < budget and not decompressor.eof:
+            feed, pending = pending[:INFLATE_PIECE], pending[INFLATE_PIECE:]
             # max_length is never 0 here: zlib reads 0 as "no limit", and the
-            # loop condition keeps `budget - len(out)` at 1 or more.
+            # loop condition keeps `budget - len(out)` at 1 or more. Input the
+            # call could not consume is not fed back: that only happens when
+            # the output hit the budget, and a stream that reaches the budget
+            # is refused two lines below rather than inflated further.
             out += decompressor.decompress(feed, budget - len(out))
     except zlib.error as error:
         return b"", [f"{name} IDAT data is not a valid deflate stream ({error})"]
@@ -477,8 +528,14 @@ MULTI_IDAT = assemble(
     chunk(b"IDAT", _SPLIT[: len(_SPLIT) // 2]),
     chunk(b"IDAT", _SPLIT[len(_SPLIT) // 2 :]),
 )
+FULL_PALETTE = assemble(
+    ihdr(4, 2, 8, 3),
+    chunk(b"PLTE", bytes(MAX_PALETTE_BYTES)),
+    chunk(b"IDAT", zlib.compress(rows(4, 2, 8, 3))),
+)
 POSITIVES = {
     "grey.png": GREY,
+    "full-palette.png": FULL_PALETTE,
     "rgb.png": RGB,
     "indexed.png": INDEXED,
     "grey-alpha.png": GREY_ALPHA,
@@ -519,6 +576,8 @@ class CaptureSetIsIntact(unittest.TestCase):
         self.assertEqual(40000, MAX_DIMENSION)
         self.assertEqual(67108864, MAX_IMAGE_BYTES)
         self.assertEqual(64 * 1024 * 1024, MAX_IMAGE_BYTES)
+        self.assertEqual(768, MAX_PALETTE_BYTES)
+        self.assertEqual(256 * 3, MAX_PALETTE_BYTES)
         self.assertIn(CEILING_SENTENCE, documents()[1])
 
     def test_the_declared_form_is_stated_where_the_captures_are_documented(self):
@@ -600,7 +659,65 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             # After the heading, so the comment opens INSIDE the section.
             return [section[0], "<!--"] + section[1:] + ["-->"]
 
-        self.with_readme(self.rewrite_section(rewrite), "'<!--'", "HTML-commented images")
+        self.with_readme(
+            self.rewrite_section(rewrite), "in order", "HTML-commented images"
+        )
+
+    def test_a_comment_enclosing_the_whole_section_is_refused(self):
+        # The reproducer that survived round 3: the opener sits OUTSIDE the
+        # section, so nothing inside it changes and every screenshot is gone.
+        readme = self.readme.replace(
+            CAPTURE_SECTION, "<!--\n" + CAPTURE_SECTION, 1
+        ).replace("## Get syncing\n", "-->\n\n## Get syncing\n", 1)
+        self.with_readme(readme, "hidden or missing", "a comment around the section")
+
+    def test_an_unclosed_comment_before_the_section_is_refused(self):
+        readme = self.readme.replace(CAPTURE_SECTION, "<!--\n" + CAPTURE_SECTION, 1)
+        self.with_readme(
+            readme, "hidden or missing", "an unclosed comment above the section"
+        )
+
+    def test_eight_space_indented_images_are_refused(self):
+        def rewrite(section):
+            return [
+                "     " + line if IMAGE_LINE_RE.match(line) else line
+                for line in section
+            ]
+
+        found = self.refusing(
+            self.rewrite_section(rewrite), self.convention, self.files, "indented images"
+        )
+        self.kills(found, "indented code block")
+        self.kills(found, "in order")
+
+    def test_a_tab_indented_image_is_refused(self):
+        def rewrite(section):
+            return [
+                "\t" + line.lstrip(" ") if IMAGE_LINE_RE.match(line) else line
+                for line in section
+            ]
+
+        self.kills(
+            self.refusing(
+                self.rewrite_section(rewrite),
+                self.convention,
+                self.files,
+                "a tab-indented image",
+            ),
+            "indented code block",
+        )
+
+    def test_uppercase_pre_wrapping_an_image_is_refused(self):
+        def rewrite(section):
+            out = []
+            for line in section:
+                if IMAGE_LINE_RE.match(line) and NAMES[1] in line:
+                    out += ["<PRE>", line, "</PRE>"]
+                else:
+                    out.append(line)
+            return out
+
+        self.with_readme(self.rewrite_section(rewrite), "'<pre'", "an uppercase PRE")
 
     def test_tilde_fencing_every_image_is_refused(self):
         def rewrite(section):
@@ -636,6 +753,42 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         )
         self.with_readme(readme, "'`'", "an inline-coded image")
 
+    def test_turning_an_image_into_a_link_is_refused(self):
+        # The `!` is the whole difference between a screenshot and a line of
+        # blue text nobody clicks.
+        readme = self.readme.replace("![The recovery-phrase", "[The recovery-phrase", 1)
+        found = self.refusing(readme, self.convention, self.files, "an image demoted to a link")
+        self.kills(found, "does not admit")
+        self.kills(found, "in order")
+
+    def test_trailing_whitespace_after_an_image_is_refused(self):
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[0]})\n", f"](docs/captures/{NAMES[0]}) \n", 1
+        )
+        found = self.refusing(readme, self.convention, self.files, "a trailing space")
+        self.kills(found, "does not admit")
+        self.kills(found, "in order")
+
+    def test_an_image_naming_an_unknown_capture_is_refused(self):
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[1]})", "](docs/captures/06-extra.png)", 1
+        )
+        # The anchored name group refuses the LINE, which is a better message
+        # than counting a sixth capture and complaining about the order.
+        self.kills(
+            self.refusing(readme, self.convention, self.files, "an unknown capture name"),
+            "does not admit",
+        )
+
+    def test_a_png_named_outside_the_convention_table_is_refused_by_nothing(self):
+        # The table rule reads the TABLE. A backticked file name in the
+        # convention's prose is not a sixth row, and treating it as one would
+        # make the rule unable to describe itself.
+        convention = self.convention.replace(
+            "## How to take them", "A stray `06-stray.png` in prose.\n\n## How to take them", 1
+        )
+        self.assertEqual([], self.refusing(self.readme, convention, self.files, "prose"))
+
     def test_an_img_tag_in_the_section_is_refused(self):
         def rewrite(section):
             return section + ['<img src="docs/captures/01-install-from-directory.png">']
@@ -664,7 +817,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_losing_the_section_heading_is_refused(self):
         readme = self.readme.replace(CAPTURE_SECTION, "## Getting started", 1)
-        self.with_readme(readme, "has no", "a renamed section heading")
+        self.with_readme(readme, "hidden or missing", "a renamed section heading")
 
     # ---- what the convention tables ---------------------------------------
 
@@ -809,6 +962,28 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         blob = assemble(ihdr(1, 1, 3, 0), chunk(b"IDAT", zlib.compress(rows())))
         self.with_capture(NAMES[1], blob, "bit depth 3", "bit depth 3")
 
+    def test_each_colour_type_refuses_a_depth_only_another_type_allows(self):
+        # One fixture per colour type, each carrying a bit depth that is legal
+        # for SOME type and not for this one. Widening any single row of
+        # COLOUR_FORMS turns exactly one of these from a refusal into a pass.
+        cases = {
+            2: (2, 2, 4),
+            3: (4, 2, 16),
+            4: (2, 2, 2),
+            6: (3, 3, 1),
+        }
+        for colour, (width, height, depth) in cases.items():
+            with self.subTest(colour=colour, depth=depth):
+                parts = [ihdr(width, height, depth, colour)]
+                if colour == 3:
+                    parts.append(chunk(b"PLTE", bytes(12)))
+                # rows() is computed for a depth this type DOES allow, because
+                # the header is refused before the grid is ever inflated.
+                parts.append(chunk(b"IDAT", zlib.compress(rows(width, height, 8, colour))))
+                self.with_capture(
+                    NAMES[0], assemble(*parts), f"bit depth {depth}", f"type {colour} at {depth} bits"
+                )
+
     def test_a_capture_declaring_another_compression_method_is_refused(self):
         blob = assemble(
             ihdr(compression=1), chunk(b"IDAT", zlib.compress(rows()))
@@ -848,6 +1023,38 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             chunk(b"IDAT", zlib.compress(rows(2, 2, 8, 2))),
         )
         self.with_capture(NAMES[2], blob, "three-byte entries", "a 10-byte palette")
+
+    def test_two_palettes_are_refused(self):
+        blob = assemble(
+            ihdr(4, 2, 2, 3),
+            chunk(b"PLTE", bytes(12)),
+            chunk(b"PLTE", bytes(12)),
+            chunk(b"IDAT", zlib.compress(rows(4, 2, 2, 3))),
+        )
+        self.with_capture(NAMES[0], blob, "PLTE chunks, which must be at most 1", "two palettes")
+
+    def test_more_palette_entries_than_the_depth_can_name_is_refused(self):
+        # Three entries behind one-bit indices: the third can never be chosen,
+        # which means this file does not say what it appears to say.
+        blob = assemble(
+            ihdr(8, 2, 1, 3),
+            chunk(b"PLTE", bytes(9)),
+            chunk(b"IDAT", zlib.compress(rows(8, 2, 1, 3))),
+        )
+        self.with_capture(
+            NAMES[1], blob, "palette entries, more than the", "three entries at one bit"
+        )
+
+    def test_a_palette_over_the_byte_bound_is_refused(self):
+        self.assertEqual(768, MAX_PALETTE_BYTES)
+        blob = assemble(
+            ihdr(2, 2, 8, 2),
+            chunk(b"PLTE", bytes(771)),
+            chunk(b"IDAT", zlib.compress(rows(2, 2, 8, 2))),
+        )
+        self.with_capture(
+            NAMES[2], blob, "three-byte entries", "a 257-entry palette"
+        )
 
     def test_a_greyscale_palette_is_refused(self):
         blob = assemble(

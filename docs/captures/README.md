@@ -25,25 +25,43 @@ validation run and belong to the run recorded in
 
 ## How README.md displays them
 
-`scripts/ci/test_capture_contract.py` refuses anything but this form, so
-it is written here rather than only in the suite. The CAPTURE SECTION is
-the lines of `README.md` from `## Get synced in five steps` up to the next
-line beginning `## `. Inside it:
+`scripts/ci/test_capture_contract.py` refuses anything but this form, so it is
+written here rather than only in the suite. It is deliberately narrower than
+markdown: the question it answers is not "does this parse" but "does a reader
+SEE five screenshots".
 
-- exactly five image lines, in the order of the table above, each ALONE on
-  its line and matching `![<alt>](docs/captures/<name>)` with alternative
-  text that is not empty;
-- no line may carry a backtick, a `~~~` fence, a `<pre` tag, an HTML
-  comment opener `<!--`, an escaped `\![`, or an `<img` tag. Each of those
-  renders an image as literal text or hides it altogether, and the section
-  is where the screenshots have to actually appear;
-- any other mention of `docs/captures/` -- a link with no `!`, an image
-  with empty alternative text, an image sharing a line with prose -- is
-  refused rather than counted.
+First, every HTML comment is removed from the WHOLE of `README.md` -- a closed
+`<!--` to `-->`, and an unclosed `<!--` running to the end of the file. What
+is left is the visible document. The CAPTURE SECTION is the lines of that
+visible text from `## Get synced in five steps` up to the next line beginning
+`## `. If the heading is not in the visible text at all, the README has no
+screenshots in it and that is a refusal, not an empty count: a comment opened
+on the line ABOVE the heading hides the whole section from any rule that only
+reads the section.
 
-Outside that section README.md may say whatever it likes; this is a form
-for one section, not a markdown policy. Renaming the heading is a change
-to this convention and to the suite, in one pull request.
+Inside the section:
+
+- exactly five image lines, in the order of the table above, each ALONE on its
+  line, indented by EXACTLY the three spaces that continue its numbered list
+  item, matching `![<alt>](docs/captures/<name>)` with alternative text that is
+  not empty and nothing after the closing parenthesis;
+- no line may begin with four spaces or a tab. In CommonMark that opens an
+  indented code block whatever it contains, so eight spaces turn all five
+  screenshots into code samples without changing a character of the image
+  syntax;
+- no line may carry a backtick, a `~~~` fence, a `<pre` tag, an HTML comment
+  opener `<!--`, an escaped `\![`, or an `<img` tag, in EITHER case: `<PRE>`
+  hides an image exactly as well as `<pre>`. Each of those renders an image as
+  literal text or hides it altogether, and the section is where the
+  screenshots have to actually appear;
+- any other mention of `docs/captures/` -- a link with no `!`, an image with
+  empty alternative text, an image sharing a line with prose -- is refused
+  rather than counted.
+
+Outside that section README.md may say whatever it likes, including the
+comment that records this rule; this is a form for one section, not a markdown
+policy. Renaming the heading is a change to this convention and to the suite,
+in one pull request.
 
 ## How to take them
 
