@@ -5,6 +5,106 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.0 - Unreleased
+
+- First stable release. No behaviour changes with it: 1.0.0 is the point at
+  which the guarantees below stop being intentions and start being the
+  contract this project is judged against. Everything under "Known limits" is
+  what 1.0.0 does NOT claim.
+- **Dependency-free, by construction.** The server is one Rust binary built
+  against the standard library alone -- no crates, no build script, no
+  vendored code -- and the plugin has zero runtime dependencies, built by one
+  pinned TypeScript compiler and a bundler in this repository. Cryptography is
+  the platform's own WebCrypto on the device and an implementation checked
+  against published test vectors on the server. `#![forbid(unsafe_code)]`
+  holds everywhere but the one file that delivers SIGTERM.
+- **A blind server.** No vault key, chunk key, plaintext chunk, or clear file
+  path is sent to, stored by, or logged by the server; file names travel only
+  inside encrypted manifests. The server cannot decrypt a vault because it
+  holds no key material with which to try. The doctrine tests in
+  `crates/obsyncd` refuse a handler, log line, or journal frame carrying a
+  field named or shaped like a key or a path.
+- **Fail-closed, with nothing to turn off.** No flag, environment variable,
+  build feature, or configuration field disables encryption, request
+  authentication, replay protection, fsync, integrity verification, probes, or
+  the response header policy. The signing window (+/-300 s) and the nonce
+  memory (600 s) are constants, not settings. A chart that has not been given
+  a resolved image digest fails at pull time rather than deploying something
+  unverified.
+- **Any size, one path.** There is no per-file or per-vault size limit in
+  server code. The only refusals are explicit, configurable and visible: the
+  free-space watermark on a volume and the account quota, both HTTP 507.
+  Device-side ceilings -- the mobile budget and the per-file mobile ceiling --
+  are plugin policy, defaulted per platform and shown in the interface.
+- **Native installation and updates.** The plugin installs and updates through
+  Obsidian's own Settings -> Community plugins browser as Self Hosted Private
+  Sync (`obsync-private-sync`). Root `versions.json` tells that installer which
+  release each Obsidian version may take, so an older Obsidian is offered the
+  newest release it can actually run instead of nothing. No supported path
+  copies files by hand.
+- **Two independent routes to a working deployment.** The reference route puts
+  a TLS terminator the operator trusts in front of the pod on a private
+  network, with `OBSYNC_EDGE=none`. The Compose route (`deploy/compose`) needs
+  an account with nobody: Caddy, a private name, a private certificate
+  authority, and nothing reachable from the internet;
+  `scripts/ci/compose-smoke.sh` re-proves its serving path and its published
+  address on every pull request. A tunnel on a public hostname is an optional
+  convenience on top of either, never the foundation.
+
+### Validated on real devices
+
+The device campaign behind this release is recorded in
+[`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md),
+which carries every V1 through V16 outcome in its own row.
+
+- Route: the Compose route (`deploy/compose`, validation.md V15) with a
+  macOS laptop as the server: the 0.1.19 release image by digest behind Caddy
+  `tls internal`, a private name and a privately trusted root on each device,
+  reachable only on the local network. The reference route (Helm chart behind
+  a WARP private route on the homelab) was not exercised in this run: the
+  WARP client delivered SSH but not a second port to the same host.
+- Devices, operating systems, Obsidian versions, plugin version, server
+  commit: a MacBook Pro on macOS 26.6 with Obsidian 1.13.7 and plugin 0.1.18
+  (paired first); an iPhone 15 Pro Max on iOS 26.6.1 with Obsidian mobile and
+  plugin 0.1.19 installed from the community directory; server `obsyncd`
+  0.1.19 from release commit `e47e3d4`.
+- Passed: the production-path install on both devices; V1 first-time setup and
+  device enrollment (setup token accepted, recovery phrase shown, device
+  listed); V2 pairing the phone (one-time code pasted on the phone, approved
+  by name on the desktop, sealed envelope delivered, about one minute end to
+  end); V3 two-way live edits (a note created on the desktop appeared on the
+  phone, a line appended on the phone appeared on the desktop, each within a
+  few seconds as observed, not instrumented); V15 itself, since this run is
+  that Compose route confirmed on two real devices with no provider, no public
+  hostname, and no port reachable from the internet. Unsigned requests to
+  every sync endpoint were refused (401/404/400) and the server log shows
+  exactly the two enrolled devices.
+- Not attempted: V4, V5, V6, V7, V8, V9, V10, V11, V12, V14, V16, and the
+  native update 0.1.18 -> 0.1.19 on the desktop. Not applicable: V13, because
+  a laptop server has no private route.
+- Two findings, both about generated URLs on a non-default HTTPS port and
+  neither affecting sync correctness or privacy: the dashboard link the plugin
+  opens, and the terminator's HTTP-to-HTTPS redirect, both drop that port.
+  Tracked as [issue #68](https://github.com/snaraj/obsync/issues/68).
+
+### Known limits
+
+- V7 (a 20 GiB archive, Obsidian killed mid-upload, fewer than 8 MiB re-sent)
+  is unproven. Resumable uploads exist; the retransmission bound has never been
+  measured on a real device.
+- V12 (a blob corrupted by hand, quarantined by scrub, restored from a healthy
+  client) is unproven on real devices. Hosts without bounded range reads refuse
+  automatic repair from a local source above 8 MiB, so a matching source on a
+  capable device is required; a synthetic test does not close it.
+- iPad and Windows are not validated. `docs/validation.md` names them as
+  required platforms for the full campaign and this release does not claim
+  them.
+- Off-LAN synchronisation over the reference route (V13) is pending.
+- The selected-folder list may only narrow once a vault has history. Widening
+  it needs a safe current-head resync, which this version does not implement.
+- Public reachability is not, and has never been, an acceptance criterion
+  here: the reference deployment is private and owner-only by ruling.
+
 ## 0.1.20 - Unreleased
 
 - Upgrade the plugin build toolchain from Node 24.19.0 with npm 11.17.0 to
