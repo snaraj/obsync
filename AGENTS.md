@@ -17,7 +17,7 @@ nothing here depends on them.
    commits carry the noreply identity per "Commit identity mechanics"; the
    pinned toolchain is `rust-toolchain.toml` (Rust 1.98.0, components
    `rustfmt`, `clippy`, `llvm-tools`) and `plugin/package.json` (Node
-   24.19.0, npm 11.17.0, one exact `typescript` devDependency). The gate
+   26.8.2, npm 11.19.1, one exact `typescript` devDependency). The gate
    verifies these exactly.
 4. Survey live state yourself: `gh issue list`, `gh pr list`, including the
    open-agent-PR count against the PR budget below.

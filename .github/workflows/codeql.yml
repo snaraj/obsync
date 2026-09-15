@@ -42,7 +42,7 @@ jobs:
       matrix:
         include:
           # `rust` IS a built-in CodeQL language at the pinned action version:
-          # src/languages/builtin.json at cdf488f (v4.37.9) lists actions, cpp,
+          # src/languages/builtin.json at b96794f (v4.38.0) lists actions, cpp,
           # csharp, go, java, javascript, python, ruby, rust, swift. It analyses
           # in build-mode `none` -- the extractor reads the source tree, and no
           # cargo invocation happens here, which is also why this job needs no
@@ -59,13 +59,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
       - name: Analyze
         id: analyze
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
       - name: Record the SARIF id this analysis uploaded
         id: record
         env:

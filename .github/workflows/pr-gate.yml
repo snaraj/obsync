@@ -140,7 +140,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '26.8.2'
           check-latest: false
       - name: Verify the pinned toolchain exactly
         # rust-toolchain.toml is the single Rust pin (1.98.0 with rustfmt,
@@ -153,8 +153,8 @@ jobs:
           rustup toolchain install
           test "$(rustc --version | awk '{print $2}')" = "1.98.0"
           test "$(cargo --version | awk '{print $2}')" = "1.98.0"
-          test "$(node --version)" = "v24.19.0"
-          test "$(npm --version)" = "11.17.0"
+          test "$(node --version)" = "v26.8.2"
+          test "$(npm --version)" = "11.19.1"
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Lint Rust, warnings are errors
@@ -172,10 +172,8 @@ jobs:
           npm run build
           npm test
       - name: Test the dashboard
-        # The GLOB, not the directory: on the pinned Node 24.19.0 a
-        # directory argument is run as a module rather than searched, so
-        # `node --test dashboard/test/` fails with MODULE_NOT_FOUND.
-        # Verified inside the pinned node:24.19.0-trixie-slim image.
+        # The explicit glob names the dashboard test files without relying on
+        # Node's directory-discovery behavior. Verified with pinned Node 26.8.2.
         run: node --test dashboard/test/*.test.mjs
       - name: Pin the Makefile and CI to one battery
         run: ./scripts/ci/makefile-invariants.sh

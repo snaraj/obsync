@@ -23,7 +23,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `security` | `actionlint` | The workflows parse and their shell bodies pass shellcheck. |
 | `security` | `trivy fs --scanners vuln --severity HIGH,CRITICAL` | No high or critical vulnerability in the source tree. Requirement 5 keeps this near-empty by construction; the same policy string is recorded in the release evidence manifest. |
 | `security` | `gitleaks git` (full history) and `gitleaks dir` (working tree) | No secret in any blob, in history or in the tree. `.gitleaks.toml` uses the default rule set whole and carries exactly one path allowlist, for `plugin/test/fixtures/crypto.json` -- sentinel-derived cross-implementation vectors whose root input is the byte sequence 00..1f and which are regenerable in one command. It is one FILE wide, not one directory or one rule, and a probe confirms the same payload in a neighbouring fixtures file is still found. |
-| `application` | `rustup toolchain install` then exact version assertions | The runner runs the toolchain `rust-toolchain.toml` names (1.98.0 with rustfmt, clippy, llvm-tools) and Node 24.19.0 / npm 11.17.0 — not whatever the runner image shipped. |
+| `application` | `rustup toolchain install` then exact version assertions | The runner runs the toolchain `rust-toolchain.toml` names (1.98.0 with rustfmt, clippy, llvm-tools) and Node 26.8.2 / npm 11.19.1 — not whatever the runner image shipped. |
 | `application` | `cargo fmt --all --check` | Formatting is decided, not argued. |
 | `application` | `cargo clippy --workspace --all-targets -- -D warnings` | No lint survives, in tests as well as in the library. |
 | `application` | `cargo test --workspace` | The Rust battery, including the doctrine pins. |
@@ -74,7 +74,7 @@ the storage classes are stated in exactly one place.
 
 Two matrix jobs, both `build-mode: none`. **Rust is analysed**: `rust` is a
 built-in CodeQL language at the pinned action version — `src/languages/
-builtin.json` at `cdf488f` (v4.37.9) lists `actions, cpp, csharp, go, java,
+builtin.json` at `b96794f` (v4.38.0) lists `actions, cpp, csharp, go, java,
 javascript, python, ruby, rust, swift`, so no fallback to
 javascript-only was needed. `javascript-typescript` is that file's alias for
 `javascript` and covers `plugin/src`, `plugin/build.mjs`, and the dashboard.
