@@ -1025,6 +1025,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     # ---- what the alternative text may say --------------------------------
 
     ALT_ANCHOR = "The recovery-phrase dialog shown after first-time setup"
+    FULL_ALT = ALT_ANCHOR + ", its words obscured"
 
     def test_a_bracket_before_every_closing_bracket_is_refused(self):
         # The reviewer's fixture: `![alt[](docs/captures/...)`. Under
@@ -1078,6 +1079,25 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
                     [], self.refusing(readme, self.convention, self.files, label)
                 )
 
+    def test_alternative_text_may_start_with_any_admitted_category(self):
+        # The first class admits three categories and the tail may be EMPTY.
+        # Without these, dropping lowercase letters or digits from the first
+        # class, or requiring at least one tail character, changes nothing any
+        # test can see -- because every committed description happens to start
+        # with a capital and run on for a sentence.
+        for label, alt in {
+            "a lowercase letter": "the recovery phrase dialog, words obscured",
+            "an uppercase letter": "The recovery phrase dialog, words obscured",
+            "a digit": "24 words shown once, then never again",
+            "one letter": "A",
+            "one digit": "3",
+        }.items():
+            with self.subTest(alt=label):
+                readme = self.readme.replace(self.FULL_ALT, alt, 1)
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, label)
+                )
+
     def test_empty_alternative_text_or_a_leading_space_is_refused(self):
         for label, replacement in {
             "empty alternative text": "",
@@ -1108,12 +1128,24 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         ("a prose line", "first", "\t"), ("a prose line", "first", " "),
         ("a prose line", "later", "~"), ("a prose line", "later", "\\"),
         ("a prose line", "later", "<"), ("a prose line", "later", "`"),
+        # The alternative text has TWO classes, and only its tail was tested:
+        # widening the FIRST one alone to admit `[` left every test green
+        # while `![[alt](...)` stopped being an image. Every character the
+        # first class excludes is a row here.
+        ("an alternative text", "first", "["), ("an alternative text", "first", "]"),
+        ("an alternative text", "first", "\\"), ("an alternative text", "first", "`"),
+        ("an alternative text", "first", "~"), ("an alternative text", "first", "<"),
+        ("an alternative text", "first", "_"), ("an alternative text", "first", "*"),
+        ("an alternative text", "first", ","), ("an alternative text", "first", "."),
+        ("an alternative text", "first", "'"), ("an alternative text", "first", " "),
+        ("an alternative text", "first", "-"),
     )
     # Where each shape is exercised, and what "first" and "later" mean in it.
     SHAPE_ANCHORS = {
         "a step opener": ("1. **Install from Community plugins.**", "1. **", "Install ", "from Community plugins.**"),
         "a continuation line": ("   Browse, search for", "   ", "Browse, ", "search for"),
         "a prose line": ("The path this release was validated on,", "", "The path ", "this release was validated on,"),
+        "an alternative text": ("![" + ALT_ANCHOR, "![", "The recovery-phrase ", "dialog shown after first-time setup"),
     }
 
     def shaped(self, shape: str, position: str, character: str) -> str:
