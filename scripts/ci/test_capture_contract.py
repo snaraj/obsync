@@ -39,33 +39,56 @@ pixels is a human reading every region before the commit, recorded in the pull
 request; this file cannot and does not stand in for it.
 
 THE DECLARED DOCUMENT FORM, and why it is a form rather than a markdown
-parser. Three versions of this rule have been walked through. The first
-counted `](docs/captures/...)` as a raw substring, so an HTML comment around
-the five lines hid every screenshot with the count unchanged. The second
-stripped comments, column-zero fences and inline code, and a `~~~` fence, an
-escaped `\!`, and a `<pre>` walked through that. The third bounded a section
-and declared what may stand in it -- and an HTML comment opened on the line
-ABOVE the heading hid the whole section from outside the lines being read,
-eight spaces turned each image into an indented code block, and `<PRE>` in
-capitals matched nothing. "What markdown renders" is a specification this
-repository is not going to reimplement in a contract suite, so the form stays
-declared and narrow, but it is now read in the document's own visible context:
+parser. Four versions of this rule have been walked through. The first counted
+`](docs/captures/...)` as a raw substring, so an HTML comment around the five
+lines hid every screenshot with the count unchanged. The second stripped
+comments, column-zero fences and inline code, and a `~~~` fence, an escaped
+`\!`, and a `<pre>` walked through that. The third bounded a section, and a
+comment opened on the line ABOVE the heading hid it from outside the lines
+being read. The fourth removed comments from the whole file -- and a ``` fence,
+a `~~~` fence, or an outer `<PRE>` opened above the heading and closed below
+the section did the same thing, because a comment is only one of the
+constructs that can enclose a heading.
 
-  * EVERY HTML COMMENT IS REMOVED FROM THE WHOLE FILE FIRST, closed
-    (`<!--` to `-->`) or unclosed and running to the end of it, and the
-    heading must still be there afterwards. A heading absent from the visible
-    document is a README with no screenshots in it, and that is a refusal, not
-    a fallback to counting nothing.
-  * THE SECTION is the lines from `## Get synced in five steps` to the next
-    line beginning `## `, in that visible text.
-  * EACH IMAGE LINE is indented by EXACTLY the three spaces that continue its
-    numbered list item, carries alternative text that is not empty, and ends
-    at the closing parenthesis. Four spaces or a tab open an indented code
-    block in CommonMark whatever they contain, so any line of the section
-    starting with one is refused on its own.
-  * A BACKTICK, a `~~~` fence, a `<pre`, an HTML comment opener, an escaped
-    bang or an `<img` is refused wherever it appears in the section, matched
-    WITHOUT CASE, because `<PRE>` hides an image exactly as well as `<pre>`.
+"What markdown renders" is still a specification this repository is not going
+to reimplement in a contract suite. So the form stays declared and narrow, and
+the enclosing context is handled by ONE bounded block-level pass over the
+whole document, written against the two sections of the CommonMark
+specification that decide it:
+
+  * FENCED CODE BLOCKS (CommonMark 4.5,
+    https://spec.commonmark.org/0.31.2/#fenced-code-blocks). An opener is up
+    to three spaces of indent then three or more backticks or tildes, a
+    backtick fence's info string carrying no backtick of its own. It closes at
+    the first later line with up to three spaces of indent and a run of the
+    same character at least as long, or at the end of the file. Everything
+    from opener to closer is literal text, so a `## ` line in there is not a
+    heading.
+  * HTML BLOCKS (CommonMark 4.6,
+    https://spec.commonmark.org/0.31.2/#html-blocks), the five kinds that end
+    at a CLOSING MARKER rather than at a blank line: type 1 (`<pre`,
+    `<script`, `<style`, `<textarea`, case-insensitive), type 2 (`<!--`),
+    type 3 (`<?`), type 4 (`<!` and a letter), type 5 (`<![CDATA[`). Each may
+    start with up to three spaces of indent and each, unclosed, runs to the
+    end of the file.
+  * TYPES 6 AND 7 end at the next BLANK LINE instead, so neither can still be
+    open at a heading the document separates with one. That is why the
+    declared form REQUIRES the line above `## Get synced in five steps` to be
+    blank: one rule, and those two kinds are answered by construction rather
+    than by parsing them.
+  * INDENTED CODE BLOCKS (CommonMark 4.4) need four spaces of indent on every
+    line they contain, and this heading has none, so they cannot enclose it.
+
+What survives that pass is the visible document. The heading must be in it --
+its absence is a refusal in its own words, not a fallback to counting nothing
+-- and the section is the lines from it to the next line beginning `## `.
+Inside the section: exactly five image lines, each alone on its line, indented
+by EXACTLY the three spaces that continue its numbered list item, carrying
+alternative text that is not empty and ending at the closing parenthesis; no
+line beginning with four spaces or a tab, which would open an indented code
+block whatever it contained; and no backtick, `~~~`, `<pre`, escaped bang or
+`<img` anywhere in it, matched WITHOUT CASE, for the ones that can still
+appear part-way along a line the block pass keeps.
 
 A construct nobody has thought of yet is refused too, because one anchored
 pattern admits a line and nothing else admits one. `docs/captures/README.md`
@@ -135,9 +158,34 @@ INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)")
 # Any other way a line can mention a capture: a link with no bang, an image
 # with empty alternative text, an image sharing its line with prose.
 MENTION = "](docs/captures/"
-# An HTML comment, closed or running to the end of the file. The second shape
-# matters because an unclosed opener hides everything after it, and a reader
-# of the rendered page sees exactly nothing from that point on.
+# A fenced code block (CommonMark 4.5): up to three spaces of indent, then a
+# run of at least three backticks or tildes. A BACKTICK fence's info string may
+# not itself contain a backtick; a tilde fence's may. It closes at the first
+# later line with up to three spaces of indent and a run of the same character
+# at least as long as the opener, or at the end of the file.
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+# HTML blocks (CommonMark 4.6). Only the five kinds that end at a CLOSING
+# MARKER are listed: those are the ones that swallow a heading. Types 6 and 7
+# end at the next blank line instead, which is what the blank-line rule below
+# turns into a guarantee, and an indented code block (4.4) cannot contain a
+# heading that is not itself indented. Each may start with up to three spaces
+# of indent, and an unclosed one runs to the end of the file.
+_HTML_BLOCKS = (
+    # Type 1. The end marker is any of the four closers, per the spec, and the
+    # opening line counts: `<pre>x</pre>` is one block.
+    (
+        re.compile(r"^ {0,3}<(?:pre|script|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
+        re.compile(r"</(?:pre|script|style|textarea)>", re.IGNORECASE),
+    ),
+    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),  # type 2
+    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),  # type 3
+    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),  # type 5, before 4
+    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),  # type 4
+)
+# Inline HTML comments, which start somewhere other than the beginning of a
+# line and so are not an HTML BLOCK. Stripping them is stricter than CommonMark
+# -- an inline comment cannot actually hide a heading that a blank line
+# separates from it -- and stricter is the direction this file errs in.
 _CLOSED_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _UNCLOSED_COMMENT_RE = re.compile(r"<!--.*\Z", re.DOTALL)
 
@@ -169,19 +217,65 @@ MAX_IMAGE_BYTES = 67108864
 # Compressed input is fed in pieces this size, with the OUTPUT bounded per
 # call, so a small file declaring an enormous grid cannot inflate past budget.
 INFLATE_PIECE = 65536
+# The real module, held before any test swaps the global name for a recorder.
+_REAL_ZLIB = zlib
 _CHUNK_TYPE_RE = re.compile(rb"[A-Za-z]{4}")
 
 
-def visible(readme: str) -> str:
-    """README.md with every HTML comment gone, closed or not.
+def _fence_end(lines: Sequence[str], start: int, fence: str) -> int:
+    """The line after a fenced code block that opened at `start`."""
+    closer = re.compile(r"^ {0,3}%s{%d,}\s*$" % (re.escape(fence[0]), len(fence)))
+    for index in range(start + 1, len(lines)):
+        if closer.match(lines[index]):
+            return index + 1
+    return len(lines)  # unclosed: the fence runs to the end of the file
 
-    The whole document, not the section: the reproducer that closed the last
-    round put `<!--` on the line ABOVE the heading and `-->` below the last
-    image, so the opener sat outside the inspected lines and every screenshot
-    vanished with the section itself unchanged. A section cannot be read
-    without the context that decides whether it renders at all.
+
+def _html_end(lines: Sequence[str], start: int, closer: re.Pattern[str]) -> int:
+    """The line after an HTML block that opened at `start`.
+
+    The scan begins ON the opening line, because `<pre>x</pre>` and
+    `<!DOCTYPE html>` open and close on one line.
     """
-    return _UNCLOSED_COMMENT_RE.sub("", _CLOSED_COMMENT_RE.sub("", readme))
+    for index in range(start, len(lines)):
+        if closer.search(lines[index]):
+            return index + 1
+    return len(lines)  # unclosed: the block runs to the end of the file
+
+
+def visible(readme: str) -> str:
+    """README.md with the literal contents of every enclosing block removed.
+
+    A block-level pass, in document order, over the WHOLE file: whatever is
+    inside a fenced code block or one of the five HTML-block kinds that end at
+    a closing marker is not rendered markdown, so a `## ` line inside one is
+    not a heading and the five images under it are not images. The pass is
+    bounded -- each step advances at least one line, and an unclosed construct
+    consumes the rest of the file, which is what a reader sees too.
+
+    Comment stripping alone is NOT this, and saying it was is what let three
+    rounds of enclosing constructs through: a `~~~` fence, a ``` fence and an
+    outer `<PRE>` each hid all five screenshots with the inspected section
+    unchanged.
+    """
+    lines = readme.splitlines()
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        fence = _FENCE_OPEN_RE.match(line)
+        if fence and not (fence.group("fence")[0] == "`" and "`" in fence.group("info")):
+            index = _fence_end(lines, index, fence.group("fence"))
+            continue
+        for opener, closer in _HTML_BLOCKS:
+            if opener.match(line):
+                index = _html_end(lines, index, closer)
+                break
+        else:
+            kept.append(line)
+            index += 1
+    text = "\n".join(kept)
+    return _UNCLOSED_COMMENT_RE.sub("", _CLOSED_COMMENT_RE.sub("", text))
 
 
 def capture_section(readme: str) -> list[str] | None:
@@ -197,6 +291,16 @@ def capture_section(readme: str) -> list[str] | None:
             end = index
             break
     return lines[start:end]
+
+
+def preceding_line(readme: str) -> str | None:
+    """The visible line immediately above the heading, or None if it is gone."""
+    lines = visible(readme).splitlines()
+    try:
+        start = lines.index(CAPTURE_SECTION)
+    except ValueError:
+        return None
+    return lines[start - 1] if start else ""
 
 
 def displayed_names(section: Sequence[str]) -> list[str]:
@@ -219,6 +323,17 @@ def section_refusals(readme: str) -> list[str]:
             "the visible README"
         ]
     found: list[str] = []
+    # Types 6 and 7 of CommonMark 4.6 end at the next BLANK LINE, so a block
+    # of either kind that opened above the heading has already closed if the
+    # line above the heading is blank. Requiring that blank line is what makes
+    # those two kinds unable to hide this section, and it costs a document
+    # nothing: a heading wants the blank line anyway.
+    above = preceding_line(readme)
+    if above is None or above.strip():
+        found.append(
+            f"the line above `{CAPTURE_SECTION}` must be blank, so that no HTML "
+            f"block ending at a blank line can still be open, not {above!r}"
+        )
     lowered = [token.lower() for token in FORBIDDEN_IN_SECTION]
     for offset, line in enumerate(section):
         for token, needle in zip(FORBIDDEN_IN_SECTION, lowered):
@@ -559,6 +674,54 @@ def png_of_at_least(size: int) -> bytes:
     return grown
 
 
+class _BoundedDecompressor:
+    """A hand-written stand-in for `zlib.decompressobj` that records the bound.
+
+    No mock framework (testing doctrine): it delegates every call to a real
+    decompressor and keeps what `_inflate` asked for. `max_length=0` means
+    UNLIMITED to zlib, which is exactly the shape of the mutation this exists
+    to catch, so the limit is recorded beside the output already produced and
+    the test asserts the relationship rather than the eventual verdict.
+    """
+
+    def __init__(self, budget: int):
+        self.inner = _REAL_ZLIB.decompressobj()
+        self.budget = budget
+        self.produced = 0
+        self.calls: list[tuple[object, int]] = []
+
+    def decompress(self, data, max_length=0):
+        self.calls.append((max_length, self.produced))
+        out = self.inner.decompress(data, max_length)
+        self.produced += len(out)
+        return out
+
+    @property
+    def eof(self):
+        return self.inner.eof
+
+    @property
+    def unconsumed_tail(self):
+        return self.inner.unconsumed_tail
+
+    @property
+    def unused_data(self):
+        return self.inner.unused_data
+
+
+class _ZlibWithBoundedInflate:
+    """The module's `zlib`, with one decompressor swapped for the recorder."""
+
+    def __init__(self, recorder: _BoundedDecompressor):
+        self._recorder = recorder
+
+    def __getattr__(self, name):
+        return getattr(_REAL_ZLIB, name)
+
+    def decompressobj(self, *args, **kwargs):
+        return self._recorder
+
+
 class CaptureSetIsIntact(unittest.TestCase):
     def test_the_repository_refuses_nothing(self):
         readme, convention = documents()
@@ -677,6 +840,123 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             readme, "hidden or missing", "an unclosed comment above the section"
         )
 
+    # ---- blocks that enclose the whole section ----------------------------
+
+    ENCLOSING = (
+        ("a backtick fence", "```", "```"),
+        ("a tilde fence", "~~~", "~~~"),
+        ("an indented backtick fence", "   ```", "   ```"),
+        ("a longer closing fence", "~~~", "~~~~~"),
+        ("a pre block", "<pre>", "</pre>"),
+        ("an uppercase PRE block", "<PRE>", "</PRE>"),
+        ("a script block", "<script>", "</script>"),
+        ("a style block", "<style>", "</style>"),
+        ("a textarea block", "<textarea>", "</textarea>"),
+        ("an indented pre block", "   <pre>", "</pre>"),
+        ("a processing instruction", "<?php", "?>"),
+        ("a declaration", "<!DOCTYPE", ">"),
+        ("a CDATA section", "<![CDATA[", "]]>"),
+        ("an HTML comment", "<!--", "-->"),
+    )
+
+    def enclosed(self, opener: str, closer: str) -> str:
+        """The README with one block opened above the heading and closed below."""
+        readme = self.readme.replace(
+            CAPTURE_SECTION, opener + "\n" + CAPTURE_SECTION, 1
+        )
+        return readme.replace("## Get syncing\n", closer + "\n\n## Get syncing\n", 1)
+
+    def test_a_block_enclosing_the_section_is_refused(self):
+        # Every construct that can swallow a heading, each opened OUTSIDE the
+        # inspected lines: the section itself is unchanged in all fourteen.
+        for label, opener, closer in self.ENCLOSING:
+            with self.subTest(block=label):
+                self.with_readme(
+                    self.enclosed(opener, closer), "hidden or missing", label
+                )
+
+    def test_an_unclosed_block_before_the_section_is_refused(self):
+        for label, opener, _ in self.ENCLOSING:
+            with self.subTest(block=label):
+                readme = self.readme.replace(
+                    CAPTURE_SECTION, opener + "\n" + CAPTURE_SECTION, 1
+                )
+                self.with_readme(readme, "hidden or missing", "unclosed " + label)
+
+    def above(self, *lines: str) -> str:
+        """The README with these lines inserted just above the heading."""
+        return self.readme.replace(
+            CAPTURE_SECTION, "\n".join(lines) + "\n\n" + CAPTURE_SECTION, 1
+        )
+
+    def test_a_closed_block_above_the_section_leaves_it_visible(self):
+        # The other half of the block pass: a construct that CLOSES above the
+        # heading must not take the heading with it. Without these, a closer
+        # that never matches would look exactly like a correct one, because
+        # everything it swallowed was already being refused.
+        cases = {
+            "a backtick fence": ("```", "sample", "```"),
+            "an indented backtick fence": ("   ```", "sample", "   ```"),
+            "a tilde fence": ("~~~", "sample", "~~~"),
+            "a one-line HTML comment": ("<!-- an aside -->",),
+            "a one-line declaration": ("<!DOCTYPE html>",),
+            "a closed pre block": ("<pre>", "sample", "</pre>"),
+        }
+        for label, lines in cases.items():
+            with self.subTest(block=label):
+                readme = self.above(*lines)
+                self.assertIn(CAPTURE_SECTION, visible(readme))
+                self.assertEqual(
+                    [], self.refusing(readme, self.convention, self.files, label)
+                )
+
+    def test_a_closed_mid_line_comment_above_the_section_leaves_it_visible(self):
+        # The closed-comment regex has to stop where the comment stops, or the
+        # unclosed one would be doing all the work and this document could
+        # never mention `<!--` in a sentence again.
+        readme = self.readme.replace(
+            "writers on one vault", "writers <!-- an aside --> on one vault", 1
+        )
+        self.assertIn(CAPTURE_SECTION, visible(readme))
+        self.assertEqual(
+            [], self.refusing(readme, self.convention, self.files, "a closed aside")
+        )
+
+    def test_an_uppercase_pre_tag_on_an_image_line_is_refused(self):
+        # Mid-line, so the block pass keeps it and the TOKEN rule is what
+        # catches it -- which is the comparison that has to fold case.
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[4]})", f"](docs/captures/{NAMES[4]}) <PRE>", 1
+        )
+        self.with_readme(readme, "'<pre'", "an uppercase pre tag on an image line")
+
+    def test_a_non_blank_line_above_the_heading_is_refused(self):
+        # CommonMark HTML blocks of types 6 and 7 end at the next blank line,
+        # so this one rule is what stops either of them reaching the section.
+        readme = self.readme.replace(
+            "\n\n" + CAPTURE_SECTION, "\n<div>\n" + CAPTURE_SECTION, 1
+        )
+        self.with_readme(readme, "must be blank", "a non-blank line above the heading")
+
+    def test_a_comment_opened_mid_line_above_the_section_is_refused(self):
+        readme = self.readme.replace(
+            "writers on one vault", "writers <!-- on one vault", 1
+        ).replace("## Get syncing\n", "-->\n\n## Get syncing\n", 1)
+        self.with_readme(readme, "hidden or missing", "a closed mid-line comment")
+
+    def test_an_unclosed_mid_line_comment_above_the_section_is_refused(self):
+        readme = self.readme.replace(
+            "writers on one vault", "writers <!-- on one vault", 1
+        )
+        self.with_readme(readme, "hidden or missing", "an unclosed mid-line comment")
+
+    def test_a_fenced_block_elsewhere_in_the_readme_is_not_a_refusal(self):
+        # The README's own quick start is full of ``` blocks. Removing their
+        # contents must not disturb a section they do not enclose, or this
+        # whole pass would be unusable on the document it reads.
+        self.assertIn(CAPTURE_SECTION, visible(self.readme))
+        self.assertEqual(list(NAMES), displayed_names(capture_section(self.readme)))
+
     def test_eight_space_indented_images_are_refused(self):
         def rewrite(section):
             return [
@@ -717,7 +997,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
                     out.append(line)
             return out
 
-        self.with_readme(self.rewrite_section(rewrite), "'<pre'", "an uppercase PRE")
+        self.with_readme(self.rewrite_section(rewrite), "in order", "an uppercase PRE")
 
     def test_tilde_fencing_every_image_is_refused(self):
         def rewrite(section):
@@ -729,7 +1009,23 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
                     out.append(line)
             return out
 
-        self.with_readme(self.rewrite_section(rewrite), "'~~~'", "tilde-fenced images")
+        # `visible()` now REMOVES what a fence encloses, so the refusal is the
+        # stronger one: the section displays nothing at all.
+        self.with_readme(self.rewrite_section(rewrite), "in order", "tilde-fenced images")
+
+    def test_a_tilde_run_on_an_image_line_is_refused(self):
+        # Not a fence opener -- it shares its line -- so the token rule is what
+        # catches it, and that is the entry this proves is reachable.
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[2]})", f"](docs/captures/{NAMES[2]}) ~~~", 1
+        )
+        self.with_readme(readme, "'~~~'", "a tilde run on an image line")
+
+    def test_a_pre_tag_on_an_image_line_is_refused(self):
+        readme = self.readme.replace(
+            f"](docs/captures/{NAMES[3]})", f"](docs/captures/{NAMES[3]}) <pre>", 1
+        )
+        self.with_readme(readme, "'<pre'", "a pre tag on an image line")
 
     def test_escaping_an_image_marker_is_refused(self):
         readme = self.readme.replace("![The recovery-phrase", "\\![The recovery-phrase", 1)
@@ -745,7 +1041,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
                     out.append(line)
             return out
 
-        self.with_readme(self.rewrite_section(rewrite), "'<pre'", "a pre-wrapped image")
+        self.with_readme(self.rewrite_section(rewrite), "in order", "a pre-wrapped image")
 
     def test_an_image_inside_inline_code_is_refused(self):
         readme = self.readme.replace(
@@ -1112,6 +1408,43 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             ihdr(), chunk(b"IDAT", zlib.compress(rows(filter_byte=5)))
         )
         self.with_capture(NAMES[1], blob, "filter byte 5", "filter byte 5")
+
+    def test_the_inflate_output_stays_inside_its_budget(self):
+        # A ten-mebibyte grid from a few hundred bytes, under a header that
+        # declares one pixel. What is proven is not that this is eventually
+        # refused -- the length check would do that after allocating ten
+        # mebibytes -- but that the allocation never happens.
+        expected = 2  # 1 x 1 greyscale: one filter byte, one sample
+        blob = assemble(
+            ihdr(), chunk(b"IDAT", _REAL_ZLIB.compress(b"\0" * (10 << 20)))
+        )
+        recorder = _BoundedDecompressor(expected + 1)
+        previous = globals()["zlib"]
+        globals()["zlib"] = _ZlibWithBoundedInflate(recorder)
+        try:
+            found = png_refusals(NAMES[0], blob)
+        finally:
+            globals()["zlib"] = previous
+        self.kills(found, "inflates past")
+        self.assertTrue(recorder.calls, "the inflate never ran")
+        for limit, produced in recorder.calls:
+            self.assertIsInstance(limit, int)
+            self.assertGreater(limit, 0, "max_length 0 means UNLIMITED to zlib")
+            self.assertLessEqual(limit, expected + 1 - produced)
+        self.assertLessEqual(recorder.produced, expected + 1)
+
+    def test_bytes_in_unread_input_after_the_stream_are_refused(self):
+        # The deflate stream ends EXACTLY on the first input piece, so
+        # `unused_data` is empty and the only evidence of the trailing bytes
+        # is the input this loop has not fed yet.
+        raw = rows(2620, 25)
+        self.assertEqual(65525, len(raw))
+        stream = zlib.compress(raw, 0)  # stored blocks: a predictable length
+        self.assertEqual(INFLATE_PIECE, len(stream))
+        blob = assemble(ihdr(2620, 25), chunk(b"IDAT", stream + b"x" * 16))
+        self.with_capture(
+            NAMES[1], blob, "after the IDAT deflate stream", "unread trailing input"
+        )
 
     def test_bytes_after_the_deflate_stream_are_refused(self):
         blob = assemble(ihdr(), chunk(b"IDAT", zlib.compress(rows()) + b"extra"))

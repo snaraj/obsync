@@ -30,14 +30,34 @@ written here rather than only in the suite. It is deliberately narrower than
 markdown: the question it answers is not "does this parse" but "does a reader
 SEE five screenshots".
 
-First, every HTML comment is removed from the WHOLE of `README.md` -- a closed
-`<!--` to `-->`, and an unclosed `<!--` running to the end of the file. What
-is left is the visible document. The CAPTURE SECTION is the lines of that
-visible text from `## Get synced in five steps` up to the next line beginning
-`## `. If the heading is not in the visible text at all, the README has no
-screenshots in it and that is a refusal, not an empty count: a comment opened
-on the line ABOVE the heading hides the whole section from any rule that only
-reads the section.
+### The visible document
+
+`README.md` is first reduced to what a reader actually sees, by removing the
+literal contents of every block that can ENCLOSE a heading. Comment stripping
+alone is not that, and saying it was is how three separate constructs got past
+this rule: a `~~~` fence, a ``` fence, and an outer `<PRE>` each hid all five
+screenshots with the section itself unchanged.
+
+- **Fenced code blocks** ([CommonMark 4.5](https://spec.commonmark.org/0.31.2/#fenced-code-blocks)):
+  up to three spaces of indent, then three or more backticks or tildes; closed
+  by the first later line with up to three spaces of indent and a run of the
+  same character at least as long, or by the end of the file.
+- **HTML blocks** ([CommonMark 4.6](https://spec.commonmark.org/0.31.2/#html-blocks))
+  of the five kinds that end at a closing marker: `<pre` / `<script` /
+  `<style` / `<textarea` (either case), `<!--`, `<?`, `<!` and a letter, and
+  `<![CDATA[`. Each may be indented up to three spaces, and an unclosed one
+  runs to the end of the file.
+- HTML blocks of **types 6 and 7** end at the next blank line instead, so the
+  form simply REQUIRES the line above the heading to be blank: neither kind
+  can still be open there. **Indented code blocks** (CommonMark 4.4) need four
+  spaces on every line, and the heading has none, so they cannot enclose it.
+
+### The capture section
+
+The CAPTURE SECTION is the lines of that visible text from
+`## Get synced in five steps` up to the next line beginning `## `. If the
+heading is not in the visible text at all, the README has no screenshots in it
+and that is a refusal, not an empty count.
 
 Inside the section:
 
@@ -49,19 +69,18 @@ Inside the section:
   indented code block whatever it contains, so eight spaces turn all five
   screenshots into code samples without changing a character of the image
   syntax;
-- no line may carry a backtick, a `~~~` fence, a `<pre` tag, an HTML comment
-  opener `<!--`, an escaped `\![`, or an `<img` tag, in EITHER case: `<PRE>`
-  hides an image exactly as well as `<pre>`. Each of those renders an image as
-  literal text or hides it altogether, and the section is where the
-  screenshots have to actually appear;
+- no line may carry a backtick, a `~~~` run, a `<pre` tag, an escaped `\![`,
+  or an `<img` tag, in EITHER case: `<PRE>` hides an image exactly as well as
+  `<pre>`. These catch the same constructs part-way along a line, where they
+  are inline HTML rather than a block;
 - any other mention of `docs/captures/` -- a link with no `!`, an image with
   empty alternative text, an image sharing a line with prose -- is refused
   rather than counted.
 
 Outside that section README.md may say whatever it likes, including the
-comment that records this rule; this is a form for one section, not a markdown
-policy. Renaming the heading is a change to this convention and to the suite,
-in one pull request.
+comment that records this rule and the fenced blocks of the quick start; this
+is a form for one section, not a markdown policy. Renaming the heading is a
+change to this convention and to the suite, in one pull request.
 
 ## How to take them
 
