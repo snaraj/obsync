@@ -5,7 +5,7 @@
 never generated at build time, and a pull request that changes what either
 surface renders asks the owner for fresh ones and says so in its body.
 
-## The six
+## The five
 
 `README.md` references exactly these names, in this order, one sentence each.
 The names are part of the README and do not change without changing it:
@@ -15,12 +15,11 @@ The names are part of the README and do not change without changing it:
 | `01-install-from-directory.png` | Settings -> Community plugins -> Browse with **Self Hosted Private Sync** found and the Install button |
 | `02-first-time-setup.png` | the plugin's settings tab: **Server URL**, the folder selection saved, and **First-time setup** where the setup token goes |
 | `03-recovery-phrase.png` | the 24-word recovery-phrase dialog, words obscured |
-| `04-pair-a-new-device.png` | the one-time pairing code on the first desktop, code obscured, beside the phone's **Pairing code** field |
+| `04-pair-a-new-device.png` | the **Pair a new device** dialog on the first device, its one-time code obscured |
 | `05-sync-both-ways.png` | the same disposable note edited on one device and arrived on the other, with the status bar visible |
-| `06-dashboard-devices.png` | the dashboard's Devices list, with the revoke control in view |
 
 In `docs/validation.md` terms: 01 comes from the production-path install, 02
-and 03 from V1, 04 and 06 from V2, 05 from V3. They are taken during a real
+and 03 from V1, 04 from V2, 05 from V3. They are taken during a real
 validation run and belong to the run recorded in
 `docs/validation-runs/<date>.md`.
 

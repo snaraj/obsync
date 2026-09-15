@@ -56,11 +56,31 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 The device campaign behind this release is recorded in
 [`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md).
 
-- Route: <<RUN-RECORD>>
+- Route: the Compose route (`deploy/compose`, validation.md V15) with a
+  macOS laptop as the server: the 0.1.19 release image by digest behind Caddy
+  `tls internal`, a private name and a privately trusted root on each device,
+  reachable only on the local network. The reference route (Helm chart behind
+  a WARP private route on the homelab) was not exercised in this run: the
+  WARP client delivered SSH but not a second port to the same host.
 - Devices, operating systems, Obsidian versions, plugin version, server
-  commit: <<RUN-RECORD>>
-- Scenarios passed, with timings: <<RUN-RECORD>>
-- Attempted and not passed, or not attempted: <<RUN-RECORD>>
+  commit: a MacBook Pro on macOS 26.6 with Obsidian 1.13.7 and plugin 0.1.18
+  (paired first); an iPhone 15 Pro Max on iOS 26.6.1 with Obsidian mobile and
+  plugin 0.1.19 installed from the community directory; server `obsyncd`
+  0.1.19 from release commit `e47e3d4`.
+- Scenarios passed, with timings: V1 first-time setup and device enrollment
+  (setup token accepted, recovery phrase shown, device listed); V2 iPhone
+  pairing (one-time code pasted on the phone, approved by name on the desktop,
+  sealed envelope delivered, about one minute end to end); V3 two-way live
+  edits (a note created on the desktop appeared on the phone, a line appended
+  on the phone appeared on the desktop, each within a few seconds as observed,
+  not instrumented). Unsigned requests to every sync endpoint were refused
+  (401/404/400) and the server log shows exactly the two enrolled devices.
+- Attempted and not passed, or not attempted: V5 offline conflict, V8
+  delete/restore, V9 revoke, V14 dashboard at 390 px, V16 restart persistence
+  and the native update 0.1.18 -> 0.1.19 on the desktop were not attempted;
+  V13 off-LAN does not apply to a laptop server. Two findings: the generated
+  dashboard link and the HTTP-to-HTTPS redirect both drop a non-default HTTPS
+  port.
 
 ### Known limits
 

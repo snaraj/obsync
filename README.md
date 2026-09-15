@@ -27,7 +27,7 @@ acceptance for 1.0.0 is a separate result and is planned in
 > writers on one vault produce conflicts neither of them can reconcile.
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
-     the plugin and the dashboard. The six files below are committed PNGs from
+     the plugin and the dashboard. The five files below are committed PNGs from
      a validated device run; docs/captures/README.md holds the convention and
      the redaction rules. A change to what either surface renders asks the
      owner for fresh captures. -->
@@ -63,7 +63,7 @@ assume your own server is already running.
    and approve the device by name — the vault key travels encrypted under a
    pairing secret the server never sees.
 
-   ![The one-time pairing code on the first device, obscured, beside the second device's Pairing code field](docs/captures/04-pair-a-new-device.png)
+   ![The Pair a new device dialog on the first device, its one-time code obscured](docs/captures/04-pair-a-new-device.png)
 
 5. **Edit on either device and watch it land.** Type in a note on one device
    and it appears on the other within seconds, in both directions, with the
@@ -74,8 +74,6 @@ assume your own server is already running.
 6. **See and revoke your devices.** Run **Open dashboard** to see every paired
    device, storage per volume, and scrub and garbage-collection state — and to
    revoke a lost device, after which its very next request fails.
-
-   ![The dashboard's Devices list with its revoke control](docs/captures/06-dashboard-devices.png)
 
 ## Get syncing
 

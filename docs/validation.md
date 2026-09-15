@@ -123,7 +123,7 @@ Every run records device models, OS versions, app versions, the server
 commit, and timings in one file per run under
 [`docs/validation-runs/`](validation-runs/README.md), named `<date>.md` for
 the date the run started; that README holds the required fields and the
-redaction rules. The README's six captures are taken during the run -- 01 from
-the production-path install above, 02 and 03 from V1, 04 and 06 from V2, 05
-from V3 -- and are committed under [`docs/captures/`](captures/README.md) by
+redaction rules. The README's five captures are taken during the run -- 01 from
+the production-path install above, 02 and 03 from V1, 04 from V2, 05 from V3
+-- and are committed under [`docs/captures/`](captures/README.md) by
 the convention recorded there.
