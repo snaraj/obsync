@@ -181,6 +181,34 @@ still resolving to the recorded digests, both cosign signatures, the plugin
 bundle's SHA-256, and a fresh HIGH/CRITICAL scan of the shipped image against
 today's vulnerability database. It holds no write permission anywhere.
 
+## `docs-site.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `build` | `python3 -m mkdocs build --strict` | The documentation site renders: every nav entry names a file that exists, every relative link resolves, every referenced image was committed. `--strict` makes each MkDocs warning a failure, so a 404 fails the pull request instead of shipping |
+| `deploy` | `actions/configure-pages`, `actions/deploy-pages` | Pushes to `main` publish the built site to GitHub Pages. It holds `pages: write` and `id-token: write` and no `contents` grant at all, so it cannot touch the repository |
+
+The build inputs come from `docs/requirements.txt` with
+`pip install --no-deps --only-binary=:all:`: the file carries the whole
+transitive closure at exact versions, so pip resolves nothing and no package's
+own build code runs on the runner.
+
+**It is not in the release chain, and that is the design.**
+`release-after-main.yml` fires on a completed `PR gate` run and nothing else,
+and the publisher's authorization job reads the job inventories of
+`pr-gate.yml` and `codeql.yml` alone (`EXPECTED_MAIN_JOBS` and
+`EXPECTED_CODEQL_JOBS` in `scripts/ci/release_contract.py`, with
+`test_release_contract.py` pinning each to its workflow's jobs). A workflow of
+its own adds no job to either inventory, so nothing about the release
+authorization moves. A site build added as a job in `pr-gate.yml` WOULD have
+moved it, and would have made a documentation dependency a gate on publishing
+the server.
+
+`deploy` runs only once the repository owner has turned GitHub Pages on with
+source "GitHub Actions". `configure-pages` is called with no `enablement:`
+input: if Pages is off, the job fails and says so rather than turning a
+publishing surface on by itself.
+
 ## `dependabot.yml`
 
 `github-actions` and `docker` only. Requirement 5 makes the Rust workspace, the

@@ -1,0 +1,96 @@
+name: Docs site
+
+# The documentation site (https://snaraj.github.io/obsync/) is a RENDERING of
+# the `docs/` folder, built by `mkdocs.yml` from the exact Markdown files this
+# repository reviews in pull requests. This workflow does two things and only
+# two: it BUILDS the site on every pull request, under `--strict`, so a broken
+# link or a missing image fails the pull request instead of shipping a 404; and
+# it DEPLOYS the built site on pushes to `main`.
+#
+# It is deliberately NOT part of the release chain. `release-after-main.yml`
+# fires on a completed `PR gate` run and nothing else, and the publisher's
+# authorization job reads the job inventory of `pr-gate.yml` and `codeql.yml`
+# alone (scripts/ci/release_contract.py, EXPECTED_MAIN_JOBS and
+# EXPECTED_CODEQL_JOBS). A workflow of its own adds no job to either, so the
+# inventory the publisher authorizes against is unchanged by this file --
+# which is exactly why the site build lives here rather than as a job in the
+# gate, where it WOULD have moved that inventory.
+#
+# `deploy` runs only after the repository owner has turned GitHub Pages on with
+# source "GitHub Actions". Until then it fails loudly rather than enabling
+# Pages for the repository, because turning on a publishing surface is an
+# owner decision and not something a workflow does on its own.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # One build per pull request, cancellable; every main push keeps its own
+  # group so a later merge cannot cancel the deployment of an earlier one.
+  group: docs-site-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pin the interpreter
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          check-latest: false
+      - name: Install the pinned build inputs
+        # `--no-deps` installs exactly the lines in docs/requirements.txt and
+        # resolves nothing, so no transitive release can enter a build;
+        # `--only-binary=:all:` refuses source distributions, so no package's
+        # own build code runs on this runner. docs/requirements.txt carries the
+        # whole closure and how it was resolved.
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            --no-deps --only-binary=:all: -r docs/requirements.txt
+      - name: Build the site
+        # `--strict` turns every MkDocs warning into a failure: a nav entry
+        # with no file, a relative link to a page that does not exist, an
+        # image that was never committed.
+        run: python3 -m mkdocs build --strict
+      - name: Upload the Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      # The narrowest grant that can publish: `pages` to write the deployment
+      # and `id-token` for the OIDC token the Pages deployment is verified
+      # with. No `contents`, so this job cannot touch the repository.
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Read the Pages configuration
+        # No `enablement:` input. If Pages is off, this step fails and says so;
+        # it never turns a publishing surface on for the repository.
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

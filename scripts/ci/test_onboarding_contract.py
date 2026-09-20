@@ -159,6 +159,16 @@ import miniyaml  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
+# The documentation site's own onboarding pages (mkdocs.yml, "Start here" and
+# "Using it"). The quick start moved OUT of README.md when the README became a
+# front door, and the commands moved with it. A judged document that stops
+# being where the reader is told to go is a gate watching an empty room, so
+# every page that carries an onboarding command or hands the reader the setup
+# token is judged here beside the README.
+SERVER_GUIDE = ROOT / "docs" / "server.md"
+QUICKSTART_GUIDE = ROOT / "docs" / "quickstart.md"
+DASHBOARD_GUIDE = ROOT / "docs" / "dashboard.md"
+DAILY_USE_GUIDE = ROOT / "docs" / "daily-use.md"
 ARCHITECTURE = ROOT / "docs" / "architecture.md"
 COMPOSE = ROOT / "deploy" / "compose" / "docker-compose.yml"
 SETTINGS = ROOT / "plugin" / "src" / "ui" / "settings.ts"
@@ -166,13 +176,26 @@ DASHBOARD = ROOT / "dashboard" / "index.html"
 # The document names this suite judges. The first two are markdown and take the
 # command and prose rules; the third is the compose file and takes rule 8.
 README_NAME = "README.md"
+SERVER_GUIDE_NAME = "docs/server.md"
+QUICKSTART_GUIDE_NAME = "docs/quickstart.md"
+DASHBOARD_GUIDE_NAME = "docs/dashboard.md"
+DAILY_USE_GUIDE_NAME = "docs/daily-use.md"
 ARCHITECTURE_NAME = "docs/architecture.md"
 COMPOSE_NAME = "deploy/compose/docker-compose.yml"
 SETTINGS_NAME = "plugin/src/ui/settings.ts"
 DASHBOARD_NAME = "dashboard/index.html"
-MARKDOWN = (README_NAME, ARCHITECTURE_NAME)
+MARKDOWN = (README_NAME, SERVER_GUIDE_NAME, ARCHITECTURE_NAME)
 # Rule 5's document set: everywhere a person reads the words "setup token".
-WORDING = (README_NAME, ARCHITECTURE_NAME, SETTINGS_NAME, DASHBOARD_NAME)
+WORDING = (
+    README_NAME,
+    SERVER_GUIDE_NAME,
+    QUICKSTART_GUIDE_NAME,
+    DASHBOARD_GUIDE_NAME,
+    DAILY_USE_GUIDE_NAME,
+    ARCHITECTURE_NAME,
+    SETTINGS_NAME,
+    DASHBOARD_NAME,
+)
 
 # The only image the onboarding path may run, and only ever by digest.
 SERVER_IMAGE_PREFIX = "ghcr.io/snaraj/obsync@sha256:"
@@ -476,7 +499,7 @@ def _quick_start_pipelines(quick_start: str) -> list[Pipeline]:
     return found
 
 
-def _token_read_refusals(quick_start: str) -> list[str]:
+def _token_read_refusals(quick_start: str, name: str = README_NAME) -> list[str]:
     """Rule 3, over EVERY documented read rather than over the first one.
 
     The quick start reads the token twice now -- once from the container the
@@ -499,13 +522,13 @@ def _token_read_refusals(quick_start: str) -> list[str]:
             continue
         named = " | ".join(" ".join(command) for command in pipeline.commands)
         found.append(
-            "README.md: the quick start no longer reads the setup token with "
+            f"{name}: the quick start no longer reads the setup token with "
             f"`{SAFE_READ}`: {named}"
         )
     starts = _server_starts(quick_start)
     if reachable < max(1, starts):
         found.append(
-            "README.md: the quick start no longer reads the setup token with "
+            f"{name}: the quick start no longer reads the setup token with "
             f"`{SAFE_READ}` on every path that starts the server "
             f"({starts} starts, {reachable} reachable reads)"
         )
@@ -577,6 +600,21 @@ def refusals(documents: dict[str, str]) -> list[str]:
             )
         found.extend(_reachability_refusals(quick_start))
         found.extend(_program_refusals(quick_start))
+    server_guide = documents.get(SERVER_GUIDE_NAME, "")
+    if server_guide:
+        # The whole page rather than one section: it exists to document BOTH
+        # install paths, so every pipeline in it that names the token path must
+        # be the safe read and each documented start must have one. The
+        # section-scoped rules (the standing-credential sentence, the
+        # allowlisted programs, the destination/source sentence) stay on
+        # README.md's `## Get syncing`, which is still the shortest complete
+        # path and is still judged as one.
+        found.extend(_token_read_refusals(server_guide, SERVER_GUIDE_NAME))
+        if RECOVERY_SENTENCE not in server_guide:
+            found.append(
+                f"{SERVER_GUIDE_NAME}: the server guide no longer says the token "
+                f"{RECOVERY_SENTENCE!r}"
+            )
     architecture = documents.get(ARCHITECTURE_NAME, "")
     if architecture:
         found.extend(_architecture_refusals(architecture))
@@ -900,6 +938,10 @@ def _architecture_refusals(text: str) -> list[str]:
 def documents() -> dict[str, str]:
     return {
         README_NAME: README.read_text(encoding="utf-8"),
+        SERVER_GUIDE_NAME: SERVER_GUIDE.read_text(encoding="utf-8"),
+        QUICKSTART_GUIDE_NAME: QUICKSTART_GUIDE.read_text(encoding="utf-8"),
+        DASHBOARD_GUIDE_NAME: DASHBOARD_GUIDE.read_text(encoding="utf-8"),
+        DAILY_USE_GUIDE_NAME: DAILY_USE_GUIDE.read_text(encoding="utf-8"),
         ARCHITECTURE_NAME: ARCHITECTURE.read_text(encoding="utf-8"),
         COMPOSE_NAME: COMPOSE.read_text(encoding="utf-8"),
         SETTINGS_NAME: SETTINGS.read_text(encoding="utf-8"),
@@ -933,6 +975,58 @@ class TheOnboardingPathHoldsItsRepairedShape(unittest.TestCase):
     def test_the_quick_start_calls_the_token_a_standing_credential(self):
         quick_start = section(documents()["README.md"], "## Get syncing")
         self.assertIn(RECOVERY_SENTENCE, quick_start)
+
+
+class TheSiteGuidesAreJudgedBesideTheReadme(unittest.TestCase):
+    """The pages the README now sends a reader to, held to the same rules.
+
+    `README.md` is a front door: it carries the shortest complete path and
+    nothing else, and `mkdocs.yml` sends every reader who wants more to
+    `docs/server.md`. That page documents the SAME two install paths with the
+    same commands, so a rule that watched only the README would be watching the
+    shorter of two documents a stranger pastes from. These are the properties
+    the longer one has to hold too.
+    """
+
+    def guide(self) -> str:
+        return documents()[SERVER_GUIDE_NAME]
+
+    def test_the_server_guide_is_one_of_the_judged_documents(self):
+        # Non-vacuity: every assertion below is worth nothing if the page is
+        # not in the sets `refusals()` walks.
+        self.assertIn(SERVER_GUIDE_NAME, MARKDOWN)
+        self.assertIn(SERVER_GUIDE_NAME, WORDING)
+
+    def test_the_server_guide_runs_the_verified_digest(self):
+        self.assertIn(SERVER_IMAGE_PREFIX, self.guide())
+        self.assertEqual(_command_refusals(SERVER_GUIDE_NAME, self.guide()), [])
+
+    def test_the_server_guide_pins_both_cosign_identity_flags(self):
+        flat = re.sub(r"\s*\\\n\s*", " ", self.guide())
+        self.assertIn(flag_text(CERTIFICATE_IDENTITY), flat)
+        self.assertIn(flag_text(CERTIFICATE_ISSUER), flat)
+
+    def test_the_server_guide_reads_the_token_on_every_path(self):
+        guide = self.guide()
+        self.assertEqual(_server_starts(guide), 2)
+        self.assertEqual(_token_read_refusals(guide, SERVER_GUIDE_NAME), [])
+
+    def test_the_server_guide_calls_the_token_a_standing_credential(self):
+        self.assertIn(RECOVERY_SENTENCE, self.guide())
+
+    def test_every_page_that_hands_over_the_token_takes_the_wording_rule(self):
+        # The four pages `mkdocs.yml` puts under "Start here" and "Using it".
+        # A page that tells a reader where the setup token is, and calls it
+        # one-time, teaches the same wrong habit the settings tab would.
+        for name in (
+            SERVER_GUIDE_NAME,
+            QUICKSTART_GUIDE_NAME,
+            DASHBOARD_GUIDE_NAME,
+            DAILY_USE_GUIDE_NAME,
+        ):
+            with self.subTest(document=name):
+                self.assertIn(name, WORDING)
+                self.assertEqual(_prose_refusals(name, documents()[name]), [])
 
 
 class TheParserFindsWhatItClaimsTo(unittest.TestCase):
@@ -1505,6 +1599,64 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def test_renaming_the_obsync_service_is_refused(self):
         found = self.mutate(COMPOSE_NAME, "\n  obsync:\n", "\n  obsyncd:\n")
         self.kills(found, f"has no `services.{OBSYNC_SERVICE}` mapping")
+
+
+    def test_running_the_mutable_tag_in_the_server_guide_is_refused(self):
+        # Rule 1 over the page the README sends the reader to. Without the
+        # page in MARKDOWN this mutation is silent, which is the whole point
+        # of adding it there.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, SERVER_IMAGE_PREFIX, "ghcr.io/snaraj/obsync:v1.0.0 #"
+        )
+        self.kills(found, "not ghcr.io/snaraj/obsync@sha256:")
+
+    def test_neutralizing_a_server_guide_token_read_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            "docker cp obsync:",
+            "false && docker cp obsync:",
+        )
+        self.kills(found, "docs/server.md: the quick start no longer reads")
+
+    def test_dropping_a_server_guide_token_read_is_refused(self):
+        # The other half: a read that is gone entirely, rather than one that
+        # is present and unreachable. One read for two documented starts.
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            "docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO",
+            "docker logs obsync-obsync-1",
+        )
+        self.kills(found, "on every path that starts the server")
+
+    def test_deleting_the_server_guide_recovery_sentence_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME, RECOVERY_SENTENCE, "is consumed at first use"
+        )
+        self.kills(found, "docs/server.md: the server guide no longer says")
+
+    def test_an_unpinned_compose_up_in_the_server_guide_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME, COMPOSE_UP_BIND, "OBSYNC_HTTPS_PORT=8443"
+        )
+        self.kills(found, f"carries no {BIND_ADDRESS_VARIABLE}=")
+
+    def test_calling_the_token_one_time_on_a_site_page_is_refused(self):
+        for name, old, new in (
+            (
+                QUICKSTART_GUIDE_NAME,
+                "paste the setup token and select **Set up**",
+                "paste the one-time setup token and select **Set up**",
+            ),
+            (
+                DASHBOARD_GUIDE_NAME,
+                "the setup token the server wrote at first boot",
+                "the one-time setup token the server wrote at first boot",
+            ),
+        ):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(name, old, new)
+                self.kills(found, '"one-time" shares a sentence')
 
 
 if __name__ == "__main__":

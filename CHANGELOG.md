@@ -5,6 +5,51 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.0 - 2026-09-20
+
+- **The documentation is a site, and the README is a front door.** The pages
+  this repository already carried are now published at
+  [snaraj.github.io/obsync](https://snaraj.github.io/obsync/), built from
+  `docs/` by `mkdocs.yml` with MkDocs Material. It is a RENDERING, never a
+  second copy: every page on it is a Markdown file reviewed in a pull request,
+  readable without the site, and at the path it has always had, so no existing
+  link breaks. That is also why this project has no GitHub wiki — wiki content
+  is unreviewed, unversioned, invisible to `make check`, and cannot be part of
+  a pull request. `docs/requirements.txt` pins the whole build closure by exact
+  version and the install resolves nothing.
+- **`README.md` is 206 lines instead of 572.** It keeps what a stranger needs
+  before deciding: the pitch, the three warnings, what it does, the five
+  captures, the shortest complete path to a running server, the disclosure of
+  everything this plugin talks to, and where a question, a bug and a
+  vulnerability go. Nothing was deleted. Every paragraph that left is on a page
+  the README links to: [`docs/server.md`](docs/server.md) (the TLS terminator
+  choice, Docker, Compose with its own certificate authority, the bind address,
+  trusting that authority on each device, reaching the server from outside the
+  LAN), [`docs/quickstart.md`](docs/quickstart.md) (setting up the first device
+  and pairing a phone), [`docs/daily-use.md`](docs/daily-use.md) (the commands,
+  the status bar, what syncs, restoring a retained version), and
+  [`docs/index.md`](docs/index.md) (the repository layout).
+- **A page for the dashboard, which never had one.**
+  [`docs/dashboard.md`](docs/dashboard.md) is how to launch it, how to reach
+  it, what each of its six pages shows, and how to revoke a device — with four
+  marked capture slots waiting for a validation run, because the run behind
+  1.0.0 never exercised the device list or the revoke button.
+- **The onboarding contract follows the commands it judges.**
+  `scripts/ci/test_onboarding_contract.py` used to read `README.md` and
+  `docs/architecture.md`. The install commands now also stand on
+  `docs/server.md`, so that page is judged by the same rules — digest-only
+  runs, both cosign identity flags, the journal volume nowhere else, the
+  tokenless token read on every documented start, the standing-credential
+  sentence — and the three site pages that hand a reader the setup token take
+  the wording rule. Twelve tests were added, each with its own mutation.
+- **A workflow of its own, outside the release chain.**
+  `.github/workflows/docs-site.yml` builds the site under `mkdocs build
+  --strict` on every pull request and deploys it on pushes to `main`, with
+  every action pinned by commit SHA and the deploy job holding `pages: write`
+  and `id-token: write` and nothing else. It adds no job to `pr-gate.yml` or
+  `codeql.yml`, so the job inventory the release publisher authorizes against
+  (`scripts/ci/release_contract.py`) is unchanged.
+
 ## 1.0.2 - 2026-09-20
 
 - **Obsidian 1.13.0 or newer.** The floor moves from 1.12.4 because the

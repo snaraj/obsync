@@ -362,7 +362,7 @@ restart checks remain required on supported platforms. SecretStorage is
 vault-local and shared with other trusted plugins; this does not promise
 universal OS encryption or isolation from those plugins or the local OS.
 See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
-and [API baseline](../plugin/vendor/obsidian/README.md).
+and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsidian/README.md).
 
 ### 4.3 Revocation and recovery
 
