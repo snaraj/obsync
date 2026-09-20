@@ -8,10 +8,10 @@ export type SyncFolders = readonly string[] | undefined;
 export function parseSyncFolders(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error("obsync: sync folders must be a list of relative folder paths; sync is stopped.");
   const folders: string[] = [];
-  for (const folder of value as unknown[]) {
-    assertVaultPath(folder);
-    if ((folder as string).trim() !== folder) throw new VaultPathError("blank_segment");
-    if (!folders.includes(folder as string)) folders.push(folder as string);
+  for (const entry of value as unknown[]) {
+    const folder = assertVaultPath(entry);
+    if (folder.trim() !== folder) throw new VaultPathError("blank_segment");
+    if (!folders.includes(folder)) folders.push(folder);
   }
   // A parent already covers its descendants; one representation makes scope comparisons exact.
   return folders.filter((folder) => !folders.some((parent) => parent !== folder && folder.startsWith(`${parent}/`))).sort();

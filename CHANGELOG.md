@@ -5,6 +5,36 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.2 - 2026-09-20
+
+- **Obsidian 1.13.0 or newer.** The floor moves from 1.12.4 because the
+  settings tab is now declared to Obsidian rather than drawn by the plugin,
+  which is what makes every row searchable from Settings and what the
+  non-deprecated destructive button needs. Root `versions.json` keeps 1.0.1
+  available to an Obsidian below 1.13.0; the wire protocol, the journal and
+  pairing are unchanged, so a device on 1.0.1 and a device on 1.0.2 sync the
+  same vault.
+- **A shorter first run.** A host name typed alone in **Server URL** becomes
+  `https://host`. **Set up** and **Pair this device** apply a folder selection
+  that was typed but not yet saved, so the screen is what the device syncs.
+  The account-name field is gone: the dashboard calls the one account a
+  server holds `obsync`. Notices drop the `obsync:` prefix.
+- **A clean community-directory scorecard.** The directory's automated scan
+  reported 221 issues on 1.0.0; the same rules (`eslint-plugin-obsidianmd`
+  0.4.2 with typescript-eslint's type-checked set) now report none. The
+  vendored Obsidian API declaration sits under a `node_modules` path, the one
+  name every linter skips, and is pinned at exactly the floor so the compiler
+  refuses any member the floor lacks. In the plugin: 17 redundant casts, typed
+  edge-header parsing, a history cleanup that no longer throws from `finally`,
+  a control-character check that is a loop rather than a regular expression,
+  `console.warn` for refusals and `console.debug` for routine decisions,
+  sentence-case notices. In the stylesheets: no `columns`, no `clip-path`, no
+  `!important`; the recovery phrase is a numbered list laid out as a grid.
+- **Disclosures.** The README now states that the plugin lists every file in
+  the vault to decide what is in scope, writes the clipboard only when you
+  press Copy, talks to one host, and that each Release carries a plugin ZIP
+  and an evidence manifest that Obsidian ignores.
+
 ## 1.0.1 - 2026-09-20
 
 - **Open dashboard opens the configured server, or nothing.** The plugin used

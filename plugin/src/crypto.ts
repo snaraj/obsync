@@ -287,7 +287,7 @@ export function deriveDomainMapKey(vrk: Bytes): Promise<Bytes> {
  */
 export async function domainMapIds(mapKey: Bytes): Promise<{ fileId: string; domainId: string }> {
   const mac = await hmacSha256(mapKey, utf8(LABEL.domainMapId));
-  return { fileId: hex(mac.subarray(0, 16) as Bytes), domainId: hex(mac.subarray(16, 32) as Bytes) };
+  return { fileId: hex(mac.subarray(0, 16)), domainId: hex(mac.subarray(16, 32)) };
 }
 
 /** `K_pair = HKDF(PS, salt="obsync/v1/pair", info=utf8(pairing_id))`. */

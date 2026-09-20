@@ -39,7 +39,7 @@ export class HistoryModal extends Modal {
     const el = this.contentEl;
     el.empty();
     el.createEl("p", { text: "Restore a retained version as a new sibling file. Current files and their history stay unchanged. Deleted notes appear through their retained content versions." });
-    el.createEl("p", { text: "Oldest first, within this device's selected folders. Each Load next checks at most 20 versions for up to 5 seconds, plus the current request. More versions may remain even when no matches are shown." });
+    el.createEl("p", { text: "Oldest first, within this device's selected folders. Each step checks at most 20 versions for up to 5 seconds, plus the current request. More versions may remain even when no matches are shown." });
     new Setting(el).setName("Filename contains").addText((text) => text.setValue(this.filter).setDisabled(this.busy).onChange((value) => { this.filter = value.slice(0, 512); }))
       .addButton((button) => button.setButtonText("Restart search").setDisabled(this.busy).onClick(() => this.restart()));
     el.createEl("p", { text: this.message });

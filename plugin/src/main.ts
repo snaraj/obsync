@@ -54,7 +54,7 @@
 
 import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
-import { ByteSource, bytesSource } from "./chunker";
+import { ByteSource } from "./chunker";
 import { State } from "./state";
 import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
@@ -146,6 +146,9 @@ function walker(fs: NodeFs): PathWalker {
  * runs a newer plugin than this device. Obsidian's plugin manager owns
  * installation and updates; this server can never supply executable code.
  */
+/** The decisions that mean the plugin did NOT do what was asked. */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
+
 export function updateMessage(server: string, local: string): string {
   return (
     `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
@@ -393,7 +396,7 @@ export class ObsidianHost implements VaultHost {
         if (bytesRead === 0) break;
         filled += bytesRead;
       }
-      return buffer.subarray(0, filled) as Bytes;
+      return buffer.subarray(0, filled);
     } finally {
       await handle.close();
     }
@@ -412,7 +415,7 @@ export class ObsidianHost implements VaultHost {
         size,
         read: async (offset, length) => {
           cached = cached ?? (await this.read(path));
-          return cached.subarray(offset, offset + length) as Bytes;
+          return cached.subarray(offset, offset + length);
         },
       };
     }
@@ -431,7 +434,7 @@ export class ObsidianHost implements VaultHost {
             if (bytesRead === 0) break;
             filled += bytesRead;
           }
-          return buffer.subarray(0, filled) as Bytes;
+          return buffer.subarray(0, filled);
         } finally {
           await handle.close();
         }
@@ -1006,12 +1009,12 @@ export default class ObsyncPlugin extends Plugin {
         }).catch(() => this.log("history decision=sync_pending reason=restart_failed"));
       }
     }
-    return { path: (created as VaultStat).path, syncRequested };
+    return { path: created.path, syncRequested };
   }
 
   async fetchRemoteOnly(fileId: string): Promise<string> {
     const context = this.syncContext();
-    if (!context) throw new Error("obsync is not running on this device");
+    if (!context) throw new Error("Sync is not running on this device.");
     const fetch = fetchRemoteOnly(context, fileId);
     this.manualFetches.add(fetch);
     try {
@@ -1026,7 +1029,7 @@ export default class ObsyncPlugin extends Plugin {
     const generation = this.lifecycle;
     const assertActive = (): void => {
       if (!this.isCurrent(generation)) {
-        throw new Error("obsync: plugin unloaded during the folder change; restart Obsidian to check the saved selection.");
+        throw new Error("The plugin unloaded during the folder change; restart Obsidian to check the saved selection.");
       }
     };
     assertActive();
@@ -1047,7 +1050,7 @@ export default class ObsyncPlugin extends Plugin {
       }
     };
     assertChange();
-    if (this.changingScope) throw new Error("obsync: a folder selection is already being saved.");
+    if (this.changingScope) throw new Error("A folder selection is already being saved.");
     this.changingScope = true;
     this.cancelHistories();
     try {
@@ -1213,7 +1216,7 @@ export default class ObsyncPlugin extends Plugin {
       state.data.deviceSecret = result.device_secret;
       await state.save();
       assertCurrent();
-      new Notice("obsync: account created and this device enrolled.");
+      new Notice("Account created and this device enrolled.");
       if (state.data.vrk === null) {
         await this.adoptVaultKey(hex(newVaultKey()));
         assertCurrent();
@@ -1265,7 +1268,7 @@ export default class ObsyncPlugin extends Plugin {
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
       this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
-      new Notice(`obsync: ${updateMessage(remote.version, this.manifest.version)}`, 15000);
+      new Notice(updateMessage(remote.version, this.manifest.version), 15000);
     } catch (error) {
       if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1297,7 +1300,13 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  /**
+   * One structured line per decision (requirement 12). A refusal or failure
+   * goes out at warn, which DevTools shows by default; routine decisions go
+   * out at debug, the level the plugin guidelines reserve for diagnostics.
+   */
   log(line: string): void {
-    console.log(`obsync ${line}`);
+    if (FAILURE_DECISION.test(line)) console.warn(`obsync ${line}`);
+    else console.debug(`obsync ${line}`);
   }
 }

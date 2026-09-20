@@ -56,6 +56,7 @@ test("every escaping, hidden or malformed path is refused, with its reason", () 
     ["Notes\\Ideas.md", "backslash"],
     ["Notes/pass\u0000wd.md", "control_character"],
     ["Notes/be\u001bll.md", "control_character"],
+    ["Notes/del\u007fete.md", "control_character"],
     ["Notes//Ideas.md", "empty_segment"],
     ["Notes/", "empty_segment"],
     ["..", "dot_segment"],

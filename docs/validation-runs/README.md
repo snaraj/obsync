@@ -26,7 +26,7 @@ plus one row per scenario:
   copy is not a production-path install, and a record of one says so rather
   than counting as an install result.
 - **Devices.** One line per device: model, operating-system version, and
-  Obsidian version (1.12.4 or newer). Devices are identified by ROLE -- "first
+  Obsidian version (1.13.0 or newer). Devices are identified by ROLE -- "first
   desktop", "phone", "tablet" -- never by a device name, serial, or account.
   A field the run did not capture is written `not recorded during the run`
   and left there. Reading it off the device afterwards records TODAY's state

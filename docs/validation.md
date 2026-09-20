@@ -68,7 +68,7 @@ evidence.
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
 | V16 | Native credential persistence on each required platform, after fresh setup and after upgrading legacy paired state | restart Obsidian; the same device resumes bidirectional sync without setup or re-pairing, preserving folder selection |
 
-For V16, record the Obsidian version (at least 1.12.4), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
+For V16, record the Obsidian version (at least 1.13.0), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
 
 V7 and V12 remain unproven acceptance requirements. The configured concurrent uploads do not establish the V7 retransmission bound. The client repair implemented for [issue #51](https://github.com/snaraj/obsync/issues/51) must pass the isolated scrub and required native-device scenarios below before V12 can pass; local synthetic tests alone do not establish that result.
 

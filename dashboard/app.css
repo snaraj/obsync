@@ -36,7 +36,6 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-[hidden] { display: none !important; }
 
 html { -webkit-text-size-adjust: 100%; }
 
@@ -63,8 +62,8 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .visually-hidden {
-  position: absolute; width: 1px; height: 1px; overflow: hidden;
-  clip-path: inset(50%); white-space: nowrap;
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; white-space: nowrap;
 }
 
 .skip {
@@ -219,6 +218,12 @@ input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
 .log .refuse { color: var(--danger); }
 .log .accept { color: var(--ok); }
 
+/* `hidden` wins over every class above by ORDER, since an attribute and a
+   class weigh the same: this rule stays below the last `display:` outside a
+   media block, and html.test.mjs holds it there. The narrow block below sets
+   `display` on `.grid tr`, which outweighs an attribute, so it hides its own. */
+[hidden] { display: none; }
+
 /* ---- wide ------------------------------------------------------------ */
 
 @media (min-width: 40rem) {
@@ -235,6 +240,7 @@ input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
 @media (max-width: 39.99rem) {
   .grid, .grid tbody, .grid tr, .grid tbody th, .grid td { display: block; width: 100%; }
   .grid thead { display: none; }
+  .grid tr[hidden] { display: none; }
   .grid tr { border: 1px solid var(--rule); border-radius: 3px; margin-bottom: 0.6rem; padding: 0.2rem 0.1rem; }
   .grid tbody th, .grid td { border-bottom: 1px solid var(--rule-2); }
   .grid tr > :last-child { border-bottom: 0; }

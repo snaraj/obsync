@@ -33,7 +33,7 @@ import { hex, unhex } from "../crypto";
 import { ApiError, PairingEnvelope, Sent, lostMessage } from "../transport";
 
 function fail(error: unknown): void {
-  new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+  new Notice(error instanceof Error ? error.message : String(error), 8000);
 }
 
 /**
@@ -69,7 +69,7 @@ export class ConfirmModal extends Modal {
       .addButton((button) =>
         button
           .setButtonText("Revoke")
-          .setWarning()
+          .setDestructive()
           .onClick(() => {
             this.close();
             this.confirmed();
@@ -121,13 +121,13 @@ export class PairCreateModal extends Modal {
         .addButton((button) =>
           button.setButtonText("Copy code").onClick(() => {
             void navigator.clipboard.writeText(code);
-            new Notice("obsync: pairing code copied.");
+            new Notice("Pairing code copied.");
           }),
         )
         .addButton((button) =>
           button.setButtonText("Copy link").onClick(() => {
             void navigator.clipboard.writeText(pairingLink(code));
-            new Notice("obsync: pairing link copied.");
+            new Notice("Pairing link copied.");
           }),
         );
       const statusEl = this.contentEl.createEl("p", { text: "Waiting for the new device…" });
@@ -174,7 +174,7 @@ export class PairCreateModal extends Modal {
                   await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce),
                   "approving the new device",
                 );
-                new Notice("obsync: the new device is paired.");
+                new Notice("The new device is paired.");
                 this.close();
               } catch (error) {
                 fail(error);
@@ -285,7 +285,7 @@ export class PairClaimModal extends Modal {
         if (!this.waiting) return;
         await this.plugin.restartEngine();
         this.plugin.log("pairing role=claimant decision=paired");
-        new Notice("obsync: this device is paired. The first sync is running.");
+        new Notice("This device is paired. The first sync is running.");
         this.close();
         return;
       }
@@ -331,10 +331,9 @@ export class RecoveryPhraseModal extends Modal {
     this.contentEl.createEl("p", {
       text: "Write these 24 words down and keep them off this device. Anyone with them can read this vault; without them and without a paired device the vault cannot be recovered.",
     });
-    this.contentEl.createEl("pre", {
-      cls: "obsync-phrase",
-      text: words.map((word, index) => `${index + 1}. ${word}`).join("\n"),
-    });
+    // A numbered list, laid out by the stylesheet in two columns of twelve.
+    const list = this.contentEl.createEl("ol", { cls: "obsync-phrase" });
+    for (const word of words) list.createEl("li", { text: word });
     if (!this.confirmFirst) return;
 
     const asked = [3, 11, 20];
@@ -351,10 +350,10 @@ export class RecoveryPhraseModal extends Modal {
         .onClick(() => {
           const wrong = asked.filter((position) => answers.get(position) !== words[position - 1]);
           if (wrong.length > 0) {
-            new Notice(`obsync: word ${wrong.join(", ")} does not match. Check the list again.`);
+            new Notice(`Word ${wrong.join(", ")} does not match. Check the list again.`);
             return;
           }
-          new Notice("obsync: recovery phrase confirmed.");
+          new Notice("Recovery phrase confirmed.");
           this.close();
         }),
     );
@@ -400,7 +399,7 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             await this.plugin.adoptVaultKey(hex(entropy));
             assertCurrent();
-            new Notice("obsync: vault key restored.");
+            new Notice("Vault key restored.");
             this.close();
           } catch (error) {
             fail(error);
@@ -436,7 +435,7 @@ export class StatusModal extends Modal {
   }
 
   override onOpen(): void {
-    this.setTitle("obsync status");
+    this.setTitle("Sync status");
     const data = this.plugin.state.data;
     const rows: [string, string][] = [
       ["Server", data.serverUrl === "" ? "not configured" : data.serverUrl],
@@ -485,7 +484,7 @@ export class RemoteOnlyModal extends Modal {
     this.contentEl.empty();
     const context = this.plugin.syncContext();
     if (!context) {
-      this.contentEl.createEl("p", { text: "obsync is not running on this device yet." });
+      this.contentEl.createEl("p", { text: "Sync is not running on this device yet." });
       return;
     }
     const entries = remoteOnlyList(context);
@@ -505,7 +504,7 @@ export class RemoteOnlyModal extends Modal {
             void (async () => {
               try {
                 await this.plugin.fetchRemoteOnly(entry.fileId);
-                new Notice(`obsync: fetched ${entry.path}.`);
+                new Notice(`Fetched ${entry.path}.`);
                 this.render();
               } catch (error) {
                 fail(error);

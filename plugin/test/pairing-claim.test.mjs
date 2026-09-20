@@ -69,7 +69,7 @@ test("a claimant waits on its envelope, then saves the approved key before resta
   assert.equal(result.restarted, 1);
   assert.ok(result.logs.includes("pairing role=claimant decision=waiting reason=not_approved"));
   assert.ok(result.logs.includes("pairing role=claimant decision=paired"));
-  assert.ok(result.notices.some((notice) => notice.includes("this device is paired")));
+  assert.ok(result.notices.some((notice) => notice.includes("This device is paired")));
 });
 
 test("sync stays stopped while the approved key save is pending", async (t) => {
@@ -102,7 +102,7 @@ test("a rejected approved-key save never starts sync", async (t) => {
   assert.equal(result.saves.length, 1);
   assert.equal(result.saves[0].vrk, null);
   assert.ok(result.notices.some((notice) => notice.includes("fixture key save failed")));
-  assert.ok(!result.notices.some((notice) => notice.includes("this device is paired")));
+  assert.ok(!result.notices.some((notice) => notice.includes("This device is paired")));
 });
 
 test("only the explicit pending-approval refusal permits another envelope request", async (t) => {

@@ -78,9 +78,9 @@ export function decodePairingCode(code: string): PairingCode {
   const expected = PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES + PAIRING_SECRET_BYTES;
   if (raw.length < expected) throw new Error("pairing: the code is too short");
   return {
-    pairingId: hex(raw.subarray(0, PAIRING_ID_BYTES) as Bytes),
-    enrollToken: hex(raw.subarray(PAIRING_ID_BYTES, PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES) as Bytes),
-    pairingSecret: raw.subarray(PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES, expected) as Bytes,
+    pairingId: hex(raw.subarray(0, PAIRING_ID_BYTES)),
+    enrollToken: hex(raw.subarray(PAIRING_ID_BYTES, PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES)),
+    pairingSecret: raw.subarray(PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES, expected),
   };
 }
 

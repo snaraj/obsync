@@ -66,7 +66,7 @@ export async function readFully(source: ByteSource, offset: number, length: numb
 export function bytesSource(data: Bytes): ByteSource {
   return {
     size: data.length,
-    read: async (offset, length) => data.subarray(offset, offset + length) as Bytes,
+    read: async (offset, length) => data.subarray(offset, offset + length),
   };
 }
 
@@ -126,8 +126,8 @@ export async function* chunkStream(source: ByteSource): AsyncGenerator<Bytes> {
     }
     if (window.length === 0) return;
     const cut = cutPoint(window, gear);
-    yield window.subarray(0, cut) as Bytes;
-    window = window.slice(cut) as Bytes;
+    yield window.subarray(0, cut);
+    window = window.slice(cut);
     position += cut;
   }
 }
