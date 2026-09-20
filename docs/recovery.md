@@ -21,7 +21,19 @@ design, and it is also the reason recovery has the shape it does.
 1. **Revoke it** — the dashboard's Devices list, or **Devices** in the plugin
    settings on another paired device. Revocation destroys that device's
    wrapped secret on the server; it is final, and a revoked device gets
-   `403 device_revoked` for every request it tries.
+   `403 device_revoked` for every request it tries. It also ends that
+   device's hold on the dashboard: any sign-in link it minted stops working,
+   and any dashboard session opened from one of its links is closed at the
+   same moment.
+
+   **Two things revocation does not do.** It cannot be undone — there is no
+   un-revoke route and no CLI that restores a revoked device, so the way
+   back is to pair that device again as a new one, which gives it a new
+   device id and a new secret. And it is refused outright for the only
+   ACTIVE device, from the dashboard and from the plugin alike
+   (`409 last_device`): an account with no active device can never sync
+   again, and nothing in this release re-enrols one. Pair the replacement
+   first, then revoke.
 2. **Pair the replacement** from a device that still syncs: **Pair a new
    device** there, the code on the new one, approval back on the first. The
    vault key travels inside the pairing envelope, encrypted under a secret the
@@ -109,6 +121,18 @@ It mints a new 64-hex token, writes it mode 0600, and logs
 `event=setup_token_ready … state=recovery_login` — never the token itself. The
 old token stops working the moment the file is replaced. Existing devices are
 unaffected: they authenticate with their own secrets, not with this token.
+
+**How to tell it has been used.** A sign-in with this token logs
+`event=dashboard_login decision=recovery_login` at `warn` — never the token,
+not even a prefix — and the dashboard's Overview page carries a notice for as
+long as that session lasts. A sign-in from a device's link logs
+`decision=link_login` at `info` instead. If you see the first and did not do
+it, rotate the token with the three steps above and use **Sign out
+everywhere** on the dashboard, which closes every session the server holds.
+
+**Who holds it.** Whoever can read the journal volume. Its custody is the
+dashboard's custody, and that is why it is worth rotating after a restore
+from a backup somebody else handled ([`security/dashboard.md`](security/dashboard.md)).
 
 ## Moving the server to a new address
 

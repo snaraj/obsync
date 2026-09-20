@@ -130,13 +130,39 @@ pub fn patch(
     Ok(Response::json(200, &render::device(&record)))
 }
 
+/// Refuse to revoke the only ACTIVE device, from either route that revokes.
+///
+/// Both routes need it and only one had it: the dashboard's revoke called
+/// the store directly, and the store has no such guard, so one click ended
+/// an account for good. Nothing re-enrols a device — `POST /v1/setup`
+/// answers `409 already_set_up` forever and a pairing can only be opened BY
+/// a paired device — so the last active device is the account
+/// (`docs/recovery.md`).
+///
+/// A device waiting for pairing approval is not a way out of the refusal: it
+/// holds no vault key and cannot pair a replacement.
+///
+/// # Errors
+/// `409 last_device` when `target` is the only active device.
+pub fn refuse_last_active(app: &App, target: &crate::types::DeviceId) -> Result<(), ApiError> {
+    let devices = app.store.devices();
+    let live = devices.iter().filter(|d| d.active()).count();
+    let target_is_live = devices.iter().any(|d| d.device_id == *target && d.active());
+    if target_is_live && live <= 1 {
+        return Err(ApiError::new(
+            409,
+            "last_device",
+            "the only active device cannot be revoked; pair another first",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /v1/devices/{id}/revoke`.
 ///
 /// # Errors
-/// `404 unknown_device`, `409 last_device` when a device tries to revoke
-/// itself while it is the only ACTIVE one, plus the authentication refusals.
-/// A device still waiting for pairing approval is not a way out of that
-/// refusal: it holds no vault key and cannot pair a replacement.
+/// `404 unknown_device`, `409 last_device` when the target is the only
+/// ACTIVE device, plus the authentication refusals.
 pub fn revoke(
     app: &App,
     req: &mut Request,
@@ -145,20 +171,22 @@ pub fn revoke(
 ) -> Result<Response, ApiError> {
     let authed = auth::device(app, req, client)?;
     let target = render::device_id(id)?;
-    let live = app.store.devices().iter().filter(|d| d.active()).count();
-    if target == authed.id && live <= 1 {
-        return Err(ApiError::new(
-            409,
-            "last_device",
-            "the only device cannot revoke itself; pair another first",
-        ));
-    }
+    refuse_last_active(app, &target)?;
     app.store.revoke_device(&target)?;
+    // Revocation reaches the dashboard too: the sessions this device's links
+    // opened, and the links it minted that nobody has spent.
+    let (sessions, links) = app
+        .sessions
+        .lock()
+        .expect("sessions")
+        .close_for_device(&target);
     app.log.warn(
         "device_revoked",
         &[
             ("device", Val::device(&target)),
             ("by_device", Val::device(&authed.id)),
+            ("sessions_closed", Val::count(sessions as u64)),
+            ("links_dropped", Val::count(links as u64)),
         ],
     );
     Ok(Response::empty(204))

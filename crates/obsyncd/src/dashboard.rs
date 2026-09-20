@@ -82,10 +82,15 @@ impl Dashboard {
                 "this server ships no dashboard",
             )
         })?;
-        Ok(
-            Response::bytes(200, content_type, bytes.clone())
-                .header("Content-Security-Policy", CSP),
-        )
+        // The CSP, plus the two isolation headers a page response can carry
+        // without costing the dashboard anything: it opens no window and it
+        // is loaded by no other origin, so `same-origin` on both is free
+        // here and denies a cross-origin page both a handle to this one and
+        // a read of these bytes (`docs/security/dashboard.md`).
+        Ok(Response::bytes(200, content_type, bytes.clone())
+            .header("Content-Security-Policy", CSP)
+            .header("Cross-Origin-Opener-Policy", "same-origin")
+            .header("Cross-Origin-Resource-Policy", "same-origin"))
     }
 
     /// How many of the four files loaded.

@@ -78,6 +78,7 @@ What the server can and cannot see is in
 | [`docs/protocol.md`](docs/protocol.md) | The wire contract between plugin and server |
 | [`docs/storage.md`](docs/storage.md) | Volumes, durability, retention, scrub, and every refusal |
 | [`docs/threat-model.md`](docs/threat-model.md) | What is defended, and what is not |
+| [`docs/security/dashboard.md`](docs/security/dashboard.md) | The dashboard's own threat model: sessions, sign-in, revocation, residuals |
 | [`docs/validation.md`](docs/validation.md) | The device validation plan and what "ready" means |
 | [`docs/release.md`](docs/release.md) | How a release is cut, signed, and audited |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed in each version |

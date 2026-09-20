@@ -135,13 +135,43 @@ Two devices must each be paired.
 
 ## `last_device`
 
-**Symptom.** `409 last_device` when revoking.
+**Symptom.** `409 last_device` when revoking, from the plugin or from the
+dashboard.
 
-**Cause.** The only active device cannot revoke itself; doing so would leave an
+**Cause.** The only ACTIVE device cannot be revoked; doing so would leave an
 account no device can reach, which is unrecoverable
-([`recovery.md`](recovery.md)).
+([`recovery.md`](recovery.md)). Both routes refuse it, and revocation cannot
+be undone.
 
 **Fix.** Pair another device first, then revoke.
+
+## The dashboard signs itself out on every page load
+
+**Symptom.** `/login?token=…` redirects and looks fine, then every page says
+the session is signed out.
+
+**Cause.** The address is not one the browser treats as secure. The session
+cookies are `Secure` and `__Host-` prefixed, and a browser silently discards
+those over plain HTTP to an IP address or a LAN name. Nothing reaches the
+server to refuse, which is why there is no error to read.
+
+**Fix.** Reach the dashboard through its TLS terminator by name, or over
+`localhost` on the host itself. Serving the dashboard over plain HTTP to an
+IP address is not supported
+([`security/dashboard.md`](security/dashboard.md)).
+
+## `too_many_logins`
+
+**Symptom.** `429 too_many_logins` from `/login`.
+
+**Cause.** Five sign-in attempts from this source failed within a minute, so
+the route is refusing further attempts from it. One attempt returns per
+minute, and a successful sign-in clears the count.
+
+**Fix.** Wait a minute and use a fresh link from **Open dashboard** on a
+paired device. If nobody at that address was signing in, read the
+`event=dashboard_login_refused` lines: something else is trying, and the
+recovery token is worth rotating ([`recovery.md`](recovery.md)).
 
 ## `missing_auth` and `bad_signature`
 

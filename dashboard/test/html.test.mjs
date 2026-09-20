@@ -38,6 +38,12 @@ function attr(attrs, name) {
 
 /* ---- the checks --------------------------------------------------------- */
 
+// No doctype is quirks mode, where this page's own CSS is interpreted by
+// rules nobody wrote it against. It has to be the first bytes of the file.
+function missingDoctype(html) {
+  return /^<!doctype html>/i.test(html) ? [] : ['no <!DOCTYPE html> to open the document'];
+}
+
 // The CSP is `script-src 'self'`: every script must be a fetched file.
 function inlineScripts(html) {
   return tags(html)
@@ -133,6 +139,11 @@ function providerHits(sources, needles) {
 
 /* ---- index.html --------------------------------------------------------- */
 
+test('index.html: opens with a doctype, so the page is never in quirks mode', () => {
+  assert.deepEqual(missingDoctype(HTML), []);
+  assert.ok(HTML.startsWith('<!DOCTYPE html>\n<meta charset="utf-8">'));
+});
+
 test('index.html: no inline script', () => {
   assert.deepEqual(inlineScripts(HTML), []);
 });
@@ -165,6 +176,29 @@ test('index.html: exactly the two asset paths the server serves', () => {
 test('index.html: no off-origin reference beyond the SVG namespace', () => {
   const urls = HTML.match(/https?:\/\/[^"'\s>]+/g) || [];
   assert.deepEqual(urls, ['http://www.w3.org/2000/svg']);
+});
+
+// Both cookies the dashboard reads are `__Host-` names. The prefix is what
+// makes the browser refuse one that is not Secure and host-bound, so the
+// name IS the control and a rename back would be a silent downgrade.
+test('lib.js reads the host-prefixed double-submit cookie and no other name', () => {
+  assert.ok(LIB_JS.includes("const CSRF_COOKIE = '__Host-obsync_csrf'"));
+  const bare = stripComments(`${APP_JS}${LIB_JS}`).match(/(?<!__Host-)obsync_csrf/g) || [];
+  assert.deepEqual(bare, [], 'no unprefixed cookie name survives in the shipped code');
+});
+
+// Two page behaviours that exist only because the server grew a field and a
+// route for them. Without these, deleting the line that reads either one
+// leaves every other check in this file green.
+test('the page shows the recovery notice and can sign out everywhere', () => {
+  const code = stripComments(APP_JS);
+  assert.ok(HTML.includes('id="recovery-note"'), 'the notice element exists');
+  assert.ok(code.includes('session.recovery'), 'keyed on the overview field the server sends');
+  assert.ok(code.includes("el('recovery-note').hidden"), 'and it toggles that element');
+
+  assert.ok(HTML.includes('id="signout-all"'), 'the control exists');
+  assert.ok(code.includes("el('signout-all').addEventListener"), 'and it is wired');
+  assert.ok(code.includes('`${ADMIN}/logout-all`'), 'to the route that ends every session');
 });
 
 test('index.html: one section per route, plus sign-in', () => {
@@ -323,12 +357,21 @@ test('dev/mock.mjs sends the header set AGENTS.md pins', () => {
   assert.deepEqual(
     missingNames(code, [
       "default-src 'self'; script-src 'self'; style-src 'self'",
+      "object-src 'none'",
       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       "'X-Content-Type-Options': 'nosniff'",
       "'X-Frame-Options': 'DENY'",
       "'Referrer-Policy': 'no-referrer'",
       "'Cache-Control': 'no-store'",
       "'X-Obsync-Seq'",
+      // The journal head is write activity, so it rides a response only
+      // when the caller proved a credential, exactly as the origin does.
+      "(credentialed ? { 'X-Obsync-Seq': String(seq) } : {})",
+      // Page responses are isolated from other origins; the dashboard
+      // opens no window and is embedded by nobody, so neither costs it
+      // anything.
+      "'Cross-Origin-Opener-Policy'] = 'same-origin'",
+      "'Cross-Origin-Resource-Policy'] = 'same-origin'",
       // The CSP rides HTML responses only; the rest ride everything.
       "type.startsWith('text/html')",
       // Per response: Node ignores the server-wide property of this name.
@@ -347,6 +390,10 @@ test('dev/mock.mjs sends the header set AGENTS.md pins', () => {
 /* ---- the checks themselves ---------------------------------------------- */
 
 test('the checks reject a hostile document', () => {
+  assert.equal(missingDoctype('<meta charset="utf-8">').length, 1);
+  assert.equal(missingDoctype('\n<!DOCTYPE html>').length, 1, 'not even a leading newline');
+  assert.equal(missingDoctype('<!doctype html>\n<meta charset="utf-8">').length, 0);
+
   assert.equal(inlineScripts('<script>alert(1)</script>').length, 1);
   assert.equal(inlineScripts('<script type="module" src="/app.js"></script>').length, 0);
 
