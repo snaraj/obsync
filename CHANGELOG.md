@@ -7,19 +7,28 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.0.2 - 2026-09-20
 
-Dashboard security, from an independent review of 1.0.1. **Nothing to do.**
-Your vault, your devices and your pairing are untouched; the plugin does not
-change. One thing you will notice: dashboard sessions opened before this
-update are signed out once, so open the dashboard from **Open dashboard** on
-a paired device again.
+Dashboard security, from an independent review of 1.0.1. Your vault, your
+devices and your pairing are untouched, and the plugin does not change.
+
+**Nothing to do — unless you open the dashboard over plain `http`.** That
+stops working after this update at any IP address or LAN name, and also at
+`localhost` if your browser is Safari (first bullet below). One thing everybody will notice: dashboard sessions opened before
+this update are signed out once, so open the dashboard from **Open
+dashboard** on a paired device again.
 
 - **The dashboard needs a secure address now.** Its two cookies are `Secure`
   and host-bound, which is what stops one plaintext request from carrying
   your session in the clear or letting another host on your domain plant one.
-  Browsers accept those over `localhost`, and over any `https` address, so
-  the supported ways in are unchanged; what stops working is reaching the
-  dashboard over plain HTTP at an IP address or a LAN name. If that is how
-  you reach it, put your TLS terminator in front of it and use its name.
+  What that means for the address bar:
+  - an `https` address works in every browser — this is the supported way in,
+    and the one every install guide here already describes;
+  - plain `http` to `localhost` or `127.0.0.1` works in Chrome and Firefox,
+    which treat loopback as secure, but **not in Safari**, which sends no
+    `Secure` cookie to a plaintext origin at all: on Safari the sign-in
+    redirect appears to work and every page is then signed out;
+  - plain `http` to any other IP address or LAN name works nowhere. If that
+    is how you reach the dashboard today, put your TLS terminator in front of
+    it and use its name.
 - **Revoking a device now ends what it opened.** Revoking used to leave the
   sign-in link that device had just minted working, and any dashboard session
   opened from one of its links alive for up to twelve hours. Revoking a lost
@@ -39,9 +48,10 @@ a paired device again.
   sign-in with it is logged as a warning, and the Overview page says so for
   as long as that session lasts, so a use you did not make is visible.
   `docs/recovery.md` has the three steps that rotate it, and how to tell it
-  has been used. Sign-in attempts are also rate limited: five failures from
-  one source and the route refuses for a minute, so a stranger cannot make
-  unlimited attempts or unlimited noise.
+  has been used. Every refused sign-in is logged as a warning too, and those
+  lines can no longer be pushed out of the Logs page by a stranger (see the
+  Logs bullet), so a run of attempts against your server is something you can
+  actually see.
 - **The Logs page can no longer be wiped by a stranger.** Anyone who could
   reach the server could push every decision out of it with about a thousand
   free health probes. Authenticated decisions and unauthenticated traffic now

@@ -41,15 +41,6 @@ pub const LOGIN_LINK_TTL_SECS: u64 = 300;
 /// Most log lines one `GET /v1/admin/logs` call returns
 /// (`docs/protocol.md`).
 pub const LOGS_MAX_LIMIT: u64 = 500;
-/// Failed `GET /login` attempts one source may spend before the route
-/// refuses it outright.
-pub const LOGIN_FAILURE_BURST: u32 = 5;
-/// How long one spent attempt takes to come back.
-pub const LOGIN_REFILL_SECS: u64 = 60;
-/// Most sources the login limiter remembers at once. A bound, because the
-/// table is filled by unauthenticated callers.
-pub const LOGIN_SOURCES_MAX: usize = 1024;
-
 /// One signed-in dashboard session.
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -187,99 +178,6 @@ impl SessionTable {
     }
 }
 
-/// One source's remaining `GET /login` allowance.
-#[derive(Clone, Copy, Debug)]
-struct Bucket {
-    tokens: u32,
-    updated: u64,
-}
-
-/// A token bucket per request source for `GET /login`.
-///
-/// The token itself is 256 bits compared in constant time, so this is not
-/// what makes guessing hopeless. What it bounds is the free noise an
-/// unauthenticated caller can make: attempts, log lines, and the alarm an
-/// operator reads. It charges FAILURES only, so a real operator signing in
-/// repeatedly never spends an allowance.
-#[derive(Default)]
-pub struct LoginLimiter {
-    buckets: HashMap<String, Bucket>,
-}
-
-impl LoginLimiter {
-    /// An empty limiter.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Whether this source may attempt a login now.
-    pub fn check(&mut self, source: &str, now: u64) -> bool {
-        match self.buckets.get_mut(source) {
-            Some(b) => {
-                refill(b, now);
-                b.tokens > 0
-            }
-            None => true,
-        }
-    }
-
-    /// Charge one failed attempt to this source. Returns whether the failure
-    /// was remembered: a table at [`LOGIN_SOURCES_MAX`] distinct recent
-    /// failures forgets the newest source rather than refusing it, because a
-    /// saturated limiter must not become the way to lock an operator out of
-    /// the recovery login. The caller logs that state (requirement 12).
-    pub fn charge(&mut self, source: &str, now: u64) -> bool {
-        if let Some(b) = self.buckets.get_mut(source) {
-            refill(b, now);
-            b.tokens = b.tokens.saturating_sub(1);
-            return true;
-        }
-        if self.buckets.len() >= LOGIN_SOURCES_MAX {
-            self.sweep(now);
-        }
-        if self.buckets.len() >= LOGIN_SOURCES_MAX {
-            return false;
-        }
-        self.buckets.insert(
-            source.to_string(),
-            Bucket {
-                tokens: LOGIN_FAILURE_BURST - 1,
-                updated: now,
-            },
-        );
-        true
-    }
-
-    /// Forget a source that just signed in successfully.
-    pub fn forget(&mut self, source: &str) {
-        self.buckets.remove(source);
-    }
-
-    /// Drop every source whose allowance has come all the way back, which is
-    /// a source indistinguishable from one that never failed.
-    pub fn sweep(&mut self, now: u64) -> usize {
-        let before = self.buckets.len();
-        self.buckets.retain(|_, b| {
-            refill(b, now);
-            b.tokens < LOGIN_FAILURE_BURST
-        });
-        before - self.buckets.len()
-    }
-}
-
-/// Give a bucket back whatever whole allowances have elapsed, capped.
-fn refill(b: &mut Bucket, now: u64) {
-    let gained = now.saturating_sub(b.updated) / LOGIN_REFILL_SECS;
-    if gained == 0 {
-        return;
-    }
-    b.tokens = b
-        .tokens
-        .saturating_add(gained.min(u64::from(LOGIN_FAILURE_BURST)) as u32)
-        .min(LOGIN_FAILURE_BURST);
-    b.updated = b.updated.saturating_add(gained * LOGIN_REFILL_SECS);
-}
-
 /// `Set-Cookie` for the session: `Secure` so it never rides a plaintext
 /// request, `HttpOnly` so no script can read it, `SameSite=Strict` so no
 /// cross-site navigation carries it, and `__Host-` so the browser enforces
@@ -379,35 +277,21 @@ pub fn login_link(app: &App, req: &mut Request, client: &ClientInfo) -> Result<R
 /// `GET /login?token=…`: consume a login link, or the first-boot setup token
 /// as the documented recovery login, and set the session.
 ///
-/// Every failure costs this source one of [`LOGIN_FAILURE_BURST`] attempts;
-/// a source with none left is refused before the compare. The compare itself
-/// is unchanged and constant-time: the limiter bounds noise, not guessing
-/// (`docs/security/dashboard.md`).
+/// The token is 256 bits compared in constant time, and there is deliberately
+/// no attempt limit in front of that compare. A limit keyed by request source
+/// refuses EVERYONE at once wherever that source is a proxy this deployment
+/// does not trust -- the shipped chart's own default, with no trusted CIDR --
+/// which would make the recovery login the easiest thing on the server to
+/// deny. Every refusal is one `warn` line that reaches the Logs page as well
+/// as stdout, and no run of them can push the authenticated record off that
+/// page (`docs/security/dashboard.md`).
 ///
 /// # Errors
-/// `401 bad_login_token` when the token is absent, spent, or wrong;
-/// `429 too_many_logins` when this source has spent its attempts.
-pub fn login(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Response, ApiError> {
+/// `401 bad_login_token` when the token is absent, spent, or wrong.
+pub fn login(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     let now = app.clock.unix_secs();
-    let source = client.address_word().to_string();
-    if !app
-        .logins
-        .lock()
-        .expect("login limiter")
-        .check(&source, now)
-    {
-        app.log.warn(
-            "dashboard_login_refused",
-            &[("decision", Val::word("too_many_logins"))],
-        );
-        return Err(ApiError::new(
-            429,
-            "too_many_logins",
-            "too many sign-in attempts from this source; wait a minute",
-        ));
-    }
-    // An absent token takes the same path as a wrong one: one refusal, one
-    // charge, and nothing an unauthenticated caller can tell apart.
+    // An absent token takes the same path as a wrong one: one refusal, and
+    // nothing an unauthenticated caller can tell apart.
     let token = req.query_param("token").unwrap_or_default().to_string();
 
     let mut sessions = app.sessions.lock().expect("sessions");
@@ -418,17 +302,9 @@ pub fn login(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respon
     let minted_by = sessions.take_link(&token, now);
     if minted_by.is_none() && !recovery {
         drop(sessions);
-        let remembered = app
-            .logins
-            .lock()
-            .expect("login limiter")
-            .charge(&source, now);
         app.log.warn(
             "dashboard_login_refused",
-            &[
-                ("decision", Val::word("bad_login_token")),
-                ("limited", Val::flag(remembered)),
-            ],
+            &[("decision", Val::word("bad_login_token"))],
         );
         return Err(ApiError::new(
             401,
@@ -440,7 +316,6 @@ pub fn login(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respon
     let csrf = mint(32)?;
     sessions.open(&session, &csrf, now, minted_by);
     drop(sessions);
-    app.logins.lock().expect("login limiter").forget(&source);
 
     // The recovery token is a standing credential with no device behind it,
     // so its use is a warning and not a note, and the overview says so while
@@ -976,52 +851,5 @@ mod tests {
             "the recovery login belongs to no device"
         );
         assert_eq!(t.take_link("kept-link", 1_000), Some(device(2)));
-    }
-
-    #[test]
-    fn the_login_limiter_charges_failures_refills_and_forgets_a_success() {
-        let mut l = LoginLimiter::new();
-        assert!(l.check("198.51.100.7", 1_000), "a fresh source may try");
-        for _ in 0..LOGIN_FAILURE_BURST {
-            assert!(l.check("198.51.100.7", 1_000));
-            assert!(l.charge("198.51.100.7", 1_000));
-        }
-        assert!(
-            !l.check("198.51.100.7", 1_000),
-            "the burst is spent and the next attempt is refused"
-        );
-        assert!(
-            l.check("203.0.113.9", 1_000),
-            "one source's noise never refuses another"
-        );
-        assert!(
-            l.check("198.51.100.7", 1_000 + LOGIN_REFILL_SECS),
-            "one allowance comes back after the refill"
-        );
-        // A success forgets the source outright.
-        l.forget("198.51.100.7");
-        for _ in 0..LOGIN_FAILURE_BURST {
-            assert!(l.check("198.51.100.7", 1_000));
-            l.charge("198.51.100.7", 1_000);
-        }
-        assert!(!l.check("198.51.100.7", 1_000));
-        l.forget("198.51.100.7");
-        assert!(l.check("198.51.100.7", 1_000));
-    }
-
-    #[test]
-    fn the_login_limiter_is_bounded_and_says_when_it_is_saturated() {
-        let mut l = LoginLimiter::new();
-        for i in 0..LOGIN_SOURCES_MAX {
-            assert!(l.charge(&format!("source-{i}"), 1_000), "source {i}");
-        }
-        assert!(
-            !l.charge("one-too-many", 1_000),
-            "a saturated table says so rather than growing"
-        );
-        // Recovered sources are swept, which makes room again.
-        let recovered = 1_000 + u64::from(LOGIN_FAILURE_BURST) * LOGIN_REFILL_SECS;
-        assert!(l.charge("one-too-many", recovered));
-        assert!(l.sweep(1_000 + 10 * LOGIN_REFILL_SECS) > 0);
     }
 }
