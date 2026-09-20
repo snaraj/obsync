@@ -115,7 +115,7 @@ isolation boundary. Native restart persistence is a separate validation step.
 5. Edit a note on the phone. It appears on the computer within seconds, and
    the other way round. That is the whole loop.
 
-A phone that will also sync away from home needs four more things to be true
+A phone that will also sync away from home needs five more things to be true
 on the phone itself; they are listed under
 [reaching it from outside your LAN](server.md#reaching-it-from-outside-your-lan).
 

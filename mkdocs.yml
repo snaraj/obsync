@@ -12,14 +12,17 @@
 # duplicating a document to get it into that directory is how the two copies
 # start to disagree.
 #
-# Build it locally exactly as `.github/workflows/docs-site.yml` does:
+# Build it locally on the interpreter and platform the workflow pins, which is
+# also the one `docs/requirements.txt`'s hashes are the wheels for:
 #
-#     python3 -m venv .venv
-#     .venv/bin/pip install --no-deps --only-binary=:all: -r docs/requirements.txt
-#     .venv/bin/mkdocs build --strict
+#     docker run --rm --platform linux/amd64 -v "$PWD:/repo" -w /repo \
+#       python:3.12-slim sh -c 'pip install --require-hashes --no-deps \
+#       --only-binary=:all: -r docs/requirements.txt && mkdocs build --strict'
 #
 # `--strict` turns every MkDocs warning into a failure, so a link to a page or
 # an image that is not there fails the pull request instead of shipping a 404.
+# A venv on a developer's own Python is not this build: the hashes name the
+# CPython 3.12 linux/amd64 wheels, so `--require-hashes` refuses anything else.
 
 site_name: Self Hosted Private Sync
 site_description: >-
@@ -39,6 +42,14 @@ site_dir: site
 theme:
   name: material
   language: en
+  # Material's default is Roboto and Roboto Mono, fetched from Google's font
+  # CDN by every page view. Requirement 1 admits no third-party service, and
+  # the front page of this project tells the same reader there is none, so the
+  # documentation may not quietly hand their address to one. `false` is
+  # Material's own switch for that: it emits neither the stylesheet nor the
+  # preconnect, and the pages render in the reader's own system fonts.
+  # `scripts/ci/test_docs_site_workflow.py` refuses the key going missing.
+  font: false
   icon:
     repo: fontawesome/brands/github
   features:

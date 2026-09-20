@@ -52,14 +52,17 @@ jobs:
           python-version: '3.12'
           check-latest: false
       - name: Install the pinned build inputs
-        # `--no-deps` installs exactly the lines in docs/requirements.txt and
-        # resolves nothing, so no transitive release can enter a build;
-        # `--only-binary=:all:` refuses source distributions, so no package's
-        # own build code runs on this runner. docs/requirements.txt carries the
-        # whole closure and how it was resolved.
+        # `--require-hashes` binds the BYTES: every wheel must match a sha256
+        # written in docs/requirements.txt, and a requirement carrying no hash
+        # fails the install rather than widening the closure quietly.
+        # `--no-deps` installs exactly those lines and resolves nothing, so no
+        # transitive release can enter a build; `--only-binary=:all:` refuses
+        # source distributions, so no package's own build code runs on this
+        # runner. docs/requirements.txt carries the whole closure, its hashes,
+        # and how both were produced.
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check \
+          python3 -m pip install --disable-pip-version-check --require-hashes \
             --no-deps --only-binary=:all: -r docs/requirements.txt
       - name: Build the site
         # `--strict` turns every MkDocs warning into a failure: a nav entry

@@ -78,12 +78,14 @@ authenticate WebAuthn credentials.
 | **Devices** | every device by name, platform, app version, first paired, last sign-in, last seen, last edit, connecting address and country — and the revoke button |
 | **Pairing** | the pairing instructions; codes themselves are minted on a device, never here |
 | **Storage** | usage against the declared capacity, the free-space watermark, retention, scrub state and rate, and the quarantine list |
-| **Install** | the plugin download and the per-platform install steps |
+| **Install** | the Community Plugins install steps, the updates path, the certificate requirement, and the plugin version this server is serving |
 | **Logs** | the most recent request decisions, filtered by device |
 
-Addresses and countries come from the edge's connecting-address and country
-headers in `cloudflare` edge mode, and from the peer address or a trusted
-proxy header in `none` mode. Device history retention defaults to 90 days.
+The address comes from the edge's connecting-address header in `cloudflare`
+edge mode, and from the peer address or a trusted proxy header in `none` mode.
+The COUNTRY has one source only, the edge's country header, so in `none` mode
+that column is empty rather than guessed. Device history retention defaults to
+90 days.
 [Protocol](protocol.md#dashboard-admin-api) is the exact shape of every
 response behind these pages.
 
@@ -114,15 +116,24 @@ answer to a lost or stolen device.
 
 1. Open **Devices** and find the device by the name you gave it when you
    approved it.
-2. Select **Revoke**. The server drops that device's credential
-   (`POST /v1/admin/devices/{id}/revoke`); the next request it makes is
-   refused and it syncs nothing further.
-3. The device keeps whatever it already downloaded. Revoking ends its access
+2. Select **Revoke**. Nothing is revoked yet: that button only reveals the
+   confirmation, which asks "Revoke <name>? Its next request fails."
+3. Select **Confirm revoke**. THIS is the click that sends
+   `POST /v1/admin/devices/{id}/revoke`. **Cancel** beside it closes the
+   confirmation and sends nothing.
+4. Watch it land before you walk away. The dashboard says "<name> is revoked.
+   Its next request fails." and reloads the list, where that device now carries
+   a **revoked** tag. No notice, an error, or a row without the tag means the
+   device is still authorized and the step has to be repeated — a request that
+   did not arrive revokes nothing.
+5. The device keeps whatever it already downloaded. Revoking ends its access
    to the server; it does not reach into the device and delete files, and it
    does not re-encrypt the vault under a new key.
 
-You can also revoke from the **Devices** list in the plugin's own settings
-tab, on any paired device, without opening the dashboard at all.
+You can also revoke from the **Devices** list in the plugin's own settings tab,
+on any paired device, without opening the dashboard at all. It confirms the
+same way: **Revoke** there opens a dialog whose own **Revoke** button is what
+sends the request, and **Cancel** closes it having sent nothing.
 
 If the device that is gone was your LAST one, revoking is not the problem to
 solve — getting back in is. [Recovery](recovery.md) is that page.

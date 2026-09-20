@@ -45,14 +45,24 @@ contract) and [Architecture](architecture.md).
 
 ## Building this site
 
+From a checkout, on any machine with a container runtime:
+
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install --no-deps --only-binary=:all: -r docs/requirements.txt
-.venv/bin/mkdocs build --strict
+docker run --rm --platform linux/amd64 -v "$PWD:/repo" -w /repo \
+  python:3.12-slim sh -c 'pip install --require-hashes --no-deps \
+  --only-binary=:all: -r docs/requirements.txt && mkdocs build --strict'
 ```
 
+The container is not decoration. `docs/requirements.txt` pins every package by
+exact version AND by the sha256 of the exact wheel, and a wheel's sha256 is a
+fact about ONE file: the closure is resolved and hashed for **CPython 3.12 on
+linux/amd64**, the interpreter and platform
+`.github/workflows/docs-site.yml` pins. `--require-hashes` therefore refuses a
+venv on another interpreter — and so, before it, does `--only-binary=:all:`,
+because several of these packages publish no wheel at all for a newer Python.
+Running the pinned image is how a reader gets the bytes CI gets.
+
 `mkdocs.yml` at the repository root carries the navigation and the reasoning
-behind it; `docs/requirements.txt` pins every package the build installs, with
-no resolution step. `.github/workflows/docs-site.yml` runs the same two
-commands on every pull request and deploys the result to GitHub Pages on
-pushes to `main`.
+behind it. `.github/workflows/docs-site.yml` runs the same install and the same
+`mkdocs build --strict` on every pull request, and deploys the result to GitHub
+Pages on pushes to `main`.

@@ -185,13 +185,34 @@ today's vulnerability database. It holds no write permission anywhere.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `build` | `python3 -m mkdocs build --strict` | The documentation site renders: every nav entry names a file that exists, every relative link resolves, every referenced image was committed. `--strict` makes each MkDocs warning a failure, so a 404 fails the pull request instead of shipping |
+| `build` | `python3 -m mkdocs build --strict` | The documentation site renders: every nav entry names a file that exists, every relative link resolves, every referenced image was committed. `--strict` makes each MkDocs warning a failure, so a broken link reddens this check instead of shipping a 404 |
 | `deploy` | `actions/configure-pages`, `actions/deploy-pages` | Pushes to `main` publish the built site to GitHub Pages. It holds `pages: write` and `id-token: write` and no `contents` grant at all, so it cannot touch the repository |
 
+`Docs site / build` is NOT one of the eight contexts in
+`REQUIRED_STATUS_CHECKS`, so what stops a red docs build from merging is the
+Ready rule ("every check green at the exact head", AGENTS.md) rather than
+branch protection. Adding it to `Protect-Main` is the owner's call and has the
+same open-pull-request cost every new required context has (`dispositions`,
+below).
+
 The build inputs come from `docs/requirements.txt` with
-`pip install --no-deps --only-binary=:all:`: the file carries the whole
-transitive closure at exact versions, so pip resolves nothing and no package's
-own build code runs on the runner.
+`pip install --require-hashes --no-deps --only-binary=:all:`: the file carries
+the whole transitive closure at exact versions AND the sha256 of every wheel,
+so pip verifies the bytes, resolves nothing, refuses a requirement carrying no
+hash, and runs no package's own build code on the runner. The hashes are the
+CPython 3.12 linux/amd64 wheels, which is the interpreter the workflow pins and
+the platform its runner is.
+
+`scripts/ci/test_docs_site_workflow.py` pins this workflow's own boundaries,
+which the four generic rules in `test_workflow_integrity.py` say nothing about:
+the `build` job's permissions are exactly `contents: read` (it runs a pull
+request's own `mkdocs.yml` and must not hold publishing authority), both the
+artifact upload and the `deploy` job require `push` AND `refs/heads/main`,
+`configure-pages` carries no `enablement:` input, the install keeps all three
+flags, `mkdocs build` keeps `--strict`, every requirement carries a hash, and
+`mkdocs.yml` keeps `theme.font: false` — without which Material fetches Roboto
+from Google's CDN on every page view, which requirement 1 forbids. Each rule
+has a mutation that kills it.
 
 **It is not in the release chain, and that is the design.**
 `release-after-main.yml` fires on a completed `PR gate` run and nothing else,

@@ -7,16 +7,22 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.0 - 2026-09-20
 
-- **The documentation is a site, and the README is a front door.** The pages
-  this repository already carried are now published at
-  [snaraj.github.io/obsync](https://snaraj.github.io/obsync/), built from
-  `docs/` by `mkdocs.yml` with MkDocs Material. It is a RENDERING, never a
-  second copy: every page on it is a Markdown file reviewed in a pull request,
-  readable without the site, and at the path it has always had, so no existing
-  link breaks. That is also why this project has no GitHub wiki — wiki content
-  is unreviewed, unversioned, invisible to `make check`, and cannot be part of
-  a pull request. `docs/requirements.txt` pins the whole build closure by exact
-  version and the install resolves nothing.
+- **The documentation can be published as a site, and the README is a front
+  door.** `mkdocs.yml` builds the pages this repository already carried into a
+  site with MkDocs Material, and `.github/workflows/docs-site.yml` deploys it
+  to GitHub Pages on every push to `main` from this release on — at
+  `snaraj.github.io/obsync`, once the repository owner has turned Pages on.
+  Nothing about the documentation depends on that: the site is a RENDERING,
+  never a second copy. Every page on it is a Markdown file reviewed in a pull
+  request, readable in the repository without the site, and at the path it has
+  always had, so no existing link breaks. That is also why this project has no
+  GitHub wiki — wiki content is unreviewed, unversioned, invisible to
+  `make check`, and cannot be part of a pull request.
+  `docs/requirements.txt` pins the whole build closure by exact version AND by
+  the sha256 of each wheel, and the install runs under `--require-hashes` with
+  no resolution step. The theme fetches no font, script or style from any
+  third party: `theme.font` is `false`, and every one of the 23 generated
+  pages was checked for a remote asset reference.
 - **`README.md` is 206 lines instead of 572.** It keeps what a stranger needs
   before deciding: the pitch, the three warnings, what it does, the five
   captures, the shortest complete path to a running server, the disclosure of

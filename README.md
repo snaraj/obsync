@@ -12,7 +12,7 @@ plugins → Browse, on every platform Obsidian runs on. The device run behind
 it proved setup, pairing and two-way sync between a Mac and an iPhone on one
 LAN, and nothing about iPad, Windows, or reaching the server from off that LAN.
 
-**Full documentation: [snaraj.github.io/obsync](https://snaraj.github.io/obsync/)**, built from [`docs/`](docs/).
+**Full documentation: the [`docs/`](docs/) folder**, also published at snaraj.github.io/obsync once the owner enables GitHub Pages.
 
 > [!IMPORTANT]
 > This plugin syncs to a server **you** run. There is no hosted service and no

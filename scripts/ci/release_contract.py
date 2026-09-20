@@ -11,8 +11,9 @@ THE SEVEN LOCKSTEP LOCKS. `VERSION`, the workspace `version` in `Cargo.toml`,
 heading. Six files, seven facts, one number.
 
 THE CLASSIFIER HAS TWO VERDICTS AND NO FLAG. A range whose every commit is
-confined to root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown under
-`docs/` is `no-artifact` and must advance nothing. Anything else is `artifact`
+confined to root `AGENTS.md`, `README.md`, `.gitignore`, `mkdocs.yml`,
+`docs/requirements.txt`, and Markdown under `docs/` is `no-artifact` and must
+advance nothing. Anything else is `artifact`
 and must advance every lock exactly ONE SEMVER STEP from its protected base --
 one patch, one minor, or one major, and nothing else. A non-allowlisted path
 with an unchanged version denies; there is no third path and no environment
@@ -103,7 +104,21 @@ TRIVY_SEVERITIES = ["HIGH", "CRITICAL"]
 CHART_DIGEST_SENTINEL = "sha256:" + "0" * 64
 CHART_DIGEST_LINE_RE = re.compile(r"^  digest: .*$", re.MULTILINE)
 
-DOCUMENTATION_FILES = frozenset({"AGENTS.md", "README.md", ".gitignore"})
+# The closed allowlist, by exact repo-relative path. `mkdocs.yml` and
+# `docs/requirements.txt` are the documentation SITE's build inputs: they are
+# read by nothing under `crates/`, `plugin/`, `chart/`, `deploy/` or the
+# publisher, they ship in no artifact, and neither is a release lock, so a
+# range confined to them changes nothing a version could describe. Every
+# `.github/workflows/**` path stays OUT, this workflow included: the allowlist
+# matches PATHS and cannot tell a comment from a permission grant, so
+# allowlisting a workflow file would classify a future `contents: write` or a
+# `pull_request_target` trigger as documentation -- and requirement 10's
+# no-artifact class is also what the review protocol routes to its lightest
+# depth. A docs-workflow edit costs one patch step instead, which is the cheap
+# half of that trade.
+DOCUMENTATION_FILES = frozenset(
+    {"AGENTS.md", "README.md", ".gitignore", "mkdocs.yml", "docs/requirements.txt"}
+)
 DOCUMENTATION_TREE = "docs/"
 RELEASE_LOCK_PATHS = (
     "VERSION",
@@ -646,7 +661,15 @@ def _validated_history_transitions(
 
 
 def is_documentation_path(path: str) -> bool:
-    """The closed documentation allowlist. Widening it is a released change."""
+    """The closed documentation allowlist. Widening it is a released change.
+
+    Two shapes: an exact repo-relative path in `DOCUMENTATION_FILES`, or a
+    Markdown file anywhere under `docs/`. Everything else is an artifact path,
+    including a non-Markdown file under `docs/` that is not named above and
+    every file under `.github/`, and the allowlist is ONE fact written here, in
+    `AGENTS.md` requirement 10 and in `docs/release.md`.
+    `test_release_contract.py` pins each member and each deliberate exclusion.
+    """
     if path in DOCUMENTATION_FILES:
         return True
     return path.startswith(DOCUMENTATION_TREE) and path.endswith(".md")

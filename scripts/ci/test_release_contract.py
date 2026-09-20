@@ -301,6 +301,58 @@ class TheClassifier(GitFixture):
         self.assertFalse(contract.is_documentation_path("nested/AGENTS.md"))
         self.assertTrue(contract.is_documentation_path("docs/nested/deep.md"))
 
+    def test_the_documentation_site_build_inputs_are_documentation(self):
+        # `mkdocs.yml` and `docs/requirements.txt` render and pin the site made
+        # out of `docs/`. Neither is a release lock, neither is read by the
+        # server, the plugin, the chart, the deploy manifests or the publisher,
+        # and neither ships in an artifact, so a range confined to them has no
+        # version to advance. Asserted per path AND through the classifier, so
+        # removing a name from the allowlist reddens here rather than silently
+        # sending the next documentation range down the release path.
+        for path in ("mkdocs.yml", "docs/requirements.txt"):
+            with self.subTest(path=path):
+                self.assertTrue(contract.is_documentation_path(path))
+        head = self.repository.commit(
+            {
+                "mkdocs.yml": "site_name: obsync\n",
+                "docs/requirements.txt": "mkdocs-material==9.7.7\n",
+                "docs/index.md": "# Home\n",
+            },
+            "site inputs",
+        )
+        self.assertEqual(self.classify(self.base, head)["class"], "no-artifact")
+
+    def test_the_documentation_site_workflow_is_not_documentation(self):
+        # The deliberate exclusion, and the reason the allowlist stops where it
+        # does: it matches PATHS, so a workflow on it would classify a future
+        # `contents: write`, a `pull_request_target` trigger or a new step as
+        # documentation. Every `.github/` path stays an artifact path.
+        for path in (
+            ".github/workflows/docs-site.yml",
+            ".github/workflows/pr-gate.yml",
+            ".github/dependabot.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(contract.is_documentation_path(path))
+        head = self.repository.commit(
+            {".github/workflows/docs-site.yml": "name: Docs site\n"}, "workflow"
+        )
+        with self.assertRaises(contract.ContractError):
+            self.classify(self.base, head)
+
+    def test_the_allowlist_is_only_these_names(self):
+        # A closed set, asserted as one: a sixth name added without a reviewed
+        # edit to requirement 10 and docs/release.md reddens here. The two
+        # near-misses below are the ones a path rule gets wrong by accident --
+        # the same basenames somewhere else in the tree.
+        self.assertEqual(
+            set(contract.DOCUMENTATION_FILES),
+            {"AGENTS.md", "README.md", ".gitignore", "mkdocs.yml", "docs/requirements.txt"},
+        )
+        for path in ("docs/mkdocs.yml", "requirements.txt", "plugin/requirements.txt"):
+            with self.subTest(path=path):
+                self.assertFalse(contract.is_documentation_path(path))
+
     def test_a_skipped_or_reverted_patch_denies(self):
         skipped = self.repository.commit({**locks("0.1.3", ["0.1.0"]), "src.rs": "x\n"}, "skip")
         with self.assertRaises(contract.ContractError):

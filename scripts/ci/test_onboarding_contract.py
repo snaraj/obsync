@@ -186,12 +186,17 @@ SETTINGS_NAME = "plugin/src/ui/settings.ts"
 DASHBOARD_NAME = "dashboard/index.html"
 MARKDOWN = (README_NAME, SERVER_GUIDE_NAME, ARCHITECTURE_NAME)
 # Rule 5's document set: everywhere a person reads the words "setup token".
+# `docs/daily-use.md` is deliberately NOT here. It never names the setup token
+# -- it is the page about a vault that is already syncing -- so rule 5 has
+# nothing in it to match and a membership would be an assertion no edit to that
+# page could fail. A tuple entry that cannot fire is not a cheap extra guard;
+# it is the vacuity this suite's own protocol refuses, and it made the claim
+# "every page that hands over the token" true of one page fewer than it said.
 WORDING = (
     README_NAME,
     SERVER_GUIDE_NAME,
     QUICKSTART_GUIDE_NAME,
     DASHBOARD_GUIDE_NAME,
-    DAILY_USE_GUIDE_NAME,
     ARCHITECTURE_NAME,
     SETTINGS_NAME,
     DASHBOARD_NAME,
@@ -313,6 +318,19 @@ EVERY_INTERFACE = "0.0.0.0"
 REACHABILITY_SENTENCE = "a bind address limits the destination interface, not the source"
 SOURCE_EXCLUSIVITY_CLAIMS = ("and no further", "nothing else does", "nothing off this host can open")
 VOLUME_FLAGS = frozenset({"-v", "--volume", "--mount"})
+# Rule 13: the server's own `docker run` publishes 8080 on the loopback and
+# nowhere else. The process speaks plain HTTP and TLS is always outside it
+# (requirement 7), so the published address is the whole of who can reach an
+# unencrypted sync API and an administrative dashboard. The Compose half of the
+# same guidance already has rule 11 for exactly this question, and the Docker
+# half had nothing: rewriting `127.0.0.1` to `0.0.0.0` in both judged documents
+# left every rule green. A host port with NO address at all is the same
+# exposure with nobody having chosen it, so it is refused too. The flag is read
+# as shell TOKENS, and the host address is the part before the first colon of a
+# three-part value, so `-p=…` and `--publish …` are the same decision.
+PUBLISH_FLAGS = frozenset({"-p", "--publish"})
+SERVER_PORT = "8080"
+LOOPBACK = "127.0.0.1"
 
 
 @dataclass(frozen=True)
@@ -856,12 +874,45 @@ def _one_command(name: str, command: tuple[str, ...]) -> list[str]:
             f"{name}: `{JOURNAL_VOLUME}` is named by a command that is not the "
             f"server's own digest-pinned run: {' '.join(command)}"
         )
+    if server:
+        found.extend(_publish_refusals(name, command))
     if command[:2] == ("cosign", "verify"):
         for pair in (CERTIFICATE_IDENTITY, CERTIFICATE_ISSUER):
             if not _has_flag(command, pair):
                 found.append(
                     f"{name}: `cosign verify` is missing `{flag_text(pair)}`"
                 )
+    return found
+
+
+def _publish_refusals(name: str, command: tuple[str, ...]) -> list[str]:
+    """Rule 13, over the server's own run: 8080 is published on the loopback."""
+    found: list[str] = []
+    index = 0
+    while index < len(command):
+        word = command[index]
+        flag, separator, value = word.partition("=")
+        if flag not in PUBLISH_FLAGS:
+            index += 1
+            continue
+        if not separator:
+            value = command[index + 1] if index + 1 < len(command) else ""
+            index += 2
+        else:
+            index += 1
+        parts = value.split(":")
+        if parts[-1] != SERVER_PORT:
+            continue
+        host = parts[0] if len(parts) >= 3 else ""
+        if host != LOOPBACK:
+            found.append(
+                f"{name}: the server's own run publishes {SERVER_PORT} on "
+                f"{host or 'every address this host has (no host address given)'!r}, "
+                f"not {LOOPBACK!r}: this process speaks plain HTTP and its TLS "
+                f"terminator is outside it, so the published address is who can "
+                f"reach an unencrypted sync API and the dashboard: "
+                f"{' '.join(command)}"
+            )
     return found
 
 
@@ -1018,15 +1069,20 @@ class TheSiteGuidesAreJudgedBesideTheReadme(unittest.TestCase):
         # The four pages `mkdocs.yml` puts under "Start here" and "Using it".
         # A page that tells a reader where the setup token is, and calls it
         # one-time, teaches the same wrong habit the settings tab would.
-        for name in (
-            SERVER_GUIDE_NAME,
-            QUICKSTART_GUIDE_NAME,
-            DASHBOARD_GUIDE_NAME,
-            DAILY_USE_GUIDE_NAME,
-        ):
+        for name in (SERVER_GUIDE_NAME, QUICKSTART_GUIDE_NAME, DASHBOARD_GUIDE_NAME):
             with self.subTest(document=name):
                 self.assertIn(name, WORDING)
                 self.assertEqual(_prose_refusals(name, documents()[name]), [])
+                # The membership is only real if the rule has something in this
+                # page to bite on, so each one is required to NAME the token.
+                self.assertIn("setup token", documents()[name])
+
+    def test_a_page_that_never_names_the_token_is_left_out_of_wording(self):
+        # The other side of the line above, and the reason `docs/daily-use.md`
+        # is absent: a document rule 5 cannot match adds a tuple entry no edit
+        # to that document can fail.
+        self.assertNotIn("setup token", documents()[DAILY_USE_GUIDE_NAME])
+        self.assertNotIn(DAILY_USE_GUIDE_NAME, WORDING)
 
 
 class TheParserFindsWhatItClaimsTo(unittest.TestCase):
@@ -1639,6 +1695,43 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             SERVER_GUIDE_NAME, COMPOSE_UP_BIND, "OBSYNC_HTTPS_PORT=8443"
         )
         self.kills(found, f"carries no {BIND_ADDRESS_VARIABLE}=")
+
+    def test_publishing_the_server_on_every_interface_is_refused(self):
+        # Rule 13, on BOTH judged documents, because the command stands in each
+        # and a reader pastes whichever one is in front of them. This is the
+        # mutant that survived the first head: the guidance is emphatic about
+        # the Compose bind address and had nothing to say about this one.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {EVERY_INTERFACE}:{SERVER_PORT}:{SERVER_PORT}",
+                )
+                self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_publishing_the_server_with_no_host_address_is_refused(self):
+        # The same exposure with nobody having chosen it: `-p 8080:8080`
+        # publishes on every address the host has, which is what the omitted
+        # field means to Docker and is the shape a reader shortens the line to.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {SERVER_PORT}:{SERVER_PORT}",
+                )
+                self.kills(found, "no host address given")
+
+    def test_a_loopback_publish_of_another_port_is_not_refused(self):
+        # Rule 13's positive control: it judges the port this server listens
+        # on, and says nothing about a second mapping a deployment adds.
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT} -p {LOOPBACK}:9100:9100",
+        )
+        self.assertEqual(found, self.before)
 
     def test_calling_the_token_one_time_on_a_site_page_is_refused(self):
         for name, old, new in (

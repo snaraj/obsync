@@ -128,8 +128,13 @@ Numbered for citation, repo-scoped, none negotiable in code:
     `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
     root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
     A range whose every commit is confined to the closed documentation
-    allowlist — root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown
-    files under `docs/` — classifies no-artifact and advances nothing. The
+    allowlist — root `AGENTS.md`, `README.md`, `.gitignore`, `mkdocs.yml`,
+    `docs/requirements.txt`, and Markdown files under `docs/` — classifies
+    no-artifact and advances nothing. The two site-build inputs are on it
+    because they render and pin the documentation and are read by no artifact;
+    every `.github/workflows/**` path is deliberately off it, including the
+    site's own workflow, because the allowlist matches paths and cannot tell a
+    comment from a permission grant. The
     classifier has exactly two verdicts and no flag; a non-allowlisted path
     with an unchanged version denies. Successful main CI dispatches the
     publisher, which creates the annotated `X.Y.Z` tag at the exact merged

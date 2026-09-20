@@ -46,7 +46,21 @@ release's own `manifest.json`.
 Two verdicts, no flag: `artifact` (any path outside the documentation
 allowlist changed, and every lock advanced exactly one release step) or
 `no-artifact` (every commit confined to root `AGENTS.md`, `README.md`,
-`.gitignore`, and Markdown under `docs/`; no lock touched).
+`.gitignore`, `mkdocs.yml`, `docs/requirements.txt`, and Markdown under
+`docs/`; no lock touched).
+
+`mkdocs.yml` and `docs/requirements.txt` build the documentation SITE out of
+`docs/` (`docs/ci-map.md`, `docs-site.yml`). They are on the allowlist because
+nothing outside `docs/` reads them, neither is a release lock, and neither ships
+in the image, the chart or the plugin bundle, so a range confined to them has no
+version to describe. `.github/workflows/docs-site.yml` is NOT on it, and no
+workflow ever will be: the allowlist matches PATHS, so a workflow on it would
+classify a later `contents: write`, a `pull_request_target` trigger or a new
+step as documentation — and the no-artifact class is also what the review
+protocol routes to its lightest depth. A docs-workflow edit takes one patch step
+instead. `scripts/ci/test_release_contract.py` pins every member of the set and
+each of those exclusions; the allowlist is ONE fact written here, in
+`AGENTS.md` requirement 10 and in `release_contract.py`.
 
 **Genesis.** A range whose base carries NONE of the seven locks — the state a
 repository born from GitHub's own root commit is in, which the release-step
