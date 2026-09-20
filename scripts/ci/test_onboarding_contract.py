@@ -115,6 +115,24 @@ preference:
      not the one a reader copies out of an install guide. The PROSE may name
      it, and does; only a command may not carry it.
 
+ 12. a bind address is a DESTINATION, not a source -- the quick start must say,
+     in these words, that "a bind address limits the destination interface, not
+     the source", and may not claim source exclusivity for one. Routed, VPN and
+     port-forwarded traffic arriving at a LAN address is accepted unless a
+     firewall or the router refuses it, and a reader who takes a LAN bind for
+     an access control has protected nothing.
+
+ 13. the server's own run publishes 8080 on the loopback -- in every judged
+     document, a `-p`/`--publish` mapping of this server's port must name
+     `127.0.0.1` as its host address, and a mapping with NO host address is
+     refused too, because that is the same exposure with nobody having chosen
+     it. The process speaks plain HTTP and its TLS terminator is outside it
+     (requirement 7), so the published address is the whole of who can reach an
+     unencrypted sync API and an administrative dashboard. Rule 11 asks exactly
+     this question of the Compose path and the Docker path had no rule at all:
+     an adversarial review rewrote `127.0.0.1` to `0.0.0.0` in both documents
+     and the entire suite stayed green.
+
 FAIL-CLOSED PARSING, OVER EXECUTABLE STRUCTURE. The first version of this file
 judged text: it split a line on shell operators and searched the result with
 regular expressions. An adversarial review walked straight through it with two
