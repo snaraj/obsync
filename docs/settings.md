@@ -1,11 +1,18 @@
 # Plugin settings
 
-Every field in Settings → Community plugins → Self Hosted Private Sync, what it
-defaults to, and when it is worth changing. The source is
-`plugin/src/ui/settings.ts`; the defaults are `plugin/src/policy.ts`.
+Every field in Settings → Community plugins → Self Hosted Private Sync, what
+it defaults to, and when it is worth changing. The fields are
+`plugin/src/ui/settings.ts`; the two mobile ceilings default from
+`plugin/src/policy.ts`, and every other default is the field's own.
 
 Everything here is **per device**. Nothing in this tab is synced, and no other
 device can change it for you.
+
+## Above the first heading
+
+| Row | When it appears | What it does |
+| --- | --- | --- |
+| **Update available** | only when the server reports a newer plugin version than this device runs | one sentence naming both versions and sending you to Obsidian's own updater. Nothing here installs code: the plugin never fetches its own bundle from the sync server |
 
 ## Server
 
@@ -20,6 +27,7 @@ device can change it for you.
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
+| **Current selection** | — | Not a field: it reads back what this device has SAVED, which is what sync obeys. An edit below that has not been saved does not appear here | — |
 | **Folder selection** | Whole vault | `Whole vault`, or `Selected folders only`. Hidden folders (`.obsidian`, `.git`) and symlinked folders are excluded either way. | Before the first sync, if the vault also holds code or private files |
 | **Selected folders** | empty | One relative folder per line, no leading or trailing slash. An empty list with `Selected folders only` syncs nothing. | With the setting above |
 | **Save on this device** | — | Waits for active transfers, then rescans. | After every change to the two above — nothing takes effect until this is pressed |

@@ -9,11 +9,12 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 - **Open dashboard opens the configured server, or nothing.** The plugin used
   to open whatever the server answered with. The server builds that link from
-  `OBSYNC_PUBLIC_URL`, which the chart and the composition leave empty on
-  purpose -- a private deployment advertises no address of its own -- so the
-  honest answer is the relative `/login?token=…` and the command failed on
-  every deployment that had not named itself. The link is now resolved against
-  the **Server URL** this device is configured with, and opened only when the
+  `OBSYNC_PUBLIC_URL`, which the chart leaves empty on purpose -- a private
+  deployment advertises no address of its own -- so on the chart's path the
+  answer is the relative `/login?token=…` and the command failed on every
+  deployment that had not named itself; on the Compose path the value was
+  there but dropped the port. The link is now resolved against the **Server
+  URL** this device is configured with, and opened only when the
   resolved ORIGIN is that server's. A link to any other origin is refused by
   name and not opened: the answer carries a single-use dashboard sign-in token,
   and resolving a server's answer without checking where it points is how that
@@ -23,7 +24,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   while the deployment published `OBSYNC_HTTPS_PORT`, so a deployment that
   moved that port sent its own readers to a port nothing listens on. Both now
   carry the published port, and `scripts/ci/compose-smoke.sh` -- which already
-  publishes a non-default pair -- proves the redirect keeps it.
+  publishes a non-default pair -- reads back the redirect AND the address the
+  server hands out. A deployment whose devices arrive somewhere else, because
+  another reverse proxy holds 443 in front of it, sets `OBSYNC_PUBLIC_URL`
+  itself: an explicit value wins, and the smoke proves that too.
 - **A standalone Helm path.** `chart/README.md` carries the exact OCI install
   command, the Secret command for the server key, and a minimal `values.yaml`
   that produces a running pod outside the owner's own platform. No chart
@@ -36,8 +40,8 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   what it does, in six lines, above the fold; a Documentation table; and where
   a question, a bug and a vulnerability each go. Four new pages carry what the
   README used to imply: [`docs/troubleshooting.md`](docs/troubleshooting.md)
-  (one heading per failure mode, every error code a device can show, and how to
-  collect a report without pasting a credential),
+  (one heading per failure mode, the protocol refusals a device can show, and
+  how to collect a report without pasting a credential),
   [`docs/settings.md`](docs/settings.md) (every setting, its default, and when
   to change it), [`docs/recovery.md`](docs/recovery.md) (a lost device, a lost
   server key, a restored volume, a rotated setup token, a moved address — and
@@ -60,8 +64,8 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   deployment has had since 2026-09-07 instead of a public tunnel with an access
   application; the README says how to reach the server from outside the LAN and
   what the recorded device run did and did not prove; the Kubernetes
-  setup-token read is a command rather than a suggestion; the five protocol
-  refusals the plugin shows verbatim each have a sentence; the first-time-setup
+  setup-token read is a command rather than a suggestion; the protocol refusals
+  the plugin shows verbatim each have a sentence; the first-time-setup
   and pairing surfaces are named as they are labelled; and the two "may not be
   listed yet" hedges are gone, because it is.
 

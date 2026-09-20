@@ -9,10 +9,10 @@ Obsidian on iOS and Android refuses plain HTTP, so that terminator is not
 optional.
 
 The defaults in `values.yaml` are the reference deployment's — a single-node
-cluster on a Raspberry Pi — and they are fail-closed on purpose: zero replicas,
-StorageClasses that exist on that one machine, and one ingress peer that exists
-in that one cluster. Four of them are yours to replace. Everything else can
-stay.
+cluster on a Raspberry Pi — and they are fail-closed on purpose: zero
+replicas, StorageClasses that exist on that one machine, and one ingress peer
+that exists in that one cluster. Four of them are yours to replace.
+Everything else can stay.
 
 ## 1. A namespace, a server key, and two volumes
 
@@ -30,34 +30,30 @@ because a server that comes back without it cannot unwrap a single device and
 every device has to be paired again. It is not the vault key and cannot decrypt
 a note — that key never leaves your devices.
 
-The chart creates CLAIMS, never PersistentVolumes. On a cluster with a dynamic
-provisioner, naming your StorageClass below is all that is needed. On static
-local volumes, create the two PersistentVolumes first and present each
-directory owned by uid 65532, mode 0700, with root-owned parents: the server
-takes ownership of nothing and refuses to start on a volume it cannot write
-([`docs/storage.md`](../docs/storage.md), "Volume posture"). No `fsGroup` is
-set, because a group-writable volume is refused.
+The chart creates CLAIMS, never PersistentVolumes, and **the volume behind each
+claim has to arrive already owned by uid 65532**. The server takes ownership of
+nothing: it refuses to start with `reason=unwritable` when the mount point is
+not owned and writable by that user, and with `writable_by_others` when it is
+world-writable ([`docs/storage.md`](../docs/storage.md), "Volume posture"). No
+`fsGroup` is set, because a group-writable volume is refused too, and the chart
+ships no root initContainer to re-own a mount — a container that could `chown`
+your volume is not one this project runs. So, before `deploymentReady: true`:
 
-## 2. Verify the chart, then install it
+- **A static local volume or `hostPath`:** create the two PersistentVolumes and
+  their directories as `65532:65532`, mode `0700`, with root-owned, closed
+  parents and no symlink on the path.
+- **A dynamic provisioner:** naming your StorageClass below is NOT enough
+  unless that provisioner honours the pod's `runAsUser` when it presents the
+  volume. Many hand over a root-owned `0755` or a world-writable root, and the
+  pod then CrashLoopBackOffs on the first start with a refusal naming the
+  volume. Prepare the backing directory once as the node administrator
+  (`chown 65532:65532`, `chmod 0700`), or provision the volumes statically as
+  above.
 
-```sh
-cosign verify ghcr.io/snaraj/charts/obsync:1.0.1 \
-  --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+A volume that already holds the server's `v1` is accepted whatever owns the
+mount point above it, so a restored deployment does not re-run this.
 
-helm install obsync oci://ghcr.io/snaraj/charts/obsync \
-  --version 1.0.1 \
-  --namespace obsidian \
-  -f values.yaml
-```
-
-Install the PUBLISHED chart, not a copy from git. The committed chart carries
-an all-zeros image digest no registry can resolve, so a git copy fails at pull
-time instead of deploying something nobody verified; the published chart
-carries the digest the publisher resolved after the signature and the
-vulnerability scan accepted it.
-
-## 3. The four values that are yours
+## 2. The four values that are yours, in `values.yaml`
 
 ```yaml
 # The replica switch. False ships as the default so the claims can bind and the
@@ -108,15 +104,36 @@ kubectl get namespace <its namespace> -o jsonpath='{.metadata.labels.kubernetes\
 ```
 
 That terminator has to run IN the cluster — an ingress controller, a tunnel
-connector, a reverse proxy you deploy — because the policy names a POD. Traffic
-that arrives from outside the cluster through a NodePort or a LoadBalancer is
-not a pod and is not admitted.
+connector, a reverse proxy you deploy — because the policy names a POD.
+Traffic that arrives from outside the cluster through a NodePort or a
+LoadBalancer is not a pod and is not admitted.
 
 **`publicUrl`** is the base of every link the server generates, including the
 dashboard sign-in link the plugin asks for. Empty is a working answer, not a
 gap: the server then hands out a relative link and each device resolves it
 against the Server URL it is configured with. Set it, and it must be the exact
 address devices use — scheme, host, and port when the port is not 443.
+
+## 3. Verify the chart, then install it
+
+From the directory holding the `values.yaml` you just wrote:
+
+```sh
+cosign verify ghcr.io/snaraj/charts/obsync:1.0.1 \
+  --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+helm install obsync oci://ghcr.io/snaraj/charts/obsync \
+  --version 1.0.1 \
+  --namespace obsidian \
+  -f values.yaml
+```
+
+Install the PUBLISHED chart, not a copy from git. The committed chart carries
+an all-zeros image digest no registry can resolve, so a git copy fails at pull
+time instead of deploying something nobody verified; the published chart
+carries the digest the publisher resolved after the signature and the
+vulnerability scan accepted it.
 
 ## 4. Read the setup token
 
@@ -136,12 +153,17 @@ project ships on purpose, so the file is read from the volume instead.
   sudo cat <the path that PersistentVolume names>/v1/setup-token
   ```
 
-- **Any other provisioner:** mount the `obsync-journal` claim read-only into a
-  throwaway pod of an image you trust and read `/journal/v1/setup-token` from
-  it, then delete the pod. Because this chart always supplies the server key
-  from a Secret, that volume holds the journal and the token and no key
-  material — but it is still the deployment's sensitive volume, so mount it
-  read-only and nowhere else.
+- **Any other provisioner:** mount the `obsync-journal` claim into a throwaway
+  pod of an image you trust and read `/journal/v1/setup-token` from it, then
+  delete the pod. Every claim this chart renders is **ReadWriteOnce**, and
+  `readOnly: true` on a mount does not relax that: a second pod on another node
+  sits `Pending` with a multi-attach error. So either scale the Deployment to
+  zero first (`kubectl scale deploy/obsync --replicas=0`, and back to one
+  afterwards — or set `deploymentReady: false` if the platform reconciles it),
+  or schedule the throwaway pod onto the node already running obsync. Because
+  this chart always supplies the server key from a Secret, that volume holds
+  the journal and the token and no key material — but it is still the
+  deployment's sensitive volume, so mount it nowhere else.
 
 ## 5. What "installed" looks like
 

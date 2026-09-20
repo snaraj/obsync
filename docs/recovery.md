@@ -82,7 +82,7 @@ hold.
 
 **What to restore, in order.** The server key first (the Secret, or the file on
 the journal volume), then both volumes, then start the server and read
-`/readyz`. It answers `{"ready":true}` only once the volumes are writable and
+`/readyz`. It answers `{"ready":true,"seq":<n>}` only once the volumes are writable and
 the journal has replayed.
 
 **Two ways this bites:**

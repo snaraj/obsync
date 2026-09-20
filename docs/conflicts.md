@@ -5,14 +5,24 @@ discards an edit to resolve that, so exactly one of two things happens.
 
 ## A text file is merged
 
-Markdown and the other text formats (`.md`, `.markdown`, `.txt`, `.csv`,
-`.json`, `.yaml`/`.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`,
-`.ini`, `.log`, and only when the file holds no NUL byte) are merged line by
-line against the version both devices last agreed on. Edits in different parts
-of the file merge silently and you see one file with both changes.
+A merge happens only when ALL of these hold, and any one of them failing gives
+you a conflict copy instead:
 
-When the two devices changed THE SAME lines, the merge stops rather than
-guessing, and you get a conflict copy instead.
+- **It is a text format**: `.md`, `.markdown`, `.txt`, `.csv`, `.json`,
+  `.yaml`/`.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`, `.ini`,
+  `.log` — and the local file holds no NUL byte.
+- **Both sides are under 8 MiB**, the chunk ceiling: a merge input is held
+  whole in memory, so the incoming version must be a single chunk, and so must
+  the version the two devices last agreed on. A 12 MiB `.csv` or `.log` is
+  never merged, extension notwithstanding; the log line says
+  `reason=base_above_one_chunk` when it was the common ancestor that was too
+  large.
+- **The two versions share a common ancestor.** Two devices that independently
+  created the same path have none — there is nothing to merge against, and
+  neither side is a later version of the other.
+- **The changes do not overlap.** Edits in different parts of the file merge
+  silently and you see one file with both changes; when both devices changed
+  THE SAME lines, the merge stops rather than guessing.
 
 ## Everything else becomes a conflict copy
 
@@ -45,7 +55,9 @@ the other. There is no third state and no silent overwrite.
 ## Avoiding them
 
 - Let a device finish syncing before editing the same note on another one. The
-  status bar reads `obsync: idle` when there is nothing in flight.
+  status bar reads `obsync: idle` when there is nothing in flight. This is the
+  only one of these that helps with a large file or a file two devices created
+  independently, because neither of those can ever merge.
 - Do not run a second sync tool on the same vault. Two writers produce
   conflicts neither tool can reconcile, and obsync can only see its own.
 - On a device that has been offline for a long time, open Obsidian and let

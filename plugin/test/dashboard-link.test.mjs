@@ -72,6 +72,19 @@ test("a link to another origin is refused, and says which one", async (t) => {
   assert.deepEqual(logs, ["dashboard decision=refused reason=foreign_origin"]);
 });
 
+test("the same host over http is another origin, and is refused", async (t) => {
+  // The other downgrade this guard exists for. Host and port match, so a
+  // comparison that dropped the SCHEME would open a single-use dashboard
+  // sign-in token over cleartext.
+  const { instance, opened, logs, said } = await device(t, "http://sync.example.invalid/login?token=abcdef");
+
+  await instance.openDashboard();
+
+  assert.deepEqual(opened, [], "the token never leaves over http");
+  assert.match(said(), /http:\/\/sync\.example\.invalid/, "the refusal names the scheme that answered");
+  assert.deepEqual(logs, ["dashboard decision=refused reason=foreign_origin"]);
+});
+
 test("the same host on another port is another origin, and is refused", async (t) => {
   // The 1.0.1 defect in its quietest form: a deployment published on a
   // non-default HTTPS port, advertising itself on the default one.

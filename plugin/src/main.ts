@@ -172,11 +172,12 @@ export function isNewer(candidate: string, current: string): boolean {
  *
  * The link is SERVER-SUPPLIED data. The server builds it as
  * `{OBSYNC_PUBLIC_URL}/login?token=…` (`crates/obsyncd/src/api/admin.rs`), and
- * the chart and the composition ship an empty `publicUrl` on purpose — a
- * server that advertises no address of its own is the private posture, not a
- * misconfiguration — so the honest answer is usually the RELATIVE
- * `/login?token=…`, which no browser can open. Resolving it against the Server
- * URL the operator typed is what makes that link work.
+ * the chart ships an empty `publicUrl` on purpose — a server that advertises
+ * no address of its own is the private posture, not a misconfiguration — so
+ * the answer is then the RELATIVE `/login?token=…`, which no browser can open.
+ * A deployment that DOES name itself can still name an address this device
+ * does not use. Resolving the answer against the Server URL the operator
+ * typed is what makes the first case work and the second visible.
  *
  * Resolution is also what would let a server REDIRECT this device, so the
  * resolved origin must equal the configured one. The answer carries a

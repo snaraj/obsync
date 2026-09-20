@@ -11,6 +11,7 @@ job that enforces them.
 from __future__ import annotations
 
 import contextlib
+import re
 import io
 import shutil
 import sys
@@ -314,6 +315,37 @@ class ThePinsHoldAgainstTheRealChart(unittest.TestCase):
         # refusal out rather than swallowing it into a green pin.
         with self.assertRaises(miniyaml.YamlError):
             miniyaml.loads("spec:\n  ingress: [{from: [{podSelector: {}}]}]\n")
+
+
+class TheChartReadmeShipsThisVersion(unittest.TestCase):
+    """`helm package` bundles `chart/README.md` into the published chart, so a
+    version written in it is shipped with the chart that carries it. It is not
+    one of the seven locks -- the classifier reads six files and this is not
+    one of them -- but it FOLLOWS them the way `versions.json` and the lockfiles
+    do, and this is the gate that says so. Without it, the 1.0.2 chart tells its
+    reader to install 1.0.1."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+    README = ROOT / "chart" / "README.md"
+    SEMVER = re.compile(r"\b\d+\.\d+\.\d+\b")
+
+    def test_every_version_it_names_is_this_release(self):
+        version = (self.ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        found = self.SEMVER.findall(self.README.read_text(encoding="utf-8"))
+        self.assertTrue(found, "chart/README.md names no version; the install command needs one")
+        self.assertEqual(
+            sorted(set(found)),
+            [version],
+            f"chart/README.md must name {version} wherever it names a version "
+            "(the release step moves it with the locks)",
+        )
+
+    def test_the_rule_catches_a_stale_literal(self):
+        # A rule no input can fail is decoration standing next to real pins.
+        stale = self.README.read_text(encoding="utf-8").replace(
+            (self.ROOT / "VERSION").read_text(encoding="utf-8").strip(), "0.0.1", 1
+        )
+        self.assertNotEqual(sorted(set(self.SEMVER.findall(stale))), sorted({"0.0.1"}))
 
 
 if __name__ == "__main__":

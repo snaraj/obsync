@@ -27,8 +27,8 @@ settings, or reaches something that is not it.
 4. Check the route. If the server is on a LAN or behind a VPN, the device has
    to be on that network, and the name has to resolve there — see the README's
    "Reaching it from outside your LAN".
-5. Check the server: `GET /readyz` answers `{"ready":true}` when it is serving.
-   If it answers `not_ready`, read the volume section of
+5. Check the server: `GET /readyz` answers `{"ready":true,"seq":<n>}` when it
+   is serving. If it answers `not_ready`, read the volume section of
    [`storage.md`](storage.md) — the server refuses readiness rather than lying
    about it.
 
@@ -104,6 +104,45 @@ can widen it.
 server on a machine that has been suspended for a long time is the usual
 culprit; so is a phone with time set by hand.
 
+## `edge_required`
+
+**Symptom.** Every request refused with `421 edge_required`, including the
+first pairing attempt.
+
+**Cause.** The server is configured for an access-controlled edge
+(`OBSYNC_EDGE=cloudflare`) and this request did not arrive through it: the
+edge's connecting-address and request-id headers were absent. In that mode the
+server refuses rather than guessing who the client is.
+
+**Fix.** Reach the server through the edge, not around it — and if that edge
+requires a service token, paste its headers into **Edge service-token headers**
+in the plugin's settings, one per line as `Name: value`. A deployment with
+nothing in front of it should be `OBSYNC_EDGE=none` instead.
+
+## `replayed_nonce`
+
+**Symptom.** An occasional `401 replayed_nonce`, or `503` from the nonce store
+beside it.
+
+**Cause.** Every signed request carries a nonce the server remembers for 600
+seconds, and a nonce is spent by being sent. A repeat means the same signed
+request arrived twice: a proxy that retried it, or two copies of one device's
+credential running at once.
+
+**Fix.** The plugin never replays a request itself, so look for the duplicate
+outside it: a retrying proxy, or the same credential restored onto two devices.
+Two devices must each be paired.
+
+## `last_device`
+
+**Symptom.** `409 last_device` when revoking.
+
+**Cause.** The only active device cannot revoke itself; doing so would leave an
+account no device can reach, which is unrecoverable
+([`recovery.md`](recovery.md)).
+
+**Fix.** Pair another device first, then revoke.
+
 ## `missing_auth` and `bad_signature`
 
 **Symptom.** `401 missing_auth` or `401 bad_signature`.
@@ -173,7 +212,8 @@ That is obsync refusing to discard an edit, not a failure. See
    filter for `obsync`. Every refusal it logs names the request, the status and
    the code, and never the body.
 2. **Show sync status**, from the command palette: what the engine is doing and
-   why it is not doing more.
+   why it is not doing more. Its first row is this device's **Server** address
+   — leave that row out, for the same reason the list below gives.
 3. **The server's log.** One structured line per decision. The useful ones:
    `event=request … status=<code> decision=<what it decided>`,
    `event=readiness decision=not_ready volume=<which> io=<error>`, and the

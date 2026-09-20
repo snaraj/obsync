@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import miniyaml
 import release_contract as contract
 from test_community_release import VERSION, bundle, digest, native_arguments
-from test_release_contract import Repository, locks, main_run_record
+from test_release_contract import Repository, locks, main_run_record, manifest_arguments
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/release-publisher.yml"
@@ -180,25 +180,36 @@ class NativePublicationSteps(unittest.TestCase):
             path = bins / name
             path.write_text(REST_MODEL)
             path.chmod(0o755)
-        data = bundle()
-        archive = self.root / f'obsync-plugin-{VERSION}.zip'
-        archive.write_bytes(data)
-        with zipfile.ZipFile(archive) as source:
-            for name in contract.PLUGIN_FILES:
-                (files / name).write_bytes(source.read(name))
-        args = native_arguments(data)
-        evidence = self.root / f'obsync-{VERSION}-release-manifest.json'
-        evidence.write_bytes(contract._canonical_json(contract.build_release_manifest(**args)))
+        self.bins, self.temp, self.files = bins, temp, files
         self.state = self.root / 'state.json'
+        self.stage(VERSION)
+
+    def stage(self, version):
+        """One release's bytes, manifest and step environment.
+
+        Parameterised by version because the release-body format turns over at
+        1.0.0: a fixture below the boundary cannot exercise the `--changelog`
+        argument at all, which is how three wiring mutants survived.
+        """
+        data = bundle(version)
+        archive = self.root / f'obsync-plugin-{version}.zip'
+        archive.write_bytes(data)
+        for name in contract.PLUGIN_FILES:
+            (self.files / name).write_bytes(zipfile.ZipFile(io.BytesIO(data)).read(name))
+        args = manifest_arguments(version=version, plugin_digest=digest(data), plugin_bundle=data)
+        evidence = self.root / f'obsync-{version}-release-manifest.json'
+        evidence.write_bytes(contract._canonical_json(contract.build_release_manifest(**args)))
         self.state.write_text(json.dumps(dict(release=None, files={}, calls=[])))
-        self.env = dict(PATH=f'{bins}{os.pathsep}{os.environ["PATH"]}', LANG='C',
-                        RUNNER_TEMP=str(temp), MODEL_STATE=str(self.state),
+        self.env = dict(PATH=f'{self.bins}{os.pathsep}{os.environ["PATH"]}', LANG='C',
+                        RUNNER_TEMP=str(self.temp), MODEL_STATE=str(self.state),
                         GH_TOKEN='SENTINEL', GITHUB_API_URL='https://api.github.com',
                         GITHUB_REPOSITORY='snaraj/obsync', SOURCE_SHA=args['source_sha'],
-                        MAIN_RUN_ID=str(args['main_run_id']), VERSION=VERSION, TAG=VERSION,
+                        MAIN_RUN_ID=str(args['main_run_id']), VERSION=version, TAG=version,
                         IMAGE=args['image'], CHART=args['chart'], IMAGE_DIGEST=args['image_digest'],
                         CHART_DIGEST=args['chart_digest'], PLUGIN_DIGEST=digest(data),
-                        PLUGIN_PATH=str(archive), PLUGIN_DIRECTORY=str(files), MANIFEST_PATH=str(evidence))
+                        PLUGIN_PATH=str(archive), PLUGIN_DIRECTORY=str(self.files),
+                        MANIFEST_PATH=str(evidence))
+        return self.env
 
     def run_step(self, scenario=''):
         step = self.steps['Stage, verify, and publish the exact GitHub release']
@@ -242,6 +253,20 @@ class NativePublicationSteps(unittest.TestCase):
         for name in contract.PLUGIN_FILES:
             self.assertEqual(base64.b64decode(state['files'][name]),
                              (Path(exported['directory']) / name).read_bytes())
+
+    def test_a_release_after_1_0_0_publishes_a_changelog_led_body(self):
+        """The publisher's `--changelog CHANGELOG.md`, which no fixture below
+        the 1.0.0 format boundary can exercise: without it the notes command
+        refuses and this step fails."""
+        self.stage('1.0.1')
+        result = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = json.loads(self.state.read_text())['release']['body']
+        entry = contract.changelog_entry((ROOT / 'CHANGELOG.md').read_text(),
+                                         contract.Version(1, 0, 1))
+        self.assertIn('### What changed', body)
+        self.assertIn(entry, body, "this checkout's own 1.0.1 entry, not a summary of it")
+        self.assertIn('<details>', body, 'the evidence is folded, not dropped')
 
     def test_exact_immutable_rerun_performs_no_mutation(self):
         self.assertEqual(self.run_step().returncode, 0)
@@ -305,10 +330,30 @@ class NativePublicationSteps(unittest.TestCase):
         old = locks('0.1.10')
         old['plugin/manifest.json'] = old.pop('manifest.json')
         source_sha = repo.commit(old)
+        self.source_changelog = old['CHANGELOG.md']
+        parsed = contract.Version.parse(source_version or version)
         if not contract.Version.parse(version).legacy:
             repo.git('rm', 'plugin/manifest.json')
-            for patch in range(11, contract.Version.parse(source_version or version).patch + 1):
-                source_sha = repo.commit(locks(f'0.1.{patch}', [f'0.1.{old}' for old in range(patch - 1, 9, -1)]))
+            # 0.1.11 is the plugin-identity boundary and the first native
+            # release, so every ladder starts there. A post-1.0.0 fixture then
+            # takes the two steps the release contract admits from it -- one
+            # major, one patch -- rather than walking twenty patches nothing
+            # reads.
+            ladder = ([f'0.1.{patch}' for patch in range(11, parsed.patch + 1)]
+                      if parsed <= contract.Version(1, 0, 0) else ['0.1.11', '1.0.0', str(parsed)])
+            history = ['0.1.10']
+            for entry in ladder:
+                self.source_changelog = locks(entry, list(reversed(history)))['CHANGELOG.md']
+                source_sha = repo.commit(locks(entry, list(reversed(history))))
+                history.append(entry)
+            if parsed > contract.Version(1, 0, 0):
+                # THE DRIFT THAT MAKES THE SOURCE READ MEAN SOMETHING. A later
+                # commit edits the entry of an ALREADY PUBLISHED release, which
+                # is exactly what a following release does to the changelog
+                # under it. The audit must still re-derive the body the source
+                # commit produced, so a working-tree read fails here.
+                repo.commit({'CHANGELOG.md': self.source_changelog.replace(
+                    f'- Entry for {parsed}.', f'- Entry for {parsed}, edited after publication.')})
         scripts = source / 'scripts/ci'
         scripts.mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', scripts)
@@ -331,8 +376,8 @@ class NativePublicationSteps(unittest.TestCase):
                                content_type=content_type, uploader=actor, state='uploaded',
                                url='https://api.github.com/model-assets/' + name))
         release = dict(author=actor, tag_name=tag, name='obsync ' + tag,
-                       body=contract.build_release_notes(evidence), draft=False,
-                       immutable=True, prerelease=False, assets=assets)
+                       body=contract.build_release_notes(evidence, self.source_changelog),
+                       draft=False, immutable=True, prerelease=False, assets=assets)
         tag_sha = 'b' * 40
         api = 'repos/snaraj/obsync/'
         tag_record = dict(sha=tag_sha, tag=tag, message=f'Release {tag} from {source_sha}',
@@ -379,6 +424,24 @@ class NativePublicationSteps(unittest.TestCase):
                 self.assertEqual(len([call for call in calls if call.startswith('trivy:')]), 1)
                 self.assertEqual([call for call in calls if call.startswith('attestation:')],
                                  ['attestation:' + name for name in contract.PLUGIN_FILES] if version == '0.1.15' else [])
+
+    def test_the_audit_of_a_release_after_1_0_0_reads_the_source_commit_changelog(self):
+        """The three wiring mutants this closes: the audit dropping
+        `--changelog`, the audit reading the working tree instead of `git show
+        <source_sha>:CHANGELOG.md`, and the publisher dropping `--changelog`
+        (that one in `test_a_release_after_1_0_0_publishes_a_changelog_led_body`).
+        Every earlier fixture is <= 1.0.0, where the argument is ignored."""
+        self.prepare_audit('1.0.1')
+        working_tree = (self.audit_root / 'CHANGELOG.md').read_text()
+        self.assertNotEqual(working_tree, self.source_changelog,
+                            'the fixture drifted after publication, so the two reads differ')
+        self.assertIn('### What changed', json.loads(self.state.read_text())['release']['body'])
+        result = self.run_audit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = json.loads(self.state.read_text())['calls']
+        self.assertEqual(len([call for call in calls if call.startswith('download:')]), 5)
+        self.assertEqual([call for call in calls if call.startswith('attestation:')],
+                         ['attestation:' + name for name in contract.PLUGIN_FILES])
 
     def test_new_release_audit_refuses_missing_native_build_provenance(self):
         for member in contract.PLUGIN_FILES:

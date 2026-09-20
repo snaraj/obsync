@@ -289,6 +289,14 @@ server: set the plugin's **Server URL** to `https://name:PORT`, and the
 deployment's own generated links and its HTTP-to-HTTPS redirect carry the same
 port without being told twice.
 
+That holds while devices arrive at THIS host's port. If another reverse proxy
+sits in front — holding 443 on this machine, which is the usual reason to move
+these ports at all — then devices still arrive at `https://name`, and the
+deployment has to be told: add `OBSYNC_PUBLIC_URL=https://name` to the compose
+command. An explicit value always wins over the file's default, and it is the
+address the plugin checks a generated link against, so it must be the address
+your devices actually use.
+
 The setup token is read the same way as in step 1, from the container compose
 created:
 
@@ -474,7 +482,7 @@ server is unreachable, and `obsync: error — <reason>` when sync has stopped.
 - **A file is not syncing.** Hidden folders (`.obsidian`, `.git`), symlinked
   folders, and anything outside this device's folder selection are excluded by
   design — see *What syncs and what does not* below.
-Every other symptom, every error code the plugin shows verbatim, and how to
+Every other symptom, each error code the plugin shows verbatim, and how to
 collect a report worth sending are in
 [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
