@@ -60,10 +60,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Server").setHeading();
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("The address of your obsyncd server, for example https://obsync.example.org. Mobile Obsidian requires HTTPS.")
+      .setDesc("The address this device reaches your own server at, for example https://sync.example.org, with the port when it is not 443. Mobile Obsidian requires HTTPS.")
       .addText((text) =>
         text
-          .setPlaceholder("https://obsync.example.org")
+          .setPlaceholder("https://sync.example.org")
           .setValue(this.plugin.state.data.serverUrl)
           .onChange((value) => {
             const url = value.trim().replace(/\/+$/, "");

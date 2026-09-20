@@ -15,11 +15,15 @@ advances, so `X.Y+1.1` and `X+1.0.1` deny beside `X.Y.Z+2`. One step at a
 time, never a skip, is the whole rule -- which is what makes 1.0.0 reachable
 from 0.Y.Z without a gate edit in the pull request that needs the gate.
 
-Four followers move with the locks and are held by gates, not by the
+Five followers move with the locks and are held by gates, not by the
 classifier: `plugin/package.json` `version` and its two copies in
 `package-lock.json` (the plugin's bundle test compares the built manifest to
 both sources); `Cargo.lock`, refreshed by `cargo check` (`--locked` in the
-image and gate refuses a stale one); and root `versions.json`.
+image and gate refuses a stale one); root `versions.json`; and
+`chart/README.md`, whose `cosign verify` and `helm install --version` lines
+name the release a reader installs. `helm package` bundles that file INSIDE the
+published chart, so a stale literal ships with the chart that contradicts it;
+`scripts/ci/test_chart_pins.py` refuses any version in it but `VERSION`'s.
 
 `versions.json` is the ledger Obsidian's community-plugin installer reads to
 decide WHICH release a given Obsidian version may install: the newest plugin
@@ -63,7 +67,18 @@ inventory; then its write/packages/OIDC job builds the multi-arch image
 chart keyless (identity `refs/heads/main` of this repository), attaches
 `obsync-plugin-X.Y.Z.zip` and the individual `main.js`, `manifest.json`, and
 `styles.css` files from the same image build. The v2 evidence manifest binds
-the ZIP digest and each file's digest, size and content type. The publisher
+the ZIP digest and each file's digest, size and content type.
+
+**The Release body.** From 1.0.1 the notes lead with that version's own
+`CHANGELOG.md` section, read out of the SOURCE COMMIT rather than out of a
+working tree, then the one line that installs or updates the plugin and the one
+that upgrades the server by digest, and fold the artifact table, the signing
+identity and the evidence digest under `Supply-chain evidence`. Releases
+through 1.0.0 keep the body they published, byte for byte: the read-only audit
+re-derives the notes from the sealed manifest and compares them, so a format
+change that reached backwards would fail against a release nobody can edit.
+`scripts/ci/test_community_release.py` pins both shapes and the boundary
+between them. The publisher
 requires the exact five-asset inventory and reads every uploaded byte back
 before immutable publication. It scans source and final image for
 high/critical findings, and publishes one immutable Release.

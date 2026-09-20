@@ -11,6 +11,7 @@ job that enforces them.
 from __future__ import annotations
 
 import contextlib
+import re
 import io
 import shutil
 import sys
@@ -314,6 +315,56 @@ class ThePinsHoldAgainstTheRealChart(unittest.TestCase):
         # refusal out rather than swallowing it into a green pin.
         with self.assertRaises(miniyaml.YamlError):
             miniyaml.loads("spec:\n  ingress: [{from: [{podSelector: {}}]}]\n")
+
+
+class TheChartReadmeShipsThisVersion(unittest.TestCase):
+    """`helm package` bundles `chart/README.md` into the published chart, so a
+    version written in it is shipped with the chart that carries it. It is not
+    one of the seven locks -- the classifier reads six files and this is not
+    one of them -- but it FOLLOWS them the way `versions.json` and the lockfiles
+    do, and this is the gate that says so. Without it, the 1.0.2 chart tells its
+    reader to install 1.0.1."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+    README = ROOT / "chart" / "README.md"
+    SEMVER = re.compile(r"\b\d+\.\d+\.\d+\b")
+
+    def stale_versions(self, text: str, version: str) -> list[str]:
+        """THE RULE: every version this text names that is not the release's.
+
+        It is a function of the text so the shipped file and a fixture go
+        through the SAME comparison. An earlier shape asserted on the mutated
+        text instead of running the rule over it, which held only because the
+        README happens to name its version twice -- and let the rule itself be
+        weakened to "the current version appears somewhere" with the suite
+        green.
+        """
+        return sorted({found for found in self.SEMVER.findall(text) if found != version})
+
+    def test_the_readme_names_this_release_and_no_other_version(self):
+        version = (self.ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        readme = self.README.read_text(encoding="utf-8")
+        self.assertIn(
+            version,
+            self.SEMVER.findall(readme),
+            "chart/README.md names no version; the install command needs one",
+        )
+        # The shipped file and three fixtures through one assertion. The third
+        # names ONLY a stale version, so an assertion weakened to "the current
+        # version is in there" fails here rather than passing on the real file.
+        for case, text, expected in (
+            ("the shipped file", readme, []),
+            ("a stale literal beside the current one", f"{readme}\n--version 0.0.1\n", ["0.0.1"]),
+            ("a file naming only a stale version", "helm install --version 0.0.1\n", ["0.0.1"]),
+            ("a file naming only this release", f"helm install --version {version}\n", []),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(
+                    self.stale_versions(text, version),
+                    expected,
+                    f"chart/README.md must name {version} wherever it names a version "
+                    "(the release step moves it with the locks)",
+                )
 
 
 if __name__ == "__main__":

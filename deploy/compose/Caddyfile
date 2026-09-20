@@ -28,8 +28,10 @@
 #     different, still digest-pinned, caddy image on purpose.
 #
 # `{$OBSYNC_HOST}` is the hostname from the environment: the same value the
-# compose file gives the server as `OBSYNC_PUBLIC_URL`, so a mismatch between
-# the certificate and the URL devices are configured with cannot happen.
+# compose file builds `OBSYNC_PUBLIC_URL` from, so a mismatch between the
+# certificate and the URL devices are configured with cannot happen.
+# `{$OBSYNC_HTTPS_PORT}` is the HOST port that publishes this container's 443,
+# and the redirect below is the only place it is needed.
 
 {
 	# Do not try to add the generated root to the CONTAINER's trust store.
@@ -48,6 +50,18 @@
 	# X-Forwarded-For, -Proto and -Host, which the server trusts ONLY from
 	# `OBSYNC_TRUSTED_PROXY_CIDRS` -- this network -- and from nowhere else.
 	reverse_proxy obsync:8080
+}
+
+# PORT 80 IS A REDIRECT, AND IT HAS TO KEEP THE PORT. Caddy writes its own
+# HTTP-to-HTTPS redirect for a site declared without a scheme, and that
+# redirect names the port Caddy LISTENS on -- 443, inside this container --
+# while docker-compose.yml publishes that on `${OBSYNC_HTTPS_PORT:-443}` of the
+# host. A deployment that moved the host port therefore redirected its own
+# readers to a port nothing listens on. An explicit HTTP site takes that
+# decision back: Caddy inserts its automatic redirect AFTER user routes that
+# carry a host matcher (Caddy, "Automatic HTTPS"), so this one answers first.
+http://{$OBSYNC_HOST} {
+	redir https://{$OBSYNC_HOST}:{$OBSYNC_HTTPS_PORT:443}{uri} 308
 }
 
 # Public ACME, for a deployment whose ports 80 and 443 are reachable from the

@@ -92,8 +92,15 @@ jobs:
                     --plugin-digest "${plugin_digest}" --plugin-bundle "${bundle}")
           python3 -B scripts/ci/release_contract.py manifest-record \
             --manifest "${manifest}" "${contract[@]}"
+          # The notes lead with the changelog entry as the SOURCE COMMIT wrote
+          # it. This checkout is `main`, where a later commit may have edited
+          # that entry under an immutable release, so it is read out of git at
+          # the sealed source SHA and never from the working tree.
+          changelog="${RUNNER_TEMP}/audit-source-changelog.md"
+          git show "${source_sha}:CHANGELOG.md" > "${changelog}"
           python3 -B scripts/ci/release_contract.py release-notes \
-            --manifest "${manifest}" --output "${notes}" "${contract[@]}"
+            --manifest "${manifest}" --output "${notes}" \
+            --changelog "${changelog}" "${contract[@]}"
           python3 -B scripts/ci/release_contract.py release-record \
             --release-json "${release_json}" --tag "${tag}" \
             --title "obsync ${tag}" --body "${notes}" \

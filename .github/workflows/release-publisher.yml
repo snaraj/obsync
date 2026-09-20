@@ -666,8 +666,12 @@ jobs:
         run: |
           set -euo pipefail
           notes="${RUNNER_TEMP}/release-notes.md"
+          # This checkout IS the authorized source commit, so its CHANGELOG.md
+          # is the one this release was cut from. The audit reads the same
+          # bytes out of git at that SHA.
           python3 -B scripts/ci/release_contract.py release-notes \
             --manifest "${MANIFEST_PATH}" --output "${notes}" \
+            --changelog CHANGELOG.md \
             --repository "${GITHUB_REPOSITORY}" --source-sha "${SOURCE_SHA}" \
             --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}" \
             --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}" \

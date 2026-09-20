@@ -131,6 +131,42 @@ class NativeReleaseEvidence(unittest.TestCase):
         self.assertEqual(hashlib.sha256(contract.build_release_notes(record).encode()).hexdigest(),
                          "69747a9d5e85eb803eeee27ba20b98b24e770ab72f461f979287367d14596aa5")
 
+    def notes_for(self, version, changelog=None):
+        data = bundle(version)
+        arguments = manifest_arguments(version=version, plugin_digest=digest(data),
+                                       plugin_bundle=data)
+        return contract.build_release_notes(contract.build_release_manifest(**arguments), changelog)
+
+    def test_the_notes_format_turns_over_at_1_0_0_and_never_reaches_backwards(self):
+        # 1.0.0 is published and immutable, and the read-only audit re-derives
+        # its body byte for byte. A changelog handed to it must change nothing.
+        notes = self.notes_for("1.0.0")
+        self.assertIn("See CHANGELOG.md for human-readable changes.", notes)
+        self.assertNotIn("### What changed", notes)
+        self.assertEqual(notes, self.notes_for("1.0.0", locks("1.0.0")["CHANGELOG.md"]))
+
+    def test_notes_after_1_0_0_lead_with_that_release_s_own_changelog_entry(self):
+        notes = self.notes_for("1.0.1", locks("1.0.1", ["1.0.0"])["CHANGELOG.md"])
+        head, fold, evidence = notes.partition("<details>")
+        self.assertTrue(fold, "the evidence is folded rather than dropped")
+        self.assertIn("### What changed", head)
+        self.assertIn("- Entry for 1.0.1.", head)
+        self.assertNotIn("Entry for 1.0.0", notes, "only this release's own entry")
+        self.assertIn("Settings -> Community plugins -> Browse", head)
+        self.assertIn("BY DIGEST", head)
+        for reference in (f"{contract.EXPECTED_IMAGE}:v1.0.1@", f"{contract.EXPECTED_CHART}:1.0.1@"):
+            self.assertIn(reference, evidence)
+
+    def test_notes_after_1_0_0_refuse_an_absent_or_empty_entry(self):
+        for changelog, refusal in (
+            (None, "require the source commit's changelog"),
+            (locks("1.0.0")["CHANGELOG.md"], "no entry for 1.0.1"),
+            ("# Changelog\n\n## 1.0.1 - 2026-09-20\n\n## 1.0.0 - 2026-09-15\n\n- x\n", "is empty"),
+        ):
+            with self.subTest(refusal=refusal):
+                with self.assertRaisesRegex(contract.ContractError, refusal):
+                    self.notes_for("1.0.1", changelog)
+
     def test_release_and_image_names_diverge_only_after_the_legacy_boundary(self):
         for version, tag in [("0.1.10", "v0.1.10"), (VERSION, VERSION), ("1.0.0", "1.0.0")]:
             parsed = contract.Version.parse(version)

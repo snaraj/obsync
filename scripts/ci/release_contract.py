@@ -1267,25 +1267,73 @@ def validate_release_manifest_record(
         raise ContractError("release manifest is not the exact canonical evidence record")
 
 
-def build_release_notes(manifest: Mapping[str, object]) -> str:
+def changelog_entry(text: str, version: Version) -> str:
+    """One `## X.Y.Z` section's body, exactly as that release's commit wrote it.
+
+    The Release page is read by people who install the plugin from Obsidian's
+    directory and will never open this repository, so the notes lead with what
+    changed rather than with digests. The section is read from the SOURCE
+    COMMIT's changelog by the caller: a later commit may edit an entry under an
+    already immutable release, and notes that moved with it would make the
+    read-only audit fail against a body nobody can change.
+    """
+    headings = list(_CHANGELOG_HEADING_RE.finditer(text))
+    for index, match in enumerate(headings):
+        if Version.parse(match.group("version")) != version:
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        body = text[match.end() : end].strip("\n")
+        if not body.strip():
+            raise ContractError(f"changelog entry for {version} is empty")
+        return body
+    raise ContractError(f"changelog carries no entry for {version}")
+
+
+def build_release_notes(manifest: Mapping[str, object], changelog: str | None = None) -> str:
     release = _object(manifest.get("release"), "release manifest release")
     artifacts = _object(manifest.get("artifacts"), "release manifest artifacts")
     image = _object(artifacts.get("image"), "release manifest image")
     chart = _object(artifacts.get("chart"), "release manifest chart")
     plugin = _object(artifacts.get("plugin_bundle"), "release manifest plugin bundle")
     tag = str(release.get("tag"))
+    version = release_version(tag)
     asset_name = release_manifest_asset_name(tag)
     asset_digest = "sha256:" + hashlib.sha256(_canonical_json(manifest)).hexdigest()
-    return (
-        f"## obsync {tag}\n\n"
-        "Immutable artifacts (deploy by digest, never by tag):\n\n"
+    evidence = (
         "| Artifact | Reference |\n| --- | --- |\n"
         f"| Image | `{image.get('repository')}:{image.get('tag')}@{image.get('digest')}` |\n"
         f"| Chart | `{chart.get('repository')}:{chart.get('tag')}@{chart.get('digest')}` |\n"
         f"| Plugin | `{plugin.get('name')}` (`{plugin.get('digest')}`) |\n"
         "\nImage and chart are signed with keyless Cosign by this workflow identity.\n"
         f"\nPublication evidence: `{asset_name}` (`{asset_digest}`).\n"
-        "\nSee CHANGELOG.md for human-readable changes.\n"
+    )
+    # EVERY RELEASE THROUGH 1.0.0 KEEPS ITS EXACT NOTES. Those bodies are
+    # published and immutable, and the read-only audit re-derives the notes and
+    # compares them byte for byte: a format change that reached backwards would
+    # make the audit fail against releases nobody can edit. The boundary is the
+    # same shape as the legacy tag and evidence boundaries above it.
+    if version <= Version(1, 0, 0):
+        return (
+            f"## obsync {tag}\n\n"
+            "Immutable artifacts (deploy by digest, never by tag):\n\n"
+            f"{evidence}"
+            "\nSee CHANGELOG.md for human-readable changes.\n"
+        )
+    if changelog is None:
+        raise ContractError(f"release notes for {version} require the source commit's changelog")
+    return (
+        f"## obsync {tag}\n\n"
+        "### What changed\n\n"
+        f"{changelog_entry(changelog, version)}\n\n"
+        "### Install or update\n\n"
+        "In Obsidian: Settings -> Community plugins -> Browse -> Self Hosted Private Sync,\n"
+        "or Check for updates if it is already installed. Obsidian takes the plugin\n"
+        "files from this Release.\n\n"
+        "The server is a separate upgrade and nothing forces it: deploy the image below\n"
+        "BY DIGEST, keeping both volumes, and the journal replays into the new binary.\n\n"
+        "<details>\n<summary>Supply-chain evidence</summary>\n\n"
+        f"{evidence}"
+        "\n</details>\n"
     )
 
 
@@ -1735,6 +1783,11 @@ def _parser() -> argparse.ArgumentParser:
     notes = commands.add_parser("release-notes")
     notes.add_argument("--manifest", type=Path, required=True)
     notes.add_argument("--output", type=Path, required=True)
+    # The changelog the notes lead with, as the SOURCE COMMIT wrote it. The
+    # publisher passes its own checkout; the audit passes `git show
+    # <source_sha>:CHANGELOG.md`, because its checkout is `main` and a later
+    # commit may have edited the entry under an immutable release.
+    notes.add_argument("--changelog", type=Path)
     for command in (manifest, manifest_record, notes):
         command.add_argument("--repository", required=True)
         command.add_argument("--source-sha", required=True)
@@ -1916,8 +1969,11 @@ def main(argv: list[str] | None = None) -> int:
                     _read_object(args.manifest), **_manifest_arguments(args)
                 )
                 if args.command == "release-notes":
+                    changelog = (
+                        args.changelog.read_text(encoding="utf-8") if args.changelog else None
+                    )
                     args.output.write_text(
-                        build_release_notes(expected_manifest), encoding="utf-8"
+                        build_release_notes(expected_manifest, changelog), encoding="utf-8"
                     )
                 else:
                     print("exact")

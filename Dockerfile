@@ -121,7 +121,9 @@ RUN set -eux; \
 # declaration that same command refuses out loud on the read-only root
 # filesystem, with the same one-line refusal above, which is the behaviour
 # requirement 12 asks for. `VOLUME` is also inert on Kubernetes, where the
-# chart's `fsGroup: 65532` is what makes the claims writable.
+# volume behind each claim has to arrive owned by uid 65532: the chart sets no
+# `fsGroup` on purpose, because a group-writable volume is refused
+# (`docs/storage.md`, "Volume posture").
 # ---------------------------------------------------------------------------
 FROM server AS datadirs
 RUN install -d -m 0700 /skeleton/data /skeleton/data/blobs /skeleton/data/journal

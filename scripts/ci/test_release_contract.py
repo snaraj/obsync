@@ -973,6 +973,17 @@ class TheEvidenceManifest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, notes)
 
+    def test_legacy_notes_ignore_a_changelog_they_are_handed(self):
+        """A published body is immutable and the audit re-derives it, so a
+        caller that always passes a changelog cannot change one. The shape
+        AFTER 1.0.0 is pinned in test_community_release, where a native
+        manifest's plugin bundle lives."""
+        manifest = contract.build_release_manifest(**manifest_arguments())
+        notes = contract.build_release_notes(manifest)
+        self.assertIn("See CHANGELOG.md for human-readable changes.", notes)
+        self.assertNotIn("### What changed", notes)
+        self.assertEqual(notes, contract.build_release_notes(manifest, locks("0.1.4")["CHANGELOG.md"]))
+
 
 def release_record(state: str = "exact", assets: list | None = None, **overrides: object) -> dict:
     record = {

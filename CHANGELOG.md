@@ -5,7 +5,71 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.0.0 - Unreleased
+## 1.0.1 - 2026-09-20
+
+- **Open dashboard opens the configured server, or nothing.** The plugin used
+  to open whatever the server answered with. The server builds that link from
+  `OBSYNC_PUBLIC_URL`, which the chart leaves empty on purpose -- a private
+  deployment advertises no address of its own -- so on the chart's path the
+  answer is the relative `/login?token=…` and the command failed on every
+  deployment that had not named itself; on the Compose path the value was
+  there but dropped the port. The link is now resolved against the **Server
+  URL** this device is configured with, and opened only when the
+  resolved ORIGIN is that server's. A link to any other origin is refused by
+  name and not opened: the answer carries a single-use dashboard sign-in token,
+  and resolving a server's answer without checking where it points is how that
+  token would reach somebody else's origin.
+- **The Compose route hands out the port it publishes.** `OBSYNC_PUBLIC_URL`
+  and the terminator's HTTP-to-HTTPS redirect both named the default HTTPS port
+  while the deployment published `OBSYNC_HTTPS_PORT`, so a deployment that
+  moved that port sent its own readers to a port nothing listens on. Both now
+  carry the published port, and `scripts/ci/compose-smoke.sh` -- which already
+  publishes a non-default pair -- reads back the redirect AND the address the
+  server hands out. A deployment whose devices arrive somewhere else, because
+  another reverse proxy holds 443 in front of it, sets `OBSYNC_PUBLIC_URL`
+  itself: an explicit value wins, and the smoke proves that too.
+- **A standalone Helm path.** `chart/README.md` carries the exact OCI install
+  command, the Secret command for the server key, and a minimal `values.yaml`
+  that produces a running pod outside the owner's own platform. No chart
+  DEFAULT moved: `deploymentReady: false`, the reference StorageClasses and the
+  reference ingress peer are fail-closed on purpose, and the new file is about
+  which of them a stranger must replace with their own.
+- **The README answers the questions a stranger asks first.** What this plugin
+  talks to (your own server, and Obsidian's directory for installation — no
+  telemetry, no third party, and no code ever fetched from the sync server);
+  what it does, in six lines, above the fold; a Documentation table; and where
+  a question, a bug and a vulnerability each go. Four new pages carry what the
+  README used to imply: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+  (one heading per failure mode, the protocol refusals a device can show, and
+  how to collect a report without pasting a credential),
+  [`docs/settings.md`](docs/settings.md) (every setting, its default, and when
+  to change it), [`docs/recovery.md`](docs/recovery.md) (a lost device, a lost
+  server key, a restored volume, a rotated setup token, a moved address — and
+  the plain statement that a vault with no device left has no supported way
+  back in this version), and [`docs/conflicts.md`](docs/conflicts.md) (what a
+  conflict copy is and what to do with it).
+- **The Release page leads with what changed.** From this release the published
+  notes carry that version's own changelog entry, then the line that installs
+  or updates the plugin and the line that upgrades the server by digest, with
+  the artifact table and the evidence digest folded underneath. Releases
+  through 1.0.0 keep the body they published, byte for byte, because the
+  read-only audit re-derives and compares it.
+- **The plugin's directory entry says what it does.** The manifest description
+  is an action ("Sync your vault across devices, end-to-end encrypted, through
+  a server you run yourself.") rather than a product name nobody has heard, and
+  a `helpUrl` points at the documentation table.
+- **Documentation repairs found by auditing 1.0.0's install path.** The
+  `cosign verify` example names the release being installed rather than
+  `v0.1.0`; `SECURITY.md` states the private, owner-only posture the reference
+  deployment has had since 2026-09-07 instead of a public tunnel with an access
+  application; the README says how to reach the server from outside the LAN and
+  what the recorded device run did and did not prove; the Kubernetes
+  setup-token read is a command rather than a suggestion; the protocol refusals
+  the plugin shows verbatim each have a sentence; the first-time-setup
+  and pairing surfaces are named as they are labelled; and the two "may not be
+  listed yet" hedges are gone, because it is.
+
+## 1.0.0 - 2026-09-15
 
 - First stable release. No behaviour changes with it: 1.0.0 is the point at
   which the guarantees below stop being intentions and start being the
@@ -102,7 +166,7 @@ which carries every V1 through V16 outcome in its own row.
 - iPad and Windows are not validated. `docs/validation.md` names them as
   required platforms for the full campaign and this release does not claim
   them.
-- Off-LAN synchronisation over the reference route (V13) is pending.
+- Off-LAN sync (V13) is unproven on either route.
 - The selected-folder list may only narrow once a vault has history. Widening
   it needs a safe current-head resync, which this version does not implement.
 - Public reachability is not, and has never been, an acceptance criterion

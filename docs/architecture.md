@@ -838,7 +838,7 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_PLUGIN_DIR` | `/opt/obsync/plugin` | Plugin bundle (`main.js`, `manifest.json`, `styles.css`) |
 | `OBSYNC_EDGE` | `none` | `none` or `cloudflare` |
 | `OBSYNC_TRUSTED_PROXY_CIDRS` | empty | Forwarded-address trust in `none` mode |
-| `OBSYNC_PUBLIC_URL` | empty | Shown in pairing and install pages |
+| `OBSYNC_PUBLIC_URL` | empty | The base every generated link is built on -- the dashboard sign-in link the plugin asks for, and the addresses the pairing and install pages show. Empty is the private default: the server then hands out a relative link and the device resolves it against the server address it is configured with. Set, it must carry the scheme, the host AND the port devices arrive on |
 | `OBSYNC_SERVER_KEY` | empty | 64 hex chars; generated once if absent |
 | `OBSYNC_FREE_WATERMARK` | `5%,2GiB` | Refuse writes below the larger of the two |
 | `OBSYNC_RETENTION_DAYS` | `30` | Version and tombstone retention |

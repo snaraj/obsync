@@ -76,10 +76,28 @@
 #                     privileges, and exactly ONE capability
 #                     (`NET_BIND_SERVICE`, for the privileged-port bind), so a
 #                     future edit that grants a second one fails here.
+#  11. the redirect  `http://name:<http port>` answers a redirect to
+#      keeps the port `https://name:<https port>`, the port this run actually
+#                     publishes. The terminator listens on 443 inside its
+#                     container whatever host port publishes it, so a redirect
+#                     Caddy writes for itself names 443 and sends the reader to
+#                     a port nothing listens on. This run publishes a high pair
+#                     for its own reasons, which makes it exactly the
+#                     deployment that used to break.
+#  12. the address   the server's own `OBSYNC_PUBLIC_URL` is the address this
+#      it hands out   file PUBLISHES, port included, read back from the running
+#                     container. Every link the server generates is built on
+#                     it, and a device opens such a link only when its origin
+#                     matches the Server URL that device is configured with --
+#                     so a value that drops the port is a refused link, which
+#                     is the 1.0.0 defect this file's other half fixed. The
+#                     same property reads back an explicit `OBSYNC_PUBLIC_URL`,
+#                     because a deployment behind a second proxy arrives
+#                     somewhere else and must be able to say so.
 #
 # The three steps that carry the deployment between those -- the preflight,
 # the terminator pull and `compose up` -- log and time themselves the same way,
-# so the numbers in the output run 1 to 13 and every one of them names its own
+# so the numbers in the output run 1 to 15 and every one of them names its own
 # decision.
 #
 # It BUILDS NOTHING. The obsync image reference is the argument, so `make
@@ -455,6 +473,36 @@ case "${caddy_hardening}" in
   *) deny "the caddy container did not run hardened: ${caddy_hardening}" ;;
 esac
 prove "hardening: obsync ran ${obsync_hardening}; caddy ran ${caddy_hardening}"
+
+# (11) The redirect off port 80 keeps the port this deployment is published on.
+# `%{redirect_url}` is curl's own resolution of the Location header, so a
+# relative or port-less answer is visible as the address a browser would go to
+# rather than as a string that merely contains the host.
+redirect="$(curl --silent --show-error --max-time 3 --output /dev/null \
+  --resolve "${HOST}:${HTTP_PORT}:127.0.0.1" \
+  --write-out '%{redirect_url}' \
+  "http://${HOST}:${HTTP_PORT}/readyz" 2>/dev/null || true)"
+[ "${redirect}" = "https://${HOST}:${HTTPS_PORT}/readyz" ] \
+  || deny "http://${HOST}:${HTTP_PORT}/readyz redirects to ${redirect:-nothing}, not to https://${HOST}:${HTTPS_PORT}/readyz: a reader who typed the name would land on a port nothing publishes"
+prove "the redirect keeps the port: http://${HOST}:${HTTP_PORT}/readyz -> ${redirect}"
+
+# (12) The address the deployment HANDS OUT, read from the server's own
+# environment rather than from the file, and the deployer's escape hatch read
+# from the render. This run publishes 18443, so a value that dropped the port
+# fails here -- which is the whole of the defect the links half of this change
+# repairs.
+readonly ADVERTISED="https://${HOST}:${HTTPS_PORT}"
+public_url="$(docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  "${obsync_container}" | sed -n 's/^OBSYNC_PUBLIC_URL=//p' | head -n 1 || true)"
+[ "${public_url}" = "${ADVERTISED}" ] \
+  || deny "the server advertises ${public_url:-nothing}, not ${ADVERTISED}; a device resolving a generated link against its own Server URL would refuse it as another origin"
+readonly OVERRIDE='https://front.invalid'
+rendered_override="$(OBSYNC_PUBLIC_URL="${OVERRIDE}" docker compose \
+  --project-name "${project}" --file "${COMPOSE_FILE}" config 2>/dev/null \
+  | sed -n 's/^ *OBSYNC_PUBLIC_URL: //p' | tr -d '"' | head -n 1)"
+[ "${rendered_override}" = "${OVERRIDE}" ] \
+  || deny "an explicit OBSYNC_PUBLIC_URL rendered as ${rendered_override:-nothing}, not ${OVERRIDE}; a deployment whose devices arrive at another proxy cannot state the address they use"
+prove "the address it hands out: ${public_url}, and an explicit OBSYNC_PUBLIC_URL wins (${rendered_override})"
 
 printf 'compose-smoke: SUMMARY image=%s terminator=%s steps=%d duration=%ds decision=pass\n' \
   "${image}" "${caddy_image}" "${proven}" "$(( $(date +%s) - started_at ))"

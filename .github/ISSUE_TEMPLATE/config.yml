@@ -1,0 +1,11 @@
+# A blank issue is a report with none of the facts a fix needs. The two
+# templates beside this file ask for them; the links below are where the two
+# things that are NOT bug reports belong.
+blank_issues_enabled: false
+contact_links:
+  - name: Question, or something you are not sure is a bug
+    url: https://github.com/snaraj/obsync/discussions
+    about: Ask in Discussions. Setup, deployment and "is this expected" all belong there.
+  - name: Security vulnerability
+    url: https://github.com/snaraj/obsync/security/advisories/new
+    about: Report privately through GitHub's advisory form, never as a public issue. SECURITY.md has the policy.

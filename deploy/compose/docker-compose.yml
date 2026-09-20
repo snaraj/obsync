@@ -52,7 +52,26 @@ services:
     environment:
       OBSYNC_EDGE: none
       OBSYNC_TRUSTED_PROXY_CIDRS: 172.31.255.240/28
-      OBSYNC_PUBLIC_URL: https://${OBSYNC_HOST:?set it to the hostname you reach obsync at}
+      # THE ADDRESS THIS DEPLOYMENT HANDS OUT IS THE ADDRESS DEVICES ARRIVE AT.
+      # Every link the server generates -- the dashboard sign-in among them --
+      # is built on this value, and a device opens such a link only when its
+      # ORIGIN matches the Server URL that device is configured with, so a
+      # value that is not the address devices use is a refused link rather than
+      # a wrong one.
+      #
+      # The DEFAULT is this file's own published address: the host port below,
+      # written with the same `${OBSYNC_HTTPS_PORT:-443}`, so the two cannot
+      # disagree. `443` is written out rather than omitted because a
+      # conditional makes compose warn about an unset variable on every command
+      # of the deployment that changed nothing, and `https://name:443` is the
+      # same ORIGIN as `https://name` to every client that parses a URL.
+      #
+      # SET `OBSYNC_PUBLIC_URL` YOURSELF when the port below is NOT the port
+      # devices arrive at: another reverse proxy in front of this host holding
+      # 443 and forwarding to `OBSYNC_HTTPS_PORT=8443` here is exactly that
+      # deployment, and its devices still reach `https://name`. An explicit
+      # value always wins over the default.
+      OBSYNC_PUBLIC_URL: ${OBSYNC_PUBLIC_URL:-https://${OBSYNC_HOST:?set it to the hostname you reach obsync at}:${OBSYNC_HTTPS_PORT:-443}}
       OBSYNC_BLOBS_CAPACITY: ${OBSYNC_BLOBS_CAPACITY:-250GiB}
       OBSYNC_JOURNAL_CAPACITY: ${OBSYNC_JOURNAL_CAPACITY:-4GiB}
     volumes:
@@ -117,6 +136,10 @@ services:
       - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes 80 and 443: 127.0.0.1, this host's LAN address, or 0.0.0.0 for every interface}:${OBSYNC_HTTPS_PORT:-443}:443"
     environment:
       OBSYNC_HOST: ${OBSYNC_HOST:?set it to the hostname you reach obsync at}
+      # The terminator listens on 443 inside this container whatever host port
+      # publishes it, so its HTTP-to-HTTPS redirect has to be TOLD which port a
+      # device came in on. The Caddyfile's redirect reads this.
+      OBSYNC_HTTPS_PORT: ${OBSYNC_HTTPS_PORT:-443}
     volumes:
       # Read-only: the configuration is the deployer's, not the container's.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
