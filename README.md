@@ -14,6 +14,20 @@ proved setup, pairing and two-way sync between a Mac and an iPhone on one LAN,
 and it proved nothing about iPad, Windows, or reaching the server from off that
 LAN.
 
+## What it does
+
+- Syncs one vault across every Obsidian platform (macOS, Windows, Linux, iOS,
+  iPadOS, Android) through a plugin that talks to your own server.
+- Encrypts every chunk and every manifest on the device. The server stores
+  ciphertext only and never learns the vault key or a single file name.
+- Handles large files by content-defined chunking with resumable, deduplicated
+  uploads: a 100 GB video and a 2 KB note follow the same path.
+- Keeps 30 days of versions and never silently discards a conflicting edit.
+- Ships a dashboard: account, devices, storage per volume, scrub and
+  garbage-collection state, pairing, and installation guidance.
+- Runs as one static binary: Docker, Kubernetes (Helm chart included), or a
+  bare host.
+
 > [!IMPORTANT]
 > This plugin syncs to a server **you** run. There is no hosted service and no
 > account with anyone but yourself: without your own `obsyncd` reachable over
@@ -28,6 +42,47 @@ LAN.
 > Do not run this plugin alongside another sync solution on the same vault —
 > Obsidian Sync, a file-syncing cloud folder, or another sync plugin. Two
 > writers on one vault produce conflicts neither of them can reconcile.
+
+## What this plugin talks to
+
+- **Your own server, and nothing else.** Every sync request goes to the
+  **Server URL** you type into the plugin's settings. There is no obsync
+  service, no analytics, no advertising, no crash reporter, and no
+  third-party host anywhere in the sync path.
+- **An account on that server is required**, and you create it: the first
+  device uses the setup token your server wrote at first boot, and every other
+  device is paired from a device that already syncs. Signing in to Obsidian
+  does not enroll anything.
+- **Obsidian's own directory and GitHub**, for installation and updates only.
+  Obsidian downloads the release's `main.js`, `manifest.json` and `styles.css`
+  from this repository's GitHub Releases when you install or update. The
+  plugin never fetches or executes code from the sync server.
+- **Your edge, if you put one there.** If an access-controlled proxy sits in
+  front of your server, the headers you paste under **Edge service-token
+  headers** are sent to it, because it is on the path to your server.
+
+What the server can and cannot see is in
+[`SECURITY.md`](SECURITY.md) and [`docs/threat-model.md`](docs/threat-model.md).
+
+## Documentation
+
+| Page | What it answers |
+| --- | --- |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Something is wrong: symptom, cause, fix, and how to collect a report |
+| [`docs/settings.md`](docs/settings.md) | Every setting in the plugin, its default, and when to change it |
+| [`docs/recovery.md`](docs/recovery.md) | A lost device, a lost server, a moved server, a rotated token |
+| [`docs/conflicts.md`](docs/conflicts.md) | What a conflict copy is, how it is named, what to do with it |
+| [`chart/README.md`](chart/README.md) | Installing the server on Kubernetes with the signed chart |
+| [`docs/community-plugin.md`](docs/community-plugin.md) | Installation, updates, and device credential custody |
+| [`docs/architecture.md`](docs/architecture.md) | How the whole system is built, and every environment variable |
+| [`docs/protocol.md`](docs/protocol.md) | The wire contract between plugin and server |
+| [`docs/storage.md`](docs/storage.md) | Volumes, durability, retention, scrub, and every refusal |
+| [`docs/threat-model.md`](docs/threat-model.md) | What is defended, and what is not |
+| [`docs/validation.md`](docs/validation.md) | The device validation plan and what "ready" means |
+| [`docs/release.md`](docs/release.md) | How a release is cut, signed, and audited |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each version |
+| [`SECURITY.md`](SECURITY.md) | Posture, supported versions, and how to report a vulnerability |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to work on this repository |
 
 <!-- README screenshot rule (AGENTS.md): this section leads with captures of
      the plugin and the dashboard. The five files below are committed PNGs from
@@ -346,7 +401,8 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    vault key on this computer, and shows the **recovery phrase** (24 words).
    Write it down and keep it off this machine: without any paired device and
    without this phrase, the vault is unrecoverable by design. The server never
-   sees the key.
+   sees the key. [`docs/recovery.md`](docs/recovery.md) is what the phrase
+   does and does not get you back.
 6. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
@@ -418,30 +474,9 @@ server is unreachable, and `obsync: error — <reason>` when sync has stopped.
 - **A file is not syncing.** Hidden folders (`.obsidian`, `.git`), symlinked
   folders, and anything outside this device's folder selection are excluded by
   design — see *What syncs and what does not* below.
-- **A large file did not arrive on a phone.** It is above that device's
-  ceiling and is listed under `Show remote-only files`, to fetch on demand.
-- **The server refuses to start or reports `not_ready`.** The volume posture
-  and every refusal it can raise are in
-  [`docs/storage.md`](docs/storage.md); the protocol is in
-  [`docs/protocol.md`](docs/protocol.md) and the design in
-  [`docs/architecture.md`](docs/architecture.md).
-
-The error message repeats the server's own refusal code. Five of them are
-about this device rather than about your notes:
-
-- `missing_auth` — the request carried no device, timestamp, nonce or
-  signature. A device that was never set up or paired sends none of them.
-- `bad_signature` — the server has no device by that id, or the signature
-  does not verify with the secret it holds. The usual cause is a device the
-  server no longer has: a rebuilt server, or a restored volume older than the
-  pairing.
-- `stale_timestamp` — this device's clock is more than 300 seconds from the
-  server's. Fix the clock on whichever of the two is wrong, usually by turning
-  automatic time back on; nothing in the plugin can widen that window.
-- `device_pending` — the pairing code was accepted and nobody has approved
-  this device yet. Approve it on the device you paired from.
-- `device_revoked` — this device was revoked, from the dashboard or from
-  another device's settings. It stays revoked: pair it again as a new device.
+Every other symptom, every error code the plugin shows verbatim, and how to
+collect a report worth sending are in
+[`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ### What syncs and what does not
 
@@ -463,8 +498,8 @@ about this device rather than about your notes:
   on-demand fetch; **Total to keep on this device** defaults to 50 GiB. Both
   are settings. Computers have no ceiling.
 - Every edit is kept as a version for 30 days and at least the last 10
-  versions per file; conflicts never discard an edit (text merges cleanly or
-  you get a conflict copy).
+  versions per file; conflicts never discard an edit — text merges cleanly or
+  you get a conflict copy ([`docs/conflicts.md`](docs/conflicts.md)).
 - Update through Settings → Community plugins → Check for updates on each
   device. The plugin never installs code from the sync server. See
   [installation trust and distribution](docs/community-plugin.md).
@@ -493,20 +528,16 @@ before a size check is possible. Reopening history does not start another
 manual request until the outstanding one settles. These are platform
 limits, not a claim of power-loss or real-device validation.
 
-## What it does
+## Questions, bugs, and security
 
-- Syncs a vault across every Obsidian platform (macOS, Windows, Linux, iOS,
-  iPadOS, Android) through a plugin that talks to your own server.
-- Encrypts every chunk and every manifest on the device. The server stores
-  ciphertext only and never learns the vault key or a single file name.
-- Handles large files by content-defined chunking with resumable, deduplicated
-  uploads: a 100 GB video and a 2 KB note follow the same path.
-- Keeps versions and never silently discards a conflicting edit.
-- Ships a dashboard: account, devices (type, address, country, last sign-in,
-  last edit), storage per volume, scrub and garbage-collection status, pairing,
-  and plugin install.
-- Runs as one static binary: Docker, Kubernetes (Helm chart included), or a
-  bare host.
+- **A question, or something you are not sure is a bug:**
+  [Discussions](https://github.com/snaraj/obsync/discussions).
+- **A bug:** [open an issue](https://github.com/snaraj/obsync/issues/new/choose)
+  with the bug-report template, and the report described in
+  [`docs/troubleshooting.md`](docs/troubleshooting.md). Include no token, no
+  recovery phrase, and no address you would not publish.
+- **A suspected vulnerability:** privately, through
+  [`SECURITY.md`](SECURITY.md) — never a public issue.
 
 ## Layout
 

@@ -30,6 +30,30 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   DEFAULT moved: `deploymentReady: false`, the reference StorageClasses and the
   reference ingress peer are fail-closed on purpose, and the new file is about
   which of them a stranger must replace with their own.
+- **The README answers the questions a stranger asks first.** What this plugin
+  talks to (your own server, and Obsidian's directory for installation — no
+  telemetry, no third party, and no code ever fetched from the sync server);
+  what it does, in six lines, above the fold; a Documentation table; and where
+  a question, a bug and a vulnerability each go. Four new pages carry what the
+  README used to imply: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+  (one heading per failure mode, every error code a device can show, and how to
+  collect a report without pasting a credential),
+  [`docs/settings.md`](docs/settings.md) (every setting, its default, and when
+  to change it), [`docs/recovery.md`](docs/recovery.md) (a lost device, a lost
+  server key, a restored volume, a rotated setup token, a moved address — and
+  the plain statement that a vault with no device left has no supported way
+  back in this version), and [`docs/conflicts.md`](docs/conflicts.md) (what a
+  conflict copy is and what to do with it).
+- **The Release page leads with what changed.** From this release the published
+  notes carry that version's own changelog entry, then the line that installs
+  or updates the plugin and the line that upgrades the server by digest, with
+  the artifact table and the evidence digest folded underneath. Releases
+  through 1.0.0 keep the body they published, byte for byte, because the
+  read-only audit re-derives and compares it.
+- **The plugin's directory entry says what it does.** The manifest description
+  is an action ("Sync your vault across devices, end-to-end encrypted, through
+  a server you run yourself.") rather than a product name nobody has heard, and
+  a `helpUrl` points at the documentation table.
 - **Documentation repairs found by auditing 1.0.0's install path.** The
   `cosign verify` example names the release being installed rather than
   `v0.1.0`; `SECURITY.md` states the private, owner-only posture the reference

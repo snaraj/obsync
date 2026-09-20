@@ -3,8 +3,9 @@
   "name": "Self Hosted Private Sync",
   "version": "1.0.1",
   "minAppVersion": "1.12.4",
-  "description": "Self-hosted, end-to-end encrypted live sync for your own obsync server.",
+  "description": "Sync your vault across devices, end-to-end encrypted, through a server you run yourself.",
   "author": "Samuel Naranjo",
   "authorUrl": "https://github.com/snaraj",
+  "helpUrl": "https://github.com/snaraj/obsync#documentation",
   "isDesktopOnly": false
 }
