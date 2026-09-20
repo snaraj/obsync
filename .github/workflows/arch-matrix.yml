@@ -1,0 +1,216 @@
+name: Architecture matrix
+
+# Requirement 14 says the server runs on linux/amd64 and linux/arm64, and the
+# reference host is the arm64 one. Until this file existed, every check ran on
+# an amd64 runner: the PR gate builds the amd64 image natively and says so, and
+# the arm64 half of the release was first exercised by the PUBLISHER, after the
+# merge, where nobody is holding the diff any more.
+#
+# NATIVE ON BOTH, NEVER EMULATED. GitHub's `ubuntu-24.04-arm` runner is free
+# for public repositories, so each architecture builds on its own machine. That
+# matters for what the result MEANS: a failure here is a failure of the code on
+# that architecture and never of an emulator. It is also why the Dockerfile's
+# own note --- that emulating a second architecture to re-run identical
+# stdlib-only tests buys nothing --- is not contradicted: nothing is emulated.
+#
+# The `server` stage runs `cargo clippy --workspace --all-targets --locked` and
+# `cargo test --workspace --locked` on the build platform, so building that
+# stage natively on each runner IS the unit suite on each architecture. There
+# is no second way to run it that would prove more.
+#
+# The amd64 half of `native` deliberately overlaps the gate's `container` job:
+# one set of steps proves both architectures, which is worth more than a
+# smaller matrix that proves them differently.
+#
+# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
+# release publisher authorizes against the job inventories of pr-gate.yml and
+# codeql.yml alone. Whether either job becomes a REQUIRED check is the owner's
+# ruleset decision, not this file's.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: arch-matrix-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    strategy:
+      # Both architectures are reported. A failure on one is a fact about that
+      # architecture, and cancelling the other would throw away the comparison
+      # that makes it readable.
+      fail-fast: false
+      matrix:
+        target:
+          - runner: ubuntu-24.04
+            architecture: amd64
+            elf: x86-64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            elf: ARM aarch64
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Prove the runner is the architecture this leg claims
+        # A matrix leg that silently ran on the other architecture would prove
+        # the same thing twice and report it as two results.
+        env:
+          ARCHITECTURE: ${{ matrix.target.architecture }}
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64 | amd64) observed=amd64 ;;
+            aarch64 | arm64) observed=arm64 ;;
+            *) printf 'DENY: unsupported runner architecture %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+          printf 'runner=%s claimed=%s\n' "${observed}" "${ARCHITECTURE}"
+          test "${observed}" = "${ARCHITECTURE}"
+      - name: Build the server stage natively, which runs clippy and the tests
+        run: docker build --target server --tag "obsync-arch:${GITHUB_SHA}" .
+      - name: Prove the shipped binary is a static ELF for this architecture
+        # distroless/static has no shell, so nothing can be asked INSIDE the
+        # image: `docker create` plus `docker cp` need no entrypoint and no
+        # run, and the classification happens on the runner.
+        env:
+          ELF: ${{ matrix.target.elf }}
+        run: |
+          set -euo pipefail
+          container="$(docker create --name "obsync-arch-${GITHUB_SHA}" "obsync-arch:${GITHUB_SHA}")"
+          docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
+          docker rm --force "${container}" > /dev/null
+          description="$(file --brief "${RUNNER_TEMP}/obsyncd")"
+          printf 'obsyncd: %s\n' "${description}"
+          case "${description}" in
+            *"dynamically linked"* | *interpreter*)
+              printf 'DENY: obsyncd is dynamically linked: %s\n' "${description}" >&2
+              exit 1
+              ;;
+          esac
+          case "${description}" in
+            *"ELF 64-bit LSB"*"${ELF}"*) ;;
+            *)
+              printf 'DENY: obsyncd is not a native %s ELF: %s\n' "${ELF}" "${description}" >&2
+              exit 1
+              ;;
+          esac
+          case "${description}" in
+            *"statically linked"* | *"static-pie linked"*) ;;
+            *)
+              printf 'DENY: obsyncd declares no static linkage: %s\n' "${description}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Build the full shipped image natively
+        run: docker build --tag "obsync-arch-full:${GITHUB_SHA}" .
+      - name: Prove the image runs as nonroot with the shipped entrypoint
+        run: |
+          set -euo pipefail
+          inspected="${RUNNER_TEMP}/obsync-image.json"
+          docker image inspect "obsync-arch-full:${GITHUB_SHA}" > "${inspected}"
+          jq -r '.[0] | "architecture=\(.Architecture) user=\(.Config.User) entrypoint=\(.Config.Entrypoint | tostring)"' \
+            "${inspected}"
+          test "$(jq -r '.[0].Architecture' "${inspected}")" = "${ARCHITECTURE}"
+          test "$(jq -r '.[0].Config.User' "${inspected}")" = nonroot
+          test "$(jq -c '.[0].Config.Entrypoint' "${inspected}")" = '["/usr/local/bin/obsyncd"]'
+          test "$(jq -c '.[0].Config.Cmd' "${inspected}")" = '["serve"]'
+          test "$(jq -c '.[0].Config.ExposedPorts | keys' "${inspected}")" = '["8080/tcp"]'
+        env:
+          ARCHITECTURE: ${{ matrix.target.architecture }}
+      - name: Hand the binary to the distribution matrix
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: obsyncd-${{ matrix.target.architecture }}
+          path: ${{ runner.temp }}/obsyncd
+          if-no-files-found: error
+          overwrite: true
+          # Long enough to read a failed run, short enough that a build
+          # artifact is not left lying about for a quarter.
+          retention-days: 1
+      - name: Remove anything the build left behind
+        # `docker create` makes a container that no `docker run` removes, and a
+        # failure between the create and the cp would leave it standing.
+        if: always()
+        run: |
+          set -uo pipefail
+          docker rm --force "obsync-arch-${GITHUB_SHA}" >/dev/null 2>&1 || true
+          exit 0
+
+  distributions:
+    # The binary is built once per architecture and PROVEN on four
+    # distributions per architecture. It is a static musl build, so there is no
+    # glibc floor to document and these eight legs are what says so rather than
+    # a sentence claiming it. Every image is pinned by digest: a tag would make
+    # "does it run on Debian" depend on the day the job ran.
+    needs: native
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+        distribution:
+          - name: debian
+            image: docker.io/library/debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+          - name: ubuntu
+            image: docker.io/library/ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+          - name: fedora
+            image: docker.io/library/fedora:45@sha256:99e203b80b1c3d8f7e161ec10a68fd02b081ef83a3963553e513c82846b97814
+          - name: alpine
+            image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Take the binary this architecture built
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: obsyncd-${{ matrix.target.architecture }}
+          path: ${{ runner.temp }}/binary
+      - name: Run it on this distribution
+        # An artifact does not carry the executable bit, so it is restored
+        # here rather than inside the smoke, where it would be a permission
+        # the test granted itself.
+        env:
+          IMAGE: ${{ matrix.distribution.image }}
+        run: |
+          set -euo pipefail
+          chmod +x "${RUNNER_TEMP}/binary/obsyncd"
+          scripts/ci/distro-smoke.sh "${RUNNER_TEMP}/binary/obsyncd" "${IMAGE}"
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          docker ps --all --quiet --filter name=obsync-distro- \
+            | xargs -r docker rm --force
+          exit 0

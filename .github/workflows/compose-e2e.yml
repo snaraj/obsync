@@ -1,0 +1,107 @@
+name: Compose end to end
+
+# The commands docs/server.md SHOWS, run against the image this commit builds.
+# `scripts/ci/compose-e2e.sh` says what each property is and why; the short
+# version is that a self-hosting guide is a set of commands a stranger pastes,
+# so CI runs the page's own text rather than a copy of it, and then proves what
+# those commands exist for: read the setup token, sign in to the dashboard with
+# it, enrol the account and a SECOND device through the API, push and pull one
+# file, restart the stack and find all of it still there --- and find the API
+# refusing every request that is not properly signed.
+#
+# IT IS A WORKFLOW OF ITS OWN, like docs-site.yml and for the same reason: the
+# release publisher authorizes against the job inventories of pr-gate.yml and
+# codeql.yml alone (`EXPECTED_MAIN_JOBS` and `EXPECTED_CODEQL_JOBS` in
+# scripts/ci/release_contract.py). A job added to the gate would have moved an
+# inventory the publisher reads; a workflow of its own moves nothing. Whether
+# it becomes a REQUIRED check is the owner's ruleset decision, not this file's.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # One run per pull request, cancellable; every main push keeps its own group
+  # so a later merge cannot cancel an earlier one's evidence.
+  group: compose-e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  compose:
+    # BOTH ARCHITECTURES, natively. Issue #78 asks for a Linux runner matrix,
+    # and the reference deployment is the arm64 one: a Compose path proven only
+    # on amd64 is proven on the machine nobody self-hosts this on. GitHub's
+    # `ubuntu-24.04-arm` runner is free for public repositories, so neither leg
+    # is emulated and a failure on one is a fact about that architecture.
+    #
+    # The HOST DISTRIBUTION each leg exercises is `ubuntu-24.04` (the runner
+    # image), and it is named here because "which distributions is the Compose
+    # path exercised on" is a question this workflow is the answer to. The
+    # binary's independence from the distribution underneath it is
+    # `arch-matrix.yml`'s eight legs, not this one's.
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        # Every base image is pulled anonymously by digest, so no credential is
+        # needed. An EMPTY DOCKER_CONFIG directory consults no credential
+        # helper at all, so a helper that cannot run can never become this
+        # job's failure.
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Prove the runner is the architecture this leg claims
+        # A matrix leg that silently ran on the other architecture would prove
+        # the same thing twice and report it as two results.
+        env:
+          ARCHITECTURE: ${{ matrix.target.architecture }}
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64 | amd64) observed=amd64 ;;
+            aarch64 | arm64) observed=arm64 ;;
+            *) printf 'DENY: unsupported runner architecture %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+          printf 'runner=%s claimed=%s host=%s\n' "${observed}" "${ARCHITECTURE}" "$(. /etc/os-release && printf '%s %s' "${ID}" "${VERSION_ID}")"
+          test "${observed}" = "${ARCHITECTURE}"
+      - name: Build the shipped image
+        run: docker build --tag "obsync-compose-e2e:${GITHUB_SHA}" .
+      - name: Run the commands the server guide shows
+        run: scripts/ci/compose-e2e.sh "obsync-compose-e2e:${GITHUB_SHA}"
+      - name: Remove anything the run left behind
+        # The script tears its own deployment down from a trap, and this runs
+        # whatever happened to the script: a compose project left standing
+        # holds two containers, four volumes and a network on the runner, and
+        # the next run of this workflow refuses to start beside them. Selected
+        # by compose's own project label rather than by name, so an object
+        # renamed in the compose file is still collected here.
+        if: always()
+        run: |
+          set -uo pipefail
+          docker ps --all --quiet --filter label=com.docker.compose.project=obsync \
+            | xargs -r docker rm --force
+          docker volume ls --quiet --filter label=com.docker.compose.project=obsync \
+            | xargs -r docker volume rm --force
+          docker network ls --quiet --filter label=com.docker.compose.project=obsync \
+            | xargs -r docker network rm
+          exit 0

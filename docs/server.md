@@ -18,10 +18,13 @@ on the device, and no key that decrypts them ever crosses the wire
 ([architecture](architecture.md) section 2.1). "Files of any size" is a
 promise about this server; a provider on the path has its own terms.
 
-On Kubernetes,
+This page is the simple path and the one most deployments should take: one
+host, one `docker` or `docker compose` command, volumes you can back up with a
+copy. [Kubernetes](kubernetes.md) is the advanced path — a cluster, a chart, a
+certificate you renew — and
 [`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
-is the whole standalone path: the `helm install` command against the signed OCI
-chart, the one command that creates the `OBSYNC_SERVER_KEY` Secret, and the
+is that chart's own reference: the `helm install` command against the signed
+OCI chart, the one command that creates the `OBSYNC_SERVER_KEY` Secret, and the
 four values a cluster that is not the owner's must override before a pod can
 run. The reference deployment (a single-node cluster on a Raspberry Pi, reached
 over private connectivity with no public hostname) is described in
@@ -99,6 +102,7 @@ all**, and a terminator of your own in front of it.
 Verify the signature exactly as above, then, from a checkout of this
 repository:
 
+<!-- ci: compose-up -->
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   OBSYNC_HOST=sync.example.org \
@@ -178,6 +182,7 @@ your devices actually use.
 The setup token is read the same way as above, from the container compose
 created:
 
+<!-- ci: compose-setup-token -->
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
@@ -189,6 +194,22 @@ published port, 80 and 443 published on the chosen address and on nothing
 else, the redirect off port 80 keeping the port you published, the token
 readable, both containers hardened.
 
+`.github/workflows/compose-e2e.yml` then proves THIS PAGE, on an amd64 and an
+arm64 runner. It builds the image from the commit under test and runs the three
+commands above — the `up`, the setup-token read, the root-certificate export —
+by READING THEM OUT OF THIS FILE rather than out of a copy, substituting only
+the digest, the hostname and the bind address a reader supplies for themselves.
+It then does what the token is for: signs in to the dashboard with it, creates
+the account, pairs a SECOND device through the API, pushes one file and reads
+it back on that second device, and is refused by name for a request that is
+unsigned, altered, stale or replayed. Finally it restarts the stack and finds
+the account, both devices and the file still there — which is the promise the
+two volumes above are really making. An edit to those blocks that nobody
+carries into the gate fails the build:
+`scripts/ci/test_selfhosting_contract.py` holds the coupling, and
+`scripts/ci/docs_blocks.py` refuses a page whose text no longer matches what
+the run substitutes.
+
 ### Trust the certificate authority, once per device
 
 `deploy/compose/Caddyfile` issues certificates from an authority Caddy
@@ -197,6 +218,7 @@ and you need no domain. The price is that each device must be told to trust
 that authority once -- the Obsidian plugin speaks HTTPS only, and on phones
 there is no "continue anyway". Export the root certificate:
 
+<!-- ci: compose-root-certificate -->
 ```sh
 docker cp obsync-caddy-1:/data/caddy/pki/authorities/local/root.crt - \
   | tar -xO > obsync-root.crt
@@ -223,6 +245,54 @@ Copy `obsync-root.crt` to each device and install it:
   answer is the public-ACME block documented in
   `deploy/compose/Caddyfile` -- a real domain, ports 80 and 443 reachable,
   and a certificate every device already trusts. Nothing else changes.
+
+## Back up the two volumes
+
+Two volumes hold everything: `obsync-blobs` is every encrypted chunk, and
+`obsync-journal` is the manifest journal, the setup token and — unless you
+supplied `OBSYNC_SERVER_KEY` yourself — the generated server key. Lose the
+first and your vaults are gone from the server; lose the second and the
+devices you paired can never be unwrapped again, which is a rebuild and a
+fresh pairing of every device ([recovery](recovery.md)).
+
+Copy them out of the container itself, with no second image on the path and
+no write access to either volume. Stop the server first, so the copy is not
+taken mid-write:
+
+```sh
+docker stop obsync
+docker cp obsync:/data/blobs - > blobs-backup.tar
+docker cp obsync:/data/journal - > journal-backup.tar
+docker start obsync
+```
+
+On the Compose route the container is `obsync-obsync-1` and the pair is
+`docker compose -f deploy/compose/docker-compose.yml stop` and `… start`
+around the same two copies. Store `journal-backup.tar` the way you store the
+recovery phrase: it carries a credential that signs in to the dashboard.
+Restoring is the same copy in reverse, into a server that is stopped, and the
+volume must arrive owned by uid 65532 — see "Volume ownership" above, which is
+the one rule a restored deployment gets wrong.
+
+## Upgrade by digest
+
+An upgrade is one number. Read the new release's digest off its Release page,
+verify the signature exactly as at the top of this page — a new digest is a new
+decision, so the verification is not optional the second time — and start the
+same deployment on the new digest:
+
+- **Docker:** `docker stop obsync && docker rm obsync`, then the `docker run`
+  command above with the new digest. The two named volumes are untouched by
+  the removal, so the server comes back to the same data and the same devices.
+- **Compose:** the `docker compose … up -d` command above with the new
+  `OBSYNC_IMAGE`. Compose recreates the one container whose image changed and
+  leaves the volumes alone.
+
+Rolling back is the same command with the previous digest, which is why the
+digest you are running is worth keeping beside the backup: a tag would not
+tell you which bytes were running. Take the backup above BEFORE an upgrade.
+That is what makes a roll-back safe whatever the newer release wrote to the
+volumes, and it costs one copy.
 
 ## Reaching it from outside your LAN
 

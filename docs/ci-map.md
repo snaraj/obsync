@@ -1,6 +1,6 @@
 # CI map
 
-Dated 2026-09-07. What each job runs, what that proves, and the exact contexts
+Dated 2026-09-20. What each job runs, what that proves, and the exact contexts
 the owner enters into the branch ruleset. `make check` runs the same battery
 locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever
 stop agreeing. The one group `check` does not chain is the `container` job's
@@ -230,6 +230,55 @@ source "GitHub Actions". `configure-pages` is called with no `enablement:`
 input: if Pages is off, the job fails and says so rather than turning a
 publishing surface on by itself.
 
+## `compose-e2e.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `compose` (amd64, arm64) | `docker build`, then `scripts/ci/compose-e2e.sh` | The commands [`docs/server.md`](server.md) SHOWS work against the image this commit builds, on BOTH architectures natively — the reference deployment is the arm64 one. The `up`, the root-certificate export and the setup-token read are read out of that page by `scripts/ci/docs_blocks.py`, with only the digest, the hostname and the bind address substituted, so a page edited without its gate fails here. It then proves what those commands exist for: `/readyz` through the terminator over TLS; `/login?token=…` answering 302 with a session that reads `/v1/admin/overview` where no session reads 401; and, through `scripts/ci/api_flow.py`, first boot with the token, a second device paired through the API, one file pushed and pulled back on that second device, `missing_auth`/`bad_signature`/`stale_timestamp`/`replayed_nonce` each refused by name, and all of it still there after the stack is restarted |
+
+The token is masked with `::add-mask::` before it is used and is printed
+nowhere. Each leg runs on the `ubuntu-24.04` runner image for its
+architecture, which is the host distribution the Compose path is exercised on;
+the binary's independence from the distribution underneath it is
+`arch-matrix.yml`'s eight legs. An `if: always()` step removes every object
+carrying the compose project label, so a cancelled run leaves the next one a
+clean runner.
+
+## `helm-e2e.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `helm` | `install-tools.sh`, `install-kind.sh`, `docker build`, then `scripts/ci/helm-e2e.sh` | The chart installs and SERVES. A throwaway `kind` cluster at the node image pinned beside kind; the two node directories prepared `0700` and owned by 65532, the StorageClass and both `local` PersistentVolumes, the values file, the TLS front and the setup-token read, all read out of [`docs/kubernetes.md`](kubernetes.md); the image loaded and deployed by the digest containerd actually holds, with `pullPolicy: Never` so the cluster can only run those bytes; both claims `Bound`, the Deployment `Available`, `/readyz` answered through a port-forward AND through the documented terminator over HTTPS; then the same `api_flow.py` device flow through that terminator — including a file larger than a stock proxy's 1 MiB body ceiling — and a `helm upgrade` on the digest followed by a `helm rollback`, after which the account, both devices and the file are still there |
+
+What it does not prove, stated rather than implied: the NetworkPolicy's
+refusals, which are proven against the RENDERED policy by
+`scripts/ci/chart_pins.py`, because kind's CNI does not enforce policy; and the
+DNS-01 issuance, because the leaf the terminator serves is one the job issues.
+What the terminator step does prove is the wiring the reference activation got
+wrong — the three peer labels, the upstream Service, and the body ceiling. An
+`if: always()` step deletes the cluster whatever happened to the script.
+
+## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `native` (amd64, arm64) | `docker build --target server`, `file`, `docker build`, `docker image inspect` | Each architecture builds on its OWN runner, never under emulation. The `server` stage runs `cargo clippy --workspace --all-targets --locked` and `cargo test --workspace --locked`, so this IS the workspace suite on each architecture; the shipped binary is then asserted to be a statically linked ELF for that architecture, and the full image to be nonroot with the shipped entrypoint |
+| `distributions` (2 × 4) | `scripts/ci/distro-smoke.sh` | The binary each architecture built loads and serves on Debian, Ubuntu, Fedora and Alpine, every image pinned by digest. It is a static musl build with no libc to find at runtime, so these eight legs are the evidence for that rather than a sentence claiming it |
+
+`ubuntu-24.04-arm` is a GitHub-hosted runner, free for public repositories,
+which is what makes the arm64 half of requirement 14 provable BEFORE a merge
+instead of first at publication, here and in `compose-e2e.yml`. The amd64 half of `native` deliberately
+overlaps the gate's `container` job: one set of steps proving both
+architectures is worth more than a smaller matrix proving them differently.
+
+**None of the three is in the release chain**, for the reason `docs-site.yml`
+gives: `release-after-main.yml` fires on a completed `PR gate` run and nothing
+else, and the publisher authorizes against the job inventories of
+`pr-gate.yml` and `codeql.yml` alone. A workflow of its own adds a job to
+neither. Whether any of them becomes a REQUIRED check is the owner's ruleset
+decision; until it is entered into `Protect-Main` a red run here does not block
+a merge, and the list below is unchanged.
+
 ## `dependabot.yml`
 
 `github-actions` and `docker` only. Requirement 5 makes the Rust workspace, the
@@ -273,10 +322,12 @@ missing is only the ruleset's refusal to merge around a red one.
 ## Zero-spend guardrails
 
 Top-level `permissions: {}` with narrow per-job grants; `persist-credentials:
-false` on every checkout; GitHub-hosted `ubuntu-24.04` runners only; every
-third-party action pinned to a full commit SHA with a version comment; every
-third-party tool installed only through the checksum-verifying
-`scripts/ci/install-tools.sh`. `scripts/ci/test_workflow_integrity.py` refuses
+false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`, and
+`ubuntu-24.04-arm` for the architecture matrix, both free for public
+repositories; every third-party action pinned to a full commit SHA with a
+version comment; every third-party tool installed only through a
+checksum-verifying installer (`scripts/ci/install-tools.sh`, and
+`scripts/ci/install-kind.sh` for the one job that creates a cluster). `scripts/ci/test_workflow_integrity.py` refuses
 any workflow that breaks the pinning, permissions, `pull_request_target`, or
 `persist-credentials` rules, and its allowlist ratchets shut rather than
 accumulating excuses. The `container` job builds and never publishes: no

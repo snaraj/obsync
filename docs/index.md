@@ -19,7 +19,7 @@ second copy here.
 | You want to | Go to |
 | --- | --- |
 | Get two devices syncing | [Quickstart](quickstart.md) |
-| Put the server somewhere | [Run the server](server.md) or the [Helm chart](https://github.com/snaraj/obsync/blob/main/chart/README.md) |
+| Put the server somewhere | [Run the server](server.md) with Docker, or [on Kubernetes](kubernetes.md) |
 | Install or update the plugin | [Install the plugin](community-plugin.md) |
 | Know what a setting does | [Settings reference](settings.md) |
 | Fix something | [Troubleshooting](troubleshooting.md) |

@@ -55,6 +55,46 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   and `id-token: write` and nothing else. It adds no job to `pr-gate.yml` or
   `codeql.yml`, so the job inventory the release publisher authorizes against
   (`scripts/ci/release_contract.py`) is unchanged.
+- **Two self-hosting guides, and CI runs the commands they show.**
+  [`docs/server.md`](docs/server.md) gains backups of the two volumes and
+  upgrade-and-roll-back by digest, and
+  [`docs/kubernetes.md`](docs/kubernetes.md) is new: static local volumes with
+  the ownership rule the server enforces, the values that match them, a TLS
+  front inside the cluster — manifest included, carrying the three labels the
+  chart's NetworkPolicy admits — with a certificate issued over DNS-01 and the
+  cadence to renew it, the setup-token read for a distroless image, and
+  reaching the deployment privately. Neither page is a promise.
+  `.github/workflows/compose-e2e.yml` brings the Compose deployment up from the
+  commands `docs/server.md` shows, on an amd64 and an arm64 runner, reads the
+  setup token the way that page says to, signs in to the dashboard with it, and
+  then does what that token exists for: `scripts/ci/api_flow.py` creates the
+  account, pairs a SECOND device through the API, pushes one file and reads it
+  back on that device, is refused by name for an unsigned, altered, stale or
+  replayed request, and finds all of it intact after the stack is restarted.
+  `.github/workflows/helm-e2e.yml` installs the chart into a `kind` cluster with
+  the volumes and values `docs/kubernetes.md` shows, applies that page's own
+  terminator, runs the same device flow through it over HTTPS — with a file
+  larger than the 1 MiB body ceiling a stock proxy applies — and then upgrades
+  on the digest and rolls back, with the account, both devices and the file
+  surviving both pod replacements. Both read the page at the commit under test
+  through `scripts/ci/docs_blocks.py` rather than a copy kept beside it, and
+  `scripts/ci/test_selfhosting_contract.py` fails the build when a page and its
+  gate stop agreeing.
+- **Both architectures, natively, before the merge rather than after.**
+  `.github/workflows/arch-matrix.yml` builds the server on `ubuntu-24.04` and
+  on `ubuntu-24.04-arm` — so the workspace test suite runs on each — asserts a
+  static ELF for that architecture, builds the shipped image on both, and runs
+  the resulting binary on Debian, Ubuntu, Fedora and Alpine, each pinned by
+  digest, on each architecture. The binary links no libc at all, so there is no
+  glibc floor to document and these eight legs are what says so.
+- **New troubleshooting entries for two failures that are not the server.** A
+  phone that reports the hostname cannot be found on its own Wi-Fi is usually
+  the router's DNS-rebinding protection returning an empty answer for a name
+  that resolves to a private address; a TLS error from a device behind an
+  access-controlled edge is usually that edge's own decision — a posture policy
+  the device no longer passes, or an allow policy demanding the identity be
+  re-authenticated — rather than the certificate, so the edge policy for that
+  device is what you read first.
 
 ## 1.0.2 - 2026-09-20
 

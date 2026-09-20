@@ -109,7 +109,8 @@ nav:
       - Quickstart: quickstart.md
       - Install the plugin: community-plugin.md
       - Run the server (Docker and Compose): server.md
-      - Run the server (Kubernetes): https://github.com/snaraj/obsync/blob/main/chart/README.md
+      - Run the server (Kubernetes): kubernetes.md
+      - Chart reference: https://github.com/snaraj/obsync/blob/main/chart/README.md
   - Using it:
       - Daily use: daily-use.md
       - The dashboard: dashboard.md

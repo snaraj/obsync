@@ -32,6 +32,40 @@ settings, or reaches something that is not it.
    [`storage.md`](storage.md) — the server refuses readiness rather than lying
    about it.
 
+## "A server with the specified hostname could not be found"
+
+**Symptom.** On a phone or tablet, on your OWN Wi-Fi, obsync reports that the
+hostname could not be found — while a laptop on the same network syncs, and
+the same phone works over cellular or over the VPN.
+
+**Cause.** The router's DNS-rebinding protection. Many home routers drop a DNS
+answer that points at a private address (`192.168.…`, `10.…`, `172.16–31.…`)
+when it comes back from a public zone, because that pattern is also how a
+rebinding attack works. Your name is exactly that shape: a public name whose
+answer is a private address. The device is not told the answer was filtered,
+so it reports the name as not existing at all.
+
+**Fix,** any one of these, and the first is usually the least work:
+
+1. **Point the device at a public resolver** rather than at the router — a
+   phone's Wi-Fi settings can set DNS per network, and the answer is then
+   never filtered on the way in.
+2. **Use the VPN's resolver**, which is where a split-DNS or overlay name is
+   answered anyway, and is the route that also works away from home.
+3. **Allow the name in the router's rebinding protection.** Most routers that
+   filter offer an exception list, by name; that is the setting to look for,
+   and it is worded differently on every one.
+4. **Confirm the diagnosis before changing anything:** on cellular, with the
+   VPN up, the same name resolves and syncs. That is the whole test, and it
+   takes ten seconds.
+
+This is not the server, the certificate or the plugin — nothing reaches obsync
+at all — so nothing in the deployment needs changing to fix it. Confirmed on
+the maintainer's own network on 2026-09-20: the router returned an empty
+answer for a name that resolves to a private address, and the same name
+resolved and synced the moment the device used a resolver that does not filter
+private answers.
+
 ## The certificate is not trusted on this device
 
 **Symptom.** `obsync: offline` on one device while another syncs, or a browser
@@ -58,6 +92,53 @@ steps rather than one.
 
 The README's "Trust the certificate authority, once per device" has the exact
 commands for the Compose route.
+
+## "A TLS error caused the secure connection to fail"
+
+**Symptom.** On a phone, behind an access-controlled edge (a Zero Trust proxy,
+a tunnel with an access policy in front of it), every request fails with a TLS
+error. The same name works from a computer, or from the same phone on another
+network, and the certificate itself is in date and trusted.
+
+**Cause.** Usually the edge's own decision rather than the certificate — and
+there are THREE of those decisions that look identical from the device, because
+each of them resets the TCP flow while the handshake is still in progress. A
+client that never completed a handshake can only report a TLS failure, so the
+message names the layer the failure surfaced at and never the decision that
+caused it:
+
+1. **A device-posture policy this device no longer passes.** An enrolment that
+   lapsed, a posture check that is failing, a rule that admits the user but not
+   this device.
+2. **An allow policy that demands the identity be re-authenticated.** An edge
+   that enforces re-authentication on a cadence (weekly is a common setting)
+   stops admitting a device whose session has aged out. Its log shows the flow
+   matching the allow rule with the action taken recorded as `authenticate`
+   rather than as an allow.
+3. **The certificate really has expired** — the one cause that is not the edge,
+   and the one that fails every device at once rather than one at a time.
+
+**Fix.** Read the edge policy for THAT device first. It is what separates the
+three, and it is the one thing the device cannot tell you:
+
+1. **Read the edge's own log for that device.** It names the decision the phone
+   cannot see: the matched rule, the action taken, the device identity. An
+   action of `authenticate` is cause 2; a rule that stopped matching this
+   device, or a posture check reported as failing, is cause 1.
+2. **Do what that entry says.** For cause 2, re-authenticate the edge client on
+   that device — sign in again in the client app rather than merely
+   reconnecting it, which costs a tap. For cause 1, repair the enrolment or the
+   posture the rule requires; nothing on the device's own network settings will
+   help.
+3. **Only then look at the certificate**, which is quickest to rule out from a
+   computer on the same route: if a browser there is happy with it, the
+   certificate is not what the phone is failing on. A certificate expires for
+   every device at once; an edge decision refuses one device at a time, which
+   is why the policy is what you read first.
+
+Causes 1 and 2 were both seen on the maintainer's own devices on 2026-09-20,
+against the same deployment and within the same hour, which is how they came to
+be written down as two things rather than one.
 
 ## The plugin says this device is not paired
 
