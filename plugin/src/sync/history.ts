@@ -102,7 +102,7 @@ export class HistoryBrowser {
             if (!manifest.path.toLowerCase().includes(filter.toLowerCase())) continue;
             entries.push({ fileId: r["file_id"], versionId: r["version_id"], domainId: r["domain_id"],
               path: manifest.path, size: manifest.size, deleted: manifest.deleted, ts: r["ts"] as number });
-          } catch (error) {
+          } catch {
             this.operation.check();
             refused++;
             this.context.host.log("history path_class=manifest decision=refused");
@@ -194,6 +194,7 @@ export async function restoreCopy(browser: HistoryBrowser, entry: HistoryEntry):
     guard();
     const writer = await context.host.createWriter(path, manifest.size, guard);
     let published = false;
+    let outcome: { stat: VaultStat } | { failure: unknown };
     try {
       await writeVerified(context, manifest, writer, operation);
       used = await inventory(context, operation);
@@ -203,18 +204,20 @@ export async function restoreCopy(browser: HistoryBrowser, entry: HistoryEntry):
       // Publication may have finished after cancellation. Preserve it and
       // return its identity before considering any further asynchronous work.
       context.host.log(`history decision=copy_created bytes=${stat.size} duration_ms=${Date.now() - started}`);
-      return stat;
+      outcome = { stat };
     } catch (error) {
-      if (published) throw new CopyPublicationError(path);
-      throw error;
-    } finally {
-      try { await writer.abort(); } catch (error) {
-        // Cleanup is confined to the owned temp. A later failure must still
-        // name the already published copy, never imply that it was removed.
-        if (published) throw new CopyPublicationError(path);
-        throw error;
-      }
+      outcome = { failure: published ? new CopyPublicationError(path) : error };
     }
+    // Cleanup is confined to the owned temp, and runs on both paths. A failure
+    // here must still name the already published copy, never imply that it
+    // was removed; it outranks whatever the copy itself reported.
+    try {
+      await writer.abort();
+    } catch (error) {
+      throw published ? new CopyPublicationError(path) : error;
+    }
+    if ("failure" in outcome) throw outcome.failure;
+    return outcome.stat;
   }
   throw new Error("No unoccupied, untracked sibling name was available. Retry to choose a new name.");
 }

@@ -93,8 +93,14 @@ export type VaultPathRefusal =
   | "target_identity"
   | "chain_changed";
 
-/** Control characters, including NUL, which truncates a path at the syscall. */
-const CONTROL = /[\u0000-\u001f\u007f]/;
+/** Control characters, U+0000 to U+001F and U+007F: NUL truncates a path at the syscall. */
+function hasControl(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /** `C:`, `c:/…`: a Windows drive-relative or absolute path. */
 const DRIVE = /^[A-Za-z]:/;
@@ -113,7 +119,7 @@ export function vaultPathRefusal(value: unknown): VaultPathRefusal | null {
   if (typeof value !== "string") return "not_a_string";
   if (value === "") return "empty";
   if (value.includes("\\")) return "backslash";
-  if (CONTROL.test(value)) return "control_character";
+  if (hasControl(value)) return "control_character";
   if (value.startsWith("/")) return "absolute";
   if (DRIVE.test(value)) return "drive_letter";
   for (const segment of value.split("/")) {

@@ -201,6 +201,22 @@ test('app.css: no import and no remote asset', () => {
   assert.deepEqual(forbiddenPatterns(CSS, ['@import', 'url(', 'http://', 'https://']), []);
 });
 
+test('app.css: [hidden] outranks every class by ORDER, and the narrow table rows by specificity', () => {
+  // An attribute selector weighs the same as a class selector, so `[hidden]`
+  // hides `.banner`, `.tabs` and `.confirm` (all `display: flex`) only by
+  // coming after the last `display:` outside a media block. The narrow block
+  // gives `.grid tr` a display of its own with more weight, so it must hide
+  // its own rows. `!important` did both jobs and is gone; this holds them.
+  const rule = '[hidden] { display: none; }';
+  const base = CSS.slice(0, CSS.indexOf('/* ---- wide'));
+  assert.ok(base.includes('/* ---- logs'), 'the base section ends before the media blocks');
+  const after = base.slice(base.indexOf(rule) + rule.length);
+  assert.ok(base.includes(rule));
+  assert.equal(after.includes('display:'), false, `a display rule follows [hidden]: ${after.trim().slice(0, 80)}`);
+  assert.ok(CSS.includes('.grid tr[hidden] { display: none; }'));
+  assert.equal(CSS.includes('!important'), false);
+});
+
 // There is no browser here, so nothing else would notice a typo in an id or
 // a data-f name until the page ran. These three tests are that notice.
 test('app.js: every element id it reaches for exists in index.html', () => {

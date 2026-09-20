@@ -11,10 +11,16 @@
   border-radius: var(--radius-s);
 }
 
+/* The 24 words as a numbered list: two columns of twelve, filled down. */
 .obsync-phrase {
   user-select: all;
-  white-space: pre-wrap;
-  columns: 2;
+  display: grid;
+  grid-template-rows: repeat(12, auto);
+  grid-auto-flow: column;
+  column-gap: var(--size-4-4);
+  margin: 0;
+  padding: 0;
+  list-style-position: inside;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-small);
   line-height: 1.6;

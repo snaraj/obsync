@@ -122,7 +122,7 @@ test("the notice and the settings line direct updates to Obsidian's plugin manag
   assert.match(notice, /Settings → Community plugins → Check for updates, then update Self Hosted Private Sync/);
   assert.doesNotMatch(notice, /\.zip|reinstall|releases\/tag|\/v1\/plugin\/bundle/);
   assert.equal(instance.updateAvailable, "9.9.9");
-  assert.equal(instance.updateLine(), notice.replace(/^obsync: /, ""), "the settings tab says the same thing");
+  assert.equal(instance.updateLine(), notice, "the settings tab says the same thing");
 });
 
 test("a server that is not newer says nothing at all", async () => {

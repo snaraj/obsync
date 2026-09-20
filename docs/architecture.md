@@ -314,8 +314,8 @@ it holds no `VRK`. Approval is always from a paired Obsidian instance.
 
 ### Device-local credential custody
 
-Obsidian 1.12.4 or newer is required; the vendored official API package is
-pinned separately to 1.12.3. The plugin uses only the public SecretStorage
+Obsidian 1.13.0 or newer is required; the vendored official API package is
+pinned at exactly that version, so the compiler refuses any newer member. The plugin uses only the public SecretStorage
 `getSecret` and `setSecret` operations for its exact owned entry. A validated,
 random installation ID determines that entry's name. No secret inventory or
 other plugin installation is read or imported.

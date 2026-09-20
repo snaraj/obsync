@@ -8,7 +8,7 @@
  * The layout is compact on purpose — one entry per vault path, one per
  * remote-only file — because it is rewritten on every save.
  *
- * PLATFORM. Obsidian 1.12.4 or newer is required. Unavailable secret storage
+ * PLATFORM. Obsidian 1.13.0 or newer is required. Unavailable secret storage
  * stops loading or saving; plaintext is never a fallback. Immediate secret
  * readback and awaited saveData do not promise a crash-durable transaction
  * across the two host stores. The bounded previous credential record allows
@@ -105,6 +105,10 @@ function num(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function isHeader(value: unknown): value is { name: string; value: string } {
+  return isRecord(value) && typeof value["name"] === "string" && typeof value["value"] === "string";
+}
+
 type Credentials = Pick<ObsyncData, "vrk" | "deviceId" | "deviceSecret" | "edgeHeaders">;
 interface CredentialRevision extends Credentials { revision: number; serverUrl: string; }
 interface SecretEnvelope {
@@ -125,11 +129,8 @@ function credentials(loaded: Record<string, unknown>): Credentials {
   };
   const vrk = field("vrk", 32), deviceId = field("deviceId", 16), deviceSecret = field("deviceSecret", 32);
   if ((deviceId === null) !== (deviceSecret === null)) throw new StateStorageError("incomplete_credential");
-  const headers = loaded["edgeHeaders"] === undefined ? [] : loaded["edgeHeaders"];
-  if (!Array.isArray(headers) || headers.some((header) => !isRecord(header) ||
-    typeof header["name"] !== "string" || typeof header["value"] !== "string")) {
-    throw new StateStorageError("invalid_edge_headers");
-  }
+  const headers: unknown = loaded["edgeHeaders"] === undefined ? [] : loaded["edgeHeaders"];
+  if (!Array.isArray(headers) || !headers.every(isHeader)) throw new StateStorageError("invalid_edge_headers");
   return { vrk, deviceId, deviceSecret, edgeHeaders: headers.map((header) => ({ name: header.name, value: header.value })) };
 }
 

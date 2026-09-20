@@ -42,7 +42,13 @@ export function sandbox({ dist = false } = {}) {
     `class Component {}
 class Plugin extends Component {}
 class Modal { constructor(app) { this.app = app; } }
-class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
+// Like the real one, the constructor names the tab after the plugin. The API
+// declaration does not list \`id\` or \`name\`, so a subclass field with either
+// name would shadow them unseen by the compiler; the settings test pins both.
+class PluginSettingTab {
+  constructor(app, plugin) { this.app = app; this.plugin = plugin; this.id = plugin.manifest?.id ?? "fixture"; this.name = plugin.manifest?.name ?? "Fixture"; }
+  update() {} hide() {}
+}
 class Setting { constructor(el) { this.el = el; } }
 // Every Notice the plugin raises is recorded, so a test can read what the
 // user was actually told instead of asserting on a call it cannot see.

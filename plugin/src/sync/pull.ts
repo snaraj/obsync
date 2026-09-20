@@ -583,7 +583,7 @@ async function reconcile(
       const decoder = new TextDecoder();
       const merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
       if (merged.ok) {
-        const text = new TextEncoder().encode(merged.text) as Bytes;
+        const text = new TextEncoder().encode(merged.text);
         const writer = await context.host.writer(localPath);
         await writer.write(text);
         const stat = await writer.commit(context.now());

@@ -7,9 +7,10 @@ it to decide WHICH release a given Obsidian version may install: the newest
 plugin version whose recorded `minAppVersion` the app satisfies. Without the
 file the installer has only the newest release's own `minAppVersion`, so an
 Obsidian older than that floor is offered nothing at all rather than the last
-release it could actually run. This plugin's floor moved twice already --
-1.7.0 at 0.1.11, 1.7.2 at 0.1.13, 1.12.4 at 0.1.16 -- so the ledger is the
-difference between an older Obsidian installing 0.1.14 and installing nothing.
+release it could actually run. This plugin's floor moved three times already --
+1.7.0 at 0.1.11, 1.7.2 at 0.1.13, 1.12.4 at 0.1.16, 1.13.0 at 1.0.2 -- so the
+ledger is the difference between an older Obsidian installing the last
+release it can run and installing nothing.
 
 IT IS A FOLLOWER, NOT A LOCK. The seven lockstep locks (`docs/release.md`) are
 one version in six files, walked per commit by `release_contract.py`. This

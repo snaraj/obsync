@@ -335,7 +335,7 @@ type Attempt =
 function toArrayBuffer(bytes: Bytes): ArrayBuffer {
   return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
     ? bytes.buffer
-    : (bytes.slice().buffer as ArrayBuffer);
+    : bytes.slice().buffer;
 }
 
 export class Transport {
@@ -736,7 +736,7 @@ export function parseMultipart(body: Bytes, boundary: string): MultipartPart[] {
     parts.push({
       sid: /x-obsync-sid:\s*([0-9a-f]+)/i.exec(headers)?.[1] ?? "",
       missing: /x-obsync-missing:\s*1/i.test(headers),
-      body: body.slice(start, start + length) as Bytes,
+      body: body.slice(start, start + length),
     });
     at = indexOfBytes(body, marker, start + length);
   }

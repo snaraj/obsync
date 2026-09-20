@@ -56,10 +56,17 @@ LAN.
 - **Obsidian's own directory and GitHub**, for installation and updates only.
   Obsidian downloads the release's `main.js`, `manifest.json` and `styles.css`
   from this repository's GitHub Releases when you install or update. The
-  plugin never fetches or executes code from the sync server.
+  plugin never fetches or executes code from the sync server. Each Release
+  also carries the plugin ZIP and the evidence manifest, for people deploying
+  the server; Obsidian ignores both.
 - **Your edge, if you put one there.** If an access-controlled proxy sits in
   front of your server, the headers you paste under **Edge service-token
   headers** are sent to it, because it is on the path to your server.
+- **Your vault's file list, and the files you chose to sync.** The plugin
+  lists every file in the vault to decide what is in scope, reads the ones
+  inside your folder selection, and writes what other devices changed.
+- **The clipboard, only when you press Copy.** The two Copy buttons in **Pair
+  a new device** write the pairing code or link; nothing is ever read from it.
 
 What the server can and cannot see is in
 [`SECURITY.md`](SECURITY.md) and [`docs/threat-model.md`](docs/threat-model.md).
@@ -104,10 +111,10 @@ below, and all five assume your own server is already running.
    ![Obsidian's Community plugins browser showing Self Hosted Private Sync with its Install button](docs/captures/01-install-from-directory.png)
 
 2. **Point it at your server and set it up.** Open the plugin's settings tab,
-   set **Server URL** to your own server, choose and save which folders this
-   device syncs, then paste your setup token under **First-time setup**.
+   set **Server URL** to your own server, choose which folders this device
+   syncs, then paste your setup token under **First-time setup**.
 
-   ![The plugin settings tab scrolled to the saved folder selection, Pairing, and the First-time setup token field](docs/captures/02-first-time-setup.png)
+   ![The plugin settings tab scrolled to the folder selection, Pairing, and the First-time setup token field](docs/captures/02-first-time-setup.png)
 
 3. **Keep the recovery phrase.** Setup generates the vault key on this device
    and shows a 24-word phrase once: write it down and keep it somewhere other
@@ -381,7 +388,7 @@ route.
 
 ### 2. Set up this computer (the first device)
 
-Use Obsidian 1.12.4 or newer on each device. Credentials and vault keys use
+Use Obsidian 1.13.0 or newer on each device. Credentials and vault keys use
 Obsidian's native secret storage; unavailable storage stops setup and sync.
 
 1. In your vault, open Settings → Community plugins and allow community
@@ -394,19 +401,17 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    server, paste its headers under **Edge service-token headers**, one per
    line as `Name: value`.
 4. Under **Sync folders on this device**, choose **Selected folders only**
-   if the vault also contains code or files you do not want shared. Enter
-   relative folders such as `Notes`, one per line, and click **Save on this
-   device** before setup or pairing. An empty selected list syncs no files;
-   **Whole vault** retains the existing default. Select the final folders
-   now: after sync has history, the selection may only narrow. To stage a
-   first sync within one vault, keep personal files in an excluded folder,
-   test disposable notes inside the selected folder, then move the personal
-   files in and run **Sync now**.
-5. Under **First-time setup**, paste the setup token in the first field. The
-   second field is the **account name**, which is what the dashboard calls
-   this account; it is filled in as `obsync` and most people leave it. Select
-   **Set up**: the plugin creates the account and this device, generates the
-   vault key on this computer, and shows the **recovery phrase** (24 words).
+   if the vault also contains code or files you do not want shared, and
+   enter relative folders such as `Notes`, one per line. **Set up** and
+   **Pair this device** apply what you typed; **Save** applies it on its own.
+   An empty selected list syncs no files; **Whole vault** is the default.
+   Select the final folders now: after sync has history, the selection may
+   only narrow. To stage a first sync within one vault, keep personal files
+   in an excluded folder, test disposable notes inside the selected folder,
+   then move the personal files in and run **Sync now**.
+5. Under **First-time setup**, paste the setup token and select **Set up**:
+   the plugin creates the account and this device, generates the vault key
+   on this computer, and shows the **recovery phrase** (24 words).
    Write it down and keep it off this machine: without any paired device and
    without this phrase, the vault is unrecoverable by design. The server never
    sees the key. [`docs/recovery.md`](docs/recovery.md) is what the phrase
@@ -428,9 +433,9 @@ isolation boundary. Native restart persistence is a separate validation step.
 1. In the phone's local vault, install and enable **Self Hosted Private Sync** through Settings →
    Community plugins → Browse. Set the same **Server URL** and connect to
    its private network if needed. The server must provide HTTPS trusted by
-   the phone. Choose and save this phone's folder selection before pairing;
-   the selection is local and is not copied by the pairing code. Files keep
-   their relative folder names.
+   the phone. Choose this phone's folder selection before pairing; **Pair this
+   device** applies it, and it is local, not copied by the pairing code.
+   Files keep their relative folder names.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
    an `obsidian://obsync-private-sync/pair?code=...` link you can send yourself.

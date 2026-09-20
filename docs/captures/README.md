@@ -13,7 +13,7 @@ The names are part of the README and do not change without changing it:
 | File | Shows |
 | --- | --- |
 | `01-install-from-directory.png` | Settings -> Community plugins -> Browse with **Self Hosted Private Sync** found and the Install button |
-| `02-first-time-setup.png` | the plugin's settings tab, scrolled to the saved folder selection, **Pairing**, and **First-time setup** where the setup token goes; the **Server URL** field is above the frame, because the address it holds may not be published |
+| `02-first-time-setup.png` | the plugin's settings tab, scrolled to the folder selection, **Pairing**, and **First-time setup** where the setup token goes; the **Server URL** field is above the frame, because the address it holds may not be published |
 | `03-recovery-phrase.png` | the 24-word recovery-phrase dialog, words obscured |
 | `04-pair-a-new-device.png` | the **Pair a new device** dialog on the first device, its one-time code obscured, cropped to the dialog so the settings page behind it -- which carries this device's name -- is not published |
 | `05-sync-both-ways.png` | the disposable note carrying both devices' edits, seen on the desktop, with the status bar visible |

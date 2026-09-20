@@ -225,8 +225,10 @@ That is obsync refusing to discard an edit, not a failure. See
 
 1. **The plugin's own log.** On desktop, open Obsidian's developer console
    (`Cmd`+`Option`+`I` on macOS, `Ctrl`+`Shift`+`I` on Windows and Linux) and
-   filter for `obsync`. Every refusal it logs names the request, the status and
-   the code, and never the body.
+   filter for `obsync`. Refusals and failures are at the warning level;
+   routine decisions are at the verbose level, which the console hides until
+   you enable it. Every refusal names the request, the status and the code,
+   and never the body.
 2. **Show sync status**, from the command palette: what the engine is doing and
    why it is not doing more. Its first row is this device's **Server** address
    — leave that row out, for the same reason the list below gives.

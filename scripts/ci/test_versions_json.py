@@ -170,15 +170,15 @@ class TheRepositoryLedger(unittest.TestCase):
         self.assertEqual(list(resolved)[-1], head, "the head is the newest row")
 
     def test_every_recorded_floor_is_one_this_plugin_actually_declared(self):
-        # The three floors this plugin has published, read from the releases'
+        # The four floors this plugin has published, read from the releases'
         # own manifests: 1.7.0 (0.1.11-0.1.12), 1.7.2 (0.1.13-0.1.14),
-        # 1.12.4 (0.1.16 onwards). A row carrying anything else is a typo
-        # nobody would see until an install failed.
+        # 1.12.4 (0.1.16-1.0.1), 1.13.0 (1.0.2 onwards). A row carrying
+        # anything else is a typo nobody would see until an install failed.
         resolved = versions.validate_versions(
             (ROOT / "versions.json").read_text(encoding="utf-8"),
             (ROOT / "manifest.json").read_text(encoding="utf-8"),
         )
-        self.assertEqual(set(resolved.values()) - {"1.7.0", "1.7.2", "1.12.4"}, set())
+        self.assertEqual(set(resolved.values()) - {"1.7.0", "1.7.2", "1.12.4", "1.13.0"}, set())
 
 
 if __name__ == "__main__":

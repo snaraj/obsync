@@ -37,8 +37,9 @@ head version must be the last row and must carry exactly root
 the rows must ascend, and no row may name a version above the head. A gap is
 admissible and 0.1.15 is one: it was built but never published, so a row for
 it would promise the installer a download that does not exist. The floors this
-plugin has published are 1.7.0 (0.1.11-0.1.12), 1.7.2 (0.1.13-0.1.14) and
-1.12.4 (0.1.16 onwards), each read from that release's own `manifest.json`.
+plugin has published are 1.7.0 (0.1.11-0.1.12), 1.7.2 (0.1.13-0.1.14),
+1.12.4 (0.1.16-1.0.1) and 1.13.0 (1.0.2 onwards), each read from that
+release's own `manifest.json`.
 
 ## Classifier
 
