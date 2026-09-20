@@ -20,6 +20,12 @@ you a conflict copy instead:
 - **The two versions share a common ancestor.** Two devices that independently
   created the same path have none — there is nothing to merge against, and
   neither side is a later version of the other.
+- **The two sides are close enough to align.** The merge lines up each side
+  against the common ancestor with a table bounded at 4,000,000 cells, counted
+  after the shared opening and closing lines are trimmed. Two versions that
+  differ by thousands of lines in the middle exceed it, the merge answers
+  `too_large`, and you get a conflict copy. Ordinary note editing is nowhere
+  near this.
 - **The changes do not overlap.** Edits in different parts of the file merge
   silently and you see one file with both changes; when both devices changed
   THE SAME lines, the merge stops rather than guessing.

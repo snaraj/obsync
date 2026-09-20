@@ -50,8 +50,15 @@ your volume is not one this project runs. So, before `deploymentReady: true`:
   (`chown 65532:65532`, `chmod 0700`), or provision the volumes statically as
   above.
 
-A volume that already holds the server's `v1` is accepted whatever owns the
-mount point above it, so a restored deployment does not re-run this.
+Exactly what the server does with the mount point, so a restored deployment
+knows where it stands: a root-owned, closed root (`0755`) is **accepted** once
+the volume already holds the server's `v1`, because nothing needs creating; a
+root writable by others or by its group is **refused**
+(`writable_by_others`, `writable_by_group`) whether or not `v1` is there, unless
+it carries the sticky bit; and a root owned by neither root nor uid 65532 is
+refused (`foreign_owner`). Only the writability test is skipped for a volume
+that already holds `v1` — never the posture judgement, which runs on every
+start.
 
 ## 2. The four values that are yours, in `values.yaml`
 
@@ -153,17 +160,19 @@ project ships on purpose, so the file is read from the volume instead.
   sudo cat <the path that PersistentVolume names>/v1/setup-token
   ```
 
-- **Any other provisioner:** mount the `obsync-journal` claim into a throwaway
-  pod of an image you trust and read `/journal/v1/setup-token` from it, then
-  delete the pod. Every claim this chart renders is **ReadWriteOnce**, and
-  `readOnly: true` on a mount does not relax that: a second pod on another node
-  sits `Pending` with a multi-attach error. So either scale the Deployment to
-  zero first (`kubectl scale deploy/obsync --replicas=0`, and back to one
-  afterwards — or set `deploymentReady: false` if the platform reconciles it),
-  or schedule the throwaway pod onto the node already running obsync. Because
-  this chart always supplies the server key from a Secret, that volume holds
-  the journal and the token and no key material — but it is still the
-  deployment's sensitive volume, so mount it nowhere else.
+- **Any other provisioner:** mount the `obsync-journal` claim **read-only**
+  into a throwaway pod of an image you trust, read `/journal/v1/setup-token`
+  from it, then delete the pod. Every claim this chart renders is
+  **ReadWriteOnce**, and `readOnly: true` does not relax ATTACHMENT — a second
+  pod on another node sits `Pending` with a multi-attach error — so it is a
+  reason to pin the pod as well, not instead. Either scale the Deployment to
+  zero first (`kubectl scale deploy/obsync --namespace obsidian --replicas=0`,
+  and back to one afterwards — or set `deploymentReady: false` if a platform
+  reconciler owns the replica count), or schedule the throwaway pod onto the
+  node already running obsync. Because this chart always supplies the server
+  key from a Secret, that volume holds the journal and the token and no key
+  material — but it is still the deployment's sensitive volume, so mount it
+  read-only and nowhere else.
 
 ## 5. What "installed" looks like
 

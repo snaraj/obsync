@@ -121,8 +121,8 @@ nothing in front of it should be `OBSYNC_EDGE=none` instead.
 
 ## `replayed_nonce`
 
-**Symptom.** An occasional `401 replayed_nonce`, or `503` from the nonce store
-beside it.
+**Symptom.** An occasional `401 replayed_nonce`, or one of the nonce store's
+two 503s beside it (`nonce_cache_full`, `nonce_log_unavailable`, below).
 
 **Cause.** Every signed request carries a nonce the server remembers for 600
 seconds, and a nonce is spent by being sent. A repeat means the same signed
@@ -156,6 +156,22 @@ volume restored from a backup older than this pairing.
 **Fix.** Both are the same repair: pair this device again. If the server was
 rebuilt or restored, see [`recovery.md`](recovery.md) before pairing anything,
 because the server key decides whether existing devices can be kept at all.
+
+## Other refusals a device can show
+
+The plugin prints the server's refusal as `<status> <code>: <detail>`, so any
+code below appears in the status bar or in a notice exactly as it is spelled
+here. These are the ones left after the sections above; none of them is a
+reason to repeat setup.
+
+| Code | What it means | What to do |
+| --- | --- | --- |
+| `409 already_claimed` | the pairing code has already been claimed by another device | mint a new one with **Pair a new device** |
+| `410 pairing_expired` | the code was not claimed within its ten minutes | mint a new one |
+| `409 missing_chunks` | a version was posted naming chunks the server does not hold, so it refused to record it rather than record a file it cannot serve | let sync run again; it re-uploads what is missing. A repeat is worth a report |
+| `409 too_many_heads` | one file has accumulated more unmerged heads than the server will carry | resolve the conflict copies for that file, which retires its heads |
+| `503 nonce_cache_full` | the replay cache is full | transient by construction: a repeatable request retries itself with backoff, and the next sweep clears it |
+| `503 nonce_log_unavailable` | the server could not record replay state, so it refused the request rather than accept one it cannot prove is not a replay | the server's own log names the I/O error; treat it as a storage problem |
 
 ## Sync stopped with an error
 

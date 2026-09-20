@@ -213,7 +213,7 @@ volume also carries the journal itself and, when
 `OBSYNC_SERVER_KEY` is not supplied, the generated server key: back it up as
 the sensitive volume it is.
 
-`GET /readyz` answers `{"ready":true}` once the server is serving.
+`GET /readyz` answers `{"ready":true,"seq":<n>}` once the server is serving.
 
 ### 1b. Any network, no provider: Compose with Caddy
 
@@ -482,7 +482,7 @@ server is unreachable, and `obsync: error — <reason>` when sync has stopped.
 - **A file is not syncing.** Hidden folders (`.obsidian`, `.git`), symlinked
   folders, and anything outside this device's folder selection are excluded by
   design — see *What syncs and what does not* below.
-Every other symptom, each error code the plugin shows verbatim, and how to
+Every other symptom, the error codes you are most likely to meet, and how to
 collect a report worth sending are in
 [`docs/troubleshooting.md`](docs/troubleshooting.md).
 

@@ -2,8 +2,9 @@
 
 Every field in Settings → Community plugins → Self Hosted Private Sync, what
 it defaults to, and when it is worth changing. The fields are
-`plugin/src/ui/settings.ts`; the two mobile ceilings default from
-`plugin/src/policy.ts`, and every other default is the field's own.
+`plugin/src/ui/settings.ts`; both ceilings default per platform from
+`plugin/src/policy.ts`, this device's **Name** from `defaultDeviceName()` in
+`plugin/src/main.ts`, and the rest from the field itself.
 
 Everything here is **per device**. Nothing in this tab is synced, and no other
 device can change it for you.
