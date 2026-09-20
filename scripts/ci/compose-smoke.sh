@@ -76,10 +76,18 @@
 #                     privileges, and exactly ONE capability
 #                     (`NET_BIND_SERVICE`, for the privileged-port bind), so a
 #                     future edit that grants a second one fails here.
+#  11. the redirect  `http://name:<http port>` answers a redirect to
+#      keeps the port `https://name:<https port>`, the port this run actually
+#                     publishes. The terminator listens on 443 inside its
+#                     container whatever host port publishes it, so a redirect
+#                     Caddy writes for itself names 443 and sends the reader to
+#                     a port nothing listens on. This run publishes a high pair
+#                     for its own reasons, which makes it exactly the
+#                     deployment that used to break.
 #
 # The three steps that carry the deployment between those -- the preflight,
 # the terminator pull and `compose up` -- log and time themselves the same way,
-# so the numbers in the output run 1 to 13 and every one of them names its own
+# so the numbers in the output run 1 to 14 and every one of them names its own
 # decision.
 #
 # It BUILDS NOTHING. The obsync image reference is the argument, so `make
@@ -455,6 +463,18 @@ case "${caddy_hardening}" in
   *) deny "the caddy container did not run hardened: ${caddy_hardening}" ;;
 esac
 prove "hardening: obsync ran ${obsync_hardening}; caddy ran ${caddy_hardening}"
+
+# (11) The redirect off port 80 keeps the port this deployment is published on.
+# `%{redirect_url}` is curl's own resolution of the Location header, so a
+# relative or port-less answer is visible as the address a browser would go to
+# rather than as a string that merely contains the host.
+redirect="$(curl --silent --show-error --max-time 3 --output /dev/null \
+  --resolve "${HOST}:${HTTP_PORT}:127.0.0.1" \
+  --write-out '%{redirect_url}' \
+  "http://${HOST}:${HTTP_PORT}/readyz" 2>/dev/null || true)"
+[ "${redirect}" = "https://${HOST}:${HTTPS_PORT}/readyz" ] \
+  || deny "http://${HOST}:${HTTP_PORT}/readyz redirects to ${redirect:-nothing}, not to https://${HOST}:${HTTPS_PORT}/readyz: a reader who typed the name would land on a port nothing publishes"
+prove "the redirect keeps the port: http://${HOST}:${HTTP_PORT}/readyz -> ${redirect}"
 
 printf 'compose-smoke: SUMMARY image=%s terminator=%s steps=%d duration=%ds decision=pass\n' \
   "${image}" "${caddy_image}" "${proven}" "$(( $(date +%s) - started_at ))"

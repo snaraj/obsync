@@ -5,11 +5,14 @@ One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-Listed in Obsidian's community plugin directory as **Self Hosted Private
-Sync** (plugin id `obsync-private-sync`): install it from Settings →
-Community plugins → Browse, on every platform Obsidian runs on. Device
-acceptance for 1.0.0 is a separate result and is planned in
-[`docs/validation.md`](docs/validation.md).
+1.0.1, listed in Obsidian's community plugin directory as **Self Hosted
+Private Sync** (plugin id `obsync-private-sync`): install it from Settings →
+Community plugins → Browse, on every platform Obsidian runs on. The device run
+behind it is recorded in
+[`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md): it
+proved setup, pairing and two-way sync between a Mac and an iPhone on one LAN,
+and it proved nothing about iPad, Windows, or reaching the server from off that
+LAN.
 
 > [!IMPORTANT]
 > This plugin syncs to a server **you** run. There is no hosted service and no
@@ -110,10 +113,11 @@ this repository’s publisher. New releases carry
 `obsync-X.Y.Z-release-manifest.json`, which names their digests and the
 SHA-256 of the plugin bundle and each native installation file. Verify the signature with cosign, read the digest from the verified
 payload (it must match the manifest on the Release page), and run exactly
-that digest:
+that digest. The tag below is the release you are installing -- `v1.0.1` here,
+`vX.Y.Z` for whichever release you took off the Releases page:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v0.1.0 \
+cosign verify ghcr.io/snaraj/obsync:v1.0.1 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
@@ -126,10 +130,12 @@ docker run -d --name obsync -p 127.0.0.1:8080:8080 \
   ghcr.io/snaraj/obsync@sha256:<the digest cosign just verified>
 ```
 
-On Kubernetes, install the chart with your storage classes, claim sizes, and
-a Secret for `OBSYNC_SERVER_KEY`; the reference deployment (a single-node
-cluster on a Raspberry Pi, reached over private connectivity with no public
-hostname) is described in `docs/platform-onboarding.md` and
+On Kubernetes, [`chart/README.md`](chart/README.md) is the whole standalone
+path: the `helm install` command against the signed OCI chart, the one command
+that creates the `OBSYNC_SERVER_KEY` Secret, and the four values a cluster that
+is not the owner's must override before a pod can run. The reference deployment
+(a single-node cluster on a Raspberry Pi, reached over private connectivity
+with no public hostname) is described in `docs/platform-onboarding.md` and
 `docs/architecture.md` section 10. The server takes ownership of nothing: each volume must be presented owned by uid 65532 and writable by it, or already hold the server's `v1`, or the start is refused with `reason=unwritable`. Static local volumes and `hostPath` directories: create them as `65532:65532`, mode `0700`, with root-owned, closed parents and no symlink on the path. A dynamic provisioner that presents a root-owned or world-writable volume root: prepare the backing directory once as the node administrator (`chown 65532:65532` and `chmod 0700`), then start. The chart sets no `fsGroup`, because a group-writable volume is refused (`docs/storage.md`, "Volume posture").
 
 At first boot the server mints a setup token and writes it, mode 0600 and
@@ -144,8 +150,11 @@ container's own volume, running or stopped:
 docker cp obsync:/data/journal/v1/setup-token - | tar -xO
 ```
 
-On Kubernetes, read `v1/setup-token` from the journal volume on the node
-that holds it. The journal volume also carries the journal itself and, when
+On Kubernetes the same file is on the journal volume, and
+[`chart/README.md`](chart/README.md) gives the two ways to read it there —
+`kubectl exec` and `kubectl cp` are not among them, because the image has no
+shell and no `tar` for either to use. The journal
+volume also carries the journal itself and, when
 `OBSYNC_SERVER_KEY` is not supplied, the generated server key: back it up as
 the sensitive volume it is.
 
@@ -220,7 +229,10 @@ belongs to. Ports 80 and 443 on the address you chose are the only ones
 opened, and `OBSYNC_HTTP_PORT` and `OBSYNC_HTTPS_PORT` move that pair of HOST
 ports if something on this machine already holds them -- they default to 80 and
 443, and the container ports, the certificate and the name never change with
-them.
+them. A host port you moved has to appear everywhere a device names this
+server: set the plugin's **Server URL** to `https://name:PORT`, and the
+deployment's own generated links and its HTTP-to-HTTPS redirect carry the same
+port without being told twice.
 
 The setup token is read the same way as in step 1, from the container compose
 created:
@@ -233,7 +245,8 @@ docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 and proves the path end to end: the bind address required before anything
 starts, TLS through the proxy, `/readyz` truthful, the server itself with no
 published port, 80 and 443 published on the chosen address and on nothing
-else, the token readable, both containers hardened.
+else, the redirect off port 80 keeping the port you published, the token
+readable, both containers hardened.
 
 #### Trust the certificate authority, once per device
 
@@ -270,6 +283,39 @@ Copy `obsync-root.crt` to each device and install it:
   `deploy/compose/Caddyfile` -- a real domain, ports 80 and 443 reachable,
   and a certificate every device already trusts. Nothing else changes.
 
+#### Reaching it from outside your LAN
+
+The server needs no public existence for this, and nothing below asks it to
+become reachable from the internet. What has to be true is true on the ROAMING
+DEVICE, and all five of these, because the first one that is missing is the
+one that makes sync look broken:
+
+- **A private route back to the server.** An overlay network the device joins:
+  WireGuard, Tailscale, or a tunnel provider's private network with its client
+  app. The route has to carry the HTTPS port, not only SSH or one service.
+- **The same Server URL, resolving and routing on that device.** The plugin
+  sends every request to the address you typed, so that name must resolve to
+  an address the route reaches -- the overlay's own DNS, the device's hosts
+  file, or a split-DNS entry. A name that resolves to a LAN address the device
+  cannot route to fails exactly like an offline server.
+- **The same private authority, trusted on that device.** Section above, once
+  per device. A phone that trusts the certificate at home trusts it away from
+  home; a device that never installed it does not.
+- **On iOS, the local-network permission accepted.** iOS prompts once, the
+  first time Obsidian reaches an address on a local network, and the answer
+  afterwards lives in Settings, Obsidian. It is one of the steps the recorded
+  device run answered by hand on the phone.
+- **The host firewall admitting the HTTPS port from the route.** A bind
+  address decides which interface accepts connections; the firewall decides
+  which sources do. An overlay's addresses are a new source.
+
+What has actually been proved is the LAN: the recorded run
+([`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md))
+took a Mac and an iPhone through setup, pairing and two-way sync over the
+Compose route, on one home network, with HTTPS on a non-default port. Sync
+from off that LAN is not a proven result in any release so far, on either
+route.
+
 ### 2. Set up this computer (the first device)
 
 Use Obsidian 1.12.4 or newer on each device. Credentials and vault keys use
@@ -277,12 +323,13 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 
 1. In your vault, open Settings → Community plugins and allow community
    plugins. Select Browse and search for **Self Hosted Private Sync**.
-2. Select **Install**, then **Enable**. If Self Hosted Private Sync is not in Browse, its
-   directory listing is not yet available. No hidden folders or manual file
+2. Select **Install**, then **Enable**. No hidden folders or manual file
    copies are part of installation.
-3. Open the Self Hosted Private Sync settings tab. Set **Server URL** to your public URL. If an
-   access-controlled edge sits in front of the server, paste its headers
-   under **Edge service-token headers**, one per line as `Name: value`.
+3. Open the Self Hosted Private Sync settings tab. Set **Server URL** to the
+   URL your devices reach the server at, port included when it is not 443
+   (`https://name:8443`). If an access-controlled edge sits in front of the
+   server, paste its headers under **Edge service-token headers**, one per
+   line as `Name: value`.
 4. Under **Sync folders on this device**, choose **Selected folders only**
    if the vault also contains code or files you do not want shared. Enter
    relative folders such as `Notes`, one per line, and click **Save on this
@@ -292,11 +339,14 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    first sync within one vault, keep personal files in an excluded folder,
    test disposable notes inside the selected folder, then move the personal
    files in and run **Sync now**.
-5. Under **First-time setup**, paste the setup token. The plugin creates the
-   account and this device, generates the vault key on this computer, and
-   shows the **recovery phrase** (24 words). Write it down and keep it off
-   this machine: without any paired device and without this phrase, the vault
-   is unrecoverable by design. The server never sees the key.
+5. Under **First-time setup**, paste the setup token in the first field. The
+   second field is the **account name**, which is what the dashboard calls
+   this account; it is filled in as `obsync` and most people leave it. Select
+   **Set up**: the plugin creates the account and this device, generates the
+   vault key on this computer, and shows the **recovery phrase** (24 words).
+   Write it down and keep it off this machine: without any paired device and
+   without this phrase, the vault is unrecoverable by design. The server never
+   sees the key.
 6. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
@@ -320,8 +370,9 @@ isolation boundary. Native restart persistence is a separate validation step.
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
    an `obsidian://obsync-private-sync/pair?code=...` link you can send yourself.
-3. On the phone, paste the code under **Pairing code** and tap **Pair this
-   device**, or open the link.
+3. On the phone, open **Pair this device** in the settings tab, paste the code
+   under **Pairing code** and tap **Pair** — or open the link, which is the
+   same dialog with the code already in it.
 4. Back on the computer, approve the device by its name when asked. The phone
    receives the vault key encrypted under a pairing secret that never touches
    the server; until you approve, the phone has no authority of any kind.
@@ -374,6 +425,23 @@ server is unreachable, and `obsync: error — <reason>` when sync has stopped.
   [`docs/storage.md`](docs/storage.md); the protocol is in
   [`docs/protocol.md`](docs/protocol.md) and the design in
   [`docs/architecture.md`](docs/architecture.md).
+
+The error message repeats the server's own refusal code. Five of them are
+about this device rather than about your notes:
+
+- `missing_auth` — the request carried no device, timestamp, nonce or
+  signature. A device that was never set up or paired sends none of them.
+- `bad_signature` — the server has no device by that id, or the signature
+  does not verify with the secret it holds. The usual cause is a device the
+  server no longer has: a rebuilt server, or a restored volume older than the
+  pairing.
+- `stale_timestamp` — this device's clock is more than 300 seconds from the
+  server's. Fix the clock on whichever of the two is wrong, usually by turning
+  automatic time back on; nothing in the plugin can widen that window.
+- `device_pending` — the pairing code was accepted and nobody has approved
+  this device yet. Approve it on the device you paired from.
+- `device_revoked` — this device was revoked, from the dashboard or from
+  another device's settings. It stays revoked: pair it again as a new device.
 
 ### What syncs and what does not
 

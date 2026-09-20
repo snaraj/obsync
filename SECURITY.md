@@ -23,9 +23,13 @@ Fixes ship as new versions, never as re-tags.
 - The server is one static, dependency-free Rust binary in a shell-less
   distroless image, running as non-root with a read-only root filesystem.
   It speaks plain HTTP and is always deployed behind a TLS terminator.
-- Public exposure on the reference deployment is a Cloudflare Tunnel with
-  Cloudflare Access in front of it; the pod is reachable only from the tunnel
-  connector under a default-deny NetworkPolicy.
+- The reference deployment is private and owner-only: no public hostname, no
+  public route, and no access application in front of it. It is reached over
+  private connectivity — a LAN, or a VPN back to it — and the pod accepts
+  connections from exactly one named peer under a default-deny NetworkPolicy
+  that denies all egress. A tunnel provider's PRIVATE route is one optional way
+  to reach it from outside that network; a published hostname is a deployment
+  choice this project supports and does not make.
 - Releases are signed (cosign keyless), deployed by digest, and immutable.
 
 ## Out of scope

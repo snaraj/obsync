@@ -167,6 +167,59 @@ export function isNewer(candidate: string, current: string): boolean {
   return false;
 }
 
+/**
+ * Where **Open dashboard** may send the browser, decided on this device.
+ *
+ * The link is SERVER-SUPPLIED data. The server builds it as
+ * `{OBSYNC_PUBLIC_URL}/login?token=…` (`crates/obsyncd/src/api/admin.rs`), and
+ * the chart and the composition ship an empty `publicUrl` on purpose — a
+ * server that advertises no address of its own is the private posture, not a
+ * misconfiguration — so the honest answer is usually the RELATIVE
+ * `/login?token=…`, which no browser can open. Resolving it against the Server
+ * URL the operator typed is what makes that link work.
+ *
+ * Resolution is also what would let a server REDIRECT this device, so the
+ * resolved origin must equal the configured one. The answer carries a
+ * single-use dashboard token: a hostile or merely misconfigured server that
+ * answered with another origin would hand that token, and the administrative
+ * session it opens, to whoever owns that origin. The configured URL must be
+ * http(s) for the same reason — an opaque base (`foo:bar`) has the opaque
+ * origin `null`, which a `javascript:` link resolved against it would match.
+ */
+export type DashboardTarget = { url: string } | { reason: string; refused: string };
+
+export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
+  const base = parseUrl(serverUrl);
+  if (base === null || (base.protocol !== "https:" && base.protocol !== "http:")) {
+    return {
+      reason: "server_url",
+      refused: "the Server URL in settings is not an http or https address, so a dashboard link cannot be resolved against it",
+    };
+  }
+  const resolved = parseUrl(link, base);
+  if (resolved === null) {
+    return {
+      reason: "not_a_link",
+      refused: "the server answered with something this device cannot read as an address, so no dashboard was opened",
+    };
+  }
+  if (resolved.origin !== base.origin) {
+    return {
+      reason: "foreign_origin",
+      refused: `the dashboard link points at ${resolved.origin}, not at the configured server ${base.origin}, so it was not opened`,
+    };
+  }
+  return { url: resolved.href };
+}
+
+function parseUrl(value: string, base?: URL): URL | null {
+  try {
+    return new URL(value, base);
+  } catch {
+    return null;
+  }
+}
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
 
@@ -1179,7 +1232,16 @@ export default class ObsyncPlugin extends Plugin {
       // have been minted for nobody; it expires in five minutes, and asking
       // for another is the user's own decision, not a retry this makes.
       if (link.outcome === "lost") throw new Error(lostMessage("requesting a dashboard link", link));
-      window.open(link.value.url, "_blank");
+      // The answer is resolved and origin-checked here, never opened as it
+      // arrives: `dashboardTarget` says why. The reason is logged and the link
+      // itself never is, because it carries the token.
+      const target = dashboardTarget(link.value.url, this.state.data.serverUrl);
+      if ("refused" in target) {
+        this.log(`dashboard decision=refused reason=${target.reason}`);
+        throw new Error(target.refused);
+      }
+      this.log("dashboard decision=opened");
+      window.open(target.url, "_blank");
     } catch (error) {
       new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
     }

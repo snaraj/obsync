@@ -1,8 +1,7 @@
 # Community plugin distribution
 
 Self Hosted Private Sync installs and updates through Obsidian's Community Plugins browser on
-desktop and mobile. The server does not install client code. If Self Hosted Private Sync is
-not listed in Browse, the directory entry is not yet available; manual
+desktop and mobile. The server does not install client code, and manual
 placement of plugin files is not the production installation path.
 
 The directory identity is `obsync-private-sync`; the displayed name is
