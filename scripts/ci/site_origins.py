@@ -157,11 +157,16 @@ def allowed(url: str, own: str) -> bool:
             return True  # relative: this site
         if parts.scheme.lower() not in ("http", "https"):
             return True  # names no host to reach
-    origin = f"https://{parts.netloc}" if parts.netloc else ""
-    own_host = urlsplit(own).netloc
-    if parts.netloc == own_host:
+    host = parts.netloc.lower()
+    if host == urlsplit(own).netloc.lower():
         return True
-    return origin == REPOSITORY_ORIGIN and parts.path.startswith(REPOSITORY_PREFIX)
+    if f"https://{host}" != REPOSITORY_ORIGIN:
+        return False
+    # The repository's own pages, and NOT a repository whose name merely
+    # begins with this one's: `/snaraj/obsync-anything` is a different
+    # repository and a prefix test would admit it.
+    path = parts.path
+    return path == REPOSITORY_PREFIX or path.startswith(f"{REPOSITORY_PREFIX}/")
 
 
 def srcset_candidates(value: str) -> list[str]:

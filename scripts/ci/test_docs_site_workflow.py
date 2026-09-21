@@ -504,6 +504,11 @@ class TheBuiltSiteIsJudgedByItsOrigins(unittest.TestCase):
         self.assertTrue(site_origins.allowed("../captures/01-install.png", own))
         self.assertTrue(site_origins.allowed("mailto:someone@example.org", own))
         self.assertFalse(site_origins.allowed("https://github.com/someone/else", own))
+        # A repository whose name BEGINS with this one's is a different
+        # repository, and a prefix test would have admitted it.
+        self.assertFalse(site_origins.allowed("https://github.com/snaraj/obsync-mirror", own))
+        self.assertTrue(site_origins.allowed("https://GitHub.com/snaraj/obsync/issues/96", own))
+        self.assertTrue(site_origins.allowed("https://SNARAJ.github.io/obsync/", own))
         self.assertFalse(site_origins.allowed("//unpkg.com/x", own))
         self.assertFalse(site_origins.allowed("https://unpkg.com/x", own))
 
