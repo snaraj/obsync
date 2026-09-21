@@ -66,7 +66,9 @@
  * so a crash mid-write cannot leave a torn note, and streams a file of any
  * size. Mobile buffers the file and writes it with `adapter.writeBinary`,
  * which is why the mobile per-file ceiling exists; a file above the ceiling
- * is never downloaded and is listed as remote-only instead.
+ * is never downloaded and is listed as remote-only instead, and any older
+ * local copy of that file goes to the system trash so the device never shows
+ * a stale file and a remote-only entry for the same path (issue #100).
  */
 
 import type { SyncContext, VaultStat, VaultWriter } from "./engine";
@@ -566,10 +568,34 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
 
   const admission = admit(context.state.data.policy, context.state.localBytes(), manifest.size);
   if (!admission.ok) {
+    const started = context.now();
+    // AN OLDER LOCAL COPY IS NOT A SECOND TRUTH (issue #100). The file's
+    // current version is one this device will not hold, so any copy still on
+    // disk is behind it with nothing on screen saying so: the file explorer
+    // lists a file that looks synced while "Show remote-only files" lists the
+    // same path as absent, and one touch of that copy publishes a version
+    // whose parent is not the latest -- which is a conflict copy of stale
+    // content on every other device. Remote-only means remote-only, and Fetch
+    // is the way back. The one copy that is NOT this decision's to remove is
+    // one holding bytes this device never pushed, because no version holds
+    // them (`competing`, issue #98); that copy stays and its queued push
+    // carries it.
+    let local = "none";
+    if (localPath !== undefined && (await context.host.stat(localPath)) !== null) {
+      const held = await competing(context, localPath, change.file_id);
+      if (held !== null) local = `kept_${held}`;
+      else {
+        context.trashed.add(localPath);
+        await context.host.trash(localPath);
+        context.state.forgetPath(localPath);
+        local = "trashed";
+      }
+    }
     context.state.data.remoteOnly[change.file_id] = { path: manifest.path, size: manifest.size };
     await context.state.save();
     context.host.log(
-      `pull path_class=file bytes=${manifest.size} decision=remote_only reason=${admission.reason} seq=${change.seq}`,
+      `pull path_class=file bytes=${manifest.size} decision=remote_only reason=${admission.reason} ` +
+        `local=${local} seq=${change.seq} duration_ms=${context.now() - started}`,
     );
     return "remote_only";
   }
