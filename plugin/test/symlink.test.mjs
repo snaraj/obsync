@@ -105,6 +105,7 @@ async function vault({ fs: injected } = {}) {
     concurrency: 4,
     authored: new Set(),
     written: new Set(),
+    trashed: new Set(),
     refused: new Set(),
     deviceNames: new Map(),
     now: () => 1757200000000,

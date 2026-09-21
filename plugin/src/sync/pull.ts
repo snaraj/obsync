@@ -410,6 +410,11 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
 
   if (manifest.deleted) {
     if (localPath !== undefined) {
+      // Marked BEFORE the trash, not after: Obsidian reports the removal to
+      // this plugin's own delete handler while `trash` is still running, and
+      // an unmarked echo becomes a tombstone this device publishes for a file
+      // the remote side already owns (`engine.ts`, ECHOES; issue #96).
+      context.trashed.add(localPath);
       await context.host.trash(localPath);
       context.state.forgetPath(localPath);
       await context.state.save();
@@ -439,6 +444,10 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   const started = context.now();
   await materialise(context, manifest);
   if (localPath !== undefined && localPath !== manifest.path) {
+    // The move's delete half. The same echo, and the one that cost a renamed
+    // note on every device before 1.0.4: here the file is not deleted at all,
+    // it is the SAME file id, alive at `manifest.path`.
+    context.trashed.add(localPath);
     await context.host.trash(localPath);
     context.state.forgetPath(localPath);
   }

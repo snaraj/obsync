@@ -186,6 +186,8 @@ export class FakeServer {
   constructor({ deviceId = "aabbccddeeff00112233445566778899", deviceSecretHex = "0f".repeat(32) } = {}) {
     this.deviceId = deviceId;
     this.deviceSecret = Buffer.from(deviceSecretHex, "hex");
+    /** One secret per enrolled device, as obsyncd holds them. */
+    this.secrets = new Map([[deviceId, this.deviceSecret]]);
     this.chunks = new Map();
     this.files = new Map();
     this.journal = [];
@@ -229,8 +231,28 @@ export class FakeServer {
       headers["X-Obsync-Nonce"],
       sha256(this.bodyBytes(request)),
     ].join("\n");
-    const expected = createHmac("sha256", this.deviceSecret).update(preimage).digest("hex");
+    // The signing key is the one enrolled for the device that CLAIMS the
+    // request, never a server-wide secret: a two-device test must not be able
+    // to pass by signing as somebody else.
+    const secret = this.secrets.get(headers["X-Obsync-Device"]);
+    if (!secret) throw new Error(`fake server: ${target} claims an unenrolled device`);
+    const expected = createHmac("sha256", secret).update(preimage).digest("hex");
     if (expected !== headers["X-Obsync-Sig"]) throw new Error(`fake server: bad signature on ${target}`);
+  }
+
+  /** Enrol a second device in the same vault, with its own secret. */
+  addDevice(deviceId, deviceSecretHex, name, platform = "ios") {
+    this.secrets.set(deviceId, Buffer.from(deviceSecretHex, "hex"));
+    this.devices.push({
+      device_id: deviceId,
+      name,
+      platform,
+      app_version: "0.1.0",
+      last_seen: 0,
+      revoked: false,
+      policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
+    });
+    return deviceId;
   }
 
   json(status, value) {
@@ -721,6 +743,7 @@ export async function rig({ isMobile = false, policy } = {}) {
     concurrency: isMobile ? 2 : 4,
     authored: new Set(),
     written: new Set(),
+    trashed: new Set(),
     refused: new Set(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,

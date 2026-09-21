@@ -5,6 +5,48 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.4 - 2026-09-20
+
+**Renaming a note or a folder could delete it, on every device. Update every
+device that syncs this vault, and do not rename anything until you have.**
+That is the whole release; nothing else changes.
+
+**What happened.** In 1.0.0, 1.0.1, 1.0.2 and 1.0.3, renaming a note -- through
+the inline title, through the file explorer, or by moving it into another
+folder -- reached the other devices correctly as a MOVE, and then the device
+that applied that move published a DELETION for the note it had just moved.
+Every device obeys a deletion, the one that did the renaming included, so the
+note left the vault everywhere within seconds of being renamed. Renaming a
+folder did the same to every note inside it. A note nobody renamed was never
+affected, and no note was ever deleted on its own.
+
+**Your content is not lost, and the server never had it in the clear.** A
+deletion here is a marker, not an erasure: the versions before it stay on the
+server under the retention its operator set (by default at least ten versions
+per file and everything from the last thirty days), and they are still
+encrypted with your vault key. To bring a note back, run **Restore from
+history** from the command palette on any paired device, find the note by its
+path, pick the content version from before the deletion marker -- markers
+themselves cannot be restored, which is why the list offers the version under
+it -- and restore it. It comes back as a new file beside that path, named
+`<note> (restored-...)`, and nothing existing is overwritten. A note Obsidian
+moved to your system Trash or to your vault's `.trash` folder when it obeyed
+the deletion is also still there, with its body intact.
+
+**What was wrong.** Applying a remote rename means writing the note under its
+new name and removing it under the old one. Obsidian reports that removal back
+to this plugin exactly as it reports one you make yourself, and the plugin
+published it: a deletion for a file that was alive the whole time, one name
+over. The plugin already ignored the echo of its own writes; now it ignores the
+echo of its own removals too, by the path it is about to remove, and it says so
+in its log (`decision=echo_suppressed event=delete`). A deletion you actually
+make is untouched by this and still reaches every device, including one you
+make on a note that was just renamed elsewhere.
+
+**Why every device.** The device that publishes the wrong deletion is the one
+RECEIVING the rename, so a single device left on 1.0.0-1.0.3 can still delete a
+note that a fully updated device renames. Update them all, then rename freely.
+
 ## 1.0.3 - 2026-09-20
 
 Dashboard security: an independent review of 1.0.1, and a second pass that
