@@ -5,6 +5,52 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.7 - 2026-09-21
+
+**The other half of the problem 1.0.6 described: two notes that share one name
+are now given two names, the same two on every device. Update every device that
+syncs the vault.**
+
+**Two notes, one name, settled once.** When two devices each made a note under
+the same name while one of them was closed, 1.0.5 and 1.0.6 kept both -- which
+is right -- and then left both of them wearing the one name, so every later
+edit of either note arrived at a name that was taken and wrote another
+`(conflict from ...)` copy. On real devices that was three copies of one note
+within a few minutes, on both devices at once. Now the pair is told apart once
+and for all: each note has an identity of its own, the note whose identity
+sorts first keeps the name, and the device holding the other one renames its
+note to the `(conflict from ...)` name and publishes that rename like any other
+rename you would make yourself. Both devices work it out from the same two
+identities, without asking each other, so both end up with the same two names
+-- and from then on each note updates in place, wherever it is edited, instead
+of being copied again.
+
+**What you will see when you update.** On one of the two devices, the note that
+device made changes name once, to the `(conflict from ...)` name, and obsync
+tells you it has done it. Nothing is written over: both notes keep their text,
+and both end up on both devices under those same two names. Rename either of
+them afterwards as you would any note -- the copy name is a starting point, not
+a fixture. If you already renamed one of the pair yourself, there is no longer
+a collision and nothing here applies to it.
+
+**Two smaller things behind that.**
+
+- A note a device has never uploaded is now uploaded before obsync decides
+  anything about a name it shares. Without that, the device that had not
+  uploaded its note yet could not tell the two apart at all, and the two
+  devices would settle on different names and stay there -- each keeping its
+  own note under the name and the other device's beside it.
+- A note that is already exactly the version the server holds is now recognised
+  as that version rather than copied beside itself. That is what a device meets
+  after its vault folder is restored or replaced, where 1.0.6 would have made a
+  conflict copy of every note in it.
+
+**Update every device that syncs the vault.** A device still on 1.0.6 does not
+know the rule, and for any pair it has not yet settled it goes on making copies
+the way 1.0.6 did. In the case reproduced here -- two devices, one note each
+under one name -- both notes survived on both devices and no note content was
+lost.
+
 ## 1.0.6 - 2026-09-21
 
 **Three things 1.0.5 got wrong, all found on real devices after it shipped, none
