@@ -9,3 +9,6 @@ __pycache__/
 # Agent worktrees (AGENTS.md, "Parallel agents in one checkout")
 .worktrees/
 .claude/worktrees/
+
+# Documentation site build output (mkdocs.yml, `site_dir`)
+/site/

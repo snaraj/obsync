@@ -115,6 +115,24 @@ preference:
      not the one a reader copies out of an install guide. The PROSE may name
      it, and does; only a command may not carry it.
 
+ 12. a bind address is a DESTINATION, not a source -- the quick start must say,
+     in these words, that "a bind address limits the destination interface, not
+     the source", and may not claim source exclusivity for one. Routed, VPN and
+     port-forwarded traffic arriving at a LAN address is accepted unless a
+     firewall or the router refuses it, and a reader who takes a LAN bind for
+     an access control has protected nothing.
+
+ 13. the server's own run publishes 8080 on the loopback -- in every judged
+     document, a `-p`/`--publish` mapping of this server's port must name
+     `127.0.0.1` as its host address, and a mapping with NO host address is
+     refused too, because that is the same exposure with nobody having chosen
+     it. The process speaks plain HTTP and its TLS terminator is outside it
+     (requirement 7), so the published address is the whole of who can reach an
+     unencrypted sync API and an administrative dashboard. Rule 11 asks exactly
+     this question of the Compose path and the Docker path had no rule at all:
+     an adversarial review rewrote `127.0.0.1` to `0.0.0.0` in both documents
+     and the entire suite stayed green.
+
 FAIL-CLOSED PARSING, OVER EXECUTABLE STRUCTURE. The first version of this file
 judged text: it split a line on shell operators and searched the result with
 regular expressions. An adversarial review walked straight through it with two
@@ -159,6 +177,16 @@ import miniyaml  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
+# The documentation site's own onboarding pages (mkdocs.yml, "Start here" and
+# "Using it"). The quick start moved OUT of README.md when the README became a
+# front door, and the commands moved with it. A judged document that stops
+# being where the reader is told to go is a gate watching an empty room, so
+# every page that carries an onboarding command or hands the reader the setup
+# token is judged here beside the README.
+SERVER_GUIDE = ROOT / "docs" / "server.md"
+QUICKSTART_GUIDE = ROOT / "docs" / "quickstart.md"
+DASHBOARD_GUIDE = ROOT / "docs" / "dashboard.md"
+DAILY_USE_GUIDE = ROOT / "docs" / "daily-use.md"
 ARCHITECTURE = ROOT / "docs" / "architecture.md"
 COMPOSE = ROOT / "deploy" / "compose" / "docker-compose.yml"
 SETTINGS = ROOT / "plugin" / "src" / "ui" / "settings.ts"
@@ -166,13 +194,31 @@ DASHBOARD = ROOT / "dashboard" / "index.html"
 # The document names this suite judges. The first two are markdown and take the
 # command and prose rules; the third is the compose file and takes rule 8.
 README_NAME = "README.md"
+SERVER_GUIDE_NAME = "docs/server.md"
+QUICKSTART_GUIDE_NAME = "docs/quickstart.md"
+DASHBOARD_GUIDE_NAME = "docs/dashboard.md"
+DAILY_USE_GUIDE_NAME = "docs/daily-use.md"
 ARCHITECTURE_NAME = "docs/architecture.md"
 COMPOSE_NAME = "deploy/compose/docker-compose.yml"
 SETTINGS_NAME = "plugin/src/ui/settings.ts"
 DASHBOARD_NAME = "dashboard/index.html"
-MARKDOWN = (README_NAME, ARCHITECTURE_NAME)
+MARKDOWN = (README_NAME, SERVER_GUIDE_NAME, ARCHITECTURE_NAME)
 # Rule 5's document set: everywhere a person reads the words "setup token".
-WORDING = (README_NAME, ARCHITECTURE_NAME, SETTINGS_NAME, DASHBOARD_NAME)
+# `docs/daily-use.md` is deliberately NOT here. It never names the setup token
+# -- it is the page about a vault that is already syncing -- so rule 5 has
+# nothing in it to match and a membership would be an assertion no edit to that
+# page could fail. A tuple entry that cannot fire is not a cheap extra guard;
+# it is the vacuity this suite's own protocol refuses, and it made the claim
+# "every page that hands over the token" true of one page fewer than it said.
+WORDING = (
+    README_NAME,
+    SERVER_GUIDE_NAME,
+    QUICKSTART_GUIDE_NAME,
+    DASHBOARD_GUIDE_NAME,
+    ARCHITECTURE_NAME,
+    SETTINGS_NAME,
+    DASHBOARD_NAME,
+)
 
 # The only image the onboarding path may run, and only ever by digest.
 SERVER_IMAGE_PREFIX = "ghcr.io/snaraj/obsync@sha256:"
@@ -290,6 +336,27 @@ EVERY_INTERFACE = "0.0.0.0"
 REACHABILITY_SENTENCE = "a bind address limits the destination interface, not the source"
 SOURCE_EXCLUSIVITY_CLAIMS = ("and no further", "nothing else does", "nothing off this host can open")
 VOLUME_FLAGS = frozenset({"-v", "--volume", "--mount"})
+# Rule 13: the server's own `docker run` publishes 8080 on the loopback and
+# nowhere else. The process speaks plain HTTP and TLS is always outside it
+# (requirement 7), so the published address is the whole of who can reach an
+# unencrypted sync API and an administrative dashboard. The Compose half of the
+# same guidance already has rule 11 for exactly this question, and the Docker
+# half had nothing: rewriting `127.0.0.1` to `0.0.0.0` in both judged documents
+# left every rule green. A host port with NO address at all is the same
+# exposure with nobody having chosen it, so it is refused too. The flag is read
+# as shell TOKENS, and the host address is the part before the first colon of a
+# three-part value, so `-p=…` and `--publish …` are the same decision.
+PUBLISH_FLAGS = frozenset({"-p", "--publish"})
+SERVER_PORT = "8080"
+LOOPBACK = "127.0.0.1"
+# The long publication syntax's keys, and the protocols a short one may carry.
+# An unknown key or protocol makes the mapping unreadable, which is a refusal.
+PUBLISH_LONG_KEYS = frozenset({"published", "target", "host_ip", "protocol", "mode"})
+PUBLISH_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
+# A range wider than this is a mistake or an attack, not a documented mapping,
+# and expanding it would be this gate's own denial of service.
+PUBLISH_RANGE_CEILING = 65535
+IPV6_HOST = re.compile(r"^\[(?P<host>[^\]]*)\]:(?P<rest>.*)$")
 
 
 @dataclass(frozen=True)
@@ -476,7 +543,7 @@ def _quick_start_pipelines(quick_start: str) -> list[Pipeline]:
     return found
 
 
-def _token_read_refusals(quick_start: str) -> list[str]:
+def _token_read_refusals(quick_start: str, name: str = README_NAME) -> list[str]:
     """Rule 3, over EVERY documented read rather than over the first one.
 
     The quick start reads the token twice now -- once from the container the
@@ -499,13 +566,13 @@ def _token_read_refusals(quick_start: str) -> list[str]:
             continue
         named = " | ".join(" ".join(command) for command in pipeline.commands)
         found.append(
-            "README.md: the quick start no longer reads the setup token with "
+            f"{name}: the quick start no longer reads the setup token with "
             f"`{SAFE_READ}`: {named}"
         )
     starts = _server_starts(quick_start)
     if reachable < max(1, starts):
         found.append(
-            "README.md: the quick start no longer reads the setup token with "
+            f"{name}: the quick start no longer reads the setup token with "
             f"`{SAFE_READ}` on every path that starts the server "
             f"({starts} starts, {reachable} reachable reads)"
         )
@@ -577,6 +644,21 @@ def refusals(documents: dict[str, str]) -> list[str]:
             )
         found.extend(_reachability_refusals(quick_start))
         found.extend(_program_refusals(quick_start))
+    server_guide = documents.get(SERVER_GUIDE_NAME, "")
+    if server_guide:
+        # The whole page rather than one section: it exists to document BOTH
+        # install paths, so every pipeline in it that names the token path must
+        # be the safe read and each documented start must have one. The
+        # section-scoped rules (the standing-credential sentence, the
+        # allowlisted programs, the destination/source sentence) stay on
+        # README.md's `## Get syncing`, which is still the shortest complete
+        # path and is still judged as one.
+        found.extend(_token_read_refusals(server_guide, SERVER_GUIDE_NAME))
+        if RECOVERY_SENTENCE not in server_guide:
+            found.append(
+                f"{SERVER_GUIDE_NAME}: the server guide no longer says the token "
+                f"{RECOVERY_SENTENCE!r}"
+            )
     architecture = documents.get(ARCHITECTURE_NAME, "")
     if architecture:
         found.extend(_architecture_refusals(architecture))
@@ -818,12 +900,140 @@ def _one_command(name: str, command: tuple[str, ...]) -> list[str]:
             f"{name}: `{JOURNAL_VOLUME}` is named by a command that is not the "
             f"server's own digest-pinned run: {' '.join(command)}"
         )
+    if server:
+        found.extend(_publish_refusals(name, command))
     if command[:2] == ("cosign", "verify"):
         for pair in (CERTIFICATE_IDENTITY, CERTIFICATE_ISSUER):
             if not _has_flag(command, pair):
                 found.append(
                     f"{name}: `cosign verify` is missing `{flag_text(pair)}`"
                 )
+    return found
+
+
+def _publish_values(command: tuple[str, ...]) -> list[str]:
+    """Every `-p`/`--publish` VALUE in one command, in the order they appear."""
+    values: list[str] = []
+    index = 0
+    while index < len(command):
+        flag, separator, value = command[index].partition("=")
+        if flag not in PUBLISH_FLAGS:
+            index += 1
+            continue
+        if separator:
+            values.append(value)
+            index += 1
+            continue
+        values.append(command[index + 1] if index + 1 < len(command) else "")
+        index += 2
+    return values
+
+
+def _container_ports(side: str) -> frozenset[int] | None:
+    """The container ports one published specification exposes, or None.
+
+    A specification may name a single port or a RANGE, and may carry a
+    `/tcp` or `/udp` suffix. None means "this gate cannot read it", which is a
+    refusal rather than a pass: an unreadable mapping is one nobody can say the
+    address of.
+    """
+    port, _, protocol = side.partition("/")
+    if protocol and protocol not in PUBLISH_PROTOCOLS:
+        return None
+    low, dash, high = port.partition("-")
+    if not low.isdigit() or (dash and not high.isdigit()):
+        return None
+    first, last = int(low), int(high) if dash else int(low)
+    if last < first or last - first > PUBLISH_RANGE_CEILING:
+        return None
+    return frozenset(range(first, last + 1))
+
+
+def _publication(value: str) -> tuple[str, frozenset[int]] | None:
+    """`(host address, container ports)` for one publication, or None.
+
+    Docker publishes in more shapes than `ip:host:container`, and rule 13 has
+    to read all of them, because each one can put the plaintext API on every
+    address the host has:
+
+        8080                     every address, host port chosen for you
+        8080:8080                every address
+        127.0.0.1:8080:8080      the loopback, which is the documented form
+        127.0.0.1::8080          the loopback, host port chosen for you
+        [::1]:8080:8080          an IPv6 host address
+        0.0.0.0:8000-8100:8000-8100   a RANGE that contains 8080
+        0.0.0.0:8181:8080/tcp    a protocol suffix on the container side
+        published=8181,target=8080    the long syntax
+
+    The first version of this guard compared the last colon-separated segment
+    with `8080`, so the protocol suffix alone walked past it and an ADDITIONAL
+    mapping beside the loopback one was never judged at all.
+    """
+    if "=" in value:
+        fields: dict[str, str] = {}
+        for field in value.split(","):
+            key, separator, item = field.partition("=")
+            if not separator or key.strip() not in PUBLISH_LONG_KEYS:
+                return None
+            fields[key.strip()] = item.strip()
+        ports = _container_ports(fields.get("target", ""))
+        if ports is None:
+            return None
+        return fields.get("host_ip", ""), ports
+    rest = value
+    host = ""
+    bracketed = IPV6_HOST.match(value)
+    if bracketed is not None:
+        host = bracketed.group("host")
+        rest = bracketed.group("rest")
+    parts = rest.split(":")
+    if bracketed is not None:
+        # `[::1]:8080:8080` leaves `8080:8080`, and `[::1]::8080` leaves
+        # `:8080`, so the remainder carries one field fewer than the plain
+        # forms below.
+        parts = [host] + parts
+    if len(parts) == 1:
+        ports = _container_ports(parts[0])
+    elif len(parts) == 2:
+        ports = _container_ports(parts[1])
+    elif len(parts) == 3:
+        host, ports = parts[0], _container_ports(parts[2])
+    else:
+        return None
+    if ports is None:
+        return None
+    return host, ports
+
+
+def _publish_refusals(name: str, command: tuple[str, ...]) -> list[str]:
+    """Rule 13, over the server's own run: 8080 is published on the loopback.
+
+    EVERY publication in the command is judged, not the first and not the one
+    that replaced the documented mapping: a second `-p` added beside it exposes
+    the same process just as completely.
+    """
+    found: list[str] = []
+    for value in _publish_values(command):
+        publication = _publication(value)
+        if publication is None:
+            found.append(
+                f"{name}: `{value}` is not a port publication this gate can "
+                f"read, so nothing here can say who reaches {SERVER_PORT}: "
+                f"{' '.join(command)}"
+            )
+            continue
+        host, ports = publication
+        if int(SERVER_PORT) not in ports:
+            continue
+        if host != LOOPBACK:
+            found.append(
+                f"{name}: the server's own run publishes {SERVER_PORT} on "
+                f"{host or 'every address this host has (no host address given)'!r}, "
+                f"not {LOOPBACK!r}: this process speaks plain HTTP and its TLS "
+                f"terminator is outside it, so the published address is who can "
+                f"reach an unencrypted sync API and the dashboard: "
+                f"{' '.join(command)}"
+            )
     return found
 
 
@@ -900,6 +1110,10 @@ def _architecture_refusals(text: str) -> list[str]:
 def documents() -> dict[str, str]:
     return {
         README_NAME: README.read_text(encoding="utf-8"),
+        SERVER_GUIDE_NAME: SERVER_GUIDE.read_text(encoding="utf-8"),
+        QUICKSTART_GUIDE_NAME: QUICKSTART_GUIDE.read_text(encoding="utf-8"),
+        DASHBOARD_GUIDE_NAME: DASHBOARD_GUIDE.read_text(encoding="utf-8"),
+        DAILY_USE_GUIDE_NAME: DAILY_USE_GUIDE.read_text(encoding="utf-8"),
         ARCHITECTURE_NAME: ARCHITECTURE.read_text(encoding="utf-8"),
         COMPOSE_NAME: COMPOSE.read_text(encoding="utf-8"),
         SETTINGS_NAME: SETTINGS.read_text(encoding="utf-8"),
@@ -933,6 +1147,63 @@ class TheOnboardingPathHoldsItsRepairedShape(unittest.TestCase):
     def test_the_quick_start_calls_the_token_a_standing_credential(self):
         quick_start = section(documents()["README.md"], "## Get syncing")
         self.assertIn(RECOVERY_SENTENCE, quick_start)
+
+
+class TheSiteGuidesAreJudgedBesideTheReadme(unittest.TestCase):
+    """The pages the README now sends a reader to, held to the same rules.
+
+    `README.md` is a front door: it carries the shortest complete path and
+    nothing else, and `mkdocs.yml` sends every reader who wants more to
+    `docs/server.md`. That page documents the SAME two install paths with the
+    same commands, so a rule that watched only the README would be watching the
+    shorter of two documents a stranger pastes from. These are the properties
+    the longer one has to hold too.
+    """
+
+    def guide(self) -> str:
+        return documents()[SERVER_GUIDE_NAME]
+
+    def test_the_server_guide_is_one_of_the_judged_documents(self):
+        # Non-vacuity: every assertion below is worth nothing if the page is
+        # not in the sets `refusals()` walks.
+        self.assertIn(SERVER_GUIDE_NAME, MARKDOWN)
+        self.assertIn(SERVER_GUIDE_NAME, WORDING)
+
+    def test_the_server_guide_runs_the_verified_digest(self):
+        self.assertIn(SERVER_IMAGE_PREFIX, self.guide())
+        self.assertEqual(_command_refusals(SERVER_GUIDE_NAME, self.guide()), [])
+
+    def test_the_server_guide_pins_both_cosign_identity_flags(self):
+        flat = re.sub(r"\s*\\\n\s*", " ", self.guide())
+        self.assertIn(flag_text(CERTIFICATE_IDENTITY), flat)
+        self.assertIn(flag_text(CERTIFICATE_ISSUER), flat)
+
+    def test_the_server_guide_reads_the_token_on_every_path(self):
+        guide = self.guide()
+        self.assertEqual(_server_starts(guide), 2)
+        self.assertEqual(_token_read_refusals(guide, SERVER_GUIDE_NAME), [])
+
+    def test_the_server_guide_calls_the_token_a_standing_credential(self):
+        self.assertIn(RECOVERY_SENTENCE, self.guide())
+
+    def test_every_page_that_hands_over_the_token_takes_the_wording_rule(self):
+        # The four pages `mkdocs.yml` puts under "Start here" and "Using it".
+        # A page that tells a reader where the setup token is, and calls it
+        # one-time, teaches the same wrong habit the settings tab would.
+        for name in (SERVER_GUIDE_NAME, QUICKSTART_GUIDE_NAME, DASHBOARD_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.assertIn(name, WORDING)
+                self.assertEqual(_prose_refusals(name, documents()[name]), [])
+                # The membership is only real if the rule has something in this
+                # page to bite on, so each one is required to NAME the token.
+                self.assertIn("setup token", documents()[name])
+
+    def test_a_page_that_never_names_the_token_is_left_out_of_wording(self):
+        # The other side of the line above, and the reason `docs/daily-use.md`
+        # is absent: a document rule 5 cannot match adds a tuple entry no edit
+        # to that document can fail.
+        self.assertNotIn("setup token", documents()[DAILY_USE_GUIDE_NAME])
+        self.assertNotIn(DAILY_USE_GUIDE_NAME, WORDING)
 
 
 class TheParserFindsWhatItClaimsTo(unittest.TestCase):
@@ -1505,6 +1776,172 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def test_renaming_the_obsync_service_is_refused(self):
         found = self.mutate(COMPOSE_NAME, "\n  obsync:\n", "\n  obsyncd:\n")
         self.kills(found, f"has no `services.{OBSYNC_SERVICE}` mapping")
+
+
+    def test_running_the_mutable_tag_in_the_server_guide_is_refused(self):
+        # Rule 1 over the page the README sends the reader to. Without the
+        # page in MARKDOWN this mutation is silent, which is the whole point
+        # of adding it there.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, SERVER_IMAGE_PREFIX, "ghcr.io/snaraj/obsync:v1.0.0 #"
+        )
+        self.kills(found, "not ghcr.io/snaraj/obsync@sha256:")
+
+    def test_neutralizing_a_server_guide_token_read_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            "docker cp obsync:",
+            "false && docker cp obsync:",
+        )
+        self.kills(found, "docs/server.md: the quick start no longer reads")
+
+    def test_dropping_a_server_guide_token_read_is_refused(self):
+        # The other half: a read that is gone entirely, rather than one that
+        # is present and unreachable. One read for two documented starts.
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            "docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO",
+            "docker logs obsync-obsync-1",
+        )
+        self.kills(found, "on every path that starts the server")
+
+    def test_deleting_the_server_guide_recovery_sentence_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME, RECOVERY_SENTENCE, "is consumed at first use"
+        )
+        self.kills(found, "docs/server.md: the server guide no longer says")
+
+    def test_an_unpinned_compose_up_in_the_server_guide_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME, COMPOSE_UP_BIND, "OBSYNC_HTTPS_PORT=8443"
+        )
+        self.kills(found, f"carries no {BIND_ADDRESS_VARIABLE}=")
+
+    def test_publishing_the_server_on_every_interface_is_refused(self):
+        # Rule 13, on BOTH judged documents, because the command stands in each
+        # and a reader pastes whichever one is in front of them. This is the
+        # mutant that survived the first head: the guidance is emphatic about
+        # the Compose bind address and had nothing to say about this one.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {EVERY_INTERFACE}:{SERVER_PORT}:{SERVER_PORT}",
+                )
+                self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_publishing_the_server_with_no_host_address_is_refused(self):
+        # The same exposure with nobody having chosen it: `-p 8080:8080`
+        # publishes on every address the host has, which is what the omitted
+        # field means to Docker and is the shape a reader shortens the line to.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {SERVER_PORT}:{SERVER_PORT}",
+                )
+                self.kills(found, "no host address given")
+
+    def test_a_protocol_suffix_does_not_walk_past_rule_13(self):
+        # The review's surviving regression: the first version of this guard
+        # compared the LAST colon-separated segment with `8080`, so `/tcp`
+        # made the mapping invisible to it and all 84 tests stayed green.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {EVERY_INTERFACE}:8181:{SERVER_PORT}/tcp",
+                )
+                self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_an_additional_mapping_beside_the_loopback_one_is_refused(self):
+        # The other half of the same regression: the documented mapping stays
+        # exactly as it is and a second one is ADDED. Judging one publication
+        # per command would have called this clean.
+        for name in (README_NAME, SERVER_GUIDE_NAME):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(
+                    name, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT} "
+                    f"-p {EVERY_INTERFACE}:8181:{SERVER_PORT}/tcp",
+                )
+                self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_a_range_that_contains_the_server_port_is_refused(self):
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {EVERY_INTERFACE}:8000-8100:8000-8100",
+        )
+        self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_the_long_publication_syntax_is_read(self):
+        # `--publish published=…,target=…` names no host address at all, which
+        # is every address the host has.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"--publish published=8181,target={SERVER_PORT},protocol=tcp",
+        )
+        self.kills(found, "no host address given")
+
+    def test_a_host_port_only_mapping_is_refused(self):
+        # `-p 127.0.0.1::8080` is the loopback and passes; `-p ::8080` is not
+        # a host address, it is every address with the host port chosen for
+        # you, and the empty first field is easy to read as harmless.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p :8181:{SERVER_PORT}",
+        )
+        self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_a_publication_this_gate_cannot_read_is_refused(self):
+        # Fail closed (requirement 4): a mapping nobody can parse is a mapping
+        # whose address nobody can state.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            "-p 1:2:3:4",
+        )
+        self.kills(found, "is not a port publication this gate can read")
+
+    def test_the_documented_mapping_with_a_protocol_suffix_is_not_refused(self):
+        # Rule 13's positive control for the parser: the suffix is READ, not
+        # refused, so the tests above kill on the ADDRESS and not on the form.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}/tcp",
+        )
+        self.assertEqual(found, self.before)
+
+    def test_a_loopback_publish_of_another_port_is_not_refused(self):
+        # Rule 13's positive control: it judges the port this server listens
+        # on, and says nothing about a second mapping a deployment adds.
+        found = self.mutate(
+            SERVER_GUIDE_NAME,
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT} -p {LOOPBACK}:9100:9100",
+        )
+        self.assertEqual(found, self.before)
+
+    def test_calling_the_token_one_time_on_a_site_page_is_refused(self):
+        for name, old, new in (
+            (
+                QUICKSTART_GUIDE_NAME,
+                "paste the setup token and select **Set up**",
+                "paste the one-time setup token and select **Set up**",
+            ),
+            (
+                DASHBOARD_GUIDE_NAME,
+                "the setup token the server wrote at first boot",
+                "the one-time setup token the server wrote at first boot",
+            ),
+        ):
+            with self.subTest(document=name):
+                self.setUp()
+                found = self.mutate(name, old, new)
+                self.kills(found, '"one-time" shares a sentence')
 
 
 if __name__ == "__main__":

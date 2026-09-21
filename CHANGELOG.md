@@ -5,6 +5,114 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.0 - 2026-09-21
+
+- **The documentation can be published as a site, and the README is a front
+  door.** `mkdocs.yml` builds the pages this repository already carried into a
+  site with MkDocs Material, and `.github/workflows/docs-site.yml` deploys it
+  to GitHub Pages on every push to `main` from this release on — at
+  `snaraj.github.io/obsync`, once the repository owner has turned Pages on.
+  Nothing about the documentation depends on that: the site is a RENDERING,
+  never a second copy. Every page on it is a Markdown file reviewed in a pull
+  request, readable in the repository without the site, and at the path it has
+  always had, so no existing link breaks. That is also why this project has no
+  GitHub wiki — wiki content is unreviewed, unversioned, invisible to
+  `make check`, and cannot be part of a pull request.
+  `docs/requirements.txt` pins the whole build closure by exact version AND by
+  the sha256 of each wheel, and the install runs under `--require-hashes` with
+  no resolution step. The theme fetches no font, script or style from any
+  third party, and that is now proven on the OUTPUT rather than asserted of a
+  setting: `theme.font` is `false`, and `scripts/ci/site_origins.py` rewrites
+  the two script loads Material's own bundle carries to a CDN and then refuses
+  any load in any built file whose origin is not this site's or this
+  repository's. The docs workflow runs both between the build and the upload,
+  so what is published is what was judged.
+- **`README.md` is 200 lines instead of 573.** It keeps what a stranger needs
+  before deciding: the pitch, the three warnings, what it does, the five
+  captures, the shortest complete path to a running server, the disclosure of
+  everything this plugin talks to, and where a question, a bug and a
+  vulnerability go. Nothing was deleted. Every paragraph that left is on a page
+  the README links to: [`docs/server.md`](docs/server.md) (the TLS terminator
+  choice, Docker, Compose with its own certificate authority, the bind address,
+  trusting that authority on each device, reaching the server from outside the
+  LAN), [`docs/quickstart.md`](docs/quickstart.md) (setting up the first device
+  and pairing a phone), [`docs/daily-use.md`](docs/daily-use.md) (the commands,
+  the status bar, what syncs, restoring a retained version), and
+  [`docs/index.md`](docs/index.md) (the repository layout).
+- **A page for the dashboard, which never had one.**
+  [`docs/dashboard.md`](docs/dashboard.md) is how to launch it, how to reach
+  it, what each of its six pages shows, and how to revoke a device — with four
+  marked capture slots naming what each image must show, because the run behind
+  1.0.0 never exercised the device list or the revoke button.
+- **The onboarding contract follows the commands it judges.**
+  `scripts/ci/test_onboarding_contract.py` used to read `README.md` and
+  `docs/architecture.md`. The install commands now also stand on
+  `docs/server.md`, so that page is judged by the same rules — digest-only
+  runs, both cosign identity flags, the journal volume nowhere else, the
+  tokenless token read on every documented start, the standing-credential
+  sentence — and the three site pages that hand a reader the setup token take
+  the wording rule, and the rule that keeps the server's own run publishing
+  `8080` on loopback alone now reads every publication form Docker accepts and
+  judges all of them. The suite goes from 68 tests to 91, each addition with
+  its own mutation.
+- **A workflow of its own, outside the release chain.**
+  `.github/workflows/docs-site.yml` builds the site under `mkdocs build
+  --strict` on every pull request and deploys it on pushes to `main`, with
+  every action pinned by commit SHA and the deploy job holding `pages: write`
+  and `id-token: write` and nothing else. It adds no job to `pr-gate.yml` or
+  `codeql.yml`, so the job inventory the release publisher authorizes against
+  (`scripts/ci/release_contract.py`) is unchanged.
+- **Two self-hosting guides, and CI runs the commands they show.**
+  [`docs/server.md`](docs/server.md) gains backups of the two volumes and
+  upgrade-and-roll-back by digest, and
+  [`docs/kubernetes.md`](docs/kubernetes.md) is new: static local volumes with
+  the ownership rule the server enforces, the values that match them, a TLS
+  front inside the cluster — manifest included, carrying the three labels the
+  chart's NetworkPolicy admits — with a certificate issued over DNS-01 and the
+  cadence to renew it, the setup-token read for a distroless image, and
+  reaching the deployment privately. Neither page is a promise.
+  `.github/workflows/compose-e2e.yml` brings the Compose deployment up from the
+  commands `docs/server.md` shows, on an amd64 and an arm64 runner, reads the
+  setup token the way that page says to, signs in to the dashboard with it, and
+  then does what that token exists for: `scripts/ci/api_flow.py` creates the
+  account, pairs a SECOND device through the API, pushes one file and reads it
+  back on that device, is refused by name for an unsigned, altered, stale or
+  replayed request, and finds all of it intact after the stack is restarted.
+  `.github/workflows/helm-e2e.yml` installs the chart into a `kind` cluster with
+  the volumes and values `docs/kubernetes.md` shows, applies that page's own
+  terminator, runs the same device flow through it over HTTPS — with a file
+  larger than the 1 MiB body ceiling a stock proxy applies — and then upgrades
+  on the digest and rolls back, with the account, both devices and the file
+  surviving both pod replacements. Both read the page at the commit under test
+  through `scripts/ci/docs_blocks.py` rather than a copy kept beside it, and
+  `scripts/ci/test_selfhosting_contract.py` fails the build when a page and its
+  gate stop agreeing. Every resource either workflow creates is named after the
+  run that created it, and the teardown fires only for what a marker says that
+  invocation actually made, so a preflight refusal on a machine that already
+  hosts a deployment destroys nothing.
+- **Both architectures, natively, before the merge rather than after.**
+  `.github/workflows/arch-matrix.yml` builds the server on `ubuntu-24.04` and
+  on `ubuntu-24.04-arm` — so the workspace test suite runs on each — asserts a
+  static ELF for that architecture, builds the shipped image on both, and runs
+  the resulting binary on Debian, Ubuntu, Fedora and Alpine, each pinned by
+  digest, on each architecture. The binary links no libc at all, so there is no
+  glibc floor to document and these eight legs are what says so.
+- **New troubleshooting entries for two failures that are not the server.** A
+  phone that reports the hostname cannot be found on its own Wi-Fi is usually
+  the router's DNS-rebinding protection returning an empty answer for a name
+  that resolves to a private address; a TLS error from a device behind an
+  access-controlled edge is usually that edge's own decision — a posture policy
+  the device no longer passes, or an allow policy demanding the identity be
+  re-authenticated — rather than the certificate, so the edge policy for that
+  device is what you read first.
+
+**Compatibility with 1.0.3.** That release changed three behaviours on purpose,
+and this one keeps them: the outcome of two concurrent revocations of the same
+device, how a pending device's refusal is classified, and the handling of
+sessions and sign-in links a device originates. Everything else a paired device
+sees over the wire is unchanged, so a 1.0.x plugin and a 1.1.0 server
+interoperate exactly as before.
+
 ## 1.0.3 - 2026-09-20
 
 Dashboard security: an independent review of 1.0.1, and a second pass that
