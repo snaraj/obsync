@@ -1032,22 +1032,46 @@ export class SyncEngine {
     }
     const gone = Object.keys(context.state.data.files).filter((path) => !seen.has(path));
 
+    // NORMALISATION IS NOT A MOVE. A listing can spell a recorded name
+    // differently without anything having happened: Obsidian's index is NFC
+    // (`normalizePath`), a macOS volume keeps an accented name decomposed,
+    // and the two spellings are one note. Paired as a move, that difference
+    // publishes a rename to the other spelling, and the device applying it
+    // writes one path and trashes the other -- the same file wherever the
+    // volume ignores the difference, so the note is deleted (the #96 class
+    // of loss). `scan()` normalises its own listing (`main.ts`); this refuses
+    // the pair whatever a listing says, and refuses to queue the twin as a
+    // new file or to tombstone the record it belongs to.
+    const settled = new Set<string>();
+    const recorded = new Map(gone.map((path) => [path.normalize("NFC"), path]));
+    let unnormalised = 0;
+    for (const file of fresh) {
+      const twin = recorded.get(file.path.normalize("NFC"));
+      if (twin === undefined) continue;
+      settled.add(file.path);
+      settled.add(twin);
+      unnormalised++;
+    }
+    // One line for the pass, with a count and no path: a name is vault
+    // content and never reaches a log (requirement 6).
+    if (unnormalised > 0) context.host.log(`${label} decision=skipped reason=normalisation_only files=${unnormalised}`);
+
     // Moves first: a paired destination must not also be queued as a new
-    // file, and a paired source must not also be tombstoned.
-    const moved = new Set<string>();
+    // file, and a paired source must not also be tombstoned. A path the
+    // normalisation check settled is handled in exactly the same way.
     let moves = 0;
     for (const from of gone) {
       if (!this.running) return;
       const record = context.state.fileByPath(from);
-      if (record === undefined) continue;
-      const candidates = fresh.filter((file) => !moved.has(file.path) &&
+      if (record === undefined || settled.has(from)) continue;
+      const candidates = fresh.filter((file) => !settled.has(file.path) &&
         file.mtime === record.mtime && file.size === record.size &&
         context.state.fileByPath(file.path) === undefined);
       if (candidates.length !== 1) continue;
       const to = (candidates[0] as VaultStat).path;
       if (!(await context.host.syncable(to))) { skipped++; continue; }
-      moved.add(to);
-      moved.add(from);
+      settled.add(to);
+      settled.add(from);
       moves++;
       this.renamed(from, to);
     }
@@ -1066,10 +1090,10 @@ export class SyncEngine {
     let removed = 0;
     for (const from of gone) {
       if (!this.running) return;
-      if (moved.has(from)) continue;
+      if (settled.has(from)) continue;
       if (!this.tracked(from, `${label}_state`) || !(await context.host.syncable(from))) { skipped++; continue; }
       if (await this.caseRenamed(context, from, spellings.get(from.toLowerCase()) ?? [], label)) {
-        moved.add(from);
+        settled.add(from);
         cased++;
         continue;
       }
@@ -1082,7 +1106,7 @@ export class SyncEngine {
     let queued = 0;
     for (const file of fresh) {
       if (!this.running) return;
-      if (moved.has(file.path)) continue;
+      if (settled.has(file.path)) continue;
       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
       this.enqueue(file.path);
       queued++;

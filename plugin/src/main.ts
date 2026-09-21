@@ -386,6 +386,11 @@ export class ObsidianHost implements VaultHost {
    * skipped rather than reported as empty -- this listing may only ADD work
    * (`engine.ts`), but a caller that mistook an unreadable folder for a
    * vanished one would be one refactor away from a tombstone.
+   *
+   * Names come back in Obsidian's own form, NFC (see `walk`). On a volume
+   * that tells NFC and NFD apart, a FOLDER whose name is decomposed on disk
+   * is then read under its composed name and reported unreadable, which
+   * skips that subtree rather than proposing paths the index can never hold.
    */
   async scan(): Promise<VaultStat[] | null> {
     const desktop = this.desktop;
@@ -413,7 +418,18 @@ export class ObsidianHost implements VaultHost {
     }
     const folders = this.plugin.state.data.syncFolders;
     for (const name of names) {
-      const path = folder === "" ? name : `${folder}/${name}`;
+      // THE NAME AS OBSIDIAN HAS IT, NOT AS THE VOLUME SPELLS IT. Every path
+      // Obsidian's index reports has been through `normalizePath`, which ends
+      // in `.normalize("NFC")`; a macOS app writing an accented name through
+      // Cocoa leaves it DECOMPOSED on the volume, so `readdir` hands the same
+      // note back in NFD. Reported raw, that name is one the record has never
+      // held while the recorded one looks gone, and `survey()` would pair the
+      // two as a move and publish a rename to the other spelling -- which on a
+      // normalisation-insensitive volume names the same file, so the device
+      // applying it writes one path and trashes the other: the note is gone,
+      // the #96 class of loss. Only the name REPORTED is normalised; every
+      // syscall below still takes the raw name the directory gave.
+      const path = folder === "" ? name.normalize("NFC") : `${folder}/${name.normalize("NFC")}`;
       // A NO-FOLLOW stat, so a link is neither a file nor a directory here
       // and is listed as neither; `inSyncTree` and `inSyncScope` carry the
       // string rule (`vaultPath.ts`), so a hidden or non-canonical name is

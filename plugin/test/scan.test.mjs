@@ -197,6 +197,126 @@ test("two files sharing a size and an mtime are never paired as a move", async (
   assert.ok(host.logs.some((line) => /^scan decision=queued .*moved=0 /.test(line)), host.logs.join(" | "));
 });
 
+// A note whose name carries an accent has two spellings on a Mac. Obsidian's
+// index reports the composed one -- every path it hands out has been through
+// `normalizePath`, which ends in `.normalize("NFC")` -- while a file manager
+// writing that name through Cocoa leaves it DECOMPOSED on the volume, which
+// is what `readdir` then reports. One note, two strings.
+// Both are written as escapes on purpose: an editor that normalised this
+// file would otherwise make them one string, and the tests below vacuous.
+const NFC = "Notes/Espa\u00f1ol.md";
+const NFD = "Notes/Espan\u0303ol.md";
+const ACCENTED = "una nota con acento\n";
+
+test("a listing that spells a recorded name differently is never a move", async () => {
+  const rigged = await rig();
+  const { host, server, state } = rigged;
+  const vault = withScan(host);
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+
+  vault.seed(NFC, ACCENTED, 1000);
+  await engine.start();
+  await timers.run(100, () => state.fileByPath(NFC) !== undefined);
+  const fileId = state.fileByPath(NFC).fileId;
+  const versions = server.journal.length;
+
+  // The host's own listing reports the decomposed spelling: the same bytes,
+  // the same (mtime, size), a name the record has never held. Paired as a
+  // move it would publish a rename to the other spelling, and the device
+  // applying it writes one path and trashes the other -- the same file on
+  // every volume that ignores the difference, so the note would be gone.
+  let scans = 0;
+  const listing = host.scan;
+  host.scan = async () => { scans++; return listing(); };
+  vault.moveUnseen(NFC, NFD);
+
+  // Wait for the PASS, not for the line: a wait on the line would report a
+  // removed refusal as a timeout instead of as the rename it published.
+  await timers.run(SCAN_MS, () => scans >= 2);
+  await timers.run(1000);
+  engine.stop();
+
+  assert.equal(server.journal.length, versions, "no rename was published, and no version at all");
+  assert.equal(state.fileByPath(NFD), undefined, "the other spelling was never queued");
+  assert.equal(state.fileByPath(NFC)?.fileId, fileId, "and the record still holds the name Obsidian has");
+  assert.ok(
+    host.logs.includes("scan decision=skipped reason=normalisation_only files=1"),
+    host.logs.join(" | "),
+  );
+  assert.equal(
+    host.logs.some((line) => /^scan decision=queued .*moved=[1-9]/.test(line)),
+    false,
+    host.logs.join(" | "),
+  );
+});
+
+test("a spelling twin is a candidate for nothing else either", async () => {
+  const rigged = await rig();
+  const { host, server, state, keys: k } = rigged;
+  const vault = withScan(host);
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+
+  vault.seed(NFC, ACCENTED, 1000);
+  await engine.start();
+  await timers.run(100, () => state.fileByPath(NFC) !== undefined);
+  const fileId = state.fileByPath(NFC).fileId;
+
+  // The note is reported under its other spelling, and an unrelated note of
+  // exactly the same (mtime, size) turns up in the same pass. The record is
+  // not gone -- the twin IS it -- so pairing it with the newcomer would
+  // publish a rename carrying the note to a name it has never had.
+  vault.moveUnseen(NFC, NFD);
+  vault.seed("Notes/Nueva.md", ACCENTED, 1000);
+
+  await timers.run(1000, () => state.fileByPath("Notes/Nueva.md") !== undefined);
+  await timers.run(1000, () => (state.fileByPath("Notes/Nueva.md")?.mtime ?? -1) !== -1);
+  engine.stop();
+
+  assert.equal(state.fileByPath(NFD), undefined, "the twin was never queued");
+  assert.equal(state.fileByPath(NFC)?.fileId, fileId, "and the record never moved");
+  const posted = await postedPaths(server, k);
+  assert.deepEqual(
+    posted.map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
+    [`+${NFC}`, "+Notes/Nueva.md"],
+  );
+  assert.equal(new Set(posted.map((version) => version.fileId)).size, 2, "two notes, two ids: nothing was renamed");
+});
+
+test("an accented note that really moved is still one rename", async () => {
+  const rigged = await rig();
+  const { host, server, state, keys: k } = rigged;
+  const vault = withScan(host);
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  const moved = "Notes/Archive/Espa\u00f1ol.md";
+
+  vault.seed(NFC, ACCENTED, 1000);
+  await engine.start();
+  await timers.run(100, () => state.fileByPath(NFC) !== undefined);
+  const fileId = state.fileByPath(NFC).fileId;
+
+  // The same name, in the same spelling, in another folder: a real move, and
+  // the refusal above must not swallow it.
+  vault.moveUnseen(NFC, moved);
+
+  await timers.run(1000, () => state.fileByPath(moved) !== undefined);
+  await timers.run(1000, () => (state.fileByPath(moved)?.mtime ?? -1) !== -1);
+  engine.stop();
+
+  assert.equal(state.fileByPath(NFC), undefined, "the old path is forgotten");
+  assert.equal(state.fileByPath(moved).fileId, fileId, "the same file id moved");
+  const posted = await postedPaths(server, k);
+  assert.deepEqual(
+    posted.map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
+    [`+${NFC}`, `+${moved}`],
+    "exactly one rename, and never a tombstone",
+  );
+  assert.equal(host.logs.some((line) => line.includes("reason=normalisation_only")), false, host.logs.join(" | "));
+  assert.ok(host.logs.some((line) => /^scan decision=queued .*moved=1 /.test(line)), host.logs.join(" | "));
+});
+
 test("a scan with nothing to say says nothing, and an overrun still speaks", async () => {
   const rigged = await rig();
   const { host, state } = rigged;
@@ -252,9 +372,16 @@ function nativeHost(t, folders) {
     log: (line) => logs.push(line),
   };
   const opened = [];
-  const watched = { promises: { ...fs, readdir: async (path) => { opened.push(String(path)); return fs.readdir(path); } } };
+  const statted = [];
+  const watched = {
+    promises: {
+      ...fs,
+      readdir: async (path) => { opened.push(String(path)); return fs.readdir(path); },
+      lstat: async (path) => { statted.push(String(path)); return fs.lstat(path); },
+    },
+  };
   const host = new ObsidianHost(plugin, { fs: watched, path: nodePath, base: root });
-  return { host, root, outside, logs, plugin, opened };
+  return { host, root, outside, logs, plugin, opened, statted };
 }
 
 test("the desktop listing reads the filesystem, including a file the vault index has never seen", async (t) => {
@@ -274,6 +401,27 @@ test("the desktop listing reads the filesystem, including a file the vault index
   );
   assert.equal(scanned.find((file) => file.path === "Top.md").size, 12);
   assert.ok(scanned.every((file) => Number.isInteger(file.mtime) && file.mtime > 0));
+});
+
+test("the desktop listing reports a decomposed name the way Obsidian's index holds it", async (t) => {
+  const { host, root, statted } = nativeHost(t, undefined);
+  mkdirSync(join(root, "Notes"), { recursive: true });
+  // Written the way a Cocoa app writes it: the accent left decomposed.
+  writeFileSync(join(root, "Notes", "Espan\u0303ol.md"), ACCENTED);
+
+  // What this test rests on: the volume kept the name it was given. A volume
+  // that composed it on the way in is not the case under test, and saying so
+  // here is cheaper than an assertion below that could never fail.
+  assert.deepEqual(await fs.readdir(join(root, "Notes")), ["Espan\u0303ol.md"]);
+
+  const scanned = await host.scan();
+  assert.deepEqual(scanned.map((file) => file.path), [NFC], "the listing speaks the index's spelling");
+  assert.equal(scanned[0].size, Buffer.byteLength(ACCENTED));
+  // And the syscall still took the name the directory gave: composing it
+  // first works on a volume that ignores the difference and is a missing
+  // file on one that does not.
+  assert.ok(statted.includes(join(root, "Notes", "Espan\u0303ol.md")), statted.join(" | "));
+  assert.equal(statted.includes(join(root, "Notes", "Espa\u00f1ol.md")), false, statted.join(" | "));
 });
 
 test("the desktop listing skips hidden names, symlinks and everything outside the selection", async (t) => {
