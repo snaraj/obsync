@@ -11,14 +11,13 @@
   border-radius: var(--radius-s);
 }
 
-/* The 24 words as ONE numbered column. Two columns filled downward read 1-12
-   then 13-24, which is not the order a hand copies them in, and on a phone the
-   second column is where the dialog runs out of width. One column is longer
-   and unambiguous, which is the trade a recovery phrase wants. */
+/* The 24 words as a numbered list: two columns of twelve, filled down. */
 .obsync-phrase {
   user-select: all;
   display: grid;
-  row-gap: var(--size-2-1);
+  grid-template-rows: repeat(12, auto);
+  grid-auto-flow: column;
+  column-gap: var(--size-4-4);
   margin: 0;
   padding: 0;
   list-style-position: inside;
