@@ -5,14 +5,32 @@ One dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-1.0.1, listed in Obsidian's community plugin directory as **Self Hosted
-Private Sync** (plugin id `obsync-private-sync`): install it from Settings →
-Community plugins → Browse, on every platform Obsidian runs on. The device run
-behind it is recorded in
-[`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md): it
-proved setup, pairing and two-way sync between a Mac and an iPhone on one LAN,
-and it proved nothing about iPad, Windows, or reaching the server from off that
-LAN.
+Listed in Obsidian's community plugin directory as **Self Hosted Private
+Sync** (plugin id `obsync-private-sync`): install it from Settings → Community
+plugins → Browse, on every platform Obsidian runs on.
+
+## Status and known issues
+
+This is young software that syncs the only copy of your notes, so it is written
+down rather than implied:
+
+- **Every release page says what changed and what is known.** Each release in
+  [Releases](https://github.com/snaraj/obsync/releases) carries the same text
+  as that version's entry in [`CHANGELOG.md`](CHANGELOG.md), in plain language,
+  including anything found after it shipped. Read the page for the version you
+  are on. Defects found on devices are listed there and here, not left for you
+  to discover.
+- **The one rule: update every device that syncs a vault.** A single device
+  left on an older version can still act on the old behaviour and affect the
+  others, however current the rest are.
+- **What has actually been exercised on hardware** is recorded per run in
+  [`docs/validation-runs/`](docs/validation-runs/), including what each run did
+  NOT cover. A platform that is not named in one of those runs has not been
+  proven, whatever the feature list above says.
+- **If you are seeing a stream of "merged concurrent edits" notices** on two
+  devices editing one note, quit Obsidian on one of them and it stops at once;
+  then update both. That loop is fixed, and the release page for the version
+  you are running tells you which one to move to.
 
 ## What it does
 
