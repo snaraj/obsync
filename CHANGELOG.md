@@ -46,8 +46,8 @@ still makes a second copy on purpose: a note too large for obsync to carry a
 single whole-file fingerprint -- roughly 8 MB and up -- cannot be compared that
 way, so its copy takes the next free name rather than risk replacing something. The other
 half is that the two notes still compete for the one name; giving them settled,
-separate names on every device is 1.0.7. **Until then: rename one of the two
-notes and the copies stop.**
+separate names on every device is planned for 1.0.7 and is not in this release.
+**Until then: rename one of the two notes and the copies stop.**
 
 **3. A hidden `.obsync-restore-<id>.tmp` file could be left in your vault.** On
 desktop, after obsync wrote a conflict copy, the working file it used to write
@@ -66,7 +66,8 @@ server's own retention removes them in time.
 
 **Update every device that syncs the vault** — a single device left on 1.0.5
 can still start a loop. If one is running right now, quit Obsidian on one of
-the two devices and it stops at once.
+the two devices: stopping one participant can allow outstanding work on the
+other to drain. Update every device before resuming.
 
 ## 1.0.5 - 2026-09-21
 
@@ -115,9 +116,9 @@ closed, so updating one device protects only that device. Update them all.
 two open devices could loop, and a hidden `.obsync-restore-<id>.tmp` file could
 be left in the vault folder: both are fixed in 1.0.6. Two notes created under
 one name kept making conflict copies: the copies are recognised correctly from
-1.0.6, and the two notes get settled, separate names in 1.0.7; until then,
-rename one of them. None of these loses note content. See the 1.0.6 entry
-above, and update every device.
+1.0.6, and giving the two notes settled, separate names is planned for 1.0.7;
+until then, rename one of them. In every case seen, no note content was lost.
+See the 1.0.6 entry above, and update every device.
 
 ## 1.0.4 - 2026-09-20
 

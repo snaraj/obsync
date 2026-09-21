@@ -14,12 +14,14 @@ plugins → Browse, on every platform Obsidian runs on.
 This is young software that syncs the only copy of your notes, so it is written
 down rather than implied:
 
-- **Every release page says what changed and what is known.** Each release in
-  [Releases](https://github.com/snaraj/obsync/releases) carries the same text
-  as that version's entry in [`CHANGELOG.md`](CHANGELOG.md), in plain language,
-  including anything found after it shipped. Read the page for the version you
-  are on. Defects found on devices are listed there and here, not left for you
-  to discover.
+- **[`CHANGELOG.md`](CHANGELOG.md) is the maintained list of what is known.**
+  Each release page carries that version's entry as it read when it was
+  published, and published release notes are kept as they were rather than
+  rewritten; the changelog in this repository is where later findings are
+  added, including anything found on devices after a release shipped. Read the
+  changelog entry for the version you are on, and the entries above it. One
+  release page, 1.0.5, was amended by hand after the fact because what was
+  found there needed saying on the page itself.
 - **The one rule: update every device that syncs a vault.** A single device
   left on an older version can still act on the old behaviour and affect the
   others, however current the rest are.
@@ -28,9 +30,10 @@ down rather than implied:
   NOT cover. A platform that is not named in one of those runs has not been
   proven, whatever the feature list above says.
 - **If you are seeing a stream of "merged concurrent edits" notices** on two
-  devices editing one note, quit Obsidian on one of them and it stops at once;
-  then update both. That loop is fixed, and the release page for the version
-  you are running tells you which one to move to.
+  devices editing one note, quit Obsidian on one of them. Stopping one
+  participant can allow outstanding work on the other to drain. Update every
+  device before resuming; the changelog entry for the version you are running
+  says which release to move to.
 
 ## What it does
 
