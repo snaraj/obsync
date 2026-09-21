@@ -39,11 +39,11 @@ this repository's publisher. New releases carry
 SHA-256 of the plugin bundle and each native installation file. Verify the
 signature with cosign, read the digest from the verified payload (it must match
 the manifest on the Release page), and run exactly that digest. The tag below
-is the release you are installing -- `v1.1.0` here, `vX.Y.Z` for whichever
+is the release you are installing -- `v1.0.7` here, `vX.Y.Z` for whichever
 release you took off the Releases page:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.1.0 \
+cosign verify ghcr.io/snaraj/obsync:v1.0.7 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 

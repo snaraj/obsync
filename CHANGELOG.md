@@ -5,7 +5,7 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.1.0 - 2026-09-21
+## 1.0.7 - 2026-09-21
 
 - **The documentation can be published as a site, and the README is a front
   door.** `mkdocs.yml` builds the pages this repository already carried into a
@@ -126,12 +126,25 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   re-authenticated — rather than the certificate, so the edge policy for that
   device is what you read first.
 
-**Compatibility with 1.0.3.** That release changed three behaviours on purpose,
-and this one keeps them: the outcome of two concurrent revocations of the same
+- **The validation plan holds the journeys a person actually performs.**
+  `docs/validation.md` gains ten user journeys -- the first note, the first
+  folder rename, the first move out of the selection, the first relaunch -- each
+  with a pass condition a stranger can verify on two devices, and a release
+  whose range touches the plugin or the sync path must now run the affected
+  ones on real devices and record what happened before it ships.
+  [`docs/validation-runs/2026-09-21.md`](docs/validation-runs/2026-09-21.md) is
+  that record for the run behind 1.0.4 and 1.0.5: thirty scenarios, the in-app
+  update on both devices, the rename journeys re-run against 1.0.4 in both
+  directions, and every issue the run filed.
+
+**Nothing a paired device sees over the wire changes.** This release adds no
+endpoint, moves no field and alters no sync behaviour. No file under
+`crates/` or `plugin/src/` changes in it, so the plugin behaves exactly as
+1.0.5's does and reads its own version from the manifest at run time; a 1.0.5
+device and a 1.0.7 server interoperate as before. The compatibility note 1.0.3
+earned still holds: the outcome of two concurrent revocations of the same
 device, how a pending device's refusal is classified, and the handling of
-sessions and sign-in links a device originates. Everything else a paired device
-sees over the wire is unchanged, so a 1.0.x plugin and a 1.1.0 server
-interoperate exactly as before.
+sessions and sign-in links a device originates are all as 1.0.3 left them.
 
 ## 1.0.5 - 2026-09-21
 
