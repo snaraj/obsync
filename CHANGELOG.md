@@ -5,6 +5,50 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.6 - 2026-09-21
+
+**If you are on 1.0.5, update every device now.** A note edited on two devices
+at once could put them into a loop that never stops, and that is what this
+release fixes. Nothing you did caused it and nothing was lost to it.
+
+**What was happening.** When the same note was changed on two devices — one of
+them with the app closed — 1.0.5 combined the two versions correctly, and then
+both devices kept combining the same result over and over. You would see an
+endless run of "obsync merged concurrent edits to ..." notices, on both
+devices, for as long as either was open. The note's own text was finished after
+the first pass and never changed again; what kept going was the record your
+server keeps of it, growing by several entries a second. Closing one app did
+not stop it, and deleting the note did not either, because the other device put
+it straight back.
+
+**Why it mattered even though nothing was lost.** Your notes were safe
+throughout: every device ended up with the same, correctly combined text. But
+the loop filled your server's history, kept both devices talking to it
+continuously, and on a server with a storage limit it could have used that
+limit up, which stops syncing for the whole vault until space is freed.
+
+**What to do.** Update every device that syncs the vault; a single device left
+on 1.0.5 can still start one. There is nothing to clean up by hand: the extra
+history entries are ordinary versions and your server's own retention removes
+them in time. If a note is looping right now, closing both apps and updating
+them ends it.
+
+**What changed.** A device only records a combined version when the result is
+genuinely new. If combining produces the text it already has, there is nothing
+to publish and it says so; if it produces the other device's text, that version
+already contained this device's edit and is simply adopted. On top of that there
+is now a hard stop: more than five resolutions of one note within a minute and
+the device stops combining that note altogether, keeps both versions side by
+side as it does for any conflict it cannot merge, and tells you once.
+
+**Also in this release.** Conflict copies -- the `<note> (conflict from
+<device>, <date>).md` files obsync writes when it keeps both versions -- are
+handled more carefully. A copy is only recognised as one already on disk when
+its content really matches, not merely its size and timestamp, so a version can
+no longer be announced as copied when it was not, and the same version is no
+longer copied twice under two names. On desktop, each finished copy no longer
+leaves a hidden working file behind in the folder next to it.
+
 ## 1.0.5 - 2026-09-21
 
 **A note you wrote or edited while Obsidian was closed could be replaced by

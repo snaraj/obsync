@@ -69,7 +69,7 @@
  * is never downloaded and is listed as remote-only instead.
  */
 
-import type { SyncContext, VaultWriter } from "./engine";
+import type { SyncContext, VaultStat, VaultWriter } from "./engine";
 import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
 import {
   Bytes,
@@ -661,8 +661,84 @@ async function reconcile(
   localPath: string,
   localVersionId: string,
 ): Promise<ApplyResult> {
+  // THE BREAKER. Everything below is bounded by construction, but a bound
+  // that rests on an argument is not a bound: the cost of being wrong here is
+  // a device filling the server's journal and its owner's quota, on battery.
+  // More than a handful of resolutions of ONE file inside a minute is not a
+  // user editing on two devices, so this device stops merging that file and
+  // keeps both sides instead. It says so once, and the count is in the log.
+  const now = context.now();
+  const seen = context.merges.get(change.file_id);
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
+  tally.count++;
+  context.merges.set(change.file_id, tally);
+  if (tally.count > MERGE_STORM_LIMIT) {
+    context.host.log(
+      `pull decision=refused reason=merge_storm file=${change.file_id} count=${tally.count} window_ms=${MERGE_STORM_MS}`,
+    );
+    if (!context.refused.has(change.file_id)) {
+      context.refused.add(change.file_id);
+      context.host.notify(
+        `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a minute. ` +
+          `Both versions are kept side by side instead. Check that every device syncing this vault is up to date.`,
+      );
+    }
+    return await keepBoth(context, change, theirManifest);
+  }
+
   const baseId = commonAncestor(file.versions, localVersionId, change.version_id);
   const mine = await context.host.read(localPath);
+  // TWO HEADS, ONE CONTENT.
+  //
+  // This is where the storm ended up. A and B each merge the same pair to the
+  // same text and post it; the two posts differ only in their manifest nonce,
+  // so they are two version ids for identical bytes and the file forks again.
+  // Each device then merges THAT pair -- to the same bytes once more -- and
+  // posts again, about seven times a second (issue #110).
+  //
+  // Identical bytes are nothing to write and nothing to say. But stopping is
+  // not enough: if each device simply adopted the other's head the two would
+  // SWAP, the server would still hold two heads, and the next real edit would
+  // reconcile against the wrong base. So the head is chosen by a rule both
+  // devices compute from the same two ids and cannot disagree about: the
+  // lexicographically smaller one wins.
+  // The comparison costs no download: the manifest is authenticated, so its
+  // `sha256` is a trustworthy statement of the incoming plaintext, and the
+  // local bytes are already in hand.
+  if (
+    theirManifest.sha256 !== "" &&
+    theirManifest.size === mine.length &&
+    hex(await sha256(mine)) === theirManifest.sha256
+  ) {
+    const head = localVersionId < change.version_id ? localVersionId : change.version_id;
+    const held = context.state.fileByPath(localPath);
+    if (held) context.state.setFile(localPath, { ...held, versionId: head });
+    await context.state.save();
+    context.host.log(
+      `pull decision=converged reason=identical_bytes head=${head} file=${change.file_id} seq=${change.seq}`,
+    );
+    // Agreeing is not the same as closing. The file is still forked on the
+    // server, and the next real edit would reconcile against the head this
+    // device did not choose. So the device holding the WINNING head -- and
+    // only that device, because both compute the same winner -- publishes one
+    // version naming both heads as parents. The other says nothing, which is
+    // what keeps this from becoming a second storm. Narrow on purpose: exactly
+    // these two heads and no others, or the record convergence stands alone.
+    if (
+      held !== undefined &&
+      head === localVersionId &&
+      file.heads.length === 2 &&
+      file.heads.includes(localVersionId) &&
+      file.heads.includes(change.version_id)
+    ) {
+      await postMerged(context, change, localPath, localVersionId, mine, held.mtime, [...file.heads].sort());
+      context.host.log(
+        `pull decision=resolved reason=identical_heads file=${change.file_id} seq=${change.seq}`,
+      );
+    }
+    return "skipped";
+  }
+
   const mergeable =
     baseId !== null &&
     theirManifest.chunks.length === 1 &&
@@ -697,6 +773,27 @@ async function reconcile(
         await writer.write(text);
         const stat = await writer.commit(context.now());
         context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+        // The result is the INCOMING version's own bytes: that version already
+        // carries this device's edit, so what the graph called a fork is a
+        // fast-forward onto it. Adopt it and post nothing -- a third version
+        // saying what the second already says is how the storm was fed. A
+        // result that is new to both sides is a real resolution and is posted
+        // once, which terminates because the other device then finds its own
+        // bytes in it.
+        if (sameBytes(text, theirs)) {
+          context.state.setFile(localPath, {
+            fileId: change.file_id,
+            versionId: change.version_id,
+            mtime: stat.mtime,
+            size: stat.size,
+            sha256: await sidDigest(change.sids),
+          });
+          await context.state.save();
+          context.host.log(
+            `pull decision=applied reason=incoming_holds_merge bytes=${theirManifest.size} file=${change.file_id} seq=${change.seq}`,
+          );
+          return "applied";
+        }
         await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
         context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
         context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
@@ -710,12 +807,67 @@ async function reconcile(
 }
 
 /**
+ * The merge breaker. One fork of one note costs at most one merge per device,
+ * so a file that needs more than this inside a minute is not being edited, it
+ * is looping, and a device that keeps merging a loop is what fills a journal
+ * (issue #110). Both are constants, not configuration: a device must not be
+ * able to be told to keep going.
+ */
+const MERGE_STORM_LIMIT = 5;
+const MERGE_STORM_MS = 60_000;
+
+/** Byte equality over plaintext this device already holds; nothing secret. */
+function sameBytes(a: Bytes, b: Bytes): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
+}
+
+/**
  * How many names a conflict copy may try before giving up. The stamp is
  * minute-resolution, so collisions come in bursts of one minute; twenty is far
  * past any real vault and it is BOUNDED, because the alternative to giving up
  * must never be overwriting something.
  */
 const CONFLICT_COPY_NAMES = 20;
+
+/**
+ * Is the file at `path` already EXACTLY this version's content?
+ *
+ * One foreign head is resolved twice by design -- the feed delivers a head the
+ * push's own reconciliation has already handled -- so the second pass must not
+ * grow an identical second copy. But "already here" has to be PROVED. Size and
+ * modification time are what a vault reports ABOUT a file, not what is in it:
+ * an unrelated note that happened to share them, or a second version of the
+ * same note with the same length and timestamp, made this device announce a
+ * copy it never wrote, skip the version entirely, and never fetch or
+ * authenticate a single chunk of it (issue #109).
+ *
+ * The manifest is authenticated -- AES-GCM under the manifest key, bound field
+ * by field to its record -- so its `sha256` is a trustworthy statement of the
+ * plaintext. A local file that hashes to it IS this version's content, byte
+ * for byte, and nothing weaker is accepted here. A multi-chunk version carries
+ * no whole-file digest (`push.ts`, MANIFEST `sha256`) and is never recognised
+ * this way: it takes the next name instead, which costs a duplicate copy and
+ * never a missing one. Reading is bounded by the same single-chunk rule the
+ * merge inputs obey, and a file that cannot be read proves nothing.
+ */
+async function alreadyCopied(
+  context: SyncContext,
+  manifest: Manifest,
+  path: string,
+  occupant: VaultStat,
+): Promise<boolean> {
+  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return false;
+  if (occupant.size !== manifest.size) return false;
+  let bytes: Bytes;
+  try {
+    bytes = await context.host.read(path);
+  } catch {
+    return false;
+  }
+  return hex(await sha256(bytes)) === manifest.sha256;
+}
 
 /**
  * Write the foreign version at a name nothing occupies.
@@ -737,6 +889,17 @@ const CONFLICT_COPY_NAMES = 20;
  * the race a check alone leaves open. A refusal earns the NEXT name, and only
  * a failure with nothing at the name is a real error and rethrown, so a
  * network fault cannot be retried into twenty downloads.
+ *
+ * THE WRITER OWNS A TEMPORARY FILE, ON BOTH OUTCOMES. The desktop writer
+ * publishes with `link`, which leaves its own `.obsync-*.tmp` name pointing at
+ * the SAME inode as the published copy, and hands the removal of that name to
+ * `abort` (`main.ts`). A caller that aborted only on failure therefore left a
+ * second, hidden name for the note's plaintext behind every successful copy,
+ * and the blocks with it (issue #109). `abort` runs on both outcomes, exactly
+ * as the history copy does; it cannot unpublish anything, because the host
+ * unlinks the temp only while it is still the file it opened; and a cleanup
+ * that fails is logged rather than turned into a failure of a copy the user
+ * already has.
  */
 async function writeCopy(
   context: SyncContext,
@@ -749,13 +912,12 @@ async function writeCopy(
     assertVaultPath(path);
     const occupant = await context.host.stat(path);
     if (occupant !== null) {
-      // THIS version's copy, already here: the same size and the same mtime
-      // this manifest would write. One foreign head is resolved twice by
-      // design -- the feed delivers a head the push's own reconciliation has
-      // already handled -- and the second pass must not grow an identical
-      // second copy. Anything the user has touched since has a different
-      // stat, so it is a different file and earns the next name instead.
-      if (occupant.size === manifest.size && occupant.mtime === manifest.mtime) return { path, attempt };
+      if (await alreadyCopied(context, manifest, path, occupant)) {
+        context.host.log(
+          `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${attempt}`,
+        );
+        return { path, attempt };
+      }
       continue;
     }
     let writer: VaultWriter;
@@ -765,15 +927,30 @@ async function writeCopy(
       if ((await context.host.stat(path)) === null) throw error;
       continue;
     }
+    let outcome: { stat: VaultStat } | { failure: unknown };
     try {
       await writeVerified(context, { ...manifest, path }, writer);
-      const stat = await writer.commit(manifest.mtime);
-      context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
-      return { path: stat.path, attempt };
+      outcome = { stat: await writer.commit(manifest.mtime) };
     } catch (error) {
-      await writer.abort();
-      if ((await context.host.stat(path)) === null) throw error;
+      outcome = { failure: error };
     }
+    try {
+      await writer.abort();
+    } catch {
+      // Never the error the caller hears. A published copy is not withdrawn
+      // because its temporary name could not be removed -- the user has the
+      // file -- and on the failing path the cause of the failure outranks the
+      // cleanup. The residue is named here so it is not silent (requirement 12);
+      // the reason is not, because a host error names a filesystem path.
+      context.host.log(
+        `pull decision=copy_temp_not_removed published=${"stat" in outcome} name_attempt=${attempt}`,
+      );
+    }
+    if ("stat" in outcome) {
+      context.written.add(`${outcome.stat.path}:${outcome.stat.mtime}:${outcome.stat.size}`);
+      return { path: outcome.stat.path, attempt };
+    }
+    if ((await context.host.stat(path)) === null) throw outcome.failure;
   }
   return null;
 }
@@ -819,6 +996,7 @@ async function postMerged(
   localVersionId: string,
   text: Bytes,
   mtime: number,
+  over?: string[],
 ): Promise<void> {
   const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, text);
   const missing = await context.transport.missingChunks([sid]);
@@ -833,7 +1011,7 @@ async function postMerged(
     sha256: hex(await sha256(text)),
     deleted: false,
   };
-  const parents = [localVersionId, change.version_id].sort();
+  const parents = over ?? [localVersionId, change.version_id].sort();
   const posted = await postManifest(context, change.file_id, parents, [sid], manifest, text.length);
   context.authored.add(posted.versionId);
   context.state.setFile(path, {
