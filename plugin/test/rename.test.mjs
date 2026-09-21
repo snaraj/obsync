@@ -21,6 +21,15 @@
  * the path inside the manifest. No device may ever publish a tombstone for a
  * file that was only renamed — a tombstone is what every other device obeys,
  * and obeying it deletes the user's note everywhere.
+ *
+ * WHAT IS AND IS NOT A PLATFORM HERE. Both devices are the same hand-written
+ * `Vault`, one configured desktop (`isMobile` false, concurrency 4) and one
+ * mobile (`isMobile` true, concurrency 2). That exercises the real
+ * `registerVaultEvents`, the real transport signing and the real engine on
+ * both configurations; it does NOT exercise `ObsidianHost` — the Node `fs`
+ * writer, the adapter writer, `FileManager.trashFile` — or the native event
+ * timing of either platform. Those stay a real-device acceptance run
+ * (`docs/validation.md`), and this file says nothing about them.
  */
 
 import { strict as assert } from "node:assert";
@@ -45,6 +54,9 @@ const STEP_MS = 50;
 
 const DEVICE_B = "00112233445566778899aabbccddeeff";
 const SECRET_B = "3c".repeat(32);
+/** An identity the fixture never enrols, and a secret no device holds. */
+const UNENROLLED = "deadbeefdeadbeefdeadbeefdeadbeef";
+const SECRET_C = "5e".repeat(32);
 
 /**
  * A vault that behaves like Obsidian's: every mutation, the plugin's own
@@ -304,6 +316,10 @@ test("a deletion the user makes after a pull-applied move is still published", a
   b.host.remove("Renamed.md");
   await timers.run(STEP_MS, () =>
     a.host.text("Renamed.md") === null && !settled(a, "Renamed.md") && !settled(b, "Renamed.md"));
+  // Quiet first: the device that OBEYS a tombstone trashes a file too, and
+  // that removal is echoed back to it like any other. ONE tombstone means
+  // one, measured after there is nothing left in flight to add a second.
+  await timers.run(STEP_MS);
 
   assert.equal(tombstones(server).length, 1, `the user's own deletion was swallowed: ${story(server, a, b)}`);
   assert.equal(tombstones(server)[0].file_id, fileId);
@@ -345,6 +361,9 @@ for (const arrival of ["typed", "renamed onto it"]) {
     const fileId = b.state.fileByPath("Note.md").fileId;
     b.host.remove("Note.md");
     await timers.run(STEP_MS, () => a.host.text("Note.md") === null);
+    // The same quiet window: the desktop obeying this tombstone trashes its
+    // copy, and that removal must not come back as a second tombstone.
+    await timers.run(STEP_MS);
 
     assert.equal(tombstones(server).length, 1, `the new note's deletion was swallowed: ${story(server, a, b)}`);
     assert.equal(tombstones(server)[0].file_id, fileId);
@@ -352,3 +371,53 @@ for (const arrival of ["typed", "renamed onto it"]) {
     assert.equal(b.host.text("Renamed.md"), BODY);
   });
 }
+
+/**
+ * THE FIXTURE'S OWN GUARD, pinned by its refusals.
+ *
+ * Everything above rests on the fake server telling the two devices apart: it
+ * holds one secret PER ENROLLED DEVICE and verifies every request against the
+ * device that CLAIMS it. Valid traffic alone does not prove that -- a fixture
+ * that admitted an unenrolled identity, or never compared the signature at
+ * all, would let a two-device test pass while proving nothing about which
+ * device did what, and the tombstone assertions above are exactly assertions
+ * about WHICH DEVICE published a version. So the refusals are driven here,
+ * through the product's own signer, with sentinel identities and secrets.
+ */
+function claim(server, id, secret) {
+  return new Transport({
+    request: server.request,
+    serverUrl: () => "https://sync.example.invalid",
+    device: () => ({ id, secret: Uint8Array.from(Buffer.from(secret, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => 1757200000000,
+    // One attempt: the refusal is the answer, and retrying it would only
+    // bury the reason under `gave_up`.
+    maxAttempts: 1,
+    sleep: async () => undefined,
+    log: () => undefined,
+  }).devices();
+}
+
+test("the fixture server verifies each request against the device that claims it", async () => {
+  const server = new FakeServer();
+  server.addDevice(DEVICE_B, SECRET_B, "phone");
+
+  // Controls: each enrolled device, signing with its own secret, is served.
+  assert.equal((await claim(server, KEYS.deviceId, KEYS.deviceSecret)).devices.length, 2);
+  assert.equal((await claim(server, DEVICE_B, SECRET_B)).devices.length, 2);
+
+  // An identity the server never enrolled is refused, whatever it signs with.
+  await assert.rejects(claim(server, UNENROLLED, SECRET_C), /unenrolled device/);
+  await assert.rejects(claim(server, UNENROLLED, KEYS.deviceSecret), /unenrolled device/);
+
+  // Each enrolled device signing with the OTHER one's secret is refused: one
+  // device cannot post as the other, which is what makes a per-device
+  // assertion about a published version mean anything.
+  await assert.rejects(claim(server, DEVICE_B, KEYS.deviceSecret), /bad signature/);
+  await assert.rejects(claim(server, KEYS.deviceId, SECRET_B), /bad signature/);
+
+  // And the refusals cost the caller nothing but the refusal: no device was
+  // enrolled, renamed or revoked by any of them.
+  assert.deepEqual(server.devices.map((device) => device.device_id), [KEYS.deviceId, DEVICE_B]);
+});
