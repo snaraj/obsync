@@ -41,13 +41,22 @@
  * `(path, mtime, size)` of the writes this device made, which is what stops
  * the vault watcher from pushing our own pull back up.
  *
- * CONFLICTS. When the server reports more than one head and ours is not the
- * incoming one, a text file with a reachable common ancestor takes the
- * three-way merge and the merged text is posted with BOTH heads as parents.
- * Everything else keeps both sides: the foreign head is written as
- * `<name> (conflict from <device>, <date>).<ext>` and the user is told.
- * Merging is attempted only for single-chunk text files; above that a
- * conflict copy is the honest answer.
+ * CONFLICTS. A version is written over a local file only when it DESCENDS
+ * from the version this device recorded and the file still holds the bytes
+ * this device put there. The version graph answers the first question; the
+ * server's `conflicted` flag cannot, because it is that file's state when the
+ * version was journaled and says nothing about what this device has done
+ * since. The file's own `(mtime, size)` against its record answers the second,
+ * and that is the half NO server can see: bytes this device never pushed are
+ * bytes it never heard of, so a note written or edited while this device was
+ * closed is a conflict the feed arrives innocent of (issue #98). Two divergent
+ * heads on a text file with a reachable common ancestor take the three-way
+ * merge and the merged text is posted with BOTH heads as parents. Everything
+ * else keeps both sides: the foreign version is written as
+ * `<name> (conflict from <device>, <date>).<ext>`, the local bytes stay where
+ * they are for the queued push to carry, and the user is told. Merging is
+ * attempted only for single-chunk text files; above that a conflict copy is
+ * the honest answer.
  *
  * PLATFORM. Desktop writes through a temp file and a rename (Node `fs`),
  * so a crash mid-write cannot leave a torn note, and streams a file of any
@@ -70,7 +79,7 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ChangeRecord, ReadControl } from "../transport";
+import { ChangeRecord, FileRecord, ReadControl } from "../transport";
 import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
@@ -400,6 +409,34 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   }
 }
 
+/**
+ * Why the file at `path` is not this version's to replace, or `null`.
+ *
+ * A pull may overwrite a local file only when this device put those exact
+ * bytes there for THIS file id and nothing has touched them since. The test is
+ * the startup reconciliation's own (`engine.ts`): the record a device keeps
+ * per path, compared against the file's `(mtime, size)`. Each answer is a
+ * different way for local content to exist nowhere else -- `no_record`, a file
+ * created here while the engine was not running; `other_file`, a different
+ * file that happens to share the name, which is how two devices racing the
+ * same new note arrive; `local_edit`, a file edited here since it was last
+ * pushed. In all three the push that would carry those bytes has not run yet,
+ * so the server holds nothing that could give them back.
+ */
+async function competing(
+  context: SyncContext,
+  path: string,
+  fileId: string,
+): Promise<"no_record" | "other_file" | "local_edit" | null> {
+  const stat = await context.host.stat(path);
+  if (stat === null) return null;
+  const record = context.state.fileByPath(path);
+  if (record === undefined) return "no_record";
+  if (record.fileId !== fileId) return "other_file";
+  if (record.mtime !== stat.mtime || record.size !== stat.size) return "local_edit";
+  return null;
+}
+
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   const manifest = await decryptRecordManifest(context, change);
   const localPath = context.state.pathByFileId(change.file_id);
@@ -437,8 +474,45 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     return "remote_only";
   }
 
-  if (change.conflicted && local && !change.parents.includes(local.versionId)) {
-    return await reconcile(context, change, manifest, localPath as string, local.versionId);
+  if (local && !change.parents.includes(local.versionId)) {
+    // Not our child by its parent list -- so ask the graph what it is. Three
+    // answers: a version our own already reaches is one this device has
+    // incorporated (its own merge, or a head it resolved), a version that
+    // reaches ours is a fast-forward across versions this device skipped, and
+    // anything else is two heads to resolve. The server's `conflicted` flag
+    // answers none of them: it was computed when this version was journaled,
+    // so the frame for the head another device wrote FIRST still says false
+    // after this device forked the file, and obeying it discards the merge.
+    const file = await context.transport.getFile(change.file_id);
+    if (reaches(file.versions, local.versionId, change.version_id)) {
+      context.host.log(
+        `pull path_class=file decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,
+      );
+      return "skipped";
+    }
+    if (!reaches(file.versions, change.version_id, local.versionId)) {
+      return await reconcile(context, file, change, manifest, localPath as string, local.versionId);
+    }
+  }
+
+  // The half the server cannot see. It flags `conflicted` only for a version
+  // whose parents are not its file's heads, and a device that was closed while
+  // another wrote posts nothing, so the incoming version arrives as an honest
+  // descendant of the parent this device recorded -- over a local file that
+  // has moved on since. Materialising it would replace bytes no version holds,
+  // and the push already queued for that path would then find the record and
+  // the file agreeing and send nothing, which is how the edit left no trace
+  // anywhere (issue #98). The move's trash half is the same loss one path over.
+  const held =
+    (await competing(context, manifest.path, change.file_id)) ??
+    (localPath !== undefined && localPath !== manifest.path
+      ? await competing(context, localPath, change.file_id)
+      : null);
+  if (held !== null) {
+    context.host.log(
+      `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
+    );
+    return await keepBoth(context, change, manifest);
   }
 
   const started = context.now();
@@ -507,6 +581,34 @@ function parentsFrom(versions: VersionNode[]): (id: string) => string[] {
   return (id) => byId.get(id) ?? [];
 }
 
+/** Every version `start` reaches through the parent graph, `start` included. */
+function reachable(parents: (id: string) => string[], start: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const id = queue.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const parent of parents(id)) queue.push(parent);
+  }
+  return seen;
+}
+
+/**
+ * Is `target` `head` itself, or one of its ancestors?
+ *
+ * The question a version's `parents` cannot answer: it names the IMMEDIATE
+ * parents, so a version this device never applied -- one a ceiling held back,
+ * one whose manifest was refused, one outside the current folder selection --
+ * leaves the record an ancestor rather than a parent, and the incoming version
+ * is still a plain fast-forward. One walk, linear in the graph, and it is what
+ * separates a fast-forward from a fork without trusting a flag the server
+ * computed before this device had done anything.
+ */
+function reaches(versions: VersionNode[], head: string, target: string): boolean {
+  return reachable(parentsFrom(versions), head).has(target);
+}
+
 /**
  * The newest version both heads reach, or `null`.
  *
@@ -530,19 +632,8 @@ export function commonAncestor(
   parentsOf?: (id: string) => string[],
 ): string | null {
   const parents = parentsOf ?? parentsFrom(versions);
-  const reach = (start: string): Set<string> => {
-    const seen = new Set<string>();
-    const queue = [start];
-    while (queue.length > 0) {
-      const id = queue.pop() as string;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      for (const parent of parents(id)) queue.push(parent);
-    }
-    return seen;
-  };
-  const fromLeft = reach(left);
-  const fromRight = reach(right);
+  const fromLeft = reachable(parents, left);
+  const fromRight = reachable(parents, right);
   for (const { version_id: id } of versions) {
     if (id !== left && id !== right && fromLeft.has(id) && fromRight.has(id)) return id;
   }
@@ -551,16 +642,18 @@ export function commonAncestor(
 
 /**
  * Two heads on one file. Merge when we can prove a base and the content is
- * mergeable text; otherwise keep both sides.
+ * mergeable text; otherwise keep both sides. The caller passes the file it
+ * already read: deciding that these ARE two heads walks the same graph, and
+ * asking twice would buy the same answer with a second request.
  */
 async function reconcile(
   context: SyncContext,
+  file: FileRecord,
   change: ChangeRecord,
   theirManifest: Manifest,
   localPath: string,
   localVersionId: string,
 ): Promise<ApplyResult> {
-  const file = await context.transport.getFile(change.file_id);
   const baseId = commonAncestor(file.versions, localVersionId, change.version_id);
   const mine = await context.host.read(localPath);
   const mergeable =

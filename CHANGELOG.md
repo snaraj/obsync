@@ -5,6 +5,42 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.5 - 2026-09-21
+
+**A note you wrote or edited while Obsidian was closed could be replaced by
+another device's version when you opened it again. Update every device that
+syncs this vault.** That is the whole release; nothing else changes.
+
+**What happened.** In 1.0.0, 1.0.1, 1.0.2, 1.0.3 and 1.0.4, if you edited a
+note while Obsidian was closed on one device, and the same note also changed on
+another device in the meantime, opening Obsidian again replaced your version
+with the other device's within a few seconds. Writing a NEW note while the app
+was closed did the same when another device happened to create a different note
+under that same name. No `(conflict from ...)` copy was written and nothing was
+moved to the trash. A note that changed on only one device was never affected,
+and a note you wrote while the app was closed with no counterpart on another
+device was uploaded correctly.
+
+**Content lost this way cannot be brought back.** This is not like 1.0.4's
+deletions, where the note's content was still on the server and **Restore from
+history** could return it. Here the replaced text had never left the device --
+obsync had not uploaded it yet -- so the server never held it, and neither
+**Restore from history** nor the dashboard nor your operator's backups can
+produce something that was never sent. If Obsidian's own **File recovery**
+(Settings, Core plugins) was on, its periodic snapshots of that note are the
+one place left to look.
+
+**What happens now.** When a version arrives from another device for a note
+this device has changed and not yet uploaded, obsync keeps your file exactly as
+it is, writes the other device's version beside it as
+`<note> (conflict from <device>, <date>).md`, tells you it kept both, and then
+uploads yours. Where the two sides only added lines in different places, they
+are merged into one note, as concurrent edits always were. Nothing is replaced,
+and both versions end up on both devices.
+
+**Why every device.** The device that loses the edit is the one that was
+closed, so updating one device protects only that device. Update them all.
+
 ## 1.0.4 - 2026-09-20
 
 **Renaming a note or a folder could delete it, on every device. Update every
