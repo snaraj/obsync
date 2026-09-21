@@ -2477,6 +2477,41 @@ fn widen(root: &std::path::Path) {
     chmod(root, WEAK_DIR);
 }
 
+/// The last-active refusal looks at the TARGET, not only at the count: a
+/// device that is not active was never the account's way to sync, so
+/// revoking it is allowed even when exactly one active device is left.
+///
+/// Without this, a guard that only counts refuses an operator with one
+/// laptop and one half-paired phone the ability to revoke the phone, and
+/// every other test in this file still passes.
+#[test]
+fn revoking_a_device_that_is_not_active_is_never_the_last_one() {
+    let dir = TempDir::new("store-revoke-target");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let account = store.setup("sentinel").expect("setup runs once");
+    let active = spare_device(&store, account);
+    let pending = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "half-paired phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [7u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("the claimant")
+        .device_id;
+
+    store
+        .revoke_device_unless_last(&pending)
+        .expect("a device that cannot sync is not the last one that can");
+    let err = store
+        .revoke_device_unless_last(&active)
+        .expect_err("and the one that can is still refused");
+    assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
+}
+
 /// Two devices revoking each other at the same instant cannot leave an
 /// account with nothing active.
 ///
