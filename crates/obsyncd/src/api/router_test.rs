@@ -1,7 +1,7 @@
 //! Route resolution: every route of `docs/protocol.md` and nothing else.
 #![forbid(unsafe_code)]
 
-use super::{Route, resolve};
+use super::{Route, Trust, demands_credential, resolve, trust};
 
 const SID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const ID: &str = "0123456789abcdef0123456789abcdef";
@@ -187,4 +187,110 @@ fn nothing_outside_the_four_dashboard_files_is_served_from_the_root() {
 fn empty_segments_are_ignored_so_a_trailing_slash_still_resolves() {
     assert_eq!(route("GET", "/v1/devices/"), Route::Devices);
     assert_eq!(route("GET", "//v1//devices"), Route::Devices);
+}
+
+/// Which routes answer without a credential decides two things at once: the
+/// ring a decision line lands in, and whether the response states the
+/// journal head. The list below is the unauthenticated surface
+/// `docs/protocol.md` documents, and nothing else may join it silently --
+/// `demands_credential` takes no wildcard, so a new route does not compile
+/// until its author chooses.
+#[test]
+fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
+    let public = [
+        ("GET", "/livez".to_string()),
+        ("GET", "/readyz".to_string()),
+        ("POST", "/v1/setup".to_string()),
+        ("POST", format!("/v1/pairing/{ID}/claim")),
+        ("GET", "/v1/plugin/manifest".to_string()),
+        ("GET", "/".to_string()),
+        ("GET", "/index.html".to_string()),
+        ("GET", "/app.css".to_string()),
+        ("GET", "/app.js".to_string()),
+        ("GET", "/lib.js".to_string()),
+    ];
+    for (method, path) in &public {
+        assert!(
+            !demands_credential(&route(method, path)),
+            "{method} {path} is documented unauthenticated"
+        );
+    }
+
+    // Everything else in the table demands one, the dashboard session
+    // routes and `GET /login` included: a login link is a credential.
+    let credentialed = [
+        ("GET", "/v1/account".to_string()),
+        ("POST", "/v1/pairing".to_string()),
+        ("GET", format!("/v1/pairing/{ID}")),
+        ("POST", format!("/v1/pairing/{ID}/approve")),
+        ("POST", format!("/v1/pairing/{ID}/reject")),
+        ("GET", format!("/v1/pairing/{ID}/envelope")),
+        ("GET", "/v1/devices".to_string()),
+        ("PATCH", format!("/v1/devices/{ID}")),
+        ("POST", format!("/v1/devices/{ID}/revoke")),
+        ("POST", "/v1/devices/heartbeat".to_string()),
+        ("POST", "/v1/chunks/exists".to_string()),
+        ("POST", "/v1/chunks/get".to_string()),
+        ("PUT", format!("/v1/chunks/{SID}")),
+        ("GET", format!("/v1/chunks/{SID}")),
+        ("POST", format!("/v1/files/{ID}/versions")),
+        ("GET", format!("/v1/files/{ID}")),
+        ("GET", format!("/v1/files/{ID}/versions/{SID}")),
+        ("GET", "/v1/files".to_string()),
+        ("GET", "/v1/changes".to_string()),
+        ("POST", "/v1/dashboard/login-link".to_string()),
+        ("GET", "/login".to_string()),
+        ("POST", "/v1/admin/logout".to_string()),
+        ("POST", "/v1/admin/logout-all".to_string()),
+        ("GET", "/v1/admin/overview".to_string()),
+        ("GET", "/v1/admin/devices".to_string()),
+        ("POST", format!("/v1/admin/devices/{ID}/revoke")),
+        ("GET", "/v1/admin/storage".to_string()),
+        ("POST", "/v1/admin/gc/run".to_string()),
+        ("POST", "/v1/admin/scrub/run".to_string()),
+        ("GET", "/v1/admin/logs".to_string()),
+    ];
+    for (method, path) in &credentialed {
+        assert!(
+            demands_credential(&route(method, path)),
+            "{method} {path} must not answer an anonymous caller"
+        );
+    }
+    // Every route in the table is named above exactly once, so neither list
+    // can go stale while the other grows.
+    assert_eq!(public.len() + credentialed.len(), 40);
+}
+
+#[test]
+fn signing_out_everywhere_is_its_own_route_and_post_only() {
+    assert_eq!(route("POST", "/v1/admin/logout-all"), Route::LogoutAll);
+    assert_eq!(
+        class("POST", "/v1/admin/logout-all"),
+        "/v1/admin/logout-all"
+    );
+    assert!(resolve("GET", "/v1/admin/logout-all").is_none());
+}
+
+/// The trust decision, exhaustively: evidence decides, the route table only
+/// cross-checks. There is no input where a status promotes a request.
+#[test]
+fn only_verified_evidence_makes_a_response_credentialed() {
+    // Proof carries every status, on either side of the route table.
+    for status in [200, 204, 302, 400, 401, 403, 404, 409, 421, 500] {
+        assert_eq!(trust(true, true, status), Trust::Proved, "{status}");
+        assert_eq!(trust(false, true, status), Trust::Proved, "{status}");
+    }
+    // Without proof, a refusal on a credentialed route is simply unproved --
+    // the statuses the old status heuristic read as proof included.
+    for status in [400, 401, 403, 404, 409, 421, 500] {
+        assert_eq!(trust(true, false, status), Trust::Unproved, "{status}");
+    }
+    // Without proof, a SUCCESS on a credentialed route is the server bug.
+    for status in [200, 201, 204, 302, 399] {
+        assert_eq!(trust(true, false, status), Trust::Unverified, "{status}");
+    }
+    // A public route proves nothing by succeeding, and is no bug either.
+    for status in [200, 204, 302, 401, 404] {
+        assert_eq!(trust(false, false, status), Trust::Unproved, "{status}");
+    }
 }

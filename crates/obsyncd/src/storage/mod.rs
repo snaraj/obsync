@@ -772,12 +772,37 @@ impl Store {
         Ok(())
     }
 
-    /// Revoke a device: every later request from it fails.
-    pub fn revoke_device(&self, id: &DeviceId) -> Result<(), StoreError> {
+    /// Revoke a device -- every later request from it fails -- unless it is
+    /// the account's only ACTIVE one.
+    ///
+    /// The count and the append happen under ONE hold of the index lock, so
+    /// the refusal cannot be raced. An API-level check could not: it reads
+    /// the device list, releases the lock, and decides against a count that
+    /// another request has already changed, so two devices revoking each
+    /// other concurrently both saw two and both wrote. What that leaves is
+    /// permanent -- `POST /v1/setup` answers `409 already_set_up` forever
+    /// and only a paired device can open a pairing, so an account with no
+    /// active device can never sync again (`docs/recovery.md`). There is
+    /// deliberately no unguarded revoke beside this one.
+    ///
+    /// A device waiting for pairing approval is not a way out of the
+    /// refusal: it holds no vault key and cannot pair a replacement.
+    ///
+    /// # Errors
+    /// `UnknownDevice` when there is no such device, `LastActiveDevice` when
+    /// it is the only active one.
+    pub fn revoke_device_unless_last(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
         let mut index = self.index();
-        if !index.devices.contains_key(id) {
-            return Err(StoreError::UnknownDevice);
+        let target_is_active = index
+            .devices
+            .get(id)
+            .ok_or(StoreError::UnknownDevice)?
+            .record
+            .active();
+        let active = index.devices.values().filter(|e| e.record.active()).count();
+        if target_is_active && active <= 1 {
+            return Err(StoreError::LastActiveDevice);
         }
         append(&mut journal, &mut index, |_| Frame::DeviceRevoke {
             device_id: *id,

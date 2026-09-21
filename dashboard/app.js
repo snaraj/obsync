@@ -13,11 +13,24 @@
 
 import * as L from './lib.js';
 
+// The browser objects this file touches, named in one place so `start()` can
+// be handed stand-ins under `node --test` (dashboard/test/dom.mjs) and the
+// page's behaviour can be tested without a browser. In a browser these ARE
+// the browser's own: `start()` is called with nothing at the bottom of this
+// file, exactly as the module body used to run.
+const env = {
+  document: globalThis.document,
+  window: globalThis,
+  location: globalThis.location,
+  clipboard: globalThis.navigator && globalThis.navigator.clipboard,
+  fetch: (...args) => globalThis.fetch(...args),
+};
+
 const ADMIN = '/v1/admin';
 
 const state = { overview: null, logs: [], signedIn: true, retry: null };
 
-const el = (id) => document.getElementById(id);
+const el = (id) => env.document.getElementById(id);
 const field = (root, name) => root.querySelector(`[data-f="${name}"]`);
 const clone = (id) => el(id).content.cloneNode(true);
 
@@ -66,9 +79,9 @@ function clearError() {
 function skeleton(body, columns, rows) {
   body.replaceChildren();
   for (let i = 0; i < rows; i += 1) {
-    const tr = document.createElement('tr');
+    const tr = env.document.createElement('tr');
     tr.className = 'skelrow';
-    const td = document.createElement('td');
+    const td = env.document.createElement('td');
     td.colSpan = columns;
     td.className = 'skel';
     td.textContent = ' ';
@@ -84,14 +97,14 @@ async function request(method, path, body) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') {
     // Double submit: the header must equal the readable cookie.
-    const token = L.csrfToken(document.cookie);
+    const token = L.csrfToken(env.document.cookie);
     if (!token) throw new ApiError(0, 'no_csrf_cookie', 'This browser holds no CSRF cookie. Sign in again.');
     headers['X-Obsync-Csrf'] = token;
   }
 
   let res;
   try {
-    res = await fetch(path, {
+    res = await env.fetch(path, {
       method,
       headers,
       credentials: 'same-origin',
@@ -133,7 +146,7 @@ const get = (path) => request('GET', path);
 function renderVolumes(host, volumes) {
   host.replaceChildren();
   if (!Array.isArray(volumes) || volumes.length === 0) {
-    const p = document.createElement('p');
+    const p = env.document.createElement('p');
     p.className = 'empty';
     p.textContent = 'No volume is reporting yet.';
     host.append(p);
@@ -196,6 +209,12 @@ async function loadOverview() {
   renderScrub(el('scrub-summary'), data.last_scrub);
   renderVolumes(el('overview-volumes'), data.volumes);
   applyEdge(data);
+
+  // A session opened with the standing setup token, rather than from a
+  // paired device, is worth saying out loud: it is the recovery credential,
+  // it never expires, and whoever holds the journal volume holds it.
+  const session = data.session && typeof data.session === 'object' ? data.session : {};
+  el('recovery-note').hidden = session.recovery !== true;
 }
 
 // Both summaries are `<gc>` and `<scrub>` from docs/protocol.md, and both
@@ -282,7 +301,12 @@ function deviceRow(row, index) {
   if (row.revoked) {
     open.hidden = true;
   } else {
-    setText(field(node, 'confirm-text'), `Revoke ${row.name}? Its next request fails.`);
+    setText(
+      field(node, 'confirm-text'),
+      `Revoke ${row.name}? It stops syncing at once, its dashboard links and sessions end with it, `
+      + 'and pairing it again from another device is the only way back. '
+      + 'The last active device cannot be revoked.',
+    );
     open.addEventListener('click', () => {
       open.hidden = true;
       confirm.hidden = false;
@@ -296,13 +320,13 @@ function deviceRow(row, index) {
     field(node, 'revoke-do').addEventListener('click', () => {
       guard(async () => {
         await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/revoke`);
-        say(`${row.name} is revoked. Its next request fails.`);
+        say(`${row.name} is revoked. Its next request fails, and its dashboard sessions are closed.`);
         await loadDevices();
       });
     });
   }
 
-  const out = document.createDocumentFragment();
+  const out = env.document.createDocumentFragment();
   out.append(node, history);
   return out;
 }
@@ -443,24 +467,25 @@ function showSignin() {
   for (const name of L.routes()) el(`page-${name}`).hidden = true;
   el('page-signin').hidden = false;
   el('signout').hidden = true;
-  document.querySelector('.tabs').hidden = true;
+  el('signout-all').hidden = true;
+  env.document.querySelector('.tabs').hidden = true;
   clearError();
   say('');
 }
 
 function route() {
-  const name = L.routeFromHash(location.hash);
+  const name = L.routeFromHash(env.location.hash);
   if (!state.signedIn) {
     showSignin();
     return;
   }
   for (const other of L.routes()) el(`page-${other}`).hidden = other !== name;
   el('page-signin').hidden = true;
-  for (const link of document.querySelectorAll('.tabs a')) {
+  for (const link of env.document.querySelectorAll('.tabs a')) {
     if (link.dataset.route === name) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = `obsync — ${name}`;
+  env.document.title = `obsync — ${name}`;
   say('');
   clearError();
   guard(LOADERS[name]);
@@ -468,37 +493,59 @@ function route() {
 
 /* ---- wiring -------------------------------------------------------------- */
 
-el('banner-retry').addEventListener('click', () => {
-  const retry = state.retry;
-  clearError();
-  if (retry) retry();
-});
+// Everything below used to run as the module body. It runs from `start()`
+// instead, which changes nothing in a browser -- the call at the end of this
+// file is unconditional there -- and lets a test drive the same wiring over a
+// stand-in document and fetch.
+export function start(overrides = {}) {
+  Object.assign(env, overrides);
 
-el('signout').addEventListener('click', () => {
-  guard(async () => {
-    await request('POST', `${ADMIN}/logout`);
-    showSignin();
+  el('banner-retry').addEventListener('click', () => {
+    const retry = state.retry;
+    clearError();
+    if (retry) retry();
   });
-});
 
-el('copy-url').addEventListener('click', () => {
-  const url = el('public-url').textContent;
-  if (!navigator.clipboard) {
-    say(`This browser will not copy for us. The address is ${url}`);
-    return;
-  }
-  navigator.clipboard.writeText(url).then(
-    () => say('Public address copied.'),
-    () => say(`Copy it by hand: ${url}`),
-  );
-});
+  el('signout').addEventListener('click', () => {
+    guard(async () => {
+      await request('POST', `${ADMIN}/logout`);
+      showSignin();
+    });
+  });
 
-el('run-gc').addEventListener('click', () =>
-  runJob(el('run-gc'), `${ADMIN}/gc/run`, 'Garbage collection started. It logs a summary when it finishes.'));
-el('run-scrub').addEventListener('click', () =>
-  runJob(el('run-scrub'), `${ADMIN}/scrub/run`, 'Scrub started. It runs at the configured rate and logs a summary.'));
+  // Sessions live in the server, so this ends every one of them: a browser
+  // left signed in somewhere the operator no longer controls stops working
+  // here, without waiting out the twelve-hour limit and without a restart.
+  el('signout-all').addEventListener('click', () => {
+    guard(async () => {
+      await request('POST', `${ADMIN}/logout-all`);
+      showSignin();
+    });
+  });
 
-el('log-filter').addEventListener('input', renderLogs);
-window.addEventListener('hashchange', route);
+  el('copy-url').addEventListener('click', () => {
+    const url = el('public-url').textContent;
+    if (!env.clipboard) {
+      say(`This browser will not copy for us. The address is ${url}`);
+      return;
+    }
+    env.clipboard.writeText(url).then(
+      () => say('Public address copied.'),
+      () => say(`Copy it by hand: ${url}`),
+    );
+  });
 
-route();
+  el('run-gc').addEventListener('click', () =>
+    runJob(el('run-gc'), `${ADMIN}/gc/run`, 'Garbage collection started. It logs a summary when it finishes.'));
+  el('run-scrub').addEventListener('click', () =>
+    runJob(el('run-scrub'), `${ADMIN}/scrub/run`, 'Scrub started. It runs at the configured rate and logs a summary.'));
+
+  el('log-filter').addEventListener('input', renderLogs);
+  env.window.addEventListener('hashchange', route);
+
+  route();
+}
+
+// A browser has a document; `node --test` does not, and there `start()` is
+// called by the test with one of its own.
+if (env.document) start();

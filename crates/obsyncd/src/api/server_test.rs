@@ -401,14 +401,38 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
     assert_eq!(res.header("x-content-type-options"), Some("nosniff"));
     assert_eq!(res.header("x-frame-options"), Some("DENY"));
     assert_eq!(res.header("referrer-policy"), Some("no-referrer"));
-    assert!(
-        res.header("x-obsync-seq").is_some(),
-        "every response carries the journal head"
+    // The journal head is not part of that set: it is write activity, and it
+    // rides a response only when the caller proved a credential.
+    assert_eq!(
+        res.header("x-obsync-seq"),
+        None,
+        "an unauthenticated probe learns nothing about how much the owner writes"
     );
 
     let res = Req::get("/readyz").send(h.addr);
     assert_eq!(res.status, 200, "{}", res.text());
     assert_eq!(res.json().get("ready").and_then(Value::as_bool), Some(true));
+    assert_eq!(res.header("x-obsync-seq"), None, "nor does readiness");
+
+    // And a caller that proved one still gets it: the dashboard's footer
+    // reads exactly this header.
+    let cred = h.setup_account();
+    let authed = Req::get("/v1/account").sign(&cred, NOW).send(h.addr);
+    assert_eq!(authed.status, 200, "{}", authed.text());
+    assert!(
+        authed.header("x-obsync-seq").is_some(),
+        "an authenticated response still carries the journal head"
+    );
+    assert_eq!(authed.header("cache-control"), Some("no-store"));
+
+    // A refusal of the credential itself is not a credentialed response.
+    let refused = Req::get("/v1/account").send(h.addr);
+    assert_eq!(refused.status, 401);
+    assert_eq!(
+        refused.header("x-obsync-seq"),
+        None,
+        "a 401 must not answer what an authenticated read would"
+    );
 }
 
 #[test]
@@ -529,6 +553,14 @@ fn a_journal_whose_usage_is_unverified_answers_readyz_and_recovers_without_a_wri
 /// there the cookie mechanics are the subject and their assertions belong
 /// inline; here they are only the way in.
 fn admin_cookie(h: &Harness, cred: &Cred) -> String {
+    let token = login_token(h, cred);
+    let login = Req::get(&format!("/login?token={token}")).send(h.addr);
+    assert_eq!(login.status, 302, "{}", login.text());
+    cookie_header(&login)
+}
+
+/// Mint one dashboard login link on `cred` and return its token, unspent.
+fn login_token(h: &Harness, cred: &Cred) -> String {
     let link = Req::post("/v1/dashboard/login-link")
         .sign(cred, NOW)
         .send(h.addr);
@@ -539,19 +571,31 @@ fn admin_cookie(h: &Harness, cred: &Cred) -> String {
         .and_then(Value::as_str)
         .expect("a login url")
         .to_string();
-    let token = url
-        .split("token=")
+    url.split("token=")
         .nth(1)
         .expect("a token in the url")
-        .to_string();
-    let login = Req::get(&format!("/login?token={token}")).send(h.addr);
-    assert_eq!(login.status, 302, "{}", login.text());
-    login
-        .headers_all("set-cookie")
+        .to_string()
+}
+
+/// The `Cookie:` header a browser would send back after a response's
+/// `Set-Cookie` lines: the name=value pairs, attributes dropped.
+fn cookie_header(res: &Res) -> String {
+    res.headers_all("set-cookie")
         .iter()
         .map(|c| c.split(';').next().expect("a cookie pair").to_string())
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// The double-submit value out of such a header, for the `X-Obsync-Csrf`
+/// header every mutation carries.
+fn csrf_value(cookie_header: &str) -> String {
+    cookie_header
+        .split(';')
+        .map(str::trim)
+        .find_map(|pair| pair.strip_prefix(&format!("{}=", crate::api::admin::CSRF_COOKIE)))
+        .expect("a CSRF cookie in the header")
+        .to_string()
 }
 
 /// The journal volume AS THE DASHBOARD RECEIVES IT: the parsed JSON of the
@@ -2308,6 +2352,25 @@ fn the_dashboard_serves_its_files_with_the_strict_policy() {
         !csp.contains("unsafe-inline"),
         "no inline script is ever allowed: {csp}"
     );
+    assert!(
+        csp.contains("object-src 'none'"),
+        "plugins and embeds are named rather than left to default-src: {csp}"
+    );
+    // A page that opens no window and is embedded by nobody pays nothing
+    // for cross-origin isolation.
+    assert_eq!(
+        index.header("cross-origin-opener-policy"),
+        Some("same-origin")
+    );
+    assert_eq!(
+        index.header("cross-origin-resource-policy"),
+        Some("same-origin")
+    );
+    assert_eq!(
+        index.header("x-obsync-seq"),
+        None,
+        "a page request proves no credential"
+    );
 
     assert_eq!(
         Req::get("/app.css").send(h.addr).header("content-type"),
@@ -2363,20 +2426,28 @@ fn the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header()
     assert_eq!(cookies.len(), 2, "session and CSRF: {cookies:?}");
     let session = cookies
         .iter()
-        .find(|c| c.starts_with("obsync_session="))
+        .find(|c| c.starts_with("__Host-obsync_session="))
         .expect("session cookie")
         .to_string();
     let csrf = cookies
         .iter()
-        .find(|c| c.starts_with("obsync_csrf="))
+        .find(|c| c.starts_with("__Host-obsync_csrf="))
         .expect("csrf")
         .to_string();
     assert!(session.contains("HttpOnly"), "{session}");
-    assert!(session.contains("SameSite=Strict"), "{session}");
     assert!(
         !csrf.contains("HttpOnly"),
         "the double-submit value must be readable: {csrf}"
     );
+    // Both cookies are `__Host-` names, and a browser refuses one of those
+    // without `Secure`, without `Path=/`, or with a `Domain`. That is what
+    // stops a plaintext hop or a sibling host from planting or reading one.
+    for c in [&session, &csrf] {
+        assert!(c.contains("Secure"), "{c}");
+        assert!(c.contains("SameSite=Strict"), "{c}");
+        assert!(c.contains("Path=/"), "{c}");
+        assert!(!c.contains("Domain="), "{c}");
+    }
 
     let session_value = session.split(';').next().expect("pair").to_string();
     let csrf_value = csrf.split(';').next().expect("pair").to_string();
@@ -2495,14 +2566,129 @@ fn the_dashboard_session_needs_a_link_and_every_mutation_needs_the_csrf_header()
         .header("X-Obsync-Csrf", &csrf_token)
         .send(h.addr);
     assert_eq!(logout.status, 204, "{}", logout.text());
+    for c in logout.headers_all("set-cookie") {
+        assert!(c.contains("Max-Age=0"), "{c}");
+        assert!(
+            c.contains("Secure"),
+            "a `__Host-` cookie is cleared only by a clear the browser accepts: {c}"
+        );
+    }
     let after = Req::get("/v1/admin/overview")
         .header("Cookie", &cookie_header)
         .send(h.addr);
     assert_eq!(after.status, 401, "the session is closed");
 }
 
+/// One session per browser is not the unit an operator can act on: the unit
+/// is "every browser I ever signed in". Nothing offered that before, and a
+/// session could not be ended remotely at all short of a restart.
 #[test]
-fn the_setup_token_is_the_documented_recovery_login() {
+fn signing_out_everywhere_ends_every_session_not_only_this_one() {
+    let h = Harness::start_with(
+        "logout-all",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let one = admin_cookie(&h, &cred);
+    let two = admin_cookie(&h, &cred);
+    assert_ne!(one, two, "two independent sessions");
+    for c in [&one, &two] {
+        assert_eq!(
+            Req::get("/v1/admin/overview")
+                .header("Cookie", c)
+                .send(h.addr)
+                .status,
+            200
+        );
+    }
+
+    // A link minted and never spent is the same key to the same dashboard:
+    // the machine the operator no longer controls may be holding one.
+    let unspent = login_token(&h, &cred);
+
+    let csrf = csrf_value(&two);
+    let all = Req::post("/v1/admin/logout-all")
+        .header("Cookie", &two)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(all.status, 204, "{}", all.text());
+
+    let spent_after = Req::get(&format!("/login?token={unspent}")).send(h.addr);
+    assert_eq!(
+        (spent_after.status, spent_after.code()),
+        (401, "bad_login_token".to_string()),
+        "signing out everywhere burns the links nobody spent, or it handed \
+         back exactly what it was pressed to take away"
+    );
+    for c in [&one, &two] {
+        assert_eq!(
+            Req::get("/v1/admin/overview")
+                .header("Cookie", c)
+                .send(h.addr)
+                .status,
+            401,
+            "every session is out, the one that asked included"
+        );
+    }
+
+    // It is a mutation like any other: no session, no CSRF header, no.
+    assert_eq!(Req::post("/v1/admin/logout-all").send(h.addr).status, 401);
+    let three = admin_cookie(&h, &cred);
+    let no_csrf = Req::post("/v1/admin/logout-all")
+        .header("Cookie", &three)
+        .send(h.addr);
+    assert_eq!(no_csrf.status, 403);
+    assert_eq!(no_csrf.code(), "csrf_failed");
+}
+
+/// A session that nothing uses stops being accepted an hour in, long before
+/// the twelve-hour limit; a session in use is carried by its use.
+#[test]
+fn a_dashboard_session_left_idle_expires_before_its_absolute_limit() {
+    let h = Harness::start_with(
+        "idle",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let cookie = admin_cookie(&h, &cred);
+    let idle = crate::api::admin::SESSION_IDLE_SECS;
+
+    // Used just before the idle limit, which carries it past that limit.
+    h.clock.set(NOW + idle - 1);
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .status,
+        200
+    );
+    h.clock.set(NOW + idle + 1);
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .status,
+        200,
+        "use pushes the idle window out"
+    );
+
+    // Then left alone for one whole window.
+    h.clock.set(NOW + 2 * idle + 2);
+    let out = Req::get("/v1/admin/overview")
+        .header("Cookie", &cookie)
+        .send(h.addr);
+    assert_eq!(out.status, 401, "{}", out.text());
+    assert_eq!(out.code(), "no_session");
+}
+
+#[test]
+fn the_setup_token_is_the_documented_recovery_login_and_the_page_is_told() {
     let h = Harness::start_with(
         "recovery",
         Setup {
@@ -2510,10 +2696,333 @@ fn the_setup_token_is_the_documented_recovery_login() {
             ..Setup::default()
         },
     );
-    h.setup_account();
+    let cred = h.setup_account();
     let login = Req::get(&format!("/login?token={}", "5e".repeat(32))).send(h.addr);
     assert_eq!(login.status, 302, "{}", login.text());
     assert_eq!(login.headers_all("set-cookie").len(), 2);
+
+    // A standing credential with no device behind it is worth saying out
+    // loud on the page it signed into.
+    let cookie = cookie_header(&login);
+    let overview = Req::get("/v1/admin/overview")
+        .header("Cookie", &cookie)
+        .send(h.addr);
+    assert_eq!(overview.status, 200, "{}", overview.text());
+    assert_eq!(
+        overview
+            .json()
+            .get("session")
+            .and_then(|s| s.get("recovery"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    // A session opened from a device's link is not one.
+    let from_device = admin_cookie(&h, &cred);
+    let ordinary = Req::get("/v1/admin/overview")
+        .header("Cookie", &from_device)
+        .send(h.addr);
+    assert_eq!(
+        ordinary
+            .json()
+            .get("session")
+            .and_then(|s| s.get("recovery"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+}
+
+/// Removing the attempt limit rests on refusals being VISIBLE instead. That
+/// has to hold on the page an operator actually reads, not only on stdout.
+#[test]
+fn a_refused_sign_in_is_visible_on_the_logs_page() {
+    let h = Harness::start_with(
+        "login-visible",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    for _ in 0..3 {
+        let refused = Req::get("/login?token=deadbeef").send(h.addr);
+        assert_eq!(refused.status, 401, "{}", refused.text());
+        assert_eq!(refused.code(), "bad_login_token");
+    }
+
+    let cookie = admin_cookie(&h, &cred);
+    let logs = Req::get("/v1/admin/logs?limit=200")
+        .header("Cookie", &cookie)
+        .send(h.addr);
+    assert_eq!(logs.status, 200, "{}", logs.text());
+    let body = logs.json();
+    let lines = body.get("lines").and_then(Value::as_array).expect("lines");
+    let refusals = lines
+        .iter()
+        .filter(|l| {
+            l.get("path_class").and_then(Value::as_str) == Some("/login")
+                && l.get("decision").and_then(Value::as_str) == Some("bad_login_token")
+        })
+        .count();
+    assert_eq!(
+        refusals,
+        3,
+        "every refusal reaches the page, each naming its decision: {}",
+        logs.text()
+    );
+    assert!(
+        !logs.text().contains("deadbeef"),
+        "and none of them carries the token that was tried: {}",
+        logs.text()
+    );
+}
+
+/// Revocation says "its next request fails" on the page. It has to mean the
+/// dashboard too: the link the device minted five minutes ago, and the
+/// session that link opened.
+#[test]
+fn revoking_a_device_ends_the_links_and_sessions_it_minted() {
+    let h = Harness::start_with(
+        "revoke-sessions",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+
+    // A session opened from the claimant's link, and a second link of its
+    // own that nobody has spent yet.
+    let doomed = admin_cookie(&h, &claimant);
+    let unspent = login_token(&h, &claimant);
+    // Plus a session from the device that survives, which must not be
+    // touched by any of this.
+    let kept = admin_cookie(&h, &creator);
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &doomed)
+            .send(h.addr)
+            .status,
+        200
+    );
+
+    let csrf = csrf_value(&kept);
+    let revoke = Req::post(&format!("/v1/admin/devices/{}/revoke", claimant.id))
+        .header("Cookie", &kept)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    let after = Req::get("/v1/admin/overview")
+        .header("Cookie", &doomed)
+        .send(h.addr);
+    assert_eq!(after.status, 401, "the session it opened is over");
+    assert_eq!(after.code(), "no_session");
+    let spent = Req::get(&format!("/login?token={unspent}")).send(h.addr);
+    assert_eq!(
+        spent.status,
+        401,
+        "the link it minted buys nothing: {}",
+        spent.text()
+    );
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &kept)
+            .send(h.addr)
+            .status,
+        200,
+        "and no other session is disturbed"
+    );
+}
+
+/// The other revoke route reaches the dashboard the same way: a device
+/// revoked from a paired device also loses its links and its sessions.
+#[test]
+fn revoking_a_device_from_another_device_ends_its_dashboard_hold_too() {
+    let h = Harness::start_with(
+        "revoke-sessions-device",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+
+    let doomed = admin_cookie(&h, &creator);
+    let unspent = login_token(&h, &creator);
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &doomed)
+            .send(h.addr)
+            .status,
+        200
+    );
+
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    assert_eq!(
+        Req::get("/v1/admin/overview")
+            .header("Cookie", &doomed)
+            .send(h.addr)
+            .status,
+        401,
+        "the session its link opened is over"
+    );
+    assert_eq!(
+        Req::get(&format!("/login?token={unspent}"))
+            .send(h.addr)
+            .status,
+        401,
+        "and the link it had already minted buys nothing"
+    );
+}
+
+/// The dashboard's revoke had no last-device guard at all, so one click on
+/// the only device ended the account: nothing re-enrols one.
+#[test]
+fn the_dashboard_refuses_to_revoke_the_only_active_device() {
+    let h = Harness::start_with(
+        "revoke-last",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let cookie = admin_cookie(&h, &cred);
+    let csrf = csrf_value(&cookie);
+
+    let refused = Req::post(&format!("/v1/admin/devices/{}/revoke", cred.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(refused.status, 409, "{}", refused.text());
+    assert_eq!(refused.code(), "last_device");
+    assert_eq!(
+        Req::get("/v1/account").sign(&cred, NOW).send(h.addr).status,
+        200,
+        "the device it refused to revoke still syncs"
+    );
+
+    // With a second active device it is allowed, which is what keeps the
+    // guard from being a refusal of everything.
+    let (id, claimant) = claim_pairing(&h, &cred);
+    approve_pairing(&h, &cred, &id);
+    let allowed = Req::post(&format!("/v1/admin/devices/{}/revoke", claimant.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(allowed.status, 204, "{}", allowed.text());
+    // And the first device is the last one again.
+    let last_again = Req::post(&format!("/v1/admin/devices/{}/revoke", cred.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(last_again.status, 409);
+    assert_eq!(last_again.code(), "last_device");
+}
+
+/// The decision log is what the dashboard shows an operator after an
+/// incident. A single ring shared with unauthenticated traffic meant anyone
+/// who could reach the port could empty it with free probes.
+#[test]
+fn unauthenticated_probes_cannot_evict_the_authenticated_decision_log() {
+    let h = Harness::start_with(
+        "log-ring",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let cookie = admin_cookie(&h, &cred);
+    assert_eq!(
+        Req::get("/v1/admin/storage")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .status,
+        200
+    );
+
+    // More probes than the public ring holds, run from a few threads: the
+    // acceptor polls, so a serial flood would spend its time sleeping.
+    let per_worker = crate::api::RECENT_PUBLIC_LOG_LINES / 8 + 8;
+    let addr = h.addr;
+    let workers: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(move || {
+                for _ in 0..per_worker {
+                    assert_eq!(Req::get("/livez").send(addr).status, 200);
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().expect("the flood finishes");
+    }
+
+    let lines = h.app.recent_lines(None, 5_000);
+    let probes = lines.iter().filter(|l| l.path_class == "/livez").count();
+    assert_eq!(
+        probes,
+        crate::api::RECENT_PUBLIC_LOG_LINES,
+        "the flood fills its own ring and stops there"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.path_class == "/v1/admin/storage" && l.status == 200),
+        "the authenticated read the operator is looking for is still there"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.path_class == "/v1/dashboard/login-link"),
+        "and so is the oldest credentialed decision on this server"
+    );
+    assert!(
+        lines.iter().any(|l| l.path_class == "/login"),
+        "the sign-in an operator has to be able to see is still shown too"
+    );
+}
+
+/// Which server is this, and has anybody claimed it? Not a question an
+/// unauthenticated caller gets to ask by sending a wrong token.
+#[test]
+fn a_wrong_setup_token_tells_a_claimed_server_from_an_unclaimed_one_to_nobody() {
+    let h = Harness::start("setup-oracle");
+    let wrong = format!(
+        r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
+        "11".repeat(32)
+    );
+    let before = Req::post("/v1/setup").body(&wrong).send(h.addr);
+    assert_eq!(before.status, 401);
+    assert_eq!(before.code(), "bad_setup_token");
+
+    h.setup_account();
+    let after = Req::post("/v1/setup").body(&wrong).send(h.addr);
+    assert_eq!(
+        (after.status, after.code()),
+        (before.status, before.code()),
+        "a claimed server answers a wrong token exactly as an unclaimed one does"
+    );
+
+    // The documented refusal still reaches the caller that holds the token.
+    let right = Req::post("/v1/setup")
+        .body(&format!(
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
+            "5e".repeat(32)
+        ))
+        .send(h.addr);
+    assert_eq!(right.status, 409);
+    assert_eq!(right.code(), "already_set_up");
 }
 
 #[test]
@@ -2704,4 +3213,286 @@ mod fixtures {
         assert_eq!(accepted.status, 409, "{}", accepted.text());
         assert_eq!(accepted.code(), "missing_chunks");
     }
+}
+
+/// The setup body every first-boot call sends, with the token under test.
+fn setup_body(token: &str) -> String {
+    format!(
+        r#"{{"setup_token":"{token}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#
+    )
+}
+
+/// Which ring a decision landed in, read from the two rings themselves.
+///
+/// The header a caller receives and the ring its line lands in are ONE
+/// decision, so every provenance assertion checks both: a fault that set one
+/// and not the other would otherwise pass.
+fn ring_of(h: &Harness, class: &str, status: u16) -> &'static str {
+    let recent = h.app.recent.lock().expect("recent log");
+    let holds = |ring: &std::collections::VecDeque<crate::api::LogLine>| {
+        ring.iter()
+            .any(|l| l.path_class == class && l.status == status)
+    };
+    if holds(&recent.credentialed) {
+        "credentialed"
+    } else if holds(&recent.public) {
+        "public"
+    } else {
+        "absent"
+    }
+}
+
+/// Credentialed means one thing: a credential verified WHILE this request was
+/// answered. No route, status, or header can produce that fact, and every
+/// refusal answered before a check could pass is public.
+#[test]
+fn only_a_verified_credential_makes_a_response_credentialed() {
+    let h = Harness::start("provenance");
+
+    // A wrong setup token proves nothing; the right one proves the
+    // first-boot credential, and the `201` that follows is credentialed.
+    let wrong = Req::post("/v1/setup")
+        .body(&setup_body(&"11".repeat(32)))
+        .send(h.addr);
+    assert_eq!(wrong.status, 401);
+    assert_eq!(wrong.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/setup", 401), "public");
+
+    let created = Req::post("/v1/setup")
+        .body(&setup_body(&"5e".repeat(32)))
+        .send(h.addr);
+    assert_eq!(created.status, 201, "{}", created.text());
+    assert!(
+        created.header("x-obsync-seq").is_some(),
+        "the caller that held the setup token proved it"
+    );
+    assert_eq!(ring_of(&h, "/v1/setup", 201), "credentialed");
+    let cred = Cred::from_json(&created.json());
+
+    // A malformed signature header is refused before verification.
+    let malformed = Req::get("/v1/account")
+        .header("X-Obsync-Device", "not-hex-at-all")
+        .header("X-Obsync-Ts", &NOW.to_string())
+        .header("X-Obsync-Nonce", &nonce())
+        .header("X-Obsync-Sig", "zz")
+        .send(h.addr);
+    assert_eq!(malformed.status, 401);
+    assert_eq!(malformed.code(), "bad_signature");
+    assert_eq!(malformed.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/account", 401), "public");
+
+    // A signature that verifies, on a request the server then refuses for a
+    // reason of its own: the credential still verified, so the answer is
+    // credentialed. This is the case a status heuristic cannot tell from the
+    // one above.
+    let unknown = Req::post(&format!("/v1/devices/{}/revoke", "ab".repeat(16)))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(unknown.status, 404, "{}", unknown.text());
+    assert!(
+        unknown.header("x-obsync-seq").is_some(),
+        "a refusal AFTER the signature verified is a credentialed answer"
+    );
+    assert_eq!(ring_of(&h, "/v1/devices/{id}/revoke", 404), "credentialed");
+
+    // A route nobody needs a credential for, and no credential arrived.
+    let missing = Req::get("/nothing-here").send(h.addr);
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/unknown", 404), "public");
+
+    // `GET /login`: a wrong token proves nothing, a live link proves itself.
+    let refused = Req::get("/login?token=deadbeef").send(h.addr);
+    assert_eq!(refused.status, 401);
+    assert_eq!(refused.code(), "bad_login_token");
+    assert_eq!(refused.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/login", 401), "public");
+
+    let token = login_token(&h, &cred);
+    let signed_in = Req::get(&format!("/login?token={token}")).send(h.addr);
+    assert_eq!(signed_in.status, 302, "{}", signed_in.text());
+    assert!(
+        signed_in.header("x-obsync-seq").is_some(),
+        "the sign-in that spent a link proved a credential"
+    );
+    assert_eq!(ring_of(&h, "/login", 302), "credentialed");
+
+    // A live session with the wrong double-submit header: refused, but
+    // refused to a signed-in browser, which is a credentialed decision.
+    let cookie = cookie_header(&signed_in);
+    let csrf_failed = Req::post("/v1/admin/logout")
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &"00".repeat(32))
+        .send(h.addr);
+    assert_eq!(csrf_failed.status, 403, "{}", csrf_failed.text());
+    assert_eq!(csrf_failed.code(), "csrf_failed");
+    assert!(
+        csrf_failed.header("x-obsync-seq").is_some(),
+        "a CSRF refusal follows a session that matched"
+    );
+    assert_eq!(ring_of(&h, "/v1/admin/logout", 403), "credentialed");
+
+    // No cookie at all is not a session, on the same route.
+    let no_session = Req::post("/v1/admin/logout").send(h.addr);
+    assert_eq!(no_session.status, 401);
+    assert_eq!(no_session.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/admin/logout", 401), "public");
+}
+
+/// Every route that demands a credential authenticates BEFORE it validates
+/// anything, so an anonymous caller gets `401` and nothing else -- whatever
+/// path segment or query it sends.
+///
+/// A handler that validated first answered `400`, and a `400` on such a route
+/// is a refusal the log has to classify with no credential to classify it by:
+/// it rode the journal head out and it sat in the 1000-line credentialed
+/// ring, where a thousand malformed requests pushed out every real decision.
+#[test]
+fn no_credentialed_route_answers_an_anonymous_caller_before_it_authenticates() {
+    let h = Harness::start("anonymous-walk");
+    h.setup_account();
+    let bad = "nothex";
+    let query = "?since=x&wait=x&limit=x&after=x&token=x&id=x";
+    let mut targets: Vec<(&str, String)> = Vec::new();
+    for (method, path) in [
+        ("GET", "/v1/account".to_string()),
+        ("POST", "/v1/pairing".to_string()),
+        ("GET", format!("/v1/pairing/{bad}")),
+        ("POST", format!("/v1/pairing/{bad}/approve")),
+        ("POST", format!("/v1/pairing/{bad}/reject")),
+        ("GET", format!("/v1/pairing/{bad}/envelope")),
+        ("GET", "/v1/devices".to_string()),
+        ("PATCH", format!("/v1/devices/{bad}")),
+        ("POST", format!("/v1/devices/{bad}/revoke")),
+        ("POST", "/v1/devices/heartbeat".to_string()),
+        ("POST", "/v1/chunks/exists".to_string()),
+        ("POST", "/v1/chunks/get".to_string()),
+        ("PUT", format!("/v1/chunks/{bad}")),
+        ("GET", format!("/v1/chunks/{bad}")),
+        ("POST", format!("/v1/files/{bad}/versions")),
+        ("GET", format!("/v1/files/{bad}")),
+        ("GET", format!("/v1/files/{bad}/versions/{bad}")),
+        ("GET", "/v1/files".to_string()),
+        ("GET", "/v1/changes".to_string()),
+        ("POST", "/v1/dashboard/login-link".to_string()),
+        ("GET", "/login".to_string()),
+        ("POST", "/v1/admin/logout".to_string()),
+        ("POST", "/v1/admin/logout-all".to_string()),
+        ("GET", "/v1/admin/overview".to_string()),
+        ("GET", "/v1/admin/devices".to_string()),
+        ("POST", format!("/v1/admin/devices/{bad}/revoke")),
+        ("GET", "/v1/admin/storage".to_string()),
+        ("POST", "/v1/admin/gc/run".to_string()),
+        ("POST", "/v1/admin/scrub/run".to_string()),
+        ("GET", "/v1/admin/logs".to_string()),
+    ] {
+        targets.push((method, format!("{path}{query}")));
+    }
+    // The whole credentialed half of the route table, so a route added
+    // without its authentication cannot slip past this walk.
+    assert_eq!(targets.len(), 30);
+
+    for (method, target) in &targets {
+        let res = Req::new(method, target)
+            .body("{\"not\":\"valid\"}")
+            .send(h.addr);
+        assert_eq!(
+            res.status,
+            401,
+            "{method} {target} answered an anonymous caller {}: {}",
+            res.status,
+            res.text()
+        );
+        assert_eq!(
+            res.header("x-obsync-seq"),
+            None,
+            "{method} {target} handed an anonymous caller the journal head"
+        );
+    }
+
+    // And not one of those refusals reached the ring the dashboard's Logs
+    // page must keep: they are all public traffic.
+    let recent = h.app.recent.lock().expect("recent log");
+    let unauthenticated = recent
+        .credentialed
+        .iter()
+        .filter(|l| l.status == 401)
+        .count();
+    assert_eq!(
+        unauthenticated, 0,
+        "an anonymous refusal must never take credentialed ring space"
+    );
+    assert_eq!(
+        recent.public.iter().filter(|l| l.status == 401).count(),
+        targets.len(),
+        "every one of them is in the public ring instead"
+    );
+}
+
+/// A revoked or pending device id is not a credential: knowing one buys
+/// neither the journal head nor a line in the credentialed ring.
+///
+/// Both refusals used to be answered from the state of the record, before the
+/// signature was verified at all, so anyone holding a 32-hex id got a `403`
+/// that the log read as proof. The pending refusal now follows the
+/// signature. The revoked one cannot: revocation destroys the wrapped
+/// secret, so there is nothing left to verify a signature against -- it stays
+/// the documented `403 device_revoked`, classed for what it is.
+#[test]
+fn a_revoked_or_pending_device_id_is_not_a_credential() {
+    let h = Harness::start("state-before-proof");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+
+    // PENDING, with garbage where the signature goes: indistinguishable from
+    // an unknown device, and no credential is claimed for it.
+    let forged = Req::get("/v1/account")
+        .header("X-Obsync-Device", &claimant.id)
+        .header("X-Obsync-Ts", &NOW.to_string())
+        .header("X-Obsync-Nonce", &nonce())
+        .header("X-Obsync-Sig", &"cd".repeat(32))
+        .send(h.addr);
+    assert_eq!(forged.status, 401, "{}", forged.text());
+    assert_eq!(forged.code(), "bad_signature");
+    assert_eq!(forged.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/account", 401), "public");
+
+    // PENDING, properly signed: the documented refusal, and a credentialed
+    // decision, because the signature did verify.
+    let pending = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(pending.status, 403, "{}", pending.text());
+    assert_eq!(pending.code(), "device_pending");
+    assert!(
+        pending.header("x-obsync-seq").is_some(),
+        "the claimant proved possession of its secret"
+    );
+    assert_eq!(ring_of(&h, "/v1/account", 403), "credentialed");
+
+    approve_pairing(&h, &creator, &id);
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    // REVOKED, properly signed by the device that still holds its copy of
+    // the secret: the server has none to check it with, so this refusal
+    // proves nothing and is classed as public.
+    let revoked = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(revoked.status, 403, "{}", revoked.text());
+    assert_eq!(revoked.code(), "device_revoked");
+    assert_eq!(
+        revoked.header("x-obsync-seq"),
+        None,
+        "a revocation destroyed the secret, so nothing verified here"
+    );
+    // The line is still on the Logs page -- in the public ring, where a
+    // revoked device hammering the server is visible without being able to
+    // push a real decision out.
+    assert!(
+        h.app
+            .recent_lines(None, 5_000)
+            .iter()
+            .any(|l| l.path_class == "/v1/account" && l.status == 403),
+        "the operator still sees a revoked device still trying"
+    );
 }

@@ -450,17 +450,26 @@ signature and nothing after it.
 - Every write to a blob or journal is fsynced (file and directory) before
   the response that acknowledges it.
 - Every response carries `Cache-Control: no-store`,
-  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: no-referrer`, and `X-Obsync-Seq`; every HTML response
-  adds `Content-Security-Policy: default-src 'self'; script-src 'self';
-  style-src 'self'; img-src 'self' data:; connect-src 'self';
-  frame-ancestors 'none'; base-uri 'none'; form-action 'self'`. The
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
+  `Referrer-Policy: no-referrer`. `X-Obsync-Seq` rides only a response to a
+  caller that proved a credential: the journal head is write activity, and
+  an unauthenticated caller polling it reconstructs when the owner writes.
+  Every HTML response adds `Content-Security-Policy: default-src 'self';
+  script-src 'self'; style-src 'self'; img-src 'self' data:;
+  object-src 'none'; connect-src 'self'; frame-ancestors 'none';
+  base-uri 'none'; form-action 'self'`, plus
+  `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Resource-Policy: same-origin`. The
   framework's own refusals (400, 408, 431, 501, 505, 503, 500) are bare
   status lines with `Connection: close` and no body. The origin never
   emits `Strict-Transport-Security` or `Date`: the terminator owns the
   first and the second is a clock dependency with no consumer.
-- The dashboard sets `HttpOnly`/`SameSite=Strict` session cookies and a
-  double-submit CSRF header; it serves no inline script.
+- The dashboard's cookies are `__Host-` prefixed, `Secure`, `Path=/`,
+  `SameSite=Strict`, with the session cookie `HttpOnly` and the CSRF cookie
+  readable by the page for the double-submit header; sessions end on an
+  absolute limit, on an idle limit, on sign-out, on sign-out-everywhere, and
+  when the device whose link opened them is revoked. It serves no inline
+  script. `docs/security/dashboard.md` is that surface's threat model.
 - Nothing listens except the one configured HTTP port and the health
   endpoints on it.
 - The container runs as non-root with a read-only root filesystem, no

@@ -1,6 +1,10 @@
 # Threat model
 
-Dated 2026-09-12. Assets, adversaries, what holds, what does not.
+Dated 2026-09-20. Assets, adversaries, what holds, what does not.
+
+The dashboard is one surface with its own entry points, session rules and
+residuals; [`security/dashboard.md`](security/dashboard.md) is that page and
+this one does not repeat it.
 
 ## Assets
 
@@ -73,7 +77,11 @@ Native app-restart persistence remains separate acceptance evidence.
    at setup/pairing and the dashboard session cookie
    and recovery link for as long as sessions exist. The terminator is in the
    trust base for credentials and out of it for content
-   (`docs/architecture.md` 2.1, choice 1).
+   (`docs/architecture.md` 2.1, choice 1). The dashboard's cookies are
+   `Secure` and `__Host-`-prefixed, which stops the leg between the
+   terminator and the browser from ever being plaintext, and makes a
+   dashboard served over plain HTTP by IP address unsupported by
+   construction ([`security/dashboard.md`](security/dashboard.md)).
 2. Single copy on one node (owner-accepted; mirrors and replicas are the
    path).
 3. Desktop vault-boundary races: the plugin binds every path component with
@@ -91,7 +99,11 @@ Native app-restart persistence remains separate acceptance evidence.
    the server's; the transport is the deployer's, and a bulk first sync
    belongs on a LAN or VPN where one exists (`docs/architecture.md` 2.1,
    choice 3).
-6. Homegrown primitives: mitigated by published test vectors,
+6. The dashboard's decision log is two bounded in-memory rings, not an audit
+   trail: unauthenticated traffic evicts only unauthenticated traffic, but
+   neither ring is durable and a restart empties both. Process stdout is the
+   record ([`security/dashboard.md`](security/dashboard.md)).
+7. Homegrown primitives: mitigated by published test vectors,
    differential tests against the host's OpenSSL in CI, a verify-only
    asymmetric surface, and constant-time construction by design; a
    dedicated security review is required before any primitive changes.

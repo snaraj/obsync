@@ -14,39 +14,66 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
-use crate::types::Seq;
+use crate::types::{DeviceId, Seq};
 
 use super::edge::ClientInfo;
 use super::render::{self, n, s};
 use super::{ApiError, App, auth, rand};
 
-/// Cookie carrying the dashboard session.
-pub const SESSION_COOKIE: &str = "obsync_session";
+/// Cookie carrying the dashboard session. The `__Host-` prefix is a browser
+/// contract and not decoration: a cookie under that name is accepted only
+/// when it is `Secure`, `Path=/`, and carries no `Domain`, so no sibling host
+/// and no plaintext hop can plant or shadow one
+/// (`docs/security/dashboard.md`).
+pub const SESSION_COOKIE: &str = "__Host-obsync_session";
 /// Cookie carrying the CSRF value, readable by the dashboard's own script.
-pub const CSRF_COOKIE: &str = "obsync_csrf";
+pub const CSRF_COOKIE: &str = "__Host-obsync_csrf";
 /// Header a mutation must echo the CSRF cookie in.
 pub const CSRF_HEADER: &str = "x-obsync-csrf";
-/// How long a dashboard session lives.
+/// How long a dashboard session lives, however busy it is.
 pub const SESSION_TTL_SECS: u64 = 12 * 3600;
+/// How long a dashboard session survives with no request on it. The absolute
+/// limit above bounds a stolen cookie's life; this one bounds a browser left
+/// open on a desk.
+pub const SESSION_IDLE_SECS: u64 = 3600;
 /// How long a one-time login link lives (`docs/protocol.md`).
 pub const LOGIN_LINK_TTL_SECS: u64 = 300;
 /// Most log lines one `GET /v1/admin/logs` call returns
 /// (`docs/protocol.md`).
 pub const LOGS_MAX_LIMIT: u64 = 500;
-
 /// One signed-in dashboard session.
 #[derive(Clone, Debug)]
 pub struct Session {
     /// The CSRF value minted with the session.
     pub csrf: String,
-    /// Unix seconds at which the session stops being accepted.
+    /// Unix seconds at which the session stops being accepted, however busy.
     pub expires: u64,
+    /// Unix seconds at which the session stops being accepted if nothing
+    /// uses it; every accepted request pushes it out again.
+    pub idle_expires: u64,
+    /// The device whose login link opened this session, or `None` when the
+    /// standing recovery token did. Revoking that device ends the session.
+    pub minted_by: Option<DeviceId>,
+}
+
+impl Session {
+    /// Whether the session is still live at `now`: inside both limits.
+    fn live(&self, now: u64) -> bool {
+        self.expires > now && self.idle_expires > now
+    }
+}
+
+/// One outstanding one-time login link.
+#[derive(Clone, Copy, Debug)]
+struct Link {
+    expires: u64,
+    minted_by: DeviceId,
 }
 
 /// Sessions and outstanding one-time login links, in memory only.
 pub struct SessionTable {
     sessions: HashMap<String, Session>,
-    links: HashMap<String, u64>,
+    links: HashMap<String, Link>,
 }
 
 impl Default for SessionTable {
@@ -64,35 +91,49 @@ impl SessionTable {
         }
     }
 
-    /// Mint a one-time login link token.
-    pub fn add_link(&mut self, token: &str, now: u64) -> u64 {
+    /// Mint a one-time login link token on behalf of `minted_by`.
+    pub fn add_link(&mut self, token: &str, now: u64, minted_by: DeviceId) -> u64 {
         let expires = now + LOGIN_LINK_TTL_SECS;
-        self.links.insert(token.to_string(), expires);
+        self.links
+            .insert(token.to_string(), Link { expires, minted_by });
         expires
     }
 
-    /// Consume a login link token, once.
-    pub fn take_link(&mut self, token: &str, now: u64) -> bool {
-        match self.links.remove(token) {
-            Some(expires) => expires > now,
-            None => false,
-        }
+    /// Consume a login link token, once, naming the device that minted it.
+    pub fn take_link(&mut self, token: &str, now: u64) -> Option<DeviceId> {
+        let link = self.links.remove(token)?;
+        (link.expires > now).then_some(link.minted_by)
     }
 
-    /// Open a session, returning its cookie value and CSRF value.
-    pub fn open(&mut self, session: &str, csrf: &str, now: u64) {
+    /// Open a session. `minted_by` is the device whose link opened it, or
+    /// `None` for the recovery token, which belongs to no device.
+    pub fn open(&mut self, session: &str, csrf: &str, now: u64, minted_by: Option<DeviceId>) {
         self.sessions.insert(
             session.to_string(),
             Session {
                 csrf: csrf.to_string(),
                 expires: now + SESSION_TTL_SECS,
+                idle_expires: now + SESSION_IDLE_SECS,
+                minted_by,
             },
         );
     }
 
-    /// The live session behind a cookie value.
+    /// The live session behind a cookie value, read-only.
     pub fn get(&self, session: &str, now: u64) -> Option<&Session> {
-        self.sessions.get(session).filter(|s| s.expires > now)
+        self.sessions.get(session).filter(|s| s.live(now))
+    }
+
+    /// The live session behind a cookie value, with its idle window pushed
+    /// out: this is what every accepted request calls, so the idle limit
+    /// measures silence and not age.
+    pub fn touch(&mut self, session: &str, now: u64) -> Option<&Session> {
+        let s = self.sessions.get_mut(session)?;
+        if !s.live(now) {
+            return None;
+        }
+        s.idle_expires = now + SESSION_IDLE_SECS;
+        Some(s)
     }
 
     /// Close a session.
@@ -100,32 +141,73 @@ impl SessionTable {
         self.sessions.remove(session);
     }
 
+    /// Close every session AND drop every outstanding login link, returning
+    /// the two counts in that order.
+    ///
+    /// The "sign out everywhere" action exists for a browser left signed in
+    /// on a machine the operator no longer controls. A one-time link that
+    /// machine still holds is the same key to the same dashboard, unspent
+    /// and good for five minutes, so leaving the links behind would have
+    /// handed back exactly what the button was pressed to take away.
+    pub fn close_all(&mut self) -> (usize, usize) {
+        let closed = self.sessions.len();
+        let dropped = self.links.len();
+        self.sessions.clear();
+        self.links.clear();
+        (closed, dropped)
+    }
+
+    /// Drop everything one device minted: the sessions opened from its links
+    /// and the links it minted that nobody has spent yet. Returns the two
+    /// counts, in that order.
+    ///
+    /// This is what makes revocation mean what the dashboard says it means.
+    /// A device's five minutes before revocation used to buy a twelve-hour
+    /// admin session afterwards, because a session remembered nothing about
+    /// where it came from.
+    pub fn close_for_device(&mut self, device: &DeviceId) -> (usize, usize) {
+        let before_sessions = self.sessions.len();
+        let before_links = self.links.len();
+        self.sessions
+            .retain(|_, s| s.minted_by.is_none_or(|id| id != *device));
+        self.links.retain(|_, l| l.minted_by != *device);
+        (
+            before_sessions - self.sessions.len(),
+            before_links - self.links.len(),
+        )
+    }
+
     /// Drop expired sessions and links, returning how many went.
     pub fn sweep(&mut self, now: u64) -> usize {
         let before = self.sessions.len() + self.links.len();
-        self.sessions.retain(|_, s| s.expires > now);
-        self.links.retain(|_, expires| *expires > now);
+        self.sessions.retain(|_, s| s.live(now));
+        self.links.retain(|_, l| l.expires > now);
         before - (self.sessions.len() + self.links.len())
     }
 }
 
-/// `Set-Cookie` for the session: `HttpOnly` so no script can read it, and
-/// `SameSite=Strict` so no cross-site navigation carries it.
+/// `Set-Cookie` for the session: `Secure` so it never rides a plaintext
+/// request, `HttpOnly` so no script can read it, `SameSite=Strict` so no
+/// cross-site navigation carries it, and `__Host-` so the browser enforces
+/// the first and the scope (`docs/security/dashboard.md`).
 pub fn session_cookie(token: &str) -> String {
     format!(
-        "{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL_SECS}; HttpOnly; SameSite=Strict"
+        "{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL_SECS}; Secure; HttpOnly; SameSite=Strict"
     )
 }
 
 /// `Set-Cookie` for the CSRF value. Deliberately readable by the dashboard's
-/// own script: the double-submit check needs it in a header.
+/// own script: the double-submit check needs it in a header. Everything else
+/// matches the session cookie.
 pub fn csrf_cookie(token: &str) -> String {
-    format!("{CSRF_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL_SECS}; SameSite=Strict")
+    format!("{CSRF_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL_SECS}; Secure; SameSite=Strict")
 }
 
-/// `Set-Cookie` that clears one cookie now.
+/// `Set-Cookie` that clears one cookie now. It carries the same attributes
+/// the cookie was set with, because a `__Host-` name is refused without
+/// them and a refused clear leaves the cookie standing.
 pub fn expired_cookie(name: &str) -> String {
-    format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+    format!("{name}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
 }
 
 /// Cookie-header parsing: `name=value` pairs separated by `;`.
@@ -178,10 +260,14 @@ pub fn csrf_verdict(
 /// # Errors
 /// The device-authentication refusals, or `500 no_randomness`.
 pub fn login_link(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Response, ApiError> {
-    auth::device(app, req, client)?;
+    let authed = auth::device(app, req, client)?;
     let token = mint(32)?;
     let now = app.clock.unix_secs();
-    let expires = app.sessions.lock().expect("sessions").add_link(&token, now);
+    let expires = app
+        .sessions
+        .lock()
+        .expect("sessions")
+        .add_link(&token, now, authed.id);
     let base = app
         .cfg
         .public_url
@@ -199,21 +285,30 @@ pub fn login_link(app: &App, req: &mut Request, client: &ClientInfo) -> Result<R
 /// `GET /login?token=…`: consume a login link, or the first-boot setup token
 /// as the documented recovery login, and set the session.
 ///
+/// The token is 256 bits compared in constant time, and there is deliberately
+/// no attempt limit in front of that compare. A limit keyed by request source
+/// refuses EVERYONE at once wherever that source is a proxy this deployment
+/// does not trust -- the shipped chart's own default, with no trusted CIDR --
+/// which would make the recovery login the easiest thing on the server to
+/// deny. Every refusal is one `warn` line that reaches the Logs page as well
+/// as stdout, and no run of them can push the authenticated record off that
+/// page (`docs/security/dashboard.md`).
+///
 /// # Errors
 /// `401 bad_login_token` when the token is absent, spent, or wrong.
 pub fn login(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    let token = req
-        .query_param("token")
-        .ok_or_else(|| ApiError::new(401, "bad_login_token", "login token required"))?
-        .to_string();
     let now = app.clock.unix_secs();
+    // An absent token takes the same path as a wrong one: one refusal, and
+    // nothing an unauthenticated caller can tell apart.
+    let token = req.query_param("token").unwrap_or_default().to_string();
 
     let mut sessions = app.sessions.lock().expect("sessions");
     let recovery = app
         .setup_token
         .as_deref()
         .is_some_and(|expected| ct::eq(expected.as_bytes(), token.as_bytes()));
-    if !sessions.take_link(&token, now) && !recovery {
+    let minted_by = sessions.take_link(&token, now);
+    if minted_by.is_none() && !recovery {
         drop(sessions);
         app.log.warn(
             "dashboard_login_refused",
@@ -225,13 +320,36 @@ pub fn login(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             "login token is not valid",
         ));
     }
+    // A link was spent, or the recovery token matched in constant time:
+    // either way this caller held a credential. Below this line the request
+    // is credentialed; above it, every path is a refusal that proved
+    // nothing.
+    req.prove();
     let session = mint(32)?;
     let csrf = mint(32)?;
-    sessions.open(&session, &csrf, now);
+    sessions.open(&session, &csrf, now, minted_by);
     drop(sessions);
 
-    app.log
-        .info("dashboard_login", &[("recovery", Val::flag(recovery))]);
+    // The recovery token is a standing credential with no device behind it,
+    // so its use is a warning and not a note, and the overview says so while
+    // the session lasts (`docs/recovery.md`).
+    if recovery {
+        app.log.warn(
+            "dashboard_login",
+            &[("decision", Val::word("recovery_login"))],
+        );
+    } else {
+        app.log.info(
+            "dashboard_login",
+            &[
+                ("decision", Val::word("link_login")),
+                (
+                    "device",
+                    minted_by.map_or(Val::word("-"), |id| Val::device(&id)),
+                ),
+            ],
+        );
+    }
     Ok(Response::empty(302)
         .header("Location", "/")
         .header("Set-Cookie", &session_cookie(&session))
@@ -250,12 +368,45 @@ pub fn logout(app: &App, req: &mut Request) -> Result<Response, ApiError> {
         .header("Set-Cookie", &expired_cookie(CSRF_COOKIE)))
 }
 
+/// `POST /v1/admin/logout-all`: sign out every dashboard session, this one
+/// included.
+///
+/// A session lives in this process and nowhere else, so this is the whole
+/// answer to a browser left signed in somewhere the operator no longer
+/// controls: it does not wait for the twelve-hour limit and it does not need
+/// a restart.
+///
+/// # Errors
+/// `401 no_session`, `403 csrf_failed`.
+pub fn logout_all(app: &App, req: &mut Request) -> Result<Response, ApiError> {
+    mutating_session(app, req)?;
+    let (closed, dropped) = app.sessions.lock().expect("sessions").close_all();
+    app.log.warn(
+        "dashboard_sessions_closed",
+        &[
+            ("count", Val::count(closed as u64)),
+            ("links_dropped", Val::count(dropped as u64)),
+            ("by", Val::word("dashboard")),
+        ],
+    );
+    Ok(Response::empty(204)
+        .header("Set-Cookie", &expired_cookie(SESSION_COOKIE))
+        .header("Set-Cookie", &expired_cookie(CSRF_COOKIE)))
+}
+
 /// `GET /v1/admin/overview` (`docs/protocol.md`, "Dashboard (admin) API").
 ///
 /// # Errors
 /// `401 no_session`.
 pub fn overview(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    session(app, req)?;
+    let token = session(app, req)?;
+    let recovery = {
+        let now = app.clock.unix_secs();
+        let sessions = app.sessions.lock().expect("sessions");
+        sessions
+            .get(&token, now)
+            .is_some_and(|s| s.minted_by.is_none())
+    };
     let account = match app.store.account() {
         Some(a) => render::account(&a, app.store.devices().len() as u64),
         None => Value::Null,
@@ -280,6 +431,7 @@ pub fn overview(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             ),
             ("last_gc", last_gc(app)),
             ("last_scrub", last_scrub(app)),
+            ("session", obj(vec![("recovery", render::b(recovery))])),
         ]),
     ))
 }
@@ -307,17 +459,32 @@ pub fn devices(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 
 /// `POST /v1/admin/devices/{id}/revoke`.
 ///
+/// The same last-device refusal the device route has carried since it
+/// shipped: one click here used to be an account nothing could ever reach
+/// again, because no route re-enrols a device and `POST /v1/setup` answers
+/// `409 already_set_up` forever (`docs/recovery.md`).
+///
 /// # Errors
-/// `401 no_session`, `403 csrf_failed`, `404 unknown_device`.
+/// `401 no_session`, `403 csrf_failed`, `404 unknown_device`,
+/// `409 last_device`.
 pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
     let target = render::device_id(id)?;
-    app.store.revoke_device(&target)?;
+    // The same single-lock refusal the device route takes: see
+    // `Store::revoke_device_unless_last`.
+    app.store.revoke_device_unless_last(&target)?;
+    let (sessions, links) = app
+        .sessions
+        .lock()
+        .expect("sessions")
+        .close_for_device(&target);
     app.log.warn(
         "device_revoked",
         &[
             ("device", Val::device(&target)),
             ("by", Val::word("dashboard")),
+            ("sessions_closed", Val::count(sessions as u64)),
+            ("links_dropped", Val::count(links as u64)),
         ],
     );
     Ok(Response::empty(204))
@@ -443,8 +610,15 @@ fn session(app: &App, req: &Request) -> Result<String, ApiError> {
     let no_session = || ApiError::new(401, "no_session", "dashboard session required");
     let token = cookie(req.headers.get("cookie"), SESSION_COOKIE).ok_or_else(no_session)?;
     let now = app.clock.unix_secs();
-    let sessions = app.sessions.lock().expect("sessions");
-    sessions.get(&token, now).ok_or_else(no_session)?;
+    let mut sessions = app.sessions.lock().expect("sessions");
+    // Touch, not read: the idle limit measures silence, so every accepted
+    // request pushes it out and only a session nobody uses expires early.
+    sessions.touch(&token, now).ok_or_else(no_session)?;
+    // A live session is a credential this server minted and just matched, so
+    // the response is a credentialed one from here on -- including the
+    // `403 csrf_failed` that `mutating_session` may answer next, which is a
+    // signed-in browser being refused, not a stranger.
+    req.prove();
     Ok(token)
 }
 
@@ -535,34 +709,52 @@ fn mint(bytes: usize) -> Result<String, ApiError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_session_cookie_is_http_only_and_same_site_strict() {
-        let c = session_cookie("abc");
-        assert!(c.starts_with("obsync_session=abc;"));
-        assert!(c.contains("HttpOnly"), "{c}");
-        assert!(c.contains("SameSite=Strict"), "{c}");
-        assert!(c.contains("Path=/"), "{c}");
+    fn device(byte: u8) -> DeviceId {
+        DeviceId::new([byte; 16])
     }
 
     #[test]
-    fn the_csrf_cookie_is_readable_by_script_but_still_same_site_strict() {
+    fn the_session_cookie_is_host_prefixed_secure_http_only_and_same_site_strict() {
+        let c = session_cookie("abc");
+        assert!(c.starts_with("__Host-obsync_session=abc;"), "{c}");
+        assert!(c.contains("Secure"), "{c}");
+        assert!(c.contains("HttpOnly"), "{c}");
+        assert!(c.contains("SameSite=Strict"), "{c}");
+        assert!(c.contains("Path=/"), "{c}");
+        // `__Host-` is refused by the browser with either of these, so a
+        // cookie carrying one is a cookie that never arrives.
+        assert!(!c.contains("Domain="), "{c}");
+    }
+
+    #[test]
+    fn the_csrf_cookie_is_readable_by_script_but_otherwise_the_same() {
         let c = csrf_cookie("xyz");
-        assert!(c.starts_with("obsync_csrf=xyz;"));
+        assert!(c.starts_with("__Host-obsync_csrf=xyz;"), "{c}");
         assert!(
             !c.contains("HttpOnly"),
             "the double-submit value must be readable: {c}"
         );
+        assert!(c.contains("Secure"), "{c}");
         assert!(c.contains("SameSite=Strict"), "{c}");
+        assert!(!c.contains("Domain="), "{c}");
+    }
+
+    #[test]
+    fn a_cleared_cookie_carries_what_the_host_prefix_demands() {
+        for c in [expired_cookie(SESSION_COOKIE), expired_cookie(CSRF_COOKIE)] {
+            assert!(c.contains("Secure"), "{c}");
+            assert!(c.contains("Path=/"), "{c}");
+            assert!(c.contains("Max-Age=0"), "{c}");
+            assert!(!c.contains("Domain="), "{c}");
+        }
     }
 
     #[test]
     fn cookies_parse_into_pairs() {
-        let pairs = parse_cookies("obsync_session=a; obsync_csrf=b");
+        let header = "__Host-obsync_session=a; __Host-obsync_csrf=b";
+        let pairs = parse_cookies(header);
         assert_eq!(pairs.len(), 2);
-        assert_eq!(
-            cookie(Some("obsync_session=a; obsync_csrf=b"), CSRF_COOKIE).as_deref(),
-            Some("b")
-        );
+        assert_eq!(cookie(Some(header), CSRF_COOKIE).as_deref(), Some("b"));
         assert_eq!(cookie(Some("nonsense"), CSRF_COOKIE), None);
         assert_eq!(cookie(None, CSRF_COOKIE), None);
     }
@@ -603,22 +795,27 @@ mod tests {
     }
 
     #[test]
-    fn a_login_link_works_once_and_expires() {
+    fn a_login_link_works_once_expires_and_names_its_device() {
         let mut t = SessionTable::new();
-        t.add_link("tok", 1_000);
-        assert!(t.take_link("tok", 1_100), "first use");
-        assert!(!t.take_link("tok", 1_100), "second use");
-        t.add_link("tok2", 1_000);
-        assert!(
-            !t.take_link("tok2", 1_000 + LOGIN_LINK_TTL_SECS + 1),
+        t.add_link("tok", 1_000, device(1));
+        assert_eq!(t.take_link("tok", 1_100), Some(device(1)), "first use");
+        assert_eq!(t.take_link("tok", 1_100), None, "second use");
+        t.add_link("tok2", 1_000, device(1));
+        assert_eq!(
+            t.take_link("tok2", 1_000 + LOGIN_LINK_TTL_SECS + 1),
+            None,
             "expired"
         );
     }
 
     #[test]
-    fn a_session_expires_and_sweeps() {
+    fn a_session_expires_absolutely_and_sweeps() {
         let mut t = SessionTable::new();
-        t.open("sess", "csrf", 1_000);
+        t.open("sess", "csrf", 1_000, Some(device(1)));
+        // Kept alive by use, so only the absolute limit ends it.
+        for step in (0..SESSION_TTL_SECS).step_by(SESSION_IDLE_SECS as usize / 2) {
+            assert!(t.touch("sess", 1_000 + step).is_some(), "at {step}");
+        }
         assert!(t.get("sess", 1_000 + SESSION_TTL_SECS - 1).is_some());
         assert!(t.get("sess", 1_000 + SESSION_TTL_SECS).is_none());
         assert_eq!(t.sweep(1_000 + SESSION_TTL_SECS), 1);
@@ -626,10 +823,59 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_session_ends_it() {
+    fn a_session_nobody_uses_expires_on_the_idle_limit() {
         let mut t = SessionTable::new();
-        t.open("sess", "csrf", 1_000);
+        t.open("sess", "csrf", 1_000, None);
+        assert!(t.get("sess", 1_000 + SESSION_IDLE_SECS - 1).is_some());
+        assert!(
+            t.get("sess", 1_000 + SESSION_IDLE_SECS).is_none(),
+            "an idle session is gone long before the absolute limit"
+        );
+        // And a touched one carries its silence forward from the touch.
+        let mut t = SessionTable::new();
+        t.open("sess", "csrf", 1_000, None);
+        assert!(t.touch("sess", 1_000 + SESSION_IDLE_SECS - 1).is_some());
+        assert!(t.get("sess", 1_000 + SESSION_IDLE_SECS + 1).is_some());
+        assert!(t.get("sess", 1_000 + 2 * SESSION_IDLE_SECS).is_none());
+    }
+
+    #[test]
+    fn closing_a_session_ends_it_and_sign_out_everywhere_ends_all_of_them() {
+        let mut t = SessionTable::new();
+        t.open("sess", "csrf", 1_000, Some(device(1)));
         t.close("sess");
         assert!(t.get("sess", 1_000).is_none());
+
+        t.open("one", "csrf", 1_000, Some(device(1)));
+        t.open("two", "csrf", 1_000, None);
+        t.add_link("unspent", 1_000, device(1));
+        assert_eq!(t.close_all(), (2, 1));
+        assert!(t.get("one", 1_000).is_none());
+        assert!(t.get("two", 1_000).is_none());
+        assert_eq!(
+            t.take_link("unspent", 1_000),
+            None,
+            "a link the operator never spent is not a way back in"
+        );
+    }
+
+    #[test]
+    fn revoking_a_device_takes_its_sessions_and_its_outstanding_links() {
+        let mut t = SessionTable::new();
+        t.open("from-lost", "csrf", 1_000, Some(device(1)));
+        t.open("from-kept", "csrf", 1_000, Some(device(2)));
+        t.open("from-recovery", "csrf", 1_000, None);
+        t.add_link("lost-link", 1_000, device(1));
+        t.add_link("kept-link", 1_000, device(2));
+
+        assert_eq!(t.close_for_device(&device(1)), (1, 1));
+        assert!(t.get("from-lost", 1_000).is_none(), "its session is gone");
+        assert_eq!(t.take_link("lost-link", 1_000), None, "its link is gone");
+        assert!(t.get("from-kept", 1_000).is_some(), "another device stands");
+        assert!(
+            t.get("from-recovery", 1_000).is_some(),
+            "the recovery login belongs to no device"
+        );
+        assert_eq!(t.take_link("kept-link", 1_000), Some(device(2)));
     }
 }

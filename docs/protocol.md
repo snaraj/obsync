@@ -29,9 +29,12 @@ bad_signature`, `401 stale_timestamp` (outside ±300 s), `401 replayed_nonce`
 the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
 forgetting a nonce still inside its window), `503 nonce_log_unavailable`
-(the volume would not take that record), `403 device_revoked`, `403
-device_pending` (a claimed device that the creator has not yet approved;
-only that pairing's envelope endpoint answers it, with `409 not_approved`).
+(the volume would not take that record), `403 device_revoked` (answered from the device
+record before the signature is checked, because revocation destroys the
+wrapped secret and leaves nothing to check it against), `403 device_pending`
+(a claimed device that the creator has not yet approved, answered only AFTER
+its signature verifies; only that pairing's envelope endpoint admits it, with
+`409 not_approved`).
 Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
@@ -98,7 +101,10 @@ and a test asserts every route it emits appears there.
   "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
   "device_secret":"<64hex>"}`: creates the account and enrols the first
   device in one step, since pairing requires a paired device. Valid once;
-  `409 already_set_up` afterwards; `401 bad_setup_token` otherwise.
+  `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
+  token is compared FIRST, so both refusals are reachable only in that
+  order: a caller holding the token learns the account exists, and a caller
+  without it learns nothing about whether the server is claimed.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
   "quota_bytes","used_bytes","device_count"}`.
 
@@ -222,17 +228,43 @@ content key.
 ## Dashboard (admin) API
 
 Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
-`obsync_csrf` cookie.
+`__Host-obsync_csrf` cookie.
+
+The two cookies are `__Host-obsync_session` (`HttpOnly`) and
+`__Host-obsync_csrf` (readable by the page's own script), both `Secure`,
+`Path=/`, `SameSite=Strict`, with no `Domain`. The `__Host-` prefix makes
+the browser enforce that set, so the dashboard must be reached at an origin
+the browser treats as secure: an `https` address in any browser, or plain
+`http` to `localhost`/`127.0.0.1` in Chrome and Firefox but not Safari, which
+sends no `Secure` cookie to a plaintext origin. Plain HTTP to any other IP
+address or LAN name is not a supported way to reach the dashboard
+(`docs/security/dashboard.md`). A session ends after 12 hours, after 1 hour
+with no request on it, on sign-out, on sign-out-everywhere, or when the
+device whose link opened it is revoked.
 
 - `POST /v1/dashboard/login-link` (device auth) → `{"url":"…/login?
-  token=…","expires"}`; single use, 5 minutes.
-- `GET /login?token=…` → sets the session cookie, redirects to `/`.
+  token=…","expires"}`; single use, 5 minutes. The link remembers the device
+  that minted it.
+- `GET /login?token=…` → sets the session cookies, redirects to `/`. Spends
+  a link, or accepts the standing setup token as the recovery sign-in.
+  `401 bad_login_token`. There is deliberately no attempt limit in front of
+  the constant-time compare: one keyed by request source would refuse every
+  visitor at once behind a proxy this deployment does not trust
+  (`docs/security/dashboard.md`).
 - `POST /v1/admin/logout` → `204`.
+- `POST /v1/admin/logout-all` → `204`: closes EVERY dashboard session,
+  including the one that asked, and drops every login link that has been
+  minted and not yet spent. An unspent link is the same key to the same
+  dashboard, so leaving one alive would hand back what the button took away.
+  Its log line carries both counts.
 - `GET /v1/admin/overview` → `{"account":{…as GET /v1/account},
   "edge":"none|cloudflare","public_url":"…"|null,"volumes":[<volume>…],
   "versions":{"total":<n>,"files":<n>},"activity":{"versions_per_hour":
   [{"hour":<unix_s>,"count":<n>}]} (24 entries, oldest first),
-  "last_gc":<gc>|null,"last_scrub":<scrub>|null}` where `<volume>` =
+  "last_gc":<gc>|null,"last_scrub":<scrub>|null,
+  "session":{"recovery":<bool>}}` (`recovery` is true when this session was
+  opened with the setup token rather than a device's link) where
+  `<volume>` =
   `{"role":"blobs|journal|mirror","path_class":"<StorageClass label or
   'host'>","bytes_total","bytes_used","bytes_free","watermark_bytes",
   "usage_unverified":<bool>}` (`usage_unverified` is true when `bytes_used`
@@ -243,7 +275,9 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   "bytes_verified","mismatches","quarantined":<count>,"complete_pass"}`.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
-- `POST /v1/admin/devices/{id}/revoke` → `204`.
+- `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
+  target is the only ACTIVE device. Revocation also closes the dashboard
+  sessions that device's links opened and drops the links it minted.
 - `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
   "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",
   "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",
@@ -282,7 +316,15 @@ Cookie session; every mutating call carries `X-Obsync-Csrf` equal to the
   wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
   `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s.
-- Every response carries `X-Obsync-Seq` (journal head), `Cache-Control:
-  no-store`, and the security headers listed in `AGENTS.md`.
+- Every response carries `Cache-Control: no-store` and the security headers
+  listed in `AGENTS.md`. `X-Obsync-Seq` (journal head) rides only a response
+  to a caller that proved a credential: it is write activity, and an
+  unauthenticated caller polling it could reconstruct when the owner writes
+  (`docs/security/dashboard.md`). "Proved" is a fact the server records where
+  a credential VERIFIES -- a device signature, a dashboard session, a login
+  or setup token -- never an inference from the route or the status. Every
+  route that requires a credential authenticates before it validates
+  anything, so an anonymous caller is answered `401` (or `421`) and nothing
+  else, whatever it sends.
 - Every request logs one line: `ts method path_class device status bytes
   duration_ms decision`.

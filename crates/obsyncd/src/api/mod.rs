@@ -25,6 +25,8 @@ pub mod setup;
 #[cfg(test)]
 mod app_test;
 #[cfg(test)]
+mod ring_test;
+#[cfg(test)]
 mod router_test;
 #[cfg(test)]
 mod server_test;
@@ -68,9 +70,20 @@ pub const CHANGES_MAX_WAIT_SECS: u64 = 55;
 /// Most changes returned by one feed request.
 pub const CHANGES_MAX_LIMIT: u64 = 1000;
 /// Content-Security-Policy for dashboard (HTML, CSS, JavaScript) responses.
-pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-/// Decision lines kept in memory for `GET /v1/admin/logs`.
+pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/// Decision lines from credentialed requests kept in memory for
+/// `GET /v1/admin/logs`.
 pub const RECENT_LOG_LINES: usize = 1000;
+/// Decision lines from UNCREDENTIALED requests kept beside them, in their own
+/// ring. Separate because the second ring is filled by anyone who can reach
+/// the port: sharing one would let roughly a thousand free probes evict every
+/// authenticated decision the dashboard has to show (`docs/security/
+/// dashboard.md`). Both rings are served; only its own noise evicts a prober.
+pub const RECENT_PUBLIC_LOG_LINES: usize = 200;
+// Noise gets less room than decisions, and both are bounded. A compile-time
+// fact, so a later edit that inverted it would not build.
+const _: () = assert!(RECENT_PUBLIC_LOG_LINES < RECENT_LOG_LINES);
+const _: () = assert!(RECENT_PUBLIC_LOG_LINES > 0);
 /// A device's `sign_in` seen event is journaled at most this often.
 pub const SIGN_IN_RECORD_INTERVAL_SECS: u64 = 900;
 /// How long a readiness probe result is reused before the volumes are
@@ -189,6 +202,11 @@ impl From<StoreError> for ApiError {
                 ApiError::new(416, code, "since is beyond the journal head")
             }
             StoreError::UnknownDevice => ApiError::new(404, code, "no such device"),
+            StoreError::LastActiveDevice => ApiError::new(
+                409,
+                code,
+                "the only active device cannot be revoked; pair another first",
+            ),
             StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")
@@ -270,6 +288,60 @@ impl NotReady {
     }
 }
 
+/// The decision lines `GET /v1/admin/logs` serves, in two rings.
+///
+/// One ring per trust class, because eviction is the whole point: a ring
+/// shared with unauthenticated traffic is a ring an unauthenticated caller
+/// can empty. Both are read back, so nothing is hidden and a burst of probes
+/// evicts only older probes.
+#[derive(Default)]
+struct Recent {
+    credentialed: VecDeque<LogLine>,
+    public: VecDeque<LogLine>,
+}
+
+impl Recent {
+    fn push(&mut self, line: LogLine, credentialed: bool) {
+        let (ring, cap) = if credentialed {
+            (&mut self.credentialed, RECENT_LOG_LINES)
+        } else {
+            (&mut self.public, RECENT_PUBLIC_LOG_LINES)
+        };
+        if ring.len() == cap {
+            ring.pop_front();
+        }
+        ring.push_back(line);
+    }
+
+    /// Both rings merged newest first, optionally only the lines whose
+    /// device id starts with `device`, capped at `limit`.
+    ///
+    /// Each ring is walked BACKWARDS before the sort. The sort is stable and
+    /// a timestamp is a millisecond, so two lines stamped in the same
+    /// millisecond keep the order they are walked in: walking forwards would
+    /// list the older of the two first, under a heading that says newest
+    /// first. Within one millisecond a credentialed line lists before a
+    /// public one, which is an order, not an accident.
+    fn newest_first(&self, device: Option<&str>, limit: usize) -> Vec<LogLine> {
+        let mut lines: Vec<LogLine> = self
+            .credentialed
+            .iter()
+            .rev()
+            .chain(self.public.iter().rev())
+            .filter(|l| {
+                device.is_none_or(|prefix| {
+                    l.device
+                        .is_some_and(|id| id.to_string().starts_with(prefix))
+                })
+            })
+            .copied()
+            .collect();
+        lines.sort_by_key(|l| std::cmp::Reverse(l.ts));
+        lines.truncate(limit);
+        lines
+    }
+}
+
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
 struct ReadyCache {
     checked_at: u64,
@@ -299,7 +371,7 @@ pub struct App {
     pairings: Mutex<PairingTable>,
     sessions: Mutex<admin::SessionTable>,
     seen: Mutex<HashMap<String, u64>>,
-    recent: Mutex<VecDeque<LogLine>>,
+    recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
     gc_requested: AtomicBool,
     scrub_requested: AtomicBool,
@@ -361,7 +433,7 @@ impl App {
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
             seen: Mutex::new(HashMap::new()),
-            recent: Mutex::new(VecDeque::new()),
+            recent: Mutex::new(Recent::default()),
             ready: Mutex::new(ReadyCache {
                 checked_at: 0,
                 verdict: Ok(()),
@@ -499,19 +571,10 @@ impl App {
     /// The last decisions, newest first, optionally only those whose device id
     /// starts with `device`.
     pub fn recent_lines(&self, device: Option<&str>, limit: usize) -> Vec<LogLine> {
-        let recent = self.recent.lock().expect("recent log");
-        recent
-            .iter()
-            .rev()
-            .filter(|l| {
-                device.is_none_or(|prefix| {
-                    l.device
-                        .is_some_and(|id| id.to_string().starts_with(prefix))
-                })
-            })
-            .take(limit)
-            .copied()
-            .collect()
+        self.recent
+            .lock()
+            .expect("recent log")
+            .newest_first(device, limit)
     }
 
     /// Truthful readiness: the store is open, every volume takes a write, and
@@ -609,18 +672,21 @@ impl App {
         let start = Instant::now();
         let path = req.path.clone();
         let method = req.method.clone();
-        let (class, out) = match resolve(&method, &path) {
+        let (class, credentialed, out) = match resolve(&method, &path) {
             Some((route, class)) => {
                 let health = matches!(route, Route::Livez | Route::Readyz);
+                let demands = demands_credential(&route);
                 let client = edge::derive(&self.cfg, req);
-                match (health, client) {
-                    (true, _) => (class, self.dispatch(route, req, &ClientInfo::unknown())),
-                    (false, Ok(c)) => (class, self.dispatch(route, req, &c)),
-                    (false, Err(e)) => (class, Err(e)),
-                }
+                let out = match (health, client) {
+                    (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),
+                    (false, Ok(c)) => self.dispatch(route, req, &c),
+                    (false, Err(e)) => Err(e),
+                };
+                (class, demands, out)
             }
             None => (
                 "/unknown",
+                false,
                 Err(ApiError::not_found("no route for this method and path")),
             ),
         };
@@ -632,7 +698,7 @@ impl App {
                 (e.to_response(), code)
             }
         };
-        self.finish(req, resp, class, decision, start)
+        self.finish(req, resp, class, decision, start, credentialed)
     }
 
     fn dispatch(
@@ -670,6 +736,7 @@ impl App {
             Route::LoginLink => admin::login_link(self, req, client),
             Route::Login => admin::login(self, req),
             Route::Logout => admin::logout(self, req),
+            Route::LogoutAll => admin::logout_all(self, req),
             Route::AdminOverview => admin::overview(self, req),
             Route::AdminDevices => admin::devices(self, req),
             Route::AdminRevoke(id) => admin::revoke(self, req, &id),
@@ -693,6 +760,17 @@ impl App {
         }
     }
 
+    /// Log one line, remember it in the ring its trust class owns, and
+    /// harden the response.
+    ///
+    /// The trust class is POSITIVE evidence and nothing else: the request
+    /// carries a bit that only [`Request::prove`] sets, and only the four
+    /// places a credential actually verifies call it -- `auth::authenticate`
+    /// once a signature, timestamp and nonce all pass, `admin::session` once
+    /// a session cookie matches a live session, `admin::login` once a link or
+    /// the recovery token compares equal, and `setup::create` once the setup
+    /// token does. No status, route, or header can produce that bit.
+    /// `demands` is the cross-check, never the source: see [`trust`].
     fn finish(
         &self,
         req: &Request,
@@ -700,6 +778,7 @@ impl App {
         class: &'static str,
         decision: &'static str,
         start: Instant,
+        demands: bool,
     ) -> Response {
         let seq = self.store.head_seq();
         let status = resp.status;
@@ -719,18 +798,38 @@ impl App {
             decision,
         };
         self.emit(&line);
-        {
-            let mut recent = self.recent.lock().expect("recent log");
-            if recent.len() == RECENT_LOG_LINES {
-                recent.pop_front();
-            }
-            recent.push_back(line);
+        let verdict = trust(demands, req.proved(), status);
+        if verdict == Trust::Unverified {
+            // A route that refuses to answer without a credential answered
+            // anyway, and nothing verified one. That is this server's bug,
+            // not a caller's doing: say so at error, name the route class,
+            // and treat the answer as unproved (AGENTS.md requirement 12).
+            self.log.error(
+                "provenance",
+                &[
+                    ("path_class", Val::word(class)),
+                    ("status", Val::status(status)),
+                    ("decision", Val::word("unverified_success")),
+                ],
+            );
         }
-        resp.header("Cache-Control", "no-store")
+        let proved = verdict == Trust::Proved;
+        self.recent.lock().expect("recent log").push(line, proved);
+        let resp = resp
+            .header("Cache-Control", "no-store")
             .header("X-Content-Type-Options", "nosniff")
             .header("X-Frame-Options", "DENY")
-            .header("Referrer-Policy", "no-referrer")
-            .header("X-Obsync-Seq", &format!("{}", render::seq_u64(seq)))
+            .header("Referrer-Policy", "no-referrer");
+        // The journal head is write activity, and write activity is the
+        // owner's. It rides a response only when a credential verified while
+        // answering it: on an unauthenticated probe it was a counter anyone
+        // could poll to reconstruct when the owner writes
+        // (`docs/security/dashboard.md`).
+        if proved {
+            resp.header("X-Obsync-Seq", &format!("{}", render::seq_u64(seq)))
+        } else {
+            resp
+        }
     }
 
     /// The one line every request logs (`docs/protocol.md`, "Limits and
@@ -756,6 +855,94 @@ impl App {
         } else {
             self.log.info("request", &fields);
         }
+    }
+}
+
+/// What one finished request proved, as the two log rings and the
+/// journal-head header read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trust {
+    /// A credential verified while this request was answered.
+    Proved,
+    /// Nothing verified: an unauthenticated route, or a refusal answered
+    /// before any check could pass.
+    Unproved,
+    /// A route that demands a credential answered success without one
+    /// verifying. Only a server bug reaches this, and it is treated as
+    /// [`Trust::Unproved`] -- fail closed, and log it.
+    Unverified,
+}
+
+/// The whole trust decision, as a pure function of the three facts
+/// [`App::finish`] holds.
+///
+/// `proved` is the evidence and decides alone. `demands` cannot promote a
+/// request -- it only lets a success on a credentialed route with no evidence
+/// be named as the bug it is, rather than quietly trusted the way inferring
+/// the class from the status used to.
+const fn trust(demands: bool, proved: bool, status: u16) -> Trust {
+    match (proved, demands, status) {
+        (true, _, _) => Trust::Proved,
+        (false, true, 200..=399) => Trust::Unverified,
+        (false, _, _) => Trust::Unproved,
+    }
+}
+
+/// Whether this route refuses to answer without a credential.
+///
+/// The match is exhaustive and takes no wildcard, so a route added to
+/// `resolve` states which side of this line it is on. This is the
+/// CROSS-CHECK on the trust decision and not its source: a success here with
+/// no credential verified is a server bug [`trust`] names and refuses to
+/// trust. Every handler that answers `true` authenticates FIRST, before it
+/// reads a body or a query parameter.
+fn demands_credential(route: &Route) -> bool {
+    match route {
+        // Unauthenticated by contract (`docs/protocol.md`): the probes, the
+        // public version metadata, the dashboard's own files, and the two
+        // routes that read a token out of a BODY they must parse first --
+        // so a malformed one is refused before anything is proved, and
+        // neither can be told from a probe by its status alone.
+        Route::Livez
+        | Route::Readyz
+        | Route::Setup
+        | Route::PairingClaim(_)
+        | Route::PluginManifest
+        | Route::DashboardFile(_) => false,
+        // `GET /login` carries its credential in the query and compares it
+        // before it does anything else, so its statuses map exactly: a 302
+        // proved a one-time link or the recovery token, and its only
+        // refusal is the `401` excluded below.
+        Route::Login
+        | Route::Account
+        | Route::PairingCreate
+        | Route::PairingState(_)
+        | Route::PairingApprove(_)
+        | Route::PairingReject(_)
+        | Route::PairingEnvelope(_)
+        | Route::Devices
+        | Route::DevicePatch(_)
+        | Route::DeviceRevoke(_)
+        | Route::Heartbeat
+        | Route::ChunksExists
+        | Route::ChunksGet
+        | Route::ChunkPut(_)
+        | Route::ChunkGet(_)
+        | Route::VersionPost(_)
+        | Route::FileGet(_)
+        | Route::VersionGet(_, _)
+        | Route::FilesPage
+        | Route::Changes
+        | Route::LoginLink
+        | Route::Logout
+        | Route::LogoutAll
+        | Route::AdminOverview
+        | Route::AdminDevices
+        | Route::AdminRevoke(_)
+        | Route::AdminStorage
+        | Route::AdminGcRun
+        | Route::AdminScrubRun
+        | Route::AdminLogs => true,
     }
 }
 
@@ -860,6 +1047,8 @@ pub enum Route {
     Login,
     /// `POST /v1/admin/logout`
     Logout,
+    /// `POST /v1/admin/logout-all`
+    LogoutAll,
     /// `GET /v1/admin/overview`
     AdminOverview,
     /// `GET /v1/admin/devices`
@@ -945,6 +1134,7 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         }
         ("GET", ["login"]) => (Route::Login, "/login"),
         ("POST", ["v1", "admin", "logout"]) => (Route::Logout, "/v1/admin/logout"),
+        ("POST", ["v1", "admin", "logout-all"]) => (Route::LogoutAll, "/v1/admin/logout-all"),
         ("GET", ["v1", "admin", "overview"]) => (Route::AdminOverview, "/v1/admin/overview"),
         ("GET", ["v1", "admin", "devices"]) => (Route::AdminDevices, "/v1/admin/devices"),
         ("POST", ["v1", "admin", "devices", id, "revoke"]) => (

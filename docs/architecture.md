@@ -386,9 +386,27 @@ v1: a paired device mints a single-use dashboard link (`POST
 /v1/dashboard/login-link`). The setup token from §4.1 remains the recovery
 sign-in, valid for the life of the server and stored only on the journal
 volume.
-Sessions are `HttpOnly`, `SameSite=Strict` cookies with a double-submit
-CSRF header. Passkey sign-in is deferred; the current dashboard does not
+Sessions are cookies named `__Host-obsync_session` and `__Host-obsync_csrf`:
+`Secure`, `Path=/`, `SameSite=Strict`, no `Domain`, the session one
+`HttpOnly` and the CSRF one readable by the page for the double-submit
+header. The browser enforces that set because of the `__Host-` prefix, so
+the dashboard must be reached at an `https` address -- or, in Chrome and
+Firefox only, at plain `http://localhost` or `http://127.0.0.1`; Safari
+sends no `Secure` cookie to a plaintext origin
+([`security/dashboard.md`](security/dashboard.md)).
+
+A session ends after 12 hours whatever it does, after 1 hour with no request
+on it, on sign-out, on `POST /v1/admin/logout-all` (which drops unspent
+login links with them), and when the device
+whose link opened it is revoked -- a session and a link both remember which
+device minted them, so revocation reaches the dashboard and not only the
+sync API. `GET /login` has no attempt limit in front of its constant-time
+compare, deliberately: a limit keyed by request source refuses every visitor
+at once wherever that source is an untrusted proxy, which is the chart's own
+default. Passkey sign-in is deferred; the current dashboard does not
 register or authenticate WebAuthn credentials.
+[`security/dashboard.md`](security/dashboard.md) is this surface's threat
+model.
 
 ## 5. Sharing (phase 2)
 

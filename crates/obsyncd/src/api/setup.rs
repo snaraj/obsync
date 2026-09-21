@@ -38,13 +38,13 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     // leave an account behind that no device can ever reach.
     let enrolment = devices::enrolment_fields(device)?;
 
-    if app.store.account().is_some() {
-        return Err(ApiError::new(
-            409,
-            "already_set_up",
-            "the account already exists",
-        ));
-    }
+    // The TOKEN first, and the account afterwards. Both refusals are
+    // documented and both still happen; what changes is what an
+    // unauthenticated caller learns from them. Asking the account first made
+    // `409 already_set_up` an answer anybody could get with a wrong token,
+    // which is a free "is this server claimed?" oracle on a public hostname.
+    // Now only a caller holding the token can tell the two apart
+    // (`docs/protocol.md`, "Setup and account").
     let expected = app
         .setup_token
         .as_deref()
@@ -58,6 +58,17 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             401,
             "bad_setup_token",
             "setup token does not match",
+        ));
+    }
+    // The token matched in constant time, so this caller holds the
+    // first-boot credential. The `409` below is answered to a caller that
+    // proved it, and the `401` above to one that did not.
+    req.prove();
+    if app.store.account().is_some() {
+        return Err(ApiError::new(
+            409,
+            "already_set_up",
+            "the account already exists",
         ));
     }
 

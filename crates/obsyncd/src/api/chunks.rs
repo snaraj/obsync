@@ -58,8 +58,13 @@ pub fn put(
     client: &ClientInfo,
     sid_hex: &str,
 ) -> Result<Response, ApiError> {
-    let sid = render::sid(sid_hex)?;
+    // Authentication FIRST, and the path only then: a handler that validates
+    // before it authenticates answers an unauthenticated caller something
+    // other than `401`, which is a refusal that has to be classified as a
+    // credentialed one to be logged truthfully. `auth::device_chunk` takes
+    // the sid as the body hash and re-checks its shape itself.
     auth::device_chunk(app, req, client, sid_hex)?;
+    let sid = render::sid(sid_hex)?;
     let account = app.account_id()?;
 
     if req.body.is_chunked() {
@@ -102,8 +107,9 @@ pub fn get(
     client: &ClientInfo,
     sid_hex: &str,
 ) -> Result<Response, ApiError> {
-    let sid = render::sid(sid_hex)?;
+    // Authentication first, the path afterwards: see `put`.
     auth::device(app, req, client)?;
+    let sid = render::sid(sid_hex)?;
     let (mut file, total) = app
         .store
         .open_chunk(&sid)

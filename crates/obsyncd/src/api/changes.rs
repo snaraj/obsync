@@ -21,10 +21,14 @@ use super::{ApiError, App, CHANGES_MAX_LIMIT, CHANGES_MAX_WAIT_SECS, auth};
 /// `400 bad_request` for malformed parameters, `416 seq_ahead` when `since`
 /// is beyond the journal head, plus the authentication refusals.
 pub fn feed(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Response, ApiError> {
+    // Authentication first, query parameters afterwards, the shape
+    // `files::page` already has: a `400` answered to an unauthenticated
+    // caller is a refusal on a credentialed route that nothing proved, and
+    // three query parameters were three free ways to make one.
+    auth::device(app, req, client)?;
     let since = number(req, "since", 0, u64::MAX)?;
     let wait = number(req, "wait", 0, CHANGES_MAX_WAIT_SECS)?;
     let limit = number(req, "limit", CHANGES_MAX_LIMIT, CHANGES_MAX_LIMIT)?.max(1);
-    auth::device(app, req, client)?;
 
     let mut changes = app.store.changes(Seq(since), limit as usize)?;
     if changes.changes.is_empty() && wait > 0 {

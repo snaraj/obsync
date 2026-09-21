@@ -34,10 +34,13 @@
 #                     caddy container, with `--resolve` so no DNS anywhere is
 #                     involved. This is the README's own path: export the root,
 #                     trust it, connect by name.
-#   4. origin bytes   that answer carries the server's own `X-Obsync-Seq` and
-#                     the proxy's `Via`, so the 200 is obsync's and not
-#                     Caddy's. A terminator that answered by itself would pass
-#                     property 3 and fail here.
+#   4. origin bytes   that answer carries the server's own header set and the
+#                     proxy's `Via`, so the 200 is obsync's and not Caddy's. A
+#                     terminator that answered by itself would pass property 3
+#                     and fail here. It must NOT carry `X-Obsync-Seq`: the
+#                     journal head is write activity and it rides a response
+#                     only when the caller proved a credential, which an
+#                     unauthenticated probe through the edge never does.
 #   5. proxied only   the obsync container publishes NO port: its
 #                     `HostConfig.PortBindings` is empty and `docker port`
 #                     prints nothing, while `8080/tcp` is exposed and bound to
@@ -351,15 +354,22 @@ prove "TLS through the proxy: https://${HOST}:${HTTPS_PORT}/readyz answered ${re
 # the comparison is made on a lowercased copy.
 [ -s "${scratch}/headers.txt" ] || deny 'the proxied response carried no headers to read'
 headers="$(tr 'A-Z' 'a-z' < "${scratch}/headers.txt")"
+for pinned in 'cache-control: no-store' 'x-content-type-options: nosniff' \
+  'x-frame-options: deny' 'referrer-policy: no-referrer'; do
+  case "${headers}" in
+    *"${pinned}"*) ;;
+    *) deny "the proxied response carries no '${pinned}'; it did not come from obsync" ;;
+  esac
+done
 case "${headers}" in
-  *x-obsync-seq:*) ;;
-  *) deny 'the proxied response carries no X-Obsync-Seq; it did not come from obsync' ;;
+  *x-obsync-seq:*)
+    deny 'the proxied readiness probe states the journal head to an unauthenticated caller' ;;
 esac
 case "${headers}" in
   *via:*caddy*) ;;
   *) deny 'the proxied response carries no Via naming the terminator' ;;
 esac
-prove 'origin bytes: the proxied 200 carries obsync X-Obsync-Seq and the proxy Via'
+prove 'origin bytes: the proxied 200 carries obsync headers, no journal head, and the proxy Via'
 
 # (5) The origin publishes nothing. Read from Docker's record, so a `ports:`
 # entry added to the obsync service fails here rather than in someone's audit.

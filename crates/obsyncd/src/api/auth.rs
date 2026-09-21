@@ -355,22 +355,14 @@ fn authenticate(
     let ts: u64 = ts_hex.parse().map_err(|_| bad())?;
 
     let record = app.store.device(&id).ok_or_else(bad)?;
-    match record.state {
-        DeviceState::Active => {}
-        DeviceState::Revoked => {
-            return Err(ApiError::new(403, "device_revoked", "device is revoked"));
-        }
-        // A claimed device holds a secret and no authority. Only the
-        // envelope fetch admits it; everything else is refused here, so a
-        // route added later is refused by default rather than by memory.
-        DeviceState::Pending if admit == Admit::ActiveOnly => {
-            return Err(ApiError::new(
-                403,
-                "device_pending",
-                "device is waiting for pairing approval",
-            ));
-        }
-        DeviceState::Pending => {}
+    // Revocation is the one refusal that cannot wait for the signature:
+    // revoking DESTROYS the wrapped secret, so there is nothing left to
+    // verify against and the server can never claim this caller proved
+    // anything. The documented `403 device_revoked` still stands, and
+    // `App::finish` classes it for what it is -- a refusal answered before
+    // any proof (`docs/security/dashboard.md`).
+    if matches!(record.state, DeviceState::Revoked) {
+        return Err(ApiError::new(403, "device_revoked", "device is revoked"));
     }
     let secret = app.store.device_secret(&id).ok_or_else(bad)?;
 
@@ -399,6 +391,33 @@ fn authenticate(
         .lock()
         .expect("nonce cache")
         .remember(&device_hex, &nonce, now)?;
+
+    // The signature verified, the timestamp is inside the window and the
+    // nonce is fresh: this caller holds the device secret. That fact, and
+    // not the status the handler goes on to answer, is what
+    // `App::finish` reads to classify the response (`api/mod.rs`,
+    // `Trust`). Everything refused above this line -- a missing or
+    // malformed header, an unknown device, a revoked or pending one, a
+    // stale timestamp, a replayed nonce -- is refused BEFORE any proof, so
+    // it counts as none. A revoked device is refused there and not here
+    // because revocation destroys the wrapped secret: there is nothing
+    // left to verify it against, so the server cannot claim it proved
+    // anything (`docs/security/dashboard.md`).
+    req.prove();
+
+    // A claimed device holds a secret and no authority. Only the envelope
+    // fetch admits it; everything else is refused HERE, after the signature
+    // verified, so a caller that merely knows a pending device's id cannot
+    // tell it from an unknown one, and so this refusal is the credentialed
+    // decision it really is. A route added later is refused by default
+    // rather than by memory.
+    if admit == Admit::ActiveOnly && matches!(record.state, DeviceState::Pending) {
+        return Err(ApiError::new(
+            403,
+            "device_pending",
+            "device is waiting for pairing approval",
+        ));
+    }
 
     // A sign-in is an ACTIVE device's first authenticated request. A pending
     // device polling for its envelope has not signed in to anything.
