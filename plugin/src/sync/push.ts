@@ -81,7 +81,8 @@ export interface Manifest {
 }
 
 export interface PushOutcome {
-  status: "pushed" | "unchanged";
+  /** `growing`: the file moved while it was being read, so no version exists. */
+  status: "pushed" | "unchanged" | "growing";
   fileId: string;
   versionId: string;
   ack?: VersionAck;
@@ -167,6 +168,26 @@ export async function pushFile(context: SyncContext, path: string, force = false
     if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single);
   } else {
     await uploadMissing(context, missing, plan, path, stat.size);
+  }
+
+  // THE GROWING-FILE INVARIANT (issue #99). Everything above describes the
+  // file as it was when the read STARTED. A file still being copied into the
+  // vault keeps growing while it is read, so the plan, the size and the mtime
+  // would be published as a truncated version of a file that is not finished:
+  // a 916 MB copy reached other devices at 376 MB. The watcher's guard makes a
+  // growing file wait, but it cannot see a copy that stalls longer than one
+  // recheck, and startup reconciliation queues a path without consulting it at
+  // all. So the size is read once more here, at the end of the read, and a
+  // file that moved is abandoned BEFORE a version exists. Uploaded chunks are
+  // content-addressed and unreferenced, so nothing durable was published; the
+  // caller re-arms the debounce and the finished file is pushed whole.
+  const after = await context.host.stat(path);
+  if (after === null || after.size !== stat.size || after.mtime !== stat.mtime) {
+    context.host.log(
+      `push path_class=file decision=abandoned reason=changed_during_read bytes=${stat.size} ` +
+        `bytes_after=${after === null ? -1 : after.size} duration_ms=${context.now() - started}`,
+    );
+    return { status: "growing", fileId, versionId: "" };
   }
 
   const manifest: Manifest = {

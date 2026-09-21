@@ -9,10 +9,16 @@
  * anywhere under `sync/`.
  *
  * DEBOUNCE AND THE GROWING-FILE GUARD. A vault event schedules its path 500
- * ms out. When the timer fires the file is stat-ed twice, `RECHECK_MS`
- * apart: if size or mtime moved, the file is still being written and the
- * debounce re-arms. A torn upload is never posted; a slow copy simply takes
- * as long as it takes.
+ * ms out. Every settle stats the file once and compares that stat with the
+ * one the PREVIOUS settle took, `RECHECK_MS` earlier: if size or mtime moved
+ * the file is still being written and the debounce re-arms. The gap is the
+ * whole guard. Two stats taken back to back agree about a file that is being
+ * copied at a gigabyte a minute, because nothing lands between them, which is
+ * how a 916 MB copy was published at 376 MB (issue #99). A gap cannot be the
+ * whole answer either -- a copy may stall for longer than one recheck -- so
+ * the push re-reads the size when its read ends and abandons a version whose
+ * file moved underneath it (`push.ts`). A torn upload is never posted; a slow
+ * copy simply takes as long as it takes.
  *
  * ECHOES. The engine drops a watcher event whose `(path, mtime, size)`
  * matches a write the pull path just made, drops a delete event for a path
@@ -82,6 +88,15 @@ export type TrashResult = "removed" | "kept" | "unheld";
  * destroy a note no version holds (issue #124).
  */
 export type MoveResult = "moved" | "occupied" | "missing";
+
+/** What one settle remembers for the next one, `RECHECK_MS` later. */
+interface Settled {
+  stat: VaultStat;
+  /** Consecutive rechecks that saw exactly this `(mtime, size)`. */
+  agreed: number;
+  /** Has this device watched the file change since the debounce began? */
+  grew: boolean;
+}
 
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
@@ -217,6 +232,15 @@ export interface EngineOptions {
 
 export const DEBOUNCE_MS = 500;
 export const RECHECK_MS = 400;
+/**
+ * How long a file that has been SEEN changing must then hold still before it
+ * is pushed. One recheck is enough for a file nothing was ever observed
+ * writing; it is not enough for a copy, because a copy that stalls for longer
+ * than one recheck -- ordinary I/O scheduling for a large `cp` between
+ * volumes -- puts two consecutive rechecks inside one pause and they agree
+ * about a file that is still growing (issue #99).
+ */
+export const QUIET_MS = 5000;
 export const HEARTBEAT_MS = 60 * 60 * 1000;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
@@ -224,6 +248,9 @@ export const FEED_ERROR_BACKOFF_MS = 5000;
 // the bare globals are Node's and hand back a `Timeout` object rather than the
 // numeric handle every other Obsidian surface expects; `window` is the one
 // spelling that means the same thing on desktop and on mobile.
+/** `QUIET_MS` of stillness, counted in rechecks because that is what fires. */
+const QUIET_RECHECKS = Math.ceil(QUIET_MS / RECHECK_MS);
+
 const defaultTimers: Timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
   clear: (handle) => window.clearTimeout(handle as number),
@@ -606,22 +633,22 @@ export class SyncEngine {
     return this.contextValue;
   }
 
-  private debounce(path: string, tries: number): void {
+  private debounce(path: string, tries: number, seen: Settled | null = null): void {
     if (!this.running) return;
     const existing = this.pending.get(path);
     if (existing) this.timers.clear(existing.handle);
     const handle = this.timers.set(() => {
-      void this.track(this.settle(path, tries));
+      void this.track(this.settle(path, tries, seen));
     }, tries === 0 ? DEBOUNCE_MS : RECHECK_MS);
     this.pending.set(path, { handle, tries });
   }
 
   /**
-   * The growing-file guard: two stats that agree, or wait again. Also the
-   * echo gate — a file whose stat matches a write we just made is our own
-   * pull coming back and is dropped.
+   * The growing-file guard: this stat and the one `RECHECK_MS` ago agree, or
+   * wait again. Also the echo gate — a file whose stat matches a write we
+   * just made is our own pull coming back and is dropped.
    */
-  private async settle(path: string, tries: number): Promise<void> {
+  private async settle(path: string, tries: number, seen: Settled | null): Promise<void> {
     this.pending.delete(path);
     if (!this.running) return;
     const context = this.need();
@@ -631,7 +658,7 @@ export class SyncEngine {
     // logged rather than thrown into a timer callback.
     try {
       if (!(await context.host.syncable(path))) return;
-      await this.settleTracked(context, path, tries);
+      await this.settleTracked(context, path, tries, seen);
     } catch (error) {
       context.host.log(
         `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
@@ -639,27 +666,46 @@ export class SyncEngine {
     }
   }
 
-  private async settleTracked(context: SyncContext, path: string, tries: number): Promise<void> {
-    const first = await context.host.stat(path);
-    if (!first) {
+  private async settleTracked(
+    context: SyncContext,
+    path: string,
+    tries: number,
+    seen: Settled | null,
+  ): Promise<void> {
+    const stat = await context.host.stat(path);
+    if (!stat) {
       this.deletions.add(path);
       this.enqueue(path);
       return;
     }
-    const key = `${path}:${first.mtime}:${first.size}`;
+    const key = `${path}:${stat.mtime}:${stat.size}`;
     if (context.written.has(key)) {
       context.written.delete(key);
       context.host.log(`watch path_class=file decision=echo_suppressed`);
       return;
     }
     const record = context.state.fileByPath(path);
-    if (record && record.mtime === first.mtime && record.size === first.size) return;
-    this.debounce(path, tries + 1);
-    const second = await context.host.stat(path);
-    if (!second || second.mtime !== first.mtime || second.size !== first.size) {
+    if (record && record.mtime === stat.mtime && record.size === stat.size) return;
+    // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
+    // ago: comparing against it is what puts real time between the two
+    // observations. The first settle has nothing to compare with, so it
+    // always waits once.
+    if (seen === null || seen.stat.mtime !== stat.mtime || seen.stat.size !== stat.size) {
       if (tries % 25 === 24) context.host.log(`watch path_class=file decision=still_growing tries=${tries + 1}`);
+      this.debounce(path, tries + 1, { stat, agreed: 0, grew: seen !== null });
       return;
     }
+    // A file this device WATCHED change must then hold still for `QUIET_MS`,
+    // not for one recheck: a large copy pauses, and two rechecks inside one
+    // pause agree about a file that is still growing.
+    const agreed = seen.agreed + 1;
+    if (agreed < (seen.grew ? QUIET_RECHECKS : 1)) {
+      this.debounce(path, tries + 1, { ...seen, agreed });
+      return;
+    }
+    // Only now is the entry retired: the returns above re-arm it through
+    // `debounce`, and clearing it before them would drop the timer this
+    // settle just decided to take again.
     this.unschedule(path);
     this.enqueue(path);
   }
@@ -758,8 +804,16 @@ export class SyncEngine {
         // function; a path with nothing at it and nothing recorded is done.
         if ((await context.host.stat(path)) === null) return;
       }
-      const outcome = await pushFile(context, path, this.renames.delete(path));
+      const forced = this.renames.delete(path);
+      const outcome = await pushFile(context, path, forced);
       if (outcome.status === "unchanged") return;
+      if (outcome.status === "growing") {
+        // The file moved while it was read: nothing was published, so this is
+        // the debounce's case again and not a failure (issue #99).
+        if (forced) this.renames.add(path);
+        this.debounce(path, 0);
+        return;
+      }
       context.authored.add(outcome.versionId);
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
