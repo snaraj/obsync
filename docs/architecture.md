@@ -590,7 +590,21 @@ returns immediately when a new frame lands.
 1. **Watcher.** `vault.on(create|modify|delete|rename)` plus a startup
    reconciliation that compares `(mtime, size)` per path against the local
    state and re-hashes anything that differs. Events are debounced 500 ms
-   per path; a file still growing is retried, never uploaded torn.
+   per path, and the growing-file guard then compares each stat with the one
+   the previous recheck took, 400 ms earlier: a file that has been seen
+   changing must hold still for 5 s before it is queued, and a push whose
+   file moved between the start and the end of its read is abandoned before
+   a version exists. A file still growing is retried, never uploaded torn.
+   Every 30 s the engine also compares its own listing of the vault against
+   the local state. On desktop that listing is the filesystem, read directly,
+   because Obsidian's index is never fresher than the events it emits: a
+   note moved in from a file manager is in neither until the app notices.
+   The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
+   recorded path with a new unrecorded one carrying the same `(mtime, size)`
+   as a MOVE, keeping the file id -- and it never publishes a tombstone,
+   because a listing this device took itself is the right thing to converge
+   from and the wrong thing to delete on. Deletions stay with the watcher
+   and with startup reconciliation, which read Obsidian's own index.
 
    THE SCAN READS RECORDS BEFORE THE LISTING, and that order carries one
    fact. A rename the plugin never heard as an event -- made while Obsidian

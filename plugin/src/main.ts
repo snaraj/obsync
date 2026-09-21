@@ -76,8 +76,18 @@ import {
   chainRefusal,
   isVaultPath,
   sameFile,
+  vaultTarget,
   walkVaultPath,
 } from "./vaultPath";
+
+/**
+ * How deep the filesystem scan walks before it stops and says so.
+ *
+ * Symlinks are skipped, so there is no loop to fall into; this is a bound on
+ * an absurd tree rather than a defence, and a vault nested deeper than this
+ * is past what any Obsidian platform handles.
+ */
+const SCAN_MAX_DEPTH = 32;
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these calls are used, and only on desktop.
@@ -101,6 +111,8 @@ interface NodeFs {
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
     /** No-follow stat. Rejects when the path does not exist. */
     lstat(path: string): Promise<PathStat>;
+    /** Entry names only: the walk lstats each one itself, without following. */
+    readdir(path: string): Promise<string[]>;
   };
 }
 declare const require: (id: string) => unknown;
@@ -354,6 +366,69 @@ export class ObsidianHost implements VaultHost {
       this.plugin.log(`list decision=skipped_unsyncable files=${files.length - synced.length}`);
     }
     return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+  }
+
+  /**
+   * The vault as the FILESYSTEM has it, or `null` on a host with no view of
+   * its own (`VaultHost.scan`).
+   *
+   * `list()` above is Obsidian's index, and the index is never fresher than
+   * the vault events this plugin already handles: a note moved into a
+   * subfolder from a file manager is absent from both until the app notices,
+   * which is why such a move took about four minutes to sync while an
+   * external EDIT took seconds (issue #101). One `readdir` per directory and
+   * one no-follow `lstat` per entry answer the same question independently.
+   *
+   * The rules are the ones every other path takes: hidden and non-canonical
+   * names are skipped (`vaultPath.ts`), symlinks are skipped in both roles
+   * (a symlinked folder is out of sync in v0.1, in both directions), and only
+   * the selected folders are walked. A directory that cannot be read is
+   * skipped rather than reported as empty -- this listing may only ADD work
+   * (`engine.ts`), but a caller that mistook an unreadable folder for a
+   * vanished one would be one refactor away from a tombstone.
+   */
+  async scan(): Promise<VaultStat[] | null> {
+    const desktop = this.desktop;
+    if (desktop === null) return null;
+    const folders = this.plugin.state.data.syncFolders;
+    const files: VaultStat[] = [];
+    for (const root of folders ?? [""]) await this.walk(desktop, root, files, 0);
+    return files;
+  }
+
+  /** One directory, then its subdirectories, to a bounded depth. */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number): Promise<void> {
+    if (depth > SCAN_MAX_DEPTH) {
+      this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
+      return;
+    }
+    const at = folder === "" ? desktop.path.resolve(desktop.base) : vaultTarget(desktop.base, folder, desktop.path);
+    let names: string[];
+    try {
+      names = await desktop.fs.promises.readdir(at);
+    } catch {
+      // Unreadable is not empty, and this listing never deletes anything.
+      this.log("scan decision=skipped reason=unreadable_directory");
+      return;
+    }
+    const folders = this.plugin.state.data.syncFolders;
+    for (const name of names) {
+      const path = folder === "" ? name : `${folder}/${name}`;
+      // A NO-FOLLOW stat, so a link is neither a file nor a directory here
+      // and is listed as neither; `inSyncTree` and `inSyncScope` carry the
+      // string rule (`vaultPath.ts`), so a hidden or non-canonical name is
+      // neither walked nor listed. None of this is the AUTHORITY on what may
+      // be synced: this listing only proposes paths, and `syncable()` walks
+      // every component of each one before the engine acts on it.
+      const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
+      if (stat === null) continue;
+      if (stat.isDirectory()) {
+        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1);
+        continue;
+      }
+      if (!stat.isFile() || !inSyncScope(path, folders)) continue;
+      out.push({ path, mtime: Math.round(stat.mtimeMs), size: stat.size });
+    }
   }
 
   /**

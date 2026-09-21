@@ -31,6 +31,16 @@
  * device, the one that renamed it included, then obeys it. That is how a
  * rename deleted a note everywhere in 1.0.0-1.0.3 (issue #96).
  *
+ * THE PERIODIC SCAN. The watcher is the fast path and stays it. Every
+ * `SCAN_MS` the engine also compares a listing of the vault against its own
+ * record, because the watcher is Obsidian's events and `host.list()` is
+ * Obsidian's index -- both blind to the same change at the same moment, which
+ * is why a note moved in from a file manager took minutes while an external
+ * EDIT took seconds (issue #101). On desktop `host.scan()` reads the
+ * filesystem instead. The pass is ADDITIVE: it queues, and it pairs a
+ * vanished recorded path with a new unrecorded one of the same
+ * `(mtime, size)` as a MOVE, but it never publishes a tombstone.
+ *
  * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
  * the watcher, startup reconciliation and the pull path all refuse anything
  * else, which is what takes `.obsidian/**` and `.git/**` out of sync in v0.1
@@ -123,6 +133,19 @@ export interface VaultHost {
   readonly appVersion: string;
   readonly deviceName: string;
   list(): Promise<VaultStat[]>;
+  /**
+   * The vault as the FILESYSTEM has it, or `null` when this host has no view
+   * of its own.
+   *
+   * `list()` is Obsidian's index, which is never fresher than the vault
+   * events this plugin already handles: a change the app has not noticed yet
+   * is absent from both, so a periodic pass over `list()` converges nothing
+   * the watcher did not already have. On desktop the host can read the
+   * directory itself, and that is the only view that converges a change
+   * Obsidian has not seen (issue #101). Mobile reaches the vault only through
+   * the adapter and answers `null`.
+   */
+  scan?(): Promise<VaultStat[] | null>;
   /**
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
@@ -242,6 +265,20 @@ export const RECHECK_MS = 400;
  */
 export const QUIET_MS = 5000;
 export const HEARTBEAT_MS = 60 * 60 * 1000;
+/**
+ * How often the engine compares the vault against its own record.
+ *
+ * The watcher is the fast path and stays the fast path. This is the bound on
+ * everything it does not report: an event the host dropped, and above all a
+ * file moved from outside Obsidian, which took about four minutes to reach
+ * the other device while an external EDIT took seconds (issue #101). It is
+ * additive only -- it queues and it pairs moves, it never publishes a
+ * tombstone -- because a listing this device took itself is the right thing
+ * to converge from and the wrong thing to delete on.
+ */
+export const SCAN_MS = 30 * 1000;
+/** What one pass is measured against; an overrun is logged, never truncated. */
+export const SCAN_BUDGET_MS = 5000;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
 // The host's own timers. Obsidian runs the desktop app inside Electron, where
@@ -278,6 +315,7 @@ export class SyncEngine {
   private feed: Promise<void> | null = null;
   private heartbeatHandle: unknown = null;
   private repairHandle: unknown = null;
+  private scanHandle: unknown = null;
   private repair: ChunkRepair | null = null;
   private repairWork: Promise<void> | null = null;
   private repairNoticeShown = false;
@@ -383,6 +421,8 @@ export class SyncEngine {
       const context = this.need();
       this.repair = new ChunkRepair(context, () => this.running && this.contextValue === context);
       this.repairHandle = this.timers.set(() => { void this.repairTick(); }, REPAIR_TICK_MS);
+      host.log(`scan decision=start interval_ms=${SCAN_MS} budget_ms=${SCAN_BUDGET_MS}`);
+      this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
       this.feed = this.track(this.feedLoop());
     }
   }
@@ -396,6 +436,8 @@ export class SyncEngine {
     this.heartbeatHandle = null;
     if (this.repairHandle !== null) this.timers.clear(this.repairHandle);
     this.repairHandle = null;
+    if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
+    this.scanHandle = null;
     this.repair?.cancel();
     this.repair = null;
     this.options.host.log("engine stop");
@@ -897,69 +939,165 @@ export class SyncEngine {
     }
   }
 
-  // --- startup reconciliation and heartbeat ------------------------------
+  // --- reconciliation, the periodic scan and the heartbeat ---------------
 
   /**
-   * Compare `(mtime, size)` per path against the local state and queue
-   * anything that differs, plus a tombstone for every recorded path the
-   * vault no longer has. This is what makes an edit made while Obsidian was
-   * closed, or a file deleted in Finder, reach the server.
+   * Startup reconciliation over Obsidian's own listing: queue what differs
+   * from the local record, pair the moves, and publish a tombstone for every
+   * recorded path the vault no longer has. This is what makes an edit made
+   * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
   reconcile(): Promise<void> {
     return this.track(this.reconcileLocal());
   }
 
   private async reconcileLocal(): Promise<void> {
+    await this.survey(await this.need().host.list(), true, "reconcile");
+  }
+
+  /**
+   * The periodic pass: the host's OWN listing, additive only.
+   *
+   * It never publishes a tombstone. A listing this device took itself is the
+   * right thing to converge FROM -- it sees a change Obsidian has not noticed
+   * yet, which is the whole point -- and the wrong thing to delete on, because
+   * a folder it could not read would otherwise erase a subtree. Deletions stay
+   * with the watcher and with startup reconciliation, which read Obsidian's
+   * own index.
+   */
+  private scanTick(): void {
+    if (!this.running) return;
+    this.scanHandle = null;
+    void this.track(this.scanLocal().finally(() => {
+      if (this.running && this.scanHandle === null) {
+        this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
+      }
+    }));
+  }
+
+  private async scanLocal(): Promise<void> {
+    const context = this.need();
+    try {
+      const own = context.host.scan === undefined ? null : await context.host.scan();
+      await this.survey(own ?? await context.host.list(), false, "scan");
+    } catch (error) {
+      context.host.log(
+        `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
+      );
+    }
+  }
+
+  /**
+   * Compare a listing against the local record and act on what differs.
+   *
+   * MOVES. A file moved from outside Obsidian arrives here as a recorded path
+   * that is gone and an unrecorded path that is new, carrying the SAME
+   * `(mtime, size)` -- a move preserves both, which a copy-and-delete does
+   * not. Pairing them and routing the pair through `renamed` keeps the file
+   * id, so the other devices move the note instead of deleting one and
+   * downloading another, and no tombstone is ever posted for a live file
+   * (issue #101). An ambiguous pair -- two candidates with identical size and
+   * mtime -- is not paired, because guessing which note moved is worse than
+   * publishing both halves.
+   *
+   * COST. The filesystem question (`syncable`) is asked only about paths this
+   * pass is about to act on, never about every file in the vault: that is
+   * what makes a pass every `SCAN_MS` affordable on a large vault, and it
+   * decides nothing differently, because an unchanged file is not queued
+   * either way.
+   */
+  private async survey(files: VaultStat[], tombstones: boolean, label: string): Promise<void> {
     const context = this.need();
     const started = context.now();
-    const listed: VaultStat[] = [];
-    let queued = 0;
+    const seen = new Set<string>();
+    const fresh: VaultStat[] = [];
     let skipped = 0;
-    for (const file of await context.host.list()) {
+    for (const file of files) {
       if (!this.running) return;
-      if (!this.tracked(file.path, "reconcile") || !(await context.host.syncable(file.path))) {
-        skipped++;
-        continue;
-      }
-      listed.push(file);
-    }
-    const seen = new Set(listed.map((file) => file.path));
-    // The listing by folded name, built once: a vault of ten thousand files
-    // and a folder of a hundred deletions must not cost a million
-    // comparisons to ask one question about each.
-    const spellings = new Map<string, string[]>();
-    for (const file of listed) {
-      const folded = file.path.toLowerCase();
-      spellings.set(folded, [...(spellings.get(folded) ?? []), file.path]);
-    }
-    // RECORDS FIRST, and that order is the fix. A rename this device never
-    // heard as an event is a record whose path has left the listing and a
-    // listed path no record explains -- and queued in the other order the
-    // second is published as a NEW file id before the first is recognised
-    // as the rename it is, which is how one folder became two on every
-    // device that tells `Team docs` from `team docs` (issue #124).
-    for (const path of Object.keys(context.state.data.files)) {
-      if (!this.running) return;
-      if (seen.has(path)) continue;
-      if (!this.tracked(path, "reconcile_state") || !(await context.host.syncable(path))) {
-        skipped++;
-        continue;
-      }
-      if (await this.caseRenamed(context, path, spellings.get(path.toLowerCase()) ?? [])) continue;
-      this.deletions.add(path);
-      this.enqueue(path);
-      queued++;
-    }
-    for (const file of listed) {
-      if (!this.running) return;
+      if (!this.tracked(file.path, label)) { skipped++; continue; }
+      seen.add(file.path);
       const record = context.state.fileByPath(file.path);
       if (record && record.mtime === file.mtime && record.size === file.size) continue;
+      fresh.push(file);
+    }
+    // The listing by folded name, built once: a vault of ten thousand files
+    // and a folder of a hundred deletions must not cost a million
+    // comparisons to ask one question about each. It is built from the WHOLE
+    // listing and not from `fresh`, because a rename by capitalisation alone
+    // changes neither stat, so the new spelling is never fresh.
+    const spellings = new Map<string, string[]>();
+    for (const path of seen) {
+      const folded = path.toLowerCase();
+      spellings.set(folded, [...(spellings.get(folded) ?? []), path]);
+    }
+    const gone = Object.keys(context.state.data.files).filter((path) => !seen.has(path));
+
+    // Moves first: a paired destination must not also be queued as a new
+    // file, and a paired source must not also be tombstoned.
+    const moved = new Set<string>();
+    let moves = 0;
+    for (const from of gone) {
+      if (!this.running) return;
+      const record = context.state.fileByPath(from);
+      if (record === undefined) continue;
+      const candidates = fresh.filter((file) => !moved.has(file.path) &&
+        file.mtime === record.mtime && file.size === record.size &&
+        context.state.fileByPath(file.path) === undefined);
+      if (candidates.length !== 1) continue;
+      const to = (candidates[0] as VaultStat).path;
+      if (!(await context.host.syncable(to))) { skipped++; continue; }
+      moved.add(to);
+      moved.add(from);
+      moves++;
+      this.renamed(from, to);
+    }
+
+    // RECORDS THAT LEFT THE LISTING, and the two things that can be true of
+    // one. The `(mtime, size)` pairing above cannot see a rename by
+    // CAPITALISATION alone: it changes neither stat, and on a host that
+    // folds case it does not even change the directory entry, so the new
+    // spelling is in the listing and never in `fresh` (issue #124). That is
+    // asked here, before anything is tombstoned, and in BOTH passes --
+    // pairing a rename is additive, which is exactly what the periodic scan
+    // is allowed to do. What is left is a record the vault really does not
+    // have, and only the pass that reads Obsidian's own index may publish a
+    // tombstone for it.
+    let cased = 0;
+    let removed = 0;
+    for (const from of gone) {
+      if (!this.running) return;
+      if (moved.has(from)) continue;
+      if (!this.tracked(from, `${label}_state`) || !(await context.host.syncable(from))) { skipped++; continue; }
+      if (await this.caseRenamed(context, from, spellings.get(from.toLowerCase()) ?? [], label)) {
+        moved.add(from);
+        cased++;
+        continue;
+      }
+      if (!tombstones) continue;
+      this.deletions.add(from);
+      this.enqueue(from);
+      removed++;
+    }
+
+    let queued = 0;
+    for (const file of fresh) {
+      if (!this.running) return;
+      if (moved.has(file.path)) continue;
+      if (!(await context.host.syncable(file.path))) { skipped++; continue; }
       this.enqueue(file.path);
       queued++;
     }
-    context.host.log(
-      `reconcile decision=queued files=${seen.size} queued=${queued} skipped=${skipped} duration_ms=${context.now() - started}`,
-    );
+    const duration = context.now() - started;
+    // The periodic pass is silent when it had nothing to say: one line every
+    // 30 s about an unchanged vault buries the lines that matter. It speaks
+    // whenever it acted, and whenever it overran the budget it is measured
+    // against.
+    if (tombstones || queued + removed + skipped + moves + cased > 0 || duration > SCAN_BUDGET_MS) {
+      context.host.log(
+        `${label} decision=queued files=${seen.size} queued=${queued} moved=${moves} removed=${removed} ` +
+          `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased}`,
+      );
+    }
   }
 
   /**
@@ -985,21 +1123,26 @@ export class SyncEngine {
    * renamed. That is the half of the recovery a device can prove by itself;
    * `docs/troubleshooting.md` carries the half only the user can do.
    */
-  private async caseRenamed(context: SyncContext, path: string, folded: string[]): Promise<boolean> {
+  private async caseRenamed(
+    context: SyncContext,
+    path: string,
+    folded: string[],
+    label: string,
+  ): Promise<boolean> {
     const spellings = folded.filter((candidate) => caseOnly(candidate, path));
     const to = spellings.length === 1 ? (spellings[0] as string) : null;
     if (to === null || (await context.host.stat(path)) === null) return false;
     if (context.state.fileByPath(to) === undefined) {
-      context.host.log("reconcile path_class=file decision=case_renamed");
+      context.host.log(`${label} path_class=file decision=case_renamed`);
       this.renamed(path, to);
       return true;
     }
     context.state.forgetPath(path);
     void this.track(context.state.save()).catch(() => {
       this.stop();
-      context.host.log("reconcile decision=failed reason=state_not_saved");
+      context.host.log(`${label} decision=failed reason=state_not_saved`);
     });
-    context.host.log("reconcile path_class=file decision=case_ghost_forgotten");
+    context.host.log(`${label} path_class=file decision=case_ghost_forgotten`);
     if (!this.caseGhostNoticeShown) {
       this.caseGhostNoticeShown = true;
       context.host.notify(
