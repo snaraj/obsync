@@ -84,6 +84,9 @@ import {
   unhex,
 } from "../crypto";
 import { ChangeRecord, FileRecord, ReadControl } from "../transport";
+// The per-path record this device keeps, named apart from the SERVER's file
+// record above, which is a different thing with the same name.
+import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
@@ -510,16 +513,31 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   // and the push already queued for that path would then find the record and
   // the file agreeing and send nothing, which is how the edit left no trace
   // anywhere (issue #98). The move's trash half is the same loss one path over.
-  const held =
-    (await competing(context, manifest.path, change.file_id)) ??
-    (localPath !== undefined && localPath !== manifest.path
+  const atTarget = await competing(context, manifest.path, change.file_id);
+  const atSource =
+    localPath !== undefined && localPath !== manifest.path
       ? await competing(context, localPath, change.file_id)
-      : null);
+      : null;
+  const held = atTarget ?? atSource;
   if (held !== null) {
     context.host.log(
       `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
     );
-    return await keepBoth(context, change, manifest);
+    // Another NOTE at the destination is not an edit at all: it is two notes
+    // wearing one name, and it is settled by rule rather than kept apart
+    // forever (issue #113). Only the DESTINATION is settled that way. The
+    // source is not touched by any answer the rule gives: vacating the
+    // destination (`null` below, then the move's trash half) is reachable
+    // only when this device does not track this file id at all, and when it
+    // does, the rule hands the version to `updateSettled`, which re-checks
+    // that source before writing a byte. Trashing a source that holds an
+    // unpushed edit is the loss issue #98 is about.
+    if (atTarget === "other_file" || atTarget === "no_record") {
+      const decided = await sameNameTiebreak(context, change, manifest, atTarget);
+      if (decided !== null) return decided;
+    } else {
+      return await keepBoth(context, change, manifest);
+    }
   }
 
   const started = context.now();
@@ -901,36 +919,49 @@ async function alreadyCopied(
  * that fails is logged rather than turned into a failure of a copy the user
  * already has.
  */
-async function writeCopy(
+/**
+ * Write beside whatever is at `path`, under the first derived name nothing
+ * holds, without ever replacing anything.
+ *
+ * TWO CALLERS, AND THE DIFFERENCE BETWEEN THEM IS THE TIE-BREAK. The pull side
+ * writes another device's version as a copy and suppresses the vault event
+ * that causes, because that copy is not this device's to publish. The
+ * tie-break side writes this device's OWN file aside and deliberately does not
+ * suppress it, because that move is exactly what this device publishes. What
+ * they share -- the create-only publication, the next name on a collision, the
+ * cleanup on both outcomes, and the rule that only a failure with nothing at
+ * the name is a real error -- lives here once. It took two review rounds to
+ * get right and must not exist twice.
+ */
+async function writeBeside(
   context: SyncContext,
-  manifest: Manifest,
+  path: string,
   deviceName: string,
   when: Date,
-): Promise<{ path: string; attempt: number } | null> {
+  size: number,
+  mtime: number,
+  fill: (writer: VaultWriter, target: string) => Promise<void>,
+  reuse: (target: string, occupant: VaultStat) => Promise<boolean>,
+): Promise<{ path: string; attempt: number; stat: VaultStat | null } | null> {
   for (let attempt = 1; attempt <= CONFLICT_COPY_NAMES; attempt++) {
-    const path = conflictCopyPath(manifest.path, deviceName, when, attempt);
-    assertVaultPath(path);
-    const occupant = await context.host.stat(path);
+    const target = conflictCopyPath(path, deviceName, when, attempt);
+    assertVaultPath(target);
+    const occupant = await context.host.stat(target);
     if (occupant !== null) {
-      if (await alreadyCopied(context, manifest, path, occupant)) {
-        context.host.log(
-          `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${attempt}`,
-        );
-        return { path, attempt };
-      }
+      if (await reuse(target, occupant)) return { path: target, attempt, stat: null };
       continue;
     }
     let writer: VaultWriter;
     try {
-      writer = await context.host.createWriter(path, manifest.size, () => undefined);
+      writer = await context.host.createWriter(target, size, () => undefined);
     } catch (error) {
-      if ((await context.host.stat(path)) === null) throw error;
+      if ((await context.host.stat(target)) === null) throw error;
       continue;
     }
     let outcome: { stat: VaultStat } | { failure: unknown };
     try {
-      await writeVerified(context, { ...manifest, path }, writer);
-      outcome = { stat: await writer.commit(manifest.mtime) };
+      await fill(writer, target);
+      outcome = { stat: await writer.commit(mtime) };
     } catch (error) {
       outcome = { failure: error };
     }
@@ -946,13 +977,289 @@ async function writeCopy(
         `pull decision=copy_temp_not_removed published=${"stat" in outcome} name_attempt=${attempt}`,
       );
     }
-    if ("stat" in outcome) {
-      context.written.add(`${outcome.stat.path}:${outcome.stat.mtime}:${outcome.stat.size}`);
-      return { path: outcome.stat.path, attempt };
-    }
-    if ((await context.host.stat(path)) === null) throw outcome.failure;
+    if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat };
+    if ((await context.host.stat(target)) === null) throw outcome.failure;
   }
   return null;
+}
+
+/**
+ * The foreign version, written as a copy beside the local file. The write is
+ * echo-suppressed: this device did not author that content and must not
+ * publish it back as a file of its own.
+ */
+async function writeCopy(
+  context: SyncContext,
+  manifest: Manifest,
+  deviceName: string,
+  when: Date,
+): Promise<{ path: string; attempt: number } | null> {
+  const landed = await writeBeside(
+    context, manifest.path, deviceName, when, manifest.size, manifest.mtime,
+    (writer, target) => writeVerified(context, { ...manifest, path: target }, writer),
+    (target, occupant) => alreadyCopied(context, manifest, target, occupant),
+  );
+  if (landed === null) return null;
+  if (landed.stat === null) {
+    context.host.log(
+      `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${landed.attempt}`,
+    );
+  } else {
+    context.written.add(`${landed.stat.path}:${landed.stat.mtime}:${landed.stat.size}`);
+  }
+  return { path: landed.path, attempt: landed.attempt };
+}
+
+/**
+ * This device's OWN file, moved to the conflict name because it lost the
+ * same-name tie-break, and left DIRTY so the next push publishes the move as a
+ * version of this device's file id. That published rename is the one thing
+ * either device says about the collision.
+ */
+async function moveAside(
+  context: SyncContext,
+  from: string,
+  bytes: Bytes,
+  record: FileState,
+  when: Date,
+): Promise<string | null> {
+  const landed = await writeBeside(
+    context, from, context.deviceNameFor(context.deviceId), when, bytes.length, record.mtime,
+    async (writer) => { await writer.write(bytes); },
+    // Never reused: this is a MOVE of a file that must really arrive.
+    async () => false,
+  );
+  if (landed === null || landed.stat === null) return null;
+  // Marked BEFORE the trash: the vault reports the removal to this plugin's
+  // own delete handler while the trash is still running, and an unmarked echo
+  // publishes a tombstone for a file that is alive one name over (issue #96).
+  context.trashed.add(from);
+  await context.host.trash(from);
+  // `mtime: -1` and no digest, exactly as a user's own rename records it
+  // (`engine.ts`): the bytes did not move, the PATH did, and the path lives
+  // inside the manifest, so the push must post even though the content is
+  // unchanged. The write above is deliberately not echo-suppressed for the
+  // same reason -- that event is what carries this move to the push queue.
+  context.state.setFile(landed.stat.path, { ...record, mtime: -1, sha256: "" });
+  context.state.forgetPath(from);
+  await context.state.save();
+  return landed.stat.path;
+}
+
+/**
+ * Two file ids, one path (issue #113).
+ *
+ * Two devices that each create a note at the same path while one of them is
+ * closed produce two FILES with one name. 1.0.5 and 1.0.6 kept both, which is
+ * right, and neither ever gave the pair distinct names, so every later edit of
+ * either note arrived at an occupied path and made another copy: three copies
+ * of one note inside a few minutes, on real devices, symmetrically.
+ *
+ * The names have to be settled, and settled the SAME WAY on every device
+ * without the two of them negotiating about it. So the ids decide, because
+ * both devices hold both: THE LOWER FILE ID KEEPS THE PATH.
+ *
+ * A device holding the lower id writes the incoming version as a copy and
+ * RECORDS it under the incoming id, so the next version of that id is an
+ * ordinary update of a file it tracks rather than another collision, and it
+ * publishes nothing, because that file is not its own. A device holding the
+ * higher id moves its own file to the conflict name, lets the ordinary push
+ * publish that move as a version of its own id, and then applies the incoming
+ * version at the path it has just vacated. Exactly one rename is ever
+ * published, by the device whose file actually moved.
+ *
+ * A file at the name that no record explains has no id to compare, so it is
+ * PUBLISHED first and then the same rule decides -- see `identify`. It was
+ * going to be published seconds later anyway, and without it the two devices
+ * settle on different names and stay there.
+ *
+ * Returns `null` when the path has been vacated and the caller should apply
+ * the incoming version there as it would any other.
+ */
+async function sameNameTiebreak(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  occupant: "other_file" | "no_record",
+): Promise<ApplyResult | null> {
+  // A name of its own here already. Whatever settled this pair last time
+  // settled it for good: the incoming id's versions land where this device
+  // put it, and they keep landing there until its own device publishes the
+  // rename that moves it. Asking the rule again would answer the same way,
+  // and deciding it by what occupies its ORIGINAL name would copy the file
+  // again every time it is edited, which is the defect itself (issue #113).
+  const settled = context.state.pathByFileId(change.file_id);
+  if (settled !== undefined) return await updateSettled(context, change, manifest, settled);
+  if (occupant === "no_record") {
+    const stat = await context.host.stat(manifest.path);
+    // Gone between the check and here: the name is free, so there is nothing
+    // to settle and the caller applies the version as it would any other.
+    if (stat === null) return null;
+    if (await adopt(context, change, manifest, stat)) return "applied";
+    if (!(await identify(context, manifest.path, change.file_id))) {
+      return await keepBothRecorded(context, change, manifest);
+    }
+  }
+  const when = new Date(context.now());
+  const ours = context.state.fileByPath(manifest.path);
+  if (ours === undefined) return await keepBoth(context, change, manifest);
+
+  if (ours.fileId < change.file_id) {
+    const kept = await keepBothRecorded(context, change, manifest);
+    if (kept === "conflict_copy") {
+      context.host.log(
+        `pull decision=same_name_tiebreak winner=${ours.fileId} role=keep file=${change.file_id} seq=${change.seq}`,
+      );
+    }
+    return kept;
+  }
+
+  const mine = await context.host.read(manifest.path);
+  const moved = await moveAside(context, manifest.path, mine, ours, when);
+  if (moved === null) return await keepBoth(context, change, manifest);
+  context.host.log(
+    `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
+  );
+  context.host.notify(
+    `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
+      `and the other device's keeps the name.`,
+  );
+  return null;
+}
+
+/**
+ * A version of a file this device has already given a name of its own.
+ *
+ * It lands THERE, not at the name its manifest carries: that name belongs to
+ * the other note of the pair on this device, and materialising over it is the
+ * loss this whole series is about -- while copying it beside again, once per
+ * edit, is the defect issue #113 exists to end.
+ *
+ * The check below is the ONLY thing standing between that write and an
+ * unpushed edit: the user can open a conflict copy and type into it, and
+ * those bytes exist on this device and nowhere else (issue #98). It is made
+ * here, against the file about to be written, rather than earlier against the
+ * same path by a caller -- the guard belongs at the write.
+ */
+async function updateSettled(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  settled: string,
+): Promise<ApplyResult> {
+  if ((await competing(context, settled, change.file_id)) !== null) {
+    return await keepBoth(context, change, manifest);
+  }
+  await materialise(context, { ...manifest, path: settled });
+  await recordAt(context, change, manifest, settled);
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
+  );
+  return "applied";
+}
+
+/**
+ * Is the local file at the name ALREADY this version, byte for byte?
+ *
+ * A vault whose local state was lost or replaced meets every one of its own
+ * notes this way: no record explains them, and every one of them is exactly
+ * the version the server holds. Publishing each as a new file id and then
+ * renaming the losers would double the vault and scatter its names over a
+ * bookkeeping file, so a local file that IS this version is simply recorded
+ * as it, and nothing is written, published or moved. The proof is the
+ * manifest's authenticated digest, exactly as a conflict copy's reuse is
+ * proved; a version too large to carry one (`push.ts`, MANIFEST `sha256`) is
+ * not recognised this way and takes the ordinary path, which costs a
+ * duplicate and never a loss.
+ *
+ * A file id this device tracks somewhere else never reaches this: the rule
+ * hands those to `updateSettled` before asking anything about the name.
+ */
+async function adopt(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  occupant: VaultStat,
+): Promise<boolean> {
+  if (!(await alreadyCopied(context, manifest, manifest.path, occupant))) return false;
+  await recordAt(context, change, manifest, manifest.path);
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=adopted reason=identical_bytes file=${change.file_id} seq=${change.seq}`,
+  );
+  return true;
+}
+
+/**
+ * Give the local file at `path` an identity, so that the rule above has two
+ * ids to compare.
+ *
+ * THE RACE THIS CLOSES. A device that was closed while another wrote pulls
+ * the incoming version before its own reconciliation has finished publishing
+ * the note it made under that name while it was shut -- the queue and the
+ * feed run side by side, and either can win. The pulling device then sees a
+ * file with no id, cannot apply the rule, and keeps both under a name it
+ * chose alone; the other device, whose file IS published, applies the rule
+ * and keeps both under a name IT chose. Neither is wrong and they never
+ * agree, which is the divergence issue #113 is about. Publishing the local
+ * file first costs one push the queue was about to make anyway and leaves
+ * both devices holding both ids, which is all the rule needs.
+ *
+ * A failure is not one: the file keeps its bytes, and the decision falls back
+ * to keeping both, exactly as every version before 1.0.7 did.
+ */
+async function identify(context: SyncContext, path: string, fileId: string): Promise<boolean> {
+  if (context.publish === undefined) return false;
+  try {
+    await context.publish(path);
+  } catch {
+    // The reason is not logged: a host or transport error names a path.
+    context.host.log(`pull path_class=file decision=not_identified file=${fileId}`);
+    return false;
+  }
+  const record = context.state.fileByPath(path);
+  return record !== undefined && record.fileId !== fileId;
+}
+
+/**
+ * Both notes kept, and the copy RECORDED under the incoming file id.
+ *
+ * Both answers that keep the incoming version beside a local file end here:
+ * the device that keeps the name by the rule, and the device that could not
+ * identify its own file at all. Both notes survive, as they did in 1.0.5 and
+ * 1.0.6, and the record is what is new: the next version of that id is an
+ * ordinary update of a file this device tracks instead of another copy, a
+ * later rename of it is a plain move, and the startup scan never publishes
+ * the copy as a THIRD file id (issue #113). A file id this device tracks
+ * somewhere else never reaches this: the rule hands those to `updateSettled`,
+ * which keeps them where they are.
+ */
+async function keepBothRecorded(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+): Promise<ApplyResult> {
+  const copy = await keepBothAt(context, change, manifest);
+  if (copy === null) return "refused";
+  await recordAt(context, change, manifest, copy);
+  return "conflict_copy";
+}
+
+/** The record a materialised version leaves behind, wherever it landed. */
+async function recordAt(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  path: string,
+): Promise<void> {
+  const stat = await context.host.stat(path);
+  context.state.setFile(path, {
+    fileId: change.file_id,
+    versionId: change.version_id,
+    mtime: stat?.mtime ?? manifest.mtime,
+    size: stat?.size ?? manifest.size,
+    sha256: await sidDigest(change.sids),
+  });
+  await context.state.save();
 }
 
 /** Write the foreign head beside ours under a named copy, and say so. */
@@ -961,6 +1268,15 @@ async function keepBoth(
   change: ChangeRecord,
   theirManifest: Manifest,
 ): Promise<ApplyResult> {
+  return (await keepBothAt(context, change, theirManifest)) === null ? "refused" : "conflict_copy";
+}
+
+/** The same, returning where the copy landed for a caller that must record it. */
+async function keepBothAt(
+  context: SyncContext,
+  change: ChangeRecord,
+  theirManifest: Manifest,
+): Promise<string | null> {
   const copy = await writeCopy(
     context,
     theirManifest,
@@ -977,7 +1293,7 @@ async function keepBoth(
       `obsync kept your version of ${theirManifest.path} and could not place the other device's copy: ` +
         `every name it tried was already taken. Nothing here was changed, and the other version is still on the server.`,
     );
-    return "refused";
+    return null;
   }
   context.host.notify(
     `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
@@ -985,7 +1301,7 @@ async function keepBoth(
   context.host.log(
     `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
   );
-  return "conflict_copy";
+  return copy.path;
 }
 
 /** Post the merge result as one version whose parents are BOTH heads. */

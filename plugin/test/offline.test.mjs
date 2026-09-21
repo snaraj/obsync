@@ -155,16 +155,18 @@ test("a note written while this device was closed survives one the other device 
 
   // The desktop comes back.
   await a.engine.start();
-  await timers.run(STEP_MS, kept(a.host, SAME, DESKTOP_NEW, () =>
-    settled(a, SAME) && copies(a.host).length === 1 && copies(b.host).length === 1));
+  await timers.run(STEP_MS, () =>
+    copies(a.host).length >= 1 && copies(b.host).length >= 1 && settled(a, SAME) && settled(b, SAME));
   await timers.run(STEP_MS);
 
-  assert.equal(a.host.text(SAME), DESKTOP_NEW, `the desktop's note was replaced: ${story(server, a, b)}`);
-  const copy = copies(a.host)[0];
-  assert.match(copy, /^Same name \(conflict from phone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
-  assert.equal(a.host.text(copy), PHONE_NEW, "and the phone's note is kept beside it");
-  assert.equal(b.host.text(SAME), PHONE_NEW, `the phone's note was replaced: ${story(server, a, b)}`);
-  assert.equal(b.host.text(copies(b.host)[0]), DESKTOP_NEW, "and the desktop's reached the phone");
+  // Neither device's bytes were replaced, and both notes are on both devices.
+  // WHICH name each ends up under is the tie-break's business and has its own
+  // suite (`samename.test.mjs`); what this one holds is that nothing is lost.
+  for (const device of [a, b]) {
+    const texts = [...device.host.files.keys()].map((path) => device.host.text(path));
+    assert.ok(texts.includes(DESKTOP_NEW), `the desktop's note is missing on one device: ${story(server, a, b)}`);
+    assert.ok(texts.includes(PHONE_NEW), `the phone's note is missing on one device: ${story(server, a, b)}`);
+  }
 
   const versions = await published(server, k);
   assert.ok(holds(versions, DESKTOP_NEW), `the desktop's bytes reached no version: ${story(server, a, b)}`);
@@ -280,9 +282,13 @@ const reasons = [
   {
     reason: "other_file",
     what: "a note this device tracks under another identity",
-    async arrange({ host, context }) {
+    async arrange({ host, context, state }) {
       host.seed(NOTE, MINE, 2000);
       await pushFile(context, NOTE);
+      // Which file id sorts lower decides who keeps the name (#113), and a
+      // pushed id is random, so it is pinned: this device holds the lower one
+      // and therefore keeps its note exactly where it is.
+      state.setFile(NOTE, { ...state.fileByPath(NOTE), fileId: "11".repeat(16) });
       return { fileId: "22".repeat(16), parents: [] };
     },
   },
@@ -516,10 +522,26 @@ test("an edited conflict copy survives the next version that would take its name
  * recognised by the size and modification time this very manifest would
  * write, so only a byte-identical copy of THIS version is reused.
  */
+/**
+ * A note this device pushed and then edited before the other device's version
+ * of it arrived: the shape a REPLAYED head actually meets. A version of a
+ * file id this device does not track at all is recorded where its copy lands
+ * (#113), so the feed's second delivery of it is skipped outright and never
+ * reaches the occupant check; the check's subject is this shape, where the
+ * record at the name is this device's own edited file and both passes take
+ * the keep-both path.
+ */
+async function editedHere(r) {
+  r.host.seed(NOTE, "an older line\n", 1000);
+  const pushed = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, MINE, 2000);
+  return { fileId: pushed.fileId, parents: [pushed.versionId] };
+}
+
 test("resolving the same foreign version twice leaves one copy, not two", async () => {
   const r = await rig();
-  r.host.seed(NOTE, MINE, 2000);
-  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const { fileId, parents } = await editedHere(r);
+  const frame = await foreign(r, { fileId, path: NOTE, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
@@ -586,7 +608,7 @@ test("an occupied name whose bytes are not this version's is not mistaken for it
   );
 });
 
-test("two versions with the same size and modification time both reach the vault", async () => {
+test("a second version with the same size and modification time still reaches the vault", async () => {
   const r = await rig();
   r.host.seed(NOTE, MINE, 2000);
   const next = sameLength(THEIRS, "the second version");
@@ -597,10 +619,13 @@ test("two versions with the same size and modification time both reach the vault
   const two = await foreign(r, {
     fileId: "22".repeat(16), path: NOTE, text: next, mtime: 4000, parents: [one.version_id],
   });
-  assert.equal(await applyChange(r.context, two), "conflict_copy");
+  // The copy this device made is RECORDED under that file id (#113), so the
+  // next version of it is an ordinary update of the note it made -- where
+  // 1.0.6 wrote a second copy for every edit, and a third for the next one.
+  assert.equal(await applyChange(r.context, two), "applied");
 
-  assert.equal(r.host.text(copyName(r, NOTE, 1)), THEIRS);
-  assert.equal(r.host.text(copyName(r, NOTE, 2)), next, "the second version was never written");
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), next, "the second version was never written");
+  assert.deepEqual(copies(r.host), [copyName(r, NOTE, 1)], "the second version made another copy");
   assert.equal(r.host.text(NOTE), MINE);
 });
 
@@ -756,8 +781,8 @@ test("a failed conflict copy through the real desktop host leaves neither copy n
  */
 test("a replayed head whose copy carries a different timestamp is still one copy", async () => {
   const r = await rig();
-  r.host.seed(NOTE, MINE, 2000);
-  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const { fileId, parents } = await editedHere(r);
+  const frame = await foreign(r, { fileId, path: NOTE, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
   const copy = copyName(r, NOTE, 1);
@@ -844,8 +869,8 @@ test("an occupant of a different length is never read to compare it", async () =
 
 test("a single-chunk version of the same length IS read, and its copy reused", async () => {
   const r = await rig();
-  r.host.seed(NOTE, MINE, 2000);
-  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const { fileId, parents } = await editedHere(r);
+  const frame = await foreign(r, { fileId, path: NOTE, text: THEIRS, mtime: 4000, parents });
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
 
   const watched = watchReads(r);

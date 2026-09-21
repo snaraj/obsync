@@ -116,6 +116,18 @@ export interface SyncContext {
   readonly refused: Set<string>;
   /** Resolutions of one file inside the current window, for the merge breaker. */
   readonly merges: Map<string, { since: number; count: number }>;
+  /**
+   * Publish a local file NOW, out of the queue's turn, and wait for it.
+   *
+   * The pull path uses it for one thing: a file at a name an incoming version
+   * wants, that this device has never published, has no file id -- and
+   * without two ids the same-name rule cannot be applied and the two devices
+   * settle on different names (`pull.ts`, issue #113). The file was going to
+   * be published seconds later by the queue anyway; this only moves it in
+   * front of the decision. Absent wherever the pull path runs without a push
+   * queue behind it, and then the pull keeps both and settles nothing.
+   */
+  publish?(path: string): Promise<void>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -167,6 +179,7 @@ export class SyncEngine {
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
+  private readonly pushing = new Map<string, Promise<void>>();
   private running = false;
   private cancelled = false;
   private feed: Promise<void> | null = null;
@@ -255,6 +268,7 @@ export class SyncEngine {
       trashed: new Set<string>(),
       refused: new Set<string>(),
       merges: new Map<string, { since: number; count: number }>(),
+      publish: (path) => this.pushOne(path),
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -500,7 +514,26 @@ export class SyncEngine {
     }
   }
 
-  private async pushOne(path: string): Promise<void> {
+  /**
+   * One push per path at a time. The queue drains in batches and the pull
+   * path can ask for a path out of turn (SyncContext.publish), and two pushes
+   * of one unpublished file both find no record, both mint a file id, and
+   * both post: two files on the server for one note, one of them orphaned by
+   * the record the other leaves (issue #113). Sharing the in-flight push is
+   * what makes asking out of turn safe; a path pushed again AFTER one
+   * finished is an ordinary second push, which is what a second edit needs.
+   */
+  private pushOne(path: string): Promise<void> {
+    const active = this.pushing.get(path);
+    if (active !== undefined) return active;
+    const work = this.pushNow(path);
+    this.pushing.set(path, work);
+    const clear = (): void => { if (this.pushing.get(path) === work) this.pushing.delete(path); };
+    void work.then(clear, clear);
+    return work;
+  }
+
+  private async pushNow(path: string): Promise<void> {
     const context = this.need();
     try {
       if (this.deletions.has(path)) {
