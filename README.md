@@ -29,6 +29,10 @@ down rather than implied:
   [`docs/validation-runs/`](docs/validation-runs/), including what each run did
   NOT cover. A platform that is not named in one of those runs has not been
   proven, whatever the feature list above says.
+- **If new `(conflict from ...)` copies of one note keep appearing**, two
+  different notes are sharing one name. Update every device: from 1.0.7 obsync
+  settles such a pair on two names by itself, the same two on every device.
+  Renaming one of the two yourself ends it on any version.
 - **If you are seeing a stream of "merged concurrent edits" notices** on two
   devices editing one note, quit Obsidian on one of them. Stopping one
   participant can allow outstanding work on the other to drain. Update every
