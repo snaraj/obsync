@@ -891,7 +891,7 @@ wherever nothing but private connectivity reaches the server:
 
 | Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
 | --- | --- | --- | --- | --- |
-| Reference (pie5) | `none` | an in-cluster TLS terminator the platform trusts, in front of the pod; the deployment's own tuple lives in the platform runbook | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty at activation: no forwarded address is trusted until a reviewed change names a proxy | planned, not yet proven: `docs/validation.md` V1-V14 by hand once the deployment is live |
+| Reference (homelab) | `none` | an in-cluster TLS terminator the platform trusts, in front of the pod; the deployment's own tuple lives in the platform runbook | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty at activation: no forwarded address is trusted until a reviewed change names a proxy | planned, not yet proven: `docs/validation.md` V1-V14 by hand once the deployment is live |
 | Compose (any network, no provider) | `none` | Caddy, `deploy/compose`, reachable only on the bind address you choose | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
 
 The Compose row is the one a stranger can run: a private name, a certificate
