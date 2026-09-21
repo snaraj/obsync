@@ -42,6 +42,7 @@ const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
+const { conflictCopyPath } = require("../build/sync/conflict.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 
@@ -57,6 +58,23 @@ const NOTE = "Notes/One.md";
 const MOVED = "Notes/Two.md";
 const MINE = "the bytes this device has and the server does not\n";
 const THEIRS = "the bytes the other device published\n";
+const THEIRS_AGAIN = "the bytes the other device published next\n";
+const EDITED = "the bytes the user typed into the conflict copy\n";
+const SQUATTER = "a note the user already kept under that name\n";
+// Two sentinels of EXACTLY the same length, and one that is longer at the
+// same modification time: the two halves of the stat comparison, separated.
+const EQUAL_OLD = "sentinel line one\n";
+const EQUAL_NEW = "sentinel line two\n";
+const LONGER = "sentinel line one, with more after it\n";
+
+/** The name a conflict copy of `path` takes on its `attempt`-th try here. */
+const copyName = (r, path, attempt) => conflictCopyPath(path, "iPhone", new Date(r.host.clock), attempt);
+
+/** One version published by the other device, over `rig`'s fixture keys. */
+const foreign = (r, { fileId, path, text, mtime, parents = [] }) => r.server.publish({
+  fileId, path, bytes: enc(text), mtime, parents,
+  domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+});
 
 /** Every conflict copy in a vault, which is where a kept version lands. */
 const copies = (host) => [...host.files.keys()].filter((path) => path.includes("(conflict from"));
@@ -273,9 +291,34 @@ const reasons = [
       return { fileId: pushed.fileId, parents: [pushed.versionId] };
     },
   },
+  // The two halves of `(mtime, size)`, separated. Together they are what
+  // keeps EITHER comparison from being dead weight: a test that moves both
+  // dimensions at once passes with either one deleted (review round 1).
+  {
+    reason: "local_edit",
+    what: "a note edited to exactly the same size",
+    mine: EQUAL_NEW,
+    async arrange({ host, context }) {
+      host.seed(NOTE, EQUAL_OLD, 1000);
+      const pushed = await pushFile(context, NOTE);
+      host.seed(NOTE, EQUAL_NEW, 2000);
+      return { fileId: pushed.fileId, parents: [pushed.versionId] };
+    },
+  },
+  {
+    reason: "local_edit",
+    what: "a note edited without its modification time moving",
+    mine: LONGER,
+    async arrange({ host, context }) {
+      host.seed(NOTE, EQUAL_OLD, 1000);
+      const pushed = await pushFile(context, NOTE);
+      host.seed(NOTE, LONGER, 1000);
+      return { fileId: pushed.fileId, parents: [pushed.versionId] };
+    },
+  },
 ];
 
-for (const { reason, what, arrange } of reasons) {
+for (const { reason, what, arrange, mine = MINE } of reasons) {
   test(`a pull never replaces ${what} (${reason})`, async () => {
     const r = await rig();
     const { fileId, parents } = await arrange(r);
@@ -290,7 +333,7 @@ for (const { reason, what, arrange } of reasons) {
     });
 
     assert.equal(await applyChange(r.context, frame), "conflict_copy");
-    assert.equal(r.host.text(NOTE), MINE, "the local bytes are exactly as they were");
+    assert.equal(r.host.text(NOTE), mine, "the local bytes are exactly as they were");
     const copy = copies(r.host)[0];
     assert.match(copy, /^Notes\/One \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
     assert.equal(r.host.text(copy), THEIRS, "and the other device's version is kept beside them");
@@ -383,4 +426,127 @@ test("a move never trashes a local file this device has not pushed", async () =>
   assert.deepEqual(host.trashed, [], "and it was not moved to the trash either");
   assert.equal(state.fileByPath(NOTE).versionId, pushed.versionId, "its record still names its parent");
   assert.match(copies(host)[0], /^Notes\/Two \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
+});
+
+/**
+ * The positive control for the whole guard. A file that still matches its
+ * record is the ordinary case, and it must go straight through: a guard that
+ * fired on it would turn every update into a conflict copy, which is the
+ * failure mode opposite to the one this change repairs.
+ */
+test("a version over a file that still matches its record is applied, not kept", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, EQUAL_OLD, 1000);
+  const pushed = await pushFile(r.context, NOTE);
+  const record = r.state.fileByPath(NOTE);
+  const stat = await r.host.stat(NOTE);
+  assert.equal(record.mtime, stat.mtime, "the control really is unchanged in both dimensions");
+  assert.equal(record.size, stat.size);
+
+  const frame = await foreign(r, {
+    fileId: pushed.fileId, path: NOTE, text: THEIRS, mtime: 4000, parents: [pushed.versionId],
+  });
+  assert.equal(await applyChange(r.context, frame), "applied");
+  assert.equal(r.host.text(NOTE), THEIRS);
+  assert.deepEqual(copies(r.host), [], "and no conflict copy was invented");
+});
+
+// --- the conflict copy is a destination too ---------------------------------
+
+/**
+ * The copy's name is DERIVED and minute-resolution, so it is a place the user
+ * may already have something -- including the copy an earlier version of this
+ * same file left, which they may have opened and edited. Writing it through
+ * the ordinary overwriting writer destroyed exactly the bytes this change
+ * exists to protect (review round 1, finding 1).
+ */
+test("a conflict copy never replaces whatever is already at its name", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const taken = copyName(r, NOTE, 1);
+  r.host.seed(taken, SQUATTER, 3000);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(NOTE), MINE, "the local note is untouched");
+  assert.equal(r.host.text(taken), SQUATTER, "and so is the file already at the copy's name");
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS, "the copy took the next free name");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=conflict_copy") && line.includes("name_attempt=2")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("an edited conflict copy survives the next version that would take its name", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+
+  const first = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, first), "conflict_copy");
+  const copy = copyName(r, NOTE, 1);
+  assert.equal(r.host.text(copy), THEIRS);
+
+  // The user opens that copy and edits it. Nothing has pushed it yet, so
+  // those bytes exist on this device and nowhere else.
+  r.host.seed(copy, EDITED, 5000);
+
+  // The same device publishes again, inside the same minute, so the name the
+  // copy would be given is the one the user's edit is sitting in.
+  const second = await foreign(r, {
+    fileId: "22".repeat(16), path: NOTE, text: THEIRS_AGAIN, mtime: 6000,
+    parents: [first.version_id],
+  });
+  assert.equal(await applyChange(r.context, second), "conflict_copy");
+
+  assert.equal(r.host.text(copy), EDITED, "the edited copy was replaced by the second remote version");
+  assert.equal(r.host.text(NOTE), MINE, "and the note it was a copy of is untouched");
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS_AGAIN, "the second version took the next name");
+});
+
+/**
+ * The other side of that guard: one foreign head is resolved twice by design
+ * -- the feed delivers a head the push's own reconciliation already handled --
+ * and the second pass must not grow an identical second copy. The occupant is
+ * recognised by the size and modification time this very manifest would
+ * write, so only a byte-identical copy of THIS version is reused.
+ */
+test("resolving the same foreign version twice leaves one copy, not two", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.deepEqual(copies(r.host), [copyName(r, NOTE, 1)]);
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), THEIRS);
+  assert.equal(r.host.text(NOTE), MINE);
+});
+
+/**
+ * And the reason the look is not the guard. A name that is free when it is
+ * checked and taken when the write lands is a race an existence check cannot
+ * close; only a create-exclusive publication can, and that is what the host's
+ * `createWriter` is (`main.ts`: `link` on desktop, `Vault.createBinary` on
+ * mobile, neither of which can replace a destination).
+ */
+test("a name that appears between the look and the write is still not replaced", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const taken = copyName(r, NOTE, 1);
+  r.host.seed(taken, SQUATTER, 3000);
+  const stat = r.host.stat.bind(r.host);
+  let lied = false;
+  r.host.stat = async (path) => {
+    if (path === taken && !lied) { lied = true; return null; }
+    return stat(path);
+  };
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(taken), SQUATTER, "the write went through the look and replaced the occupant");
+  assert.equal(r.host.text(NOTE), MINE);
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS, "the refused commit earned the next name");
 });

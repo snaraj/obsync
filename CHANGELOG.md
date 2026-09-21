@@ -35,8 +35,15 @@ this device has changed and not yet uploaded, obsync keeps your file exactly as
 it is, writes the other device's version beside it as
 `<note> (conflict from <device>, <date>).md`, tells you it kept both, and then
 uploads yours. Where the two sides only added lines in different places, they
-are merged into one note, as concurrent edits always were. Nothing is replaced,
-and both versions end up on both devices.
+are merged into one note, as concurrent edits always were. A conflict copy is
+never written over something already at that name either, so a copy you have
+opened and edited is kept and the new one takes the next free name.
+
+obsync recognises a note you have changed by its **size and its modification
+time**, compared with what it recorded when it last uploaded that note — the
+same check it has always used at startup to decide what to upload. An edit that
+leaves both of those exactly as they were is invisible to that check, on this
+release and on every earlier one.
 
 **Why every device.** The device that loses the edit is the one that was
 closed, so updating one device protects only that device. Update them all.

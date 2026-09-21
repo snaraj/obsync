@@ -160,15 +160,23 @@ export function conflictStamp(when: Date): string {
 /**
  * `Notes/Ideas.md` → `Notes/Ideas (conflict from iPhone, 2026-09-07 1432).md`.
  * A name without an extension keeps none; a dotfile keeps its leading dot.
+ *
+ * The stamp is minute-resolution, so two versions kept in the same minute
+ * derive the SAME name. `attempt` is how the caller asks for another one —
+ * `… ) 2.md`, `… ) 3.md` — because the second copy must never be written over
+ * the first: the first may already hold edits of the user's that nothing else
+ * has (issue #98, review round 1). Attempt 1 is the plain name, so a vault
+ * that never collides never grows an ordinal.
  */
-export function conflictCopyPath(path: string, deviceName: string, when: Date): string {
+export function conflictCopyPath(path: string, deviceName: string, when: Date, attempt = 1): string {
   const slash = path.lastIndexOf("/");
   const folder = slash < 0 ? "" : path.slice(0, slash + 1);
   const name = slash < 0 ? path : path.slice(slash + 1);
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const extension = dot > 0 ? name.slice(dot) : "";
-  return `${folder}${stem} (conflict from ${sanitiseDeviceName(deviceName)}, ${conflictStamp(when)})${extension}`;
+  const ordinal = attempt > 1 ? ` ${attempt}` : "";
+  return `${folder}${stem} (conflict from ${sanitiseDeviceName(deviceName)}, ${conflictStamp(when)})${ordinal}${extension}`;
 }
 
 /** Text files are merged; everything else takes the conflict-copy path. */
