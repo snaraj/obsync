@@ -283,6 +283,9 @@ export class SyncEngine {
   private repairNoticeShown = false;
   private scopeExitNoticeShown = false;
   private caseGhostNoticeShown = false;
+  /** When the repair tick began yielding to a manual history operation. */
+  private repairDeferredAt: number | null = null;
+  private repairDeferredTicks = 0;
   private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(private readonly options: EngineOptions) {
@@ -1039,6 +1042,34 @@ export class SyncEngine {
   private repairTick(): Promise<void> {
     if (this.repairWork !== null) return this.repairWork;
     if (!this.running || this.repair === null) return Promise.resolve();
+    // THE TICK IS THE ONE THAT CAN WAIT (issue #103). The repair tick and a
+    // manual history operation share one read slot, and a collision used to
+    // surface as "Server repair could not verify a retained file" -- a
+    // message sending the user to check connectivity and the server's scrub
+    // report, for a benign scheduling overlap, during recovery, which is the
+    // moment they can least absorb a false alarm. The tick runs every second;
+    // the dialog is in front of a person. So the tick yields while one is
+    // open and comes back a second later.
+    if (this.options.transport.manualBusy) {
+      if (this.repairDeferredAt === null) {
+        this.repairDeferredAt = this.nowFn();
+        this.repairDeferredTicks = 0;
+        this.options.host.log(
+          `repair decision=deferred reason=busy budget_sids=${REPAIR_BATCH_SIDS} budget_chunks=1 duration_ms=0`,
+        );
+      }
+      this.repairDeferredTicks++;
+      if (this.repairHandle !== null) this.timers.clear(this.repairHandle);
+      this.repairHandle = this.timers.set(() => { void this.repairTick(); }, REPAIR_TICK_MS);
+      return Promise.resolve();
+    }
+    if (this.repairDeferredAt !== null) {
+      this.options.host.log(
+        `repair decision=resumed reason=history_closed ticks=${this.repairDeferredTicks} ` +
+          `duration_ms=${this.nowFn() - this.repairDeferredAt}`,
+      );
+      this.repairDeferredAt = null;
+    }
     if (this.repairHandle !== null) this.timers.clear(this.repairHandle);
     this.repairHandle = null;
     const repair = this.repair;
@@ -1068,12 +1099,22 @@ export class SyncEngine {
         this.status({ kind: "error", message });
         if (!this.repairNoticeShown) { host.notify(`obsync: ${message}`); this.repairNoticeShown = true; }
       }
-    } catch {
+    } catch (error) {
       // Do not expose a source path or untrusted transport/manifest error.
       if (this.running && this.repair === repair) {
-        host.log(`repair decision=deferred reason=read_or_write_failed ${budget()}`);
-        this.status({ kind: "error", message: "Server repair could not verify a retained file. It will retry; check connectivity and the server scrub report." });
-        delay = REPAIR_SCAN_MS;
+        // A read that never left the device is the collision again, one layer
+        // down: the dialog took the slot between the check above and this
+        // step's own read. It is never an error status (issue #103).
+        const busy = error instanceof Error && error.name === "HistoryBusyError";
+        host.log(`repair decision=deferred reason=${busy ? "busy" : "read_or_write_failed"} ${budget()}`);
+        if (!busy) {
+          this.status({
+            kind: "error",
+            message: "Server repair could not verify a retained file: this device could not read it or the server would not take it. " +
+              "It retries within five minutes; check connectivity and the server scrub report.",
+          });
+          delay = REPAIR_SCAN_MS;
+        }
       }
     } finally {
       if (this.running && this.repair === repair) {

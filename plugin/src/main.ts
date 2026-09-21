@@ -1313,8 +1313,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private cancelHistories(): void {
-    for (const browser of this.histories) browser.operation.cancel();
-    this.histories.clear();
+    for (const browser of [...this.histories]) this.closeHistory(browser);
   }
 
   openHistory(): HistoryBrowser {
@@ -1328,12 +1327,15 @@ export default class ObsyncPlugin extends Plugin {
       this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
     const browser = new HistoryBrowser(context, operation);
     this.histories.add(browser);
+    // The transport's manual read slot is held for as long as the dialog is
+    // open, so the repair tick yields to it instead of colliding (#103).
+    this.transport.openManual();
     return browser;
   }
 
   closeHistory(browser: HistoryBrowser): void {
     browser.operation.cancel();
-    this.histories.delete(browser);
+    if (this.histories.delete(browser)) this.transport.closeManual();
   }
 
   restoreHistory(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {

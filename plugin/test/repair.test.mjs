@@ -539,3 +539,69 @@ test("native host reports actual range capability and closes its bounded source 
   await assert.rejects(host.source("source.bin", 100).read(40, 10), /synthetic range read failure/);
   assert.equal(closed, 2);
 });
+
+// --- the repair tick and an open history dialog (#103) ----------------------
+
+test("the repair tick yields to an open history operation instead of failing the step", async () => {
+  const r = await note(), timers = new FakeTimers(), statuses = [];
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const before = statuses.length;
+
+  // What `plugin.openHistory()` does: the dialog holds the one manual read
+  // slot for as long as it is open.
+  r.transport.openManual();
+  await engine.syncNow();
+
+  const line = r.host.logs.find((entry) => entry.startsWith("repair decision=deferred"));
+  assert.ok(line, r.host.logs.join(" | "));
+  assert.match(line, /reason=busy/);
+  assert.match(line, /budget_sids=64 budget_chunks=1 duration_ms=\d+/);
+  assert.equal(
+    statuses.slice(before).some((status) => status.kind === "error"),
+    false,
+    "a scheduling collision never sets the error status",
+  );
+  assert.equal(
+    r.host.logs.some((entry) => entry.includes("read_or_write_failed")),
+    false,
+    "and it is never reported as a failed read or write",
+  );
+  // It comes back a second later, not five minutes later.
+  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_TICK_MS));
+  assert.equal(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS), false);
+
+  r.transport.closeManual();
+  await timers.run(REPAIR_TICK_MS, () => r.host.logs.some((entry) => entry.startsWith("repair decision=resumed")));
+  assert.match(
+    r.host.logs.find((entry) => entry.startsWith("repair decision=resumed")),
+    /reason=history_closed ticks=\d+ duration_ms=\d+/,
+  );
+  await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});
+
+test("a read that loses the slot mid-step is deferred, never a could-not-verify error", async () => {
+  const r = await note(), timers = new FakeTimers(), statuses = [];
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const before = statuses.length;
+
+  // The dialog takes the slot after the tick's own check: the transport is
+  // the only thing that can see it, and it refuses without sending.
+  const { HistoryBusyError } = require("../build/transport.js");
+  r.transport.historyVersion = async () => { throw new HistoryBusyError(); };
+  await engine.syncNow();
+
+  assert.ok(
+    r.host.logs.some((entry) => /^repair decision=deferred reason=busy budget_sids=64/.test(entry)),
+    r.host.logs.join(" | "),
+  );
+  assert.equal(statuses.slice(before).some((status) => status.kind === "error"), false);
+  assert.equal(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS), false,
+    "a collision does not push the next attempt five minutes out");
+  await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});

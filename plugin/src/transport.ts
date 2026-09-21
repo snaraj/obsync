@@ -79,6 +79,32 @@ export interface ReadControl {
 
 export const HISTORY_RESPONSE_BYTES = 6 * 1024 * 1024;
 
+/**
+ * A manual read arrived while another still held the slot.
+ *
+ * This is a scheduling decision on THIS device, not a failure of anything:
+ * nothing was sent, nothing was measured against a budget, and the caller
+ * that can wait should wait. The repair tick tells it apart from a read that
+ * really failed after leaving the device, which is what stopped a benign
+ * collision raising "could not verify a retained file" for five minutes
+ * (issue #103).
+ */
+export class HistoryBusyError extends Error {
+  constructor() {
+    super("The previous history request is still settling. Retry after it finishes.");
+    this.name = "HistoryBusyError";
+  }
+}
+
+/** Why a manual read was refused, for the one log line it writes. */
+function refusalReason(error: unknown): string {
+  if (error instanceof HistoryBusyError) return "busy";
+  if (error instanceof ApiError) {
+    return error.code === "response_too_large" ? "too_large" : error.code;
+  }
+  return error instanceof Error && error.name === "HistoryCancelled" ? "cancelled" : "failed";
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -403,6 +429,8 @@ export class Transport {
   private readonly admitting: { bytes: number; resume: () => void }[] = [];
   /** What the uploader has done, for the per-run summary its caller logs. */
   private readonly upload = { chunks: 0, resent: 0, deduped: 0 };
+  /** Manual history operations currently open, whether or not one is reading. */
+  private manualSessions = 0;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
@@ -540,15 +568,34 @@ export class Transport {
   }
 
   /** One attempt, one outstanding manual request, and a post-buffer ceiling. */
+  /**
+   * Is a manual history operation open, or one of its reads in flight?
+   *
+   * The repair tick asks before it starts so the two share the slot in order
+   * rather than colliding (issue #103); an open dialog is enough, because the
+   * tick runs every second and the user is in front of the other one.
+   */
+  get manualBusy(): boolean {
+    return this.manualSessions > 0 || this.manualRead !== null;
+  }
+
+  openManual(): void {
+    this.manualSessions++;
+  }
+
+  closeManual(): void {
+    if (this.manualSessions > 0) this.manualSessions--;
+  }
+
   private async readOnce(target: string, control: ReadControl, maxBytes: number, json?: unknown): Promise<HttpResponse> {
     const started = this.now();
     try {
       control.check();
-      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      if (this.manualRead !== null) throw new HistoryBusyError();
       const method = json === undefined ? "GET" : "POST";
       const sending = await this.prepare(target, { auth: "device", json });
       control.check();
-      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      if (this.manualRead !== null) throw new HistoryBusyError();
       const pending = this.attempt(method, target, sending, () => control.check());
       this.manualRead = pending;
       void pending.finally(() => {
@@ -565,7 +612,15 @@ export class Transport {
       }
       return this.settle(method, target, response, 1, started);
     } catch (error) {
-      this.log(`history_http decision=refused budget_bytes=${maxBytes} duration_ms=${this.now() - started}`);
+      // `budget_bytes` belongs to the size refusal alone. A read that never
+      // left the device was never measured against a byte budget, and naming
+      // one made a scheduling collision read like an oversize response.
+      const reason = refusalReason(error);
+      this.log(
+        `history_http decision=refused reason=${reason}` +
+          (reason === "too_large" ? ` budget_bytes=${maxBytes}` : "") +
+          ` duration_ms=${this.now() - started}`,
+      );
       throw error;
     }
   }
