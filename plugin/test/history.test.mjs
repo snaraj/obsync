@@ -24,7 +24,11 @@ async function note(r, path = "Notes/note.md", text = "HISTORY SENTINEL", fileId
   return r.server.publish({ fileId, path, bytes: enc(text), mtime: 1000, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, parents });
 }
 const entry = (record, path = "Notes/note.md") => ({ fileId: record.file_id, versionId: record.version_id, domainId: record.domain_id, path, size: record.bytes, ts: record.ts, deleted: record.deleted });
-const browser = (r, operation = new HistoryOperation(), now) => new HistoryBrowser(r.context, operation, now);
+// The forward walk. It is no longer the default -- newest first is (#102) --
+// but it is the same primitive and these are its tests; `newest.test.mjs`
+// covers the descending walk and the automatic search.
+const browser = (r, operation = new HistoryOperation(), now) =>
+  new HistoryBrowser(r.context, operation, { newestFirst: false, now });
 
 test("history pages include deleted-note content beyond the file-view cap without touching sync state", async () => {
   const r = await rig();
@@ -123,11 +127,12 @@ test("cross-page cursor/head regressions are refused, and empty filtered batches
   const r = await rig();
   for (let i = 0; i < 21; i++) await note(r, `Notes/note-${i}.md`, `VERSION ${i}`);
   const view = browser(r);
-  const first = await view.next("note-20");
-  assert.equal(first.scanned, 20);
-  assert.deepEqual(first.entries, []);
-  assert.equal(view.done, false);
-  assert.equal((await view.next("NOTE-20")).entries[0].path, "Notes/note-20.md");
+  // A filter now steps by itself past the empty batches to the first match,
+  // instead of handing one empty page back per click (issue #102).
+  const first = await view.next("NOTE-20");
+  assert.deepEqual(first.entries.map((e) => e.path), ["Notes/note-20.md"]);
+  assert.ok(first.scanned > 20, `it crossed more than one step to get there (${first.scanned})`);
+  assert.equal(first.checked, first.scanned, "and counted every position it consumed");
   assert.equal(view.done, true);
   assert.equal((await view.next()).scanned, 0, "completed scans issue no further request");
 });

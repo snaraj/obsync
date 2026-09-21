@@ -1316,7 +1316,7 @@ export default class ObsyncPlugin extends Plugin {
     for (const browser of [...this.histories]) this.closeHistory(browser);
   }
 
-  openHistory(): HistoryBrowser {
+  openHistory(newestFirst = true): HistoryBrowser {
     const context = this.syncContext();
     if (!context) throw new Error("Start sync on this paired device before opening history.");
     const generation = this.lifecycle;
@@ -1325,7 +1325,7 @@ export default class ObsyncPlugin extends Plugin {
     const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
       !this.changingScope && (this.restoring === null || this.restoring === operation) &&
       this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
-    const browser = new HistoryBrowser(context, operation);
+    const browser = new HistoryBrowser(context, operation, { newestFirst });
     this.histories.add(browser);
     // The transport's manual read slot is held for as long as the dialog is
     // open, so the repair tick yields to it instead of colliding (#103).
