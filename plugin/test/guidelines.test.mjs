@@ -91,6 +91,52 @@ test("each rule catches the shape it names, and leaves the correct one alone", (
   assert.deepEqual(caught("const file = plugin.app.vault.getFileByPath(path);"), []);
 });
 
+/**
+ * CSS multicolumn, as properties rather than as one flagged line.
+ *
+ * The community directory's scorecard reports multicolumn as "only partially
+ * supported" by the Obsidian versions this plugin declares. The rule is the
+ * FEATURE, not the one declaration that was found: `column-gap` is shared
+ * between multicolumn and grid, so a grid written with it reads as
+ * multicolumn to the scorecard and to anyone scanning the file.
+ */
+const MULTICOLUMN = /(^|[;{]|\*\/)\s*(columns|column-(count|width|gap|rule|rule-[a-z]+|span|fill))\s*:/;
+
+/** One declaration per line, with comments removed: what the rule reads. */
+function declarations(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+test("the shipped stylesheet uses no CSS multicolumn property", () => {
+  const css = readFileSync(join(PLUGIN, "styles.css"), "utf8");
+  assert.ok(css.includes(".obsync-phrase"), "the stylesheet really was read");
+  const match = MULTICOLUMN.exec(declarations(css));
+  assert.equal(match, null, `styles.css declares a multicolumn property: ${match?.[0].trim()}`);
+  // And the phrase block still lays the 24 words out in two readable tracks.
+  assert.match(css, /\.obsync-phrase\s*\{[^}]*user-select:\s*all/, "the phrase stays selectable in one gesture");
+  assert.match(css, /\.obsync-phrase\s*\{[^}]*font-family:\s*var\(--font-monospace\)/);
+  assert.match(css, /\.obsync-phrase\s*\{[^}]*grid-template-columns:\s*repeat\(2,/);
+});
+
+test("the multicolumn rule catches each property it names, and leaves grid alone", () => {
+  // A rule no input can fail is decoration standing next to real rules.
+  for (const declaration of [
+    "columns: 2;", "column-count: 2;", "column-width: 10em;", "column-gap: 1rem;",
+    "column-rule: 1px solid red;", "column-rule-style: solid;", "column-span: all;", "column-fill: auto;",
+  ]) {
+    assert.notEqual(MULTICOLUMN.exec(`.x { ${declaration} }`), null, declaration);
+    assert.notEqual(MULTICOLUMN.exec(`.x {\n  ${declaration}\n}`), null, declaration);
+  }
+  for (const declaration of [
+    "gap: 0 1rem;", "row-gap: 1rem;", "grid-template-columns: repeat(2, minmax(0, 1fr));",
+    "grid-auto-flow: column;", "flex-direction: column;",
+  ]) {
+    assert.equal(MULTICOLUMN.exec(`.x {\n  ${declaration}\n}`), null, declaration);
+  }
+  // A comment naming the feature is not a declaration of it.
+  assert.equal(MULTICOLUMN.exec(declarations("/* never columns: 2; */\n.x { gap: 0; }")), null);
+});
+
 test("the shipped manifest keeps the mobile promise requirement 14 makes", () => {
   const manifest = JSON.parse(readFileSync(join(dirname(PLUGIN), "manifest.json"), "utf8"));
   assert.equal(manifest.isDesktopOnly, false, "the plugin runs on every Obsidian platform");

@@ -11,13 +11,23 @@
   border-radius: var(--radius-s);
 }
 
-/* The 24 words as a numbered list: two columns of twelve, filled down. */
+/*
+ * The 24 words as a numbered list: two tracks of twelve, filled downwards.
+ *
+ * GRID, NEVER MULTICOLUMN. CSS multicolumn (`columns`, `column-count`, and
+ * the `column-gap` that multicolumn and grid share) is only partially
+ * supported by the Obsidian versions this plugin declares, and the community
+ * directory's scorecard flags it. A two-track grid says the same thing with
+ * no partially supported feature in it, and the `gap` shorthand carries the
+ * spacing: zero between rows, one step between the two tracks.
+ */
 .obsync-phrase {
   user-select: all;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(12, auto);
   grid-auto-flow: column;
-  column-gap: var(--size-4-4);
+  gap: 0 var(--size-4-4);
   margin: 0;
   padding: 0;
   list-style-position: inside;
