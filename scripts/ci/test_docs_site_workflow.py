@@ -122,6 +122,14 @@ FIXTURE_BUNDLE = (
     'function as(){return typeof mermaid=="undefined"?'
     '_t("https://unpkg.com/mermaid@11/dist/mermaid.min.js"):$(void 0)}'
 )
+# Every fixture page carries the two links the real pages carry: one to the
+# theme it is built with and one to this repository. The first is the reason
+# an anchor is a navigation rather than a load.
+ANCHORS = (
+    '<link rel="canonical" href="https://snaraj.github.io/obsync/">'
+    '<a href="https://squidfunk.github.io/mkdocs-material/">theme</a>'
+    '<a href="https://github.com/snaraj/obsync">repository</a>'
+)
 HASH_RE = re.compile(r"^\s*--hash=sha256:[0-9a-f]{64}\s*$")
 REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*==\S+")
 
@@ -351,16 +359,39 @@ class TheShippedSourcesHoldTheseBoundaries(unittest.TestCase):
 
 
 class TheBuiltSiteIsJudgedByItsOrigins(unittest.TestCase):
-    """Rule 7, driven: the script, over a fixture with both injections."""
+    """Rule 7, driven: the script itself, over built output.
 
-    def site(self, directory: Path, bundle: str) -> Path:
+    Every case here is a LOAD FORM. The review that asked for them found four
+    the earlier reader admitted -- a protocol-relative `img`, the second
+    candidate of a `srcset`, an uppercase `IMG SRC`, and a URL built in a
+    template literal -- and two branches whose deletion no test noticed. Each
+    test below fails if its own branch is removed from `site_origins.py`.
+    """
+
+    # A fixture site, not a fixture file: `assert` refuses a directory too
+    # thin to support the claim, so a stand-in has to be a site.
+    PAGES = ("index.html", "server/index.html", "protocol/index.html",
+             "storage/index.html", "recovery/index.html")
+
+    def site(self, directory: Path, bundle: str = FIXTURE_BUNDLE, page: str = "",
+             style: str = "body{color:#000}") -> Path:
         built = directory / "site"
         (built / "assets" / "javascripts").mkdir(parents=True)
+        (built / "assets" / "stylesheets").mkdir(parents=True)
         (built / "assets" / "javascripts" / "bundle.min.js").write_text(bundle, encoding="utf-8")
-        (built / "index.html").write_text(
-            '<link rel="canonical" href="https://snaraj.github.io/obsync/">'
-            '<a href="https://squidfunk.github.io/mkdocs-material/">theme</a>'
-            '<a href="https://github.com/snaraj/obsync">repository</a>',
+        (built / "assets" / "stylesheets" / "main.css").write_text(style, encoding="utf-8")
+        base = site_origins.site_base()
+        locations = []
+        for name in self.PAGES:
+            target = built / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            body = ANCHORS + (page if name == "index.html" else "")
+            target.write_text(f"<html><body>{body}</body></html>", encoding="utf-8")
+            locations.append(base + name[: -len("index.html")])
+        (built / "sitemap.xml").write_text(
+            "<urlset>"
+            + "".join(f"<url><loc>{where}</loc></url>" for where in locations)
+            + "</urlset>",
             encoding="utf-8",
         )
         return built
@@ -368,12 +399,147 @@ class TheBuiltSiteIsJudgedByItsOrigins(unittest.TestCase):
     def run_mode(self, mode: str, built: Path) -> int:
         return site_origins.main([mode, str(built)])
 
+    def deny(self, markup: str, name: str = "index.html") -> list[str]:
+        """What one document's loads are refused for, with anchors dropped."""
+        found, _ = site_origins.refusals(Path(name), markup, site_origins.site_origin())
+        return found
+
+    def refuses(self, markup: str, needle: str, name: str = "index.html") -> None:
+        found = self.deny(markup, name)
+        self.assertTrue(found, f"{markup!r} was admitted")
+        self.assertTrue(
+            [line for line in found if needle in line],
+            f"{needle!r} is not why {markup!r} was refused: {found}",
+        )
+
+    # ---- the four load forms the review drove through the real CLI --------
+
+    def test_a_protocol_relative_image_is_refused(self):
+        # `//host/x` inherits the page's scheme and reaches the same stranger.
+        self.refuses('<img src="//outside.example/pixel">', "outside.example")
+
+    def test_the_second_candidate_of_a_srcset_is_refused(self):
+        # Reading the first candidate only admits every one after it.
+        self.refuses(
+            '<img srcset="local.png 1x, https://outside.example/pixel 2x">',
+            "outside.example",
+        )
+
+    def test_an_uppercase_image_tag_is_refused(self):
+        # HTML is case-insensitive; a regular expression over the text is not.
+        self.refuses('<IMG SRC="https://outside.example/p.png">', "outside.example")
+
+    def test_a_url_built_in_a_template_literal_is_refused(self):
+        found, _ = site_origins.refusals(
+            Path("bundle.js"),
+            "function facts(o,r){let u=`https://outside.example/repos/${o}/${r}`;return fetch(u)}",
+            site_origins.site_origin(),
+        )
+        self.assertTrue([line for line in found if "outside.example" in line], found)
+
+    # ---- the branches whose removal nothing noticed -----------------------
+
+    def test_every_html_url_attribute_is_judged(self):
+        for markup, why in (
+            ('<video poster="https://outside.example/p.jpg"></video>', "poster"),
+            ('<object data="https://outside.example/o.svg"></object>', "data"),
+            ('<form action="https://outside.example/post"></form>', "action"),
+            ('<button formaction="https://outside.example/post"></button>', "formaction"),
+            ('<script src="https://outside.example/s.js"></script>', "src"),
+            ('<link rel="stylesheet" href="https://fonts.googleapis.com/css">', "href"),
+            ('<meta http-equiv="refresh" content="0; url=https://outside.example/">', "meta"),
+        ):
+            with self.subTest(attribute=why):
+                self.refuses(markup, "outside.example" if "outside" in markup else "fonts.googleapis.com")
+
+    def test_a_stylesheet_is_judged_in_every_url_form(self):
+        own = site_origins.site_origin()
+        for text in (
+            "@import url(https://outside.example/a.css);",
+            '@import url("https://outside.example/a.css") screen;',
+            "@import 'https://outside.example/a.css';",
+            "body{background:url(https://outside.example/b.png)}",
+            'body{background:url("https://outside.example/b.png")}',
+            "body{background:url('https://outside.example/b.png')}",
+        ):
+            with self.subTest(css=text):
+                found, _ = site_origins.refusals(Path("main.css"), text, own)
+                self.assertTrue(found, f"{text!r} was admitted")
+
+    def test_an_inline_script_and_an_inline_style_are_judged(self):
+        self.refuses('<script>fetch("https://outside.example/x")</script>', "outside.example")
+        self.refuses('<style>@import "https://outside.example/a.css";</style>', "outside.example")
+        self.refuses('<div style="background:url(https://outside.example/b.png)"></div>', "outside.example")
+
+    def test_a_url_in_a_comment_is_not_a_load_and_a_stray_one_still_is(self):
+        own = site_origins.site_origin()
+        # The measured exemption: the licence banners in the search worker are
+        # comments, and judging them would refuse the theme for citing itself.
+        found, _ = site_origins.refusals(
+            Path("bundle.js"), "/*! licensed under https://outside.example/MPL */var a=1", own
+        )
+        self.assertEqual(found, [])
+        # The backstop: a URL in neither a string nor a comment means the lexer
+        # lost its place, and that fails closed rather than falling silent.
+        found, _ = site_origins.refusals(Path("bundle.js"), "var a=https://outside.example/x;", own)
+        self.assertTrue([line for line in found if "unparsed" in line], found)
+
+    def test_an_anchor_is_a_navigation_and_is_counted_not_refused(self):
+        # The documentation links to the projects it names. The count is
+        # printed so that "no third-party load" is never read as "no link".
+        found, anchors = site_origins.refusals(
+            Path("index.html"),
+            '<a href="https://obsidian.md/">Obsidian</a>'
+            '<area href="https://squidfunk.github.io/mkdocs-material/">'
+            '<link rel="canonical" href="https://snaraj.github.io/obsync/">',
+            site_origins.site_origin(),
+        )
+        self.assertEqual(found, [])
+        self.assertEqual(anchors, 2)
+
+    def test_the_repositorys_own_pages_are_allowed_and_another_repository_is_not(self):
+        own = site_origins.site_origin()
+        self.assertTrue(site_origins.allowed("https://github.com/snaraj/obsync/blob/main/AGENTS.md", own))
+        self.assertTrue(site_origins.allowed("https://snaraj.github.io/obsync/server/", own))
+        self.assertTrue(site_origins.allowed("../captures/01-install.png", own))
+        self.assertTrue(site_origins.allowed("mailto:someone@example.org", own))
+        self.assertFalse(site_origins.allowed("https://github.com/someone/else", own))
+        self.assertFalse(site_origins.allowed("//unpkg.com/x", own))
+        self.assertFalse(site_origins.allowed("https://unpkg.com/x", own))
+
+    # ---- a pass has to be worth something ---------------------------------
+
+    def test_an_empty_or_short_directory_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            empty = Path(scratch) / "empty"
+            empty.mkdir()
+            self.assertEqual(self.run_mode("assert", empty), 1)
+        with tempfile.TemporaryDirectory() as scratch:
+            built = self.site(Path(scratch), FIXTURE_BUNDLE)
+            self.assertEqual(self.run_mode("strip", built), 0)
+            self.assertEqual(self.run_mode("assert", built), 0)
+            # One page of the sitemap gone: the output no longer carries what
+            # MkDocs said it built.
+            (built / "server" / "index.html").unlink()
+            self.assertEqual(self.run_mode("assert", built), 1)
+
+    def test_a_site_without_a_script_or_a_stylesheet_cannot_pass(self):
+        for asset in ("assets/javascripts/bundle.min.js", "assets/stylesheets/main.css"):
+            with self.subTest(missing=asset), tempfile.TemporaryDirectory() as scratch:
+                built = self.site(Path(scratch), FIXTURE_BUNDLE)
+                self.assertEqual(self.run_mode("strip", built), 0)
+                (built / asset).unlink()
+                self.assertEqual(self.run_mode("assert", built), 1)
+
+    # ---- strip and assert are a pair --------------------------------------
+
     def test_an_unstripped_bundle_is_refused_by_name(self):
         with tempfile.TemporaryDirectory() as scratch:
             built = self.site(Path(scratch), FIXTURE_BUNDLE)
-            own = site_origins.site_origin()
-            found = site_origins.refusals(
-                built / "assets" / "javascripts" / "bundle.min.js", FIXTURE_BUNDLE, own
+            found, _ = site_origins.refusals(
+                built / "assets" / "javascripts" / "bundle.min.js",
+                FIXTURE_BUNDLE,
+                site_origins.site_origin(),
             )
             self.assertEqual(len(found), 2, found)
             self.assertTrue(all("unpkg.com" in line for line in found), found)
@@ -390,39 +556,26 @@ class TheBuiltSiteIsJudgedByItsOrigins(unittest.TestCase):
             # branch already named, so the ternary still yields it.
             self.assertIn("?$(void 0):$(void 0)", bundle)
 
-    def test_an_anchor_is_not_a_load(self):
-        # The documentation links to the projects it names, and a link a reader
-        # may click is not a fetch the page makes.
-        own = site_origins.site_origin()
-        self.assertEqual(
-            site_origins.refusals(
-                Path("index.html"),
-                '<a href="https://obsidian.md/">Obsidian</a>'
-                '<link rel="canonical" href="https://snaraj.github.io/obsync/">',
-                own,
-            ),
-            [],
-        )
+    def test_strip_refuses_a_bundle_whose_pinned_shape_it_no_longer_finds(self):
+        # A Material upgrade that renames the injection must fail the step,
+        # not publish an unstripped bundle quietly.
+        with tempfile.TemporaryDirectory() as scratch:
+            built = self.site(Path(scratch), 'var a=1;// nothing to strip\n')
+            self.assertEqual(self.run_mode("strip", built), 1)
 
-    def test_a_third_party_stylesheet_link_is_refused(self):
-        # The earlier round's finding, now judged on the OUTPUT rather than on
-        # `mkdocs.yml`: a `theme.font` regression emits exactly this.
-        own = site_origins.site_origin()
-        found = site_origins.refusals(
-            Path("index.html"),
-            '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto">',
-            own,
-        )
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("fonts.googleapis.com", found[0])
-
-    def test_the_repositorys_own_pages_are_allowed_and_another_repository_is_not(self):
-        own = site_origins.site_origin()
-        self.assertTrue(site_origins.allowed("https://github.com/snaraj/obsync/blob/main/AGENTS.md", own))
-        self.assertTrue(site_origins.allowed("https://snaraj.github.io/obsync/server/", own))
-        self.assertFalse(site_origins.allowed("https://github.com/someone/else", own))
-        self.assertFalse(site_origins.allowed("https://unpkg.com/x", own))
-
+    def test_strip_neutralises_a_literal_the_pinned_rewrite_does_not_cover(self):
+        # The second layer: a URL the theme builds rather than loads outright.
+        bundle = FIXTURE_BUNDLE + 'function facts(o,r){return fetch(`https://api.example/repos/${o}/${r}`)}'
+        with tempfile.TemporaryDirectory() as scratch:
+            built = self.site(Path(scratch), bundle)
+            self.assertEqual(self.run_mode("assert", built), 1)
+            self.assertEqual(self.run_mode("strip", built), 0)
+            self.assertEqual(self.run_mode("assert", built), 0)
+            text = (built / "assets" / "javascripts" / "bundle.min.js").read_text(encoding="utf-8")
+            self.assertNotIn("api.example", text)
+            # The literal is still a literal: the substitution survives, so the
+            # file still parses.
+            self.assertIn("${o}", text)
 
 class MutatedSourcesAreRefused(unittest.TestCase):
     """One broken boundary per test, in memory, over the real files."""

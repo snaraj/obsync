@@ -17,7 +17,12 @@ pins the property itself, three ways:
   1. **Names.** Every object an invocation creates carries a run id, so no
      name it removes can be another run's or a deployment that was already
      there. The scripts derive it from `OBSYNC_E2E_RUN_ID` when a workflow
-     supplies one and from the pid otherwise.
+     supplies one and from the pid otherwise -- and the VALUE a workflow
+     supplies is judged here too, because a run id that does not vary is a
+     fixed name wearing a variable's clothes. A review replaced the
+     expression with the literal `fixed` and every offline test stayed green,
+     which is two concurrent runs sharing one compose project and one cluster
+     and each tearing down the other's.
   2. **Order.** The EXIT trap is armed only after preflight, and the teardown
      it runs is guarded by a `created` marker set immediately BEFORE the first
      command that makes anything -- so a partial creation is still torn down,
@@ -35,6 +40,7 @@ is the real script, unmodified, with its refusals reached for real.
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import subprocess
@@ -56,6 +62,16 @@ RUN_ID = "testrun-7f3a"
 # mutation it exists to catch.
 EXPECTED_PREFIX = f"obsync-e2e-{RUN_ID}"
 RUN_ID_VARIABLE = "OBSYNC_E2E_RUN_ID"
+# What a workflow's run id must vary with. `github.run_id` alone repeats on
+# every RE-RUN of that run, and a re-run can be dispatched while the attempt it
+# replaces is still tearing its objects down; `github.run_attempt` alone
+# repeats across every run there has ever been. Both, or the name is shared.
+RUN_CONTEXTS = ("github.run_id", "github.run_attempt")
+# A GitHub expression, and a `matrix.<path>` reference inside one. The contexts
+# above are looked for INSIDE an expression rather than in the value, so a
+# literal that merely spells one of them out is not mistaken for reading it.
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}")
+MATRIX_REFERENCE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
 
 # What a refusal may never do. Each entry is (program, the argument that
 # destroys something), matched against a recorded call's whole argument list.
@@ -172,6 +188,47 @@ def unnamed_calls(recording: Recording) -> list[tuple[str, str]]:
                 if value and EXPECTED_PREFIX not in value[0] and "obsync" in value[0]:
                     found.append((program, arguments))
     return found
+
+
+def reads(expression: str, context: str) -> bool:
+    """Some `${{ … }}` in this value reads that context."""
+    return any(context in body for body in EXPRESSION.findall(expression))
+
+
+def matrix_legs(job: dict) -> list[dict] | None:
+    """Every combination one job's matrix runs.
+
+    None means the job declares no matrix and is one leg. An empty list means
+    it declares one this reader cannot enumerate -- `include`/`exclude`, or an
+    axis that is not a list -- which is a refusal and never a pass, because a
+    gate that cannot name the legs cannot say their names differ.
+    """
+    strategy = job.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    if not isinstance(matrix, dict):
+        return None
+    axes = []
+    for axis, values in matrix.items():
+        if axis in ("include", "exclude") or not isinstance(values, list):
+            return []
+        axes.append([(axis, value) for value in values])
+    return [dict(leg) for leg in itertools.product(*axes)]
+
+
+def rendered_run_id(expression: str, leg: dict) -> str:
+    """One leg's run id: every `matrix.…` reference resolved against it.
+
+    A path that resolves to nothing renders as `None` for every leg, so it
+    collides with every other leg rather than looking like a difference.
+    """
+
+    def resolve(match: re.Match) -> str:
+        value: object = leg
+        for step in match.group(1).split("."):
+            value = value.get(step) if isinstance(value, dict) else None
+        return repr(value)
+
+    return MATRIX_REFERENCE.sub(resolve, expression)
 
 
 class ComposeRefusalsPreserveWhatTheyRefuseAbout(unittest.TestCase):
@@ -423,7 +480,16 @@ class TheSetupTokenNeverReachesAnArgumentVector(unittest.TestCase):
 
 
 class TheWorkflowCleanupsNameTheSameRun(unittest.TestCase):
-    """A cleanup step that names a FIXED project or cluster is the same bug."""
+    """A cleanup step that names a FIXED project or cluster is the same bug.
+
+    And so is a run id that is fixed, which is where the same bug hides once
+    the cleanup step has been written correctly: the step below interpolates
+    `OBSYNC_E2E_RUN_ID` faithfully, so everything it removes is as
+    differentiated as that value is and no more. The cases here judge the
+    VALUE -- against the run, the attempt, and the matrix leg -- so that the
+    agreement the rest of this class proves is an agreement about two names
+    that no other run can be wearing.
+    """
 
     def jobs(self):
         found = []
@@ -450,6 +516,70 @@ class TheWorkflowCleanupsNameTheSameRun(unittest.TestCase):
                 environment = job.get("env")
                 self.assertIsInstance(environment, dict, f"{workflow}:{name} declares no env")
                 self.assertIn(RUN_ID_VARIABLE, environment)
+
+    def test_each_run_id_varies_with_the_run_and_its_attempt(self):
+        # The VALUE, not only the key. A literal gives every run of this
+        # workflow one compose project and one cluster name, and two runs that
+        # overlap then create, refuse about and tear down each other's
+        # objects -- the data-loss class this whole file is about, arriving
+        # through the one place the tests were only checking a key existed.
+        # Both contexts are required: `github.run_id` repeats on a re-run,
+        # `github.run_attempt` is `1` for almost every run there is.
+        for workflow, name, job, _ in self.jobs():
+            with self.subTest(workflow=workflow, job=name):
+                environment = job.get("env")
+                self.assertIsInstance(environment, dict, f"{workflow}:{name}")
+                expression = environment.get(RUN_ID_VARIABLE)
+                self.assertIsInstance(
+                    expression, str, f"{workflow}:{name} sets no {RUN_ID_VARIABLE}"
+                )
+                for context in RUN_CONTEXTS:
+                    self.assertTrue(
+                        reads(expression, context),
+                        f"{workflow}:{name} sets {RUN_ID_VARIABLE} to "
+                        f"{expression!r}, which does not vary with "
+                        f"{context}: every run of this job would name the "
+                        f"same objects",
+                    )
+
+    def test_a_matrix_job_gives_every_leg_its_own_run_id(self):
+        # A matrix is several jobs sharing one `env` block, and its legs run
+        # at the same time by construction, so a run id that does not vary
+        # with the LEG is the collision above with the overlap guaranteed
+        # rather than merely possible. The property is the NAMES and not the
+        # spelling: each leg's run id is rendered and they must be pairwise
+        # distinct, so any matrix field that separates the legs answers it and
+        # this test does not pin which axis the workflow chose.
+        judged = 0
+        for workflow, name, job, _ in self.jobs():
+            legs = matrix_legs(job)
+            if legs is None:
+                continue
+            with self.subTest(workflow=workflow, job=name):
+                self.assertTrue(
+                    legs, f"{workflow}:{name} declares a matrix this test cannot read"
+                )
+                expression = job.get("env", {}).get(RUN_ID_VARIABLE, "")
+                self.assertTrue(
+                    MATRIX_REFERENCE.search(expression),
+                    f"{workflow}:{name} runs {len(legs)} matrix legs and sets "
+                    f"{RUN_ID_VARIABLE} to {expression!r}, which names no "
+                    f"matrix field: every leg would name the same objects",
+                )
+                rendered = [rendered_run_id(expression, leg) for leg in legs]
+                self.assertEqual(
+                    len(set(rendered)),
+                    len(legs),
+                    f"{workflow}:{name} runs {len(legs)} matrix legs under "
+                    f"{len(set(rendered))} run id(s): {rendered}",
+                )
+            if len(legs) > 1:
+                judged += 1
+        self.assertTrue(
+            judged,
+            "no judged job runs a matrix of more than one leg, so this test "
+            "proves nothing; delete it or restore the matrix it watched",
+        )
 
     def test_no_cleanup_step_names_a_fixed_project_or_cluster(self):
         fixed = re.compile(r"obsync-e2e(?![-a-z0-9]*\$\{)|=obsync\b|--name obsync\b")

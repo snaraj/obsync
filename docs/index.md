@@ -57,12 +57,20 @@ docker run --rm --platform linux/amd64 -v "$PWD:/repo" -w /repo \
 ```
 
 The last two commands are the same ones
-`.github/workflows/docs-site.yml` runs before it uploads anything: the theme's
-bundle carries two script loads to a CDN, `strip` rewrites them into the no-op
-their own else branch already is, and `assert` then refuses any load in the
-built output that reaches an origin other than this site's or this
-repository's. Requirement 1 admits no third-party runtime dependency, and a
-setting in `mkdocs.yml` is not evidence about the bytes a reader downloads.
+`.github/workflows/docs-site.yml` runs before it uploads anything, and they are
+a pair. The vendored theme bundle carries loads to other hosts whatever
+`mkdocs.yml` says -- two script injections and the addresses it builds to ask a
+code-hosting API about this repository -- so `strip` rewrites the injections
+into the no-op their own else branch already is and neutralises every other
+address a script carries. `assert` then reads the OUTPUT and refuses anything
+left: HTML through a parser (every `src`, `srcset` candidate, `poster`, `data`,
+`action`, `formaction`, loading `link` and meta refresh, in any case and any
+quoting, protocol-relative addresses included), stylesheets for `url()` and
+`@import`, scripts for every string and template literal that carries an
+address, and an output too thin to have been judged at all. A link a reader may
+CLICK is a navigation rather than a load: those are counted and the count is
+printed. Requirement 1 admits no third-party runtime dependency, and a setting
+in `mkdocs.yml` is not evidence about the bytes a reader downloads.
 
 The container is not decoration. `docs/requirements.txt` pins every package by
 exact version AND by the sha256 of the exact wheel, and a wheel's sha256 is a

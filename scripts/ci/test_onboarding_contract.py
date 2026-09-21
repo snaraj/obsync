@@ -131,7 +131,12 @@ preference:
      unencrypted sync API and an administrative dashboard. Rule 11 asks exactly
      this question of the Compose path and the Docker path had no rule at all:
      an adversarial review rewrote `127.0.0.1` to `0.0.0.0` in both documents
-     and the entire suite stayed green.
+     and the entire suite stayed green. Every SPELLING of the flag is one
+     decision and is normalised to its value before anything judges it:
+     `-p VALUE`, `-pVALUE`, `-p=VALUE`, `--publish VALUE` and
+     `--publish=VALUE` start the same container, and the next review walked
+     past the first version of this rule by attaching the value to the short
+     flag.
 
 FAIL-CLOSED PARSING, OVER EXECUTABLE STRUCTURE. The first version of this file
 judged text: it split a line on shell operators and searched the result with
@@ -345,8 +350,16 @@ VOLUME_FLAGS = frozenset({"-v", "--volume", "--mount"})
 # left every rule green. A host port with NO address at all is the same
 # exposure with nobody having chosen it, so it is refused too. The flag is read
 # as shell TOKENS, and the host address is the part before the first colon of a
-# three-part value, so `-p=…` and `--publish …` are the same decision.
-PUBLISH_FLAGS = frozenset({"-p", "--publish"})
+# three-part value, so every spelling `_publish_values` normalises -- `-p …`,
+# `-p=…`, `-p…`, `--publish …` and `--publish=…` -- is the same decision.
+PUBLISH_SHORT = "-p"
+PUBLISH_LONG = "--publish"
+PUBLISH_FLAGS = frozenset({PUBLISH_SHORT, PUBLISH_LONG})
+# The OTHER publication flag, which names no mapping at all: `-P` publishes
+# every port the image EXPOSES, on every interface, at host ports Docker
+# chooses. A rule that judges mappings sees nothing to judge in a command that
+# carries one, so it is refused outright rather than parsed.
+PUBLISH_EVERYTHING = frozenset({"-P", "--publish-all"})
 SERVER_PORT = "8080"
 LOOPBACK = "127.0.0.1"
 # The long publication syntax's keys, and the protocols a short one may carry.
@@ -912,21 +925,56 @@ def _one_command(name: str, command: tuple[str, ...]) -> list[str]:
 
 
 def _publish_values(command: tuple[str, ...]) -> list[str]:
-    """Every `-p`/`--publish` VALUE in one command, in the order they appear."""
+    """Every `-p`/`--publish` VALUE in one command, in the order they appear.
+
+    Normalisation, and it happens BEFORE rule 13 judges anything. Docker's
+    publication flag is a pflag, and pflag lets a short option carry its value
+    in the same word: `-p0.0.0.0:8181:8080/tcp` is `-p 0.0.0.0:8181:8080/tcp`
+    and starts exactly the same container. This walk compared whole tokens
+    with `-p` until a review attached the value instead -- the compact
+    spelling was then read as a boolean flag nobody had heard of, and both an
+    ADDED mapping beside the documented one and a REPLACEMENT naming no host
+    address were invisible to the rule that exists to see them.
+    """
     values: list[str] = []
     index = 0
     while index < len(command):
-        flag, separator, value = command[index].partition("=")
-        if flag not in PUBLISH_FLAGS:
+        attached = _attached_publication(command[index])
+        if attached is not None:
+            values.append(attached)
             index += 1
             continue
-        if separator:
-            values.append(value)
-            index += 1
+        if command[index] in PUBLISH_FLAGS:
+            values.append(command[index + 1] if index + 1 < len(command) else "")
+            index += 2
             continue
-        values.append(command[index + 1] if index + 1 < len(command) else "")
-        index += 2
+        index += 1
     return values
+
+
+def _attached_publication(word: str) -> str | None:
+    """The VALUE a publication flag carries in its own word, or None.
+
+    A LONG option attaches only through `=`, and the `=` is stripped rather
+    than split on, because the long publication SYNTAX carries its own:
+    `--publish=published=8080,target=8080` is one flag and one value. A SHORT
+    option attaches with or without it, and pflag bundles shorthands, so a
+    bundle whose letters end at `p` (`-dp0.0.0.0:8080:8080`) hands the rest of
+    the word to `--publish` as well. Everything before that `p` must be flag
+    LETTERS: `-v/opt/data:/d` is a volume whose value happens to contain one,
+    and reading it as a publication would refuse a line that publishes
+    nothing. None means "no value here", which leaves `-p VALUE` to the walk
+    above rather than deciding it.
+    """
+    if word.startswith("--"):
+        flag, separator, value = word.partition("=")
+        return value if separator and flag == PUBLISH_LONG else None
+    if not word.startswith("-"):
+        return None
+    prefix, found, value = word[1:].partition(PUBLISH_SHORT[1])
+    if not found or (prefix and not prefix.isalpha()) or not value:
+        return None
+    return value[1:] if value.startswith("=") else value
 
 
 def _container_ports(side: str) -> frozenset[int] | None:
@@ -1013,6 +1061,18 @@ def _publish_refusals(name: str, command: tuple[str, ...]) -> list[str]:
     the same process just as completely.
     """
     found: list[str] = []
+    for word in command:
+        if word in PUBLISH_EVERYTHING or (
+            word.startswith("-")
+            and not word.startswith("--")
+            and word[1:].isalpha()
+            and "P" in word[1:]
+        ):
+            found.append(
+                f"{name}: `{word}` publishes every exposed port on every "
+                f"interface at a port nobody chose, so no rule here can say "
+                f"who reaches {SERVER_PORT}: {' '.join(command)}"
+            )
     for value in _publish_values(command):
         publication = _publication(value)
         if publication is None:
@@ -1906,6 +1966,104 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         )
         self.kills(found, "is not a port publication this gate can read")
 
+    def test_a_mapping_attached_to_the_short_flag_is_refused(self):
+        # pflag lets a short option carry its value in the same word, so
+        # `-p0.0.0.0:8181:8080/tcp` is `-p 0.0.0.0:8181:8080/tcp` and opens
+        # the same address. The documented mapping is left exactly as it
+        # stands and the hostile one is ADDED beside it, which is the shape a
+        # review used to leave every test in this file green: the compact
+        # spelling was read as a boolean flag and rule 13 never saw a mapping
+        # at all.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT} "
+            f"-p{EVERY_INTERFACE}:8181:{SERVER_PORT}/tcp",
+        )
+        self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_a_mapping_attached_to_the_short_flag_with_no_host_is_refused(self):
+        # The other half of the same spelling, and the shorter line a reader
+        # is likelier to type: the documented mapping is REPLACED by a compact
+        # one that names no host address, which is every address the host has.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p{SERVER_PORT}:{SERVER_PORT}",
+        )
+        self.kills(found, "no host address given")
+
+    def test_a_mapping_attached_to_the_short_flag_inside_a_bundle_is_refused(self):
+        # pflag BUNDLES shorthands, and a shorthand that takes a value takes
+        # the rest of the bundle as it, so `-dp0.0.0.0:8181:8080` detaches the
+        # container and publishes it on every address in one word. The spaced
+        # form of the same bundle is already refused by rule 1, which reads
+        # the mapping as the image; this is the one that is not.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-dp{EVERY_INTERFACE}:8181:{SERVER_PORT}",
+        )
+        self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_a_mapping_attached_to_the_long_flag_is_refused(self):
+        # A long option attaches its value only through `=`, and Docker runs
+        # exactly the same container for it.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"--publish={EVERY_INTERFACE}:{SERVER_PORT}:{SERVER_PORT}",
+        )
+        self.kills(found, f"publishes {SERVER_PORT} on")
+
+    def test_publishing_every_exposed_port_is_refused(self):
+        # `-P` names no mapping, so a rule that judges mappings would find
+        # nothing to judge -- and Docker would publish 8080 on every
+        # interface at a port nobody chose. The bundled spelling is the same
+        # decision.
+        for flag in ("-P", "--publish-all", "-dP"):
+            with self.subTest(flag=flag):
+                found = self.mutate(
+                    SERVER_GUIDE_NAME,
+                    f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    f"{flag} -p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                )
+                self.kills(found, "publishes every exposed port")
+
+    def test_an_unknown_protocol_suffix_is_refused(self):
+        # The protocol allowlist, on a mapping that is otherwise the
+        # documented one: the host address is the loopback, so the suffix is
+        # the ONLY thing left for this to refuse. Deleting the allowlist reads
+        # `/bogus` as a loopback publication of 8080 and says nothing, which
+        # is why that deletion survived every test in this file until this
+        # one.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}/bogus",
+        )
+        self.kills(found, "is not a port publication this gate can read")
+
+    def test_a_range_wider_than_the_ceiling_is_refused(self):
+        # The range ceiling, isolated the same way: the loopback is named, so
+        # only the WIDTH can be refused. A range this wide is a mistake or an
+        # attack, and resolving it is this gate spending its run on 99999
+        # ports. Deleting the ceiling expands them and reports the loopback.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p {LOOPBACK}:1-99999:1-99999",
+        )
+        self.kills(found, "is not a port publication this gate can read")
+
+    def test_an_unknown_long_syntax_key_is_refused(self):
+        # The long syntax's key allowlist, isolated the same way: `host_ip` is
+        # the loopback and every other field is a key this gate knows, except
+        # one. A key it does NOT know is a field whose effect on the published
+        # address it cannot state, so the mapping is unreadable rather than
+        # admitted. Deleting the allowlist admits it on the strength of the
+        # fields it did recognise.
+        found = self.mutate(
+            SERVER_GUIDE_NAME, f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"--publish published={SERVER_PORT},target={SERVER_PORT},"
+            f"host_ip={LOOPBACK},mode=host,bogus=1",
+        )
+        self.kills(found, "is not a port publication this gate can read")
+
     def test_the_documented_mapping_with_a_protocol_suffix_is_not_refused(self):
         # Rule 13's positive control for the parser: the suffix is READ, not
         # refused, so the tests above kill on the ADDRESS and not on the form.
@@ -1914,6 +2072,26 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
             f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}/tcp",
         )
         self.assertEqual(found, self.before)
+
+    def test_a_loopback_mapping_attached_to_its_flag_is_not_refused(self):
+        # The normalisation's own positive control, and the reason the four
+        # attached-spelling tests above kill on the ADDRESS rather than on the
+        # form: the compact spellings are READ, not refused. Without this,
+        # "refuse every value that is attached to its flag" would pass all
+        # four of them and refuse a correct line.
+        for compact in (
+            f"-p{LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"-p={LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+            f"--publish={LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+        ):
+            with self.subTest(publication=compact):
+                self.setUp()
+                found = self.mutate(
+                    SERVER_GUIDE_NAME,
+                    f"-p {LOOPBACK}:{SERVER_PORT}:{SERVER_PORT}",
+                    compact,
+                )
+                self.assertEqual(found, self.before)
 
     def test_a_loopback_publish_of_another_port_is_not_refused(self):
         # Rule 13's positive control: it judges the port this server listens

@@ -52,9 +52,9 @@ because a group-writable volume would be refused too
 could `chown` your volume, and that is the design: a container that can
 re-own the volume holding the server key is not one this project runs.
 
-The reference deployment is a single node with an SSD, so its volumes are
-static and local. Create the two directories on that node, as the node
-administrator, before the chart is installed:
+This guide builds the single-node case: one node with its own disk, so the
+volumes are static and local. Create the two directories on that node, as the
+node administrator, before the chart is installed:
 
 <!-- ci: k8s-volume-dirs -->
 ```sh
@@ -134,9 +134,9 @@ away, which is what you want for the volume holding every encrypted chunk.
 
 ## 3. The values that are yours
 
-The chart's defaults are the reference deployment's and are fail-closed:
-zero replicas, a StorageClass that exists on one machine, one ingress peer
-that exists in one cluster.
+The chart's defaults are fail-closed rather than portable: zero replicas, a
+StorageClass name from one cluster, one ingress peer from one cluster. None of
+the three is a value you keep.
 [`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
 section 2 explains each of the four; this is the file that matches the volumes
 above:
@@ -204,7 +204,7 @@ client, as a Job or a timer beside the cluster:
 
 1. **An account key and a certificate key, both EC P-256.** An EC256 leaf is
    what the terminator serves; every platform obsync runs on accepts it, and
-   it is smaller and faster than RSA on a Raspberry Pi. Keep both keys off the
+   it is smaller and faster than RSA on a small single-board machine. Keep both keys off the
    cluster's general-purpose storage and treat them as credentials.
 2. **One DNS provider credential**, scoped to writing TXT records in the one
    zone. It never needs to read or write anything else, and it is the only

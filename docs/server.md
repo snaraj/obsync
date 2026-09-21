@@ -25,9 +25,9 @@ certificate you renew — and
 [`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
 is that chart's own reference: the `helm install` command against the signed
 OCI chart, the one command that creates the `OBSYNC_SERVER_KEY` Secret, and the
-four values a cluster that is not the owner's must override before a pod can
-run. The reference deployment (a single-node cluster on a Raspberry Pi, reached
-over private connectivity with no public hostname) is described in
+four values every cluster must override before a pod can run. The shape the
+chart is written for -- a single-node cluster reached over private
+connectivity, with no public hostname -- is described in
 [platform onboarding](platform-onboarding.md) and
 [architecture](architecture.md) section 10.
 
@@ -314,18 +314,17 @@ one that makes sync look broken:
   home; a device that never installed it does not.
 - **On iOS, the local-network permission accepted.** iOS prompts once, the
   first time Obsidian reaches an address on a local network, and the answer
-  afterwards lives in Settings, Obsidian. It is one of the steps the recorded
-  device run answered by hand on the phone.
+  afterwards lives in Settings, Obsidian. It is one of the steps only a person
+  at the device can answer.
 - **The host firewall admitting the HTTPS port from the route.** A bind
   address decides which interface accepts connections; the firewall decides
   which sources do. An overlay's addresses are a new source.
 
 What has actually been proved is the LAN: the recorded run
 ([`docs/validation-runs/2026-09-14.md`](validation-runs/2026-09-14.md))
-took a Mac and an iPhone through setup, pairing and two-way sync over the
-Compose route, on one home network, with HTTPS on a non-default port. Sync
-from off that LAN is not a proven result in any release so far, on either
-route.
+carried setup, pairing and two-way sync between a macOS desktop and an iOS
+phone over the Compose route, on one local network. Sync from off that LAN is
+not a proven result in any release so far, on either route.
 
 ## Next
 

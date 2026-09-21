@@ -234,7 +234,7 @@ publishing surface on by itself.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `compose` (amd64, arm64) | `docker build`, then `scripts/ci/compose-e2e.sh` | The commands [`docs/server.md`](server.md) SHOWS work against the image this commit builds, on BOTH architectures natively — the reference deployment is the arm64 one. The `up`, the root-certificate export and the setup-token read are read out of that page by `scripts/ci/docs_blocks.py`, with only the digest, the hostname and the bind address substituted, so a page edited without its gate fails here. It then proves what those commands exist for: `/readyz` through the terminator over TLS; `/login?token=…` answering 302 with a session that reads `/v1/admin/overview` where no session reads 401; and, through `scripts/ci/api_flow.py`, first boot with the token, a second device paired through the API, one file pushed and pulled back on that second device, `missing_auth`/`bad_signature`/`stale_timestamp`/`replayed_nonce` each refused by name, and all of it still there after the stack is restarted |
+| `compose` (amd64, arm64) | `docker build`, then `scripts/ci/compose-e2e.sh` | The commands [`docs/server.md`](server.md) SHOWS work against the image this commit builds, on BOTH architectures natively, arm64 included. The `up`, the root-certificate export and the setup-token read are read out of that page by `scripts/ci/docs_blocks.py`, with only the digest, the hostname and the bind address substituted, so a page edited without its gate fails here. It then proves what those commands exist for: `/readyz` through the terminator over TLS; `/login?token=…` answering 302 with a session that reads `/v1/admin/overview` where no session reads 401; and, through `scripts/ci/api_flow.py`, first boot with the token, a second device paired through the API, one file pushed and pulled back on that second device, `missing_auth`/`bad_signature`/`stale_timestamp`/`replayed_nonce` each refused by name, and all of it still there after the stack is restarted |
 
 The token is masked with `::add-mask::` before it is used and is printed
 nowhere. Each leg runs on the `ubuntu-24.04` runner image for its
@@ -254,8 +254,9 @@ What it does not prove, stated rather than implied: the NetworkPolicy's
 refusals, which are proven against the RENDERED policy by
 `scripts/ci/chart_pins.py`, because kind's CNI does not enforce policy; and the
 DNS-01 issuance, because the leaf the terminator serves is one the job issues.
-What the terminator step does prove is the wiring the reference activation got
-wrong — the three peer labels, the upstream Service, and the body ceiling. An
+What the terminator step does prove is the wiring a first activation of this
+chart gets wrong — the three peer labels, the upstream Service, and the body
+ceiling. An
 `if: always()` step deletes the cluster whatever happened to the script.
 
 ## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch

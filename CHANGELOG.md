@@ -20,13 +20,22 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   `make check`, and cannot be part of a pull request.
   `docs/requirements.txt` pins the whole build closure by exact version AND by
   the sha256 of each wheel, and the install runs under `--require-hashes` with
-  no resolution step. The theme fetches no font, script or style from any
-  third party, and that is now proven on the OUTPUT rather than asserted of a
-  setting: `theme.font` is `false`, and `scripts/ci/site_origins.py` rewrites
-  the two script loads Material's own bundle carries to a CDN and then refuses
-  any load in any built file whose origin is not this site's or this
-  repository's. The docs workflow runs both between the build and the upload,
-  so what is published is what was judged.
+  no resolution step. The published site asks a third party for
+  nothing, and that is proven on the OUTPUT rather than asserted of a setting.
+  `theme.font` is `false`, and `scripts/ci/site_origins.py` reads what was
+  actually built: HTML through a parser rather than a pattern -- every `src`,
+  `srcset` candidate, `poster`, `data`, `action`, `formaction`, loading `link`
+  and meta refresh, whatever the case or the quoting, protocol-relative
+  addresses included -- stylesheets for `url()` and `@import` in every form,
+  and scripts for every string and template literal that carries an address.
+  It rewrites the loads the vendored theme bundle carries to other hosts, then
+  refuses anything left whose origin is neither this site's nor this
+  repository's, and refuses an output too thin to have been judged at all. A
+  LINK a reader may click is not a load: those are counted rather than
+  refused, so the claim is exactly "the page fetches nothing from a third
+  party" and never "the documentation names none". The docs workflow runs the
+  pair between the build and the upload, so what is published is what was
+  judged.
 - **`README.md` is 200 lines instead of 573.** It keeps what a stranger needs
   before deciding: the pitch, the three warnings, what it does, the five
   captures, the shortest complete path to a running server, the disclosure of
@@ -52,9 +61,11 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   tokenless token read on every documented start, the standing-credential
   sentence — and the three site pages that hand a reader the setup token take
   the wording rule, and the rule that keeps the server's own run publishing
-  `8080` on loopback alone now reads every publication form Docker accepts and
-  judges all of them. The suite goes from 68 tests to 91, each addition with
-  its own mutation.
+  `8080` on loopback alone now reads every publication form Docker accepts --
+  every spelling of the flag, the compact `-p0.0.0.0:8181:8080/tcp` included,
+  and `-P`, which names no mapping and publishes everything -- and judges all
+  of them. The suite goes from 68 tests to 100, each addition with its own
+  mutation.
 - **A workflow of its own, outside the release chain.**
   `.github/workflows/docs-site.yml` builds the site under `mkdocs build
   --strict` on every pull request and deploys it on pushes to `main`, with
@@ -97,6 +108,15 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   the resulting binary on Debian, Ubuntu, Fedora and Alpine, each pinned by
   digest, on each architecture. The binary links no libc at all, so there is no
   glibc floor to document and these eight legs are what says so.
+- **Every page is written for a stranger's deployment, not from one.** Pages
+  that described the storage classes, host paths, volume sizes, namespace,
+  secret handling, network topology and delivery pipeline of one particular
+  installation now give the same guidance in the deployer's own terms, and the
+  historical validation record states its scenario outcomes, platform coverage
+  and measurement limits while saying plainly that the operational account of
+  that run is private. Requirement 11 was already the rule for new material;
+  publishing the `docs/` tree as a website is what made the older pages worth
+  re-reading against it.
 - **New troubleshooting entries for two failures that are not the server.** A
   phone that reports the hostname cannot be found on its own Wi-Fi is usually
   the router's DNS-rebinding protection returning an empty answer for a name

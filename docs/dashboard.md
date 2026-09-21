@@ -52,10 +52,10 @@ reaches the dashboard.
 - **TLS is outside the process.** The server speaks plain HTTP and is always
   behind a terminator you trust ([Run the server](server.md)). Reach the
   dashboard over `https://`, the same address your devices use for sync.
-- **A private route is the reference deployment.** The reference deployment
-  has no public hostname: it is reached over LAN or VPN, and so is its
-  dashboard. A public hostname behind a tunnel provider with an access policy
-  is an optional path, not the default.
+- **A private route is the shape this is written for.** With no public
+  hostname, the server is reached over LAN or VPN and so is its dashboard. A
+  public hostname behind a tunnel provider with an access policy is an
+  optional path, not the default.
 - **Sessions are cookies the browser cannot read.** `HttpOnly`,
   `SameSite=Strict`, with a double-submit CSRF header (`X-Obsync-Csrf`) on
   every mutating call. The dashboard serves no inline script and every HTML
@@ -129,11 +129,11 @@ solve — getting back in is. [Recovery](recovery.md) is that page.
 > **Capture slot** — `docs/captures/09-dashboard-revoke.png`: the revoke
 > confirmation for one device, its name and address redacted.
 
-Those four captures do not exist yet: the 1.0.0 device run recorded in
-[`docs/validation-runs/2026-09-14.md`](validation-runs/2026-09-14.md) did not
-exercise the dashboard's device list or its revoke button. They are taken
-during a real validation run and obey the same redaction rules as every other
-capture in this repository — no address, no device identifier, no credential
+Those four captures do not exist yet: no recorded run so far
+([`docs/validation-runs/`](validation-runs/README.md)) exercised the
+dashboard's device list or its revoke button. They are taken on a synthetic
+vault against a throwaway server, and they obey the same redaction rules as
+every other capture in this repository — no address, no device identifier, no credential
 of any kind ([the screenshot conventions](captures/README.md)).
 
 ## Next
