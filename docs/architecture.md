@@ -625,6 +625,30 @@ returns immediately when a new frame lands.
    written as `<name> (conflict from <device>, <date>).<ext>` and the user
    is told. obsync never silently discards an edit.
 
+   A version is written over a local file only when it DESCENDS from the
+   version the device recorded for that file and the file still carries the
+   size and modification time the device recorded for it. The version graph answers the first question,
+   not the server's `conflicted` flag: that flag is the file's state when the
+   version was journaled, so it says nothing about what this device has done
+   since, and a device that obeys it discards its own merge. A version the
+   recorded one already reaches is skipped; one that reaches the recorded one
+   is a fast-forward across versions this device never applied. The file's own
+   `(mtime, size)` against its record answers the second question, and that is
+   the half NO server can see: a path with no record, a path recorded under a
+   different file id, or a stat that has moved since the last push is local
+   content that has never been uploaded, so materialising over it would
+   replace bytes no version holds and no history can return. That second test
+   is metadata, not content: an edit leaving both dimensions unchanged is
+   invisible to it, exactly as it is to the startup scan that decides what to
+   push. Three sites that destroy bytes are gated — the write at the incoming
+   path, the removal at the old path when a version moves a file, and the
+   conflict copy's own destination, whose name is derived and may already hold
+   something, so it is published with a create-only writer that cannot replace
+   and takes the next free name when it collides. The incoming version becomes a
+   conflict copy, the local bytes stay where they are, and the push already
+   queued for that path carries them with the parent the record names, which
+   is what makes the server see the conflict too.
+
    The base is the NEWEST version both heads reach, and neither head is its
    own ancestor. Newest matters: an older common ancestor replays edits both
    sides already agree on into the merge as spurious hunks. `GET

@@ -41,13 +41,26 @@
  * `(path, mtime, size)` of the writes this device made, which is what stops
  * the vault watcher from pushing our own pull back up.
  *
- * CONFLICTS. When the server reports more than one head and ours is not the
- * incoming one, a text file with a reachable common ancestor takes the
- * three-way merge and the merged text is posted with BOTH heads as parents.
- * Everything else keeps both sides: the foreign head is written as
- * `<name> (conflict from <device>, <date>).<ext>` and the user is told.
- * Merging is attempted only for single-chunk text files; above that a
- * conflict copy is the honest answer.
+ * CONFLICTS. A version is written over a local file only when it DESCENDS
+ * from the version this device recorded and the file still carries the SIZE
+ * AND MODIFICATION TIME this device recorded for it. The version graph answers
+ * the first question; the server's `conflicted` flag cannot, because it is
+ * that file's state when the version was journaled and says nothing about what
+ * this device has done since. The file's own `(mtime, size)` against its
+ * record answers the second, and that is the half NO server can see: bytes
+ * this device never pushed are bytes it never heard of, so a note written or
+ * edited while this device was closed is a conflict the feed arrives innocent
+ * of (issue #98). That second test is METADATA, not content -- the same
+ * comparison startup reconciliation uses to decide what to push -- so an edit
+ * that leaves both the size and the modification time exactly as they were is
+ * invisible to it, here as it always has been there. Two divergent
+ * heads on a text file with a reachable common ancestor take the three-way
+ * merge and the merged text is posted with BOTH heads as parents. Everything
+ * else keeps both sides: the foreign version is written as
+ * `<name> (conflict from <device>, <date>).<ext>`, the local bytes stay where
+ * they are for the queued push to carry, and the user is told. Merging is
+ * attempted only for single-chunk text files; above that a conflict copy is
+ * the honest answer.
  *
  * PLATFORM. Desktop writes through a temp file and a rename (Node `fs`),
  * so a crash mid-write cannot leave a torn note, and streams a file of any
@@ -56,7 +69,7 @@
  * is never downloaded and is listed as remote-only instead.
  */
 
-import type { SyncContext } from "./engine";
+import type { SyncContext, VaultWriter } from "./engine";
 import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
 import {
   Bytes,
@@ -70,7 +83,7 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ChangeRecord, ReadControl } from "../transport";
+import { ChangeRecord, FileRecord, ReadControl } from "../transport";
 import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
@@ -324,7 +337,7 @@ async function materialise(context: SyncContext, manifest: Manifest): Promise<vo
 }
 
 /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
-export async function writeVerified(context: SyncContext, manifest: Manifest, writer: import("./engine").VaultWriter, control?: ReadControl): Promise<void> {
+export async function writeVerified(context: SyncContext, manifest: Manifest, writer: VaultWriter, control?: ReadControl): Promise<void> {
   if (manifest.chunks.length === 1) {
     const only = await firstChunk(context, manifest, control);
     if (manifest.sha256 !== "" && hex(await sha256(only)) !== manifest.sha256) throw new Error("pull: plaintext hash mismatch");
@@ -400,6 +413,37 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   }
 }
 
+/**
+ * Why the file at `path` is not this version's to replace, or `null`.
+ *
+ * A pull may overwrite a local file only when it still carries the size and
+ * modification time this device recorded there for THIS file id. The test is
+ * the startup reconciliation's own (`engine.ts`): the record a device keeps
+ * per path, compared against the file's `(mtime, size)`. It is metadata, not a
+ * content hash -- an edit that changes neither dimension is not detected, and
+ * re-chunking every local file on every incoming version is the price of
+ * closing that, which this does not pay. Each answer is a
+ * different way for local content to exist nowhere else -- `no_record`, a file
+ * created here while the engine was not running; `other_file`, a different
+ * file that happens to share the name, which is how two devices racing the
+ * same new note arrive; `local_edit`, a file edited here since it was last
+ * pushed. In all three the push that would carry those bytes has not run yet,
+ * so the server holds nothing that could give them back.
+ */
+async function competing(
+  context: SyncContext,
+  path: string,
+  fileId: string,
+): Promise<"no_record" | "other_file" | "local_edit" | null> {
+  const stat = await context.host.stat(path);
+  if (stat === null) return null;
+  const record = context.state.fileByPath(path);
+  if (record === undefined) return "no_record";
+  if (record.fileId !== fileId) return "other_file";
+  if (record.mtime !== stat.mtime || record.size !== stat.size) return "local_edit";
+  return null;
+}
+
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   const manifest = await decryptRecordManifest(context, change);
   const localPath = context.state.pathByFileId(change.file_id);
@@ -437,8 +481,45 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     return "remote_only";
   }
 
-  if (change.conflicted && local && !change.parents.includes(local.versionId)) {
-    return await reconcile(context, change, manifest, localPath as string, local.versionId);
+  if (local && !change.parents.includes(local.versionId)) {
+    // Not our child by its parent list -- so ask the graph what it is. Three
+    // answers: a version our own already reaches is one this device has
+    // incorporated (its own merge, or a head it resolved), a version that
+    // reaches ours is a fast-forward across versions this device skipped, and
+    // anything else is two heads to resolve. The server's `conflicted` flag
+    // answers none of them: it was computed when this version was journaled,
+    // so the frame for the head another device wrote FIRST still says false
+    // after this device forked the file, and obeying it discards the merge.
+    const file = await context.transport.getFile(change.file_id);
+    if (reaches(file.versions, local.versionId, change.version_id)) {
+      context.host.log(
+        `pull path_class=file decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,
+      );
+      return "skipped";
+    }
+    if (!reaches(file.versions, change.version_id, local.versionId)) {
+      return await reconcile(context, file, change, manifest, localPath as string, local.versionId);
+    }
+  }
+
+  // The half the server cannot see. It flags `conflicted` only for a version
+  // whose parents are not its file's heads, and a device that was closed while
+  // another wrote posts nothing, so the incoming version arrives as an honest
+  // descendant of the parent this device recorded -- over a local file that
+  // has moved on since. Materialising it would replace bytes no version holds,
+  // and the push already queued for that path would then find the record and
+  // the file agreeing and send nothing, which is how the edit left no trace
+  // anywhere (issue #98). The move's trash half is the same loss one path over.
+  const held =
+    (await competing(context, manifest.path, change.file_id)) ??
+    (localPath !== undefined && localPath !== manifest.path
+      ? await competing(context, localPath, change.file_id)
+      : null);
+  if (held !== null) {
+    context.host.log(
+      `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
+    );
+    return await keepBoth(context, change, manifest);
   }
 
   const started = context.now();
@@ -507,6 +588,34 @@ function parentsFrom(versions: VersionNode[]): (id: string) => string[] {
   return (id) => byId.get(id) ?? [];
 }
 
+/** Every version `start` reaches through the parent graph, `start` included. */
+function reachable(parents: (id: string) => string[], start: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const id = queue.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const parent of parents(id)) queue.push(parent);
+  }
+  return seen;
+}
+
+/**
+ * Is `target` `head` itself, or one of its ancestors?
+ *
+ * The question a version's `parents` cannot answer: it names the IMMEDIATE
+ * parents, so a version this device never applied -- one a ceiling held back,
+ * one whose manifest was refused, one outside the current folder selection --
+ * leaves the record an ancestor rather than a parent, and the incoming version
+ * is still a plain fast-forward. One walk, linear in the graph, and it is what
+ * separates a fast-forward from a fork without trusting a flag the server
+ * computed before this device had done anything.
+ */
+function reaches(versions: VersionNode[], head: string, target: string): boolean {
+  return reachable(parentsFrom(versions), head).has(target);
+}
+
 /**
  * The newest version both heads reach, or `null`.
  *
@@ -530,19 +639,8 @@ export function commonAncestor(
   parentsOf?: (id: string) => string[],
 ): string | null {
   const parents = parentsOf ?? parentsFrom(versions);
-  const reach = (start: string): Set<string> => {
-    const seen = new Set<string>();
-    const queue = [start];
-    while (queue.length > 0) {
-      const id = queue.pop() as string;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      for (const parent of parents(id)) queue.push(parent);
-    }
-    return seen;
-  };
-  const fromLeft = reach(left);
-  const fromRight = reach(right);
+  const fromLeft = reachable(parents, left);
+  const fromRight = reachable(parents, right);
   for (const { version_id: id } of versions) {
     if (id !== left && id !== right && fromLeft.has(id) && fromRight.has(id)) return id;
   }
@@ -551,16 +649,18 @@ export function commonAncestor(
 
 /**
  * Two heads on one file. Merge when we can prove a base and the content is
- * mergeable text; otherwise keep both sides.
+ * mergeable text; otherwise keep both sides. The caller passes the file it
+ * already read: deciding that these ARE two heads walks the same graph, and
+ * asking twice would buy the same answer with a second request.
  */
 async function reconcile(
   context: SyncContext,
+  file: FileRecord,
   change: ChangeRecord,
   theirManifest: Manifest,
   localPath: string,
   localVersionId: string,
 ): Promise<ApplyResult> {
-  const file = await context.transport.getFile(change.file_id);
   const baseId = commonAncestor(file.versions, localVersionId, change.version_id);
   const mine = await context.host.read(localPath);
   const mergeable =
@@ -609,23 +709,104 @@ async function reconcile(
   return await keepBoth(context, change, theirManifest);
 }
 
+/**
+ * How many names a conflict copy may try before giving up. The stamp is
+ * minute-resolution, so collisions come in bursts of one minute; twenty is far
+ * past any real vault and it is BOUNDED, because the alternative to giving up
+ * must never be overwriting something.
+ */
+const CONFLICT_COPY_NAMES = 20;
+
+/**
+ * Write the foreign version at a name nothing occupies.
+ *
+ * NOT A PLAIN `materialise`. The copy's name is derived, minute-resolution and
+ * therefore repeatable, so the destination is a place the user may already
+ * have something — the copy an earlier version of this same file left, which
+ * they may have opened and edited, with those edits not yet pushed. Writing
+ * through the ordinary overwriting writer destroyed exactly the bytes this
+ * whole change exists to protect (issue #98, review round 1).
+ *
+ * THE GUARD IS THE COMMIT, NOT THE LOOK. `createWriter` is the host's
+ * create-only writer: on desktop it opens a temp file exclusively and
+ * publishes with `link`, which cannot replace a destination even one that
+ * appears mid-write; on mobile it calls `Vault.createBinary`, which rejects an
+ * existing path. A stat first is only a cheap way to skip a name already taken
+ * without paying for its download — it decides nothing, and a name that
+ * appears between the stat and the commit is refused by the commit, which is
+ * the race a check alone leaves open. A refusal earns the NEXT name, and only
+ * a failure with nothing at the name is a real error and rethrown, so a
+ * network fault cannot be retried into twenty downloads.
+ */
+async function writeCopy(
+  context: SyncContext,
+  manifest: Manifest,
+  deviceName: string,
+  when: Date,
+): Promise<{ path: string; attempt: number } | null> {
+  for (let attempt = 1; attempt <= CONFLICT_COPY_NAMES; attempt++) {
+    const path = conflictCopyPath(manifest.path, deviceName, when, attempt);
+    assertVaultPath(path);
+    const occupant = await context.host.stat(path);
+    if (occupant !== null) {
+      // THIS version's copy, already here: the same size and the same mtime
+      // this manifest would write. One foreign head is resolved twice by
+      // design -- the feed delivers a head the push's own reconciliation has
+      // already handled -- and the second pass must not grow an identical
+      // second copy. Anything the user has touched since has a different
+      // stat, so it is a different file and earns the next name instead.
+      if (occupant.size === manifest.size && occupant.mtime === manifest.mtime) return { path, attempt };
+      continue;
+    }
+    let writer: VaultWriter;
+    try {
+      writer = await context.host.createWriter(path, manifest.size, () => undefined);
+    } catch (error) {
+      if ((await context.host.stat(path)) === null) throw error;
+      continue;
+    }
+    try {
+      await writeVerified(context, { ...manifest, path }, writer);
+      const stat = await writer.commit(manifest.mtime);
+      context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+      return { path: stat.path, attempt };
+    } catch (error) {
+      await writer.abort();
+      if ((await context.host.stat(path)) === null) throw error;
+    }
+  }
+  return null;
+}
+
 /** Write the foreign head beside ours under a named copy, and say so. */
 async function keepBoth(
   context: SyncContext,
   change: ChangeRecord,
   theirManifest: Manifest,
 ): Promise<ApplyResult> {
-  const copyPath = conflictCopyPath(
-    theirManifest.path,
+  const copy = await writeCopy(
+    context,
+    theirManifest,
     context.deviceNameFor(change.device_id),
     new Date(context.now()),
   );
-  await materialise(context, { ...theirManifest, path: copyPath });
+  if (copy === null) {
+    // Nothing was written and nothing was replaced. The version is still on
+    // the server, so this refuses a copy, not the content.
+    context.host.log(
+      `pull path_class=file decision=refused reason=no_free_conflict_name names=${CONFLICT_COPY_NAMES} file=${change.file_id} seq=${change.seq}`,
+    );
+    context.host.notify(
+      `obsync kept your version of ${theirManifest.path} and could not place the other device's copy: ` +
+        `every name it tried was already taken. Nothing here was changed, and the other version is still on the server.`,
+    );
+    return "refused";
+  }
   context.host.notify(
-    `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copyPath}".`,
+    `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
   );
   context.host.log(
-    `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size}`,
+    `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
   );
   return "conflict_copy";
 }

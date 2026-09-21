@@ -23,192 +23,29 @@
  * and obeying it deletes the user's note everywhere.
  *
  * WHAT IS AND IS NOT A PLATFORM HERE. Both devices are the same hand-written
- * `Vault`, one configured desktop (`isMobile` false, concurrency 4) and one
- * mobile (`isMobile` true, concurrency 2). That exercises the real
+ * vault (`EventVault`), one configured desktop (`isMobile` false, concurrency
+ * 4) and one mobile (`isMobile` true, concurrency 2). That exercises the real
  * `registerVaultEvents`, the real transport signing and the real engine on
  * both configurations; it does NOT exercise `ObsidianHost` — the Node `fs`
  * writer, the adapter writer, `FileManager.trashFile` — or the native event
  * timing of either platform. Those stay a real-device acceptance run
  * (`docs/validation.md`), and this file says nothing about them.
+ *
+ * The two-device rig itself lives in `fake.mjs`, beside the fakes it is made
+ * of, because `offline.test.mjs` drives the same two devices.
  */
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
-import { FakeHost, FakeServer, FakeTimers, KEYS, fakeState, keys, sandbox } from "./fake.mjs";
+import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
-const { SyncEngine } = require("../build/sync/engine.js");
 
-/**
- * The virtual clock steps in 50 ms, not in seconds: a pull takes milliseconds
- * on a real device and the debounce is 500 ms, so a clock that jumped a second
- * per turn would model a vault whose own echo overtakes the pull that caused
- * it. Stepping small keeps that ordering real; the waits below still walk the
- * clock past 500 ms, so the debounce and the echo gate are exercised.
- */
-const STEP_MS = 50;
-
-const DEVICE_B = "00112233445566778899aabbccddeeff";
-const SECRET_B = "3c".repeat(32);
 /** An identity the fixture never enrols, and a secret no device holds. */
 const UNENROLLED = "deadbeefdeadbeefdeadbeefdeadbeef";
 const SECRET_C = "5e".repeat(32);
-
-/**
- * A vault that behaves like Obsidian's: every mutation, the plugin's own
- * included, comes back to this device as a vault event.
- */
-class Vault extends FakeHost {
-  constructor({ delivery = "immediate", obsidian, ...options } = {}) {
-    super(options);
-    this.delivery = delivery;
-    this.obsidian = obsidian;
-    this.listeners = new Map();
-    /** Paths whose `delete` event this vault never delivers (a watcher miss). */
-    this.silent = new Set();
-  }
-
-  on(name, handler) {
-    const list = this.listeners.get(name) ?? [];
-    list.push(handler);
-    this.listeners.set(name, list);
-    return { name };
-  }
-
-  emit(name, ...args) {
-    const fire = () => {
-      for (const handler of this.listeners.get(name) ?? []) handler(...args);
-    };
-    if (this.delivery === "immediate") fire();
-    else setTimeout(fire, 0);
-  }
-
-  entry(path, folder = false) {
-    const file = folder ? new this.obsidian.TFolder() : new this.obsidian.TFile();
-    file.path = path;
-    return file;
-  }
-
-  // --- what the plugin does to the vault, and what comes back ------------
-
-  async trash(path) {
-    const existed = this.files.has(path);
-    await super.trash(path);
-    if (existed && !this.silent.has(path)) this.emit("delete", this.entry(path));
-  }
-
-  async writer(path) {
-    const writer = await super.writer(path);
-    return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
-  }
-
-  async createWriter(path, size, check) {
-    const writer = await super.createWriter(path, size, check);
-    return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
-  }
-
-  async commit(writer, path, mtime) {
-    const existed = this.files.has(path);
-    const stat = await writer.commit(mtime);
-    this.emit(existed ? "modify" : "create", this.entry(path));
-    return stat;
-  }
-
-  // --- what the USER does to the vault -----------------------------------
-
-  /** Type a note, or edit one. */
-  write(path, text, mtime) {
-    const existed = this.files.has(path);
-    this.seed(path, text, mtime);
-    this.emit(existed ? "modify" : "create", this.entry(path));
-  }
-
-  /** Rename a note through its inline title: one event, one file. */
-  rename(from, to) {
-    this.files.set(to, this.files.get(from));
-    this.files.delete(from);
-    this.emit("rename", this.entry(to), from);
-  }
-
-  /** Rename a folder: every file under it moves, and Obsidian fires ONE event. */
-  renameFolder(from, to) {
-    for (const path of [...this.files.keys()].filter((candidate) => candidate.startsWith(`${from}/`))) {
-      this.files.set(to + path.slice(from.length), this.files.get(path));
-      this.files.delete(path);
-    }
-    this.emit("rename", this.entry(to, true), from);
-  }
-
-  /** Delete a note, the way the user's own delete command does. */
-  remove(path) {
-    this.files.delete(path);
-    this.emit("delete", this.entry(path));
-  }
-}
-
-/**
- * One device: its vault, its state, its own device secret, its engine, and
- * the plugin's real vault-event registration wired between the two.
- */
-async function device(box, server, timers, { id, secret, name, delivery, isMobile = false }) {
-  const obsidian = box.require("obsidian");
-  const host = new Vault({ delivery, obsidian, isMobile, deviceName: name });
-  const { state } = await fakeState(isMobile);
-  state.data.deviceId = id;
-  state.data.deviceSecret = secret;
-  const transport = new Transport({
-    request: server.request,
-    serverUrl: () => state.data.serverUrl,
-    device: () => ({ id, secret: Uint8Array.from(Buffer.from(secret, "hex")) }),
-    edgeHeaders: () => [],
-    now: () => host.clock,
-    sleep: async () => undefined,
-    maxAttempts: 2,
-    log: (line) => host.logs.push(line),
-  });
-  const engine = new SyncEngine({ state, transport, host, now: () => host.clock, timers });
-  // The plugin's own handlers, not a copy of them: `registerVaultEvents` is
-  // what maps a vault event onto an engine call, including the fan-out a
-  // folder rename needs, and it is part of what issue #96 is about.
-  const plugin = new (box.require(join(box.home, "build/main.js")).default)();
-  plugin.app = { vault: host };
-  plugin.registerEvent = () => undefined;
-  plugin.state = state;
-  plugin.engine = engine;
-  plugin.registerVaultEvents();
-  return { host, state, transport, engine, plugin };
-}
-
-/** Two paired devices against one server, both running. */
-async function pair(t, delivery) {
-  const box = sandbox();
-  t.after(() => rmSync(box.home, { recursive: true, force: true }));
-  const server = new FakeServer();
-  const k = await keys();
-  await server.seedDomainMap(k.map, KEYS.domainId);
-  server.addDevice(DEVICE_B, SECRET_B, "phone");
-  const timers = new FakeTimers();
-  const a = await device(box, server, timers, {
-    id: KEYS.deviceId, secret: KEYS.deviceSecret, name: "desktop", delivery,
-  });
-  const b = await device(box, server, timers, {
-    id: DEVICE_B, secret: SECRET_B, name: "phone", delivery, isMobile: true,
-  });
-  t.after(() => { a.engine.stop(); b.engine.stop(); });
-  return { server, timers, a, b, keys: k };
-}
-
-/**
- * Has this device finished recording the file it pushed or pulled? A version
- * reaches the server, and so the other device, BEFORE its author writes its
- * own record, so a wait that named only the other vault could read a state
- * one statement too early.
- */
-const settled = (device, path) => device.state.fileByPath(path) !== undefined;
 
 /**
  * Wait for a move to land everywhere -- or stop the moment a tombstone
