@@ -584,7 +584,13 @@ returns immediately when a new frame lands.
    download missing chunks, decrypt, assemble, verify the plaintext
    `sha256`, and write atomically (temp file plus rename on desktop via the
    Node filesystem; adapter write on mobile). Echoes of the device's own
-   versions are recognized by `version_id` and skipped. A decrypted
+   versions are recognized by `version_id` and skipped. A version whose path
+   moved is applied as a MOVE -- the new path is written, the old one
+   trashed -- and the vault reports that removal back to this plugin like any
+   other deletion, so the engine drops it once, by the path the pull path
+   recorded before removing it. Without that gate a rename is republished as
+   a tombstone and deletes the file on every device, which is what 1.0.4
+   fixed (`plugin/src/sync/engine.ts`, ECHOES). A decrypted
    manifest is data from another device, not an instruction: its path is
    validated as a canonical relative vault path (no absolute path, no `..`
    or empty segment, no control character, no hidden segment) before any

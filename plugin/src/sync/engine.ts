@@ -15,9 +15,15 @@
  * as long as it takes.
  *
  * ECHOES. The engine drops a watcher event whose `(path, mtime, size)`
- * matches a write the pull path just made, and the pull path drops a feed
- * record whose `version_id` this device authored. Without both, one edit
- * would ping-pong between devices forever.
+ * matches a write the pull path just made, drops a delete event for a path
+ * the pull path just trashed, and the pull path drops a feed record whose
+ * `version_id` this device authored. Without all three, one edit would
+ * ping-pong between devices forever -- and the delete echo does worse than
+ * ping-pong. Applying a remote RENAME is a write at the new path and a trash
+ * at the old one, so the vault reports a deletion for a file that was only
+ * moved: publishing that echo posts a tombstone for a live file id, and every
+ * device, the one that renamed it included, then obeys it. That is how a
+ * rename deleted a note everywhere in 1.0.0-1.0.3 (issue #96).
  *
  * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
  * the watcher, startup reconciliation and the pull path all refuse anything
@@ -104,6 +110,8 @@ export interface SyncContext {
   readonly authored: Set<string>;
   /** `path:mtime:size` of writes this device made, awaiting their watcher event. */
   readonly written: Set<string>;
+  /** Paths the pull path trashed here, awaiting their watcher delete event. */
+  readonly trashed: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
   readonly deviceNames: Map<string, string>;
@@ -242,6 +250,7 @@ export class SyncEngine {
       concurrency: host.isMobile ? 2 : 4,
       authored: new Set<string>(),
       written: new Set<string>(),
+      trashed: new Set<string>(),
       refused: new Set<string>(),
       deviceNames,
       now: () => this.nowFn(),
@@ -317,13 +326,32 @@ export class SyncEngine {
   /** A create or modify event from the vault. */
   changed(path: string): void {
     if (!this.running || !this.tracked(path, "change")) return;
+    // A file exists at this path again, so any delete event still owed for
+    // the one the pull path trashed there will never arrive. Dropping the
+    // suppression now is what keeps it from swallowing the deletion of THIS
+    // file: a vault event that goes missing must cost one echo, never one
+    // tombstone.
+    this.need().trashed.delete(path);
     this.deletions.delete(path);
     this.debounce(path, 0);
   }
 
-  /** A delete event from the vault. */
+  /**
+   * A delete event from the vault.
+   *
+   * The pull path's own trash comes back here: applying a remote rename or a
+   * remote deletion removes a file from THIS vault, and Obsidian reports that
+   * removal to this plugin like any other. Publishing it would post a
+   * tombstone for a file id the vault still holds under another name, so the
+   * echo is dropped once, by the path the pull path recorded before trashing
+   * it (issue #96).
+   */
   deleted(path: string): void {
     if (!this.running || !this.tracked(path, "delete")) return;
+    if (this.need().trashed.delete(path)) {
+      this.options.host.log("watch path_class=file decision=echo_suppressed event=delete");
+      return;
+    }
     const entry = this.pending.get(path);
     if (entry) {
       this.timers.clear(entry.handle);
@@ -371,6 +399,7 @@ export class SyncEngine {
     // Straight into the queue: the debounce and the unchanged-content check
     // would both drop a rename, whose only change is the path in the manifest.
     this.renames.add(to);
+    context.trashed.delete(to);
     this.deletions.delete(to);
     this.enqueue(to);
   }
