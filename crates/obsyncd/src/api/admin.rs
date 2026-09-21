@@ -141,12 +141,20 @@ impl SessionTable {
         self.sessions.remove(session);
     }
 
-    /// Close every session, returning how many went. The "sign out
-    /// everywhere" action: a cookie captured anywhere stops working here.
-    pub fn close_all(&mut self) -> usize {
+    /// Close every session AND drop every outstanding login link, returning
+    /// the two counts in that order.
+    ///
+    /// The "sign out everywhere" action exists for a browser left signed in
+    /// on a machine the operator no longer controls. A one-time link that
+    /// machine still holds is the same key to the same dashboard, unspent
+    /// and good for five minutes, so leaving the links behind would have
+    /// handed back exactly what the button was pressed to take away.
+    pub fn close_all(&mut self) -> (usize, usize) {
         let closed = self.sessions.len();
+        let dropped = self.links.len();
         self.sessions.clear();
-        closed
+        self.links.clear();
+        (closed, dropped)
     }
 
     /// Drop everything one device minted: the sessions opened from its links
@@ -312,6 +320,11 @@ pub fn login(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             "login token is not valid",
         ));
     }
+    // A link was spent, or the recovery token matched in constant time:
+    // either way this caller held a credential. Below this line the request
+    // is credentialed; above it, every path is a refusal that proved
+    // nothing.
+    req.prove();
     let session = mint(32)?;
     let csrf = mint(32)?;
     sessions.open(&session, &csrf, now, minted_by);
@@ -367,11 +380,12 @@ pub fn logout(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 /// `401 no_session`, `403 csrf_failed`.
 pub fn logout_all(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
-    let closed = app.sessions.lock().expect("sessions").close_all();
+    let (closed, dropped) = app.sessions.lock().expect("sessions").close_all();
     app.log.warn(
         "dashboard_sessions_closed",
         &[
             ("count", Val::count(closed as u64)),
+            ("links_dropped", Val::count(dropped as u64)),
             ("by", Val::word("dashboard")),
         ],
     );
@@ -456,8 +470,9 @@ pub fn devices(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
     let target = render::device_id(id)?;
-    super::devices::refuse_last_active(app, &target)?;
-    app.store.revoke_device(&target)?;
+    // The same single-lock refusal the device route takes: see
+    // `Store::revoke_device_unless_last`.
+    app.store.revoke_device_unless_last(&target)?;
     let (sessions, links) = app
         .sessions
         .lock()
@@ -599,6 +614,11 @@ fn session(app: &App, req: &Request) -> Result<String, ApiError> {
     // Touch, not read: the idle limit measures silence, so every accepted
     // request pushes it out and only a session nobody uses expires early.
     sessions.touch(&token, now).ok_or_else(no_session)?;
+    // A live session is a credential this server minted and just matched, so
+    // the response is a credentialed one from here on -- including the
+    // `403 csrf_failed` that `mutating_session` may answer next, which is a
+    // signed-in browser being refused, not a stranger.
+    req.prove();
     Ok(token)
 }
 
@@ -828,9 +848,15 @@ mod tests {
 
         t.open("one", "csrf", 1_000, Some(device(1)));
         t.open("two", "csrf", 1_000, None);
-        assert_eq!(t.close_all(), 2);
+        t.add_link("unspent", 1_000, device(1));
+        assert_eq!(t.close_all(), (2, 1));
         assert!(t.get("one", 1_000).is_none());
         assert!(t.get("two", 1_000).is_none());
+        assert_eq!(
+            t.take_link("unspent", 1_000),
+            None,
+            "a link the operator never spent is not a way back in"
+        );
     }
 
     #[test]

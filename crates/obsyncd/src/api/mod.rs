@@ -202,6 +202,11 @@ impl From<StoreError> for ApiError {
                 ApiError::new(416, code, "since is beyond the journal head")
             }
             StoreError::UnknownDevice => ApiError::new(404, code, "no such device"),
+            StoreError::LastActiveDevice => ApiError::new(
+                409,
+                code,
+                "the only active device cannot be revoked; pair another first",
+            ),
             StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")
@@ -758,14 +763,14 @@ impl App {
     /// Log one line, remember it in the ring its trust class owns, and
     /// harden the response.
     ///
-    /// `demands` says the ROUTE requires a credential; `proved` below says
-    /// this request satisfied it, which is every status but the two that
-    /// refuse a caller before it proves anything: `401` from
-    /// authentication, and `421` from the edge requirement, which is
-    /// answered before dispatch. Every other refusal on such a route is
-    /// answered to a caller that already proved one, `403 csrf_failed` and
-    /// `403 device_revoked` included -- the second of those is a residual
-    /// stated in `docs/security/dashboard.md`.
+    /// The trust class is POSITIVE evidence and nothing else: the request
+    /// carries a bit that only [`Request::prove`] sets, and only the four
+    /// places a credential actually verifies call it -- `auth::authenticate`
+    /// once a signature, timestamp and nonce all pass, `admin::session` once
+    /// a session cookie matches a live session, `admin::login` once a link or
+    /// the recovery token compares equal, and `setup::create` once the setup
+    /// token does. No status, route, or header can produce that bit.
+    /// `demands` is the cross-check, never the source: see [`trust`].
     fn finish(
         &self,
         req: &Request,
@@ -793,7 +798,22 @@ impl App {
             decision,
         };
         self.emit(&line);
-        let proved = demands && !matches!(status, 401 | 421);
+        let verdict = trust(demands, req.proved(), status);
+        if verdict == Trust::Unverified {
+            // A route that refuses to answer without a credential answered
+            // anyway, and nothing verified one. That is this server's bug,
+            // not a caller's doing: say so at error, name the route class,
+            // and treat the answer as unproved (AGENTS.md requirement 12).
+            self.log.error(
+                "provenance",
+                &[
+                    ("path_class", Val::word(class)),
+                    ("status", Val::status(status)),
+                    ("decision", Val::word("unverified_success")),
+                ],
+            );
+        }
+        let proved = verdict == Trust::Proved;
         self.recent.lock().expect("recent log").push(line, proved);
         let resp = resp
             .header("Cache-Control", "no-store")
@@ -801,9 +821,9 @@ impl App {
             .header("X-Frame-Options", "DENY")
             .header("Referrer-Policy", "no-referrer");
         // The journal head is write activity, and write activity is the
-        // owner's. It rides responses to callers that proved a credential
-        // and nothing else: on an unauthenticated probe it was a counter
-        // anyone could poll to reconstruct when the owner writes
+        // owner's. It rides a response only when a credential verified while
+        // answering it: on an unauthenticated probe it was a counter anyone
+        // could poll to reconstruct when the owner writes
         // (`docs/security/dashboard.md`).
         if proved {
             resp.header("X-Obsync-Seq", &format!("{}", render::seq_u64(seq)))
@@ -838,14 +858,44 @@ impl App {
     }
 }
 
+/// What one finished request proved, as the two log rings and the
+/// journal-head header read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trust {
+    /// A credential verified while this request was answered.
+    Proved,
+    /// Nothing verified: an unauthenticated route, or a refusal answered
+    /// before any check could pass.
+    Unproved,
+    /// A route that demands a credential answered success without one
+    /// verifying. Only a server bug reaches this, and it is treated as
+    /// [`Trust::Unproved`] -- fail closed, and log it.
+    Unverified,
+}
+
+/// The whole trust decision, as a pure function of the three facts
+/// [`App::finish`] holds.
+///
+/// `proved` is the evidence and decides alone. `demands` cannot promote a
+/// request -- it only lets a success on a credentialed route with no evidence
+/// be named as the bug it is, rather than quietly trusted the way inferring
+/// the class from the status used to.
+const fn trust(demands: bool, proved: bool, status: u16) -> Trust {
+    match (proved, demands, status) {
+        (true, _, _) => Trust::Proved,
+        (false, true, 200..=399) => Trust::Unverified,
+        (false, _, _) => Trust::Unproved,
+    }
+}
+
 /// Whether this route refuses to answer without a credential.
 ///
 /// The match is exhaustive and takes no wildcard, so a route added to
-/// `resolve` cannot reach the log ring or the journal-head header without
-/// its author saying which side of this line it is on. Every handler that
-/// answers `true` here authenticates FIRST, before it reads a body or a
-/// query parameter, so a request refused for any other reason than `401` or
-/// `421` is one that proved a credential.
+/// `resolve` states which side of this line it is on. This is the
+/// CROSS-CHECK on the trust decision and not its source: a success here with
+/// no credential verified is a server bug [`trust`] names and refuses to
+/// trust. Every handler that answers `true` authenticates FIRST, before it
+/// reads a body or a query parameter.
 fn demands_credential(route: &Route) -> bool {
     match route {
         // Unauthenticated by contract (`docs/protocol.md`): the probes, the

@@ -187,19 +187,12 @@ test('lib.js reads the host-prefixed double-submit cookie and no other name', ()
   assert.deepEqual(bare, [], 'no unprefixed cookie name survives in the shipped code');
 });
 
-// Two page behaviours that exist only because the server grew a field and a
-// route for them. Without these, deleting the line that reads either one
-// leaves every other check in this file green.
-test('the page shows the recovery notice and can sign out everywhere', () => {
-  const code = stripComments(APP_JS);
-  assert.ok(HTML.includes('id="recovery-note"'), 'the notice element exists');
-  assert.ok(code.includes('session.recovery'), 'keyed on the overview field the server sends');
-  assert.ok(code.includes("el('recovery-note').hidden"), 'and it toggles that element');
-
-  assert.ok(HTML.includes('id="signout-all"'), 'the control exists');
-  assert.ok(code.includes("el('signout-all').addEventListener"), 'and it is wired');
-  assert.ok(code.includes('`${ADMIN}/logout-all`'), 'to the route that ends every session');
-});
+// The recovery notice and sign-out-everywhere used to be pinned here as
+// source substrings. They are behaviours now, driven through app.js itself in
+// app.test.mjs, because every one of those substrings survived a mutation
+// that broke the control it was standing in for. What is still pinned from
+// here is that the ids exist in index.html, which the id scan below does for
+// every id app.js reaches.
 
 test('index.html: one section per route, plus sign-in', () => {
   for (const name of ['overview', 'devices', 'pairing', 'storage', 'install', 'logs']) {
@@ -358,6 +351,8 @@ test('no file under dashboard/ names an ingress, edge, or access provider', () =
     'dev/mock.mjs': MOCK,
     'test/html.test.mjs': read('test/html.test.mjs'),
     'test/lib.test.mjs': read('test/lib.test.mjs'),
+    'test/app.test.mjs': read('test/app.test.mjs'),
+    'test/dom.mjs': read('test/dom.mjs'),
   };
   assert.deepEqual(providerHits(sources, needles), []);
   // The page still shows the note; it keys on the mode not being the default.

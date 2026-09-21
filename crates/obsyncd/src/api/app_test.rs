@@ -84,7 +84,9 @@ fn a_pending_device_whose_pairing_is_gone_does_not_survive_the_restart() {
             .create_device(device(account, "gone", DeviceState::Active))
             .expect("the revoked device")
             .device_id;
-        app.store.revoke_device(&revoked).expect("revoked");
+        app.store
+            .revoke_device_unless_last(&revoked)
+            .expect("revoked");
         let pending = app
             .store
             .create_device(device(account, "claimant", DeviceState::Pending))

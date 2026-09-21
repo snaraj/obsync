@@ -51,7 +51,16 @@ device.
   can succeed.
 - A session ends after 12 hours whatever it does, after 1 hour of silence, on
   sign-out, on sign-out-everywhere, and when the device that minted its link
-  is revoked.
+  is revoked. Sign-out-everywhere also drops every login link that has been
+  minted and never spent: an unspent link is the same key to the same
+  dashboard, and the button exists for a machine the operator no longer
+  controls.
+- The account's last ACTIVE device cannot be revoked, and the count and the
+  revocation happen under ONE hold of the store's index lock. Checking first
+  and writing afterwards let two devices revoking each other at the same
+  moment both succeed, which leaves an account nothing can ever sync again:
+  `POST /v1/setup` answers `409 already_set_up` forever and only a paired
+  device can open a pairing.
 - Every response carries `Cache-Control: no-store`,
   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
   `Referrer-Policy: no-referrer`; page responses add the strict CSP plus
@@ -60,11 +69,26 @@ device.
   `dashboard/test/html.test.mjs` fails the build if one appears; every value
   the server sends is rendered with `textContent`.
 - `X-Obsync-Seq` states the journal head to callers that proved a credential
-  and to nobody else.
+  and to nobody else, and "proved" is positive evidence: the server records
+  the fact where a credential VERIFIES -- a device signature with its
+  timestamp and nonce, a session cookie that matched a live session, a login
+  token, a setup token -- and the response header and the log ring key off
+  that record alone. Neither the route nor the status can produce it. The
+  route table is kept as a CROSS-CHECK: a success on a route that demands a
+  credential with nothing recorded is a server bug, logged at error and
+  treated as unproved.
+- Every route that demands a credential authenticates BEFORE it validates a
+  path segment, a query parameter or a body. A handler that validated first
+  answered an anonymous caller `400`, which is a refusal with no credential
+  behind it on a route where the log has no other way to judge one: those
+  lines took credentialed ring space and carried the journal head with them.
 - Every refused sign-in is a `warn` line carrying its decision, and it
-  reaches the Logs page as well as stdout: a run of attempts is visible
-  rather than merely rate-limited, and it cannot push the authenticated
-  record off that page (the ring split below).
+  reaches the Logs page as well as stdout for as long as it is retained: a
+  run of attempts is visible rather than merely rate-limited, and it cannot
+  push the authenticated record off that page (the ring split below). A
+  refusal is unauthenticated traffic, so it sits in the 200-line public ring
+  and other unauthenticated traffic can displace it there; stdout keeps it
+  either way.
 - The address and country shown for a device are the peer's, unless an edge
   is configured; forwarded headers from an untrusted peer are ignored.
 
@@ -108,12 +132,20 @@ device.
   with a refusal, renewably. The token is 256 bits compared in constant time,
   so a limit buys nothing against guessing; the noise it would bound is
   already bounded by the ring split below. Refusals are logged instead.
-- **A revoked device's requests still count as credentialed** until it stops
-  making them: `403 device_revoked` is answered only after a valid signature,
-  so those responses carry `X-Obsync-Seq` and those lines sit in the
-  credentialed ring. That is deliberate — the device held the vault key
-  minutes ago, and the alternative is losing the very lines that show a
-  revoked device still trying.
+- **A revoked device's requests are NOT credentialed.** Revocation destroys
+  the wrapped secret, so `403 device_revoked` has to be answered from the
+  device record before any signature can be checked — there is nothing left
+  to check one against. The refusal therefore proves nothing, carries no
+  `X-Obsync-Seq`, and its line sits in the public ring, where a revoked
+  device still hammering the server is visible but can be displaced by other
+  unauthenticated traffic. Stdout keeps every one of those lines. A pending
+  device is the other way round: it still holds its secret, so
+  `403 device_pending` is answered only after its signature verifies and is
+  credentialed.
+- **A revoked device id can be told from an unknown one** by the status
+  alone: `403 device_revoked` against `401 bad_signature`, for the reason
+  above. A device id is not a secret the protocol protects, and the
+  alternative is a refusal that does not say what happened.
 - **`GET /readyz` still states the journal head in its BODY.** The header was
   taken off unauthenticated responses; the `seq` field of
   `{"ready":true,"seq":<n>}` is pinned by `../protocol.md` and read by the
@@ -122,14 +154,24 @@ device.
   decision.
 - The decision log is not an audit log. It is two bounded rings in memory —
   1000 lines from credentialed requests, 200 from everything else — so
-  unauthenticated traffic can push out only other unauthenticated traffic.
-  Both are shown. Ship stdout for an audit trail; every line in these rings
-  was written there first.
+  unauthenticated traffic can push out only other unauthenticated traffic,
+  including other unauthenticated traffic's own refusals. Both rings are
+  shown. Ship stdout for an audit trail; every line in these rings was
+  written there first.
+- `POST /v1/setup` and `POST /v1/pairing/{id}/claim` remain PUBLIC routes,
+  but a setup call whose token compares equal records the proof and is
+  credentialed from that point: the account-creation line is no longer
+  evictable. A pairing claim is not, because it parses a body before it
+  compares anything.
 - Revocation is final. There is no un-revoke route and no CLI recovery; the
   last ACTIVE device cannot be revoked from either route, because nothing
   re-enrols one.
-- A session cannot be ended from another device — only from a dashboard
-  session, or by a restart.
+- A session can be ended from another device, by revoking the device whose
+  link opened it: revocation closes that device's sessions and drops its
+  unspent links from either revoke route. What cannot be done from a device
+  is ending a session that the RECOVERY token opened, because no device
+  minted it; that one ends on sign-out, sign-out-everywhere, either limit, or
+  a restart.
 
 ## 7. Rotation and break-glass
 
@@ -143,5 +185,6 @@ device.
 - **The last-device refusal** protects the account itself: `POST /v1/setup`
   answers `409 already_set_up` forever, and a pairing can only be opened by a
   paired device, so an account with no active device can never sync again.
-- **Sign out everywhere** ends every session in the process at once, for the
-  browser left behind on a machine the operator no longer controls.
+- **Sign out everywhere** ends every session in the process at once and
+  drops every unspent login link with them, for the browser left behind on a
+  machine the operator no longer controls.

@@ -62,6 +62,22 @@ fn ready(cfg: &StorageConfig) -> Setup {
     }
 }
 
+/// A second ACTIVE device on the same account: the store refuses to revoke
+/// the only active one, so a test about revocation needs somebody left.
+fn spare_device(store: &Store, account: AccountId) -> DeviceId {
+    store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "spare device".to_string(),
+            platform: "linux".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [9u8; 32],
+            state: DeviceState::Active,
+        })
+        .expect("the spare pairs")
+        .device_id
+}
+
 fn put(setup: &Setup, body: &[u8]) -> Sid {
     let sid = Sid::new(sha256(body));
     setup
@@ -499,7 +515,11 @@ fn a_version_needs_its_chunks_its_id_and_a_live_device() {
         .expect_err("a pending device is refused");
     assert!(matches!(err, StoreError::DevicePending), "{err}");
 
-    setup.store.revoke_device(&setup.device).expect("revoke");
+    spare_device(&setup.store, setup.account);
+    setup
+        .store
+        .revoke_device_unless_last(&setup.device)
+        .expect("revoke");
     let err = setup
         .store
         .append_version(posted)
@@ -817,7 +837,8 @@ fn a_pending_device_activates_once_and_never_after_revocation() {
         .activate_device(&id)
         .expect("approving twice is a no-op");
 
-    store.revoke_device(&id).expect("revoke");
+    spare_device(&store, account);
+    store.revoke_device_unless_last(&id).expect("revoke");
     let err = store
         .activate_device(&id)
         .expect_err("a revoked device never comes back");
@@ -904,7 +925,8 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         Some(UnixMs(42))
     );
 
-    store.revoke_device(&id).expect("revoke");
+    spare_device(&store, account);
+    store.revoke_device_unless_last(&id).expect("revoke");
     assert_eq!(
         store.device_secret(&id),
         None,
@@ -916,7 +938,11 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         "the wrapped secret is destroyed, not just flagged"
     );
     assert!(store.device(&id).expect("device").revoked());
-    assert_eq!(store.devices().len(), 1);
+    assert_eq!(
+        store.devices().len(),
+        2,
+        "the revoked device and the spare that made revoking it legal"
+    );
 
     store.delete_device(&id).expect("delete");
     assert!(store.device(&id).is_none());
@@ -2449,6 +2475,66 @@ fn widen(root: &std::path::Path) {
         }
     }
     chmod(root, WEAK_DIR);
+}
+
+/// Two devices revoking each other at the same instant cannot leave an
+/// account with nothing active.
+///
+/// The refusal used to live in the API: read the device list, release the
+/// lock, decide. Two concurrent revocations both read "two active" and both
+/// wrote, and what that leaves is permanent -- `POST /v1/setup` answers
+/// `409 already_set_up` forever and only a paired device can open a pairing,
+/// so the account can never sync again. The count and the append now happen
+/// under one hold of the index lock, which is the only place they can.
+#[test]
+fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
+    let dir = TempDir::new("store-revoke-race");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let account = store.setup("sentinel").expect("setup runs once");
+
+    for round in 0..50 {
+        let a = spare_device(&store, account);
+        let b = spare_device(&store, account);
+        assert_eq!(
+            store.devices().iter().filter(|d| d.active()).count(),
+            2,
+            "round {round} starts with exactly the two racers"
+        );
+        let gate = std::sync::Barrier::new(2);
+        let (ra, rb) = thread::scope(|scope| {
+            let one = scope.spawn(|| {
+                gate.wait();
+                store.revoke_device_unless_last(&b)
+            });
+            let two = scope.spawn(|| {
+                gate.wait();
+                store.revoke_device_unless_last(&a)
+            });
+            (one.join().expect("one"), two.join().expect("two"))
+        });
+
+        assert!(
+            ra.is_ok() != rb.is_ok(),
+            "round {round}: exactly one of two mutual revocations may land"
+        );
+        let refused = ra.err().or(rb.err()).expect("one of them was refused");
+        assert!(
+            matches!(refused, StoreError::LastActiveDevice),
+            "round {round}: {refused}"
+        );
+        assert_eq!(
+            store.devices().iter().filter(|d| d.active()).count(),
+            1,
+            "round {round}: the account still has a device that can sync"
+        );
+        // Clear the board for the next round: deletion is the pairing-reject
+        // path and takes an active device, which revocation deliberately
+        // will not.
+        for id in [a, b] {
+            store.delete_device(&id).expect("delete");
+        }
+    }
 }
 
 mod recovery;

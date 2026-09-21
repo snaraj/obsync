@@ -2605,12 +2605,24 @@ fn signing_out_everywhere_ends_every_session_not_only_this_one() {
         );
     }
 
+    // A link minted and never spent is the same key to the same dashboard:
+    // the machine the operator no longer controls may be holding one.
+    let unspent = login_token(&h, &cred);
+
     let csrf = csrf_value(&two);
     let all = Req::post("/v1/admin/logout-all")
         .header("Cookie", &two)
         .header("X-Obsync-Csrf", &csrf)
         .send(h.addr);
     assert_eq!(all.status, 204, "{}", all.text());
+
+    let spent_after = Req::get(&format!("/login?token={unspent}")).send(h.addr);
+    assert_eq!(
+        (spent_after.status, spent_after.code()),
+        (401, "bad_login_token".to_string()),
+        "signing out everywhere burns the links nobody spent, or it handed \
+         back exactly what it was pressed to take away"
+    );
     for c in [&one, &two] {
         assert_eq!(
             Req::get("/v1/admin/overview")
@@ -3201,4 +3213,286 @@ mod fixtures {
         assert_eq!(accepted.status, 409, "{}", accepted.text());
         assert_eq!(accepted.code(), "missing_chunks");
     }
+}
+
+/// The setup body every first-boot call sends, with the token under test.
+fn setup_body(token: &str) -> String {
+    format!(
+        r#"{{"setup_token":"{token}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#
+    )
+}
+
+/// Which ring a decision landed in, read from the two rings themselves.
+///
+/// The header a caller receives and the ring its line lands in are ONE
+/// decision, so every provenance assertion checks both: a fault that set one
+/// and not the other would otherwise pass.
+fn ring_of(h: &Harness, class: &str, status: u16) -> &'static str {
+    let recent = h.app.recent.lock().expect("recent log");
+    let holds = |ring: &std::collections::VecDeque<crate::api::LogLine>| {
+        ring.iter()
+            .any(|l| l.path_class == class && l.status == status)
+    };
+    if holds(&recent.credentialed) {
+        "credentialed"
+    } else if holds(&recent.public) {
+        "public"
+    } else {
+        "absent"
+    }
+}
+
+/// Credentialed means one thing: a credential verified WHILE this request was
+/// answered. No route, status, or header can produce that fact, and every
+/// refusal answered before a check could pass is public.
+#[test]
+fn only_a_verified_credential_makes_a_response_credentialed() {
+    let h = Harness::start("provenance");
+
+    // A wrong setup token proves nothing; the right one proves the
+    // first-boot credential, and the `201` that follows is credentialed.
+    let wrong = Req::post("/v1/setup")
+        .body(&setup_body(&"11".repeat(32)))
+        .send(h.addr);
+    assert_eq!(wrong.status, 401);
+    assert_eq!(wrong.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/setup", 401), "public");
+
+    let created = Req::post("/v1/setup")
+        .body(&setup_body(&"5e".repeat(32)))
+        .send(h.addr);
+    assert_eq!(created.status, 201, "{}", created.text());
+    assert!(
+        created.header("x-obsync-seq").is_some(),
+        "the caller that held the setup token proved it"
+    );
+    assert_eq!(ring_of(&h, "/v1/setup", 201), "credentialed");
+    let cred = Cred::from_json(&created.json());
+
+    // A malformed signature header is refused before verification.
+    let malformed = Req::get("/v1/account")
+        .header("X-Obsync-Device", "not-hex-at-all")
+        .header("X-Obsync-Ts", &NOW.to_string())
+        .header("X-Obsync-Nonce", &nonce())
+        .header("X-Obsync-Sig", "zz")
+        .send(h.addr);
+    assert_eq!(malformed.status, 401);
+    assert_eq!(malformed.code(), "bad_signature");
+    assert_eq!(malformed.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/account", 401), "public");
+
+    // A signature that verifies, on a request the server then refuses for a
+    // reason of its own: the credential still verified, so the answer is
+    // credentialed. This is the case a status heuristic cannot tell from the
+    // one above.
+    let unknown = Req::post(&format!("/v1/devices/{}/revoke", "ab".repeat(16)))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(unknown.status, 404, "{}", unknown.text());
+    assert!(
+        unknown.header("x-obsync-seq").is_some(),
+        "a refusal AFTER the signature verified is a credentialed answer"
+    );
+    assert_eq!(ring_of(&h, "/v1/devices/{id}/revoke", 404), "credentialed");
+
+    // A route nobody needs a credential for, and no credential arrived.
+    let missing = Req::get("/nothing-here").send(h.addr);
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/unknown", 404), "public");
+
+    // `GET /login`: a wrong token proves nothing, a live link proves itself.
+    let refused = Req::get("/login?token=deadbeef").send(h.addr);
+    assert_eq!(refused.status, 401);
+    assert_eq!(refused.code(), "bad_login_token");
+    assert_eq!(refused.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/login", 401), "public");
+
+    let token = login_token(&h, &cred);
+    let signed_in = Req::get(&format!("/login?token={token}")).send(h.addr);
+    assert_eq!(signed_in.status, 302, "{}", signed_in.text());
+    assert!(
+        signed_in.header("x-obsync-seq").is_some(),
+        "the sign-in that spent a link proved a credential"
+    );
+    assert_eq!(ring_of(&h, "/login", 302), "credentialed");
+
+    // A live session with the wrong double-submit header: refused, but
+    // refused to a signed-in browser, which is a credentialed decision.
+    let cookie = cookie_header(&signed_in);
+    let csrf_failed = Req::post("/v1/admin/logout")
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &"00".repeat(32))
+        .send(h.addr);
+    assert_eq!(csrf_failed.status, 403, "{}", csrf_failed.text());
+    assert_eq!(csrf_failed.code(), "csrf_failed");
+    assert!(
+        csrf_failed.header("x-obsync-seq").is_some(),
+        "a CSRF refusal follows a session that matched"
+    );
+    assert_eq!(ring_of(&h, "/v1/admin/logout", 403), "credentialed");
+
+    // No cookie at all is not a session, on the same route.
+    let no_session = Req::post("/v1/admin/logout").send(h.addr);
+    assert_eq!(no_session.status, 401);
+    assert_eq!(no_session.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/admin/logout", 401), "public");
+}
+
+/// Every route that demands a credential authenticates BEFORE it validates
+/// anything, so an anonymous caller gets `401` and nothing else -- whatever
+/// path segment or query it sends.
+///
+/// A handler that validated first answered `400`, and a `400` on such a route
+/// is a refusal the log has to classify with no credential to classify it by:
+/// it rode the journal head out and it sat in the 1000-line credentialed
+/// ring, where a thousand malformed requests pushed out every real decision.
+#[test]
+fn no_credentialed_route_answers_an_anonymous_caller_before_it_authenticates() {
+    let h = Harness::start("anonymous-walk");
+    h.setup_account();
+    let bad = "nothex";
+    let query = "?since=x&wait=x&limit=x&after=x&token=x&id=x";
+    let mut targets: Vec<(&str, String)> = Vec::new();
+    for (method, path) in [
+        ("GET", "/v1/account".to_string()),
+        ("POST", "/v1/pairing".to_string()),
+        ("GET", format!("/v1/pairing/{bad}")),
+        ("POST", format!("/v1/pairing/{bad}/approve")),
+        ("POST", format!("/v1/pairing/{bad}/reject")),
+        ("GET", format!("/v1/pairing/{bad}/envelope")),
+        ("GET", "/v1/devices".to_string()),
+        ("PATCH", format!("/v1/devices/{bad}")),
+        ("POST", format!("/v1/devices/{bad}/revoke")),
+        ("POST", "/v1/devices/heartbeat".to_string()),
+        ("POST", "/v1/chunks/exists".to_string()),
+        ("POST", "/v1/chunks/get".to_string()),
+        ("PUT", format!("/v1/chunks/{bad}")),
+        ("GET", format!("/v1/chunks/{bad}")),
+        ("POST", format!("/v1/files/{bad}/versions")),
+        ("GET", format!("/v1/files/{bad}")),
+        ("GET", format!("/v1/files/{bad}/versions/{bad}")),
+        ("GET", "/v1/files".to_string()),
+        ("GET", "/v1/changes".to_string()),
+        ("POST", "/v1/dashboard/login-link".to_string()),
+        ("GET", "/login".to_string()),
+        ("POST", "/v1/admin/logout".to_string()),
+        ("POST", "/v1/admin/logout-all".to_string()),
+        ("GET", "/v1/admin/overview".to_string()),
+        ("GET", "/v1/admin/devices".to_string()),
+        ("POST", format!("/v1/admin/devices/{bad}/revoke")),
+        ("GET", "/v1/admin/storage".to_string()),
+        ("POST", "/v1/admin/gc/run".to_string()),
+        ("POST", "/v1/admin/scrub/run".to_string()),
+        ("GET", "/v1/admin/logs".to_string()),
+    ] {
+        targets.push((method, format!("{path}{query}")));
+    }
+    // The whole credentialed half of the route table, so a route added
+    // without its authentication cannot slip past this walk.
+    assert_eq!(targets.len(), 30);
+
+    for (method, target) in &targets {
+        let res = Req::new(method, target)
+            .body("{\"not\":\"valid\"}")
+            .send(h.addr);
+        assert_eq!(
+            res.status,
+            401,
+            "{method} {target} answered an anonymous caller {}: {}",
+            res.status,
+            res.text()
+        );
+        assert_eq!(
+            res.header("x-obsync-seq"),
+            None,
+            "{method} {target} handed an anonymous caller the journal head"
+        );
+    }
+
+    // And not one of those refusals reached the ring the dashboard's Logs
+    // page must keep: they are all public traffic.
+    let recent = h.app.recent.lock().expect("recent log");
+    let unauthenticated = recent
+        .credentialed
+        .iter()
+        .filter(|l| l.status == 401)
+        .count();
+    assert_eq!(
+        unauthenticated, 0,
+        "an anonymous refusal must never take credentialed ring space"
+    );
+    assert_eq!(
+        recent.public.iter().filter(|l| l.status == 401).count(),
+        targets.len(),
+        "every one of them is in the public ring instead"
+    );
+}
+
+/// A revoked or pending device id is not a credential: knowing one buys
+/// neither the journal head nor a line in the credentialed ring.
+///
+/// Both refusals used to be answered from the state of the record, before the
+/// signature was verified at all, so anyone holding a 32-hex id got a `403`
+/// that the log read as proof. The pending refusal now follows the
+/// signature. The revoked one cannot: revocation destroys the wrapped
+/// secret, so there is nothing left to verify a signature against -- it stays
+/// the documented `403 device_revoked`, classed for what it is.
+#[test]
+fn a_revoked_or_pending_device_id_is_not_a_credential() {
+    let h = Harness::start("state-before-proof");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+
+    // PENDING, with garbage where the signature goes: indistinguishable from
+    // an unknown device, and no credential is claimed for it.
+    let forged = Req::get("/v1/account")
+        .header("X-Obsync-Device", &claimant.id)
+        .header("X-Obsync-Ts", &NOW.to_string())
+        .header("X-Obsync-Nonce", &nonce())
+        .header("X-Obsync-Sig", &"cd".repeat(32))
+        .send(h.addr);
+    assert_eq!(forged.status, 401, "{}", forged.text());
+    assert_eq!(forged.code(), "bad_signature");
+    assert_eq!(forged.header("x-obsync-seq"), None);
+    assert_eq!(ring_of(&h, "/v1/account", 401), "public");
+
+    // PENDING, properly signed: the documented refusal, and a credentialed
+    // decision, because the signature did verify.
+    let pending = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(pending.status, 403, "{}", pending.text());
+    assert_eq!(pending.code(), "device_pending");
+    assert!(
+        pending.header("x-obsync-seq").is_some(),
+        "the claimant proved possession of its secret"
+    );
+    assert_eq!(ring_of(&h, "/v1/account", 403), "credentialed");
+
+    approve_pairing(&h, &creator, &id);
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    // REVOKED, properly signed by the device that still holds its copy of
+    // the secret: the server has none to check it with, so this refusal
+    // proves nothing and is classed as public.
+    let revoked = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(revoked.status, 403, "{}", revoked.text());
+    assert_eq!(revoked.code(), "device_revoked");
+    assert_eq!(
+        revoked.header("x-obsync-seq"),
+        None,
+        "a revocation destroyed the secret, so nothing verified here"
+    );
+    // The line is still on the Logs page -- in the public ring, where a
+    // revoked device hammering the server is visible without being able to
+    // push a real decision out.
+    assert!(
+        h.app
+            .recent_lines(None, 5_000)
+            .iter()
+            .any(|l| l.path_class == "/v1/account" && l.status == 403),
+        "the operator still sees a revoked device still trying"
+    );
 }

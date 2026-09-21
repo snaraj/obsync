@@ -467,6 +467,9 @@ pub enum StoreError {
     },
     /// No such device.
     UnknownDevice,
+    /// The device is the account's only ACTIVE one, and revoking it would
+    /// leave an account nothing can ever sync again.
+    LastActiveDevice,
     /// The device is revoked.
     DeviceRevoked,
     /// The device claimed a pairing but nobody has approved it.
@@ -549,6 +552,7 @@ impl fmt::Display for StoreError {
                 write!(f, "seq {requested} is ahead of head {head}")
             }
             StoreError::UnknownDevice => f.write_str("unknown device"),
+            StoreError::LastActiveDevice => f.write_str("the only active device"),
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
             StoreError::TooManyHeads { heads, max } => {
@@ -600,6 +604,7 @@ impl StoreError {
             StoreError::VersionIdMismatch { .. } => "version_id_mismatch",
             StoreError::SeqAhead { .. } => "seq_ahead",
             StoreError::UnknownDevice => "unknown_device",
+            StoreError::LastActiveDevice => "last_device",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
             StoreError::TooManyHeads { .. } => "too_many_heads",

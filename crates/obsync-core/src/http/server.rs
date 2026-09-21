@@ -274,6 +274,7 @@ fn serve_connection(
             headers: head.headers,
             body,
             peer,
+            proved: std::cell::Cell::new(false),
         };
 
         let outcome = catch_unwind(AssertUnwindSafe(|| handler(&mut request)));

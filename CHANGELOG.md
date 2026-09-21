@@ -7,14 +7,16 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.0.3 - 2026-09-20
 
-Dashboard security, from an independent review of 1.0.1. Your vault, your
-devices and your pairing are untouched, and the plugin does not change.
+Dashboard security: an independent review of 1.0.1, and a second pass that
+exercised a running server rather than reading it. Your vault, your devices
+and your pairing are untouched, and the plugin does not change.
 
 **Nothing to do — unless you open the dashboard over plain `http`.** That
 stops working after this update at any IP address or LAN name, and also at
-`localhost` if your browser is Safari (first bullet below). One thing everybody will notice: dashboard sessions opened before
-this update are signed out once, so open the dashboard from **Open
-dashboard** on a paired device again.
+`localhost` if your browser is Safari (first bullet below). One thing
+everybody will notice: dashboard sessions opened before this update are
+signed out once, so open the dashboard from **Open dashboard** on a paired
+device again.
 
 - **The dashboard needs a secure address now.** Its two cookies are `Secure`
   and host-bound, which is what stops one plaintext request from carrying
@@ -42,24 +44,46 @@ dashboard** on a paired device again.
 - **Sessions end sooner, and you can end all of them.** A dashboard left open
   and untouched for an hour signs itself out; the twelve-hour limit still
   applies whatever you are doing. **Sign out everywhere** in the top bar ends
-  every session the server holds at once, for the browser left behind on a
-  machine you no longer have.
+  every session the server holds at once, and cancels any sign-in link that
+  was opened and never used — a machine you no longer have may be holding
+  one, and it would have worked for its five minutes.
+- **Two devices revoking each other at the same moment can no longer empty
+  your account.** The check for "this is your last device" and the revocation
+  itself now happen together, so two clicks that land in the same instant
+  cannot both go through. Before, they could, and an account with no active
+  device can never sync again: nothing re-enrols one.
 - **The recovery token is treated as the break-glass credential it is.** A
   sign-in with it is logged as a warning, and the Overview page says so for
   as long as that session lasts, so a use you did not make is visible.
   `docs/recovery.md` has the three steps that rotate it, and how to tell it
-  has been used. Every refused sign-in is logged as a warning too, and those
-  lines can no longer be pushed out of the Logs page by a stranger (see the
-  Logs bullet), so a run of attempts against your server is something you can
-  actually see.
+  has been used. Every refused sign-in is logged as a warning too, and while
+  the Logs page holds it you can see it. Be precise about what that promise
+  is: a refused sign-in is unauthenticated traffic, so it lives in the
+  smaller of the two rings below (200 lines) and other unauthenticated
+  traffic can push it out of that one — what it can never do is push out the
+  authenticated half (1000 lines), which is where your own devices' and your
+  own dashboard's decisions are. Your server's stdout keeps every one of
+  these lines whatever the page shows.
 - **The Logs page can no longer be wiped by a stranger.** Anyone who could
   reach the server could push every decision out of it with about a thousand
   free health probes. Authenticated decisions and unauthenticated traffic now
   keep separate space, so a burst of probes pushes out only older probes.
-- **The server stops telling strangers how much you write.** Every response
-  used to carry the journal position, including answers to unauthenticated
-  probes; polling it reconstructed when and how much you edit. It now rides
-  only responses to callers that proved a credential.
+  Three sync endpoints also used to check the shape of an address or a
+  parameter before checking who was asking, which let an anonymous caller
+  land a refusal in the authenticated half — a thousand malformed requests
+  emptied it in about a second. Every endpoint that needs a credential now
+  asks for one first, and knowing a revoked or unapproved device's id is no
+  longer treated as knowing its key.
+- **The server stops telling strangers how much you write — nearly.** Every
+  response used to carry the journal position in a header, including answers
+  to unauthenticated probes; polling it reconstructed when and how much you
+  edit. The header now rides only a response to a caller whose credential the
+  server actually verified. One opening is narrowed rather than closed, and
+  it is worth knowing about: `GET /readyz` still states that same position in
+  its body, because the readiness contract says it does and the release
+  smokes read it. If your server is reachable by people you do not trust,
+  `/readyz` is what they can still poll. Whether readiness should state a
+  sequence at all is a decision for a later release.
 - **Smaller hardening.** `object-src 'none'` and two cross-origin isolation
   headers on dashboard pages; a proper doctype on the page; and an
   unauthenticated caller with a wrong setup token can no longer tell a

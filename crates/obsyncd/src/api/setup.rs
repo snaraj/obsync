@@ -60,6 +60,10 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             "setup token does not match",
         ));
     }
+    // The token matched in constant time, so this caller holds the
+    // first-boot credential. The `409` below is answered to a caller that
+    // proved it, and the `401` above to one that did not.
+    req.prove();
     if app.store.account().is_some() {
         return Err(ApiError::new(
             409,

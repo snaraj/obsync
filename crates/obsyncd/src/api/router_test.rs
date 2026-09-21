@@ -1,7 +1,7 @@
 //! Route resolution: every route of `docs/protocol.md` and nothing else.
 #![forbid(unsafe_code)]
 
-use super::{Route, demands_credential, resolve};
+use super::{Route, Trust, demands_credential, resolve, trust};
 
 const SID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const ID: &str = "0123456789abcdef0123456789abcdef";
@@ -269,4 +269,28 @@ fn signing_out_everywhere_is_its_own_route_and_post_only() {
         "/v1/admin/logout-all"
     );
     assert!(resolve("GET", "/v1/admin/logout-all").is_none());
+}
+
+/// The trust decision, exhaustively: evidence decides, the route table only
+/// cross-checks. There is no input where a status promotes a request.
+#[test]
+fn only_verified_evidence_makes_a_response_credentialed() {
+    // Proof carries every status, on either side of the route table.
+    for status in [200, 204, 302, 400, 401, 403, 404, 409, 421, 500] {
+        assert_eq!(trust(true, true, status), Trust::Proved, "{status}");
+        assert_eq!(trust(false, true, status), Trust::Proved, "{status}");
+    }
+    // Without proof, a refusal on a credentialed route is simply unproved --
+    // the statuses the old status heuristic read as proof included.
+    for status in [400, 401, 403, 404, 409, 421, 500] {
+        assert_eq!(trust(true, false, status), Trust::Unproved, "{status}");
+    }
+    // Without proof, a SUCCESS on a credentialed route is the server bug.
+    for status in [200, 201, 204, 302, 399] {
+        assert_eq!(trust(true, false, status), Trust::Unverified, "{status}");
+    }
+    // A public route proves nothing by succeeding, and is no bug either.
+    for status in [200, 204, 302, 401, 404] {
+        assert_eq!(trust(false, false, status), Trust::Unproved, "{status}");
+    }
 }

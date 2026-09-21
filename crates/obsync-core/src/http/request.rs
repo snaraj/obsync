@@ -6,6 +6,7 @@
 //! line folding, one `Host`, one `Content-Length`, and never both a length and
 //! a transfer encoding.
 
+use std::cell::Cell;
 use std::io;
 use std::net::SocketAddr;
 
@@ -44,9 +45,28 @@ pub struct Request {
     /// terminator; the caller decides what to trust (AGENTS.md,
     /// "Deployment-provider contract").
     pub peer: SocketAddr,
+    /// One bit the HANDLER writes and this crate only carries: whether the
+    /// application verified a credential while answering this request. It is
+    /// written through [`Request::prove`] and read through
+    /// [`Request::proved`]; no parser, header, or caller can reach it, and it
+    /// starts false, so an answer nobody proved anything for cannot look
+    /// authenticated.
+    pub(crate) proved: Cell<bool>,
 }
 
 impl Request {
+    /// Record that this request proved a credential: a signature, session, or
+    /// token THIS server checked and accepted. Called at the point of the
+    /// check, never from the shape of the answer.
+    pub fn prove(&self) {
+        self.proved.set(true);
+    }
+
+    /// Whether [`Request::prove`] was called while answering this request.
+    pub fn proved(&self) -> bool {
+        self.proved.get()
+    }
+
     /// The first value of a query parameter.
     pub fn query_param(&self, name: &str) -> Option<&str> {
         self.query
@@ -851,10 +871,29 @@ mod tests {
             headers: head.headers,
             body: Body::empty(),
             peer: "127.0.0.1:1".parse().expect("addr"),
+            proved: Cell::new(false),
         };
         assert_eq!(request.query_param("a"), Some("1"));
         assert_eq!(request.query_param("b"), Some("3"));
         assert_eq!(request.query_param("c"), None);
+    }
+
+    #[test]
+    fn a_request_proves_nothing_until_a_handler_says_so() {
+        let head = accepted("GET /p HTTP/1.1\r\nHost: h\r\n\r\n");
+        let request = Request {
+            method: head.method,
+            target: head.target,
+            path: head.path,
+            query: head.query,
+            headers: head.headers,
+            body: Body::empty(),
+            peer: "127.0.0.1:1".parse().expect("addr"),
+            proved: Cell::new(false),
+        };
+        assert!(!request.proved(), "a parsed request carries no proof");
+        request.prove();
+        assert!(request.proved(), "and it carries one only when told");
     }
 
     #[test]

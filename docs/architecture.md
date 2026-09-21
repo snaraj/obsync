@@ -396,7 +396,8 @@ sends no `Secure` cookie to a plaintext origin
 ([`security/dashboard.md`](security/dashboard.md)).
 
 A session ends after 12 hours whatever it does, after 1 hour with no request
-on it, on sign-out, on `POST /v1/admin/logout-all`, and when the device
+on it, on sign-out, on `POST /v1/admin/logout-all` (which drops unspent
+login links with them), and when the device
 whose link opened it is revoked -- a session and a link both remember which
 device minted them, so revocation reaches the dashboard and not only the
 sync API. `GET /login` has no attempt limit in front of its constant-time

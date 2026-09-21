@@ -29,9 +29,12 @@ bad_signature`, `401 stale_timestamp` (outside ±300 s), `401 replayed_nonce`
 the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
 forgetting a nonce still inside its window), `503 nonce_log_unavailable`
-(the volume would not take that record), `403 device_revoked`, `403
-device_pending` (a claimed device that the creator has not yet approved;
-only that pairing's envelope endpoint answers it, with `409 not_approved`).
+(the volume would not take that record), `403 device_revoked` (answered from the device
+record before the signature is checked, because revocation destroys the
+wrapped secret and leaves nothing to check it against), `403 device_pending`
+(a claimed device that the creator has not yet approved, answered only AFTER
+its signature verifies; only that pairing's envelope endpoint admits it, with
+`409 not_approved`).
 Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
@@ -250,7 +253,10 @@ device whose link opened it is revoked.
   (`docs/security/dashboard.md`).
 - `POST /v1/admin/logout` → `204`.
 - `POST /v1/admin/logout-all` → `204`: closes EVERY dashboard session,
-  including the one that asked.
+  including the one that asked, and drops every login link that has been
+  minted and not yet spent. An unspent link is the same key to the same
+  dashboard, so leaving one alive would hand back what the button took away.
+  Its log line carries both counts.
 - `GET /v1/admin/overview` → `{"account":{…as GET /v1/account},
   "edge":"none|cloudflare","public_url":"…"|null,"volumes":[<volume>…],
   "versions":{"total":<n>,"files":<n>},"activity":{"versions_per_hour":
@@ -314,6 +320,11 @@ device whose link opened it is revoked.
   listed in `AGENTS.md`. `X-Obsync-Seq` (journal head) rides only a response
   to a caller that proved a credential: it is write activity, and an
   unauthenticated caller polling it could reconstruct when the owner writes
-  (`docs/security/dashboard.md`).
+  (`docs/security/dashboard.md`). "Proved" is a fact the server records where
+  a credential VERIFIES -- a device signature, a dashboard session, a login
+  or setup token -- never an inference from the route or the status. Every
+  route that requires a credential authenticates before it validates
+  anything, so an anonymous caller is answered `401` (or `421`) and nothing
+  else, whatever it sends.
 - Every request logs one line: `ts method path_class device status bytes
   duration_ms decision`.
