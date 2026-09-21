@@ -29,7 +29,8 @@ device.
   usual, mints a single-use link that lives five minutes and remembers which
   device minted it.
 - `GET /login?token=…` — spends that link, or accepts the standing recovery
-  token. Five failed attempts per source per minute, then `429`.
+  token, against a constant-time compare with no attempt limit in front of
+  it (residual 2 below).
 - Everything else — the session cookie, plus a double-submit CSRF header on
   every mutation.
 
@@ -60,6 +61,10 @@ device.
   the server sends is rendered with `textContent`.
 - `X-Obsync-Seq` states the journal head to callers that proved a credential
   and to nobody else.
+- Every refused sign-in is a `warn` line carrying its decision, and it
+  reaches the Logs page as well as stdout: a run of attempts is visible
+  rather than merely rate-limited, and it cannot push the authenticated
+  record off that page (the ring split below).
 - The address and country shown for a device are the peer's, unless an edge
   is configured; forwarded headers from an untrusted peer are ignored.
 
@@ -69,11 +74,19 @@ device.
    It is in the trust base for credentials and out of it for content
    (`../threat-model.md`, residual 1). `Secure` cookies do not change that;
    what they stop is a plaintext hop reaching the browser at all.
-2. **The browser** must treat the origin as secure, which means an HTTPS
-   address or `localhost`. A dashboard served over plain HTTP by IP address
-   or LAN name is not supported: the browser will not keep a `__Host-`
-   cookie, so sign-in appears to succeed and every page load is signed out.
-   Put a terminator in front, or reach it over `localhost`.
+2. **The browser** must treat the origin as secure, and the browsers do not
+   agree on what that means over plain HTTP:
+
+   | Address | Chrome, Firefox | Safari (WebKit) |
+   | --- | --- | --- |
+   | `https://…` | works | works |
+   | `http://localhost`, `http://127.0.0.1` | works (loopback is trustworthy) | **does not**: WebKit sends no `Secure` cookie to a plaintext origin (`httpwg/http-extensions#2605`, `mdn/content#41366`) |
+   | `http://<any other IP or LAN name>` | does not | does not |
+
+   Where it does not work, the browser discards the `__Host-` cookies without
+   telling anyone: sign-in appears to succeed and every page load afterwards
+   is signed out. Nothing reaches the server to refuse, which is why there is
+   no error to read. Put a terminator in front and use its name.
 3. **Forwarded headers** are trusted only in `OBSYNC_EDGE=cloudflare`, where
    direct reachability of the origin must be impossible; in `none` mode they
    are ignored unless the peer is inside `OBSYNC_TRUSTED_PROXY_CIDRS`.
@@ -86,11 +99,27 @@ device.
   use. A session opened with it is flagged on the Overview page, its use is
   logged at `warn`, and rotation is three steps in
   [`../recovery.md`](../recovery.md).
-- The login limiter remembers at most 1024 sources. Once that many distinct
-  sources have failed within a refill window, a new source is served without
-  being remembered, and the server logs it. A limiter that refused instead
-  would be a way for a botnet to lock an operator out of the recovery login,
-  and the limiter is not what makes a 256-bit token hard to guess.
+- **There is no attempt limit on `GET /login`, deliberately.** A limit keyed
+  by request source is a lockout switch wherever that source is a proxy this
+  deployment does not trust: with `OBSYNC_EDGE=none` and no
+  `OBSYNC_TRUSTED_PROXY_CIDRS` — the shipped chart's default, and what any
+  deployment behind its own ingress runs — every visitor shares one bucket,
+  so a stranger's wrong tokens would answer the owner's own one-time link
+  with a refusal, renewably. The token is 256 bits compared in constant time,
+  so a limit buys nothing against guessing; the noise it would bound is
+  already bounded by the ring split below. Refusals are logged instead.
+- **A revoked device's requests still count as credentialed** until it stops
+  making them: `403 device_revoked` is answered only after a valid signature,
+  so those responses carry `X-Obsync-Seq` and those lines sit in the
+  credentialed ring. That is deliberate — the device held the vault key
+  minutes ago, and the alternative is losing the very lines that show a
+  revoked device still trying.
+- **`GET /readyz` still states the journal head in its BODY.** The header was
+  taken off unauthenticated responses; the `seq` field of
+  `{"ready":true,"seq":<n>}` is pinned by `../protocol.md` and read by the
+  image and compose smokes, so the write-activity oracle is narrowed here and
+  not closed. Whether readiness should state a sequence at all is a separate
+  decision.
 - The decision log is not an audit log. It is two bounded rings in memory —
   1000 lines from credentialed requests, 200 from everything else — so
   unauthenticated traffic can push out only other unauthenticated traffic.

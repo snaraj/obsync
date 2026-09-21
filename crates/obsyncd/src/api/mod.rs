@@ -307,6 +307,34 @@ impl Recent {
         }
         ring.push_back(line);
     }
+
+    /// Both rings merged newest first, optionally only the lines whose
+    /// device id starts with `device`, capped at `limit`.
+    ///
+    /// Each ring is walked BACKWARDS before the sort. The sort is stable and
+    /// a timestamp is a millisecond, so two lines stamped in the same
+    /// millisecond keep the order they are walked in: walking forwards would
+    /// list the older of the two first, under a heading that says newest
+    /// first. Within one millisecond a credentialed line lists before a
+    /// public one, which is an order, not an accident.
+    fn newest_first(&self, device: Option<&str>, limit: usize) -> Vec<LogLine> {
+        let mut lines: Vec<LogLine> = self
+            .credentialed
+            .iter()
+            .rev()
+            .chain(self.public.iter().rev())
+            .filter(|l| {
+                device.is_none_or(|prefix| {
+                    l.device
+                        .is_some_and(|id| id.to_string().starts_with(prefix))
+                })
+            })
+            .copied()
+            .collect();
+        lines.sort_by_key(|l| std::cmp::Reverse(l.ts));
+        lines.truncate(limit);
+        lines
+    }
 }
 
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
@@ -337,7 +365,6 @@ pub struct App {
     nonces: Mutex<auth::NonceCache>,
     pairings: Mutex<PairingTable>,
     sessions: Mutex<admin::SessionTable>,
-    logins: Mutex<admin::LoginLimiter>,
     seen: Mutex<HashMap<String, u64>>,
     recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
@@ -400,7 +427,6 @@ impl App {
             nonces: Mutex::new(nonces),
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
-            logins: Mutex::new(admin::LoginLimiter::new()),
             seen: Mutex::new(HashMap::new()),
             recent: Mutex::new(Recent::default()),
             ready: Mutex::new(ReadyCache {
@@ -534,31 +560,16 @@ impl App {
             self.log.warn("pairing_expired", &fields);
         }
         let sessions = self.sessions.lock().expect("sessions").sweep(now);
-        self.logins.lock().expect("login limiter").sweep(now);
         (nonces, nonce_appends, swept.pairings, sessions)
     }
 
     /// The last decisions, newest first, optionally only those whose device id
     /// starts with `device`.
     pub fn recent_lines(&self, device: Option<&str>, limit: usize) -> Vec<LogLine> {
-        let recent = self.recent.lock().expect("recent log");
-        let mut lines: Vec<LogLine> = recent
-            .credentialed
-            .iter()
-            .chain(recent.public.iter())
-            .filter(|l| {
-                device.is_none_or(|prefix| {
-                    l.device
-                        .is_some_and(|id| id.to_string().starts_with(prefix))
-                })
-            })
-            .copied()
-            .collect();
-        // Newest first across both rings; a stable sort keeps the arrival
-        // order of two lines stamped in the same millisecond.
-        lines.sort_by_key(|l| std::cmp::Reverse(l.ts));
-        lines.truncate(limit);
-        lines
+        self.recent
+            .lock()
+            .expect("recent log")
+            .newest_first(device, limit)
     }
 
     /// Truthful readiness: the store is open, every volume takes a write, and
@@ -718,7 +729,7 @@ impl App {
             Route::FilesPage => files::page(self, req, client),
             Route::Changes => changes::feed(self, req, client),
             Route::LoginLink => admin::login_link(self, req, client),
-            Route::Login => admin::login(self, req, client),
+            Route::Login => admin::login(self, req),
             Route::Logout => admin::logout(self, req),
             Route::LogoutAll => admin::logout_all(self, req),
             Route::AdminOverview => admin::overview(self, req),
@@ -748,13 +759,13 @@ impl App {
     /// harden the response.
     ///
     /// `demands` says the ROUTE requires a credential; `proved` below says
-    /// this request satisfied it, which is every status but the three that
+    /// this request satisfied it, which is every status but the two that
     /// refuse a caller before it proves anything: `401` from
-    /// authentication, `421` from the edge requirement, answered before
-    /// dispatch, and `429` from the login limiter, answered before the
-    /// token compare. Every other refusal on such a route is answered to a
-    /// caller that already proved one, `403 csrf_failed` and
-    /// `403 device_revoked` included.
+    /// authentication, and `421` from the edge requirement, which is
+    /// answered before dispatch. Every other refusal on such a route is
+    /// answered to a caller that already proved one, `403 csrf_failed` and
+    /// `403 device_revoked` included -- the second of those is a residual
+    /// stated in `docs/security/dashboard.md`.
     fn finish(
         &self,
         req: &Request,
@@ -782,7 +793,7 @@ impl App {
             decision,
         };
         self.emit(&line);
-        let proved = demands && !matches!(status, 401 | 421 | 429);
+        let proved = demands && !matches!(status, 401 | 421);
         self.recent.lock().expect("recent log").push(line, proved);
         let resp = resp
             .header("Cache-Control", "no-store")
@@ -850,8 +861,8 @@ fn demands_credential(route: &Route) -> bool {
         | Route::DashboardFile(_) => false,
         // `GET /login` carries its credential in the query and compares it
         // before it does anything else, so its statuses map exactly: a 302
-        // proved a one-time link or the recovery token, and its two
-        // refusals are in the excluded set below.
+        // proved a one-time link or the recovery token, and its only
+        // refusal is the `401` excluded below.
         Route::Login
         | Route::Account
         | Route::PairingCreate

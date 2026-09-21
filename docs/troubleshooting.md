@@ -152,26 +152,33 @@ the session is signed out.
 
 **Cause.** The address is not one the browser treats as secure. The session
 cookies are `Secure` and `__Host-` prefixed, and a browser silently discards
-those over plain HTTP to an IP address or a LAN name. Nothing reaches the
-server to refuse, which is why there is no error to read.
+those. Nothing reaches the server to refuse, which is why there is no error
+to read. Two cases look identical and are not:
 
-**Fix.** Reach the dashboard through its TLS terminator by name, or over
-`localhost` on the host itself. Serving the dashboard over plain HTTP to an
-IP address is not supported
+- plain `http` to any IP address or LAN name that is not loopback: no
+  browser keeps the cookies;
+- plain `http` to `localhost` or `127.0.0.1` **in Safari**: Chrome and
+  Firefox treat loopback as secure and keep them, WebKit does not.
+
+**Fix.** Reach the dashboard through its TLS terminator by name. On the host
+itself, Chrome and Firefox will also take plain `http://localhost`
 ([`security/dashboard.md`](security/dashboard.md)).
 
-## `too_many_logins`
+## Repeated `dashboard_login_refused` lines
 
-**Symptom.** `429 too_many_logins` from `/login`.
+**Symptom.** `event=dashboard_login_refused decision=bad_login_token` in the
+log, or on the dashboard's Logs page, from an address you do not recognise.
 
-**Cause.** Five sign-in attempts from this source failed within a minute, so
-the route is refusing further attempts from it. One attempt returns per
-minute, and a successful sign-in clears the count.
+**Cause.** Something is trying sign-in tokens. The route refuses each one
+against a 256-bit constant-time compare and there is no attempt limit in
+front of it on purpose: a limit keyed by request source would refuse every
+visitor at once behind a shared proxy, which is how the recovery login would
+be denied to you ([`security/dashboard.md`](security/dashboard.md)).
 
-**Fix.** Wait a minute and use a fresh link from **Open dashboard** on a
-paired device. If nobody at that address was signing in, read the
-`event=dashboard_login_refused` lines: something else is trying, and the
-recovery token is worth rotating ([`recovery.md`](recovery.md)).
+**Fix.** Nothing is required — no attempt can succeed without the token. If
+the volume is unwelcome, keep the dashboard off any public address, and
+rotate the setup token if you believe it was ever exposed
+([`recovery.md`](recovery.md)).
 
 ## `missing_auth` and `bad_signature`
 

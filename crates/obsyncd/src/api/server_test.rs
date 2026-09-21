@@ -2720,50 +2720,48 @@ fn the_setup_token_is_the_documented_recovery_login_and_the_page_is_told() {
     );
 }
 
-/// Guessing a 256-bit token is not the risk; the free noise is. Five failed
-/// attempts from one source is all it gets, and the allowance comes back on
-/// its own.
+/// Removing the attempt limit rests on refusals being VISIBLE instead. That
+/// has to hold on the page an operator actually reads, not only on stdout.
 #[test]
-fn the_login_route_refuses_a_burst_of_failures_from_one_source() {
+fn a_refused_sign_in_is_visible_on_the_logs_page() {
     let h = Harness::start_with(
-        "login-limit",
+        "login-visible",
         Setup {
             dashboard: true,
             ..Setup::default()
         },
     );
     let cred = h.setup_account();
-    let burst = crate::api::admin::LOGIN_FAILURE_BURST;
-    for i in 0..burst {
-        let res = Req::get("/login?token=deadbeef").send(h.addr);
-        assert_eq!(res.status, 401, "attempt {i}: {}", res.text());
-        assert_eq!(res.code(), "bad_login_token");
+    for _ in 0..3 {
+        let refused = Req::get("/login?token=deadbeef").send(h.addr);
+        assert_eq!(refused.status, 401, "{}", refused.text());
+        assert_eq!(refused.code(), "bad_login_token");
     }
-    let refused = Req::get("/login?token=deadbeef").send(h.addr);
-    assert_eq!(refused.status, 429, "{}", refused.text());
-    assert_eq!(refused.code(), "too_many_logins");
 
-    // A real link is refused too while the allowance is spent: the limiter
-    // is in front of the compare, which is the point of having one.
-    let token = login_token(&h, &cred);
+    let cookie = admin_cookie(&h, &cred);
+    let logs = Req::get("/v1/admin/logs?limit=200")
+        .header("Cookie", &cookie)
+        .send(h.addr);
+    assert_eq!(logs.status, 200, "{}", logs.text());
+    let body = logs.json();
+    let lines = body.get("lines").and_then(Value::as_array).expect("lines");
+    let refusals = lines
+        .iter()
+        .filter(|l| {
+            l.get("path_class").and_then(Value::as_str) == Some("/login")
+                && l.get("decision").and_then(Value::as_str) == Some("bad_login_token")
+        })
+        .count();
     assert_eq!(
-        Req::get(&format!("/login?token={token}"))
-            .send(h.addr)
-            .status,
-        429
+        refusals,
+        3,
+        "every refusal reaches the page, each naming its decision: {}",
+        logs.text()
     );
-
-    // One refill later the source is served again, and a success forgets it.
-    h.clock.set(NOW + crate::api::admin::LOGIN_REFILL_SECS + 1);
-    let login = Req::get(&format!("/login?token={token}")).send(h.addr);
-    assert_eq!(login.status, 302, "{}", login.text());
-    for _ in 0..burst {
-        assert_eq!(Req::get("/login?token=deadbeef").send(h.addr).status, 401);
-    }
-    assert_eq!(
-        Req::get("/login?token=deadbeef").send(h.addr).status,
-        429,
-        "and the allowance is spendable again, not infinite"
+    assert!(
+        !logs.text().contains("deadbeef"),
+        "and none of them carries the token that was tried: {}",
+        logs.text()
     );
 }
 

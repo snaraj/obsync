@@ -390,15 +390,20 @@ Sessions are cookies named `__Host-obsync_session` and `__Host-obsync_csrf`:
 `Secure`, `Path=/`, `SameSite=Strict`, no `Domain`, the session one
 `HttpOnly` and the CSRF one readable by the page for the double-submit
 header. The browser enforces that set because of the `__Host-` prefix, so
-the dashboard must be reached at an HTTPS address or at `localhost`.
+the dashboard must be reached at an `https` address -- or, in Chrome and
+Firefox only, at plain `http://localhost` or `http://127.0.0.1`; Safari
+sends no `Secure` cookie to a plaintext origin
+([`security/dashboard.md`](security/dashboard.md)).
 
 A session ends after 12 hours whatever it does, after 1 hour with no request
 on it, on sign-out, on `POST /v1/admin/logout-all`, and when the device
 whose link opened it is revoked -- a session and a link both remember which
 device minted them, so revocation reaches the dashboard and not only the
-sync API. `GET /login` charges a failed attempt to its source and refuses
-with `429` after five. Passkey sign-in is deferred; the current dashboard
-does not register or authenticate WebAuthn credentials.
+sync API. `GET /login` has no attempt limit in front of its constant-time
+compare, deliberately: a limit keyed by request source refuses every visitor
+at once wherever that source is an untrusted proxy, which is the chart's own
+default. Passkey sign-in is deferred; the current dashboard does not
+register or authenticate WebAuthn credentials.
 [`security/dashboard.md`](security/dashboard.md) is this surface's threat
 model.
 

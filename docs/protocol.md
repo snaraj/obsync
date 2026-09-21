@@ -231,8 +231,10 @@ The two cookies are `__Host-obsync_session` (`HttpOnly`) and
 `__Host-obsync_csrf` (readable by the page's own script), both `Secure`,
 `Path=/`, `SameSite=Strict`, with no `Domain`. The `__Host-` prefix makes
 the browser enforce that set, so the dashboard must be reached at an origin
-the browser treats as secure: an HTTPS address, or `localhost`. Plain HTTP
-to an IP address or a LAN name is not a supported way to reach the dashboard
+the browser treats as secure: an `https` address in any browser, or plain
+`http` to `localhost`/`127.0.0.1` in Chrome and Firefox but not Safari, which
+sends no `Secure` cookie to a plaintext origin. Plain HTTP to any other IP
+address or LAN name is not a supported way to reach the dashboard
 (`docs/security/dashboard.md`). A session ends after 12 hours, after 1 hour
 with no request on it, on sign-out, on sign-out-everywhere, or when the
 device whose link opened it is revoked.
@@ -242,8 +244,10 @@ device whose link opened it is revoked.
   that minted it.
 - `GET /login?token=…` → sets the session cookies, redirects to `/`. Spends
   a link, or accepts the standing setup token as the recovery sign-in.
-  `401 bad_login_token`; `429 too_many_logins` after 5 failures from one
-  source, one attempt returning per minute.
+  `401 bad_login_token`. There is deliberately no attempt limit in front of
+  the constant-time compare: one keyed by request source would refuse every
+  visitor at once behind a proxy this deployment does not trust
+  (`docs/security/dashboard.md`).
 - `POST /v1/admin/logout` → `204`.
 - `POST /v1/admin/logout-all` → `204`: closes EVERY dashboard session,
   including the one that asked.

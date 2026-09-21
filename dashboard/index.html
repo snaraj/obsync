@@ -84,10 +84,12 @@
       </li>
     </ol>
     <p class="note">
-      Either way, open this dashboard at an address your browser treats as secure: an
-      <code>https</code> address, or <code>localhost</code>. The session cookies are
-      <code>Secure</code> and host-bound, so a browser keeps neither of them over plain HTTP to an
-      IP address or a LAN name.
+      Either way, open this dashboard at an address your browser treats as secure. An
+      <code>https</code> address works everywhere. Plain <code>http</code> to
+      <code>localhost</code> or <code>127.0.0.1</code> works in Chrome and Firefox but not in
+      Safari, which sends no <code>Secure</code> cookie to a plaintext origin. Plain
+      <code>http</code> to any other address or name works nowhere: the session cookies are
+      <code>Secure</code> and host-bound, and a browser simply discards them.
     </p>
     <p class="note">
       The dashboard holds no vault key. It can never read a file, approve a device, or recover a
