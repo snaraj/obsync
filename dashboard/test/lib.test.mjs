@@ -218,21 +218,24 @@ test('platformLabel', () => {
 });
 
 test('csrfToken: parses the double-submit cookie out of a cookie string', () => {
-  assert.equal(csrfToken('obsync_csrf=abc123'), 'abc123');
-  assert.equal(csrfToken('a=1; obsync_csrf=abc123; b=2'), 'abc123');
-  assert.equal(csrfToken('a=1;obsync_csrf=abc123;b=2'), 'abc123');
-  assert.equal(csrfToken('  obsync_csrf=abc123  '), 'abc123');
+  assert.equal(csrfToken('__Host-obsync_csrf=abc123'), 'abc123');
+  assert.equal(csrfToken('a=1; __Host-obsync_csrf=abc123; b=2'), 'abc123');
+  assert.equal(csrfToken('a=1;__Host-obsync_csrf=abc123;b=2'), 'abc123');
+  assert.equal(csrfToken('  __Host-obsync_csrf=abc123  '), 'abc123');
 });
 
 test('csrfToken: absent, empty, and near-miss names yield no token', () => {
   assert.equal(csrfToken(''), '');
-  assert.equal(csrfToken('obsync_session=zzz'), '');
-  assert.equal(csrfToken('x_obsync_csrf=nope'), '');
-  assert.equal(csrfToken('obsync_csrf_extra=nope'), '');
-  assert.equal(csrfToken('obsync_csrf'), '');
-  assert.equal(csrfToken('obsync_csrf='), '');
+  assert.equal(csrfToken('__Host-obsync_session=zzz'), '');
+  assert.equal(csrfToken('x__Host-obsync_csrf=nope'), '');
+  assert.equal(csrfToken('__Host-obsync_csrf_extra=nope'), '');
+  assert.equal(csrfToken('__Host-obsync_csrf'), '');
+  assert.equal(csrfToken('__Host-obsync_csrf='), '');
   assert.equal(csrfToken(null), '');
   assert.equal(csrfToken(undefined), '');
+  // The unprefixed name is a DIFFERENT cookie: a browser will hand one back
+  // over plain HTTP, and it is not the one this server ever set.
+  assert.equal(csrfToken('obsync_csrf=abc123'), '');
 });
 
 test('routeFromHash: known routes, everything else is Overview', () => {

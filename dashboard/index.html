@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
@@ -55,6 +56,7 @@
     <a href="#logs" data-route="logs">Logs</a>
   </nav>
   <button type="button" id="signout" class="ghost">Sign out</button>
+  <button type="button" id="signout-all" class="ghost">Sign out everywhere</button>
 </header>
 
 <div id="banner" class="banner" role="alert" hidden>
@@ -82,6 +84,12 @@
       </li>
     </ol>
     <p class="note">
+      Either way, open this dashboard at an address your browser treats as secure: an
+      <code>https</code> address, or <code>localhost</code>. The session cookies are
+      <code>Secure</code> and host-bound, so a browser keeps neither of them over plain HTTP to an
+      IP address or a LAN name.
+    </p>
+    <p class="note">
       The dashboard holds no vault key. It can never read a file, approve a device, or recover a
       vault; those all happen on a paired device.
     </p>
@@ -89,6 +97,17 @@
 
   <section id="page-overview" class="page" hidden aria-labelledby="overview-h">
     <h1 id="overview-h">Overview</h1>
+
+    <div id="recovery-note" class="warn" hidden>
+      <h2>This browser signed in with the setup token</h2>
+      <p>
+        That token is the recovery sign-in. It stands for the life of the server, it is not spent
+        by being used, and anyone who can read <code>v1/setup-token</code> on the journal volume
+        holds it. Prefer <em>Open dashboard</em> on a paired device for everyday sign-in, and
+        rotate the token if you believe it has been seen: stop the server, delete that file, start
+        it again.
+      </p>
+    </div>
 
     <div class="cards">
       <article class="card">

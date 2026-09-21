@@ -5,6 +5,59 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.3 - 2026-09-20
+
+Dashboard security, from an independent review of 1.0.1. **Nothing to do.**
+Your vault, your devices and your pairing are untouched; the plugin does not
+change. One thing you will notice: dashboard sessions opened before this
+update are signed out once, so open the dashboard from **Open dashboard** on
+a paired device again.
+
+- **The dashboard needs a secure address now.** Its two cookies are `Secure`
+  and host-bound, which is what stops one plaintext request from carrying
+  your session in the clear or letting another host on your domain plant one.
+  Browsers accept those over `localhost`, and over any `https` address, so
+  the supported ways in are unchanged; what stops working is reaching the
+  dashboard over plain HTTP at an IP address or a LAN name. If that is how
+  you reach it, put your TLS terminator in front of it and use its name.
+- **Revoking a device now ends what it opened.** Revoking used to leave the
+  sign-in link that device had just minted working, and any dashboard session
+  opened from one of its links alive for up to twelve hours. Revoking a lost
+  laptop while its browser was still signed in did not sign it out. It does
+  now: the link stops working and the session ends in the same moment.
+- **The dashboard can no longer revoke your last device.** The plugin has
+  always refused that, because an account with no active device can never
+  sync again and nothing re-enrols one; the dashboard's Revoke button had no
+  such guard, so one click was permanent. It refuses now, and the confirm
+  text says what revocation does and does not do.
+- **Sessions end sooner, and you can end all of them.** A dashboard left open
+  and untouched for an hour signs itself out; the twelve-hour limit still
+  applies whatever you are doing. **Sign out everywhere** in the top bar ends
+  every session the server holds at once, for the browser left behind on a
+  machine you no longer have.
+- **The recovery token is treated as the break-glass credential it is.** A
+  sign-in with it is logged as a warning, and the Overview page says so for
+  as long as that session lasts, so a use you did not make is visible.
+  `docs/recovery.md` has the three steps that rotate it, and how to tell it
+  has been used. Sign-in attempts are also rate limited: five failures from
+  one source and the route refuses for a minute, so a stranger cannot make
+  unlimited attempts or unlimited noise.
+- **The Logs page can no longer be wiped by a stranger.** Anyone who could
+  reach the server could push every decision out of it with about a thousand
+  free health probes. Authenticated decisions and unauthenticated traffic now
+  keep separate space, so a burst of probes pushes out only older probes.
+- **The server stops telling strangers how much you write.** Every response
+  used to carry the journal position, including answers to unauthenticated
+  probes; polling it reconstructed when and how much you edit. It now rides
+  only responses to callers that proved a credential.
+- **Smaller hardening.** `object-src 'none'` and two cross-origin isolation
+  headers on dashboard pages; a proper doctype on the page; and an
+  unauthenticated caller with a wrong setup token can no longer tell a
+  claimed server from an unclaimed one.
+- **New page:** `docs/security/dashboard.md`, the dashboard's own threat
+  model — what it holds, how you get in, what defends it, and what is
+  deliberately left standing.
+
 ## 1.0.2 - 2026-09-20
 
 - **Obsidian 1.13.0 or newer.** The floor moves from 1.12.4 because the

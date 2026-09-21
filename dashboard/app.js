@@ -196,6 +196,12 @@ async function loadOverview() {
   renderScrub(el('scrub-summary'), data.last_scrub);
   renderVolumes(el('overview-volumes'), data.volumes);
   applyEdge(data);
+
+  // A session opened with the standing setup token, rather than from a
+  // paired device, is worth saying out loud: it is the recovery credential,
+  // it never expires, and whoever holds the journal volume holds it.
+  const session = data.session && typeof data.session === 'object' ? data.session : {};
+  el('recovery-note').hidden = session.recovery !== true;
 }
 
 // Both summaries are `<gc>` and `<scrub>` from docs/protocol.md, and both
@@ -282,7 +288,12 @@ function deviceRow(row, index) {
   if (row.revoked) {
     open.hidden = true;
   } else {
-    setText(field(node, 'confirm-text'), `Revoke ${row.name}? Its next request fails.`);
+    setText(
+      field(node, 'confirm-text'),
+      `Revoke ${row.name}? It stops syncing at once, its dashboard links and sessions end with it, `
+      + 'and pairing it again from another device is the only way back. '
+      + 'The last active device cannot be revoked.',
+    );
     open.addEventListener('click', () => {
       open.hidden = true;
       confirm.hidden = false;
@@ -296,7 +307,7 @@ function deviceRow(row, index) {
     field(node, 'revoke-do').addEventListener('click', () => {
       guard(async () => {
         await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/revoke`);
-        say(`${row.name} is revoked. Its next request fails.`);
+        say(`${row.name} is revoked. Its next request fails, and its dashboard sessions are closed.`);
         await loadDevices();
       });
     });
@@ -443,6 +454,7 @@ function showSignin() {
   for (const name of L.routes()) el(`page-${name}`).hidden = true;
   el('page-signin').hidden = false;
   el('signout').hidden = true;
+  el('signout-all').hidden = true;
   document.querySelector('.tabs').hidden = true;
   clearError();
   say('');
@@ -477,6 +489,16 @@ el('banner-retry').addEventListener('click', () => {
 el('signout').addEventListener('click', () => {
   guard(async () => {
     await request('POST', `${ADMIN}/logout`);
+    showSignin();
+  });
+});
+
+// Sessions live in the server, so this ends every one of them: a browser
+// left signed in somewhere the operator no longer controls stops working
+// here, without waiting out the twelve-hour limit and without a restart.
+el('signout-all').addEventListener('click', () => {
+  guard(async () => {
+    await request('POST', `${ADMIN}/logout-all`);
     showSignin();
   });
 });

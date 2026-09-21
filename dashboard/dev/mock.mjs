@@ -37,6 +37,7 @@ const EDGE = process.env.OBSYNC_EDGE || 'none';
 // HTML responses only; the rest ride every response.
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+  "object-src 'none'; " +
   "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 const FILES = {
@@ -46,8 +47,12 @@ const FILES = {
   '/lib.js': ['lib.js', 'text/javascript; charset=utf-8'],
 };
 
-const SESSION = 'obsync_session';
-const CSRF = 'obsync_csrf';
+// `__Host-` is the browser's guarantee that a cookie is Secure, path-wide
+// and host-bound. Browsers accept it over http://localhost, which is what
+// this mock serves, and refuse it over plain HTTP to anything else -- the
+// same line the real server draws.
+const SESSION = '__Host-obsync_session';
+const CSRF = '__Host-obsync_csrf';
 const SESSION_VALUE = 'dev-session';
 const CSRF_VALUE = 'dev-csrf-token';
 
@@ -259,25 +264,31 @@ function cookies(req) {
   return out;
 }
 
-function head(extra = {}) {
+// The journal head rides a response only when the caller proved a
+// credential: on an unauthenticated one it is a write-activity counter
+// anyone could poll.
+function head(extra = {}, credentialed = false) {
   return {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
     'Cache-Control': 'no-store',
-    'X-Obsync-Seq': String(seq),
+    ...(credentialed ? { 'X-Obsync-Seq': String(seq) } : {}),
     ...extra,
   };
 }
 
-function json(res, status, body) {
+function json(res, status, body, credentialed = false) {
   const text = JSON.stringify(body);
-  res.writeHead(status, head({ 'Content-Type': 'application/json; charset=utf-8' }));
+  res.writeHead(
+    status,
+    head({ 'Content-Type': 'application/json; charset=utf-8' }, credentialed),
+  );
   res.end(text);
 }
 
-function empty(res, status) {
-  res.writeHead(status, head());
+function empty(res, status, credentialed = false) {
+  res.writeHead(status, head({}, credentialed));
   res.end();
 }
 
@@ -301,7 +312,11 @@ async function body(req) {
 async function serveFile(res, name, type) {
   const text = await readFile(path.join(DASHBOARD, name), 'utf8');
   const extra = { 'Content-Type': type };
-  if (type.startsWith('text/html')) extra['Content-Security-Policy'] = CSP;
+  if (type.startsWith('text/html')) {
+    extra['Content-Security-Policy'] = CSP;
+    extra['Cross-Origin-Opener-Policy'] = 'same-origin';
+    extra['Cross-Origin-Resource-Policy'] = 'same-origin';
+  }
   res.writeHead(200, head(extra));
   res.end(text);
 }
@@ -310,20 +325,20 @@ function signIn(res) {
   res.writeHead(302, head({
     Location: '/',
     'Set-Cookie': [
-      `${SESSION}=${SESSION_VALUE}; Path=/; HttpOnly; SameSite=Strict`,
-      `${CSRF}=${CSRF_VALUE}; Path=/; SameSite=Strict`,
+      `${SESSION}=${SESSION_VALUE}; Path=/; Secure; HttpOnly; SameSite=Strict`,
+      `${CSRF}=${CSRF_VALUE}; Path=/; Secure; SameSite=Strict`,
     ],
-  }));
+  }, true));
   res.end();
 }
 
 function signOut(res) {
   res.writeHead(204, head({
     'Set-Cookie': [
-      `${SESSION}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
-      `${CSRF}=; Path=/; SameSite=Strict; Max-Age=0`,
+      `${SESSION}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`,
+      `${CSRF}=; Path=/; Secure; SameSite=Strict; Max-Age=0`,
     ],
-  }));
+  }, true));
   res.end();
 }
 
@@ -344,6 +359,9 @@ const ADMIN = {
     activity: activity(),
     last_gc: jobs.gc.last,
     last_scrub: jobs.scrub.last,
+    // Flip to true to see the recovery-token notice the page shows when a
+    // session came from the standing setup token.
+    session: { recovery: process.env.OBSYNC_RECOVERY_SESSION === '1' },
   }),
   'GET /devices': () => ({ devices }),
   'GET /storage': () => ({
@@ -371,14 +389,14 @@ function mutate(res, method, rest, sent) {
     if (!device) return fail(res, 404, 'unknown_device', 'No such device.');
     device.revoked = true;
     seq += 1;
-    return empty(res, 204);
+    return empty(res, 204, true);
   }
 
   if (method === 'POST' && (rest === '/gc/run' || rest === '/scrub/run')) {
     const job = rest === '/gc/run' ? jobs.gc : jobs.scrub;
     job.runningUntil = now() + 6000;
     job.last = { ...job.last, ts: now() };
-    return empty(res, 202);
+    return empty(res, 202, true);
   }
 
   return fail(res, 404, 'unknown_endpoint', `No mock for ${method} /v1/admin${rest}.`);
@@ -438,12 +456,12 @@ const server = createServer(async (req, res) => {
           return fail(res, 403, 'csrf_mismatch', 'X-Obsync-Csrf must equal the obsync_csrf cookie.');
         }
         const sent = await body(req);
-        if (rest === '/logout') return signOut(res);
+        if (rest === '/logout' || rest === '/logout-all') return signOut(res);
         return mutate(res, method, rest, sent);
       }
 
       const handler = ADMIN[`GET ${rest}`];
-      if (handler) return json(res, 200, handler(url));
+      if (handler) return json(res, 200, handler(url), true);
       return fail(res, 404, 'unknown_endpoint', `No mock for GET /v1/admin${rest}.`);
     }
 

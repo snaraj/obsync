@@ -199,17 +199,25 @@ export function platformLabel(platform) {
 }
 
 /**
- * The double-submit CSRF value: the `obsync_csrf` cookie, echoed back in
- * `X-Obsync-Csrf` on every mutation (docs/protocol.md, admin API). Returns
- * "" when absent so a caller can refuse the mutation rather than send a
- * header the server will reject.
+ * The name of the double-submit cookie. The `__Host-` prefix is the
+ * browser's own guarantee that the cookie is Secure, path-wide and
+ * host-bound, which is why the server sets it under that name
+ * (docs/security/dashboard.md).
+ */
+export const CSRF_COOKIE = '__Host-obsync_csrf';
+
+/**
+ * The double-submit CSRF value: the `__Host-obsync_csrf` cookie, echoed back
+ * in `X-Obsync-Csrf` on every mutation (docs/protocol.md, admin API).
+ * Returns "" when absent so a caller can refuse the mutation rather than
+ * send a header the server will reject.
  */
 export function csrfToken(cookieString) {
   if (typeof cookieString !== 'string') return '';
   for (const part of cookieString.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
-    if (part.slice(0, eq).trim() !== 'obsync_csrf') continue;
+    if (part.slice(0, eq).trim() !== CSRF_COOKIE) continue;
     return part.slice(eq + 1).trim();
   }
   return '';
