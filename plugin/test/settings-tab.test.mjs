@@ -61,6 +61,7 @@ function stubPlugin(overrides = {}) {
     saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); },
     setUpAccount: async (token, account) => { calls.push(`setUp:${token}:${account}`); },
     openDashboard: async () => { calls.push("openDashboard"); },
+    openPluginManager: () => { calls.push("openPluginManager"); },
     ...overrides,
   };
   return { plugin, calls };
@@ -133,12 +134,26 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
 
   s.plugin.state.data.deviceId = "1122334455667788990011223344ffff";
   s.plugin.state.paired = true;
-  s.plugin.updateLine = () => "Server runs 9.9.9, you have 1.0.2.";
+  s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
   assert.equal(visible("First-time setup"), false);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), true, name);
   assert.equal(devices(), true);
   assert.equal(visible("Update available"), true);
-  assert.equal(s.row("Update available").desc, "Server runs 9.9.9, you have 1.0.2.");
+  assert.equal(s.row("Update available").desc, "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).");
+});
+
+test("the update row carries the button that opens Obsidian's Community plugins page", (t) => {
+  // The sentence alone was the whole row, and on a phone that page is several
+  // taps away; a row that says an update exists has to be able to reach it.
+  const s = open(t);
+  s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
+  const { made } = s.render("Update available");
+  const button = s.button(made, "Open Community plugins");
+
+  assert.equal(s.calls.length, 0, "drawing the row opens nothing");
+  button.click();
+
+  assert.deepEqual(s.calls, ["openPluginManager"]);
 });
 
 test("a bare host name becomes an https URL; an explicit scheme is kept; mobile refuses http", (t) => {

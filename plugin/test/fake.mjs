@@ -52,13 +52,37 @@ class PluginSettingTab {
 class Setting { constructor(el) { this.el = el; } }
 // Every Notice the plugin raises is recorded, so a test can read what the
 // user was actually told instead of asserting on a call it cannot see.
+// \`raised\` keeps the objects too, because a notice the plugin wires a
+// listener onto is a control, and a test has to be able to press it.
 const notices = [];
-class Notice { constructor(message) { this.message = message; notices.push(message); } hide() {} }
+const raised = [];
+class NoticeEl {
+  constructor(parent = null) { this.handlers = {}; this.parent = parent; }
+  addEventListener(type, handler) { (this.handlers[type] ??= []).push(handler); }
+  /** A click on an element runs its listeners, then its ancestors', as the DOM does. */
+  dispatch(type) { for (let el = this; el !== null; el = el.parent) for (const handler of el.handlers[type] ?? []) handler(); }
+}
+// The host's own shape, read off Obsidian 1.13.7: \`containerEl\` is the visible
+// \`.notice\` box and carries the app's click-to-hide, and \`noticeEl\` is an alias
+// of \`messageEl\`, the text element inside it. A fake that made them one element
+// would hide the difference between a tap on the text and a tap on the padding.
+class Notice {
+  constructor(message) {
+    this.message = message;
+    this.containerEl = new NoticeEl();
+    this.noticeEl = this.messageEl = new NoticeEl(this.containerEl);
+    this.hidden = false;
+    this.containerEl.addEventListener("click", () => { this.hidden = true; });
+    notices.push(message);
+    raised.push(this);
+  }
+  hide() { this.hidden = true; }
+}
 class TFile {}
 class TFolder {}
 class TAbstractFile {}
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, notices,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, notices, raised,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,

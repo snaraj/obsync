@@ -98,7 +98,13 @@ test("the shipped bundle has no path that installs code served by the server", (
     assert.equal(bundle.includes(marker), false, `the bundle still carries ${marker}`);
   }
   assert.ok(bundle.includes("Settings → Community plugins →"), "updates stay in Obsidian's plugin manager");
-  assert.ok(bundle.includes("Check for updates, then update Self Hosted Private Sync."));
+  assert.ok(bundle.includes("Open Settings → Community plugins → Check for updates."));
+  // The shipped sentence names the plugin the way the manifest does, so the
+  // reader recognises what is being offered.
+  const name = JSON.parse(readFileSync(join(plugin, "..", "manifest.json"), "utf8")).name;
+  assert.ok(bundle.includes(name), "the shipped sentence calls the plugin what the manifest calls it");
+  assert.ok(bundle.includes("is available (this device runs"), "and names the two versions before the instruction");
+  assert.ok(bundle.includes("community-plugins"), "and the button knows which tab installs it");
 });
 
 test("no ingress, tunnel or access provider is named in the shipped code", () => {

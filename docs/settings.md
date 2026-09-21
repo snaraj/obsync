@@ -18,7 +18,7 @@ device can change it for you.
 | **Edge service-token headers** | empty | One `name: value` per line, sent with every request. For a deployment with an access-controlled proxy in front of the server. | Only if your edge requires a service token. Leave empty otherwise |
 | **Connection** → **Check** | — | Asks the server who it is and reports the account name and device count. | Any time you want one round trip to prove the address, the certificate and the credential together |
 | **Connection** → **Open dashboard** | — | Mints a single-use sign-in link and opens the dashboard. The link is resolved against the Server URL above and opened only if it stays on that origin. | — |
-| **Update available** | shown only when the server reports a newer plugin version than this device runs | One sentence naming both versions and sending you to Obsidian's own updater. Nothing here installs code: the plugin never fetches its own bundle from the sync server. | — |
+| **Update available** → **Open Community plugins** | shown only when the server reports a newer plugin version than this device runs | One sentence naming the plugin and both versions, and a button that opens Obsidian's own Community plugins page, where **Check for updates** installs. The 15-second notice says the same thing and opens the same page when you tap it. Nothing here installs code: the plugin never fetches its own bundle from the sync server. | — |
 
 ## Sync folders on this device
 

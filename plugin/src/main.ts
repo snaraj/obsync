@@ -53,6 +53,7 @@
  */
 
 import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import type { App } from "obsidian";
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource } from "./chunker";
 import { State } from "./state";
@@ -153,18 +154,37 @@ function walker(fs: NodeFs): PathWalker {
   };
 }
 
+/** The decisions that mean the plugin did NOT do what was asked. */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
+
+/** What Obsidian's plugin manager calls this plugin, as `manifest.json` names it. */
+const PLUGIN_NAME = "Self Hosted Private Sync";
+
+/** The tab id of Obsidian's own Community plugins page, where an update is installed. */
+const COMMUNITY_PLUGINS_TAB = "community-plugins";
+
+/**
+ * Obsidian's settings window, which the app sets on `App` at runtime and the
+ * vendored API declaration does not list. Narrow, optional, and never assumed:
+ * a host without it is a host where the button does nothing but say so.
+ */
+interface SettingsHost {
+  setting?: { open(): void; openTabById(id: string): void };
+}
+
 /**
  * The one sentence the notice and the settings tab both show when the server
  * runs a newer plugin than this device. Obsidian's plugin manager owns
  * installation and updates; this server can never supply executable code.
+ *
+ * The plugin's own name comes FIRST: a phone-width notice wraps or truncates,
+ * and a reader who cannot see the whole sentence still has to learn what is
+ * available and which version they run before anything else.
  */
-/** The decisions that mean the plugin did NOT do what was asked. */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
-
 export function updateMessage(server: string, local: string): string {
   return (
-    `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
-    "Check for updates, then update Self Hosted Private Sync."
+    `${PLUGIN_NAME} ${server} is available (this device runs ${local}). ` +
+    "Open Settings → Community plugins → Check for updates."
   );
 }
 
@@ -1180,6 +1200,8 @@ export default class ObsyncPlugin extends Plugin {
   engine: SyncEngine | null = null;
   /** The newer version the server reports, for the settings tab to name. */
   updateAvailable: string | null = null;
+  /** Whether this session has already raised the update notice. */
+  private updateNotified = false;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
@@ -1749,8 +1771,23 @@ export default class ObsyncPlugin extends Plugin {
       if (!this.isCurrent(generation)) return;
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
-      this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
-      new Notice(updateMessage(remote.version, this.manifest.version), 15000);
+      // ONE notice per session. The settings row says the same thing for as
+      // long as it stays true, so a toast raised again on every later probe
+      // is noise -- and on a phone it lands on top of what the reader opened
+      // the app to do.
+      if (this.updateNotified) return;
+      this.updateNotified = true;
+      this.log(`update decision=notified server=${remote.version} local=${this.manifest.version}`);
+      // A Notice is not a control on its own: a tap dismisses it and leaves
+      // the reader where they were, several taps from the page that updates.
+      // The listener goes on `containerEl`, the whole notice box: `noticeEl`
+      // is an alias of `messageEl`, the text element INSIDE it, so a tap that
+      // landed on the box's padding would only dismiss. A click on the text
+      // bubbles up to the box, so one listener covers both.
+      const notice = new Notice(updateMessage(remote.version, this.manifest.version), 15000);
+      notice.containerEl.addEventListener("click", () => {
+        this.openPluginManager();
+      });
     } catch (error) {
       if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1760,6 +1797,25 @@ export default class ObsyncPlugin extends Plugin {
   updateLine(): string | null {
     const server = this.updateAvailable;
     return server === null ? null : updateMessage(server, this.manifest.version);
+  }
+
+  /**
+   * Open Obsidian's own Community plugins page, where **Check for updates**
+   * installs. The app owns that page and the download; this plugin still
+   * writes no code of its own (`docs/architecture.md` 6.3). `app.setting` is
+   * set by the host and absent from the vendored declaration, so it is read
+   * through a narrow optional interface and its absence is a logged refusal,
+   * never a crash inside a click handler.
+   */
+  openPluginManager(): void {
+    const settings = (this.app as App & SettingsHost).setting;
+    if (settings === undefined) {
+      this.log("update decision=refused reason=settings_window_unavailable");
+      return;
+    }
+    settings.open();
+    settings.openTabById(COMMUNITY_PLUGINS_TAB);
+    this.log("update decision=opened_plugin_manager");
   }
 
   // --- status ------------------------------------------------------------

@@ -191,14 +191,22 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   /**
    * What to do when the server runs a newer plugin. obsync never installs
-   * code the server serves (`docs/architecture.md` 6.3), so this line is the
-   * whole update path: it names both versions and Obsidian's plugin manager.
+   * code the server serves (`docs/architecture.md` 6.3), so this row is the
+   * whole update path: it names the plugin and both versions, and its button
+   * opens the page that does install -- Obsidian's own Community plugins --
+   * because reaching it by hand is several taps deep on a phone.
    */
   private updateAvailable(): Row {
     return {
       name: "Update available",
       desc: () => this.plugin.updateLine() ?? "",
       visible: () => this.plugin.updateLine() !== null,
+      render: (setting) => {
+        setting.addButton((button) =>
+          button.setButtonText("Open Community plugins").setCta().onClick(() => {
+            this.plugin.openPluginManager();
+          }));
+      },
     };
   }
 
