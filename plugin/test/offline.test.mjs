@@ -921,3 +921,112 @@ test("a cleanup failure after a failed write keeps the original failure and is l
     `residue left silently: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
   );
 });
+
+// --- a remote deletion over an unpushed local edit (#106) -------------------
+
+test("a remote delete over an unpushed local edit keeps the edit and republishes it", async () => {
+  const { host, server, state, context, keys: k } = await rig();
+  host.seed(NOTE, "an older line\n", 1000);
+  const pushed = await pushFile(context, NOTE);
+  // Edited here and not yet pushed; the other device deleted the same note.
+  host.seed(NOTE, MINE, 2000);
+  const tombstone = await server.publishTombstone({
+    fileId: pushed.fileId,
+    path: NOTE,
+    manifestKey: k.manifestKey,
+    parents: [pushed.versionId],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "skipped");
+
+  assert.equal(host.text(NOTE), MINE, "the unpushed edit is still in the vault");
+  assert.deepEqual(host.trashed, [], "and it never went to the trash");
+  const versions = await published(server, k);
+  assert.ok(holds(versions, MINE), "the server holds a version carrying those bytes");
+  assert.equal(state.fileByPath(NOTE).fileId, pushed.fileId, "published under the same file id, so it revives");
+  assert.notEqual(state.fileByPath(NOTE).versionId, pushed.versionId, "and the record moved to the new version");
+
+  const line = host.logs.find((entry) => entry.includes("decision=local_edit_kept"));
+  assert.ok(line, host.logs.join(" | "));
+  assert.match(line, /path_class=tombstone/);
+  assert.match(line, /reason=local_edit/);
+  assert.match(line, /published=pushed/);
+  assert.match(line, /duration_ms=\d+/);
+  assert.equal(host.notices.length, 1, "and the user is told once");
+});
+
+test("a tombstone for a file this device no longer tracks leaves the path alone", async () => {
+  const { host, server, context, keys: k } = await rig();
+  host.seed(NOTE, "an older line\n", 1000);
+  const pushed = await pushFile(context, NOTE);
+  const tombstone = async () => server.publishTombstone({
+    fileId: pushed.fileId, path: NOTE, manifestKey: k.manifestKey, parents: [pushed.versionId],
+  });
+  assert.equal(await applyChange(context, await tombstone()), "deleted");
+
+  // A note re-created here afterwards: no record names it, so no version
+  // holds it either. A replayed tombstone must not reach for it by path.
+  host.seed(NOTE, MINE, 4000);
+  assert.equal(await applyChange(context, await tombstone()), "skipped");
+  assert.equal(host.text(NOTE), MINE);
+  assert.deepEqual(host.trashed, [NOTE], "only the first, tracked deletion trashed anything");
+});
+
+test("a plain remote delete still trashes the note and forgets it", async () => {
+  const { host, server, state, context, keys: k } = await rig();
+  host.seed(NOTE, "an older line\n", 1000);
+  const pushed = await pushFile(context, NOTE);
+  const tombstone = await server.publishTombstone({
+    fileId: pushed.fileId,
+    path: NOTE,
+    manifestKey: k.manifestKey,
+    parents: [pushed.versionId],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "deleted");
+
+  assert.equal(host.files.has(NOTE), false, "the note is gone from the vault");
+  assert.deepEqual(host.trashed, [NOTE], "through the host's trash");
+  assert.equal(state.fileByPath(NOTE), undefined, "and the path is forgotten");
+  assert.equal(host.notices.length, 0, "an ordinary deletion says nothing");
+  assert.ok(host.logs.some((entry) => entry.includes("path_class=tombstone decision=deleted")));
+});
+
+test("a delete raced by an edit reaches the other device as a live note", async (t) => {
+  const { server, timers, a, b, keys: k } = await pair(t);
+
+  a.host.write(SHARED, BASE, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () =>
+    b.host.text(SHARED) === BASE && settled(a, SHARED) && settled(b, SHARED));
+
+  // The desktop app is closed. Its user appends a line to the tracked note.
+  a.engine.stop();
+  a.host.write(SHARED, BASE + DESKTOP_LINE, 2000);
+
+  // The phone deletes the note, and its tombstone's parent IS the version the
+  // desktop recorded, so the server sees no conflict at all.
+  b.host.remove(SHARED);
+  await timers.run(STEP_MS, () => b.state.fileByPath(SHARED) === undefined);
+
+  // The desktop comes back.
+  await a.engine.start();
+  await timers.run(STEP_MS, kept(a.host, SHARED, BASE + DESKTOP_LINE, () =>
+    b.host.text(SHARED) === BASE + DESKTOP_LINE));
+  await timers.run(STEP_MS);
+
+  assert.equal(
+    a.host.text(SHARED), BASE + DESKTOP_LINE,
+    `the desktop's line was trashed by the phone's delete: ${story(server, a, b)}`,
+  );
+  assert.equal(
+    b.host.text(SHARED), BASE + DESKTOP_LINE,
+    `the revived note never reached the phone: ${story(server, a, b)}`,
+  );
+  assert.ok(
+    holds(await published(server, k), BASE + DESKTOP_LINE),
+    `the desktop's line reached no version: ${story(server, a, b)}`,
+  );
+  assert.equal(server.vaultFiles().length, 1, "one note, still one file id");
+});

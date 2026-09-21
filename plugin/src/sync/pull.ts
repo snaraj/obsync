@@ -41,6 +41,12 @@
  * `(path, mtime, size)` of the writes this device made, which is what stops
  * the vault watcher from pushing our own pull back up.
  *
+ * A TOMBSTONE IS THE SAME DECISION. A remote deletion over a local file that
+ * no longer holds what this device pushed is delete-versus-edit, not a
+ * deletion: the local bytes are kept and published as a new version of the
+ * same file id, which brings the note back everywhere, and the user is told
+ * once (issue #106).
+ *
  * CONFLICTS. A version is written over a local file only when it DESCENDS
  * from the version this device recorded and the file still carries the SIZE
  * AND MODIFICATION TIME this device recorded for it. The version graph answers
@@ -93,7 +99,7 @@ import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
-import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
+import { Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -512,12 +518,43 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
           return "skipped";
         }
       }
+      // A TOMBSTONE IS A STATEMENT ABOUT BYTES THE SERVER HAS (issue #106).
+      // Bytes this device never pushed are bytes no version holds, so moving
+      // them to the trash here is the one loss no history can undo, and the
+      // user is told nothing -- on mobile the system trash is barely
+      // reachable. `competing` is the same question the content branch asks
+      // (issue #98): does the file at this path still hold what this device
+      // put there? When it does not, the local file is kept and published as
+      // a new version of the SAME file id, which brings the note back on
+      // every device. That is delete-versus-edit keeping both, which
+      // `docs/architecture.md` 6.2 item 4 already promises.
+      //
+      // THE FORK GUARD ABOVE DOES NOT REVIVE, and that is not an oversight:
+      // it fires only while `local.versionId` is a published version, so the
+      // bytes it keeps are already on the server and a second publication
+      // would add a version that says nothing new. This branch is the one
+      // that holds bytes no version holds.
       const held = await competing(context, localPath, change.file_id);
       if (held !== null) {
+        const started = context.now();
+        const revived = await pushFile(context, localPath, true);
+        if (revived.status === "pushed") context.authored.add(revived.versionId);
         context.host.log(
-          `pull path_class=tombstone decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
+          `pull path_class=tombstone decision=local_edit_kept reason=${held} published=${revived.status} ` +
+            `file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started}`,
         );
-        notifyKeptDeletion(context, change, localPath);
+        if (revived.status === "pushed") {
+          context.host.notify(
+            `obsync: "${localPath}" was deleted on another device after this one changed it. ` +
+              "The copy here was kept and published again, so it is back on every device.",
+          );
+        } else {
+          // The revive did not reach the server: offline, refused, or out of
+          // budget. The bytes are still here and still unpublished, so the
+          // user is told the weaker thing that is true, and the next push is
+          // what carries them.
+          notifyKeptDeletion(context, change, localPath);
+        }
         return "skipped";
       }
       // Marked BEFORE the trash, not after: Obsidian reports the removal to
