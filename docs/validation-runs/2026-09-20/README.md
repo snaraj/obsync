@@ -2,12 +2,12 @@
 
 Evidence for `docs/validation-runs/2026-09-20.md`. The image files arrive
 through the docs-site change (image files are artifact-class); this file
-states, for each, what it shows and what was cropped, so requirement 11 can
-be checked without opening them.
+states, for each, what it shows and what was cropped. Requirement 11 is
+checked against the committed pixels, not against this table.
 
 | File | Shows | Cropped out |
 | --- | --- | --- |
-| `11-desktop-approve-prompt.png` | the desktop plugin's approval prompt for the phone: `Approve "ios" on ios (obsync 1.0.1)?` with Approve and Reject | the pairing code (the prompt state does not display it) |
+| `11-desktop-approve-prompt.png` | the desktop plugin's approval prompt for the phone: `Approve "ios" on ios (obsync 1.0.1)?` with Approve and Reject | nothing; the prompt state displays no code |
 | `13-mobile-file-arrived.png` | the phone's file list with the desktop-written note present, status bar showing cellular | everything outside the phone frame |
 | `14-mobile-appended-line.png` | the note on the phone with the line the phone appended | everything outside the phone frame |
 | `15-desktop-both-lines.png` | the desktop editor with both lines, status bar reading idle | the rest of the desktop |
