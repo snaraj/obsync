@@ -649,6 +649,24 @@ returns immediately when a new frame lands.
    queued for that path carries them with the parent the record names, which
    is what makes the server see the conflict too.
 
+   A merge is posted only when its result is new. Two devices resolving the
+   same pair of heads produce the same TEXT and two different version ids,
+   because a version id covers its manifest ciphertext and that carries a
+   fresh nonce, so posting the second forks the file again and the other
+   device merges that fork to the same bytes forever. A result equal to the
+   local bytes therefore posts nothing and advances the record to the incoming
+   version; a result equal to the incoming version's bytes is a fast-forward
+   onto it. A device also stops merging one file after more than five
+   resolutions inside a minute, keeps both sides instead, and says so once.
+
+   A conflict copy is published with the create-only writer at the first
+   derived name nothing holds, and an occupied name is reused only when its
+   CONTENT hashes to the manifest's authenticated `sha256`: size and
+   modification time are what a vault reports about a file, not what is in it,
+   and a host chooses its own timestamps. The writer's owned temporary file is
+   released on both outcomes, because the desktop publication links rather
+   than renames and the temporary name would otherwise survive beside the copy.
+
    The base is the NEWEST version both heads reach, and neither head is its
    own ancestor. Newest matters: an older common ancestor replays edits both
    sides already agree on into the merge as spurious hunks. `GET

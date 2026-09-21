@@ -35,8 +35,13 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import {
+  existsSync, mkdirSync, mkdtempSync, promises as fsp, readFileSync, readdirSync, rmSync, writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
-import { DEVICE_B, STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { tmpdir } from "node:os";
+import nodePath, { basename, join } from "node:path";
+import { DEVICE_B, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
@@ -549,4 +554,345 @@ test("a name that appears between the look and the write is still not replaced",
   assert.equal(r.host.text(taken), SQUATTER, "the write went through the look and replaced the occupant");
   assert.equal(r.host.text(NOTE), MINE);
   assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS, "the refused commit earned the next name");
+});
+
+// --- the copy's name is not an identity (issue #109, finding 1) --------------
+
+/** As long as what this version would write, and not what it would write. */
+const sameLength = (text, filler) => filler.padEnd(text.length - 1, ".") + "\n";
+
+/**
+ * `(size, mtime)` is what a vault reports ABOUT a file, never what is in it.
+ * Reusing an occupied name on that alone made this device announce a copy it
+ * had not written, skip the version, and never fetch or authenticate one chunk
+ * of it -- while the feed advanced past it.
+ */
+test("an occupied name whose bytes are not this version's is not mistaken for it", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const decoy = sameLength(THEIRS, "an unrelated note");
+  assert.equal(decoy.length, THEIRS.length, "the decoy is exactly as long as the version");
+  r.host.seed(copyName(r, NOTE, 1), decoy, 4000);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), decoy, "the occupant was replaced or claimed");
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS, "the version reached the vault");
+  assert.equal(r.host.text(NOTE), MINE);
+  assert.ok(
+    r.server.requests.some((request) => request.target.startsWith("/v1/chunks/")),
+    "no chunk was fetched, so nothing was authenticated either",
+  );
+});
+
+test("two versions with the same size and modification time both reach the vault", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const next = sameLength(THEIRS, "the second version");
+  assert.equal(next.length, THEIRS.length);
+
+  const one = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, one), "conflict_copy");
+  const two = await foreign(r, {
+    fileId: "22".repeat(16), path: NOTE, text: next, mtime: 4000, parents: [one.version_id],
+  });
+  assert.equal(await applyChange(r.context, two), "conflict_copy");
+
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), THEIRS);
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), next, "the second version was never written");
+  assert.equal(r.host.text(NOTE), MINE);
+});
+
+/**
+ * The content check is what makes the replay control above sound: an occupant
+ * that hashes to the manifest's authenticated `sha256` IS this version, so
+ * there is nothing to write, and that is the ONLY reuse accepted.
+ */
+test("a corrupted chunk raises its authentication error instead of being called a copy", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const sid = frame.sids[0];
+  const tampered = Uint8Array.from(r.server.chunks.get(sid));
+  tampered[0] ^= 0xff;
+  r.server.chunks.set(sid, tampered);
+
+  await assert.rejects(applyChange(r.context, frame));
+  assert.deepEqual(copies(r.host), [], "a copy was claimed for content that never authenticated");
+  assert.equal(r.host.text(NOTE), MINE);
+});
+
+test("a writer that cannot be created where nothing exists is an error, not twenty attempts", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  let attempts = 0;
+  r.host.createWriter = async () => {
+    attempts++;
+    throw new Error("sentinel writer failure");
+  };
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  await assert.rejects(applyChange(r.context, frame), /sentinel writer failure/);
+  assert.equal(attempts, 1, "a real failure was retried into the whole name budget");
+  assert.deepEqual(copies(r.host), []);
+});
+
+test("the twentieth name is still usable when the first nineteen are taken", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  for (let i = 1; i <= 19; i++) r.host.seed(copyName(r, NOTE, i), `occupied ${i}\n`, 9000);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.equal(r.host.text(copyName(r, NOTE, 20)), THEIRS, "the last name in the budget was not reachable");
+});
+
+test("every name taken means the copy is refused, and nothing is claimed", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  for (let i = 1; i <= 20; i++) r.host.seed(copyName(r, NOTE, i), `occupied ${i}\n`, 9000);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "refused");
+
+  assert.equal(r.host.text(NOTE), MINE);
+  for (let i = 1; i <= 20; i++) assert.equal(r.host.text(copyName(r, NOTE, i)), `occupied ${i}\n`);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=refused") && line.includes("reason=no_free_conflict_name")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+  assert.match(r.host.notices.join(" "), /could not place the other device's copy/);
+});
+
+test("the copy's writer is released on success as well as on failure", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const create = r.host.createWriter.bind(r.host);
+  const released = [];
+  r.host.createWriter = async (path, size, check) => {
+    const writer = await create(path, size, check);
+    return { ...writer, abort: async () => { released.push(path); return writer.abort(); } };
+  };
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.deepEqual(released, [copyName(r, NOTE, 1)], "the writer's owned temporary was never released");
+});
+
+// --- the same two outcomes through the REAL desktop host --------------------
+
+/**
+ * The simple fake cannot show finding 2 at all: it has no temporary file. The
+ * desktop host does -- it publishes with `link`, which leaves its own
+ * `.obsync-*.tmp` name pointing at the same inode as the published copy and
+ * hands the removal to `abort`. So the cleanup contract is pinned HERE,
+ * against the real `ObsidianHost` over a throwaway vault on a real
+ * filesystem, where the residue is a directory entry a test can read.
+ */
+function desktopVault(t, r) {
+  const box = sandbox();
+  const root = mkdtempSync(join(tmpdir(), "obsync-copy-host-"));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(box.home, { recursive: true, force: true });
+  });
+  mkdirSync(join(root, "Notes"));
+  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const logs = [];
+  const vault = { adapter: {
+    exists: async (path) => existsSync(join(root, path)),
+    mkdir: async (path) => fsp.mkdir(join(root, path), { recursive: true }),
+    writeBinary: async () => assert.fail("the overwriting adapter was used"),
+  } };
+  const host = new ObsidianHost(
+    { state: r.state, app: { vault }, log: (line) => logs.push(line) },
+    { base: root, path: nodePath, fs: { promises: fsp } },
+  );
+  return { root, host, logs, context: { ...r.context, host } };
+}
+
+/** Every name in the folder, including the ones a vault hides. */
+const folder = (root) => readdirSync(join(root, "Notes")).sort();
+
+test("a conflict copy through the real desktop host leaves no temporary behind", async (t) => {
+  const r = await rig();
+  const { root, context } = desktopVault(t, r);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(context, frame), "conflict_copy");
+
+  const copy = copyName(r, NOTE, 1);
+  assert.equal(readFileSync(join(root, copy), "utf8"), THEIRS, "the copy did not land");
+  assert.equal(readFileSync(join(root, NOTE), "utf8"), MINE, "the local note was touched");
+  assert.deepEqual(
+    folder(root), [basename(NOTE), basename(copy)].sort(),
+    "a second, hidden name for the copy's plaintext was left in the vault",
+  );
+});
+
+test("a failed conflict copy through the real desktop host leaves neither copy nor temporary", async (t) => {
+  const r = await rig();
+  const { root, context } = desktopVault(t, r);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const tampered = Uint8Array.from(r.server.chunks.get(frame.sids[0]));
+  tampered[0] ^= 0xff;
+  r.server.chunks.set(frame.sids[0], tampered);
+
+  await assert.rejects(applyChange(context, frame));
+  assert.deepEqual(folder(root), [basename(NOTE)], "the failed copy left residue in the vault");
+  assert.equal(readFileSync(join(root, NOTE), "utf8"), MINE);
+});
+
+/**
+ * The same shortcut failing the OTHER way, which is what real devices showed:
+ * a vault gives a file the timestamp IT chooses, not the one the manifest
+ * carries, so a replayed head whose copy was already written did not look
+ * like itself and was copied a second time under the next ordinal. Content is
+ * the only identity that survives a host's own bookkeeping.
+ */
+test("a replayed head whose copy carries a different timestamp is still one copy", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copyName(r, NOTE, 1);
+  r.host.files.get(copy).mtime = 4321;
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.deepEqual(copies(r.host), [copy], "one head was written as two copies");
+  assert.equal(r.host.text(copy), THEIRS);
+});
+
+// --- what the occupant check is allowed to READ (issue #112, review round 1) -
+
+/** Record every whole-file read the pull path makes, and let it through. */
+function watchReads(r) {
+  const read = r.host.read.bind(r.host);
+  const paths = [];
+  r.host.read = async (path) => { paths.push(path); return read(path); };
+  return paths;
+}
+
+/**
+ * Recognising an occupant by content means READING it, and a read is a whole
+ * file in memory. So the two cheap facts come first and decide alone: a
+ * version with no whole-file digest, or of a different length than what is
+ * sitting there, is not this version's copy and is never opened. Without them
+ * an occupied name is an instruction from another device to load an arbitrary
+ * local file whole.
+ */
+test("a multi-chunk version never reads the file occupying its copy name", async () => {
+  const r = await rig();
+  const c = require("../build/crypto.js");
+  r.host.seed(NOTE, MINE, 2000);
+
+  // Two real chunks -- the record binding admits a second one only above
+  // CHUNK_MAX -- with a whole-file digest supplied anyway: authenticated,
+  // bound to its record, and still multi-chunk.
+  const first = new Uint8Array(8 << 20).fill(7);
+  const last = new Uint8Array(64).fill(9);
+  const sealed = [await c.encryptChunk(r.keys.domainKey, first), await c.encryptChunk(r.keys.domainKey, last)];
+  for (const chunk of sealed) r.server.chunks.set(chunk.sid, chunk.ciphertext);
+  const size = first.length + last.length;
+  const manifest = {
+    v: 1, path: NOTE, size, mtime: 4000, domain: "0123456789abcdef0123456789abcdef",
+    chunks: [
+      { sid: sealed[0].sid, cid: c.hex(sealed[0].cid), len: first.length },
+      { sid: sealed[1].sid, cid: c.hex(sealed[1].cid), len: last.length },
+    ],
+    sha256: c.hex(await c.sha256(new Uint8Array([...first, ...last]))),
+    deleted: false,
+  };
+  // Something is already at the copy's name, exactly as long as the version.
+  r.host.seed(copyName(r, NOTE, 1), new Uint8Array(size).fill(3), 4000);
+  const watched = watchReads(r);
+
+  const frame = await r.server.publishManifest({
+    fileId: "22".repeat(16), manifest, sids: manifest.chunks.map((chunk) => chunk.sid),
+    parents: [], deviceId: "ffffffffffffffffffffffffffffffff", manifestKey: r.keys.manifestKey, bytes: size,
+  });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.ok(
+    !watched.includes(copyName(r, NOTE, 1)),
+    "the occupied name was read whole to compare a version that carries no comparable digest",
+  );
+  assert.equal(r.host.text(copyName(r, NOTE, 2)).length, size, "and the version took the next name");
+});
+
+test("an occupant of a different length is never read to compare it", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  // Far longer than the incoming version, and sitting at its copy's name.
+  r.host.seed(copyName(r, NOTE, 1), new Uint8Array(2 << 20).fill(5), 4000);
+  const watched = watchReads(r);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.ok(
+    !watched.includes(copyName(r, NOTE, 1)),
+    "a 2 MiB occupant was loaded whole to be compared with a 37-byte version",
+  );
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS);
+});
+
+test("a single-chunk version of the same length IS read, and its copy reused", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  const watched = watchReads(r);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.ok(watched.includes(copyName(r, NOTE, 1)), "the positive control never compared the occupant at all");
+  assert.deepEqual(copies(r.host), [copyName(r, NOTE, 1)]);
+});
+
+// --- a cleanup that fails is still said out loud ---------------------------
+
+/** Make the writer's own cleanup fail, and count the copies it published. */
+function brokenCleanup(r) {
+  const create = r.host.createWriter.bind(r.host);
+  r.host.createWriter = async (path, size, check) => {
+    const writer = await create(path, size, check);
+    return { ...writer, abort: async () => { throw new Error("sentinel cleanup failure"); } };
+  };
+}
+
+test("a cleanup failure after a published copy keeps the copy and is logged", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  brokenCleanup(r);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy", "a published copy was withdrawn over its temp");
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), THEIRS);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=copy_temp_not_removed published=true")),
+    `residue left silently: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
+});
+
+test("a cleanup failure after a failed write keeps the original failure and is logged", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const tampered = Uint8Array.from(r.server.chunks.get(frame.sids[0]));
+  tampered[0] ^= 0xff;
+  r.server.chunks.set(frame.sids[0], tampered);
+  brokenCleanup(r);
+
+  // The authentication failure is the cause; the cleanup error must not bury it.
+  await assert.rejects(applyChange(r.context, frame), (error) => !/sentinel cleanup failure/.test(error.message));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=copy_temp_not_removed published=false")),
+    `residue left silently: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
 });

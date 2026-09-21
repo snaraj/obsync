@@ -114,6 +114,8 @@ export interface SyncContext {
   readonly trashed: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
+  /** Resolutions of one file inside the current window, for the merge breaker. */
+  readonly merges: Map<string, { since: number; count: number }>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -252,6 +254,7 @@ export class SyncEngine {
       written: new Set<string>(),
       trashed: new Set<string>(),
       refused: new Set<string>(),
+      merges: new Map<string, { since: number; count: number }>(),
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",

@@ -107,6 +107,7 @@ async function vault({ fs: injected } = {}) {
     written: new Set(),
     trashed: new Set(),
     refused: new Set(),
+    merges: new Map(),
     deviceNames: new Map(),
     now: () => 1757200000000,
     deviceNameFor: () => "iPhone",

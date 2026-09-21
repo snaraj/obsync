@@ -5,6 +5,70 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.0.6 - 2026-09-21
+
+**Three things 1.0.5 got wrong, all found on real devices after it shipped, none
+of them losing a note. Update every device that syncs the vault.** Two are
+fixed here; the third is half fixed here and finished in 1.0.7, and this entry
+says which is which.
+
+**1. Editing the same note on two open devices could loop.** You would see a
+stream of "obsync merged concurrent edits to ..." notices on both devices, one
+a second or faster, and the note's version history growing without end. The
+note's text was correct on both devices the whole time, and it never changed
+again after the first pass. The cause: two devices combining the same pair of
+versions produce the same text but two different version ids, so each saw the
+other's result as something new to combine, forever. Now a device checks
+whether the incoming version's content is the content it already has; if it is,
+there is nothing to publish, both devices pick the same version to carry
+forward by a rule they compute identically, and one of them publishes the
+single entry that closes it. There is also a hard stop: more than five
+resolutions of one note within a minute and the device stops combining that
+note, keeps both versions side by side as it does for any conflict it cannot
+merge, and tells you once. **Once both devices have 1.0.6, editing one note on
+both settles in a single round.** When two devices did reach the same combined
+text independently, one of them still publishes a single entry to close the
+split -- that is deliberate, and it is one entry, not a stream. With more than
+two devices editing at once, more than one of them can publish that closing
+entry from the same starting point; in testing those settled too, without a
+loop.
+
+**2. Two notes created under one name kept making conflict copies — half fixed
+here, finished in 1.0.7.** When two devices each created a note under the same
+name while one was closed, 1.0.5 kept both, as it should, and then every later
+edit wrote another `(conflict from ...)` copy on the other device. Part of that
+was this: a copy already on disk was recognised by its size and timestamp
+rather than by its content, so the same version could be copied twice under two
+names, and a version could be announced as copied when it had not been written
+at all. A copy is now recognised by its content, which a vault's own
+bookkeeping cannot change, and that half is fixed in this release. One case
+still makes a second copy on purpose: a note too large for obsync to carry a
+single whole-file fingerprint -- roughly 8 MB and up -- cannot be compared that
+way, so its copy takes the next free name rather than risk replacing something. The other
+half is that the two notes still compete for the one name; giving them settled,
+separate names on every device is planned for 1.0.7 and is not in this release.
+**Until then: rename one of the two notes and the copies stop.**
+
+**3. A hidden `.obsync-restore-<id>.tmp` file could be left in your vault.** On
+desktop, after obsync wrote a conflict copy, the working file it used to write
+that copy safely stayed behind next to the note. It is a plain copy of the
+note's text, inside your vault folder, never uploaded, and Obsidian hides it.
+Any left by 1.0.5 are safe to delete. 1.0.6 removes its own working file
+whether the copy succeeds or fails.
+
+**In every case seen, notes were safe.** In the loop as it was reproduced --
+two devices, one note, one edit each -- every device ended up with the same
+text, and no note content was lost in any of the three problems above. What the
+loops filled was your server's history, and on a server with a storage limit
+that could have used the limit up, which stops syncing for the whole vault
+until space is freed. The extra history entries are ordinary versions and your
+server's own retention removes them in time.
+
+**Update every device that syncs the vault** — a single device left on 1.0.5
+can still start a loop. If one is running right now, quit Obsidian on one of
+the two devices: stopping one participant can allow outstanding work on the
+other to drain. Update every device before resuming.
+
 ## 1.0.5 - 2026-09-21
 
 **A note you wrote or edited while Obsidian was closed could be replaced by
@@ -47,6 +111,14 @@ release and on every earlier one.
 
 **Why every device.** The device that loses the edit is the one that was
 closed, so updating one device protects only that device. Update them all.
+
+**Known issues in this release, fixed in 1.0.6 and 1.0.7.** Editing one note on
+two open devices could loop, and a hidden `.obsync-restore-<id>.tmp` file could
+be left in the vault folder: both are fixed in 1.0.6. Two notes created under
+one name kept making conflict copies: the copies are recognised correctly from
+1.0.6, and giving the two notes settled, separate names is planned for 1.0.7;
+until then, rename one of them. In every case seen, no note content was lost.
+See the 1.0.6 entry above, and update every device.
 
 ## 1.0.4 - 2026-09-20
 

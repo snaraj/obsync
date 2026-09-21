@@ -745,6 +745,7 @@ export async function rig({ isMobile = false, policy } = {}) {
     written: new Set(),
     trashed: new Set(),
     refused: new Set(),
+    merges: new Map(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
