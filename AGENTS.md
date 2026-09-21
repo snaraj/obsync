@@ -385,10 +385,14 @@ Several agents work this repository at once. Git worktrees under
    assignee, milestone, signed body with reproducible numbers. Apply
    `requires-review` once complete-from-author.
 6. **Adversarial review**; fix findings on the same branch; delta re-review.
-7. **Prove server release controls** for an automatic-release change per
+7. **Run the user journeys** for a change to `plugin/` or the sync path: the
+   affected journeys in `docs/validation.md`, on real devices, one desktop and
+   one phone, with their outcomes recorded in `docs/validation-runs/`. Nothing
+   else completes it, and the reviewer may demand that record for a verdict.
+8. **Prove server release controls** for an automatic-release change per
    `docs/release.md`.
-8. **Owner comments** are answered with reproduction, not assertion.
-9. **The owner merges.** Nothing else substitutes.
+9. **Owner comments** are answered with reproduction, not assertion.
+10. **The owner merges.** Nothing else substitutes.
 
 ## Commit identity mechanics
 
