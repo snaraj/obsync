@@ -126,12 +126,12 @@ address devices use — scheme, host, and port when the port is not 443.
 From the directory holding the `values.yaml` you just wrote:
 
 ```sh
-cosign verify ghcr.io/snaraj/charts/obsync:1.0.6 \
+cosign verify ghcr.io/snaraj/charts/obsync:1.0.7 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 helm install obsync oci://ghcr.io/snaraj/charts/obsync \
-  --version 1.0.6 \
+  --version 1.0.7 \
   --namespace obsidian \
   -f values.yaml
 ```
