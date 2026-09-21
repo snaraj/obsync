@@ -1,18 +1,17 @@
 # Device validation plan
 
 Dated 2026-09-12. The MVP is validated when every step below passes on
-iPhone, iPad, Windows, and macOS against the reference deployment, plus the
-LAN path from a desktop.
+iPhone, iPad, Windows and macOS against a private deployment, plus the LAN
+path from a desktop.
 
-## What readiness means (owner ruling, 2026-09-07)
+## What readiness means
 
-The reference deployment is PRIVATE and owner-only: no public application,
-no public DNS record, no public route. Readiness is real sync between the
-owner's own devices -- including OFF-LAN connectivity over a private path --
-together with the authentication, revocation, isolation and recovery checks
-below. **Public reachability is not an acceptance criterion**, and no
-scenario here passes or fails on whether this server can be reached from the
-internet.
+Readiness is real sync between real devices on a private deployment -- one
+with no public application, no public DNS record and no public route --
+including OFF-LAN connectivity over a private path, together with the
+authentication, revocation, isolation and recovery checks below. **Public
+reachability is not an acceptance criterion**, and no scenario here passes or
+fails on whether a server can be reached from the internet.
 
 So the private path is validated FIRST: the devices reach the server over the
 LAN, or over a VPN back to it, with a certificate the phone trusts. The
@@ -54,7 +53,7 @@ evidence.
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
 | V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
 | V3 | Type in a note on iPhone | appears on the other three within 3 s |
-| V4 | Rename and move a populated folder on Windows, wholly inside every participating device’s selected folders | mirrored everywhere, no duplicates |
+| V4 | Rename and move a populated folder on Windows, wholly inside every participating device’s selected folders | mirrored everywhere, no duplicates. **Open defect:** renaming a synced note is [issue #96](https://github.com/snaraj/obsync/issues/96); V4 stays `not attempted` in every run record until that fix has shipped and this scenario has been run against it |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
 | V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
 | V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; fewer than 8 MiB re-sent |
@@ -107,12 +106,12 @@ readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Reference (pie5) | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. The deployment's own tuple (proxy, route, certificate) lives in the platform runbook, not here | private, owner-only: the LAN, or the owner's private route back to it; no public application, no access broker | the deployment itself; V1-V14 by hand |
+| Cluster (private connectivity) | an in-cluster TLS terminator in front of the pod, as `docs/kubernetes.md` builds one; `OBSYNC_EDGE=none`. A deployment's own proxy, route and certificate are its deployer's and are not described here | private: a LAN, or a private route back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` on every pull request; V1-V14 by hand on a real deployment |
 | Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
 
 The Compose path is the no-provider route: it needs no account with anybody
-and nothing reachable from the internet, and unlike the reference deployment
-its serving path is re-proven on every pull request rather than by hand. Its
+and nothing reachable from the internet, and its serving path is re-proven on
+every pull request rather than by hand. Its
 "no public exposure" is an assertion and not a hope: the smoke reads back the
 `HostIp` Docker published 80 and 443 on and refuses any address but the one
 `OBSYNC_BIND_ADDRESS` selected, and refuses the compose file itself if that

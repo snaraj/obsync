@@ -324,7 +324,14 @@ device whose link opened it is revoked.
   a credential VERIFIES -- a device signature, a dashboard session, a login
   or setup token -- never an inference from the route or the status. Every
   route that requires a credential authenticates before it validates
-  anything, so an anonymous caller is answered `401` (or `421`) and nothing
-  else, whatever it sends.
+  anything, so a caller holding no credential is told nothing a refusal has
+  to tell it: a missing, malformed, stale, replayed or unverifiable
+  credential -- an unknown device id included -- is `401`, and a request that
+  reaches an edge-fronted deployment without the edge's headers is `421
+  edge_required`. One refusal is answered before verification, the `403
+  device_revoked` above, and it is not an exception to this: revocation
+  destroys the wrapped secret, so there is nothing left to verify the
+  signature against, the refusal repeats only the device the caller itself
+  named, and the server classes it as what it is -- answered without proof.
 - Every request logs one line: `ts method path_class device status bytes
   duration_ms decision`.

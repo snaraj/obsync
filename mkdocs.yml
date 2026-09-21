@@ -1,0 +1,141 @@
+# The documentation site: https://snaraj.github.io/obsync/
+#
+# It is a RENDERING of `docs/`, never a second copy of it. Every page in the
+# nav below is a Markdown file in this repository, reviewed in a pull request
+# like any other file, and readable without this site. That is the reason this
+# project has no GitHub wiki: wiki content is unreviewed, unversioned, invisible
+# to `make check`, and cannot be part of a pull request.
+#
+# Files that live OUTSIDE `docs/` -- the README, CHANGELOG.md, SECURITY.md,
+# CONTRIBUTING.md, AGENTS.md, chart/README.md -- appear in the nav as links to
+# the repository rather than as copies here. MkDocs builds one directory, and
+# duplicating a document to get it into that directory is how the two copies
+# start to disagree.
+#
+# Build it locally on the interpreter and platform the workflow pins, which is
+# also the one `docs/requirements.txt`'s hashes are the wheels for:
+#
+#     docker run --rm --platform linux/amd64 -v "$PWD:/repo" -w /repo \
+#       python:3.12-slim sh -c 'pip install --require-hashes --no-deps \
+#       --only-binary=:all: -r docs/requirements.txt && mkdocs build --strict'
+#
+# `--strict` turns every MkDocs warning into a failure, so a link to a page or
+# an image that is not there fails the pull request instead of shipping a 404.
+# A venv on a developer's own Python is not this build: the hashes name the
+# CPython 3.12 linux/amd64 wheels, so `--require-hashes` refuses anything else.
+
+site_name: Self Hosted Private Sync
+site_description: >-
+  Self-hosted, end-to-end encrypted live sync for Obsidian: one dependency-free
+  Rust server you run yourself, plus an Obsidian plugin.
+site_url: https://snaraj.github.io/obsync/
+site_author: Samuel Naranjo
+copyright: MIT licensed. The server stores ciphertext only.
+
+repo_url: https://github.com/snaraj/obsync
+repo_name: snaraj/obsync
+edit_uri: blob/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  # Material's default is Roboto and Roboto Mono, fetched from Google's font
+  # CDN by every page view. Requirement 1 admits no third-party service, and
+  # the front page of this project tells the same reader there is none, so the
+  # documentation may not quietly hand their address to one. `false` is
+  # Material's own switch for that: it emits neither the stylesheet nor the
+  # preconnect, and the pages render in the reader's own system fonts.
+  # `scripts/ci/test_docs_site_workflow.py` refuses the key going missing.
+  font: false
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  # Search only. Every other Material plugin either reaches the network at
+  # build time or adds a dependency that renders nothing a reader needs.
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+
+validation:
+  # A link to a page that is not there is a broken promise, not a note. With
+  # `--strict` these three become build failures.
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
+
+nav:
+  - Home: index.md
+  - Start here:
+      - Quickstart: quickstart.md
+      - Install the plugin: community-plugin.md
+      - Run the server (Docker and Compose): server.md
+      - Run the server (Kubernetes): kubernetes.md
+      - Chart reference: https://github.com/snaraj/obsync/blob/main/chart/README.md
+  - Using it:
+      - Daily use: daily-use.md
+      - The dashboard: dashboard.md
+      - Settings reference: settings.md
+      - Conflicts: conflicts.md
+      - Troubleshooting: troubleshooting.md
+      - Recovery: recovery.md
+  - Trust:
+      - What this plugin talks to: https://github.com/snaraj/obsync#what-this-plugin-talks-to
+      - Threat model: threat-model.md
+      - The dashboard's threat model: security/dashboard.md
+      - Security policy: https://github.com/snaraj/obsync/blob/main/SECURITY.md
+      - Storage and durability: storage.md
+  - Operate:
+      - Device validation: validation.md
+      - Validation runs: validation-runs/README.md
+      - 2026-09-14 run: validation-runs/2026-09-14.md
+      - Releases: release.md
+      - CI map: ci-map.md
+      - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md
+  - Contribute:
+      - How to work here: https://github.com/snaraj/obsync/blob/main/CONTRIBUTING.md
+      - Agent contract: https://github.com/snaraj/obsync/blob/main/AGENTS.md
+      - Architecture: architecture.md
+      - Protocol: protocol.md
+      - Benchmarks: benchmarks.md
+      - Platform onboarding: platform-onboarding.md
+      - Screenshot conventions: captures/README.md

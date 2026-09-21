@@ -112,8 +112,8 @@ choices, and what each is for:
 | An HTTPS reverse proxy on hardware the deployer owns | a permanent public endpoint | the deployer owns the terminator, so the deployer owns its terms |
 | A tunnel provider on a public hostname | reaching the server with no inbound port | read the provider's terms; move a bulk first sync onto the LAN |
 
-The reference deployment uses the first (section 10): private connectivity,
-no public hostname, and therefore no third party on the path at all. A tunnel
+The shape in section 10 takes the first: private connectivity, no public
+hostname, and therefore no third party on the path at all. A tunnel
 is one supported transport, never the foundation: none of the three changes
 what the server does, only who else is on the path.
 
@@ -362,7 +362,7 @@ restart checks remain required on supported platforms. SecretStorage is
 vault-local and shared with other trusted plugins; this does not promise
 universal OS encryption or isolation from those plugins or the local OS.
 See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
-and [API baseline](../plugin/vendor/obsidian/README.md).
+and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsidian/README.md).
 
 ### 4.3 Revocation and recovery
 
@@ -840,8 +840,9 @@ pinned-key verifier is not part of this installation path.
 ## 7. Storage, durability, replication
 
 `docs/storage.md` is the contract. In brief: one blob volume, one journal
-volume, each bound to whatever StorageClass the operator names (the
-reference deployment uses `local-pie-ssd` for both today); every write is
+volume, each bound to whatever StorageClass the operator names -- the chart
+ships a default name that every deployer replaces with a class their own
+cluster offers; every write is
 temp-write, fsync, rename, directory fsync; chunks are verified by `sid` on
 write and by a rate-limited scrub; unreferenced chunks are collected
 automatically after a retention window; a free-space watermark refuses new
@@ -910,28 +911,34 @@ what keeps `250G` from ever meaning 250 GiB. A size whose whole-unit product
 does not fit in 64 bits (`17179869184Gi`, exactly 2^64 bytes) is refused
 rather than wrapped.
 
-## 10. Reference deployment (the reference node)
+## 10. A reference shape, and what varies
 
-**Private and owner-only** (owner ruling 2026-09-07). A single-node cluster
-reached over private connectivity, LAN or VPN: no public hostname, no public
-access application, no public route. A tunnel provider is an option this
-deployment has not taken.
+This is the SHAPE the chart is written for, stated as guidance rather than as
+an account of any particular installation. Any deployment's own values,
+addresses, volumes and access decisions are the deployer's, and the one this
+project is developed against is private (requirement 11).
 
-Namespace `obsidian`; one Deployment (single replica, `Recreate`), one
-Service on 8080, one default-deny NetworkPolicy admitting ingress from one
-peer only; two static local PersistentVolumes on `local-pie-ssd` (blobs 250
-GiB, journal 4 GiB), growable to 500 GiB; `OBSYNC_SERVER_KEY` from a
-SOPS-managed Secret. Edge mode follows the posture: `OBSYNC_EDGE=none` while
-nothing but private connectivity reaches it, so a forwarded address is
-trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
+A single-node cluster reached over private connectivity -- a LAN, or a VPN
+back to it -- with no public hostname, no public access application and no
+public route. A tunnel provider is an option this shape does not take.
+
+One namespace of the deployer's choosing; one Deployment (single replica,
+`Recreate`, because two writers cannot share these volumes); one Service on
+8080; one default-deny NetworkPolicy admitting ingress from the one peer that
+terminates TLS; two static local PersistentVolumes sized to the disk the node
+actually has, the journal claim at or above the watermark floor
+(`docs/storage.md`); and `OBSYNC_SERVER_KEY` from a Secret whose contents
+never enter a repository. Edge mode follows the posture: `OBSYNC_EDGE=none`
+while nothing but private connectivity reaches the deployment, so a forwarded
+address is trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
 
 Publishing a hostname later is a configuration change, not a redesign: a
-per-app Cloudflare Tunnel for one hostname (`sync.example.org` standing in
-for the deployer's own) with Cloudflare Access in front -- identity policy
-for the dashboard paths, service-token policy for `/v1/*` -- and
-`OBSYNC_EDGE=cloudflare`, which makes the edge's connecting-address and
-request-id headers mandatory on every request and refuses one that lacks
-them. `docs/platform-onboarding.md` lists the platform-repository changes.
+tunnel for one hostname (`sync.example.org` standing in for the deployer's
+own) with an access policy in front -- identity policy for the dashboard
+paths, service-token policy for `/v1/*` -- and `OBSYNC_EDGE=cloudflare`, which
+makes the edge's connecting-address and request-id headers mandatory on every
+request and refuses one that lacks them. `docs/platform-onboarding.md` lists
+what a GitOps platform repository has to add.
 
 Every other deployment differs from it in the terminator and in which
 proxies, if any, may speak for a client's address; the edge mode is `none`
@@ -939,7 +946,7 @@ wherever nothing but private connectivity reaches the server:
 
 | Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
 | --- | --- | --- | --- | --- |
-| Reference (pie5) | `none` | an in-cluster TLS terminator the platform trusts, in front of the pod; the deployment's own tuple lives in the platform runbook | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty at activation: no forwarded address is trusted until a reviewed change names a proxy | planned, not yet proven: `docs/validation.md` V1-V14 by hand once the deployment is live |
+| Cluster (private connectivity) | `none` | an in-cluster TLS terminator in front of the pod, as `docs/kubernetes.md` builds one | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty until a reviewed change names a proxy | `.github/workflows/helm-e2e.yml`, which installs the chart and the terminator and runs a device flow through them |
 | Compose (any network, no provider) | `none` | Caddy, `deploy/compose`, reachable only on the bind address you choose | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
 
 The Compose row is the one a stranger can run: a private name, a certificate

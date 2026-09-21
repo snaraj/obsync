@@ -23,6 +23,13 @@ and 03 from V1, 04 from V2, 05 from V3. They are taken during a real
 validation run and belong to the run recorded in
 `docs/validation-runs/<date>.md`.
 
+Four more captures, numbered 06 to 09, belong to the dashboard and are not
+part of this table because `README.md` does not display them: their names,
+what each must show, and where they go are in
+[the dashboard page](../dashboard.md). Everything below
+about how to take one, and everything under requirement 11, applies to them
+exactly as it does to the five.
+
 ## How README.md displays them
 
 `scripts/ci/test_capture_contract.py` refuses anything but this form, so it is

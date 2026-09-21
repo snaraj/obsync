@@ -128,14 +128,14 @@ not prove directory acceptance, installation, or device synchronization.
 
 ## Governance receipt
 
-Before the first Release under this path the owner activates: immutable
-releases, strict required checks at the exact head, no core bypass actor,
-signed commits on `main`. The read-only preflight and the standalone bypass
-check are the same commands as the sibling repositories' release governance
-document and are pinned in `scripts/ci/test_release_contract.py`.
+Before the first Release under this path the repository owner activates:
+immutable releases, strict required checks at the exact head, no core bypass
+actor, signed commits on `main`. The read-only preflight and the standalone
+bypass check are pinned in `scripts/ci/test_release_contract.py`, so the
+settings are re-read rather than remembered.
 
 ## Deployment
 
-Publication is never deployment. The promoter in the platform repository
-selects the digest; Flux deploys it; the deploy-assurance watchdog reports
-drift. See `docs/platform-onboarding.md`.
+Publication is never deployment. A deployer's own platform selects the
+digest, reconciles it, and reports drift if the promotion never lands. See
+`docs/platform-onboarding.md`.

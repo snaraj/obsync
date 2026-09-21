@@ -193,3 +193,45 @@ test('Cancel closes the confirmation and sends nothing; Revoke device sends exac
   assert.equal(posts.length, 1, `confirming revokes once, not ${posts.length} times`);
   assert.equal(posts[0].headers['X-Obsync-Csrf'], CSRF);
 });
+
+/* ---- the page starts itself in a browser -------------------------------- */
+
+// Every test above hands `start()` its own stand-ins, which is what makes the
+// wiring testable -- and which means none of them touches the one line that
+// calls `start()` in a browser. Deleting that line leaves the whole file above
+// green and ships a dashboard that loads and then does nothing at all. This
+// test is the only one that never calls `start()`: it puts the browser globals
+// app.js reads in place, imports the module, and asks whether the page came up.
+test('importing the module in a browser starts the page, with nothing calling start()', async () => {
+  const document = makeDocument(COOKIE);
+  const net = makeFetch({ [`GET ${ADMIN}/overview`]: reply(200, overview()) });
+  const before = Object.fromEntries(
+    ['document', 'location', 'fetch', 'addEventListener'].map((name) => [name, globalThis[name]]),
+  );
+  Object.assign(globalThis, {
+    document,
+    location: { hash: '' },
+    fetch: net.fetch,
+    addEventListener() {},
+  });
+  try {
+    await import(`../app.js?browser=${(instance += 1)}`);
+    await settle();
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) delete globalThis[name];
+      else globalThis[name] = value;
+    }
+  }
+
+  const el = (id) => document.getElementById(id);
+  assert.equal(el('banner').hidden, true, `the page reported an error: ${el('banner-text').textContent}`);
+  assert.equal(
+    net.of('GET', `${ADMIN}/overview`).length,
+    1,
+    'the page never asked the server for anything, so the module did not start itself',
+  );
+  assert.equal(el('acc-name').textContent, 'vault', 'the payload never reached the page');
+  assert.equal(document.title, 'obsync — overview', 'no view was ever routed to');
+  assert.ok(el('signout').listeners.has('click'), 'sign-out was never wired');
+});

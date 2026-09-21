@@ -1,19 +1,24 @@
 # Storage contract
 
-Dated 2026-09-07. Owner rulings: one StorageClass per storage
-implementation (local SSD today; local drives and other node types as the
-cluster grows), a single copy without backups is an accepted risk for now,
-and the class may be reused by other workloads. The server therefore assumes
-nothing about the class behind a path; it assumes only a POSIX directory
-that honors `fsync`.
+Dated 2026-09-07. The design decisions behind it: one StorageClass per
+storage implementation, a class that other workloads may share, and -- for a
+deployment that accepts the risk -- a single copy without backups. The server
+therefore assumes nothing about the class behind a path; it assumes only a
+POSIX directory that honors `fsync`. Every size, class name and host path on
+this page is guidance for a deployer to size against their own disk, never a
+description of any particular installation.
 
 ## Volumes and roles
 
-| Role | Variable | Contents | Reference class |
+| Role | Variable | Contents | Typical claim |
 | --- | --- | --- | --- |
-| blobs | `OBSYNC_BLOBS_DIR` | ciphertext chunks | `local-pie-ssd`, 250 GiB (→ 500 GiB) |
-| journal | `OBSYNC_JOURNAL_DIR` | journal segments, index snapshots, server key | `local-pie-ssd`, 4 GiB |
+| blobs | `OBSYNC_BLOBS_DIR` | ciphertext chunks | a local class, sized to the vault and its history |
+| journal | `OBSYNC_JOURNAL_DIR` | journal segments, index snapshots, server key | a local class, at least the watermark floor below |
 | mirror | `OBSYNC_BLOBS_MIRRORS` | optional extra blob copies | any class |
+
+The chart ships a default class name in `chart/values.yaml`; it is a name
+from one cluster and every deployer replaces it with a class their own
+cluster offers.
 
 The chart exposes `storage.blobs.{className,size}`,
 `storage.journal.{className,size}`, and `storage.mirrors[]` with the same
@@ -150,9 +155,9 @@ refuses a start.
 The chart sets no `fsGroup`. It is a group-sharing mechanism: the kubelet
 would make the mount point and everything under it writable by that group,
 and a mount point a group may write is refused above. The image ships
-`/data/blobs` and `/data/journal` owned by the server's user, and the
-reference deployment's host directories are created for that user, so
-nothing needs sharing. A platform that applies an `fsGroup` anyway sees the
+`/data/blobs` and `/data/journal` owned by the server's user, and the host
+directories behind a local volume are created for that user
+(`docs/kubernetes.md`), so nothing needs sharing. A platform that applies an `fsGroup` anyway sees the
 pass correct the bits below the roots and refuse the mount point; the fix is
 to drop the `fsGroup`, not to widen the pass.
 
@@ -543,15 +548,18 @@ Chunks and manifests are already ciphertext. Device secrets are wrapped
 under the server key. Host-level disk encryption is a host decision outside
 this repository.
 
-## Reference deployment
+## A local-volume deployment, end to end
 
-Static local PersistentVolumes under `/mnt/local-pie-ssd/obsidian/obsync-{blobs,
-journal}` on class `local-pie-ssd`, `Retain`, `WaitForFirstConsumer`,
-`ReadWriteOnce` (which excludes other nodes; the one-writer boundary on the
-node is the server's own lock, above), node-affine to the single node,
-claimed by `obsync-blobs` and `obsync-journal` in namespace `obsidian`. The claim names come from the
-chart, which names every object for the application (`obsync`) and never for
-the namespace it happens to be installed into; `scripts/ci/chart_pins.py`
-refuses a name here that the render does not create. Growth to 500 GiB is a
-PV capacity edit and a claim resize. The platform's storage
-exposure policy already admits this class, provisioner, and root.
+Static local PersistentVolumes under a host directory per role --
+`/mnt/<disk>/obsync-blobs` and `/mnt/<disk>/obsync-journal` is the shape
+`docs/kubernetes.md` builds -- on a local class, `Retain`,
+`WaitForFirstConsumer`, `ReadWriteOnce` (which excludes other nodes; the
+one-writer boundary on the node is the server's own lock, above), node-affine
+to the node that holds the disk, claimed by `obsync-blobs` and
+`obsync-journal` in the namespace the chart is installed into. The claim names
+come from the chart, which names every object for the application (`obsync`)
+and never for the namespace it happens to be installed into;
+`scripts/ci/chart_pins.py` refuses a name here that the render does not
+create. Growing a volume is a PV capacity edit and a claim resize. A platform
+with a storage-exposure policy has to admit the class, the provisioner and the
+host root before any of this binds.
