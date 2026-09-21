@@ -767,3 +767,132 @@ test("a replayed head whose copy carries a different timestamp is still one copy
   assert.deepEqual(copies(r.host), [copy], "one head was written as two copies");
   assert.equal(r.host.text(copy), THEIRS);
 });
+
+// --- what the occupant check is allowed to READ (issue #112, review round 1) -
+
+/** Record every whole-file read the pull path makes, and let it through. */
+function watchReads(r) {
+  const read = r.host.read.bind(r.host);
+  const paths = [];
+  r.host.read = async (path) => { paths.push(path); return read(path); };
+  return paths;
+}
+
+/**
+ * Recognising an occupant by content means READING it, and a read is a whole
+ * file in memory. So the two cheap facts come first and decide alone: a
+ * version with no whole-file digest, or of a different length than what is
+ * sitting there, is not this version's copy and is never opened. Without them
+ * an occupied name is an instruction from another device to load an arbitrary
+ * local file whole.
+ */
+test("a multi-chunk version never reads the file occupying its copy name", async () => {
+  const r = await rig();
+  const c = require("../build/crypto.js");
+  r.host.seed(NOTE, MINE, 2000);
+
+  // Two real chunks -- the record binding admits a second one only above
+  // CHUNK_MAX -- with a whole-file digest supplied anyway: authenticated,
+  // bound to its record, and still multi-chunk.
+  const first = new Uint8Array(8 << 20).fill(7);
+  const last = new Uint8Array(64).fill(9);
+  const sealed = [await c.encryptChunk(r.keys.domainKey, first), await c.encryptChunk(r.keys.domainKey, last)];
+  for (const chunk of sealed) r.server.chunks.set(chunk.sid, chunk.ciphertext);
+  const size = first.length + last.length;
+  const manifest = {
+    v: 1, path: NOTE, size, mtime: 4000, domain: "0123456789abcdef0123456789abcdef",
+    chunks: [
+      { sid: sealed[0].sid, cid: c.hex(sealed[0].cid), len: first.length },
+      { sid: sealed[1].sid, cid: c.hex(sealed[1].cid), len: last.length },
+    ],
+    sha256: c.hex(await c.sha256(new Uint8Array([...first, ...last]))),
+    deleted: false,
+  };
+  // Something is already at the copy's name, exactly as long as the version.
+  r.host.seed(copyName(r, NOTE, 1), new Uint8Array(size).fill(3), 4000);
+  const watched = watchReads(r);
+
+  const frame = await r.server.publishManifest({
+    fileId: "22".repeat(16), manifest, sids: manifest.chunks.map((chunk) => chunk.sid),
+    parents: [], deviceId: "ffffffffffffffffffffffffffffffff", manifestKey: r.keys.manifestKey, bytes: size,
+  });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.ok(
+    !watched.includes(copyName(r, NOTE, 1)),
+    "the occupied name was read whole to compare a version that carries no comparable digest",
+  );
+  assert.equal(r.host.text(copyName(r, NOTE, 2)).length, size, "and the version took the next name");
+});
+
+test("an occupant of a different length is never read to compare it", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  // Far longer than the incoming version, and sitting at its copy's name.
+  r.host.seed(copyName(r, NOTE, 1), new Uint8Array(2 << 20).fill(5), 4000);
+  const watched = watchReads(r);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.ok(
+    !watched.includes(copyName(r, NOTE, 1)),
+    "a 2 MiB occupant was loaded whole to be compared with a 37-byte version",
+  );
+  assert.equal(r.host.text(copyName(r, NOTE, 2)), THEIRS);
+});
+
+test("a single-chunk version of the same length IS read, and its copy reused", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  const watched = watchReads(r);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  assert.ok(watched.includes(copyName(r, NOTE, 1)), "the positive control never compared the occupant at all");
+  assert.deepEqual(copies(r.host), [copyName(r, NOTE, 1)]);
+});
+
+// --- a cleanup that fails is still said out loud ---------------------------
+
+/** Make the writer's own cleanup fail, and count the copies it published. */
+function brokenCleanup(r) {
+  const create = r.host.createWriter.bind(r.host);
+  r.host.createWriter = async (path, size, check) => {
+    const writer = await create(path, size, check);
+    return { ...writer, abort: async () => { throw new Error("sentinel cleanup failure"); } };
+  };
+}
+
+test("a cleanup failure after a published copy keeps the copy and is logged", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  brokenCleanup(r);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy", "a published copy was withdrawn over its temp");
+  assert.equal(r.host.text(copyName(r, NOTE, 1)), THEIRS);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=copy_temp_not_removed published=true")),
+    `residue left silently: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
+});
+
+test("a cleanup failure after a failed write keeps the original failure and is logged", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 2000);
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  const tampered = Uint8Array.from(r.server.chunks.get(frame.sids[0]));
+  tampered[0] ^= 0xff;
+  r.server.chunks.set(frame.sids[0], tampered);
+  brokenCleanup(r);
+
+  // The authentication failure is the cause; the cleanup error must not bury it.
+  await assert.rejects(applyChange(r.context, frame), (error) => !/sentinel cleanup failure/.test(error.message));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=copy_temp_not_removed published=false")),
+    `residue left silently: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
+});

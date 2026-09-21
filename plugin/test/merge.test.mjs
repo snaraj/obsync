@@ -192,3 +192,150 @@ test("a merge that comes out as the other device's bytes is adopted, not posted"
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
 });
+
+/**
+ * The breaker is a WINDOW, and the notice is once. A log line that prints
+ * `window_ms=60000` proves neither: it is a constant in a template string.
+ * What proves them is driving past the limit twice inside one window, then
+ * walking the clock past it and watching the count start again.
+ */
+test("the breaker speaks once per window and forgets when the window passes", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Window.md";
+  r.host.seed(NOTE, "the line both sides start from\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "the line this device wrote\n", 2000);
+  await pushFile(r.context, NOTE);
+
+  const fork = async (round) => {
+    const theirs = await r.server.publish({
+      fileId: base.fileId,
+      path: NOTE,
+      bytes: new TextEncoder().encode(`the other device, round ${round}\n`),
+      mtime: 4000 + round,
+      parents: [base.versionId],
+      domainKey: r.keys.domainKey,
+      manifestKey: r.keys.manifestKey,
+    });
+    return applyChange(r.context, theirs);
+  };
+  const storms = () => r.host.logs.filter((line) => line.includes("reason=merge_storm"));
+  const notices = () => r.host.notices.filter((notice) => notice.includes("stopped merging"));
+
+  // Seven inside one window: five are merged or kept, and rounds six and seven
+  // are both over the limit. Two trips, ONE notice.
+  for (let round = 1; round <= 7; round++) await fork(round);
+  assert.equal(storms().length, 2, storms().join(" | "));
+  assert.match(storms()[1], /count=7 window_ms=60000/);
+  assert.equal(notices().length, 1, "the user was told once per version instead of once per storm");
+
+  // The window passes. The next fork starts a fresh tally, so it is resolved
+  // rather than refused: a breaker that never forgets is a breaker that stops
+  // syncing a note for good.
+  r.host.clock += 60_001;
+  await fork(8);
+  assert.equal(storms().length, 2, `the tally survived its own window: ${storms().join(" | ")}`);
+  assert.equal(notices().length, 1);
+});
+
+/**
+ * Closing a fork means naming heads as parents, and a head named as a parent
+ * is a head retired. Retiring one whose bytes were never compared would throw
+ * away someone's note, so the shortcut closes EXACTLY the two heads it
+ * compared and nothing else. Three shapes say so.
+ */
+for (const shape of ["a third divergent head", "our version already retired", "their version already retired"]) {
+  test(`the equal-byte shortcut publishes no closing version when ${shape}`, async () => {
+    const { rig } = await import("./fake.mjs");
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const { applyChange } = require("../build/sync/pull.js");
+    const { pushFile } = require("../build/sync/push.js");
+
+    const r = await rig();
+    const NOTE = "Notes/Heads.md";
+    const SHARED = "the bytes both heads carry\n";
+    r.host.seed(NOTE, SHARED, 1000);
+    const base = await pushFile(r.context, NOTE);
+
+    // Two heads carrying the SAME bytes, and a third carrying different ones.
+    const publish = (text, mtime) => r.server.publish({
+      fileId: base.fileId, path: NOTE, bytes: new TextEncoder().encode(text),
+      mtime, parents: [base.versionId],
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    const twins = [await publish(SHARED, 4000), await publish(SHARED, 4001)];
+    const third = await publish("a third device's own line\n", 5000);
+
+    // Which of the twins this device holds is not left to chance: the closing
+    // version is published by the holder of the SMALLER id, so this device
+    // must hold it for the guard below to be the thing under test at all.
+    twins.sort((left, right) => (left.version_id < right.version_id ? -1 : 1));
+    const [ours, theirs] = twins;
+    const record = r.state.fileByPath(NOTE);
+    r.state.setFile(NOTE, { ...record, versionId: ours.version_id });
+
+    const file = r.server.files.get(base.fileId);
+    if (shape === "a third divergent head") file.heads = [ours.version_id, theirs.version_id, third.version_id];
+    if (shape === "our version already retired") file.heads = [theirs.version_id, third.version_id];
+    if (shape === "their version already retired") file.heads = [ours.version_id, third.version_id];
+    const before = r.server.journal.length;
+
+    assert.equal(await applyChange(r.context, theirs), "skipped");
+    assert.ok(
+      r.host.logs.some((line) => line.includes("decision=converged reason=identical_bytes")),
+      "the records did not converge at all",
+    );
+    assert.equal(
+      r.server.journal.length, before,
+      "a closing version was published over a head whose bytes were never compared",
+    );
+    assert.ok(
+      !r.host.logs.some((line) => line.includes("decision=resolved")),
+      r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+    );
+    // The third device's line is still a head nobody threw away.
+    assert.ok(r.server.files.get(base.fileId).heads.includes(third.version_id));
+  });
+}
+
+/**
+ * The positive control for the same guard: exactly the two heads it compared,
+ * both current, and this device holding the smaller id. That is the one shape
+ * that may publish a closing version, and it must.
+ */
+test("the equal-byte shortcut does close a fork of exactly the two heads it compared", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Heads.md";
+  const SHARED = "the bytes both heads carry\n";
+  r.host.seed(NOTE, SHARED, 1000);
+  const base = await pushFile(r.context, NOTE);
+  const publish = (mtime) => r.server.publish({
+    fileId: base.fileId, path: NOTE, bytes: new TextEncoder().encode(SHARED), mtime,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const twins = [await publish(4000), await publish(4001)];
+  twins.sort((left, right) => (left.version_id < right.version_id ? -1 : 1));
+  const [ours, theirs] = twins;
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: ours.version_id });
+  r.server.files.get(base.fileId).heads = [ours.version_id, theirs.version_id];
+
+  assert.equal(await applyChange(r.context, theirs), "skipped");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=resolved reason=identical_heads")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
+});
