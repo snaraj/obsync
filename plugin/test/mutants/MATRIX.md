@@ -1,94 +1,108 @@
-# Mutation kill matrix - the 1.0.7 same-name tie-break
+# Mutation kill matrix - the 1.1.0 train
 
-Every guard this branch adds, mutated against the whole plugin suite. Each
-mutant is an exact unified diff beside this file with its subject on its first
-line, and this record is the output of one command:
+Every guard this range adds or carries, mutated against the whole plugin
+suite. Each mutant is an exact unified diff beside this file with its subject
+on its first line. Nothing below is typed by hand: the run produces the
+numbers and `record.py` writes this file from them, so a table whose counts
+have drifted from the suite is a table anyone can catch.
 
-    sh plugin/test/mutants/matrix.sh
+    sh plugin/test/mutants/matrix.sh > matrix.log
+    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants 688
 
-run over the sources this commit leaves in the tree, 547 tests, against the
-pinned TypeScript 5.9.3. One mutant can be re-measured on its own:
+The last argument is the size of the clean suite -- 688 tests here, which
+`node --test` prints as `# tests` -- so every count below is out of the whole
+suite. One mutant can be re-measured on its own:
 
     sh plugin/test/mutants/run.sh plugin/test/mutants/M12.diff
 
-A surviving mutant is a finding, so each line below either has a non-zero count
-and names the tests that produced it, or says why no test can produce one. The
-runner applies with `-F0`: a patch whose context has moved fails loudly rather
-than mutating something it was never written for.
+A surviving mutant is a finding, so each line below either has a non-zero
+count and names the tests that produced it, or says why no test can produce
+one. The runner applies with `-F0`: a patch whose context has moved fails
+loudly rather than mutating something it was never written for, and a patch
+that fails to apply is neither a kill nor a survival -- it is an unmeasured
+guard, which is why the four the composition moved were re-cut.
 
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
-| M01 | the tie-break comparison reversed | 38/547 |
-| M02 | the tie-break always keeps the name | 23/547 |
-| M03 | the tie-break always renames | 16/547 |
-| M04 | a name this device already settled is ignored | 7/547 |
-| M05 | a settled occupant is written over unchecked | 5/547 |
-| M06 | keep-and-record records no copy | 13/547 |
-| M07 | the moved file's delete is left unmarked | 3/547 |
-| M08 | the moved file's record is left clean | 4/547 |
-| M09 | no free name reports the move as done | 1/547 |
-| M10 | an unidentified file is never settled | 2/547 |
-| M11 | the source of a move is never checked for a local edit | 1/547 |
-| M12 | adoption takes any occupant of the length | 2/547 |
-| M13 | identify believes any publish outcome | 1/547 |
-| M14 | a failed publish reports success | 1/547 |
-| M15 | one path pushed twice at once | 4/547 |
-| M16 | the source is not re-stat-ed before the trash | 1/547 |
-| M17 | the refusal is logged and the move reported as done | 1/547 |
-| M18 | the move reads the whole file again | 2/547 |
-| M19 | the copy window is the rest of the file | 1/547 |
-| M20 | a copy that failed under a moving source is raised, not refused | 1/547 |
-| M21 | the fake's create-only writer accepts a short copy | 1/547 |
-| M22 | the digest proof is bound to a fresh stat | 2/547 |
-| M23 | recordAt stats the file itself | 4/547 |
-| M24 | the settled write records a fresh stat | 3/547 |
-| M25 | the joined request is dropped, as before | 1/547 |
-| M26 | the follow-up is remembered and never queued | 1/547 |
-| M27 | the record is never saved | 1/547 |
-| M28 | any held answer enters the rule, not only one about the destination | survives, see below |
-| M29 | the id the server answers with is ignored | 5/547 |
-| M30 | a post never offers the version the server already holds | 3/547 |
-| M31 | a rename offers itself for deduplication | 1/547 |
-| M32 | the domain map offers itself for deduplication | 1/547 |
-| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/547 |
-| M34 | 121: sync now never drains again for work queued behind it | 1/547 |
-| M35 | 121: sync now always reports that it joined a running drain | 1/547 |
-| M36 | 56: the in-flight byte ceiling admits anything | 1/547 |
-| M37 | 56: a chunk already in flight is uploaded a second time | 1/547 |
-| M38 | 56: the probe always answers that the body never landed | 1/547 |
-| M39 | 56: the 409 retry re-uploads every chunk again | 1/547 |
-| M40 | 91: a renamed folder does not take the selection with it | 6/547 |
-| M41 | 91: a file leaving the selection is published as a deletion | 6/547 |
-| M42 | 91: both sides of the move are judged by the selection after it | 3/547 |
-| M43 | 91: the followed selection is never persisted | 1/547 |
-| M44 | 92: every scope change replays from zero, narrowing included | 1/547 |
-| M45 | no hold is ever taken, so no move is ever completed | 11/547 |
-| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/547 |
-| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/547 |
-| M48 | a tombstone is posted without asking whether the file is still there | 2/547 |
-| M49 | a refused deletion is dropped instead of published as the change it is | 1/547 |
-| M50 | a move the filesystem refused is removed by its live name anyway | 1/547 |
-| M51 | a removal with no hold behind it is made anyway, with the window open | 3/547 |
-| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 3/547 |
-| M53 | what moved is not proved against what was copied | 4/547 |
-| M54 | the file is put back and deleted by the name an editor writes to | 4/547 |
-| M55 | the vacated name is written over instead of created | 1/547 |
-| M56 | a save made through an open descriptor after the move is not noticed | 4/547 |
-| M57 | a tombstone is applied without proving the file against its record | 1/547 |
-| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 4/547 |
-| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/547 |
-| M60 | the put-back looks at the destination and then replaces whatever took it | 2/547 |
-| M61 | the hold is released whether or not the restore landed | 1/547 |
-| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/547 |
-| M63 | an upload that outlived its path records it anyway | 2/547 |
-| M64 | a folder rename moves the records and leaves the pending work behind | 1/547 |
-| M65 | the adopted version is proved by everything except the path | 3/547 |
-| M66 | the repost after a refused adoption offers the promise again | 3/547 |
+| M01 | the tie-break comparison reversed | 39/688 |
+| M02 | the tie-break always keeps the name | 23/688 |
+| M03 | the tie-break always renames | 17/688 |
+| M04 | a name this device already settled is ignored | 7/688 |
+| M05 | a settled occupant is written over unchecked | 5/688 |
+| M06 | keep-and-record records no copy | 13/688 |
+| M07 | the moved file's delete is left unmarked | 2/688 |
+| M08 | the moved file's record is left clean | 4/688 |
+| M09 | no free name reports the move as done | 1/688 |
+| M10 | an unidentified file is never settled | 2/688 |
+| M11 | the source of a move is never checked for a local edit | 2/688 |
+| M12 | adoption takes any occupant of the length | 2/688 |
+| M13 | identify believes any publish outcome | 1/688 |
+| M14 | a failed publish reports success | 1/688 |
+| M15 | one path pushed twice at once | 4/688 |
+| M16 | the source is not re-stat-ed before the trash | 1/688 |
+| M17 | the refusal is logged and the move reported as done | 1/688 |
+| M18 | the move reads the whole file again | 2/688 |
+| M19 | the copy window is the rest of the file | 1/688 |
+| M20 | a copy that failed under a moving source is raised, not refused | 1/688 |
+| M21 | the fake's create-only writer accepts a short copy | 1/688 |
+| M22 | the digest proof is bound to a fresh stat | 2/688 |
+| M23 | recordAt stats the file itself | 4/688 |
+| M24 | the settled write records a fresh stat | 3/688 |
+| M25 | the joined request is dropped, as before | **SURVIVES** 0/688 |
+| M26 | the follow-up is remembered and never queued | **SURVIVES** 0/688 |
+| M27 | the record is never saved | 1/688 |
+| M28 | any held answer enters the rule, not only one about the destination | equivalent, see below |
+| M29 | the id the server answers with is ignored | 6/688 |
+| M30 | a post never offers the version the server already holds | 3/688 |
+| M31 | a rename offers itself for deduplication | 1/688 |
+| M32 | the domain map offers itself for deduplication | 1/688 |
+| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/688 |
+| M34 | 121: sync now never drains again for work queued behind it | 1/688 |
+| M35 | 121: sync now always reports that it joined a running drain | 1/688 |
+| M36 | 56: the in-flight byte ceiling admits anything | 1/688 |
+| M37 | 56: a chunk already in flight is uploaded a second time | 1/688 |
+| M38 | 56: the probe always answers that the body never landed | 1/688 |
+| M39 | 56: the 409 retry re-uploads every chunk again | 1/688 |
+| M40 | 91: a renamed folder does not take the selection with it | 6/688 |
+| M41 | 91: a file leaving the selection is published as a deletion | 6/688 |
+| M42 | 91: both sides of the move are judged by the selection after it | 3/688 |
+| M43 | 91: the followed selection is never persisted | 1/688 |
+| M44 | 92: every scope change replays from zero, narrowing included | 1/688 |
+| M45 | no hold is ever taken, so no move is ever completed | 11/688 |
+| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/688 |
+| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/688 |
+| M48 | a tombstone is posted without asking whether the file is still there | 3/688 |
+| M49 | a refused deletion is dropped instead of published as the change it is | 1/688 |
+| M50 | a move the filesystem refused is removed by its live name anyway | 1/688 |
+| M51 | a removal with no hold behind it is made anyway, with the window open | 3/688 |
+| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 1/688 |
+| M53 | what moved is not proved against what was copied | 4/688 |
+| M54 | the file is put back and deleted by the name an editor writes to | 4/688 |
+| M55 | the vacated name is written over instead of created | 1/688 |
+| M56 | a save made through an open descriptor after the move is not noticed | 4/688 |
+| M57 | a tombstone is applied without proving the file against its record | 3/688 |
+| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 6/688 |
+| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/688 |
+| M60 | the put-back looks at the destination and then replaces whatever took it | 2/688 |
+| M61 | the hold is released whether or not the restore landed | 1/688 |
+| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/688 |
+| M63 | an upload that outlived its path records it anyway | 1/688 |
+| M64 | a folder rename moves the records and leaves the pending work behind | 1/688 |
+| M65 | the adopted version is proved by everything except the path | 3/688 |
+| M66 | the repost after a refused adoption offers the promise again | 3/688 |
+| M67 | the bulk-deletion floor is removed, so any pass can hold | 2/688 |
+| M68 | a count alone decides a bulk deletion, without the share | 1/688 |
+| M69 | the periodic scan may clear a hold the startup pass took | 2/688 |
+| M70 | the confirmation queues nothing, so a real deletion never publishes | 1/688 |
+| M71 | every remote rename falls back to write-then-trash | 2/688 |
+| M72 | the rename shortcut stops proving the source holds this content | 1/688 |
+| M73 | leaving a server keeps the folder records it minted | 1/688 |
 
 ## Which tests killed each mutant
 
 **M01** - the tie-break comparison reversed
 
+- a device that keeps two spellings apart merges and deletes neither
 - a native move preserves an edit arriving inside the trash operation
 - an ordinary native move drops its hold and leaves the copy behind
 - a native settled write records the metadata of the bytes it committed
@@ -156,6 +170,7 @@ than mutating something it was never written for.
 
 **M03** - the tie-break always renames
 
+- a device that keeps two spellings apart merges and deletes neither
 - a native settled write records the metadata of the bytes it committed
 - control: a native settled copy protects a save made after commit returns
 - a pull never replaces a note this device tracks under another identity (other_file)
@@ -211,18 +226,6 @@ than mutating something it was never written for.
 
 - the holder of the higher id moves its own note aside and yields the path
 - a note far larger than memory is moved aside a window at a time
-- two devices that name one note twice converge, and stay converged
-- NOT A DETERMINISTIC COUNT. The number above is this run's; across this run,
-  the full run before it and a third measurement of these three mutants, the
-  kill set of this mutant moved by one test across the round-5 runs, always one
-  of the two-device or offline rigs -- two engines on one virtual clock, or a
-  device that starts with work already queued, resolve their collision in an
-  order this mutant lets decide the outcome. That is a property of the mutant,
-  not of the suite: the pristine suite passed 547/547 in every run of the
-  campaign. The floor is what all three runs reproduced: for M07 the higher-id
-  move aside and the multi-GiB move, for M10 both unpublished-note tests, and
-  for M15 the offline same-path survival, the edit that raced the push, and the
-  two-engine convergence.
 
 **M08** - the moved file's record is left clean
 
@@ -239,21 +242,11 @@ than mutating something it was never written for.
 
 - a note this device never published is given an id before the rule decides
 - and it yields the name once it has one, when the other id sorts lower
-- NOT A DETERMINISTIC COUNT. The number above is this run's; across this run,
-  the full run before it and a third measurement of these three mutants, the
-  kill set of this mutant moved by one test across the round-5 runs, always one
-  of the two-device or offline rigs -- two engines on one virtual clock, or a
-  device that starts with work already queued, resolve their collision in an
-  order this mutant lets decide the outcome. That is a property of the mutant,
-  not of the suite: the pristine suite passed 547/547 in every run of the
-  campaign. The floor is what all three runs reproduced: for M07 the higher-id
-  move aside and the multi-GiB move, for M10 both unpublished-note tests, and
-  for M15 the offline same-path survival, the edit that raced the push, and the
-  two-engine convergence.
 
 **M11** - the source of a move is never checked for a local edit
 
 - a move never trashes a local file this device has not pushed
+- a rename over an unpushed local edit keeps both, and renames nothing
 
 **M12** - adoption takes any occupant of the length
 
@@ -274,17 +267,6 @@ than mutating something it was never written for.
 - a note the queue is already pushing is not published a second time
 - an edit made while a note is being pushed is not left behind
 - two devices that name one note twice converge, and stay converged
-- NOT A DETERMINISTIC COUNT. The number above is this run's; across this run,
-  the full run before it and a third measurement of these three mutants, the
-  kill set of this mutant moved by one test across the round-5 runs, always one
-  of the two-device or offline rigs -- two engines on one virtual clock, or a
-  device that starts with work already queued, resolve their collision in an
-  order this mutant lets decide the outcome. That is a property of the mutant,
-  not of the suite: the pristine suite passed 547/547 in every run of the
-  campaign. The floor is what all three runs reproduced: for M07 the higher-id
-  move aside and the multi-GiB move, for M10 both unpublished-note tests, and
-  for M15 the offline same-path survival, the edit that raced the push, and the
-  two-engine convergence.
 
 **M16** - the source is not re-stat-ed before the trash
 
@@ -331,11 +313,31 @@ than mutating something it was never written for.
 
 **M25** - the joined request is dropped, as before
 
-- an edit made while a note is being pushed is not left behind
+- SURVIVES. No test in the suite distinguishes this mutation from the
+  code it replaces; the finding is recorded in the pull request.
 
 **M26** - the follow-up is remembered and never queued
 
-- an edit made while a note is being pushed is not left behind
+- SURVIVES. No test in the suite distinguishes this mutation from the
+  code it replaces; the finding is recorded in the pull request.
+
+- WHY IT SURVIVES NOW AND DID NOT BEFORE, which is the reason this file
+  is generated rather than typed. Every earlier run recorded one kill for
+  it, always from the same test: `a remote rename that also edits the
+  note downloads it rather than renaming`. That test waited for the
+  note's TEXT and then asserted on its RECORD, so under any mutation that
+  added a step it read a record not yet written and died of
+  `undefined.fileId` -- which is not a fact about this mutant. The wait
+  is correct now, the phantom is gone with it, and the true state of the
+  guard is visible: nothing here tells `pushOne` queueing the follow-up
+  it remembered from `pushOne` forgetting it. Reaching that needs a
+  second request for a path WHILE it is being pushed, which the drain
+  does not produce -- it is awaiting the batch that holds the push, so
+  the second request waits in the queue and is served as an ordinary
+  push afterwards. The route that does produce it is the pull path
+  asking out of turn. The guard is kept: it is review round 2, finding 3,
+  where the consequence was an engine reporting idle with an edit that
+  had gone nowhere.
 
 **M27** - the record is never saved
 
@@ -343,16 +345,23 @@ than mutating something it was never written for.
 
 **M28** - any held answer enters the rule, not only one about the destination
 
-- EQUIVALENT, and kept as the proof of that. Routing every non-null answer into
-  the rule instead of only an answer about the DESTINATION changes no outcome:
-  a `local_edit` answer, at the destination or at the source, names a path this
-  device tracks under this very file id, so the rule's first act is to hand it
-  to `updateSettled`, which re-checks that same file with `competing` and keeps
-  both. The branch is therefore a fast path, not a second guard, and the guard
-  it looks like is M05, which dies. It is not removed because the mutant's own
-  shape shows the cost: it needs a cast that asserts a type the value does not
-  have, and it would make this decision depend on another function's re-check
-  rather than on the answer in hand.
+- EQUIVALENT, and kept as the proof of that. The branch it removes sends
+  only an answer about the DESTINATION into the rule; the mutant sends the
+  source's answer there too, behind a cast that asserts a type the value
+  does not have. No outcome moves. For a file id this device already
+  tracks, `sameNameTiebreak` hands the version straight to
+  `updateSettled`, whose first act is to ask `competing` about that same
+  path -- the very answer that put the call there -- so it returns
+  `keepBoth`, which is what the `else` calls directly. The rename branch
+  below is not reachable either: it requires `held === null`, and `held`
+  is what got us here. What the mutant does change is the number of
+  `stat` calls on the way to the same answer, and until this range two
+  tests could tell the difference -- not because the outcome differed,
+  but because each waited on a proxy for what it went on to assert, so an
+  apply that took more turns was asserted on half-finished. Both now wait
+  on their own condition, and the mutant is indistinguishable across five
+  consecutive runs. It is kept rather than deleted because its shape is
+  the argument: the cast is the cost of merging the two paths.
 
 **M29** - the id the server answers with is ignored
 
@@ -361,6 +370,7 @@ than mutating something it was never written for.
 - two engines that merge one note identically end on ONE version
 - ordinary concurrent edit must not adopt another device's rename-and-edit manifest
 - a persisted unposted rename must retain the dedupe opt-out after state reload
+- two devices resolving one concurrent edit settle instead of looping
 
 **M30** - a post never offers the version the server already holds
 
@@ -461,6 +471,7 @@ than mutating something it was never written for.
 
 **M48** - a tombstone is posted without asking whether the file is still there
 
+- a host that lists two spellings and answers for a third renames nothing
 - a file the pull writes while the scan is listing is not published as a tombstone
 - a deletion refused because the file came back is published as the change it is
 
@@ -480,9 +491,7 @@ than mutating something it was never written for.
 
 **M52** - a host that cannot bind a removal is asked to move anyway, and copies first
 
-- a note written while this device was closed survives one the other device made at the same path
 - a device that cannot bind a removal keeps both instead of moving its own note
-- a note the queue is already pushing is not published a second time
 
 **M53** - what moved is not proved against what was copied
 
@@ -512,13 +521,17 @@ than mutating something it was never written for.
 **M57** - a tombstone is applied without proving the file against its record
 
 - a tombstone does not take an edit this device never published
+- a tombstone whose revive cannot publish keeps the file and says only that
+- a remote delete over an unpushed local edit keeps the edit and republishes it
 
 **M58** - a replayed tombstone is obeyed whatever this device's version descends from
 
+- a ghost tombstone that forks from the record is refused, and the note stays
 - a tombstone that forks from the version this device holds is one side of a fork
 - review: replay skips a historical tombstone that the tracked live version already incorporates
 - review: widening after an excluded remote deletion must preserve the local edit
 - review: widening must not trash an unuploaded local edit while its source read is pending
+- a delete raced by an edit reaches the other device as a live note
 
 **M59** - the tombstone's removal is not bound to the bytes it was told to remove
 
@@ -539,8 +552,7 @@ than mutating something it was never written for.
 
 **M63** - an upload that outlived its path records it anyway
 
-- review: a pending upload must not restore tracking for a file that left the selected scope
-- review: a scope exit during upload must preserve the other device's live note
+- review: a selection narrowed while a version is posting records nothing for that path
 
 **M64** - a folder rename moves the records and leaves the pending work behind
 
@@ -557,3 +569,34 @@ than mutating something it was never written for.
 - ordinary concurrent edit must not adopt another device's rename-and-edit manifest
 - a persisted unposted rename must retain the dedupe opt-out after state reload
 - startup engine does not label a foreign renamed manifest as its own echo
+
+**M67** - the bulk-deletion floor is removed, so any pass can hold
+
+- a small vault emptied is below the floor and still publishes
+- startup reconciliation tombstones a file deleted while Obsidian was closed
+
+**M68** - a count alone decides a bulk deletion, without the share
+
+- a deletion that is large but not most of the vault is published
+
+**M69** - the periodic scan may clear a hold the startup pass took
+
+- a selected folder renamed while Obsidian was closed publishes nothing and says so once
+- the user's confirmation publishes exactly what was held
+
+**M70** - the confirmation queues nothing, so a real deletion never publishes
+
+- the user's confirmation publishes exactly what was held
+
+**M71** - every remote rename falls back to write-then-trash
+
+- a renamed note moves on the other device and neither publishes a tombstone (immediate vault events)
+- a renamed note moves on the other device and neither publishes a tombstone (deferred vault events)
+
+**M72** - the rename shortcut stops proving the source holds this content
+
+- a remote rename that also edits the note downloads it rather than renaming
+
+**M73** - leaving a server keeps the folder records it minted
+
+- forgetting a pairing drops the identity and everything derived from it, and nothing else
