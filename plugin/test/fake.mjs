@@ -354,9 +354,15 @@ export class FakeHost {
   }
 }
 
+/** The setup token this fake answers to, and the credential its setup mints. */
+export const SETUP_TOKEN = "5e".repeat(32);
+export const SETUP_DEVICE = "cc".repeat(16);
+export const SETUP_SECRET = "7b".repeat(32);
+
 /** An in-memory obsyncd covering the endpoints the engine uses. */
 export class FakeServer {
-  constructor({ deviceId = "aabbccddeeff00112233445566778899", deviceSecretHex = "0f".repeat(32) } = {}) {
+  /** `claimed: false` is a server with no account: only `POST /v1/setup` works. */
+  constructor({ deviceId = "aabbccddeeff00112233445566778899", deviceSecretHex = "0f".repeat(32), claimed = true } = {}) {
     this.deviceId = deviceId;
     this.deviceSecret = Buffer.from(deviceSecretHex, "hex");
     /** One secret per enrolled device, as obsyncd holds them. */
@@ -380,6 +386,11 @@ export class FakeServer {
         policy: { per_file_max_bytes: 0, total_budget_bytes: 0 },
       },
     ];
+    this.claimed = claimed;
+    if (!claimed) {
+      this.devices = [];
+      this.secrets = new Map();
+    }
     this.requests = [];
     this.unsigned = [];
     this.feedWaiters = [];
@@ -481,6 +492,18 @@ export class FakeServer {
     const json = () => JSON.parse(body.toString("utf8") || "{}");
 
     if (path.startsWith("/v1/plugin/")) return this.json(200, { version: "0.1.0", bundle_sha256: "", styles_sha256: "" });
+    // Setup carries the token as its whole credential, so it is unsigned and
+    // is answered before the signature check. The token is compared FIRST,
+    // exactly as obsyncd does, so a caller without it learns nothing about
+    // whether this server is claimed (`docs/protocol.md`, setup).
+    if (path === "/v1/setup" && request.method === "POST") {
+      const body = json();
+      if (body.setup_token !== SETUP_TOKEN) return this.error(401, "bad_setup_token", "that is not this server's setup token");
+      if (this.claimed) return this.error(409, "already_set_up", "this server already holds an account");
+      this.claimed = true;
+      this.addDevice(SETUP_DEVICE, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
+      return this.json(201, { account_id: "aa".repeat(16), device_id: SETUP_DEVICE, device_secret: SETUP_SECRET });
+    }
     this.verify(request, target);
 
     // Match the Rust device parser before acknowledging a heartbeat or PATCH.
@@ -509,9 +532,13 @@ export class FakeServer {
     if (deviceRevoke && request.method === "POST") {
       const device = this.devices.find((candidate) => candidate.device_id === deviceRevoke[1]);
       if (!device) return this.error(404, "unknown_device");
+      // `Store::revoke_device_unless_last`, with obsyncd's own code and
+      // detail: the refusal is about the target being the only ACTIVE device,
+      // not about who asked. A stub whose refusal differs from the server's
+      // is a stub that lets a client ship a branch no server can reach.
       const live = this.devices.filter((candidate) => !candidate.revoked);
-      if (device.device_id === request.headers["X-Obsync-Device"] && live.length === 1) {
-        return this.error(409, "only_device", "the only device cannot revoke itself");
+      if (!device.revoked && live.length <= 1) {
+        return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
       }
       device.revoked = true;
       return this.json(204, {});
