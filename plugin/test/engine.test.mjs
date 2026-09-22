@@ -1348,8 +1348,18 @@ test("a deletion refused because the file came back is published as the change i
   };
   engine.deleted("Notes/Back.md");
 
+  // AND NOT BY THE PERIODIC SCAN. A dirty file is queued by the scan every
+  // `SCAN_MS` (#101), so "a second version exists" is true even if the
+  // refused deletion was dropped rather than republished as the change it
+  // is. The scan count is taken here and asserted unchanged below, so what
+  // is proved is this path and not that one.
+  const queuedByScan = () =>
+    host.logs.filter((line) => /^scan decision=queued .* queued=[1-9]/.test(line)).length;
+  const scansBefore = queuedByScan();
   await timers.run(1000, () => posted().length === 2);
   assert.ok(returned, "the test never reached the window it exists for");
+  assert.equal(queuedByScan(), scansBefore,
+    "the periodic scan published this change, so nothing here proves the refusal was republished");
 
   assert.equal(posted().length, 2, "the change was never published");
   assert.notEqual(posted()[1].deleted, true, "a tombstone was posted for a file that is there");

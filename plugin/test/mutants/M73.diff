@@ -1,0 +1,11 @@
+# M73: leaving a server keeps the folder records it minted
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -424,7 +424,6 @@ export class State {
+     // when a record exists, so a record kept across a leave would tell this
+     // device that every folder it has is already published, and the new
+     // server would never receive one (#79 meeting #104).
+-    this.data.folders = {};
+     this.data.remoteOnly = {};
+   }
+ 

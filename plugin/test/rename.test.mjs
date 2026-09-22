@@ -76,6 +76,7 @@ const story = (server, a, b) =>
     `phone_files=${JSON.stringify([...b.host.files.keys()])}`].join(" ");
 
 const BODY = "# A note\nwith a body that must survive its own rename\n";
+const EDITED = "# A note\nrenamed AND rewritten in one move, which is not a rename\n";
 
 for (const delivery of ["immediate", "deferred"]) {
   test(`a renamed note moves on the other device and neither publishes a tombstone (${delivery} vault events)`, async (t) => {
@@ -138,6 +139,39 @@ for (const delivery of ["immediate", "deferred"]) {
  * that file would carry those bytes away under a name their author never gave
  * them -- or, once the other device pulled the move back, lose them.
  */
+/**
+ * A RENAME THAT ALSO CHANGES THE TEXT IS NOT A RENAME (issue #108). The
+ * host's atomic rename moves the bytes that are already here, so it is taken
+ * only when the source holds exactly what the incoming version carries. A
+ * version that renamed AND edited has to be downloaded; renaming to its name
+ * would leave the OLD text under the NEW name, on every device that applied
+ * it, with nothing to say the text was ever different.
+ */
+test("a remote rename that also edits the note downloads it rather than renaming", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate");
+
+  a.host.write("Note.md", BODY, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () =>
+    b.host.text("Note.md") === BODY && settled(a, "Note.md") && settled(b, "Note.md"));
+  const fileId = a.state.fileByPath("Note.md").fileId;
+
+  // One version that moves the note and changes it: the desktop renames it
+  // and types into it before the phone has heard about either.
+  a.host.rename("Note.md", "Renamed.md");
+  await timers.run(STEP_MS, () => settled(a, "Renamed.md"));
+  a.host.write("Renamed.md", EDITED, 5000);
+  await timers.run(STEP_MS, () => settled(a, "Renamed.md") && a.host.text("Renamed.md") === EDITED);
+  await timers.run(STEP_MS, () => b.host.text("Renamed.md") === EDITED);
+
+  assert.equal(b.host.text("Renamed.md"), EDITED,
+    `the phone kept the text from before the rename: ${story(server, a, b)}`);
+  assert.equal(b.host.text("Note.md"), null, "the old name is not left behind");
+  assert.equal(b.state.fileByPath("Renamed.md").fileId, fileId, "one file id throughout");
+  assert.deepEqual(tombstones(server), [], `an edited rename published a tombstone: ${story(server, a, b)}`);
+});
+
 test("a rename over an unpushed local edit keeps both, and renames nothing", async (t) => {
   const { server, timers, a, b } = await pair(t, "immediate");
 

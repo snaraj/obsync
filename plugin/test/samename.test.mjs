@@ -27,6 +27,7 @@ const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
+const { QUIET_MS } = require("../build/sync/engine.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const NOTE = "Notes/Same.md";
@@ -985,11 +986,21 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
       broken = false;
       throw new Error("sentinel: the note could not be read");
     }
-    const bytes = await read(path);
-    // Held AFTER the snapshot -- the stat and the bytes this push will publish
-    // are both taken -- which is where a slow upload sits.
-    if (path === SAME && waiting) { waiting = false; entered.resolve(); await held.promise; }
-    return bytes;
+    return await read(path);
+  };
+  // HELD AT THE MANIFEST POST, not inside the read, and the difference is
+  // this train's. The push is held so that a second request for this path
+  // arrives while it is in flight, which is the only state `pushOne`'s join
+  // is about. Held inside the READ, the edit below changes the file under
+  // that push -- and from 1.1.0 the end-of-read guard abandons a push whose
+  // file moved (#99), so there is no completed push left to join and the
+  // mutant that deletes the join survives. The post is after the read, after
+  // the chunk upload and after that guard: the bytes and the stat this push
+  // will publish are all taken, which is also where a slow upload sits.
+  const post = a.transport.postVersion.bind(a.transport);
+  a.transport.postVersion = async (...args) => {
+    if (waiting) { waiting = false; entered.resolve(); await held.promise; }
+    return await post(...args);
   };
   await a.engine.start();
   await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("push path_class=file decision=failed")));
@@ -1008,14 +1019,33 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
 
   // The user edits the note while that publish is still in flight, and the
   // watcher's debounce and the queue both run to completion on it.
+  // The user edits the note while that publish is still in flight. The
+  // watcher's quiet period has to pass before the edit is queued at all
+  // (#99), so the clock is advanced through it with the push still held --
+  // which is what puts the second request INSIDE the first push.
   a.host.write(SAME, LATER, 4000);
+  await timers.run(QUIET_MS + STEP_MS);
   await timers.run(STEP_MS);
+
+  // AND NOT BY THE PERIODIC SCAN. From 1.1.0 a filesystem scan queues a dirty
+  // file every `SCAN_MS` (#101), which would make "the edit reached the
+  // server" true by a route that has nothing to do with a push in flight.
+  // This pins that the scan was not that route. It does NOT prove the join
+  // itself: with `pushOne`'s memory deleted the drain still reaches this edit
+  // by re-enqueueing it, so no input here tells the two apart -- mutant M25
+  // survives at this head and is reported as a finding rather than covered
+  // by an assertion that does not discriminate.
+  const queuedByScan = () =>
+    a.host.logs.filter((line) => /^scan decision=queued .* queued=[1-9]/.test(line)).length;
+  const scansBefore = queuedByScan();
 
   held.resolve();
   await timers.run(STEP_MS, () => settled(a, SAME));
   const record = () => a.state.fileByPath(SAME);
   await timers.run(STEP_MS, () => record()?.size === enc(LATER).length);
   await timers.run(STEP_MS);
+  assert.equal(queuedByScan(), scansBefore,
+    "the periodic scan carried this edit, so nothing here proves the push join");
 
   const story = () => `vault=${JSON.stringify([...a.host.files.keys()])} ` +
     `record=${JSON.stringify(record())} versions=${server.journal.length}`;

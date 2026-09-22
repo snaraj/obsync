@@ -144,6 +144,60 @@ test("review: widening must not trash an unuploaded local edit while its source 
     "a replay must retain bytes no successful upload recorded");
 });
 
+/**
+ * THE WINDOW THE SCOPE GUARD STILL HAS (round 5, finding 4).
+ *
+ * `pushFile` declines to write a record for a path that has left this
+ * device's selection while the upload was in flight: writing it would put
+ * back the path the rename handler dropped on purpose, and arm the tombstone
+ * the next scan would infer from its absence (#91).
+ *
+ * Both tests written for that guard now stop EARLIER than it. They move the
+ * file, and from 1.1.0 the end-of-read stat abandons a push whose file moved
+ * (#99) before the record is ever considered -- a safer answer, and the
+ * reason mutant M63 survived the composed matrix. What is left reachable is
+ * the case where the PATH keeps its file and the SELECTION moves instead: the
+ * narrowing lands after the manifest post has already checked the scope and
+ * before the record is written. That is what this drives, through the
+ * transport seam, so the guard is measured rather than assumed.
+ */
+test("review: a selection narrowed while a version is posting records nothing for that path", async (t) => {
+  const r = await rig();
+  const path = "Notes/note.md";
+  r.state.data.syncFolders = ["Notes"];
+  r.host.seed(path, "ORIGINAL SENTINEL", 1000);
+  await pushFile(r.context, path);
+  r.host.seed(path, "EDIT PUBLISHED AS THE SCOPE NARROWS SENTINEL", 2000);
+  // What the FIRST push left. The second must not move it on: the path is no
+  // longer this device's to claim by the time the record would be written.
+  const before = { ...r.state.fileByPath(path) };
+
+  // The file never moves, so the end-of-read guard sees exactly what the read
+  // started from and this push completes. The selection changes the instant
+  // the version lands, which is inside `postManifest`'s own scope check and
+  // before the record is written.
+  const post = r.transport.postVersion.bind(r.transport);
+  let narrowed = false;
+  r.transport.postVersion = async (...args) => {
+    const sent = await post(...args);
+    if (!narrowed) { narrowed = true; r.state.data.syncFolders = ["Archive"]; }
+    return sent;
+  };
+
+  const outcome = await pushFile(r.context, path);
+
+  assert.ok(narrowed, "the test never reached the window it exists for");
+  assert.equal(outcome.status, "pushed", "the version must still be published");
+  assert.deepEqual({ ...r.state.fileByPath(path) }, before,
+    "the upload moved the record on for a path this device had stopped syncing");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=not_recorded reason=left_scope")),
+    r.host.logs.filter((line) => line.startsWith("push")).join(" | "),
+  );
+  assert.equal(r.host.text(path), "EDIT PUBLISHED AS THE SCOPE NARROWS SENTINEL",
+    "nothing on the disk is touched by any of this");
+});
+
 test("review: a pending upload must not restore tracking for a file that left the selected scope", async (t) => {
   const r = await rig();
   const path = "Notes/note.md";

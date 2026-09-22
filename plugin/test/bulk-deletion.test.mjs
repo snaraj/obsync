@@ -146,6 +146,29 @@ test("an ordinary deletion below the floor is published exactly as before", asyn
   );
 });
 
+test("a deletion that is large but not most of the vault is published", async (t) => {
+  // BOTH HALVES OF THE RULE, and this is the half a floor alone would miss.
+  // Five notes is at the floor, so a test that only ever deletes everything
+  // cannot tell "at least five" from "at least five AND more than half". Here
+  // twelve are tracked and five go: a big tidy-up, not a device that has lost
+  // sight of its vault, and it publishes.
+  const many = Array.from({ length: 12 }, (_, index) => `Notes/many-${index}.md`);
+  const going = many.slice(0, BULK_DELETION_MIN);
+  const { host, server, timers, engine } = await device(t, many, ["Notes"]);
+  for (const path of going) host.files.delete(path);
+  await engine.reconcile();
+  await timers.run(1000, () => tombstones(server).length === going.length);
+
+  assert.equal(tombstones(server).length, going.length,
+    `${going.length} of ${many.length} deletions were held back`);
+  assert.equal(engine.heldDeletionCount, 0, "a deletion of fewer than half was held");
+  assert.equal(
+    host.logs.some((line) => line.includes("reason=bulk_deletion")),
+    false,
+    host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
+  );
+});
+
 test("a small vault emptied is below the floor and still publishes", async (t) => {
   const few = NOTES.slice(0, BULK_DELETION_MIN - 1);
   const { host, server, timers, engine } = await device(t, few, ["Notes"]);
