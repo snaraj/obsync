@@ -1,0 +1,10 @@
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -176,7 +176,6 @@
+       },
+       commit: async (mtime) => {
+         check();
+-        if (at !== size) throw new Error("copy content is incomplete");
+         if (this.files.has(path)) throw new Error("destination exists");
+         return writer.commit(mtime);
+       },

@@ -157,14 +157,31 @@ export class FakeHost {
     };
   }
 
+  /**
+   * The create-only writer, refusing what the real one refuses: a destination
+   * that exists, and content that does not match the size the caller declared.
+   * Both real hosts enforce that budget (`main.ts`), and a fake that accepts a
+   * short or overlong copy is a fake that cannot show a file changing under a
+   * copy of it.
+   */
   async createWriter(path, size, check) {
     const writer = await this.writer(path);
-    return { write: async (bytes) => { check(); await writer.write(bytes); },
+    let at = 0;
+    return {
+      write: async (bytes) => {
+        check();
+        at += bytes.length;
+        if (at > size) throw new Error("copy exceeded its byte budget");
+        await writer.write(bytes);
+      },
       commit: async (mtime) => {
         check();
+        if (at !== size) throw new Error("copy content is incomplete");
         if (this.files.has(path)) throw new Error("destination exists");
         return writer.commit(mtime);
-      }, abort: writer.abort };
+      },
+      abort: writer.abort,
+    };
   }
 
   async trash(path) {

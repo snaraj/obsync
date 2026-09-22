@@ -448,6 +448,125 @@ test("an edit typed while the note is being moved aside is never trashed", async
   );
 });
 
+/**
+ * The size of the LOCAL note, which the incoming version says nothing about
+ * (review round 2, finding 4).
+ *
+ * A 21-byte note arriving from another device can collide with a local note of
+ * any size at all, and the desktop host reads a whole file by allocating its
+ * whole size (`main.ts`). Reading a multi-GiB note into memory to copy it one
+ * name over is the one thing the push path is carefully built never to do --
+ * it streams in 8 MiB windows, which is why a 20 GB archive costs what a note
+ * costs -- and the move aside must obey the same bound.
+ *
+ * The vault below MODELS such a note rather than allocating one: it reports
+ * the size, serves windows, and refuses a whole-file read above the bound
+ * exactly as a device short of memory would. A move that needs the whole file
+ * cannot pass it.
+ */
+test("a note far larger than memory is moved aside a window at a time", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  const BOUND = 8 << 20;
+  const SIZE = 3 * 1024 ** 3;
+  // Paths whose size is modelled, mapped to it.
+  const modelled = new Map([[NOTE, SIZE]]);
+  const stat = r.host.stat.bind(r.host);
+  r.host.stat = async (path) => {
+    const size = modelled.get(path);
+    return size === undefined ? stat(path) : { path, mtime: 2000, size };
+  };
+  const read = r.host.read.bind(r.host);
+  let wholeFileReads = 0;
+  r.host.read = async (path) => {
+    const size = modelled.get(path);
+    if (size !== undefined && size > BOUND) {
+      wholeFileReads++;
+      throw new Error(`sentinel: ${size} bytes is past what this device can hold`);
+    }
+    return read(path);
+  };
+  // One window, reused: the vault hands out a view of it, so what this test
+  // holds in memory is one window no matter how large the note is.
+  const window = new Uint8Array(BOUND).fill(0x61);
+  let widest = 0;
+  r.host.source = (path, size) => ({
+    size,
+    read: async (offset, length) => {
+      widest = Math.max(widest, length);
+      return window.subarray(0, Math.min(length, window.length));
+    },
+  });
+  const createWriter = r.host.createWriter.bind(r.host);
+  let copied = null;
+  r.host.createWriter = async (target, size, check) => {
+    if (size <= BOUND) return createWriter(target, size, check);
+    let written = 0;
+    return {
+      write: async (bytes) => { check(); written += bytes.length; },
+      commit: async (mtime) => {
+        check();
+        if (modelled.has(target) || r.host.files.has(target)) throw new Error("destination exists");
+        modelled.set(target, written);
+        copied = { path: target, written };
+        return { path: target, mtime, size: written };
+      },
+      abort: async () => undefined,
+    };
+  };
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+
+  assert.equal(wholeFileReads, 0, "the whole local note was read into memory to move it");
+  assert.notEqual(copied, null, "the local note was never copied to its new name");
+  assert.equal(copied.written, SIZE, "the move did not carry the whole note");
+  assert.ok(widest <= BOUND, `a window of ${widest} bytes is not a bounded read`);
+  // And the ordinary answer still holds: the incoming note has the name, this
+  // device's note is at the copy name, recorded dirty for the push to carry.
+  assert.equal(r.host.text(NOTE), THEIRS, "the 21-byte incoming version did not take the name");
+  assert.equal(r.state.fileByPath(copied.path).fileId, HIGHER);
+  assert.equal(r.state.fileByPath(copied.path).mtime, -1);
+  assert.ok(r.context.trashed.has(NOTE));
+});
+
+/**
+ * The other end of the same window: the note is rewritten WHILE it is being
+ * copied, so the copy itself cannot complete. The create-only writer's byte
+ * budget refuses a copy that does not match the size it was opened for, and a
+ * source that ends before that size is abandoned rather than committed torn.
+ * Both are the same refusal as an edit landing a moment later.
+ */
+test("a note truncated while it is being copied aside is refused, not torn", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  const SHORTER = "gone\n";
+  const windows = r.host.source.bind(r.host);
+  let served = 0;
+  r.host.source = (path, size) => {
+    const source = windows(path, size);
+    return {
+      size,
+      read: async (offset, length) => {
+        // The first window is served from a note the user has just cut down.
+        if (path === NOTE && served++ === 0) r.host.seed(NOTE, SHORTER, 9000);
+        return source.read(offset, length);
+      },
+    };
+  };
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(NOTE), SHORTER, "the note this device holds was not left as the user left it");
+  assert.deepEqual(r.host.trashed, [], "a note that could not be copied was trashed anyway");
+  assert.deepEqual(
+    copies(r.host).filter((path) => path.includes("this device")), [],
+    "a torn copy of a moving note was published",
+  );
+  assert.equal(r.host.text(copies(r.host)[0]), THEIRS, "the other device's note was not kept");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
 // --- and the same thing, on two engines, from both sides at once ------------
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
