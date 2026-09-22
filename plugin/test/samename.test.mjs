@@ -353,6 +353,181 @@ test("a local file of the same length that is NOT this version is never adopted"
   assert.notEqual(r.state.fileByPath(NOTE).fileId, HIGHEST, "two different notes were recorded as one file");
 });
 
+/**
+ * What the record SAYS about a file has to be true of the bytes that were
+ * proved (review round 2, finding 2).
+ *
+ * Adoption reads the local file, hashes it against the manifest's
+ * authenticated digest, and records that file as this version. The read and
+ * the record are two operations, and a save that lands between them replaces
+ * the bytes the proof was about: recording the file's CURRENT size and
+ * modification time against the older version says "this file is that version
+ * and nothing has happened since", which is exactly the sentence the pull path
+ * reads before it writes over a file. The next version of that id then
+ * overwrote the user's replacement without keeping a copy.
+ *
+ * The metadata recorded is now bound to the bytes that were read: the file is
+ * stat-ed again after the read and adoption is refused when it moved.
+ */
+test("a note replaced while it is being adopted is not marked as that version", async () => {
+  const { r } = await publishing();
+  const EDIT = "the note the user typed while obsync was looking at the old one\n";
+  r.host.seed(NOTE, THEIRS, 4000);
+  const frame = await r.server.publish({
+    fileId: HIGHEST, path: NOTE, bytes: enc(THEIRS), mtime: 4000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const read = r.host.read.bind(r.host);
+  let once = true;
+  r.host.read = async (path) => {
+    const bytes = await read(path);
+    // The user's editor saves over the note after obsync has read the bytes
+    // it is about to call proof, and before it records anything about them.
+    if (path === NOTE && once) {
+      once = false;
+      r.host.seed(NOTE, EDIT, 9999);
+    }
+    return bytes;
+  };
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(NOTE), EDIT, "the replacement was adopted as a version it is not");
+  assert.notEqual(r.state.fileByPath(NOTE)?.fileId, HIGHEST, "the replacement was recorded as that version");
+  assert.equal(r.host.text(copies(r.host)[0]), THEIRS, "the version was not kept beside it");
+
+  // And the proof: the next version of that id must not land on the edit.
+  const child = await r.server.publish({
+    fileId: HIGHEST, path: NOTE, bytes: enc(`${THEIRS}and a child version\n`), mtime: 5000,
+    parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  await applyChange(r.context, child);
+
+  assert.equal(r.host.text(NOTE), EDIT, "a later version of that id overwrote the edit");
+});
+
+test("a copy replaced while it is being matched is not recorded as the version", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  // The name this device would give the incoming version is already occupied
+  // by exactly its bytes -- one foreign head resolved twice, which is what the
+  // reuse path exists for -- and the user replaces that copy while obsync is
+  // reading it to prove the match.
+  const taken = conflictCopyPath(NOTE, "iPhone", new Date(r.host.clock), 1);
+  r.host.seed(taken, THEIRS, 4000);
+  const EDIT = "the user's own words, typed into the copy\n";
+  const read = r.host.read.bind(r.host);
+  let once = true;
+  r.host.read = async (path) => {
+    const bytes = await read(path);
+    if (path === taken && once) {
+      once = false;
+      r.host.seed(taken, EDIT, 9999);
+    }
+    return bytes;
+  };
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(taken), EDIT, "the replacement was written over");
+  assert.equal(r.state.fileByPath(taken), undefined, "the replacement was recorded as the version it is not");
+  const landed = copies(r.host).filter((path) => path !== taken);
+  assert.equal(landed.length, 1, `the version was not written at a name of its own: ${JSON.stringify(copies(r.host))}`);
+  assert.equal(r.host.text(landed[0]), THEIRS);
+  assert.equal(r.state.fileByPath(landed[0]).fileId, HIGHER);
+});
+
+/**
+ * The same bind, on the path every vault uses every day: an ordinary version
+ * written over a file this device tracks. The record that follows the write
+ * must describe the bytes the WRITE put there. A save that lands between the
+ * two would otherwise be recorded as the version, and the next version of that
+ * file id lands on it without keeping a copy.
+ */
+test("a save that lands on a version as it is written is not recorded as that version", async () => {
+  const r = await rig();
+  const USER = "what the user typed a moment after the pull landed\n";
+  r.host.seed(NOTE, MINE, 2000);
+  await pushFile(r.context, NOTE);
+  const ours = r.state.fileByPath(NOTE);
+  const writer = r.host.writer.bind(r.host);
+  let once = true;
+  r.host.writer = async (path) => {
+    const open = await writer(path);
+    return {
+      ...open,
+      commit: async (mtime) => {
+        const stat = await open.commit(mtime);
+        if (path === NOTE && once) {
+          once = false;
+          r.host.seed(NOTE, USER, 9999);
+        }
+        return stat;
+      },
+    };
+  };
+  const frame = await r.server.publish({
+    fileId: ours.fileId, path: NOTE, bytes: enc(THEIRS), mtime: 4000,
+    parents: [ours.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+  assert.equal(r.host.text(NOTE), USER, "the fixture did not model a save landing on the write");
+
+  // The record must not claim those bytes are the version that was written,
+  // so the NEXT version of that id finds a local edit and keeps both.
+  const next = await r.server.publish({
+    fileId: ours.fileId, path: NOTE, bytes: enc(`${THEIRS}and another line\n`), mtime: 5000,
+    parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, next), "conflict_copy");
+  assert.equal(r.host.text(NOTE), USER, "the save was overwritten by a later version of that id");
+  assert.equal(r.host.text(copies(r.host)[0]), `${THEIRS}and another line\n`);
+});
+
+/**
+ * And the third caller: a version landing on the copy this device settled
+ * under the incoming id, which is precisely the file a user opens and types
+ * into (issue #98). Same bind, same consequence if it is missed.
+ */
+test("a save that lands on a settled copy as it is written is not recorded as that version", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  const USER = "what the user typed into the copy a moment after it updated\n";
+  const writer = r.host.writer.bind(r.host);
+  let once = true;
+  r.host.writer = async (path) => {
+    const open = await writer(path);
+    return {
+      ...open,
+      commit: async (mtime) => {
+        const stat = await open.commit(mtime);
+        if (path === copy && once) {
+          once = false;
+          r.host.seed(copy, USER, 9999);
+        }
+        return stat;
+      },
+    };
+  };
+  const next = await r.server.publish({
+    fileId: HIGHER, path: NOTE, bytes: enc(`${THEIRS}a second line\n`), mtime: 5000,
+    parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, next), "applied");
+  assert.equal(r.host.text(copy), USER, "the fixture did not model a save landing on the write");
+
+  const third = await r.server.publish({
+    fileId: HIGHER, path: NOTE, bytes: enc(`${THEIRS}a third line\n`), mtime: 6000,
+    parents: [next.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, third), "conflict_copy");
+  assert.equal(r.host.text(copy), USER, "the save was overwritten by a later version of that id");
+});
+
 test("a version of a file this device tracks lands where it put it, not at a second path", async () => {
   const { r } = await publishing();
   // The incoming version RENAMES a file this device tracks at `OTHER` onto a
