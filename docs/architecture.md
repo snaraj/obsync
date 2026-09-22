@@ -569,6 +569,17 @@ already stored changes. Replay applies whatever the journal holds: the
 ceiling is a decision taken where a version is accepted, not a rule
 re-applied to history.
 
+One thing the server does recognise: two devices that resolve the same
+conflict to the same bytes post the same parents and the same
+content-addressed chunk list under two version ids, because the id covers
+the encrypted manifest and its nonce. The second post says nothing the
+first did not, so a client that declares it will store the id it is
+answered with (`accept_existing`, `docs/protocol.md`) is answered with the
+first version's id and no frame is written. That is recognition, not
+resolution: the comparison is over what the server already stores, the
+same parents with other chunks still fork, and a client that keeps its own
+computed id -- every 1.0.x client -- is stored as posted.
+
 The **change feed** is the journal's version and tombstone frames, in
 sequence order, exposed by `GET /v1/changes?since=<seq>&wait=<s>`.
 `wait` long-polls up to 55 s (inside the edge's 100 s idle limit) and

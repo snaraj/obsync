@@ -30,6 +30,15 @@ pub(crate) const SEEN_HISTORY: usize = 256;
 /// list a response carries (`docs/protocol.md`, "Limits and headers").
 pub const FILE_MAX_HEADS: usize = 64;
 
+/// A parent list as the set it means: two posts naming the same parents in a
+/// different order, or one of them twice, are one position in the graph.
+fn parent_set(parents: &[VersionId]) -> Vec<VersionId> {
+    let mut ids = parents.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// A device, its wrapped secret, and its recent activity.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceEntry {
@@ -262,6 +271,44 @@ impl Index {
             None => 0,
         };
         kept + 1
+    }
+
+    /// The version of this file that already says what a post is about to
+    /// say: the same parent set, the same chunk list in the same order, and
+    /// the same tombstone flag.
+    ///
+    /// Two devices that merge the same heads to the same bytes produce the
+    /// same parents and the same content-addressed chunk list, and two
+    /// DIFFERENT version ids, because the id covers the encrypted manifest
+    /// and its nonce (`docs/architecture.md` 6.1). The second frame adds
+    /// nothing to the graph: it names the same position and the same
+    /// content, and writing it forks the file into two heads that another
+    /// merge then has to close (issue #114).
+    ///
+    /// Parents are a SET -- order is not part of what a version says -- and
+    /// sids are a LIST, because their order is the file's byte order. The
+    /// tombstone flag is part of the key: a delete and an empty file both
+    /// carry no chunks, and answering one with the other would lose the
+    /// difference. Stored order is oldest first, so repeated posts all
+    /// converge on the id that landed first.
+    pub(crate) fn twin(
+        &self,
+        file_id: &FileId,
+        parents: &[VersionId],
+        sids: &[Sid],
+        deleted: bool,
+    ) -> Option<(Seq, VersionId)> {
+        let entry = self.files.get(file_id)?;
+        let wanted = parent_set(parents);
+        entry
+            .versions
+            .iter()
+            .find(|v| {
+                v.deleted == deleted
+                    && parent_set(&v.parents) == wanted
+                    && v.sids.as_slice() == sids
+            })
+            .map(|v| (v.seq, v.version_id))
     }
 
     /// Drop one version, and the file when its last version goes.

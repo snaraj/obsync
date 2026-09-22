@@ -57,9 +57,9 @@ use self::journal::{Frame, Journal, Record};
 pub use self::index::FILE_MAX_HEADS;
 pub use self::posture::{Decision, Outcome, PathClass, Posture};
 pub use self::types::{
-    AccountRecord, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord, DeviceState,
-    FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome, ScrubSummary, SeenEvent,
-    SeenKind, StoreError, VersionRecord, VolumeStatus,
+    AccountRecord, AppendDecision, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord,
+    DeviceState, FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome,
+    ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
 };
 
 /// The domain separator device secrets rest under
@@ -441,6 +441,25 @@ impl Store {
     /// recomputation before anything else is trusted, so a client cannot name
     /// a version whose content it did not supply.
     pub fn append_version(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
+        self.append(v, false)
+    }
+
+    /// The same, for a caller that will store the version id the answer
+    /// names.
+    ///
+    /// A post that says exactly what a version this store already holds
+    /// says -- the same parent set, the same chunk list, the same tombstone
+    /// flag -- is answered with THAT version's id and its seq, and no frame
+    /// is written (issue #114). Two entry points rather than a field on
+    /// [`NewVersion`], because the promise is the CALLER's: a client that
+    /// keeps the id it computed must use [`Store::append_version`], or it
+    /// would remember a version this store never held and reconcile its
+    /// next edit against nothing.
+    pub fn append_version_idempotent(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
+        self.append(v, true)
+    }
+
+    fn append(&self, v: NewVersion, accept_existing: bool) -> Result<AppendOutcome, StoreError> {
         let timed = self.log.timed("version_append");
         let mut fields = vec![
             ("file", Val::file(&v.file_id)),
@@ -449,18 +468,16 @@ impl Store {
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
         ];
-        match self.append_version_inner(v) {
+        match self.append_version_inner(v, accept_existing) {
             Ok(outcome) => {
                 fields.push(("seq", Val::seq(outcome.seq)));
                 fields.push(("conflicted", Val::flag(outcome.conflicted)));
-                fields.push((
-                    "decision",
-                    Val::word(if outcome.existed {
-                        "existed"
-                    } else {
-                        "appended"
-                    }),
-                ));
+                fields.push(("decision", Val::word(outcome.decision.as_str())));
+                if outcome.decision == AppendDecision::Deduplicated {
+                    // The id the caller did NOT post, and the one it is now
+                    // expected to store: the only line that states it.
+                    fields.push(("version", Val::version(&outcome.version_id)));
+                }
                 timed.done(&fields);
                 Ok(outcome)
             }
@@ -473,7 +490,11 @@ impl Store {
         }
     }
 
-    fn append_version_inner(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
+    fn append_version_inner(
+        &self,
+        v: NewVersion,
+        accept_existing: bool,
+    ) -> Result<AppendOutcome, StoreError> {
         let expected = version_id_of(&v.file_id, &v.parents, &v.manifest_ct, &v.sids);
         if expected != v.version_id {
             return Err(StoreError::VersionIdMismatch {
@@ -515,9 +536,32 @@ impl Store {
             let entry = index.files.get(&v.file_id).expect("the version's file");
             return Ok(AppendOutcome {
                 seq: existing.seq,
+                version_id: v.version_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
-                existed: true,
+                decision: AppendDecision::Existed,
+            });
+        }
+        // A DIFFERENT ID FOR A POSITION THE GRAPH ALREADY HOLDS.
+        //
+        // Two devices resolving the same conflict to the same bytes post the
+        // same parents and the same chunks under two ids, because the id
+        // covers the encrypted manifest and its nonce: the file forks, and
+        // closing it costs another version (issue #114). The second post is
+        // answered with the first version's id instead, and no frame is
+        // written. Only for a caller that said it will store the id it is
+        // given (`Store::append_version_idempotent`): one that keeps its own
+        // id would remember a version this store never held.
+        if accept_existing
+            && let Some((seq, version_id)) = index.twin(&v.file_id, &v.parents, &v.sids, v.deleted)
+        {
+            let entry = index.files.get(&v.file_id).expect("the twin's file");
+            return Ok(AppendOutcome {
+                seq,
+                version_id,
+                heads: entry.heads.clone(),
+                conflicted: entry.conflicted,
+                decision: AppendDecision::Deduplicated,
             });
         }
         let missing: Vec<Sid> = v
@@ -543,6 +587,7 @@ impl Store {
         }
         let now = UnixMs::now();
         let file_id = v.file_id;
+        let version_id = v.version_id;
         let seq = append(&mut journal, &mut index, |seq| {
             Frame::Version(VersionRecord {
                 file_id: v.file_id,
@@ -562,9 +607,10 @@ impl Store {
         let entry = index.files.get(&file_id).expect("the version's file");
         let outcome = AppendOutcome {
             seq,
+            version_id,
             heads: entry.heads.clone(),
             conflicted: entry.conflicted,
-            existed: false,
+            decision: AppendDecision::Appended,
         };
         drop(index);
         self.changed.notify_all();

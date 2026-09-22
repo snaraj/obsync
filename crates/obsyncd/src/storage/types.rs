@@ -366,17 +366,52 @@ pub enum PutOutcome {
     Existed,
 }
 
+/// What one append decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppendDecision {
+    /// The store did not hold this version; a frame was written.
+    Appended,
+    /// The posted version id was already stored; nothing was written.
+    Existed,
+    /// Another version of this file already holds this parent set and this
+    /// chunk list, so its id is the answer; nothing was written
+    /// (`docs/protocol.md`, "Files and versions").
+    Deduplicated,
+}
+
+impl AppendDecision {
+    /// The word this decision logs under (requirement 12).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AppendDecision::Appended => "appended",
+            AppendDecision::Existed => "existed",
+            AppendDecision::Deduplicated => "deduplicated",
+        }
+    }
+
+    /// Whether a frame was written. Everything that follows an append --
+    /// the `201`, the edit the device is credited with -- follows from this
+    /// and not from the request, so the two no-op decisions cannot drift
+    /// apart in what they cost.
+    pub const fn wrote(self) -> bool {
+        matches!(self, AppendDecision::Appended)
+    }
+}
+
 /// What appending a version did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppendOutcome {
-    /// The journal position of the version.
+    /// The journal position of the version this answer names.
     pub seq: Seq,
+    /// The version the store holds for this post: the posted id, or the id
+    /// of the version this one was recognised as.
+    pub version_id: VersionId,
     /// The file's heads afterwards.
     pub heads: Vec<VersionId>,
     /// Whether the file conflicts afterwards.
     pub conflicted: bool,
-    /// Whether this version was already stored (an idempotent repost).
-    pub existed: bool,
+    /// What the append did.
+    pub decision: AppendDecision,
 }
 
 /// Every way the storage engine refuses or fails.
