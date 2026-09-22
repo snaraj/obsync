@@ -125,6 +125,10 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     deviceName: "Study laptop", serverUrl: "https://sync.example.invalid",
     edgeHeaders: [{ name: "X-Edge", value: "EDGE SENTINEL" }], lastSeq: 9,
     files: { "Notes/a.md": { fileId: "f1", versionId: "v1", mtime: 1, size: 2, sha256: "s" } },
+    // A FOLDER RECORD IS A PAIRING FACT TOO (#104): its file id is derived
+    // from the domain's manifest key, so it means nothing to a different
+    // server and must go with the identity, exactly as `files` does.
+    folders: { "Notes": { fileId: "f3", versionId: "v3" } },
     remoteOnly: { f2: { path: "Notes/big.bin", size: 3 } },
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
   });
@@ -135,7 +139,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     { ...state.data },
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
-      serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, remoteOnly: {},
+      serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

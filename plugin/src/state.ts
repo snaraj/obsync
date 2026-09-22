@@ -418,6 +418,13 @@ export class State {
     this.data.edgeHeaders = [];
     this.data.lastSeq = 0;
     this.data.files = {};
+    // FOLDER RECORDS GO WITH THE FILE RECORDS, for the same reason and one
+    // sharper. A folder's file id is `HMAC(K_m,d, …)` over its path, so it
+    // names nothing on a different server -- and `pushFolder` returns early
+    // when a record exists, so a record kept across a leave would tell this
+    // device that every folder it has is already published, and the new
+    // server would never receive one (#79 meeting #104).
+    this.data.folders = {};
     this.data.remoteOnly = {};
   }
 
