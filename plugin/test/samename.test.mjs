@@ -646,7 +646,11 @@ test("an edit typed while the note is being moved aside is never trashed", async
   assert.equal(r.host.text(copies(r.host).find((path) => path.includes("iPhone"))), THEIRS);
   assert.equal(r.host.text(copies(r.host).find((path) => path.includes("this device"))), MINE);
   assert.ok(
-    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed")),
+    // The exact reason, not a prefix of it: "the note changed before the
+    // removal was attempted" and "it changed inside the removal" are two
+    // different accounts of two different windows, and the device has to
+    // give the one that happened (requirement 12).
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed file=")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
 });
@@ -732,6 +736,45 @@ test("a note far larger than memory is moved aside a window at a time", async ()
 });
 
 /**
+ * A device that cannot bind a removal never moves its own note (round 3,
+ * finding 1, re-opened).
+ *
+ * The move is a copy and then a removal, and the removal is only safe where
+ * the host can keep the file reachable across the vault's own trash and put
+ * it back if a save landed inside it. A phone has no second name to give a
+ * file, so it has no way to undo a removal that took a note the user was
+ * typing into -- and a narrowed window is not a closed one. So it does not
+ * remove anything: the pair is settled the way 1.0.6 settled it, both notes
+ * kept, and the incoming note is recorded so its next version updates that
+ * copy instead of making another.
+ *
+ * The cost is a name: this device and the one that CAN move can hold the
+ * pair under different names until the mover publishes its rename, which is
+ * issue #122's divergence one case wider. It is stated in the changelog.
+ */
+test("a device that cannot bind a removal keeps both instead of moving its own note", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER, { isMobile: true });
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(NOTE), MINE, "this device's own note was moved by a device that cannot move it");
+  assert.deepEqual(r.host.trashed, [], "a device that cannot bind a removal removed something");
+  const copy = copies(r.host);
+  assert.equal(copy.length, 1, "the other device's note was not kept beside it");
+  assert.equal(r.host.text(copy[0]), THEIRS);
+  assert.equal(r.state.fileByPath(copy[0]).fileId, LOWER, "the copy was not recorded under the incoming id");
+  assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER, "this device stopped tracking its own note");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=unheld")),
+    r.host.logs.join(" | "),
+  );
+  // Nothing was copied aside first, either: a device that will refuse does
+  // not fill the vault with a copy of its own note it cannot use.
+  assert.equal(copies(r.host).length, 1, "the refusing device also copied its own note aside");
+});
+
+/**
+ * The same collision on a device that cannot stream (round 3, finding 3)./**
  * The same collision on a device that cannot stream (round 3, finding 3).
  *
  * The window above is a window in THIS file: the loop asks the host for 8 MiB
@@ -748,6 +791,12 @@ test("a note far larger than memory is moved aside a window at a time", async ()
  */
 test("a local note past this device's ceiling is left where it is", async () => {
   const { r, frame } = await collision(HIGHER, LOWER, { isMobile: true });
+  // A host that CAN bind a removal and still buffers whole files. The two
+  // capabilities are separate questions and this is the one the ceiling
+  // answers: today's phone refuses the move earlier, because it cannot bind
+  // the removal at all (below), and this keeps the bound itself proven for
+  // any host that answers the first question yes and the second no.
+  r.host.bindsRemoval = true;
   const SIZE = 3 * 1024 ** 3;
   const stat = r.host.stat.bind(r.host);
   r.host.stat = async (path) => (path === NOTE ? { path, mtime: 2000, size: SIZE } : stat(path));
@@ -825,7 +874,11 @@ test("a note truncated while it is being copied aside is refused, not torn", asy
   );
   assert.equal(r.host.text(copies(r.host)[0]), THEIRS, "the other device's note was not kept");
   assert.ok(
-    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed")),
+    // The exact reason, not a prefix of it: "the note changed before the
+    // removal was attempted" and "it changed inside the removal" are two
+    // different accounts of two different windows, and the device has to
+    // give the one that happened (requirement 12).
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed file=")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
 });
@@ -970,10 +1023,16 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
 });
 
 test("two devices that name one note twice converge, and stay converged", async (t) => {
-  const { server, timers, a, b, keys } = await pair(t);
+  // TWO DEVICES THAT CAN BOTH MOVE A NOTE ASIDE. Which of the two ids sorts
+  // higher is a coin toss -- they are random -- so the device that must move
+  // is decided by the draw, and a device that cannot bind a removal keeps
+  // both instead (`moveAside`, round 3 finding 1). Converging on ONE pair of
+  // names is what this pair can promise; the other pair's answer, and its
+  // cost, is the test below.
+  const { server, timers, a, b, keys } = await pair(t, "immediate", { isMobileB: false });
   const SAME = "Same name.md";
   const DESKTOP = "the note the desktop made\n";
-  const PHONE = "the note the phone made\n";
+  const PHONE = "the note the laptop made\n";
 
   a.host.write("Anchor.md", "so both vaults agree first\n", 1000);
   await a.engine.start();

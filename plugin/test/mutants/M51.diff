@@ -1,0 +1,15 @@
+# M51: a removal with no hold behind it is made anyway, with the window open
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -754,8 +754,9 @@
+     // finding 1). A narrowed window is not a closed one.
+     const hold = desktop === null || found === null ? null : await this.hold(desktop, found);
+     if (hold === null || desktop === null || found === null) {
+-      this.log("host path_class=file decision=kept reason=unheld");
+-      return "unheld";
++      this.log("host path_class=file decision=trash_unheld");
++      await this.remove(path);
++      return "removed";
+     }
+     return await this.removeHeld(desktop, found, hold, expect, path);
+   }

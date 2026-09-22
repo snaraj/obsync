@@ -87,6 +87,9 @@ export class FakeHost {
     this.unsyncable = new Set();
     this.isMobile = isMobile;
     this.supportsRangeReads = !isMobile;
+    // A second name for a file is a desktop filesystem's to give (`main.ts`),
+    // so a fake phone answers the way a phone does: no bound removal.
+    this.bindsRemoval = !isMobile;
     this.platform = platform;
     this.appVersion = appVersion;
     this.deviceName = deviceName;
@@ -198,8 +201,11 @@ export class FakeHost {
    * could not show a save arriving inside the removal, which is the defect.
    */
   async trash(path, expect) {
+    // A host that cannot bind a removal removes NOTHING when one is asked
+    // for by content, exactly as the real one does (`main.ts`).
+    if (expect !== undefined && this.bindsRemoval !== true) return "unheld";
     // Through `stat`, which is the seam a test overrides to model a file it
-    // does not hold, exactly as the unheld real path asks the filesystem.
+    // does not hold, exactly as the bound real path asks the filesystem.
     const now = await this.stat(path);
     if (expect !== undefined && now !== null) {
       if (now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
@@ -1043,7 +1049,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
  * answers back, so the whole path from a vault event to a posted version, and
  * from a feed record back to a vault event, is the product's.
  */
-export async function pair(t, delivery = "immediate") {
+export async function pair(t, delivery = "immediate", { isMobileB = true } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const server = new FakeServer();
@@ -1055,7 +1061,7 @@ export async function pair(t, delivery = "immediate") {
     id: KEYS.deviceId, secret: KEYS.deviceSecret, name: "desktop", delivery,
   });
   const b = await device(box, server, timers, {
-    id: DEVICE_B, secret: SECRET_B, name: "phone", delivery, isMobile: true,
+    id: DEVICE_B, secret: SECRET_B, name: isMobileB ? "phone" : "laptop", delivery, isMobile: isMobileB,
   });
   t.after(() => { a.engine.stop(); b.engine.stop(); });
   return { server, timers, a, b, keys: k };

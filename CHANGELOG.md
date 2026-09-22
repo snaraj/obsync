@@ -31,7 +31,8 @@ and a note a device has never managed to upload has none. If a device is
 offline exactly when it meets the collision, and its note would have sorted
 second, that device can keep the pair under different names from the other
 device's until its note is uploaded and edited again
-([issue #122](https://github.com/snaraj/obsync/issues/122)). Both notes exist
+([issue #122](https://github.com/snaraj/obsync/issues/122)). The same is true
+of a phone or tablet whichever way the pair sorts, for the reason below. Both notes exist
 on both devices the whole time; only the names differ, and renaming either one
 yourself settles it. A note roughly 8 MB or larger is also never recognised as
 one the server already holds (below), so on a restored vault it is copied
@@ -48,13 +49,22 @@ pair yourself, there is no longer a collision and nothing here applies to it.
 **If you are typing in that note at the moment it happens.** The note is left
 exactly where it is, with the text you just typed, and obsync says so instead
 of renaming it; the other device's note is kept beside it under a name of its
-own, the way 1.0.6 kept it. On a computer that holds for text you type at any
-moment of the rename, including while the old copy is being cleared away. On a
-phone or tablet the same note is also left alone when it is larger than that
-device's per-file limit (512 MB unless you changed it), because copying it
-there would mean holding the whole note in memory; the pair keeps one name on
-that device until the note is smaller or you raise the limit, and both notes
-are still there.
+own, the way 1.0.6 kept it. That holds for text you type at any moment of the
+rename, including while the old copy is being cleared away, and whether your
+editor saves into the note or replaces it.
+
+**On phones and tablets, obsync renames nothing at all.** Settling the pair
+means moving one note aside, and moving a note means removing the old copy
+once the new one is written. A computer can keep hold of that copy across the
+removal and put it back if you typed into it at that moment; a phone cannot,
+and neither can a few unusual disks and network drives on computers. Rather
+than remove a note it could not give back, obsync keeps both notes on those
+devices -- exactly as 1.0.6 did -- and lets the device that CAN do it safely
+publish the rename. **What that costs is a name:** until then, that pair can
+sit under different names on your phone than on your computer. Both notes are
+on both devices the whole time, no text is ever lost, and renaming either one
+yourself settles it everywhere. A note larger than that device's per-file
+limit (512 MB unless you changed it) is left alone for the same reason.
 
 **Two smaller things behind that.**
 

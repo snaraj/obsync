@@ -620,14 +620,25 @@ returns immediately when a new frame lands.
    atomic against the user. The metadata a writer answers with is the
    metadata of the bytes IT committed -- the descriptor's own stat, or the
    byte count handed to the adapter -- never a fresh look at the name, which
-   after an in-place save describes another file under the same inode. And a
-   caller that removes a file NAMES the content it is removing: the desktop
-   host holds that file under a second name across the vault's own
-   asynchronous trash and puts it back if what was removed is no longer what
-   was copied, while a device that cannot make a second name narrows the
-   window to its last instant and logs that it could not close it. Both are
-   what keep a record truthful about a file the user was typing into at that
-   moment (`plugin/src/main.ts`). Hidden folders
+   after an in-place save describes another file under the same inode.
+
+   A REMOVAL HAPPENS ONLY BEHIND A PROVEN HOLD. A caller that removes a file
+   names the content it is removing, and the desktop host first gives that
+   file a second name with `link`, so the inode outlives whatever the vault's
+   "Deleted files" preference does with the first -- including permanent
+   deletion, which is an unlink of the name it is not holding. Immediately
+   before the removal the name is re-identified against that hold, by device
+   and inode as well as by metadata: an editor that saves by renaming a temp
+   file over the note leaves a DIFFERENT file there, which the hold does not
+   have, and nothing is removed. Afterwards the hold is the source of truth:
+   a hold whose metadata no longer matches what was copied is linked back
+   under the vault name. A host that cannot make that second name at all --
+   every mobile device, and a filesystem that refuses `link` -- removes
+   NOTHING, and the caller takes its non-destructive path instead, because a
+   narrowed window is not a closed one. That is why the same-name rule
+   settles a pair by renaming on a computer and by keeping both on a phone
+   (`plugin/src/sync/pull.ts`, `VaultHost.bindsRemoval`), and the cost is a
+   name rather than a note. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
 

@@ -1076,8 +1076,18 @@ async function copyThrough(
  * bound to it, and a host that reports `kept` has put the file back with the
  * later bytes in it: the note keeps its name and its new text, the copy this
  * function already published keeps the text it had a moment ago, and the
- * caller falls back to keeping both. The binding is the host's to make and
- * the hosts differ in what they can promise -- see `VaultHost.trash`.
+ * caller falls back to keeping both.
+ *
+ * AND A HOST THAT CANNOT MAKE THAT PROMISE IS NEVER ASKED TO. Mobile has no
+ * second name to give a file, and a desktop filesystem can refuse one, so on
+ * those devices the pair is settled the way 1.0.6 settled it -- both notes
+ * kept, this device's under the name it already has -- and nothing is
+ * removed at all. That is asked BEFORE the copy, not after it, so a device
+ * that will refuse does not first fill the vault with a copy it cannot use.
+ * The cost is a name: two devices can hold that pair under different names
+ * until the one that CAN move publishes the rename (issue #122's divergence,
+ * one case wider). The alternative is a window in which a note the user is
+ * typing into is removed, and there is no version of it anywhere.
  *
  * AND THE LOCAL NOTE CAN BE ANY SIZE. The incoming version says nothing about
  * it: a 21-byte note from another device collides with whatever wears that
@@ -1103,6 +1113,15 @@ async function moveAside(
   record: FileState,
   when: Date,
 ): Promise<string | null> {
+  // Asked first, because the answer decides whether this move can happen at
+  // all: a device that cannot bind a removal to what it removes settles the
+  // pair by keeping both, and nothing here is written, copied or removed.
+  if (context.host.bindsRemoval !== true) {
+    context.host.log(
+      `pull path_class=file decision=move_aside_refused reason=unheld file=${record.fileId}`,
+    );
+    return null;
+  }
   const before = await context.host.stat(from);
   if (before === null) return null;
   // Before the copy asks for anything: on a host whose writer and source hold
@@ -1132,12 +1151,15 @@ async function moveAside(
     context.host.log(
       `pull path_class=file decision=move_aside_refused reason=${reason} file=${record.fileId}`,
     );
-    if (copy !== null) {
-      context.host.notify(
-        `obsync left ${from} where it is: it changed while obsync was moving it. Your note and its ` +
-          `new text are untouched, and the text it had a moment ago is in "${copy}".`,
-      );
-    }
+    if (copy === null) return null;
+    context.host.notify(
+      reason === "unheld"
+        ? `obsync left ${from} where it is: this device cannot move a note aside without risking text ` +
+            `typed while it does, so it keeps both notes instead. Your note is untouched, and the text ` +
+            `it had a moment ago is in "${copy}".`
+        : `obsync left ${from} where it is: it changed while obsync was moving it. Your note and its ` +
+            `new text are untouched, and the text it had a moment ago is in "${copy}".`,
+    );
     return null;
   };
   let landed: Awaited<ReturnType<typeof writeBeside>>;
@@ -1164,11 +1186,18 @@ async function moveAside(
   // publishes a tombstone for a file that is alive one name over (issue #96).
   context.trashed.add(from);
   // The removal names the bytes it is removing. `kept` means the host found
-  // other ones there and put the file back rather than take them, so this
-  // move did not happen and the pair is kept as 1.0.6 kept it.
-  if ((await context.host.trash(from, before)) === "kept") {
-    return refuse(landed.stat.path, "source_changed_in_trash");
+  // other ones there -- a save inside the removal, or a file that replaced
+  // the one we held -- and left or put back what it found rather than take
+  // it; `unheld` means it removed nothing because it could not promise that.
+  // Either way this move did not happen and the pair is kept as 1.0.6 kept
+  // it. Only `unheld` withdraws the echo marker: nothing was removed, so no
+  // delete event is owed, while a restore really did produce one.
+  const verdict = await context.host.trash(from, before);
+  if (verdict === "unheld") {
+    context.trashed.delete(from);
+    return refuse(landed.stat.path, "unheld");
   }
+  if (verdict === "kept") return refuse(landed.stat.path, "source_changed_in_trash");
   // `mtime: -1` and no digest, exactly as a user's own rename records it
   // (`engine.ts`): the bytes did not move, the PATH did, and the path lives
   // inside the manifest, so the push must post even though the content is
@@ -1249,7 +1278,13 @@ async function sameNameTiebreak(
   }
 
   const moved = await moveAside(context, manifest.path, ours, when);
-  if (moved === null) return await keepBoth(context, change, manifest);
+  // A move that did not happen still has to SETTLE the incoming id: recorded
+  // under it, the copy is where that file's next version lands, and the pair
+  // costs one copy once. Unrecorded, every later edit of it would arrive at
+  // an occupied name with no id to compare and make another copy, which is
+  // the defect issue #113 exists to end -- and a device that cannot bind a
+  // removal (mobile) takes this path for EVERY collision it meets.
+  if (moved === null) return await keepBothRecorded(context, change, manifest);
   context.host.log(
     `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
   );
