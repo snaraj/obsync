@@ -1,0 +1,14 @@
+# M48: a tombstone is posted without asking whether the file is still there
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -238,10 +238,6 @@
+   assertSyncPath(path, context.state.data.syncFolders);
+   const record = context.state.fileByPath(path);
+   if (!record) return null;
+-  if ((await context.host.stat(path)) !== null) {
+-    context.host.log("push path_class=tombstone decision=refused reason=file_present");
+-    return null;
+-  }
+   const manifest: Manifest = {
+     v: 1,
+     path,

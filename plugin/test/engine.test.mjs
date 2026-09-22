@@ -1016,6 +1016,144 @@ test("startup reconciliation tombstones a file deleted while Obsidian was closed
   engine.stop();
 });
 
+/**
+ * The scan lists the vault ONCE and then walks the state, and the pull path
+ * writes between the two.
+ *
+ * `reconcileLocal` takes a listing, walks it, and then treats every recorded
+ * path that listing did not contain as a file the vault no longer has -- which
+ * is how an edit made while Obsidian was closed reaches the server, and is
+ * right. But a version arriving from another device is written and recorded
+ * while the scan is still walking, so its path is in the record and not in
+ * the listing, and the inference names a file that is on the disk. The
+ * tombstone that follows deletes it on EVERY device.
+ *
+ * The listing below is held open across exactly one pull, which is the same
+ * interleaving a slow device reaches on its own: it was a hosted run of the
+ * scope suite, on a loaded two-core runner, that produced it.
+ */
+test("a file the pull writes while the scan is listing is not published as a tombstone", async () => {
+  const { host, server, state, context, keys: k } = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state,
+    transport: new Transport({
+      request: server.request,
+      serverUrl: () => state.data.serverUrl,
+      device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+      edgeHeaders: () => [],
+      now: () => host.clock,
+      sleep: async () => undefined,
+    }),
+    host,
+    timers,
+  });
+  host.seed("Notes/Here.md", "already here", 1000);
+  await engine.start();
+  await timers.run(1000, () => state.fileByPath("Notes/Here.md") !== undefined);
+  const posted = server.journal.length;
+
+  const frame = await server.publish({
+    fileId: "1a".repeat(16),
+    path: "Notes/Arrived.md",
+    bytes: enc("written by the other device\n"),
+    mtime: 1757200001000,
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+  });
+  const list = host.list.bind(host);
+  let raced = false;
+  host.list = async () => {
+    const files = await list();
+    // The listing is taken; the pull lands after it and before the state walk.
+    if (!raced) {
+      raced = true;
+      assert.equal(await applyChange(context, frame), "applied");
+    }
+    return files;
+  };
+
+  await engine.reconcile();
+  await timers.run(1000);
+
+  assert.ok(raced, "the test never reached the window it exists for");
+  assert.equal(host.text("Notes/Arrived.md"), "written by the other device\n");
+  assert.notEqual(
+    state.fileByPath("Notes/Arrived.md"),
+    undefined,
+    "the scan dropped the record of a file the pull had just written",
+  );
+  assert.deepEqual(
+    server.journal.slice(posted).filter((frame) => frame.deleted),
+    [],
+    "the scan published a tombstone for a file that is on the disk",
+  );
+  assert.ok(
+    host.logs.some((line) => line.includes("push path_class=tombstone decision=refused reason=file_present")),
+    host.logs.filter((line) => line.includes("tombstone")).join(" | "),
+  );
+  engine.stop();
+});
+
+/**
+ * The other half of the same guard: a deletion that is refused is still a
+ * path with something at it, and something at a path is a CHANGE.
+ *
+ * A delete event queues a tombstone, and the file can be back before the
+ * queue reaches it -- restored by the user, or written by the pull path a
+ * moment later. Refusing the tombstone is only half an answer: the file that
+ * is there now has bytes no version holds, and dropping the work would leave
+ * them on this device alone until something else touched the file.
+ */
+test("a deletion refused because the file came back is published as the change it is", async () => {
+  const { host, server, state } = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state,
+    transport: new Transport({
+      request: server.request,
+      serverUrl: () => state.data.serverUrl,
+      device: () => ({ id: KEYS.deviceId, secret: Uint8Array.from(Buffer.from(KEYS.deviceSecret, "hex")) }),
+      edgeHeaders: () => [],
+      now: () => host.clock,
+      sleep: async () => undefined,
+    }),
+    host,
+    timers,
+  });
+  host.seed("Notes/Back.md", "the first text\n", 1000);
+  await engine.start();
+  await timers.run(1000, () => server.journal.length === 1);
+  const first = state.fileByPath("Notes/Back.md").versionId;
+
+  host.files.delete("Notes/Back.md");
+  // Back between the queue and the push, with text the server has never
+  // seen: the window is the vault's, so the test opens it in the vault.
+  const stat = host.stat.bind(host);
+  let returned = false;
+  host.stat = async (path) => {
+    if (path === "Notes/Back.md" && !returned) {
+      returned = true;
+      host.seed("Notes/Back.md", "and the text it has now\n", 3000);
+    }
+    return stat(path);
+  };
+  engine.deleted("Notes/Back.md");
+
+  await timers.run(1000, () => server.journal.length === 2);
+  assert.ok(returned, "the test never reached the window it exists for");
+
+  assert.equal(server.journal.length, 2, "the change was never published");
+  assert.notEqual(server.journal[1].deleted, true, "a tombstone was posted for a file that is there");
+  assert.equal(state.fileByPath("Notes/Back.md").versionId, server.journal[1].version_id);
+  assert.notEqual(state.fileByPath("Notes/Back.md").versionId, first, "the new text was not published");
+  assert.ok(
+    host.logs.some((line) => line.includes("push path_class=tombstone decision=refused reason=file_present")),
+    host.logs.filter((line) => line.includes("tombstone")).join(" | "),
+  );
+  engine.stop();
+});
+
 test("a failed rename bookkeeping save is handled and stops the engine", async () => {
   const r = await rig(), timers = new FakeTimers();
   const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers });
