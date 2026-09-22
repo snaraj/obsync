@@ -1,0 +1,17 @@
+# M59: the tombstone's removal is not bound to the bytes it was told to remove
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -526,12 +526,7 @@
+       // And the removal names the bytes it removes, on a host that can bind
+       // one: the check above is a stat, and a save landing between it and
+       // the deletion is exactly what the bound removal exists for.
+-      const verdict = await context.host.trash(
+-        localPath,
+-        context.host.bindsRemoval === true && local !== undefined
+-          ? { path: localPath, mtime: local.mtime, size: local.size }
+-          : undefined,
+-      );
++      const verdict = await context.host.trash(localPath);
+       if (verdict === "kept") {
+         // The host found other bytes there and left them. Nothing was
+         // removed, so no delete event is owed and the record stays: the push

@@ -1,0 +1,12 @@
+# M58: a replayed tombstone is obeyed whatever this device's version descends from
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -494,7 +494,7 @@
+       // already applied -- or one another device made before this device
+       // published the edit that came after it -- arrives again, years of
+       // journal later, against a file that has moved on.
+-      if (local !== undefined && local.versionId !== "" && !change.parents.includes(local.versionId)) {
++      if (local !== undefined && local.versionId !== "" && change.parents.includes(local.versionId)) {
+         const file = await context.transport.getFile(change.file_id);
+         if (reaches(file.versions, local.versionId, change.version_id)) {
+           context.host.log(

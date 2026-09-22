@@ -1,0 +1,12 @@
+# M57: a tombstone is applied without proving the file against its record
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -511,7 +511,7 @@
+         }
+       }
+       const held = await competing(context, localPath, change.file_id);
+-      if (held !== null) {
++      if (held === "no_record") {
+         context.host.log(
+           `pull path_class=tombstone decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
+         );

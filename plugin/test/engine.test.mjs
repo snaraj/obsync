@@ -334,6 +334,134 @@ test("a tombstone deletes locally", async () => {
   assert.equal(state.fileByPath("Notes/Doomed.md"), undefined);
 });
 
+/**
+ * DELETE VERSUS EDIT KEEPS BOTH, and a deletion is the one change that keeps
+ * nothing (`docs/architecture.md`, section 4).
+ *
+ * A tombstone says the file was deleted on ANOTHER device. It says nothing
+ * about what this one has written since, and the file standing here may hold
+ * bytes no version holds -- typed while Obsidian was closed, or while this
+ * folder was outside the selection, which a widening then replays the whole
+ * feed against. Three placements below: the file has moved under its record,
+ * the tombstone forks from the version this device holds, and a save lands
+ * inside the removal itself.
+ */
+const doomed = async (options) => {
+  const r = await rig(options);
+  const created = await r.server.publish({
+    fileId: "13".repeat(16),
+    path: "Notes/Doomed.md",
+    bytes: enc("bye\n"),
+    mtime: 1757200001000,
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+  await applyChange(r.context, created);
+  return { ...r, created };
+};
+
+test("a tombstone does not take an edit this device never published", async () => {
+  const { host, state, server, context, keys: k, created } = await doomed();
+  // Typed while nothing was watching: the record still describes the version
+  // above, and the push that would carry these bytes has not run.
+  host.seed("Notes/Doomed.md", "TYPED WHILE CLOSED SENTINEL\n", 1757200009000);
+  const tombstone = await server.publishTombstone({
+    fileId: "13".repeat(16),
+    path: "Notes/Doomed.md",
+    manifestKey: k.manifestKey,
+    parents: [created.version_id],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "skipped");
+
+  assert.deepEqual(host.trashed, [], "a file holding bytes that exist nowhere else was deleted");
+  assert.equal(host.text("Notes/Doomed.md"), "TYPED WHILE CLOSED SENTINEL\n");
+  assert.ok(state.fileByPath("Notes/Doomed.md"), "the record was dropped, so nothing will publish those bytes");
+  assert.ok(
+    host.logs.some((line) => line.includes("path_class=tombstone decision=local_edit_kept reason=local_edit")),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+  assert.match(host.notices.join(" "), /did not delete/);
+});
+
+test("a tombstone that forks from the version this device holds is one side of a fork", async () => {
+  const { host, state, server, context, keys: k, created } = await doomed();
+  // Published from here, so the record moves on: the tombstone below is a
+  // sibling of that version, not its descendant, which is what a replayed
+  // feed hands a device that edited after the deletion it never saw.
+  host.seed("Notes/Doomed.md", "PUBLISHED FROM HERE SENTINEL\n", 1757200009000);
+  await pushFile(context, "Notes/Doomed.md");
+  const tombstone = await server.publishTombstone({
+    fileId: "13".repeat(16),
+    path: "Notes/Doomed.md",
+    manifestKey: k.manifestKey,
+    parents: [created.version_id],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "skipped");
+
+  assert.deepEqual(host.trashed, [], "a version newer than the deletion was deleted by it");
+  assert.equal(host.text("Notes/Doomed.md"), "PUBLISHED FROM HERE SENTINEL\n");
+  assert.ok(state.fileByPath("Notes/Doomed.md"));
+  assert.ok(
+    host.logs.some((line) => line.includes("path_class=tombstone decision=local_edit_kept reason=delete_vs_edit")),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("a save landing between the tombstone's check and its removal is kept", async () => {
+  const { host, state, server, context, keys: k, created } = await doomed();
+  const stat = host.stat.bind(host);
+  let asked = 0;
+  host.stat = async (path) => {
+    const answer = await stat(path);
+    // The first answer is the check's, and the save lands right after it: the
+    // file the removal then names is not the file that was checked.
+    if (path === "Notes/Doomed.md" && ++asked === 1) return answer;
+    if (path === "Notes/Doomed.md") return { ...answer, mtime: 1757200009000, size: 99 };
+    return answer;
+  };
+  const tombstone = await server.publishTombstone({
+    fileId: "13".repeat(16),
+    path: "Notes/Doomed.md",
+    manifestKey: k.manifestKey,
+    parents: [created.version_id],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "skipped");
+
+  assert.deepEqual(host.trashed, [], "the removal was not bound to the bytes it was told to remove");
+  assert.ok(state.fileByPath("Notes/Doomed.md"), "the record was dropped for a file that is still there");
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=local_edit_kept reason=source_changed_in_trash")),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("a host that cannot bind a removal still applies the deletion", async () => {
+  for (const options of [{ isMobile: true }, undefined]) {
+    const { host, state, server, context, keys: k, created } = await doomed(options);
+    if (options === undefined) {
+      // A desktop whose filesystem refuses the hold or the move answers
+      // `unheld`: nothing was removed, and the deletion must still apply
+      // rather than be dropped by a feed that never delivers it again.
+      const trash = host.trash.bind(host);
+      host.trash = async (path, expect) => (expect === undefined ? await trash(path) : "unheld");
+    }
+    const tombstone = await server.publishTombstone({
+      fileId: "13".repeat(16),
+      path: "Notes/Doomed.md",
+      manifestKey: k.manifestKey,
+      parents: [created.version_id],
+    });
+
+    assert.equal(await applyChange(context, tombstone), "deleted");
+
+    assert.deepEqual(host.trashed, ["Notes/Doomed.md"], JSON.stringify(options));
+    assert.equal(state.fileByPath("Notes/Doomed.md"), undefined);
+  }
+});
+
 test("a delete pushes a tombstone with no sids", async () => {
   const { host, server, state, context } = await rig();
   host.seed("gone.md", "content", 1000);
