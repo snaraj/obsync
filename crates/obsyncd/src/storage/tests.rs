@@ -2872,3 +2872,59 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
 }
 
 mod recovery;
+
+/// THE REVIEWER'S OWN INPUT CASES for round 5's finding 7 (PR #120, comment
+/// 5778412397), carried verbatim under this header. Each one names a
+/// declared invariant of the dedupe key that the suite stated in prose and
+/// no test could tell apart from its opposite: chunk ORDER is content,
+/// parents are a SET including repeats, and the twin an old client left
+/// behind resolves to the OLDEST retained one. The matching mutants are
+/// recorded in `plugin/test/mutants/MATRIX.md`.
+
+#[test]
+fn reviewer_mutation_probe_sid_order_changes_content() {
+    let dir = TempDir::new("reviewer-sid-order");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let a = put(&setup, b"ciphertext-chunk-a");
+    let b = put(&setup, b"ciphertext-chunk-b");
+    let first = version(&setup, file(1), "first-manifest", &[], &[a, b], false);
+    let swapped = version(&setup, file(1), "swapped-manifest", &[], &[b, a], false);
+    setup.store.append_version_idempotent(first).expect("first");
+    let answer = setup.store.append_version_idempotent(swapped.clone()).expect("swapped");
+    assert_eq!(answer.decision, AppendDecision::Appended, "opposite chunk order is different content");
+    assert_eq!(answer.version_id, swapped.version_id);
+}
+
+#[test]
+fn reviewer_mutation_probe_repeated_parent_is_one_position() {
+    let dir = TempDir::new("reviewer-parent-set");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-chunk-a");
+    let root = version(&setup, file(1), "root", &[], &[sid], false);
+    setup.store.append_version(root.clone()).expect("root");
+    let first = version(&setup, file(1), "first-manifest", &[root.version_id], &[sid], false);
+    let twin = version(&setup, file(1), "twin-manifest", &[root.version_id, root.version_id], &[sid], false);
+    setup.store.append_version_idempotent(first.clone()).expect("first");
+    let answer = setup.store.append_version_idempotent(twin).expect("twin");
+    assert_eq!(answer.decision, AppendDecision::Deduplicated, "parents are a set, including duplicates");
+    assert_eq!(answer.version_id, first.version_id);
+}
+
+#[test]
+fn reviewer_mutation_probe_oldest_legacy_twin_wins() {
+    let dir = TempDir::new("reviewer-oldest-twin");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-chunk-a");
+    let first = version(&setup, file(1), "first-manifest", &[], &[sid], false);
+    let later = version(&setup, file(1), "later-manifest", &[], &[sid], false);
+    let offered = version(&setup, file(1), "offered-manifest", &[], &[sid], false);
+    let original = setup.store.append_version(first.clone()).expect("old-client first");
+    setup.store.append_version(later).expect("old-client duplicate");
+    let answer = setup.store.append_version_idempotent(offered).expect("opt-in third");
+    assert_eq!(answer.decision, AppendDecision::Deduplicated);
+    assert_eq!(answer.version_id, first.version_id, "first retained twin is the documented stable answer");
+    assert_eq!(answer.seq, original.seq);
+}
