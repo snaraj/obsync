@@ -48,11 +48,13 @@ import {
   base64,
   concat,
   contentVersionId,
+  decryptManifest,
   encryptChunk,
   encryptManifest,
   hex,
   randomBytes,
   sha256,
+  unbase64,
   unhex,
   versionId,
 } from "../crypto";
@@ -326,12 +328,29 @@ export async function postManifest(
   // older than 1.0.7 sends no such field and the computed id stands, which is
   // also what the lost-answer settlement returns, because it only settles on
   // finding THIS id in the file record (issue #114).
-  const settled = (ack: VersionAck): { versionId: string; ack: VersionAck } => ({
-    versionId: ack.version_id ?? id,
-    ack,
-  });
+  // ADOPTION IS PROVED, NOT TAKEN ON TRUST. The store's identity for a
+  // position is `(file_id, parent set, sids, deleted)` and cannot include
+  // the path, which lives inside a manifest only a device holding the vault
+  // key can read: two devices that edit one note to the same bytes from the
+  // same parent are that key, whether or not one of them also RENAMED it.
+  // Recording the other device's version as ours would put its path in our
+  // record and mark its rename as this device's own echo, and the rename
+  // would then be dropped on both sides. So a version this device did not
+  // compute is read back and adopted only when its authenticated manifest
+  // describes the SAME operation: same path, same size, same deleted bit.
+  // Otherwise the post is repeated with the offer withdrawn, which is a
+  // position the store must append.
+  const settled = async (ack: VersionAck, retry: boolean): Promise<{ versionId: string; ack: VersionAck }> => {
+    const answered = ack.version_id ?? id;
+    if (answered === id || !retry) return { versionId: answered, ack };
+    if (await sameOperation(context, fileId, answered, manifest)) return { versionId: answered, ack };
+    context.host.log(
+      `push path_class=file decision=not_adopted reason=other_manifest file=${fileId}`,
+    );
+    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }), false);
+  };
   try {
-    return settled(await postOnce(context, fileId, id, post));
+    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
     const missing = new Set(await context.transport.missingChunks(sids));
@@ -339,7 +358,46 @@ export async function postManifest(
       `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
     );
     await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
-    return settled(await postOnce(context, fileId, id, post));
+    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+  }
+}
+
+/**
+ * Does the version the store answered with describe the operation this
+ * device just posted? Only a device holding the manifest key can say, and
+ * only from the manifest itself: the clear fields the store matched on are
+ * the very ones that are equal by construction.
+ *
+ * A version that cannot be read back at all is not adopted either -- an
+ * unreadable answer is not a proof.
+ */
+async function sameOperation(
+  context: SyncContext,
+  fileId: string,
+  answered: string,
+  manifest: Manifest,
+): Promise<boolean> {
+  try {
+    const file = await context.transport.getFile(fileId);
+    const version = file.versions.find((candidate) => candidate.version_id === answered);
+    if (version === undefined) return false;
+    const binder = await contentVersionId(fileId, version.parents, version.sids);
+    const theirs = JSON.parse(
+      await decryptManifest(
+        context.manifestKey,
+        fileId,
+        binder,
+        unhex(version.manifest_nonce),
+        unbase64(version.manifest_ct),
+      ),
+    ) as Partial<Manifest>;
+    return (
+      theirs.path === manifest.path &&
+      theirs.size === manifest.size &&
+      theirs.deleted === manifest.deleted
+    );
+  } catch {
+    return false;
   }
 }
 

@@ -22,12 +22,13 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, KEYS, STEP_MS, keys as vaultKeys, pair, published, rig, settled } from "./fake.mjs";
+import { DEVICE_B, FakeTimers, KEYS, STEP_MS, keys as vaultKeys, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
 const dm = require("../build/domainmap.js");
+const c = require("../build/crypto.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const NOTE = "Notes/Dedupe.md";
@@ -281,5 +282,87 @@ test("two different domain maps from one parent are two versions", async () => {
   assert.equal(stored.length, 4, "a map write did not land as a version of its own");
   for (const id of [first, second, third]) {
     assert.ok(stored.includes(id), "a map this device wrote is not in the store");
+  }
+});
+
+/**
+ * THE REVIEWER'S OWN INPUT CASES for round 5's finding 5 (PR #120, comment
+ * 5778412397), carried verbatim under this header. The offer is made by an
+ * ordinary edit and matched against a RENAME another device stored earlier,
+ * which the store's clear key cannot tell apart; the third case drives it
+ * through a real engine, where the adopted id was then marked as this
+ * device's own echo.
+ */
+async function assertRecordedPath(r, path) {
+  const local = r.context.state.fileByPath(path);
+  const version = r.server.files.get(local.fileId).versions.find(v => v.version_id === local.versionId);
+  const binder = await c.contentVersionId(local.fileId, version.parents, version.sids);
+  const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, local.fileId, binder,
+    c.unhex(version.manifest_nonce), c.unbase64(version.manifest_ct)));
+  console.log(JSON.stringify({localPath: path, recordedVersion: local.versionId, serverManifestPath: manifest.path,
+    deduplicated: r.server.deduplicated.length, serverVersions: r.server.files.get(local.fileId).versions.length}));
+  assert.equal(manifest.path, path, "a clean local record must not claim a version whose authenticated manifest names another path");
+}
+
+test("ordinary concurrent edit must not adopt another device's rename-and-edit manifest", async () => {
+  const r = await rig();
+  r.host.seed("Original.md", "base\n", 1000);
+  await pushFile(r.context, "Original.md");
+  const base = r.state.fileByPath("Original.md");
+  const renamed = await r.server.publish({fileId: base.fileId, path: "Renamed.md", bytes: enc("edited\n"), mtime: 2000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey});
+  r.host.seed("Original.md", "edited\n", 2000);
+  await pushFile(r.context, "Original.md");
+  await assertRecordedPath(r, "Original.md");
+  const applied = await applyChange(r.context, renamed);
+  console.log("later_rename_frame=" + applied);
+});
+
+test("a persisted unposted rename must retain the dedupe opt-out after state reload", async () => {
+  const r = await rig();
+  r.host.seed("Original.md", "body\n", 1000);
+  await pushFile(r.context, "Original.md");
+  const base = r.state.fileByPath("Original.md");
+  const theirs = await r.server.publish({fileId: base.fileId, path: "Theirs.md", bytes: enc("body\n"), mtime: 2000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey});
+  // The exact state shape SyncEngine.renamed() saves before dispatching its push.
+  r.host.files.set("Mine.md", r.host.files.get("Original.md"));
+  r.host.files.delete("Original.md");
+  r.state.setFile("Mine.md", {...base, mtime: -1, sha256: ""});
+  r.state.forgetPath("Original.md");
+  await r.state.save();
+  r.context.state = await r.reload();
+  // A newly constructed engine has no transient renames set. Its startup
+  // reconcile dispatches pushFile(context,path,false), as this call does.
+  await pushFile(r.context, "Mine.md");
+  await assertRecordedPath(r, "Mine.md");
+});
+
+
+test("startup engine does not label a foreign renamed manifest as its own echo", async () => {
+  const r = await rig();
+  r.host.seed("Original.md", "base\n", 1000);
+  await pushFile(r.context, "Original.md");
+  const base = r.state.fileByPath("Original.md");
+  const renamed = await r.server.publish({fileId: base.fileId, path: "Renamed.md", bytes: enc("edited\n"), mtime: 2000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey});
+  r.host.seed("Original.md", "edited\n", 2000);
+  let releaseFeed;
+  const feed = new Promise(resolve => { releaseFeed = resolve; });
+  r.transport.changes = () => feed;
+  const { SyncEngine } = require("../build/sync/engine.js");
+  const engine = new SyncEngine({state:r.state,transport:r.transport,host:r.host,now:()=>r.host.clock,timers:new FakeTimers()});
+  try {
+    await engine.start();
+    await engine.syncNow();
+    r.context = engine.context;
+    const foreignEcho = r.context.authored.has(renamed.version_id);
+    const applied = await applyChange(r.context, renamed);
+    console.log("engine_later_rename_frame=" + applied);
+    assert.equal(foreignEcho, false, "a foreign rename must not be marked as this engine own already-applied version");
+  } finally {
+    engine.stop();
+    releaseFeed({seq:r.state.data.lastSeq,head_seq:r.server.seq,changes:[]});
+    await engine.stopAndWait();
   }
 });
