@@ -74,7 +74,7 @@ answers the same.
 | `POST /v1/chunks/get` | yes | a read; same reason |
 | `PUT /v1/chunks/{sid}` | yes | the sid IS the body's hash |
 | `GET /v1/chunks/{sid}` | yes | read |
-| `POST /v1/files/{id}/versions` | **no** | appends a version and moves the heads |
+| `POST /v1/files/{id}/versions` | **no** | appends a version and moves the heads; may answer with an identical version's id |
 | `GET /v1/files…`, `GET /v1/changes` | yes | reads |
 | `POST /v1/dashboard/login-link` | **no** | mints a single-use token |
 
@@ -185,8 +185,11 @@ retain the account-wide authority described below.
 - `POST /v1/files/{file_id}/versions`
   `{"version_id":"<64hex>","parents":["<64hex>",…],"sids":["<64hex>",…],
   "bytes":<n>,"domain_id":"<32hex>","manifest_ct":"<base64>",
-  "manifest_nonce":"<24hex>","deleted":false}` → `201 {"seq":<n>,
-  "heads":["<64hex>",…],"conflicted":false}`. Rules: every sid must exist
+  "manifest_nonce":"<24hex>","deleted":false,"accept_existing":false}` →
+  `201 {"seq":<n>,"version_id":"<64hex>",
+  "heads":["<64hex>",…],"conflicted":false}`. `version_id` in the answer is
+  the version the store holds for this post: the posted id, except on the one
+  case below. Rules: every sid must exist
   (`409 missing_chunks` with the list); `version_id` must equal the server's
   recomputation (`422 version_id_mismatch`); `domain_id` is required and
   must equal the file's own (`409 domain_mismatch`), which its first version
@@ -197,6 +200,20 @@ retain the account-wide authority described below.
   version whose acceptance would leave a 65th is refused with `409
   too_many_heads` and nothing already stored changes. Posting an
   existing `version_id` is a `200` no-op.
+- **One position, one version.** Two devices that resolve the same conflict
+  to the same bytes post the same parents and the same chunks under two
+  version ids, because the id covers the encrypted manifest and its nonce;
+  the file forks and closing it costs another version. A post carrying
+  `"accept_existing":true` whose `(file_id, parents as a set, sids in order,
+  deleted)` equals a version the store already holds is answered `200` with
+  THAT version's `seq` and `version_id`, and no frame is written. The same
+  sids under other parents, or the same parents with other sids, is a new
+  version as before, and so is a tombstone over an empty file. The field is
+  the client's promise to store the `version_id` it is answered with: a
+  client that keeps the id it computed omits it (as every 1.0.x client does)
+  and is never answered with another id, because it would otherwise remember
+  a version this server never stored. The decision is logged
+  (`decision=deduplicated`).
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest

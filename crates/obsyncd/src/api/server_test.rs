@@ -1769,6 +1769,23 @@ fn post_version(
     sids: &[&str],
     manifest: &str,
 ) -> Res {
+    post_version_as(h, cred, file_id, parents, sids, manifest, None)
+}
+
+/// The same post, with the `accept_existing` field a 1.0.x client does not
+/// send: `None` omits it exactly as that client's body does, and `Some(true)`
+/// is a client that will store the `version_id` the answer names -- the only
+/// client the server may answer with another version's id
+/// (`docs/protocol.md`, "Files and versions").
+fn post_version_as(
+    h: &Harness,
+    cred: &Cred,
+    file_id: &str,
+    parents: &[&str],
+    sids: &[&str],
+    manifest: &str,
+    accept_existing: Option<bool>,
+) -> Res {
     let parents_json = parents
         .iter()
         .map(|p| format!("\"{p}\""))
@@ -1779,9 +1796,13 @@ fn post_version(
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(",");
+    let accept = match accept_existing {
+        Some(v) => format!(r#","accept_existing":{v}"#),
+        None => String::new(),
+    };
     let body = |version_id: &str| {
         format!(
-            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
+            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false{accept}}}"#
         )
     };
     let probe = Req::post(&format!("/v1/files/{file_id}/versions"))
@@ -1997,6 +2018,134 @@ fn a_version_names_its_domain_and_a_file_never_changes_it() {
         unchanged.json().get("domain_id").and_then(Value::as_str),
         Some(TEST_DOMAIN),
         "the refusal left the file where it was"
+    );
+}
+
+/// Issue #114: the second device's identical merge is answered with the
+/// first one's version id, in the response every 1.0.x client already reads.
+#[test]
+fn an_identical_version_post_is_answered_with_the_stored_id() {
+    let h = Harness::start_with(
+        "versions-dedupe",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"version-ciphertext");
+    Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+
+    let file_id = "cd".repeat(16);
+    let first = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3Qtb25l",
+        Some(true),
+    );
+    assert_eq!(first.status, 201, "{}", first.text());
+    let stored = first
+        .json()
+        .get("version_id")
+        .and_then(Value::as_str)
+        .expect("the answer names the version it stored")
+        .to_string();
+    let heads = first.json();
+    let heads = heads.get("heads").and_then(Value::as_array).expect("heads");
+    assert_eq!(
+        heads[0].as_str(),
+        Some(stored.as_str()),
+        "and it is the head"
+    );
+    let seq = h.app.store.head_seq();
+
+    // The other device's manifest, over the same parents and the same
+    // chunks: another version id for one position in the graph.
+    let twin = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3QtdHdv",
+        Some(true),
+    );
+    assert_eq!(twin.status, 200, "{}", twin.text());
+    let answered = twin.json();
+    assert_eq!(
+        answered.get("version_id").and_then(Value::as_str),
+        Some(stored.as_str()),
+        "the answer names the version the store holds, not the one posted"
+    );
+    assert_eq!(
+        answered.get("conflicted").and_then(Value::as_bool),
+        Some(false),
+        "the file did not fork"
+    );
+    assert_eq!(
+        answered
+            .get("heads")
+            .and_then(Value::as_array)
+            .expect("heads")
+            .len(),
+        1
+    );
+    assert_eq!(
+        h.app.store.head_seq(),
+        seq,
+        "no frame was appended for the twin"
+    );
+    let logged = h.captured();
+    assert!(
+        logged.contains("decision=deduplicated"),
+        "the decision is in the log: {logged}"
+    );
+
+    // The file holds one version, and the id the twin posted is not it.
+    let file = Req::get(&format!("/v1/files/{file_id}"))
+        .sign(&cred, NOW)
+        .send(h.addr)
+        .json();
+    let versions = file
+        .get("versions")
+        .and_then(Value::as_array)
+        .expect("versions");
+    assert_eq!(versions.len(), 1, "{versions:?}");
+    assert_eq!(
+        versions[0].get("version_id").and_then(Value::as_str),
+        Some(stored.as_str())
+    );
+
+    // A 1.0.x body carries no `accept_existing` at all, and its post is
+    // stored under the id that client computed and will keep: the same fork
+    // 1.0.6 closes between the devices, and no behaviour this release
+    // changed underneath it.
+    let old_client = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3QtdGhyZWU=",
+        None,
+    );
+    assert_eq!(old_client.status, 201, "{}", old_client.text());
+    let answered = old_client.json();
+    assert_ne!(
+        answered.get("version_id").and_then(Value::as_str),
+        Some(stored.as_str()),
+        "a client that keeps its own id is never answered with another"
+    );
+    assert_eq!(
+        answered.get("conflicted").and_then(Value::as_bool),
+        Some(true),
+        "two ids for one position is what 1.0.x does, unchanged"
     );
 }
 
