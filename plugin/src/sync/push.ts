@@ -57,7 +57,7 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
-import { assertSyncPath } from "../syncScope";
+import { assertSyncPath, inSyncScope } from "../syncScope";
 import { assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
@@ -188,6 +188,21 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // id with no version left that could settle it. Every other post offers it:
   // same parents, same chunks, same path is the same version (issue #114).
   const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
+  // A PUSH THAT OUTLIVES ITS PATH RECORDS NOTHING. Everything above is
+  // asynchronous -- chunk uploads especially -- and the file can leave this
+  // device's selection while they are in flight: the rename handler forgets
+  // the path on purpose, so that the next scan does not read its absence as
+  // a deletion and take the note off every other device (issue #91). Writing
+  // the record here would put that path back and arm exactly that tombstone.
+  // The version itself is published and stays published; what this device
+  // declines to do is claim it still tracks a path it no longer syncs.
+  const inScope = inSyncScope(path, context.state.data.syncFolders);
+  if (!inScope || (await context.host.stat(path)) === null) {
+    context.host.log(
+      `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} file=${fileId}`,
+    );
+    return { status: "pushed", fileId, versionId: ack.versionId };
+  }
   context.state.setFile(path, {
     fileId,
     versionId: ack.versionId,

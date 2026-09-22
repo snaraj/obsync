@@ -1,0 +1,12 @@
+# M63: an upload that outlived its path records it anyway
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -197,7 +197,7 @@
+   // The version itself is published and stays published; what this device
+   // declines to do is claim it still tracks a path it no longer syncs.
+   const inScope = inSyncScope(path, context.state.data.syncFolders);
+-  if (!inScope || (await context.host.stat(path)) === null) {
++  if (false as boolean) {
+     context.host.log(
+       `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} file=${fileId}`,
+     );

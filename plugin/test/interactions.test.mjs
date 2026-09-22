@@ -135,3 +135,112 @@ test("review: widening must not trash an unuploaded local edit while its source 
   assert.equal(a.host.text(path), "NEVER UPLOADED EDIT SENTINEL",
     "a replay must retain bytes no successful upload recorded");
 });
+
+test("review: a pending upload must not restore tracking for a file that left the selected scope", async (t) => {
+  const r = await rig();
+  const path = "Notes/note.md";
+  const moved = "Archive/note.md";
+  r.state.data.syncFolders = ["Notes"];
+  r.host.seed(path, "ORIGINAL SENTINEL", 1000);
+  await pushFile(r.context, path);
+  const id = r.state.fileByPath(path).fileId;
+  const engine = new SyncEngine({ ...r, timers: new FakeTimers() });
+  await engine.start();
+  const entered = deferred(), release = deferred();
+  const actual = r.transport.putChunk.bind(r.transport);
+  r.transport.putChunk = async (...args) => {
+    await actual(...args);
+    entered.resolve();
+    await release.promise;
+  };
+  t.after(async () => {
+    release.resolve();
+    const stopped = engine.stopAndWait();
+    r.server.releaseFeed();
+    await stopped;
+  });
+
+  r.host.seed(path, "EDIT THAT REMAINS IN THE ARCHIVE SENTINEL", 2000);
+  const uploading = engine.syncNow();
+  await entered.promise;
+  r.host.files.set(moved, r.host.files.get(path));
+  r.host.files.delete(path);
+  engine.renamed(path, moved);
+  assert.equal(r.state.fileByPath(path), undefined, "the rename initially drops tracking");
+  release.resolve();
+  await uploading;
+  const trackingRestored = r.state.fileByPath(path) !== undefined;
+  await engine.syncNow();
+  const manifests = await published(r.server, id, r.keys.manifestKey);
+  t.diagnostic(JSON.stringify({
+    trackingRestored,
+    manifests: manifests.map(({ path, deleted }) => ({ path, deleted })),
+    movedFilePresent: r.host.files.has(moved),
+    notices: r.host.notices,
+  }));
+  assert.equal(r.server.journal.filter((frame) => frame.deleted).length, 0,
+    "moving a live file outside the selection must not publish a tombstone later");
+  assert.equal(trackingRestored, false, "the old upload must not restore the forgotten path");
+});
+
+test("review: moving outside the selection after an upload settles is the safe control", async (t) => {
+  const r = await rig();
+  r.state.data.syncFolders = ["Notes"];
+  r.host.seed("Notes/note.md", "CONTROL SENTINEL", 1000);
+  await pushFile(r.context, "Notes/note.md");
+  const engine = new SyncEngine({ ...r, timers: new FakeTimers() });
+  await engine.start();
+  t.after(async () => {
+    const stopped = engine.stopAndWait();
+    r.server.releaseFeed();
+    await stopped;
+  });
+  r.host.files.set("Archive/note.md", r.host.files.get("Notes/note.md"));
+  r.host.files.delete("Notes/note.md");
+  engine.renamed("Notes/note.md", "Archive/note.md");
+  await engine.syncNow();
+  assert.equal(r.state.fileByPath("Notes/note.md"), undefined);
+  assert.equal(r.server.journal.filter((frame) => frame.deleted).length, 0);
+  assert.equal(r.host.text("Archive/note.md"), "CONTROL SENTINEL");
+});
+
+test("review: a scope exit during upload must preserve the other device's live note", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t);
+  a.state.data.syncFolders = ["Notes"];
+  const path = "Notes/note.md", moved = "Archive/note.md";
+  a.host.write(path, "ORIGINAL PEER SENTINEL", 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(a, path) && settled(b, path) &&
+    b.host.text(path) === "ORIGINAL PEER SENTINEL");
+  const id = a.state.fileByPath(path).fileId;
+  const entered = deferred(), release = deferred();
+  const actual = a.transport.putChunk.bind(a.transport);
+  a.transport.putChunk = async (...args) => {
+    await actual(...args);
+    entered.resolve();
+    await release.promise;
+  };
+  t.after(() => release.resolve());
+  a.host.write(path, "EDIT MOVED OUTSIDE SCOPE SENTINEL", 2000);
+  const uploading = a.engine.syncNow();
+  await entered.promise;
+  a.host.rename(path, moved);
+  assert.equal(a.state.fileByPath(path), undefined);
+  release.resolve();
+  await uploading;
+  // ONE EDIT, and the repair is what made it necessary: the third clause
+  // waited for the DESKTOP to hold a record for this path again, which is
+  // precisely what a push that outlives its path must no longer do. The
+  // other two clauses, and every assertion below, are the reviewer's.
+  await timers.run(STEP_MS, () => b.host.text(path) === "EDIT MOVED OUTSIDE SCOPE SENTINEL" &&
+    settled(b, path));
+  await a.engine.syncNow();
+  await timers.run(STEP_MS, () => b.state.data.lastSeq === server.seq);
+  t.diagnostic(JSON.stringify({
+    aMoved: a.host.text(moved), bOriginal: b.host.text(path),
+    manifests: (await published(server, id, keys.manifestKey)).map(({ path, deleted }) => ({ path, deleted })),
+  }));
+  assert.equal(b.host.text(path), "EDIT MOVED OUTSIDE SCOPE SENTINEL",
+    "the other device must retain its copy after a local scope exit");
+});
