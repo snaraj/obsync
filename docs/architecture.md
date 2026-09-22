@@ -731,9 +731,21 @@ Saving waits for current transfers and manual downloads to finish, stops
 queued work, persists the selection, then rescans. Excluded files, history
 and local records stay intact; their absence from a scoped scan cannot
 create a tombstone. An unposted rename retains a dirty record for the next
-scan. A local move across the boundary is a deletion from the selected
-source or creation at the selected destination; it never transfers a
-remembered excluded file identity into the selection.
+scan. A local move INTO the selection is a creation at the destination with
+a fresh identity; a remembered excluded identity is never transferred in. A
+local move OUT of it publishes nothing: the file is alive under its new
+name, so the deletion this device would otherwise post is a tombstone every
+other device obeys, the record is dropped so no later scan can infer that
+deletion either, and the user is told once.
+
+Renaming or moving a folder that IS a selected folder, or that holds one,
+moves the selection with it, in the parser's canonical form. Each file under
+the folder is judged against the selection in force on EACH side of the
+move — its old name against the selection before, its new name against the
+selection after — so the files are published as renames and a record the
+selection never covered is not brought in. A destination this version syncs
+in neither direction (hidden, malformed) cannot be followed: the selection
+stays where it is and the files leave the scope unpublished.
 
 Unloading the plugin invalidates pending startup and scope-change
 continuations. A cancelled folder change cannot restart sync or replace a

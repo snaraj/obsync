@@ -971,6 +971,14 @@ export class EventVault extends FakeHost {
     this.emit("rename", this.entry(to, true), from);
   }
 
+  /** Delete a folder: every file under it goes, and Obsidian fires ONE event. */
+  removeFolder(folder) {
+    for (const path of [...this.files.keys()].filter((candidate) => candidate.startsWith(`${folder}/`))) {
+      this.files.delete(path);
+    }
+    this.emit("delete", this.entry(folder, true));
+  }
+
   /** Delete a note, the way the user's own delete command does. */
   remove(path) {
     this.files.delete(path);

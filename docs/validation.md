@@ -54,7 +54,7 @@ evidence.
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
 | V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
 | V3 | Type in a note on iPhone | appears on the other three within 3 s |
-| V4 | Rename and move a populated folder on Windows, wholly inside every participating device’s selected folders | mirrored everywhere, no duplicates |
+| V4 | Rename and move a populated folder on Windows, including a folder that IS a selected sync folder on that device | mirrored everywhere, no duplicates, no deletions in the journal; the selection names the new path |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
 | V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
 | V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; fewer than 8 MiB re-sent |

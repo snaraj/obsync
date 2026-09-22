@@ -850,12 +850,9 @@ export default class ObsyncPlugin extends Plugin {
         if (file instanceof TFile) {
           this.engine?.renamed(oldPath, file.path);
         } else if (file instanceof TFolder) {
-          // A folder rename moves every tracked path beneath it; each file
-          // keeps its file id so other devices move it instead of
-          // re-uploading it.
-          for (const path of this.pathsUnder(oldPath)) {
-            this.engine?.renamed(path, file.path + path.slice(oldPath.length));
-          }
+          // One event covers every file beneath it, and a selected folder
+          // among them takes the selection with it (`sync/engine.ts`).
+          this.engine?.renamedFolder(oldPath, file.path);
         }
       }),
     );

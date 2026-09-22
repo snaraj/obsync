@@ -447,7 +447,7 @@ test("a stopped feed checkpoints only the change it actually finished applying",
   assert.equal(r.host.text("Notes/second.md"), null);
 });
 
-test("moving local content into a selected folder creates a new identity; moving it out removes only the selected source", async () => {
+test("moving local content into a selected folder creates a new identity; moving it out publishes nothing", async () => {
   const r = await rig();
   r.state.data.syncFolders = ["Notes"];
   const oldId = "55".repeat(16);
@@ -465,13 +465,94 @@ test("moving local content into a selected folder creates a new identity; moving
   assert.ok(r.state.fileByPath("Staging/note.md"));
   r.host.files.set("Archive/note.md", r.host.files.get("Notes/note.md"));
   r.host.files.delete("Notes/note.md");
+  const published = r.server.journal.length;
   engine.renamed("Notes/note.md", "Archive/note.md");
   await timers.run(1000, () => !r.state.fileByPath("Notes/note.md") && r.server.feedWaiters.length !== 0);
+  // The note is alive at its new name, so the deletion this device used to
+  // publish was a tombstone for a live file -- obeyed on every other device
+  // (issue #91). Nothing is published, the record goes so the next scan
+  // cannot infer it either, and the user is told once.
   assert.equal(r.host.text("Archive/note.md"), "LOCAL SENTINEL");
-  assert.equal(r.server.journal.at(-1).deleted, true);
+  assert.equal(r.server.journal.length, published, "a move out of the selection published a version");
+  assert.equal(r.server.journal.filter((frame) => frame.deleted).length, 0);
+  assert.equal(r.state.fileByPath("Archive/note.md"), undefined, "and the excluded destination is not tracked");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("rename path_class=file decision=not_published reason=moved_out_of_scope")),
+    r.host.logs.filter((line) => line.startsWith("rename")).join(" | "),
+  );
+  assert.equal(r.host.notices.length, 1, r.host.notices.join(" | "));
+  assert.match(r.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
   const stopped = engine.stopAndWait();
   r.server.releaseFeed();
   await stopped;
+});
+
+/**
+ * ISSUE #91. A selected folder is a NAME, and the user may change it. When
+ * they do, every file under it leaves the selection in the same tick unless
+ * the selection moves with the folder, and what this device publishes for a
+ * file that left the selection is a tombstone every other device obeys. The
+ * selection therefore follows the folder it names — without widening: a
+ * record under the renamed folder that the selection never covered is judged
+ * out of scope on BOTH sides of the move and stays out of sync.
+ */
+test("a rename above a selected folder moves the selection with it, persists it, and widens nothing", async () => {
+  const r = await rig();
+  r.state.data.syncFolders = ["Notes/Journal", "Attachments"];
+  // Eight bytes at mtime 100, exactly what `record()` remembers, so startup
+  // reconciliation has nothing of its own to queue for either file.
+  r.host.seed("Notes/Journal/entry.md", "12345678", 100);
+  r.host.seed("Notes/Private/secret.md", "12345678", 100);
+  const selected = "61".repeat(16);
+  r.state.setFile("Notes/Journal/entry.md", record(selected));
+  // A record from an era when the selection was wider: retained, never
+  // published, and not the folder rename's to bring back in.
+  r.state.setFile("Notes/Private/secret.md", record("62".repeat(16)));
+  guardHost(r.host, ["Notes/Journal", "Archive/Journal", "Attachments"]);
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  await engine.start();
+  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
+  assert.equal(r.server.journal.length, 0, "the vault starts settled");
+
+  for (const path of ["Notes/Journal/entry.md", "Notes/Private/secret.md"]) {
+    r.host.files.set(`Archive${path.slice("Notes".length)}`, r.host.files.get(path));
+    r.host.files.delete(path);
+  }
+  engine.renamedFolder("Notes", "Archive");
+  await timers.run(1000, () => Boolean(r.state.fileByPath("Archive/Journal/entry.md")) && r.server.journal.length !== 0);
+  await timers.run(1000);
+
+  assert.deepEqual(r.state.data.syncFolders, ["Archive/Journal", "Attachments"]);
+  assert.deepEqual(r.saved().syncFolders, ["Archive/Journal", "Attachments"], "a selection this device forgets on reload is not followed");
+  assert.equal(r.state.fileByPath("Archive/Journal/entry.md").fileId, selected, "the note kept its identity");
+  assert.equal(r.state.fileByPath("Notes/Journal/entry.md"), undefined);
+  assert.deepEqual(r.server.journal.filter((frame) => frame.deleted), [], "a followed rename publishes no tombstone");
+  assert.deepEqual(r.server.journal.map((frame) => frame.file_id), [selected], "and republishes only the selected note");
+  assert.ok(r.state.fileByPath("Notes/Private/secret.md"), "the excluded record stayed where it was");
+  assert.equal(r.state.fileByPath("Archive/Private/secret.md"), undefined, "the move did not adopt it");
+  const stopped = engine.stopAndWait();
+  r.server.releaseFeed();
+  await stopped;
+});
+
+test("a failed save of a followed selection stops the engine instead of syncing an unrecorded scope", async () => {
+  const r = await rig();
+  r.state.data.syncFolders = ["Notes"];
+  r.host.seed("Notes/entry.md", "12345678", 100);
+  r.state.setFile("Notes/entry.md", record("63".repeat(16)));
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  await engine.start();
+  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
+  r.state.save = async () => { throw new Error("fixture scope persistence failed"); };
+  r.host.files.set("Journal/entry.md", r.host.files.get("Notes/entry.md"));
+  r.host.files.delete("Notes/entry.md");
+  engine.renamedFolder("Notes", "Journal");
+  await new Promise(setImmediate);
+  assert.equal(engine.started, false);
+  assert.ok(r.host.logs.includes("scope decision=failed reason=state_not_saved"), r.host.logs.join(" | "));
+  r.server.releaseFeed();
 });
 
 test("stopping during a feed wait does not acknowledge unapplied metadata", async () => {
