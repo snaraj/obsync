@@ -50,7 +50,7 @@ import {
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, vaultPathRefusal } from "../vaultPath";
-import { inSyncScope } from "../syncScope";
+import { SyncFolders, inSyncScope, parseSyncFolders } from "../syncScope";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
@@ -192,6 +192,7 @@ export class SyncEngine {
   private repair: ChunkRepair | null = null;
   private repairWork: Promise<void> | null = null;
   private repairNoticeShown = false;
+  private scopeExitNoticeShown = false;
   private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(private readonly options: EngineOptions) {
@@ -336,9 +337,9 @@ export class SyncEngine {
    * — this plugin's own bundle and its bookkeeping `data.json`
    * — and `.git/**` out of the vault's history (`vaultPath.ts`).
    */
-  private tracked(path: string, event: string): boolean {
+  private tracked(path: string, event: string, folders: SyncFolders = this.options.state.data.syncFolders): boolean {
     const refusal = vaultPathRefusal(path) ??
-      (inSyncScope(path, this.options.state.data.syncFolders) ? null : "outside_sync_scope");
+      (inSyncScope(path, folders) ? null : "outside_sync_scope");
     if (refusal === null) return true;
     this.options.host.log(`watch path_class=file decision=not_synced reason=${refusal} event=${event}`);
     return false;
@@ -373,11 +374,7 @@ export class SyncEngine {
       this.options.host.log("watch path_class=file decision=echo_suppressed event=delete");
       return;
     }
-    const entry = this.pending.get(path);
-    if (entry) {
-      this.timers.clear(entry.handle);
-      this.pending.delete(path);
-    }
+    this.unschedule(path);
     this.deletions.add(path);
     this.enqueue(path);
   }
@@ -388,16 +385,22 @@ export class SyncEngine {
    * new path inside its manifest. Other devices then move the file instead
    * of downloading a copy and deleting the original.
    */
-  renamed(from: string, to: string): void {
+  renamed(from: string, to: string, sourceFolders?: SyncFolders): void {
     if (!this.running) return;
-    const source = this.tracked(from, "rename_from");
+    // Omitted, `tracked` judges `from` against the selection in force now,
+    // which is every caller but `renamedFolder`.
+    const source = this.tracked(from, "rename_from", sourceFolders);
     const target = this.tracked(to, "rename_to");
-    if (vaultPathRefusal(from) !== null || vaultPathRefusal(to) !== null) return;
-    // A local move across the boundary is a remove/create within the
-    // selected folders. Never transfer a remembered outside identity in.
+    if (vaultPathRefusal(from) !== null) return;
+    // A local move across the boundary is a create within the selected
+    // folders, or a file leaving them. Never transfer a remembered outside
+    // identity in -- and never publish the exit as a deletion, whether the
+    // destination is an unselected folder or a path no device syncs at all:
+    // the file is ALIVE at `to`, and a tombstone for a live file is obeyed
+    // by every other device (issue #91).
     if (!source || !target) {
-      if (source) this.deleted(from);
       if (target) this.changed(to);
+      else if (source) this.leftScope(from);
       return;
     }
     const context = this.need();
@@ -412,17 +415,109 @@ export class SyncEngine {
         this.options.host.log("rename decision=failed reason=state_not_saved");
       });
     }
-    const entry = this.pending.get(from);
-    if (entry) {
-      this.timers.clear(entry.handle);
-      this.pending.delete(from);
-    }
+    this.unschedule(from);
     // Straight into the queue: the debounce and the unchanged-content check
     // would both drop a rename, whose only change is the path in the manifest.
     this.renames.add(to);
     context.trashed.delete(to);
     this.deletions.delete(to);
     this.enqueue(to);
+  }
+
+  /**
+   * A folder rename moves every file beneath it, and Obsidian reports it
+   * ONCE, for the folder (`main.ts`). A selected sync folder that IS that
+   * folder, or lives under it, follows the move: without that every file
+   * under it leaves the selection in the same tick, and this device publishes
+   * a tombstone for a note that is alive under its new name -- which every
+   * other device then obeys, and the note is gone everywhere (issue #91).
+   */
+  renamedFolder(from: string, to: string): void {
+    if (!this.running) return;
+    // Each file is judged by the selection in force on EACH side of the move:
+    // its old name against the selection before the follow, its new one
+    // against the selection after. A record under the renamed folder that the
+    // selection never covered is therefore still out of scope on both sides,
+    // and moving a selected folder cannot smuggle it into sync.
+    const before = this.options.state.data.syncFolders;
+    this.followSelection(from, to);
+    const prefix = `${from}/`;
+    for (const path of Object.keys(this.options.state.data.files)) {
+      if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
+    }
+  }
+
+  /**
+   * Move the selection with the folder it names. The canonical form is the
+   * parser's own, so a destination inside another selected folder collapses
+   * into it rather than being remembered twice. A destination this device may
+   * not select AT ALL -- hidden, or malformed -- is refused instead: the
+   * selection stays where it is, and the files under it leave the scope,
+   * which `leftScope` declines to publish as deletions.
+   */
+  private followSelection(from: string, to: string): void {
+    const { state, host } = this.options;
+    const folders = state.data.syncFolders;
+    if (folders === undefined) return;
+    const moved = folders.filter((folder) => folder === from || folder.startsWith(`${from}/`));
+    if (moved.length === 0) return;
+    let followed: string[];
+    try {
+      followed = parseSyncFolders(
+        folders.map((folder) => (moved.includes(folder) ? to + folder.slice(from.length) : folder)),
+      );
+    } catch (error) {
+      host.log(
+        `scope decision=not_followed reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"} folders=${moved.length}`,
+      );
+      return;
+    }
+    state.data.syncFolders = followed;
+    host.log(`scope decision=followed_rename folders=${moved.length} selected=${followed.length}`);
+    void this.track(state.save()).catch(() => {
+      this.stop();
+      host.log("scope decision=failed reason=state_not_saved");
+    });
+  }
+
+  /**
+   * The file's new name is outside what this device syncs. It still EXISTS,
+   * so the deletion this device would otherwise publish is a tombstone for a
+   * live note, and every other device obeys it (issue #91). Nothing is
+   * published: dropping the record also disarms the tombstone the next
+   * startup scan would infer from the old path's absence, the debounce and
+   * queued push it may still be owed are cancelled, and the user is told once.
+   */
+  private leftScope(from: string): void {
+    const context = this.need();
+    this.unschedule(from);
+    this.deletions.delete(from);
+    const queued = this.queue.indexOf(from);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    if (context.state.fileByPath(from) !== undefined) {
+      context.state.forgetPath(from);
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        context.host.log("rename decision=failed reason=state_not_saved");
+      });
+    }
+    context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
+    if (this.scopeExitNoticeShown) return;
+    this.scopeExitNoticeShown = true;
+    context.host.notify(
+      "obsync: a file was moved out of the folders this device syncs, so this device stopped syncing it. " +
+        "Nothing was deleted: the file is still in this vault, your other devices keep their copy, and the " +
+        "server keeps its history. Move it back into a selected folder, or add its new folder under " +
+        "Sync folders on this device.",
+    );
+  }
+
+  /** Cancel any debounce this path is still owed. */
+  private unschedule(path: string): void {
+    const entry = this.pending.get(path);
+    if (entry === undefined) return;
+    this.timers.clear(entry.handle);
+    this.pending.delete(path);
   }
 
   /** The live context, for views that read remote-only accounting. */
@@ -484,11 +579,7 @@ export class SyncEngine {
       if (tries % 25 === 24) context.host.log(`watch path_class=file decision=still_growing tries=${tries + 1}`);
       return;
     }
-    const entry = this.pending.get(path);
-    if (entry) {
-      this.timers.clear(entry.handle);
-      this.pending.delete(path);
-    }
+    this.unschedule(path);
     this.enqueue(path);
   }
 

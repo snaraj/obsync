@@ -258,3 +258,119 @@ test("the fixture server verifies each request against the device that claims it
   // enrolled, renamed or revoked by any of them.
   assert.deepEqual(server.devices.map((device) => device.device_id), [KEYS.deviceId, DEVICE_B]);
 });
+
+/**
+ * A SELECTED FOLDER THAT MOVES (issue #91).
+ *
+ * The device that renames a folder it also SELECTED is the one case where the
+ * rename fan-out above meets the folder selection: every file under the folder
+ * leaves the selection in the same tick, and until 1.0.6 the device answered
+ * that with a tombstone per file — which every other device obeys, so renaming
+ * a selected folder deleted its notes everywhere. The selection therefore
+ * FOLLOWS the folder it names, and when it cannot follow (a destination no
+ * device may sync) the exit is not published at all.
+ *
+ * Only the renaming device restricts itself here: the phone syncs the whole
+ * vault, because another device's selection is its own and nothing in this
+ * fix changes it.
+ */
+const NOTES = { "One.md": "first\n", "Two.md": "second\n", "Three.md": "third\n" };
+
+/** Three notes in one selected folder, synced to both devices. */
+async function selectedFolder(t, folder = "Notes") {
+  const rig = await pair(t, "immediate");
+  const { timers, a, b } = rig;
+  a.state.data.syncFolders = [folder];
+  a.plugin.log = (line) => a.host.logs.push(line);
+  for (const [name, body] of Object.entries(NOTES)) a.host.write(`${folder}/${name}`, body, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => Object.entries(NOTES).every(([name, body]) =>
+    b.host.text(`${folder}/${name}`) === body && settled(a, `${folder}/${name}`) && settled(b, `${folder}/${name}`)));
+  const ids = Object.fromEntries(Object.keys(NOTES).map((name) => [name, a.state.fileByPath(`${folder}/${name}`).fileId]));
+  return { ...rig, ids };
+}
+
+for (const [destination, what] of [["Journal", "renamed"], ["Archive/Notes", "moved into another folder"]]) {
+  test(`a selected folder ${what} keeps its notes on every device, and the selection follows it`, async (t) => {
+    const { server, timers, a, b, ids } = await selectedFolder(t);
+
+    a.host.renameFolder("Notes", destination);
+    await timers.run(STEP_MS, landed(server, () => Object.entries(NOTES).every(([name, body]) =>
+      b.host.text(`${destination}/${name}`) === body && settled(a, `${destination}/${name}`) &&
+      settled(b, `${destination}/${name}`))));
+    await timers.run(STEP_MS);
+
+    assert.deepEqual(tombstones(server), [], `moving a selected folder published a tombstone: ${story(server, a, b)}`);
+    for (const [name, body] of Object.entries(NOTES)) {
+      assert.equal(a.host.text(`${destination}/${name}`), body, `the desktop lost ${name}`);
+      assert.equal(b.host.text(`${destination}/${name}`), body, `the phone lost ${name}: ${story(server, a, b)}`);
+      assert.equal(a.state.fileByPath(`${destination}/${name}`).fileId, ids[name], "the desktop kept the file id");
+      assert.equal(b.state.fileByPath(`${destination}/${name}`).fileId, ids[name], "the phone moved it instead of copying it");
+      assert.equal(b.state.fileByPath(`Notes/${name}`), undefined);
+    }
+    assert.deepEqual([...b.host.files.keys()].filter((path) => path.startsWith("Notes/")), []);
+    assert.equal(server.vaultFiles().length, 3, "no files were duplicated");
+    // The selection is what the device syncs from now on, so it names the
+    // folder that exists (requirement 12 says so in one line).
+    assert.deepEqual(a.state.data.syncFolders, [destination]);
+    assert.ok(
+      a.host.logs.some((line) => line.includes("scope decision=followed_rename folders=1 selected=1")),
+      a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+    );
+    assert.deepEqual(b.state.data.syncFolders, undefined, "the phone's own selection is untouched");
+  });
+}
+
+test("a selected folder the user really deletes still tombstones every note it held", async (t) => {
+  const { server, timers, a, b, ids } = await selectedFolder(t);
+
+  a.host.removeFolder("Notes");
+  await timers.run(STEP_MS, () => Object.keys(NOTES).every((name) =>
+    b.host.text(`Notes/${name}`) === null && !settled(a, `Notes/${name}`) && !settled(b, `Notes/${name}`)));
+  await timers.run(STEP_MS);
+
+  assert.equal(tombstones(server).length, 3, `a real deletion was swallowed: ${story(server, a, b)}`);
+  assert.deepEqual(
+    tombstones(server).map((frame) => frame.file_id).sort(),
+    Object.values(ids).sort(),
+    "each deleted note was published under its own file id",
+  );
+  assert.deepEqual([...b.host.files.keys()], [], "the phone obeyed every one of them");
+  assert.deepEqual(a.state.data.syncFolders, ["Notes"], "and the selection did not follow a deletion");
+});
+
+test("a selected folder renamed where no device may sync publishes nothing and says so once", async (t) => {
+  const { server, timers, a, b, ids } = await selectedFolder(t);
+  const published = server.journal.length;
+
+  // A hidden destination is one this version syncs in neither direction
+  // (`vaultPath.ts`), so the selection cannot follow it. The notes are still
+  // there, under a name this device may not read, and a tombstone for a live
+  // note is the one answer that loses them.
+  a.host.renameFolder("Notes", ".Journal");
+  await timers.run(STEP_MS, () => Object.keys(NOTES).every((name) => !settled(a, `Notes/${name}`)));
+  await timers.run(STEP_MS);
+
+  assert.deepEqual(tombstones(server), [], `an unfollowable rename published a tombstone: ${story(server, a, b)}`);
+  assert.equal(server.journal.length, published, "and published nothing else either");
+  assert.deepEqual(a.state.data.syncFolders, ["Notes"], "the selection stayed where it is");
+  for (const name of Object.keys(NOTES)) {
+    assert.equal(a.host.text(`.Journal/${name}`), NOTES[name], "the note is alive under its hidden name");
+    assert.equal(a.state.fileByPath(`.Journal/${name}`), undefined, "which this device does not track");
+    assert.equal(b.host.text(`Notes/${name}`), NOTES[name], `the phone kept its copy of ${name}`);
+    assert.equal(b.state.fileByPath(`Notes/${name}`).fileId, ids[name]);
+  }
+  assert.ok(
+    a.host.logs.some((line) => line.includes("scope decision=not_followed reason=hidden_segment folders=1")),
+    a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+  );
+  assert.equal(
+    a.host.logs.filter((line) => line.includes("rename path_class=file decision=not_published reason=moved_out_of_scope")).length,
+    3,
+    a.host.logs.filter((line) => line.startsWith("rename")).join(" | "),
+  );
+  // Once, not once per note: three refusals are one decision to the user.
+  assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
+  assert.match(a.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
+});

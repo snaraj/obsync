@@ -915,7 +915,15 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
 
   assert.equal(server.journal.length, posted, "nothing hidden was posted");
   assert.equal(state.fileByPath(".obsidian/Secret.md"), undefined, "the hidden path is not tracked");
-  assert.equal(state.fileByPath("Notes/Secret.md") !== undefined, true, "the record stayed where it was");
+  // The note is ALIVE, under a name this device may not sync. Keeping the
+  // record here is what made the next scan publish a tombstone for it, and
+  // every other device obeys a tombstone (issue #91), so the record goes and
+  // nothing is published for either name.
+  assert.equal(state.fileByPath("Notes/Secret.md"), undefined, "the record for the moved note is dropped");
+  assert.ok(
+    host.notices.some((notice) => notice.includes("moved out of the folders this device syncs")),
+    host.notices.join(" | "),
+  );
   assert.ok(
     host.logs.some((line) => line.includes("decision=not_synced reason=hidden_segment event=change")),
     host.logs.join(" | "),
@@ -938,6 +946,9 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
   await engine.reconcile();
   await timers.run(1000);
   assert.ok(host.logs.some((line) => line.includes("reconcile decision=queued") && line.includes("skipped=2")));
+  // And the scan cannot infer the deletion either: the note's absence from
+  // `Notes/` is a move it already refused to publish.
+  assert.equal(server.journal.filter((frame) => frame.deleted).length, 0, "the scan published a tombstone for a live note");
   engine.stop();
 });
 
