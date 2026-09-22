@@ -61,6 +61,15 @@ export interface VaultStat {
   size: number;
 }
 
+/**
+ * What a removal did.
+ *
+ * `kept` means the file is STILL THERE: it no longer held the content the
+ * caller bound the removal to, so what it holds now is bytes this device has
+ * not copied anywhere and nothing threw them away (round 3, finding 1).
+ */
+export type TrashResult = "removed" | "kept";
+
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
   write(bytes: Bytes): Promise<void>;
@@ -89,7 +98,20 @@ export interface VaultHost {
   writer(path: string): Promise<VaultWriter>;
   /** Publish a new file only; an occupied destination must never be replaced. */
   createWriter(path: string, size: number, check: () => void): Promise<VaultWriter>;
-  trash(path: string): Promise<void>;
+  /**
+   * Remove `path`.
+   *
+   * With `expect`, the removal is BOUND to the content that metadata
+   * describes. The vault's own trash is asynchronous and does work of its own
+   * before the file goes (`main.ts`), so a save landing inside that window is
+   * invisible to every check the caller can make beforehand -- including a
+   * stat taken on the line above the call. A host that can keep the file
+   * reachable across the removal puts it back and answers `kept`; one that
+   * cannot narrows the window to its last instant, says so in the log, and
+   * answers as best it can. Without `expect` the removal is unconditional,
+   * which is what a remote tombstone means.
+   */
+  trash(path: string, expect?: VaultStat): Promise<TrashResult>;
   notify(message: string): void;
   log(line: string): void;
 }

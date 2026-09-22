@@ -1,0 +1,15 @@
+# M45: the removal is never bound to the content it was told to remove (no hold is taken)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -703,10 +703,7 @@
+       // Nothing here to remove, and so nothing here to preserve either.
+       if (found.final === "absent") return "removed";
+     }
+-    const hold =
+-      expect === undefined || desktop === null || found === null
+-        ? null
+-        : await this.hold(desktop, found);
++    const hold: string | null = null;
+     if (expect !== undefined && hold === null) {
+       const now = await this.stat(path);
+       if (now === null || now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
