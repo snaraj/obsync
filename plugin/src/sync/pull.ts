@@ -1278,21 +1278,89 @@ async function sameNameTiebreak(
   }
 
   const moved = await moveAside(context, manifest.path, ours, when);
+  if (moved !== null) return await takeVacated(context, change, manifest, ours, moved);
   // A move that did not happen still has to SETTLE the incoming id: recorded
   // under it, the copy is where that file's next version lands, and the pair
   // costs one copy once. Unrecorded, every later edit of it would arrive at
   // an occupied name with no id to compare and make another copy, which is
   // the defect issue #113 exists to end -- and a device that cannot bind a
   // removal (mobile) takes this path for EVERY collision it meets.
-  if (moved === null) return await keepBothRecorded(context, change, manifest);
+  return await keepBothRecorded(context, change, manifest);
+}
+
+/**
+ * The incoming version, into the name this device has just vacated -- and
+ * only if it is still vacant.
+ *
+ * The move frees the name by RENAMING the old note away (`main.ts`), which is
+ * atomic and leaves nothing behind. It does not stop the user's editor from
+ * saving a moment later, and that save creates a file at a name this device
+ * tracks NOTHING at: bytes no version holds, that this device has not copied
+ * anywhere. Writing the incoming version over them would be the same loss the
+ * move exists to avoid, one instruction further on, so the write is
+ * create-only and an occupied name falls back to keeping both.
+ */
+async function takeVacated(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  ours: FileState,
+  moved: string,
+): Promise<ApplyResult> {
+  const landed = await createOnly(context, manifest);
+  if (landed === null) {
+    context.host.log(
+      `pull path_class=file decision=vacated_name_taken file=${change.file_id} seq=${change.seq}`,
+    );
+    return await keepBothRecorded(context, change, manifest);
+  }
+  await recordAt(context, change, manifest.path, landed);
   context.host.log(
     `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
+  );
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=applied seq=${change.seq}`,
   );
   context.host.notify(
     `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
       `and the other device's keeps the name.`,
   );
-  return null;
+  return "applied";
+}
+
+/**
+ * Write a manifest at its own name, WITHOUT replacing anything. `null` means
+ * the name is occupied -- by a file this device did not put there -- and the
+ * caller must not treat that as a failure; anything else is one.
+ */
+async function createOnly(context: SyncContext, manifest: Manifest): Promise<VaultStat | null> {
+  assertVaultPath(manifest.path);
+  let writer: VaultWriter;
+  try {
+    writer = await context.host.createWriter(manifest.path, manifest.size, () => undefined);
+  } catch (error) {
+    if ((await context.host.stat(manifest.path)) === null) throw error;
+    return null;
+  }
+  let stat: VaultStat;
+  try {
+    await writeVerified(context, manifest, writer);
+    stat = await writer.commit(manifest.mtime);
+  } catch (error) {
+    await writer.abort();
+    if ((await context.host.stat(manifest.path)) === null) throw error;
+    return null;
+  }
+  try {
+    // The create-only writer publishes by linking its temp name over; the
+    // temp is its to remove, and a published file is never withdrawn because
+    // that failed. The residue is named rather than silent (requirement 12).
+    await writer.abort();
+  } catch {
+    context.host.log("pull decision=copy_temp_not_removed published=true name_attempt=0");
+  }
+  context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+  return stat;
 }
 
 /**

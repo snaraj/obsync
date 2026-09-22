@@ -1,0 +1,13 @@
+# M54: the file is put back and deleted by the name an editor writes to
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -867,7 +867,8 @@
+       throw new VaultPathError(refusal);
+     }
+     // The destructive call, at last, and aimed at a name no editor writes to.
+-    await this.remove(`${path.slice(0, path.lastIndexOf("/") + 1)}${name}`);
++    await fs.promises.rename(moved, found.target);
++    await this.remove(path);
+     // And the hold has the last word, because a rename does not close an
+     // editor's DESCRIPTOR: a program that still holds the file open writes
+     // through it wherever its name has gone, including between the proof

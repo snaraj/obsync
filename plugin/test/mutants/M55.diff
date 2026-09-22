@@ -1,0 +1,12 @@
+# M55: the vacated name is written over instead of created
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1307,7 +1307,7 @@
+   ours: FileState,
+   moved: string,
+ ): Promise<ApplyResult> {
+-  const landed = await createOnly(context, manifest);
++  const landed = await materialise(context, manifest);
+   if (landed === null) {
+     context.host.log(
+       `pull path_class=file decision=vacated_name_taken file=${change.file_id} seq=${change.seq}`,

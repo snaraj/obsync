@@ -1,0 +1,12 @@
+# M53: what moved is not proved against what was copied
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -850,7 +850,7 @@
+       return "unheld";
+     }
+     const gone = await walker(fs).lstat(moved);
+-    if (!sameFile(held, gone) || !holds(gone)) {
++    if (gone === null) {
+       this.log(
+         `host path_class=file decision=kept reason=${sameFile(held, gone) ? "source_changed" : "source_replaced"}`,
+       );
