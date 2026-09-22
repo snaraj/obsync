@@ -21,6 +21,7 @@ const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
 
 const enc = (text) => new TextEncoder().encode(text);
+const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 
 /**
  * What the server can READ of a request body: every field except the AES-GCM
@@ -1015,4 +1016,135 @@ test("a failed rename bookkeeping save is handled and stops the engine", async (
   await new Promise(setImmediate);
   assert.equal(engine.started, false);
   assert.ok(r.host.logs.includes("rename decision=failed reason=state_not_saved"));
+});
+
+/**
+ * "Sync now" while a drain is already running (issue #121).
+ *
+ * `host.read` is the seam both tests below hold: a push that cannot read its
+ * file cannot finish, so what the queue holds at every step is a fact rather
+ * than a race. The engine takes its first batch in the same turn as the
+ * enqueue that starts the drain, so one path is in flight and the rest of the
+ * queue waits for the next batch of the SAME drain.
+ */
+function heldReads(host) {
+  const gate = deferred();
+  const reads = [];
+  const real = host.read.bind(host);
+  host.read = async (path) => {
+    reads.push(path);
+    await gate.promise;
+    return real(path);
+  };
+  return { reads, release: () => { host.read = real; gate.resolve(); } };
+}
+
+/**
+ * Hold the change feed's long poll open, as a server with nothing to report
+ * holds it. The feed also posts an idle status for every page that carries
+ * changes -- including this device's own versions coming back -- and the test
+ * below uses the idle status as its seam, so the feed must not supply one.
+ */
+function parkedFeed(server) {
+  const real = server.request;
+  server.request = async (request) => {
+    if (request.url.includes("/v1/changes?") && request.url.includes("wait=55")) return new Promise(() => {});
+    return real(request);
+  };
+}
+
+test("sync now waits for the drain already running, and says which decision it took", async () => {
+  const rigged = await rig();
+  const { host, server, state } = rigged;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  await timers.run();
+
+  const held = heldReads(host);
+  host.seed("One.md", "the first note\n", 2000);
+  host.seed("Two.md", "the second note\n", 2000);
+  engine.changed("One.md");
+  engine.changed("Two.md");
+  await timers.run(1000, () => held.reads.length === 1);
+  assert.equal(server.journal.length, 0, "the drain is running and has posted nothing yet");
+
+  let resolved = false;
+  const now = engine.syncNow().then(() => { resolved = true; });
+  await timers.run();
+  assert.equal(resolved, false, "sync now returned while the drain it asked for still held the queue");
+  assert.equal(server.journal.length, 0);
+
+  held.release();
+  await timers.run(1000, () => resolved);
+  await now;
+  assert.equal(state.fileByPath("One.md") !== undefined, true, "the first queued path was pushed");
+  assert.equal(state.fileByPath("Two.md") !== undefined, true, "and so was the second");
+  assert.deepEqual((await postedPaths(server, rigged.keys)).sort(), ["One.md", "Two.md"]);
+  assert.ok(
+    host.logs.some((line) =>
+      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=1 follow_up=0")),
+    host.logs.join(" | "),
+  );
+
+  // The other decision, so the line distinguishes two states rather than
+  // always naming one: nothing queued, no drain running.
+  await engine.syncNow();
+  assert.ok(
+    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=0 follow_up=0")),
+    host.logs.join(" | "),
+  );
+  engine.stop();
+});
+
+test("sync now drains again for work queued after the drain it joined took its last batch", async () => {
+  const rigged = await rig();
+  const { host, server, state } = rigged;
+  const timers = new FakeTimers();
+  // The window a join cannot cover: the drain's loop has ended, so an
+  // enqueue landing in it joins a drain that will never look at the queue
+  // again. In the field that enqueue is a debounce timer or a vault deletion
+  // firing in the turn between the drain finishing and "Sync now" resuming;
+  // here it is the idle status the drain posts from inside that same turn.
+  let armed = false;
+  parkedFeed(server);
+  const engine = engineOf(rigged, timers, {
+    onStatus: (status) => {
+      if (status.kind !== "idle" || !armed) return;
+      armed = false;
+      host.files.delete("Gone.md");
+      engine.deleted("Gone.md");
+    },
+  });
+  host.seed("Gone.md", "deleted while the drain ran\n", 1000);
+  await engine.start();
+  await timers.run(1000, () => state.fileByPath("Gone.md") !== undefined);
+
+  const held = heldReads(host);
+  host.seed("One.md", "the first note\n", 2000);
+  host.seed("Two.md", "the second note\n", 2000);
+  engine.changed("One.md");
+  engine.changed("Two.md");
+  await timers.run(1000, () => held.reads.length === 1);
+  armed = true;
+
+  let tombstoneAtReturn = null;
+  const now = engine.syncNow().then(() => {
+    tombstoneAtReturn = server.journal.some((frame) => frame.deleted === true);
+  });
+  held.release();
+  await timers.run(1000, () => tombstoneAtReturn !== null);
+  await now;
+
+  assert.equal(armed, false, "the deletion really was queued inside that window");
+  assert.equal(tombstoneAtReturn, true, "sync now returned before the path queued mid-drain was pushed");
+  assert.equal(state.fileByPath("Gone.md"), undefined, "and the tombstone was recorded");
+  assert.equal(state.fileByPath("One.md") !== undefined, true);
+  assert.equal(state.fileByPath("Two.md") !== undefined, true);
+  assert.ok(
+    host.logs.some((line) =>
+      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=1 follow_up=1")),
+    host.logs.join(" | "),
+  );
+  engine.stop();
 });
