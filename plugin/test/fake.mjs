@@ -713,14 +713,17 @@ export async function fakeState(isMobile = false) {
       written = true;
     },
   };
-  const state = await State.open(store, isMobile, memorySecrets());
+  const secrets = memorySecrets();
+  const state = await State.open(store, isMobile, secrets);
   state.data.vrk = KEYS.vrk;
   state.data.deviceId = KEYS.deviceId;
   state.data.deviceSecret = KEYS.deviceSecret;
   state.data.serverUrl = "https://sync.example.invalid";
   // Callers observe writes made by their operation, after fixture setup.
   written = false;
-  return { state, saved: () => written ? stored : null };
+  // `reload` is the next start of the plugin over the SAME stored metadata:
+  // what this session holds in memory is not what the next session gets.
+  return { state, saved: () => written ? stored : null, reload: () => State.open(store, isMobile, secrets) };
 }
 
 /**
@@ -732,7 +735,7 @@ export async function rig({ isMobile = false, policy } = {}) {
   const { Transport } = require("../build/transport.js");
   const host = new FakeHost({ isMobile });
   const server = new FakeServer();
-  const { state } = await fakeState(isMobile);
+  const { state, saved, reload } = await fakeState(isMobile);
   if (policy) state.data.policy = policy;
   const transport = new Transport({
     request: server.request,
@@ -767,7 +770,7 @@ export async function rig({ isMobile = false, policy } = {}) {
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
   };
-  return { host, server, state, transport, context, keys: k };
+  return { host, server, state, transport, context, keys: k, saved, reload };
 }
 
 export async function keys() {

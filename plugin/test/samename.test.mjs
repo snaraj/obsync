@@ -170,6 +170,34 @@ test("an unpushed local edit at the settled name is kept, not replaced", async (
   assert.equal(r.host.text(NOTE), MINE);
 });
 
+/**
+ * The record has to survive the session that made it (review round 2,
+ * finding 6).
+ *
+ * The record for the copy is what keeps the next version of that id an
+ * ordinary update, a later rename a plain move, and the copy out of the
+ * startup scan's hands -- and a record that exists only in memory is a record
+ * the next start does not have. The feed saves after each change it applies,
+ * but the OTHER caller of this path does not: a push whose acknowledgement
+ * says another device wrote first goes `pushNow -> reconcileFile ->
+ * applyChange` (`engine.ts`) and returns without a save of its own. So the
+ * write is asserted where it has to be true: in the stored metadata, and in
+ * the state a fresh start reads back out of it.
+ */
+test("the copy's record is stored, not only held in memory", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  const copy = copies(r.host)[0];
+  const stored = r.saved();
+  assert.notEqual(stored, null, "nothing was written to disk at all");
+  assert.equal(stored.files[copy]?.fileId, HIGHER, "the record was never stored");
+  const restarted = await r.reload();
+  assert.equal(restarted.fileByPath(copy)?.fileId, HIGHER, "the record did not survive a restart");
+  assert.equal(restarted.pathByFileId(HIGHER), copy, "a restart would meet the copy as a file no record explains");
+});
+
 // --- a note this device has never published -------------------------------
 
 /**
