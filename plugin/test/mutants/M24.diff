@@ -1,0 +1,12 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1239,7 +1239,8 @@
+   if ((await competing(context, settled, change.file_id)) !== null) {
+     return await keepBoth(context, change, manifest);
+   }
+-  await recordAt(context, change, settled, await materialise(context, { ...manifest, path: settled }));
++  const written = await materialise(context, { ...manifest, path: settled });
++  await recordAt(context, change, settled, (await context.host.stat(settled)) ?? written);
+   context.host.log(
+     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
+   );

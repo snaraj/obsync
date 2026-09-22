@@ -323,7 +323,7 @@ export async function assembleBytes(context: SyncContext, manifest: Manifest): P
  * Write a manifest's content into the vault atomically and return the stat
  * of what landed, which becomes the echo-suppression key.
  */
-async function materialise(context: SyncContext, manifest: Manifest): Promise<void> {
+async function materialise(context: SyncContext, manifest: Manifest): Promise<VaultStat> {
   // The single choke point for every byte this device writes: the decoded
   // manifest's path was checked at decode, a conflict copy's derived path is
   // checked here, and neither reaches a writer unchecked.
@@ -333,6 +333,10 @@ async function materialise(context: SyncContext, manifest: Manifest): Promise<vo
     await writeVerified(context, manifest, writer);
     const stat = await writer.commit(manifest.mtime);
     context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+    // The commit's own stat, handed back rather than looked up again: it is
+    // the metadata of the bytes THIS write put there, and a second stat would
+    // describe whatever the user saved a moment later instead (finding 2).
+    return stat;
   } catch (error) {
     await writer.abort();
     throw error;
@@ -541,7 +545,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   }
 
   const started = context.now();
-  await materialise(context, manifest);
+  const landed = await materialise(context, manifest);
   if (localPath !== undefined && localPath !== manifest.path) {
     // The move's delete half. The same echo, and the one that cost a renamed
     // note on every device before 1.0.4: here the file is not deleted at all,
@@ -550,15 +554,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     await context.host.trash(localPath);
     context.state.forgetPath(localPath);
   }
-  const stat = await context.host.stat(manifest.path);
-  context.state.setFile(manifest.path, {
-    fileId: change.file_id,
-    versionId: change.version_id,
-    mtime: stat?.mtime ?? manifest.mtime,
-    size: stat?.size ?? manifest.size,
-    sha256: await sidDigest(change.sids),
-  });
-  await context.state.save();
+  await recordAt(context, change, manifest.path, landed);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} chunks=${manifest.chunks.length} decision=applied seq=${change.seq} duration_ms=${context.now() - started}`,
   );
@@ -869,22 +865,34 @@ const CONFLICT_COPY_NAMES = 20;
  * this way: it takes the next name instead, which costs a duplicate copy and
  * never a missing one. Reading is bounded by the same single-chunk rule the
  * merge inputs obey, and a file that cannot be read proves nothing.
+ *
+ * IT RETURNS THE METADATA THE PROOF IS ABOUT. The answer is used to RECORD
+ * the file as this version, and a record is a statement that the file is that
+ * version and that nothing has happened to it since -- the sentence the pull
+ * path reads before it writes over a file. A save that lands between the stat
+ * and the read replaces the bytes the digest proved, so the file is stat-ed
+ * again afterwards and a stat that moved proves nothing at all (review round
+ * 2, finding 2). What comes back is the metadata of the bytes that were
+ * actually verified, and nothing else may be recorded against this version.
  */
 async function alreadyCopied(
   context: SyncContext,
   manifest: Manifest,
   path: string,
   occupant: VaultStat,
-): Promise<boolean> {
-  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return false;
-  if (occupant.size !== manifest.size) return false;
+): Promise<VaultStat | null> {
+  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return null;
+  if (occupant.size !== manifest.size) return null;
   let bytes: Bytes;
   try {
     bytes = await context.host.read(path);
   } catch {
-    return false;
+    return null;
   }
-  return hex(await sha256(bytes)) === manifest.sha256;
+  if (hex(await sha256(bytes)) !== manifest.sha256) return null;
+  const after = await context.host.stat(path);
+  if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+  return after;
 }
 
 /**
@@ -941,14 +949,18 @@ async function writeBeside(
   size: number,
   mtime: number,
   fill: (writer: VaultWriter, target: string) => Promise<void>,
-  reuse: (target: string, occupant: VaultStat) => Promise<boolean>,
-): Promise<{ path: string; attempt: number; stat: VaultStat | null } | null> {
+  reuse: (target: string, occupant: VaultStat) => Promise<VaultStat | null>,
+): Promise<{ path: string; attempt: number; stat: VaultStat; written: boolean } | null> {
   for (let attempt = 1; attempt <= CONFLICT_COPY_NAMES; attempt++) {
     const target = conflictCopyPath(path, deviceName, when, attempt);
     assertVaultPath(target);
     const occupant = await context.host.stat(target);
     if (occupant !== null) {
-      if (await reuse(target, occupant)) return { path: target, attempt, stat: null };
+      // A name already holding this version is answered with the metadata of
+      // the bytes that PROVED it, not with a fresh look at the file: what the
+      // caller records has to be true of what was verified (finding 2).
+      const reused = await reuse(target, occupant);
+      if (reused !== null) return { path: target, attempt, stat: reused, written: false };
       continue;
     }
     let writer: VaultWriter;
@@ -977,7 +989,7 @@ async function writeBeside(
         `pull decision=copy_temp_not_removed published=${"stat" in outcome} name_attempt=${attempt}`,
       );
     }
-    if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat };
+    if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat, written: true };
     if ((await context.host.stat(target)) === null) throw outcome.failure;
   }
   return null;
@@ -993,21 +1005,21 @@ async function writeCopy(
   manifest: Manifest,
   deviceName: string,
   when: Date,
-): Promise<{ path: string; attempt: number } | null> {
+): Promise<{ path: string; attempt: number; stat: VaultStat } | null> {
   const landed = await writeBeside(
     context, manifest.path, deviceName, when, manifest.size, manifest.mtime,
     (writer, target) => writeVerified(context, { ...manifest, path: target }, writer),
     (target, occupant) => alreadyCopied(context, manifest, target, occupant),
   );
   if (landed === null) return null;
-  if (landed.stat === null) {
+  if (landed.written) {
+    context.written.add(`${landed.stat.path}:${landed.stat.mtime}:${landed.stat.size}`);
+  } else {
     context.host.log(
       `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${landed.attempt}`,
     );
-  } else {
-    context.written.add(`${landed.stat.path}:${landed.stat.mtime}:${landed.stat.size}`);
   }
-  return { path: landed.path, attempt: landed.attempt };
+  return { path: landed.path, attempt: landed.attempt, stat: landed.stat };
 }
 
 /**
@@ -1095,7 +1107,7 @@ async function moveAside(
       context, from, context.deviceNameFor(context.deviceId), when, before.size, record.mtime,
       async (writer) => { await copyThrough(context, from, before.size, writer); },
       // Never reused: this is a MOVE of a file that must really arrive.
-      async () => false,
+      async () => null,
     );
   } catch (error) {
     // A copy that failed BECAUSE the note was being written while it was
@@ -1106,7 +1118,7 @@ async function moveAside(
     if (await changed()) return refuse(null);
     throw error;
   }
-  if (landed === null || landed.stat === null) return null;
+  if (landed === null) return null;
   if (await changed()) return refuse(landed.stat.path);
   // Marked BEFORE the trash: the vault reports the removal to this plugin's
   // own delete handler while the trash is still running, and an unmarked echo
@@ -1227,8 +1239,7 @@ async function updateSettled(
   if ((await competing(context, settled, change.file_id)) !== null) {
     return await keepBoth(context, change, manifest);
   }
-  await materialise(context, { ...manifest, path: settled });
-  await recordAt(context, change, manifest, settled);
+  await recordAt(context, change, settled, await materialise(context, { ...manifest, path: settled }));
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
   );
@@ -1258,8 +1269,9 @@ async function adopt(
   manifest: Manifest,
   occupant: VaultStat,
 ): Promise<boolean> {
-  if (!(await alreadyCopied(context, manifest, manifest.path, occupant))) return false;
-  await recordAt(context, change, manifest, manifest.path);
+  const verified = await alreadyCopied(context, manifest, manifest.path, occupant);
+  if (verified === null) return false;
+  await recordAt(context, change, manifest.path, verified);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=adopted reason=identical_bytes file=${change.file_id} seq=${change.seq}`,
   );
@@ -1317,23 +1329,35 @@ async function keepBothRecorded(
 ): Promise<ApplyResult> {
   const copy = await keepBothAt(context, change, manifest);
   if (copy === null) return "refused";
-  await recordAt(context, change, manifest, copy);
+  await recordAt(context, change, copy.path, copy.stat);
   return "conflict_copy";
 }
 
-/** The record a materialised version leaves behind, wherever it landed. */
+/**
+ * The record a materialised version leaves behind, wherever it landed.
+ *
+ * THE STAT IS THE CALLER'S, AND IT IS NOT NEGOTIABLE. A record says the file
+ * at `path` IS this version and nothing has happened to it since, and the pull
+ * path reads exactly that sentence before it writes over a file. Looking the
+ * metadata up here would describe the file as it is NOW -- which, after a save
+ * that landed while the version was being written or verified, is a different
+ * file being declared clean under a version it does not hold, and the next
+ * version of that id then overwrote it with no copy kept (review round 2,
+ * finding 2). So every caller hands in the metadata of the bytes it actually
+ * wrote or actually verified: the writer's own commit, or the stat the digest
+ * was proved against.
+ */
 async function recordAt(
   context: SyncContext,
   change: ChangeRecord,
-  manifest: Manifest,
   path: string,
+  stat: VaultStat,
 ): Promise<void> {
-  const stat = await context.host.stat(path);
   context.state.setFile(path, {
     fileId: change.file_id,
     versionId: change.version_id,
-    mtime: stat?.mtime ?? manifest.mtime,
-    size: stat?.size ?? manifest.size,
+    mtime: stat.mtime,
+    size: stat.size,
     sha256: await sidDigest(change.sids),
   });
   await context.state.save();
@@ -1348,12 +1372,12 @@ async function keepBoth(
   return (await keepBothAt(context, change, theirManifest)) === null ? "refused" : "conflict_copy";
 }
 
-/** The same, returning where the copy landed for a caller that must record it. */
+/** The same, returning where the copy landed, and what it landed as. */
 async function keepBothAt(
   context: SyncContext,
   change: ChangeRecord,
   theirManifest: Manifest,
-): Promise<string | null> {
+): Promise<{ path: string; stat: VaultStat } | null> {
   const copy = await writeCopy(
     context,
     theirManifest,
@@ -1378,7 +1402,7 @@ async function keepBothAt(
   context.host.log(
     `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
   );
-  return copy.path;
+  return { path: copy.path, stat: copy.stat };
 }
 
 /** Post the merge result as one version whose parents are BOTH heads. */
