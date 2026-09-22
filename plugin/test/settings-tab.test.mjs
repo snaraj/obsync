@@ -53,6 +53,8 @@ function stubPlugin(overrides = {}) {
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
     statusText: () => "idle",
     updateLine: () => null,
+    heldDeletionLine: () => null,
+    confirmHeldDeletions: () => { calls.push("confirmHeldDeletions"); },
     deviceName: () => "macos-1a2b",
     platformName: () => "macos",
     listDevices: async () => { calls.push("listDevices"); return []; },
@@ -154,6 +156,27 @@ test("the update row carries the button that opens Obsidian's Community plugins 
   button.click();
 
   assert.deepEqual(s.calls, ["openPluginManager"]);
+});
+
+test("the held-deletions row is absent until a pass holds some, and its button confirms them", (t) => {
+  // The row is a question the user should never be asked idly: a settings
+  // page that always offers "Confirm deletions" teaches the click, and the
+  // click removes notes from every device (issue #123).
+  const s = open(t);
+  const shown = () => s.row("Deletions held back").visible();
+  assert.equal(shown(), false, "the row was offered with nothing to decide");
+
+  s.plugin.heldDeletionLine = () => "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.";
+  assert.equal(shown(), true, "the row is hidden while there is something to decide");
+  assert.equal(s.row("Deletions held back").desc,
+    "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.");
+  const { made } = s.render("Deletions held back");
+  const button = s.button(made, "Confirm deletions");
+  assert.equal(button.destructive, true, "confirming removes notes from every device");
+
+  assert.equal(s.calls.length, 0, "drawing the row published nothing");
+  button.click();
+  assert.deepEqual(s.calls, ["confirmHeldDeletions"]);
 });
 
 test("a bare host name becomes an https URL; an explicit scheme is kept; mobile refuses http", (t) => {

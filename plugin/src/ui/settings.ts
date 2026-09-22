@@ -132,7 +132,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const enrolled = (): boolean => this.plugin.state.data.deviceId !== null;
     return [
       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
-      { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope()] },
+      { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
@@ -198,6 +198,27 @@ export class ObsyncSettingTab extends PluginSettingTab {
               .catch((error: unknown) => { new Notice(message(error), 8000); });
           }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));
+      },
+    };
+  }
+
+  /**
+   * Deletions one startup pass refused to publish (issue #123). The row is
+   * absent whenever there are none, so it is only ever seen by a user who has
+   * something to decide, and its button is destructive because confirming
+   * removes those notes from every device.
+   */
+  private heldDeletions(): Row {
+    return {
+      name: "Deletions held back",
+      desc: () => this.plugin.heldDeletionLine() ?? "",
+      visible: () => this.plugin.heldDeletionLine() !== null,
+      render: (setting) => {
+        setting.addButton((button) =>
+          button.setButtonText("Confirm deletions").setDestructive().onClick(() => {
+            this.plugin.confirmHeldDeletions();
+            new Notice("obsync: the deletions were published. Your other devices will remove those notes.", 8000);
+          }));
       },
     };
   }

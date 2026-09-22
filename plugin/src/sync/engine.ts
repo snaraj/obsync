@@ -296,6 +296,16 @@ export const HEARTBEAT_MS = 60 * 60 * 1000;
  * to converge from and the wrong thing to delete on.
  */
 export const SCAN_MS = 30 * 1000;
+
+/**
+ * THE BULK-DELETION FLOOR (issue #123). Below this many candidates a pass
+ * that would tombstone everything it tracks is an ordinary small vault
+ * emptying, and holding it back would teach the user to confirm without
+ * reading. At or above it, a pass that would retire more than half of what
+ * this device tracks is held and named instead of published.
+ */
+export const BULK_DELETION_MIN = 5;
+
 /** What one pass is measured against; an overrun is logged, never truncated. */
 export const SCAN_BUDGET_MS = 5000;
 export const FEED_ERROR_BACKOFF_MS = 5000;
@@ -343,6 +353,9 @@ export class SyncEngine {
   private repairNoticeShown = false;
   private scopeExitNoticeShown = false;
   private caseGhostNoticeShown = false;
+  /** Tombstones one pass refused to publish, awaiting the user's word. */
+  private heldDeletions: string[] = [];
+  private bulkNoticeShown = false;
   /** When the repair tick began yielding to a manual history operation. */
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
@@ -686,6 +699,36 @@ export class SyncEngine {
         "server keeps its history. Move it back into a selected folder, or add its new folder under " +
         "Sync folders on this device.",
     );
+  }
+
+  /**
+   * How many deletions one pass held back, waiting to be told what they were
+   * (issue #123). Zero whenever the last pass published what it found.
+   */
+  get heldDeletionCount(): number {
+    return this.heldDeletions.length;
+  }
+
+  /**
+   * The user says the deletions were real. THE HELD SET IS PUBLISHED AS IT
+   * WAS FOUND, not re-derived: re-scanning here would ask the vault a second
+   * question the user has not answered, and a file that came back in the
+   * meantime is not in the set the user was shown. Each path is queued
+   * exactly as the pass would have queued it, so everything downstream --
+   * the "file is present" refusal, the scope check, the echo marks -- still
+   * applies, and a note restored between the notice and the click is still
+   * refused by the push that finds it on the disk.
+   */
+  confirmHeldDeletions(): void {
+    if (!this.running || this.heldDeletions.length === 0) return;
+    const held = this.heldDeletions;
+    this.heldDeletions = [];
+    this.bulkNoticeShown = false;
+    for (const path of held) {
+      this.deletions.add(path);
+      this.enqueue(path);
+    }
+    this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
   }
 
   /** Cancel any debounce this path is still owed. */
@@ -1197,7 +1240,7 @@ export class SyncEngine {
     // have, and only the pass that reads Obsidian's own index may publish a
     // tombstone for it.
     let cased = 0;
-    let removed = 0;
+    const candidates: string[] = [];
     for (const from of gone) {
       if (!this.running) return;
       if (settled.has(from)) continue;
@@ -1208,9 +1251,59 @@ export class SyncEngine {
         continue;
       }
       if (!tombstones) continue;
-      this.deletions.add(from);
-      this.enqueue(from);
-      removed++;
+      candidates.push(from);
+    }
+
+    // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). A
+    // selected folder renamed from outside Obsidian while the app was closed
+    // reaches this pass as EVERY recorded path under it having vanished: no
+    // rename event ever arrived, the new paths sit outside the selection, and
+    // the old ones are gone. Published, those tombstones delete the notes on
+    // every other device, while the notes themselves sit untracked on this
+    // one under the new name. The vault is not empty and nothing asked for a
+    // deletion; the only thing that happened is that this device stopped
+    // being able to see its own files.
+    //
+    // So the pass holds them, says what it found, and publishes nothing until
+    // the user says which it was. `confirmHeldDeletions` is the other half:
+    // a folder the user really did delete still reaches every device, one
+    // click later. The rule is deliberately about SHARE and not about
+    // folders -- a rename of the one selected folder, a move of the vault
+    // root, and a volume that mounted empty all arrive here identically, and
+    // the share is what they have in common.
+    //
+    // ONLY THIS PASS MAY TOUCH THE HOLD. The periodic scan reaches here with
+    // no candidates at all -- it never tombstones -- so letting it fall into
+    // the publishing branch below would clear a hold the startup pass took,
+    // thirty seconds later and with nobody asked. The whole decision is
+    // therefore inside `tombstones`.
+    let removed = 0;
+    const tracked = Object.keys(context.state.data.files).length;
+    if (!tombstones) {
+      // Nothing to publish and nothing to decide.
+    } else if (candidates.length >= BULK_DELETION_MIN && candidates.length * 2 > tracked) {
+      this.heldDeletions = candidates;
+      context.host.log(
+        `${label} decision=refused reason=bulk_deletion candidates=${candidates.length} tracked=${tracked}`,
+      );
+      if (!this.bulkNoticeShown) {
+        this.bulkNoticeShown = true;
+        context.host.notify(
+          `obsync stopped ${candidates.length} deletions it was about to send to your other devices: ` +
+            `it can no longer see ${candidates.length} of the ${tracked} notes it syncs here, and nothing ` +
+            "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
+            "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
+            "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
+        );
+      }
+    } else {
+      this.heldDeletions = [];
+      this.bulkNoticeShown = false;
+      for (const from of candidates) {
+        this.deletions.add(from);
+        this.enqueue(from);
+        removed++;
+      }
     }
 
     let queued = 0;

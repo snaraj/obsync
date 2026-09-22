@@ -2079,6 +2079,23 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  /**
+   * The settings tab's deletions-held line, or `null` when the last pass
+   * published everything it found (issue #123).
+   */
+  heldDeletionLine(): string | null {
+    const held = this.engine?.heldDeletionCount ?? 0;
+    if (held === 0) return null;
+    return `obsync can no longer see ${held} note(s) it syncs here and has NOT told your other devices. ` +
+      "If a folder was renamed or moved outside Obsidian, put it back or select it under its new name. " +
+      "Confirm only if you really deleted them: this removes them from every device.";
+  }
+
+  /** The user's word that the held deletions were real (issue #123). */
+  confirmHeldDeletions(): void {
+    this.engine?.confirmHeldDeletions();
+  }
+
   /** The settings tab's update line, or `null` when this device is current. */
   updateLine(): string | null {
     const server = this.updateAvailable;
