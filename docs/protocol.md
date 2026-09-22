@@ -64,7 +64,7 @@ answers the same.
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
 | `POST /v1/pairing/{id}/approve` | **no** | consumes the pairing |
-| `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device |
+| `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device; refuses an approved pairing |
 | `GET /v1/pairing/{id}/envelope` | **no** | single use; then `410 envelope_consumed` |
 | `GET /v1/devices` | yes | read |
 | `PATCH /v1/devices/{id}` | **no** | write |
@@ -125,7 +125,12 @@ and a test asserts every route it emits appears there.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
-  pending device and its wrapped secret are destroyed. Expiry of an
+  pending device and its wrapped secret are destroyed. Only a CLAIMED pairing
+  is rejectable: an unclaimed one is `409 not_claimed` and one the creator
+  already approved is `409 already_approved` and changes nothing, because the
+  claimant is a paired device by then and deletion carries no last-active
+  guard. A paired device is taken away with
+  `POST /v1/devices/{id}/revoke`. Expiry of an
   unapproved pairing destroys them the same way, and so does a restart:
   pairings live in memory, so a claim that does not survive one leaves a
   device nobody can approve, and the start destroys it. The claimant pairs

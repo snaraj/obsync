@@ -298,7 +298,12 @@ that phrase the vault is unrecoverable by design.
 4. The new device fetches the envelope (a signed request), decrypts it with
    `PS`, and persists `VRK` through the native secret store before sync starts. Approval
    is what activates the device; rejection, or expiry of an unapproved
-   pairing, destroys the pending credential.
+   pairing, destroys the pending credential. Rejection reaches a PENDING
+   claimant only: once approved, the claimant is a paired device, so a
+   reject that arrived after the approval is refused
+   (`409 already_approved`) and the store refuses to delete anything but a
+   pending device. Removing a paired device is revocation, which keeps the
+   record, destroys the secret, and refuses the last active device.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
 restart between step 2 and step 3 leaves a pending device behind a pairing

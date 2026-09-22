@@ -211,6 +211,11 @@ impl From<StoreError> for ApiError {
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")
             }
+            StoreError::DeviceNotPending => ApiError::new(
+                409,
+                code,
+                "only a device waiting for pairing approval is deleted; revoke a paired one",
+            ),
             // The heads are already in the client's hands: every response
             // that named this file carried them, so the way out is a merge
             // naming them, not a retry.

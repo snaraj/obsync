@@ -23,7 +23,7 @@ use crate::api::auth::{Clock, FakeClock};
 use crate::api::{App, handler};
 use crate::config::{Config, Edge};
 use crate::dashboard::Dashboard;
-use crate::log::Log;
+use crate::log::{Log, LogLevel};
 use crate::plugin_dist::PluginDist;
 use crate::storage::{Posture, Store, load_or_create_server_key};
 
@@ -58,6 +58,11 @@ struct Setup {
     edge_mode: bool,
     dashboard: bool,
     plugin: bool,
+    /// Accumulate the structured log in memory instead of writing it to
+    /// stderr, so a test can read the decision line a refusal owes
+    /// (requirement 12). Off by default: every other test measures behavior
+    /// through the wire, and a buffer nobody reads is just memory.
+    capture_log: bool,
 }
 
 impl Harness {
@@ -121,7 +126,11 @@ impl Harness {
         .map(|(k, v)| (k.to_string(), v))
         .collect();
         let cfg = Config::from_pairs(&pairs).expect("configuration");
-        let log = Log::new(cfg.log_level);
+        let log = if setup.capture_log {
+            Log::buffered(LogLevel::Debug)
+        } else {
+            Log::new(cfg.log_level)
+        };
         let storage = cfg.storage();
         let posture = Posture::enforce(&storage, &log).expect("volume posture");
         let server_key =
@@ -175,6 +184,12 @@ impl Harness {
             addr,
             server: Some(handle),
         }
+    }
+
+    /// Everything the structured log has written, for a `capture_log`
+    /// harness. Empty otherwise.
+    fn captured(&self) -> String {
+        self.app.log.captured()
     }
 
     /// Create the account and return the first device's credential.
@@ -1456,6 +1471,78 @@ fn rejecting_a_pairing_deletes_the_claimant_device() {
             .len(),
         1
     );
+}
+
+/// Issue #88: the second click on a pairing screen the creator already
+/// approved used to delete the device that approval had just paired.
+#[test]
+fn rejecting_an_approved_pairing_is_refused_and_keeps_the_device() {
+    let h = Harness::start_with(
+        "pairing-reject-approved",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    assert_eq!(device_count(&h, &creator), 2, "the approval paired it");
+    let seq = h.app.store.head_seq();
+
+    let reject = Req::post(&format!("/v1/pairing/{id}/reject"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(reject.status, 409, "{}", reject.text());
+    assert_eq!(reject.code(), "already_approved");
+    // Measured across the reject and nothing else: an authenticated read
+    // records a sign-in, which IS a frame, so the window is this one request.
+    assert_eq!(
+        h.app.store.head_seq(),
+        seq,
+        "the journal is untouched by a refusal"
+    );
+
+    // The device is still paired and still syncing.
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(
+        after.status,
+        200,
+        "the approved device still authenticates: {}",
+        after.text()
+    );
+    assert_eq!(device_count(&h, &creator), 2);
+    let rows = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let rows = rows.get("devices").and_then(Value::as_array).expect("rows");
+    let row = rows
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("the claimant is still listed");
+    assert_eq!(row.get("state").and_then(Value::as_str), Some("active"));
+
+    // The refusal says why, in the words an operator greps for: a device
+    // that is still listed after a reject is otherwise a mystery
+    // (requirement 12).
+    let logged = h.captured();
+    assert!(
+        logged.contains("pairing_reject") && logged.contains("decision=refused"),
+        "the refusal logs its decision: {logged}"
+    );
+    assert!(
+        logged.contains("reason=already_approved"),
+        "and names the state it refused for: {logged}"
+    );
+
+    // And a second reject is the same refusal: the pairing is not consumed
+    // by having refused once.
+    let twice = Req::post(&format!("/v1/pairing/{id}/reject"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(twice.status, 409, "{}", twice.text());
+    assert_eq!(twice.code(), "already_approved");
 }
 
 /// A chunk and its sid.

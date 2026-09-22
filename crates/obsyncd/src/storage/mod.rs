@@ -783,7 +783,9 @@ impl Store {
     /// permanent -- `POST /v1/setup` answers `409 already_set_up` forever
     /// and only a paired device can open a pairing, so an account with no
     /// active device can never sync again (`docs/recovery.md`). There is
-    /// deliberately no unguarded revoke beside this one.
+    /// deliberately no unguarded revoke beside this one, and no unguarded
+    /// delete either: [`Store::delete_device`] takes a PENDING device only,
+    /// so the rejected-claim path cannot reach a paired one (issue #88).
     ///
     /// A device waiting for pairing approval is not a way out of the
     /// refusal: it holds no vault key and cannot pair a replacement.
@@ -817,12 +819,33 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a device outright (a rejected pairing).
+    /// Delete a device outright: a claim nobody approved, and nothing else.
+    ///
+    /// THE SECOND WALL. Deletion destroys the record, which is not what
+    /// revocation does: `revoke_device_unless_last` keeps the row, zeroes the
+    /// wrapped secret and refuses the last active device, so an account can
+    /// never be left with nothing that syncs. A delete carries none of that,
+    /// so the state check belongs here as well as in the pairing table that
+    /// reaches it: a reject arriving after the approval used to delete a
+    /// paired, syncing device (issue #88), and every caller this store has --
+    /// a rejected claim, an expired claim, a claim whose pairing did not
+    /// survive a restart -- names a PENDING device by construction. Anything
+    /// else is refused, under the same hold of the index lock as the append,
+    /// so the state a delete was decided on cannot change underneath it.
+    ///
+    /// # Errors
+    /// `UnknownDevice` when there is no such device, `DeviceNotPending` when
+    /// it is active or revoked.
     pub fn delete_device(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
         let mut index = self.index();
-        if !index.devices.contains_key(id) {
-            return Err(StoreError::UnknownDevice);
+        let state = index
+            .devices
+            .get(id)
+            .map(|entry| entry.record.state)
+            .ok_or(StoreError::UnknownDevice)?;
+        if state != DeviceState::Pending {
+            return Err(StoreError::DeviceNotPending);
         }
         append(&mut journal, &mut index, |_| Frame::DeviceDelete {
             device_id: *id,
