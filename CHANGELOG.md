@@ -5,12 +5,185 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.0.7 - 2026-09-21
+## 1.1.0 - 2026-09-22
 
-**The other half of the problem 1.0.6 described: two notes that share one name
-are now given two names -- the same two on every device, except when a device
-cannot reach the server at the moment it meets the collision. Update every
-device that syncs the vault.**
+**Folders sync now -- an empty one reaches your other devices, and a deleted
+one leaves them. That is a new kind of record, so a device still on 1.0.x
+refuses each folder with one notice and goes on syncing its notes. Update
+every device that syncs the vault, and read "Two folders that differ only in
+capitalisation" below if one of your devices shows two.**
+
+This release also carries everything the 1.0.7 work fixed, which had not been
+released on its own; those entries are further down, under "Also in this
+release", unchanged except where 1.1.0 changed them.
+
+### Folders
+
+**An empty folder now reaches your other devices, and a deleted folder leaves
+them.** Until now a folder existed on a device only because a note inside it
+did: two empty folders made on a computer never appeared on a phone at all,
+and deleting a folder removed its notes everywhere but left the empty tree
+standing in every other device's file explorer. Folders are now synced in
+their own right -- created, deleted and renamed, in both directions. The
+server still cannot read any of it: a folder is stored the same way a note
+is, as something only your devices can open.
+
+**A folder is only ever removed when it is empty on that device**, and empty
+means empty to the filesystem: a hidden file, a note you do not sync, or
+another plugin's data all keep it, and no file is ever taken to make a folder
+go. A folder obsync has a record for is removed only by its own deletion
+arriving, so an empty folder you keep on purpose does not vanish when its last
+note is deleted somewhere else.
+
+**What a device still on 1.0.x does.** It does not know this kind of record,
+so it refuses each one: one notice per folder, no file written, nothing
+deleted, and its notes keep syncing throughout. That notice reads "obsync
+refused a change from another device: it does not name a file or folder this
+device can write inside this vault (version). Nothing was written." It stops
+as soon as that device is updated. This was proved against the decoder
+shipped in 1.0.0 through 1.0.4, copied into the test suite from the released
+tag rather than described.
+
+**Two folders that differ only in capitalisation.** A folder renamed by
+capitalisation alone -- `Team docs` to `team docs` -- was published as NEW
+notes by versions before 1.1.0, because the computer that made the rename sees
+one folder where a phone sees two. Devices that tell the two apart received
+the new names and were never told to retire the old ones, so they ended up
+showing both: one live folder and one that never changes again. From 1.1.0
+such a rename is published as the rename it is, in both directions.
+
+If a device of yours already shows both, there is a recovery, and its order
+matters: **do not delete the stale folder first.** On a device that folds case
+the old spelling IS the live note's own entry, so a deletion of it published
+from elsewhere can take the notes you are keeping. Update every device, open
+each one and let it sync once -- a device that folds case will quietly drop
+the records naming the old spelling and tell you so once -- and only then
+delete the stale folder, on the device that shows two. The full steps are
+under "Two folders that differ only in capitalisation" in the troubleshooting
+guide. The last step is yours on purpose: no device can prove the others have
+been updated, and a rename leaves a note's size and date exactly as they were,
+so nothing later can tell the abandoned copy from the live one.
+
+**An empty folder left under an old spelling can stay or go as you like.**
+Nothing in this version deletes a folder that holds anything.
+
+### Notes, and the ways they were lost
+
+**A note another device renames is renamed here too, instead of being
+re-downloaded and thrown away.** Applying a rename used to write the note
+under its new name and send the old name to the system trash -- so every
+rename made on one device left a full copy of that note in every other
+device's trash, which on a phone is somewhere you can barely reach. It is now
+one rename: nothing is downloaded, nothing is trashed, and the note keeps its
+identity. A rename arriving over a note you have changed here and not yet
+uploaded is still kept as two notes, exactly as before.
+
+**obsync no longer tells your other devices to delete everything when it
+loses sight of a folder.** If a folder you sync is renamed or moved from
+outside Obsidian while Obsidian is closed, obsync sees every note it tracks
+vanish at once. It used to publish a deletion for each of them, and every
+other device obeyed -- while the notes themselves sat safely on the renaming
+device under the new name. obsync now stops, publishes nothing, and tells you
+what it found: that it can no longer see most of what it syncs here and that
+nothing has been sent. Put the folder back, or select it under its new name,
+and it picks up where it was. If you really did delete them, confirm it under
+Settings → obsync → "Deletions held back" and they are published then. A small
+deletion is untouched by any of this: the hold only happens when more than
+half of everything obsync tracks here disappears in one go.
+
+**A note that is still being copied into the vault is no longer published
+half-written.** A large file arriving from a file manager or a download used
+to be uploaded while it was still growing, so other devices received a
+truncated copy -- a 916 MB file arrived as 376 MB. obsync now waits for the
+file to hold still, and abandons an upload whose file changed under it rather
+than publishing a version of something that is not finished.
+
+**A note moved in from outside Obsidian converges in seconds rather than
+minutes, and as a move.** obsync now compares the vault against its own record
+every thirty seconds, reading the filesystem itself on a computer instead of
+Obsidian's index. A note that vanished from one place and appeared in another
+with the same size and date is recognised as the move it is, so your other
+devices move their copy instead of deleting one note and downloading another.
+That pass never publishes a deletion: it can only add work.
+
+**A note another device deleted after you changed it comes back by itself.**
+Keeping your text was already the rule; obsync now also publishes it again
+straight away, so the note returns on every device rather than waiting for the
+next time you touch it. If that upload cannot go out -- you are offline, or
+the note is still being written -- you are told the weaker thing that is true
+and the next sync carries it.
+
+**A note whose name differs only in how an accent is stored is no longer
+treated as a move.** On a Mac a folder can report `é` one way and Obsidian
+another; obsync used to see that as a rename to the other spelling, and the
+device applying it would write one and delete the other -- the same file on
+most disks, so the note disappeared. It is recognised as one name now.
+
+### Restoring, and getting set up
+
+**Restore from history opens on the newest versions and has a search box.**
+It used to page backwards from the oldest, which for a note with a long
+history meant a lot of clicking to reach yesterday.
+
+**A repair running in the background no longer interrupts a restore.** The two
+used to collide and raise "Server repair could not verify a retained file" --
+a message about connectivity, during a recovery, for a scheduling overlap. The
+background work yields instead.
+
+**The server can print its own setup token.** `obsyncd setup-token` runs the
+image's own binary, so it works where copying a file out of the container does
+not -- which is every Kubernetes deployment. The container still has no shell.
+
+**A device can leave its server, or move to another one, without starting a
+new vault.** Settings → obsync → This device → "Leave this server" or "Switch
+server": the device is revoked where it can be, the server address and the
+records go, and your vault key stays, so pairing again is the same vault
+rather than a new one.
+
+**The update notice names the plugin and opens the page that installs it.** It
+also says which version you have and which the server has, and appears once
+per session rather than on every check.
+
+### The documents, and the mark
+
+The documentation is a site now, built from the same files in the repository
+and readable without it, and the guides in it are run by CI rather than copied
+beside a script that drifts. The README is a short front door; the long pages
+live under `docs/`, and the README and the Cloudflare guide exist in twenty
+languages besides English. A new page, "Purging a server", covers wiping a
+server's storage and re-pairing every device, which is the one operation with
+no button and no way back. The plugin has a mark of its own, rendered from a
+source file in `brand/` by one command.
+
+**Which version you have.** The latest release is the newest tag on the
+Releases page, and that is what Obsidian installs and updates to. `main` is
+the edge: merged but unreleased work, for people building from source. There
+is no beta channel and no pre-release tag.
+
+### Known limitations in this release
+
+- **A device offline exactly when two notes collide can keep the pair under
+  different names** until its note is uploaded and edited again
+  ([issue #122](https://github.com/snaraj/obsync/issues/122)). Both notes are
+  on both devices throughout; only the names differ, and renaming either one
+  yourself settles it.
+- **Phones and tablets still settle no same-name pair themselves**, for the
+  reason given under "On phones and tablets, obsync renames nothing at all"
+  below. The computer publishes the rename and the phone follows it.
+- **A save landing in one particular instant can still be lost**, described
+  under "The one gap left, said plainly" below. Nothing about it changed here.
+- **Folder support has not been driven on a real Windows device.** What has
+  been driven is macOS, Linux and a phone, plus the filesystem-level tests on
+  a real temporary vault. The Windows folder scenario is recorded as not
+  attempted in the validation plan rather than claimed.
+- **A note roughly 8 MB or larger is still not recognised as one the server
+  already holds**, so on a restored vault it is copied beside itself rather
+  than adopted -- a duplicate, never a missing note.
+
+### Also in this release
+
+The 1.0.7 work, which never shipped on its own. Everything below is as it was
+written for that release, and the sentences 1.1.0 changed have been changed.
 
 **Two notes, one name, settled once.** When two devices each made a note under
 the same name while one of them was closed, 1.0.5 and 1.0.6 kept both -- which
@@ -105,13 +278,13 @@ limit (512 MB unless you changed it) is left alone for the same reason.
   roughly 8 MB, which carry one, and not larger ones, which do not. A larger
   note is copied beside itself as before.
 
-**Update every device that syncs the vault.** A device still on 1.0.6 does not
+**Update every device that syncs the vault.** A device still on 1.0.x does not
 know the rule, and for any pair it has not yet settled it goes on making copies
 the way 1.0.6 did. In the case reproduced here -- two devices, one note each
 under one name -- both notes survived on both devices and no note content was
 lost.
 
-### Also in this release
+### And the smaller fixes from the same work
 
 **A note another device deleted is no longer deleted here if you have changed
 it since.** Two devices can disagree about a note: one deleted it, the other
@@ -181,10 +354,12 @@ folder emptied on your other devices. Now the selection follows the folder --
 rename `Work` to `Job` and `Job` is what is synced, without touching the
 settings -- and a file that leaves the selection is dropped from syncing
 instead of being published as a deletion, which is never done for a file that
-is still there. **One case is not fixed yet:** a selected folder renamed while
-Obsidian is CLOSED is still published as deletions at the next start, because
-nothing saw the move happen (an issue follows this release). Until that is
-done, rename selected folders with Obsidian open.
+is still there. The 1.0.7 notes said one case was not fixed -- a selected
+folder renamed while Obsidian is CLOSED, which nothing is awake to see -- and
+told you to rename selected folders with Obsidian open. **That case is
+handled in this release**, further up: obsync still cannot see the move, but
+it no longer believes the notes are gone. It stops, publishes nothing and
+tells you what it found ([issue #123](https://github.com/snaraj/obsync/issues/123)).
 
 **Adding a folder to your selection now brings its history down.** Widening
 the selection used to leave the newly included folder empty on that device
