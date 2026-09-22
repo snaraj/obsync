@@ -66,6 +66,56 @@ the way 1.0.6 did. In the case reproduced here -- two devices, one note each
 under one name -- both notes survived on both devices and no note content was
 lost.
 
+### Also in this release
+
+**A selected folder you rename keeps syncing, and renaming one no longer
+deletes its notes elsewhere.** If you sync only some folders and then renamed
+or moved one of them in Obsidian, the notes inside it left the selection the
+moment they moved, and obsync published a deletion for every one of them: the
+folder emptied on your other devices. Now the selection follows the folder --
+rename `Work` to `Job` and `Job` is what is synced, without touching the
+settings -- and a file that leaves the selection is dropped from syncing
+instead of being published as a deletion, which is never done for a file that
+is still there. **One case is not fixed yet:** a selected folder renamed while
+Obsidian is CLOSED is still published as deletions at the next start, because
+nothing saw the move happen (an issue follows this release). Until that is
+done, rename selected folders with Obsidian open.
+
+**Adding a folder to your selection now brings its history down.** Widening
+the selection used to leave the newly included folder empty on that device
+until something changed inside it, because the device only ever asked for what
+had happened since it last looked. A device that widens its selection now
+replays the history it skipped, so the folder arrives.
+
+**"Sync now" waits for the sync it asked for.** When a sync was already
+running, the command returned immediately and reported done with your queue
+still full. It now returns only once the queue it was asked to flush is empty,
+including anything that arrived while it was working.
+
+**A killed upload re-sends far less.** Quitting Obsidian mid-upload made the
+next run re-send whole chunks it had already delivered; that re-sent volume is
+now bounded. Three things to know: fewer bodies are in flight at once on
+desktop, which can make a single very large first upload marginally slower; the
+retry budget is measured against this release's own runs and NOT claimed as a
+device-acceptance result; and a maximal chunk can still exceed the target by up
+to 16 bytes, which is the authentication tag.
+
+**Rejecting a pairing that was already approved no longer removes the device.**
+On the pairing screen, a reject that arrived after the approval deleted a
+device that was by then paired and syncing. That reject is now refused and
+changes nothing; to remove a paired device, revoke it from the dashboard's
+device list.
+
+**Two devices that reach the same result stop making two versions of it.**
+When two devices resolved one concurrent edit to exactly the same text, each
+stored its own version of that result, which left the note looking forked until
+another merge closed it. The server now recognises a version it already holds
+at that position and answers with it, so both devices end up on ONE version.
+This applies once BOTH the server and the device run 1.0.7: an older device
+keeps the version it computed for itself, and is never answered with another
+id. Renames are never treated this way -- what changed there is the name, which
+the server cannot see -- so a rename always lands as a version of its own.
+
 ## 1.0.6 - 2026-09-21
 
 **Three things 1.0.5 got wrong, all found on real devices after it shipped, none
