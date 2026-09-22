@@ -1,0 +1,12 @@
+# M32: the domain map offers itself for deduplication
+--- a/plugin/src/domainmap.ts
++++ b/plugin/src/domainmap.ts
+@@ -247,7 +247,7 @@
+     // answered with each other's version and would record a write that never
+     // landed. The map's whole content lives where the server cannot look, so
+     // it is never offered for deduplication (issue #114).
+-    accept_existing: false,
++    accept_existing: true,
+   };
+   if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {
+     if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {

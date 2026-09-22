@@ -253,6 +253,17 @@ export interface VersionPost {
   manifest_ct: string;
   manifest_nonce: string;
   deleted: boolean;
+  /**
+   * This device's promise to store the `version_id` the answer names, so the
+   * server may answer with a version it already holds at this position
+   * instead of forking the file (`docs/protocol.md`, "One position, one
+   * version"; issue #114). It is the caller's decision, not a constant,
+   * because the server's identity for "this position and this content" is
+   * `(file_id, parent set, sids, deleted)` and does NOT cover the encrypted
+   * manifest -- so a post whose only new fact is inside that manifest, which
+   * is what a rename is, must not offer this (`push.ts`).
+   */
+  accept_existing: boolean;
 }
 
 /**
@@ -264,6 +275,14 @@ export interface VersionPost {
 export interface VersionAck {
   heads: string[];
   conflicted: boolean;
+  /**
+   * The version the store holds for this post: the posted id, except when the
+   * server recognised the post as a version it already had under another id.
+   * OPTIONAL because a server older than 1.0.7 does not send it, and `decode`
+   * keeps whatever the answer contains and nothing else, so the caller falls
+   * back to the id it computed itself (issue #114).
+   */
+  version_id?: string;
 }
 
 export interface DeviceRecord {

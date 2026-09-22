@@ -1,0 +1,12 @@
+# M31: a rename offers itself for deduplication
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -181,7 +181,7 @@
+   // their own echo -- `authored` -- and keep two different paths for one file
+   // id with no version left that could settle it. Every other post offers it:
+   // same parents, same chunks, same path is the same version (issue #114).
+-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
++  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, true);
+   context.state.setFile(path, {
+     fileId,
+     versionId: ack.versionId,

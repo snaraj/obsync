@@ -1429,7 +1429,14 @@ async function postMerged(
     deleted: false,
   };
   const parents = over ?? [localVersionId, change.version_id].sort();
-  const posted = await postManifest(context, change.file_id, parents, [sid], manifest, text.length);
+  // THE CASE ISSUE #114 IS ABOUT. Two devices that resolve the same two heads
+  // to the same bytes produce the same parents, the same chunk and the same
+  // path, and two version ids, because the id covers the encrypted manifest
+  // and its nonce. The second frame says nothing the first did not and forks
+  // the file, which another merge then has to close. So this post offers the
+  // server the version it already holds at this position, and this device
+  // records the id it is answered with.
+  const posted = await postManifest(context, change.file_id, parents, [sid], manifest, text.length, true);
   context.authored.add(posted.versionId);
   context.state.setFile(path, {
     fileId: change.file_id,

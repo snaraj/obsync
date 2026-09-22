@@ -1,0 +1,12 @@
+# M30: a post never offers the version the server already holds
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -261,7 +261,7 @@
+     manifest_ct: base64(ciphertext),
+     manifest_nonce: hex(nonce),
+     deleted: manifest.deleted,
+-    accept_existing: acceptExisting,
++    accept_existing: false,
+   };
+   // The id the STORE holds for this post, which is the posted one unless the
+   // server answered with a version it already had at this position. A server
