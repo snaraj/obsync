@@ -38,11 +38,15 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, settled } from "./fake.mjs";
+import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
+const { applyChange } = require("../build/sync/pull.js");
+const { pushFile } = require("../build/sync/push.js");
 const c = require("../build/crypto.js");
+
+const enc = (text) => new TextEncoder().encode(text);
 
 /** An identity the fixture never enrols, and a secret no device holds. */
 const UNENROLLED = "deadbeefdeadbeefdeadbeefdeadbeef";
@@ -176,6 +180,57 @@ test("a remote rename that also edits the note downloads it rather than renaming
   assert.equal(b.host.text("Note.md"), null, "the old name is not left behind");
   assert.equal(b.state.fileByPath("Renamed.md").fileId, fileId, "one file id throughout");
   assert.deepEqual(tombstones(server), [], `an edited rename published a tombstone: ${story(server, a, b)}`);
+});
+
+/**
+ * THE SAME GUARD, WITH A DETERMINISTIC KILL (review round 1, finding 2).
+ *
+ * The two-device test above renames, waits for that push to settle, and only
+ * then edits, so it publishes TWO versions and the content proof is exercised
+ * only when timing happens to coalesce them: the reviewer ran `M72` four
+ * times on pinned Node and it survived twice. ONE version that renames AND
+ * edits is the input that cannot be coalesced away -- it is one frame, and
+ * the only thing standing between it and silent data loss is the proof that
+ * the source holds this version's content. Without it the device renames the
+ * entry, records the NEW version id over the OLD bytes, downloads nothing,
+ * and shows the user no notice at all: that edit never arrives, on that
+ * device, ever.
+ *
+ * The frame is built directly rather than driven through a second vault,
+ * because a vault that fires events is exactly what lets a test coalesce two
+ * versions into one and lose the discriminator again.
+ */
+test("one version that renames AND edits is downloaded, not applied as a bare rename", async (t) => {
+  const r = await rig();
+  r.host.seed("Note.md", BODY, 1000);
+  await pushFile(r.context, "Note.md");
+  const local = r.state.fileByPath("Note.md");
+
+  const frame = await r.server.publish({
+    fileId: local.fileId,
+    path: "Renamed.md",
+    bytes: enc(EDITED),
+    mtime: 5000,
+    parents: [local.versionId],
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+  assert.equal(await applyChange(r.context, frame), "applied");
+
+  assert.equal(
+    r.host.text("Renamed.md"),
+    EDITED,
+    "the edit that rode the rename was not applied: this device recorded the new version over the OLD bytes",
+  );
+  assert.equal(r.host.text("Note.md"), null, "the old name is not left behind");
+  assert.equal(r.state.fileByPath("Renamed.md").versionId, frame.version_id);
+  assert.equal(r.state.fileByPath("Renamed.md").fileId, local.fileId, "one file id throughout");
+  // The decision says a download happened, not a rename: a mutant that took
+  // the rename shortcut here logs `decision=renamed` and fetches nothing.
+  assert.ok(
+    r.host.logs.some((line) => line.includes("path_class=file") && line.includes("decision=applied")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
 });
 
 test("a rename over an unpushed local edit keeps both, and renames nothing", async (t) => {
