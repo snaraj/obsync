@@ -16,18 +16,71 @@ const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
+/**
+ * A bound on a HANG, not a performance assertion, and that distinction sets
+ * the number. One second was a guess about how long a drain takes on an idle
+ * machine; this suite runs forty files at once, and under that load the
+ * drain in `engine cancellation releases a held metadata read` legitimately
+ * took longer -- so the guess failed about once in two full-suite runs, with
+ * nothing wrong. That matters beyond the noise: `plugin/test/mutants/run.sh`
+ * counts every `not ok` as a kill, so a flake here adds one phantom kill to
+ * EVERY mutant in the matrix, including any mutant that is really alive.
+ *
+ * The budget is the same wall clock `FakeTimers.run` waits on for the same
+ * reason. A real hang still fails here, with the milestone that did not
+ * finish, well inside the runner's own test timeout.
+ */
+const WITHIN_BUDGET_MS = 10_000;
+
 async function within(work, milestone) {
   const pending = Symbol("pending");
   let timer;
   try {
     const result = await Promise.race([work, new Promise((resolve) => {
-      timer = setTimeout(() => resolve(pending), 1000);
+      timer = setTimeout(() => resolve(pending), WITHIN_BUDGET_MS);
     })]);
-    assert.notEqual(result, pending, `${milestone} did not settle within 1000 ms`);
+    assert.notEqual(result, pending, `${milestone} did not settle within ${WITHIN_BUDGET_MS} ms`);
     return result;
   } finally { clearTimeout(timer); }
 }
 const puts = (r) => r.server.requests.filter((request) => request.method === "PUT");
+
+/**
+ * Await `work` while answering every long poll the engine parks on.
+ *
+ * THE LEAK THIS CLOSES. One `releaseFeed()` answers the poll outstanding at
+ * that instant. A stopping engine can take one more turn round the feed loop
+ * and park on a NEW poll before it observes `running === false`; nobody
+ * answers that one, so the drain never settles, the test's `finally` cannot
+ * release the held metadata read either, and the transport's one manual-read
+ * slot stays owned -- which is why the failure did not stay local: the next
+ * test to ask for a history read was refused with "The previous history
+ * request is still settling".
+ *
+ * The window is a scheduling one. It appeared under the full parallel suite
+ * and not when this file runs alone, and widening the bound only moved it --
+ * at 30 s it still failed three runs in five. So the release is driven by the
+ * test's OWN condition, the work settling, rather than by a delay: a release
+ * is a no-op when nothing is waiting, and the loop ends because the work
+ * ends. `within` stays as a bound on a genuine hang, not as the mechanism.
+ */
+async function drainingFeed(server, work, milestone) {
+  let settled = false;
+  const watched = Promise.resolve(work).finally(() => { settled = true; });
+  const answering = (async () => {
+    while (!settled) {
+      server.releaseFeed();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  })();
+  try {
+    return await within(watched, milestone);
+  } finally {
+    settled = true;
+    await answering;
+  }
+}
+
 
 async function note() {
   const r = await rig();
@@ -470,8 +523,8 @@ test("engine cancellation releases a held metadata read without allowing any sub
   const underlying = transport.manualRead;
   assert.ok(underlying instanceof Promise);
   try {
-    const stopping = engine.stopAndWait(); r.server.releaseFeed();
-    await within(Promise.all([work, stopping]), "cancelled repair and engine drain");
+    await drainingFeed(r.server, Promise.all([work, engine.stopAndWait()]),
+      "cancelled repair and engine drain");
     assert.equal(responseReleased, false, "logical drain must not need the held metadata response");
     assert.equal(transport.manualRead, underlying, "the underlying read remains owned until it settles");
     assert.equal(metadataCalls, 1);
@@ -482,17 +535,8 @@ test("engine cancellation releases a held metadata read without allowing any sub
   } finally {
     release.resolve();
     await within(underlying, "underlying metadata response");
-    // THE FEED IS PARKED AGAIN BY NOW, sometimes. `releaseFeed` above drained
-    // the poll that was outstanding when the stop began; the loop can take
-    // one more turn and park on a new one before `running` is observed false,
-    // and then this drain waits on a long poll nothing will ever answer. It
-    // is timing, so it showed up as a whole suite hanging once in a while
-    // rather than as a failure -- and under `--test-timeout` as a cancelled
-    // test, which the mutation matrix would have counted as a kill for every
-    // mutant. Releasing again is a no-op when nothing is waiting.
-    const drained = engine.stopAndWait();
-    r.server.releaseFeed();
-    await within(drained, "engine drain after the metadata response");
+    await drainingFeed(r.server, engine.stopAndWait(),
+      "engine drain after the metadata response");
   }
   assert.equal(responseReleased, true);
   assert.equal(transport.manualRead, null);
