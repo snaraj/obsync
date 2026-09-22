@@ -344,7 +344,12 @@ test("a multipart response without a boundary is refused", async () => {
  * the server sees and must therefore appear in `CALLS` below, which is what
  * stops a new endpoint from arriving unclassified.
  */
-const INTERNAL = ["constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once", "readOnce"];
+const INTERNAL = [
+  "constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once", "readOnce",
+  // The chunk uploader: `putChunk` is the only one of these that emits, and
+  // `uploadChunk` emits it. The rest schedule, measure or report.
+  "uploadChunk", "fits", "admit", "release", "landed", "uploadStats",
+];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
 /** Every route-emitting method, arguments that make it emit, and its verdict. */

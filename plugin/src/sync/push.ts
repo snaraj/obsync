@@ -16,7 +16,12 @@
  * the same bytes) and uploads only the missing ones. Peak memory is
  * `concurrency × 8 MiB`, so a 20 GB archive costs the same as an 8 MiB note.
  * Killing Obsidian mid-upload and reopening resumes by `sid`: the exists
- * check already knows what landed.
+ * check already knows what landed. What the restart must send AGAIN is
+ * whatever was in flight when the process died, which is why the transport
+ * bounds those bytes rather than the number of requests
+ * (`UPLOAD_INFLIGHT_MAX`) and why this module never re-sends a plan it has
+ * not re-checked. Every run that chunks a file, and every run that re-sent a
+ * byte, says so in one `upload decision=summary` line.
  *
  * MANIFEST `sha256`. It carries the plaintext SHA-256 for a single-chunk
  * file. For a multi-chunk file it is the empty string: WebCrypto has no
@@ -51,7 +56,7 @@ import {
   unhex,
   versionId,
 } from "../crypto";
-import { ApiError, FileRecord, VersionAck, VersionPost } from "../transport";
+import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertSyncPath } from "../syncScope";
 import { assertVaultPath } from "../vaultPath";
 
@@ -152,6 +157,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
     return { status: "unchanged", fileId, versionId: record.versionId };
   }
 
+  const before = context.transport.uploadStats();
   const missing = new Set(await context.transport.missingChunks(sids));
   const uploads = missing.size;
   if (single !== null) {
@@ -181,6 +187,20 @@ export async function pushFile(context: SyncContext, path: string, force = false
     sha256: digest,
   });
   await context.state.save();
+  // The upload's own receipt: what crossed the wire while this run was in
+  // flight and the budget it is measured against (requirement 12). The
+  // counters are the TRANSPORT's, so a second push running beside this one is
+  // counted here too; what the budget bounds is the device's re-sent bytes,
+  // not one file's. A one-chunk run that re-sent nothing has nothing to
+  // summarise beyond `uploaded=`.
+  const after = context.transport.uploadStats();
+  const resent = after.resent - before.resent;
+  if (plan.length > 1 || resent > 0) {
+    context.host.log(
+      `upload decision=summary chunks=${after.chunks - before.chunks} retried=${resent} ` +
+        `budget=${UPLOAD_BUDGET_BYTES} deduped=${after.deduped - before.deduped} duration_ms=${context.now() - started}`,
+    );
+  }
   context.host.log(
     `push path_class=file bytes=${stat.size} chunks=${plan.length} uploaded=${uploads} decision=pushed duration_ms=${context.now() - started}`,
   );
@@ -213,8 +233,10 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
 /**
  * Encrypt the manifest, compute the version id the server will recompute,
  * and post it. `409 missing_chunks` means the server garbage-collected a
- * chunk between the exists check and now: re-upload exactly those and retry
- * once.
+ * chunk between the exists check and now: ASK which sids it is missing and
+ * re-upload exactly those, then retry once. The refusal names one sid, and
+ * re-sending the plan on its word would re-send a 20 GiB archive to replace
+ * one 4 MiB chunk (issue #56).
  */
 export async function postManifest(
   context: SyncContext,
@@ -250,8 +272,11 @@ export async function postManifest(
     return { versionId: id, ack: await postOnce(context, fileId, id, post) };
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
-    context.host.log(`push decision=retry reason=missing_chunks file=${fileId}`);
-    await uploadMissing(context, new Set(sids), manifest.chunks, manifest.path, manifest.size);
+    const missing = new Set(await context.transport.missingChunks(sids));
+    context.host.log(
+      `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
+    );
+    await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
     return { versionId: id, ack: await postOnce(context, fileId, id, post) };
   }
 }
