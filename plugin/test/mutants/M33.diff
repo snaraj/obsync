@@ -1,0 +1,12 @@
+# M33: 121: drain() resolves immediately while draining (the 1.0.6 early return)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -600,7 +600,7 @@
+    * the settled promise, decides whether there is something to join.
+    */
+   private drain(): Promise<void> {
+-    if (this.draining && this.drainWork !== null) return this.drainWork;
++    if (this.draining) return Promise.resolve();
+     this.drainWork = this.drainQueue();
+     return this.drainWork;
+   }

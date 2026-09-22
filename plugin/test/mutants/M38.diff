@@ -1,0 +1,12 @@
+# M38: 56: the probe always answers that the body never landed
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -782,7 +782,7 @@
+       const sending = await this.prepare(target, { auth: "device", json: { sids: [sid] } });
+       const probe = await this.attempt("POST", target, sending);
+       if (probe.kind !== "settled" || probe.response.status >= 400) return false;
+-      return decode<{ missing: string[] }>(probe.response).missing.length === 0;
++      return false;
+     } catch {
+       // The probe saves bytes; it can never cost a chunk.
+       return false;

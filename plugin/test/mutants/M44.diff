@@ -1,0 +1,12 @@
+# M44: 92: every scope change replays from zero, narrowing included
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1074,7 +1074,7 @@
+       const cursor = state.data.lastSeq;
+       // Decided after the quiesce, against the selection that was in force
+       // while the stopped work ran.
+-      const widened = expandsSyncScope(previous, folders);
++      const widened = true;
+       state.data.syncFolders = folders;
+       if (widened) state.data.lastSeq = 0;
+       try {

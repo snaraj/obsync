@@ -1,0 +1,16 @@
+# M37: 56: a chunk already in flight is uploaded a second time
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -695,12 +695,6 @@
+    * of up to 8 MiB on the wire beside it.
+    */
+   async putChunk(sid: string, ciphertext: Bytes): Promise<void> {
+-    const running = this.uploading.get(sid);
+-    if (running) {
+-      this.upload.deduped += 1;
+-      await running;
+-      return;
+-    }
+     const upload = this.uploadChunk(sid, ciphertext);
+     this.uploading.set(sid, upload);
+     try {
