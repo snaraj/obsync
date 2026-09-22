@@ -43,11 +43,26 @@ now**. Removed folders keep their local files and their history on the server.
 | **Largest file to download** | `0` (unlimited) on desktop, `512 MiB` on mobile | Files above it stay on the server and appear under **Show remote-only files**, to fetch on demand. | On a phone with room to spare, or one with none. `0` means unlimited |
 | **Total to keep on this device** | `0` (unlimited) on desktop, `50 GiB` on mobile | Above this total, new files stay remote-only. | Same |
 | **Save to server** → **Save** | — | Sends the name and both ceilings together, so the dashboard shows what this device will actually hold. | After changing any of the three above |
+| **Leave this server** → **Leave** | — | Revokes THIS device on the server, then forgets the server address, the edge headers, the sync cursor and every file record. Every note stays in the vault. | Retiring this device, or handing the computer on |
+| **Leave this server** → **Switch server** | — | The same, then asks for the new address and opens **Pair this device** for it. | Moving this vault to a different server |
 
 Mobile ceilings exist because Obsidian on a phone reads and writes whole files
 in memory: a ceiling is what keeps one large attachment from ending the app.
 Desktop streams files in 8 MiB windows, which is why it has no practical
 ceiling.
+
+Leaving asks first, and says what it costs. **Kept:** every note, the vault
+key (so pairing again is the SAME vault, never a new one), this device's name,
+its folder selection and both ceilings. **Lost:** this device's sync identity.
+It is refused while this device holds changes the server never received — the
+dialog names them, and either **Sync now** first or discard them on purpose.
+It is also refused for the only ACTIVE device (`409 last_device`), because an
+account with no active device can never sync again; that dialog offers to
+leave locally instead, which forgets the server and leaves the device enrolled
+on it. Pairing again is a first sync for this device, so where the server
+already holds a note at the same path the local note stays and the server's
+copy arrives beside it as a conflict copy
+([`conflicts.md`](conflicts.md)).
 
 ## Devices
 
@@ -66,6 +81,6 @@ a revoked device is paired again as a new device.
 ## Commands, not settings
 
 `Sync now`, `Show sync status`, `Pair a new device`, `Show recovery phrase`,
-`Restore from history`, `Show remote-only files` and `Open dashboard` live in
-the command palette under **Self Hosted Private Sync**, and the README
-describes what each one does.
+`Restore from history`, `Show remote-only files`, `Open dashboard`,
+`Leave this server` and `Switch server` live in the command palette under
+**Self Hosted Private Sync**, and the README describes what each one does.

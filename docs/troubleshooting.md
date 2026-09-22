@@ -193,6 +193,10 @@ volume restored from a backup older than this pairing.
 **Fix.** Both are the same repair: pair this device again. If the server was
 rebuilt or restored, see [`recovery.md`](recovery.md) before pairing anything,
 because the server key decides whether existing devices can be kept at all.
+If this appeared after pointing the device at a DIFFERENT server, its stored
+credential belongs to the old one: **This device** → **Leave this server** →
+**Switch server** (["moving this vault to a different
+server"](recovery.md#moving-this-vault-to-a-different-server)).
 
 ## Other refusals a device can show
 

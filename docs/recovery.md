@@ -153,6 +153,32 @@ everywhere** on the dashboard, which closes every session the server holds.
 dashboard's custody, and that is why it is worth rotating after a restore
 from a backup somebody else handled ([`security/dashboard.md`](security/dashboard.md)).
 
+## Moving this vault to a different server
+
+A different server INSTANCE, not the same one at a new address: a rebuilt
+server, a second one you are migrating to, or a laptop's test server you are
+done with. The device credential is bound to the server that minted it, so
+changing **Server URL** alone earns `401 bad_signature` for ever.
+
+1. On the device, **This device** → **Leave this server** → **Switch server**.
+   It revokes this device on the old server, forgets the server address, the
+   edge headers, the feed cursor and every file record, and then asks for the
+   new address and opens **Pair this device** for it.
+2. Pair against the new server: a code from a device that already syncs this
+   vault there, or **First-time setup** with that server's setup token if the
+   new server has no account yet. Either way the VAULT KEY on this device is
+   kept, so this is the same vault; a new key would be a new vault
+   ([`settings.md`](settings.md)).
+3. The only ACTIVE device cannot be revoked (`last_device`, above). The dialog
+   offers to leave LOCALLY instead: this device forgets the server and keeps
+   every note, and the server keeps the device — revoke it from the dashboard,
+   or from another device, once one is paired.
+
+Pairing again is a first sync for this device, so anything the new server
+already holds at the same path arrives beside the local note as a conflict
+copy ([`conflicts.md`](conflicts.md)). Nothing in the vault is deleted at any
+point.
+
 ## Moving the server to a new address
 
 The address is not part of any key; it is what each device is configured with.

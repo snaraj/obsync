@@ -508,6 +508,17 @@ last sign-in, last edit), storage per volume, scrub and garbage-collection
 state, and installation guidance. Revoke a lost device there or
 from the **Devices** list in the plugin settings.
 
+To take THIS device off a server, use **Leave this server** under **This
+device**: it revokes this device on the server and then forgets the server
+address and this device's sync identity, keeping every note in the vault and
+the vault key that opens it, so pairing again — with that server or another —
+is the same vault and not a new one. **Switch server** is the same step
+followed by pairing against the new address. Both refuse while this device
+holds changes the server never received, and the only ACTIVE device cannot be
+revoked at all: pair the replacement first
+([`docs/settings.md`](docs/settings.md),
+[`docs/recovery.md`](docs/recovery.md)).
+
 ### Commands and the status bar
 
 Every command is under **Self Hosted Private Sync** in the command palette
@@ -522,6 +533,8 @@ Every command is under **Self Hosted Private Sync** in the command palette
 | Restore from history | Browses retained versions and restores one as a copy |
 | Show remote-only files | Lists files above this device's ceilings, to fetch on demand |
 | Open dashboard | Mints a one-time dashboard sign-in link |
+| Leave this server | Revokes this device on the server, then forgets the pairing; notes stay |
+| Switch server | The same, then pairs this device with another server, same vault |
 
 The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
 `obsync: syncing <n>` while `n` files are in flight, `obsync: offline` when the
