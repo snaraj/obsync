@@ -146,33 +146,40 @@ limits who reaches it. The token is read the same way, from compose's container:
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
-## What this plugin talks to
+## What this plugin accesses
 
-- **Your own server, and nothing else.** Every sync request goes to the
-  **Server URL** you type into the plugin's settings. There is no obsync
-  service, no analytics, no advertising, no crash reporter, and no
-  third-party host anywhere in the sync path.
-- **An account on that server is required**, and you create it: the first
-  device uses the setup token your server wrote at first boot, and every other
-  device is paired from a device that already syncs. Signing in to Obsidian
-  does not enroll anything.
-- **Obsidian's own directory and GitHub**, for installation and updates only.
-  Obsidian downloads the release's `main.js`, `manifest.json` and `styles.css`
-  from this repository's GitHub Releases when you install or update. The
-  plugin never fetches or executes code from the sync server. Each Release
-  also carries the plugin ZIP and the evidence manifest, for people deploying
-  the server; Obsidian ignores both.
-- **Your edge, if you put one there.** If an access-controlled proxy sits in
-  front of your server, the headers you paste under **Edge service-token
-  headers** are sent to it, because it is on the path to your server.
-- **Your vault's file list, and the files you chose to sync.** The plugin
-  lists every file in the vault to decide what is in scope, reads the ones
-  inside your folder selection, and writes what other devices changed.
-- **The clipboard, only when you press Copy.** The two Copy buttons in **Pair
-  a new device** write the pairing code or link; nothing is ever read from it.
+Short and complete, so you can decide before you install.
 
-What the server can and cannot see is in
-[`SECURITY.md`](SECURITY.md) and [`docs/threat-model.md`](docs/threat-model.md).
+- **One network destination: your own server.** Every request goes to the
+  **Server URL** you type into the plugin's settings, and to nothing else.
+  There is no telemetry, no analytics, no crash reporter, no advertising, and
+  no third-party service anywhere in the sync path. The plugin never downloads
+  or runs code from that server either.
+- **An account on that server, which you create.** The first device uses the
+  setup token your server wrote at first boot; every other device is paired
+  from a device that already syncs. Your Obsidian account plays no part.
+- **Obsidian and GitHub, for install and update only.** Obsidian itself
+  downloads `main.js`, `manifest.json` and `styles.css` from this repository's
+  GitHub Releases. Each Release also carries a plugin ZIP and a release
+  manifest for people deploying the server; Obsidian ignores both.
+- **Your edge, only if you configured one.** Headers you paste under **Edge
+  service-token headers** ride on every request to the Server URL above,
+  because the proxy that needs them is on the path to your server.
+- **Your vault's file list.** The plugin lists every file in the vault to
+  decide what is in scope, reads the files inside your folder selection, and
+  writes what other devices changed. Hidden folders (`.obsidian`, `.git`) and
+  symlinked folders are skipped.
+- **The clipboard, written and never read.** Only the **Copy code** and
+  **Copy link** buttons in **Pair a new device** write to it. Nothing in the
+  plugin reads the clipboard.
+- **Your browser, when you ask for the dashboard.** **Open dashboard** opens a
+  sign-in link in your browser, and only when that link is on your server's
+  own origin.
+- **Obsidian's secret storage.** The vault key, the device secret and any edge
+  header values live there, never in plain plugin data.
+
+What the server can and cannot see is in [`SECURITY.md`](SECURITY.md) and
+[`docs/threat-model.md`](docs/threat-model.md).
 
 ## Documentation
 

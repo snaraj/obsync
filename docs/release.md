@@ -69,6 +69,9 @@ chart keyless (identity `refs/heads/main` of this repository), attaches
 `obsync-plugin-X.Y.Z.zip` and the individual `main.js`, `manifest.json`, and
 `styles.css` files from the same image build. The v2 evidence manifest binds
 the ZIP digest and each file's digest, size and content type.
+Obsidian's installer downloads only the three individual files and ignores
+the ZIP and the evidence manifest; both remain required by the inventory
+below and by the read-only audit.
 
 **The Release body.** From 1.0.1 the notes lead with that version's own
 `CHANGELOG.md` section, read out of the SOURCE COMMIT rather than out of a
