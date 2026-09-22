@@ -35,13 +35,12 @@ export function inSyncTree(path: unknown, folders: SyncFolders): path is string 
   ));
 }
 
+/**
+ * Does `after` cover anything `before` did not? A widening is what makes the
+ * device replay the feed it skipped, so the newly covered remote files arrive
+ * (`main.ts`); a narrowing keeps its cursor.
+ */
 export function expandsSyncScope(before: SyncFolders, after: SyncFolders): boolean {
   if (before === undefined) return false;
   return after === undefined || after.some((folder) => !before.some((old) => folder === old || folder.startsWith(`${old}/`)));
 }
-
-export const SCOPE_EXPANSION_MESSAGE =
-  "obsync: folders can only be narrowed after this device has synced. " +
-  "To sync more local files in this vault, move them into an already selected folder and run Sync now. " +
-  "A different folder selection needs a fresh local vault configured before pairing; keep this vault as a backup. " +
-  "The selection was not changed.";

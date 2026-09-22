@@ -237,9 +237,12 @@ error.
 symlinked folders, and anything outside this device's saved folder selection
 are not synced in either direction.
 
-**Fix.** Check the folder selection under **Sync folders on this device**. A
-used device's selection may only narrow: to bring more content in, move the
-files into a folder that is already selected and run **Sync now**.
+**Fix.** Check the folder selection under **Sync folders on this device**.
+Adding the file's folder there and selecting **Save** brings in both halves:
+the local files under it are published, and whatever the server already
+holds under it is pulled by replaying the history this device skipped. On a
+vault with long history that replay takes a while; the local log records the
+cursor it rewound from.
 
 ## A large file did not arrive on a phone
 

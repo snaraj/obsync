@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { FakeTimers, fakeState, rig, sandbox, memorySecrets } from "./fake.mjs";
+import { FakeTimers, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
@@ -307,33 +307,74 @@ test("scope saving waits for engine work without manual downloads and serializes
   assert.deepEqual(saved().syncFolders, ["Notes"]);
 });
 
-test("expansion is rechecked after in-flight work has recorded the first synced file", async (t) => {
-  const { instance, state, saved } = await plugin(t);
+/**
+ * ISSUE #92. Widening used to be refused outright, and the refusal told the
+ * user to configure a fresh vault and pair again — for the ordinary case of a
+ * new folder next to the selected one. What the refusal was protecting
+ * against was replaying history blindly, and the cursor rewind below is that
+ * replay made answerable: the pull path judges every record against what the
+ * device holds now (`sync/pull.ts`), so the newly covered files arrive and
+ * nothing already here is overwritten by an older version of itself.
+ */
+test("widening rewinds the cursor the in-flight work left behind, and keeps what it recorded", async (t) => {
+  const { instance, state, saved, restarts } = await plugin(t);
   state.data.syncFolders = ["Notes"];
+  state.data.lastSeq = 17;
   const work = deferred();
   instance.engine = { stopAndWait: () => work.promise };
   const saving = instance.saveSyncFolders(["Notes", "Attachments"]);
+  // A page the stopping feed finished applying, and a file it recorded.
+  state.data.lastSeq = 23;
   state.setFile("Notes/new.md", record("56".repeat(16)));
   work.resolve();
-  await assert.rejects(saving, /folders can only be narrowed/);
-  assert.deepEqual(state.data.syncFolders, ["Notes"]);
-  assert.equal(saved(), null);
+  await saving;
+  assert.deepEqual(saved().syncFolders, ["Attachments", "Notes"]);
+  assert.equal(saved().lastSeq, 0, "the history this device skipped is replayed");
+  assert.ok(state.fileByPath("Notes/new.md"), "and the work the quiesce recorded is kept, not reset");
+  assert.equal(restarts(), 1);
 });
 
-test("a used device refuses expansion before stopping, saving or restarting", async (t) => {
+test("a used device widens its selection, rewinds its cursor and keeps every local record", async (t) => {
   const { instance, state, saved, restarts } = await plugin(t);
-  state.data.syncFolders = ["Notes"];
-  instance.engine = { stopAndWait: () => assert.fail("must refuse before stopping") };
+  const logs = [];
+  instance.log = (line) => logs.push(line);
+  let restarted = 0;
   for (const evidence of ["cursor", "local", "remote"]) {
-    state.data.lastSeq = evidence === "cursor" ? 1 : 0;
-    state.data.files = evidence === "local" ? { "Notes/a.md": record("51".repeat(16)) } : {};
-    state.data.remoteOnly = evidence === "remote" ? { sentinel: { path: "Notes/a.md", size: 1 } } : {};
     for (const scope of [undefined, ["Notes", "Admin"], ["NotesExtra"]]) {
-      await assert.rejects(instance.saveSyncFolders(scope), /already selected folder.*Sync now.*fresh local vault.*before pairing/);
-      assert.deepEqual(state.data.syncFolders, ["Notes"]);
+      state.data.syncFolders = ["Notes"];
+      state.data.lastSeq = evidence === "cursor" ? 7 : 0;
+      state.data.files = evidence === "local" ? { "Notes/a.md": record("51".repeat(16)) } : {};
+      state.data.remoteOnly = evidence === "remote" ? { sentinel: { path: "Notes/a.md", size: 1 } } : {};
+      const before = structuredClone(state.data.files);
+      instance.engine = { stopAndWait: async () => undefined };
+      await instance.saveSyncFolders(scope);
+      assert.deepEqual(saved().syncFolders, scope === undefined ? undefined : [...scope].sort());
+      assert.equal(saved().lastSeq, 0, `${evidence} ${JSON.stringify(scope)}`);
+      // Nothing is reset: the local records and the remote-only accounting
+      // are what make the replay cheap instead of a re-download.
+      assert.deepEqual(state.data.files, before);
+      assert.equal(Object.keys(state.data.remoteOnly).length, evidence === "remote" ? 1 : 0);
+      assert.equal(restarts(), ++restarted);
+      assert.ok(
+        logs.some((line) => line.includes("scope decision=saved") && line.includes("replay=from_zero") &&
+          line.includes(`from_seq=${evidence === "cursor" ? 7 : 0}`)),
+        logs.join(" | "),
+      );
+      logs.length = 0;
     }
   }
-  assert.equal(saved(), null);
+});
+
+test("a failed save of a widening restores the cursor the device had", async (t) => {
+  const { instance, state, saved, restarts } = await plugin(t);
+  state.data.syncFolders = ["Notes"];
+  state.data.lastSeq = 31;
+  await state.save();
+  state.save = async () => { throw new Error("STORE SENTINEL"); };
+  await assert.rejects(instance.saveSyncFolders(["Notes", "Attachments"]), /STORE SENTINEL/);
+  assert.deepEqual(state.data.syncFolders, ["Notes"]);
+  assert.equal(state.data.lastSeq, 31, "a refused widening must not replay the feed");
+  assert.equal(saved().lastSeq, 31);
   assert.equal(restarts(), 0);
 });
 
@@ -887,4 +928,109 @@ test("update probes finishing after unload cannot notify or log a new result", a
   await Promise.all([first, second]);
   assert.equal(instance.updateAvailable, null);
   assert.deepEqual(logs, []);
+});
+
+/**
+ * WIDENING, ON TWO REAL DEVICES (issue #92).
+ *
+ * The rig above drives `saveSyncFolders` against a stub engine, which proves
+ * what is saved and nothing about what then syncs. These two drive the whole
+ * consequence: two engines over vaults that answer back, one server, and a
+ * selection that grows on the device that chose it. The phone syncs the whole
+ * vault, so the files this desktop declines are really on the server and
+ * really out of its cursor's reach before it widens.
+ *
+ * `startEngine` is the one seam: the real one builds an `ObsidianHost` over
+ * Obsidian's own adapter, which no fake vault can stand in for (the host has
+ * its own suite above), so the restart here re-starts this rig's engine.
+ */
+async function widening(t) {
+  const rig = await pair(t, "immediate");
+  const { server, timers, a, b } = rig;
+  a.state.data.syncFolders = ["Notes"];
+  a.plugin.log = (line) => a.host.logs.push(line);
+  a.plugin.startEngine = async () => { a.plugin.engine = a.engine; await a.engine.start(); };
+  a.host.write("Notes/In.md", "in\n", 1000);
+  // Outside the selection on this device, and never yet published by it.
+  a.host.write("Work/Local.md", "local\n", 1000);
+  b.host.write("Work/Remote.md", "remote\n", 1000);
+  b.host.write("Root.md", "root\n", 1000);
+  await a.engine.start();
+  await b.engine.start();
+  // Wait for the desktop's cursor to reach the journal head, not merely for
+  // the files to land: a change it SKIPS still advances the cursor, so a test
+  // that read the cursor with one page still in flight would be racing its
+  // own fixture.
+  await timers.run(STEP_MS, () => b.host.text("Notes/In.md") === "in\n" && settled(a, "Notes/In.md") &&
+    settled(b, "Work/Remote.md") && settled(b, "Root.md") && a.state.data.lastSeq === server.seq);
+  const cursor = a.state.data.lastSeq;
+  assert.ok(cursor > 0, "the desktop's cursor is past the files it declined");
+  assert.equal(a.host.text("Work/Remote.md"), null, "which it does not hold");
+  assert.equal(a.state.fileByPath("Work/Local.md"), undefined, "and has not published");
+  return { ...rig, cursor, remoteId: b.state.fileByPath("Work/Remote.md").fileId };
+}
+
+/**
+ * Save a selection while a long poll is parked on the server.
+ *
+ * The fixture's long poll has no window of its own: it holds until a version
+ * lands or the test releases it, so the quiesce inside `saveSyncFolders`
+ * waits for exactly that release (a real server answers its own wait). WHICH
+ * TURN the release is owed on is not the test's to know — the engine may not
+ * have issued the poll yet when the save begins, and a busy machine changes
+ * the order — so the release repeats until the save settles, under a real-time
+ * budget that fails loudly instead of hanging the file.
+ */
+async function save(rig, folders) {
+  let settled = false;
+  const saving = rig.a.plugin.saveSyncFolders(folders);
+  const done = saving.then((value) => { settled = true; return value; }, (error) => { settled = true; throw error; });
+  const deadline = Date.now() + 10000;
+  while (!settled) {
+    rig.server.releaseFeed();
+    if (Date.now() > deadline) throw new Error("scope: the folder change never settled");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await done;
+}
+
+test("widening to a second folder publishes its local notes and pulls the ones only the server had", async (t) => {
+  const rig = await widening(t);
+  const { server, timers, a, b, cursor, remoteId } = rig;
+
+  await save(rig, ["Notes", "Work"]);
+  await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" &&
+    b.host.text("Work/Local.md") === "local\n" && settled(a, "Work/Remote.md") && settled(a, "Work/Local.md"));
+
+  assert.deepEqual(a.state.data.syncFolders, ["Notes", "Work"]);
+  assert.equal(a.state.fileByPath("Work/Remote.md").fileId, remoteId, "the remote note arrived as itself");
+  assert.equal(b.state.fileByPath("Work/Local.md").fileId, a.state.fileByPath("Work/Local.md").fileId);
+  assert.equal(a.host.text("Root.md"), null, "and a folder outside the selection is still outside it");
+  assert.equal(a.state.fileByPath("Notes/In.md").versionId, b.state.fileByPath("Notes/In.md").versionId,
+    "the replay did not fork the note this device already had");
+  assert.deepEqual(server.journal.filter((frame) => frame.deleted), [], "widening published a tombstone");
+  assert.equal(server.vaultFiles().length, 4, "no file was duplicated by the replay");
+  assert.ok(
+    a.host.logs.some((line) => line.includes("scope decision=saved mode=selected_folders folders=2") &&
+      line.includes(`replay=from_zero from_seq=${cursor}`)),
+    a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+  );
+  assert.deepEqual(b.state.data.syncFolders, undefined, "the phone's selection is its own");
+});
+
+test("widening to the whole vault brings in everything the server holds", async (t) => {
+  const rig = await widening(t);
+  const { timers, a, b } = rig;
+
+  await save(rig, undefined);
+  await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" && a.host.text("Root.md") === "root\n" &&
+    b.host.text("Work/Local.md") === "local\n");
+
+  assert.equal(a.state.data.syncFolders, undefined);
+  assert.equal(a.host.text("Root.md"), "root\n", "including a file no folder selection would have covered");
+  assert.equal(a.state.fileByPath("Root.md").fileId, b.state.fileByPath("Root.md").fileId);
+  assert.ok(
+    a.host.logs.some((line) => line.includes("scope decision=saved mode=whole_vault folders=0 replay=from_zero")),
+    a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+  );
 });

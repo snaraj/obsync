@@ -56,7 +56,7 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource } from "./chunker";
 import { State } from "./state";
-import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
+import { assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
@@ -1021,7 +1021,27 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
-  /** A local scope change never alters policy on the server or replays old versions. */
+  /**
+   * A local scope change never alters policy on the server or another
+   * device's selection.
+   *
+   * WIDENING REPLAYS THE FEED THIS DEVICE SKIPPED. The files a newly
+   * selected folder holds on the server were published before this device's
+   * cursor, and the change feed is the only place they exist for it: there is
+   * no "list the vault's files" call to ask instead. So a selection that
+   * gains a folder, or returns to the whole vault, rewinds the cursor to 0
+   * and the restart walks the feed from the beginning, exactly as a device
+   * syncing for the first time does (issue #92). The newly covered LOCAL
+   * files are the startup scan's half of the same restart.
+   *
+   * Replay is safe because the pull path answers each record against what
+   * this device holds NOW, not against the order it arrives in: a version
+   * this device authored is its own echo, a version its head already reaches
+   * is `already_incorporated`, a tombstone for a file it no longer tracks is
+   * skipped, and local content the server never received is kept beside the
+   * incoming version rather than replaced (`sync/pull.ts`). Narrowing keeps
+   * its cursor: nothing new is covered, so there is nothing to replay.
+   */
   async saveSyncFolders(value: string[] | undefined): Promise<void> {
     const generation = this.lifecycle;
     const assertActive = (): void => {
@@ -1038,15 +1058,6 @@ export default class ObsyncPlugin extends Plugin {
       this.log("scope decision=refused reason=invalid_selection");
       throw error;
     }
-    const assertChange = (): void => {
-      const used = state.data.lastSeq !== 0 || Object.keys(state.data.files).length !== 0 ||
-        Object.keys(state.data.remoteOnly).length !== 0;
-      if (used && expandsSyncScope(state.data.syncFolders, folders)) {
-        this.log("scope decision=refused reason=expansion_requires_resync");
-        throw new Error(SCOPE_EXPANSION_MESSAGE);
-      }
-    };
-    assertChange();
     if (this.changingScope) throw new Error("A folder selection is already being saved.");
     this.changingScope = true;
     this.cancelHistories();
@@ -1059,17 +1070,25 @@ export default class ObsyncPlugin extends Plugin {
       await Promise.allSettled(this.manualFetches);
       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
       assertActive();
-      assertChange();
       const previous = state.data.syncFolders;
+      const cursor = state.data.lastSeq;
+      // Decided after the quiesce, against the selection that was in force
+      // while the stopped work ran.
+      const widened = expandsSyncScope(previous, folders);
       state.data.syncFolders = folders;
+      if (widened) state.data.lastSeq = 0;
       try {
         await state.save();
       } catch (error) {
         state.data.syncFolders = previous;
+        state.data.lastSeq = cursor;
         throw error;
       }
       assertActive();
-      this.log(`scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0}`);
+      this.log(
+        `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
+          `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
+      );
     } catch (error) {
       if (this.isCurrent(generation)) {
         this.log("scope decision=failed reason=not_saved");
