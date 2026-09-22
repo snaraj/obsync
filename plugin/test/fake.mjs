@@ -151,6 +151,41 @@ export class FakeHost {
     return undefined;
   }
 
+  /**
+   * The directory entry this host really holds for a FOLDER path, or
+   * `undefined` -- `resolve` one kind over, over the folders this vault has
+   * explicitly and the ones its files imply.
+   */
+  resolveFolder(path) {
+    const folders = new Set(this.explicitFolders);
+    for (const file of this.files.keys()) for (const parent of FakeHost.parents(file)) folders.add(parent);
+    if (folders.has(path)) return path;
+    if (this.caseSensitive) return undefined;
+    const folded = path.toLowerCase();
+    for (const folder of folders) if (folder.toLowerCase() === folded) return folder;
+    return undefined;
+  }
+
+  /**
+   * Where a name handed to `rename(2)` REALLY lands.
+   *
+   * POSIX, and the whole of the defect issue #124's repair is about. A rename
+   * resolves the directory components of its destination -- a folding volume
+   * finds the directory by either spelling and leaves the name it keeps alone
+   * -- and writes only the LAST component as a name. So `Team docs/One.md` ->
+   * `team docs/One.md` renames nothing at all on a folding volume and the
+   * entry stays spelled `Team docs/One.md`, while `Team docs/One.md` ->
+   * `Team docs/ONE.md` really does re-case the file. A fake that rewrote its
+   * own listing to the whole requested path modelled a filesystem that does
+   * not exist, and hid the livelock the real one produced.
+   */
+  destination(path) {
+    const slash = path.lastIndexOf("/");
+    if (slash === -1) return path;
+    const parent = path.slice(0, slash);
+    return `${this.resolveFolder(parent) ?? parent}/${path.slice(slash + 1)}`;
+  }
+
   /** Every folder above a path, deepest first, as the product computes them. */
   static parents(path) {
     const out = [];
@@ -305,15 +340,59 @@ export class FakeHost {
    * EXACT name belongs to a different file (`main.ts`). On a case-folding
    * host the two spellings are one entry, so nothing is there to refuse and
    * the entry's name changes in place.
+   *
+   * AND IT RENAMES WHAT `rename(2)` RENAMES: the last component, inside the
+   * directory the destination RESOLVES to (`destination`). A destination that
+   * differs from the source in a directory component alone is a rename of the
+   * entry onto itself -- success, and nothing changed.
    */
   async move(from, to) {
     const source = this.resolve(from);
     if (source === undefined) return "missing";
-    if (this.files.has(to) && to !== source) return "occupied";
+    const target = this.destination(to);
+    const occupied = this.resolve(target);
+    if (occupied !== undefined && occupied !== source) return "occupied";
     const file = this.files.get(source);
     this.files.delete(source);
-    this.files.set(to, file);
+    this.files.set(target, file);
     return "moved";
+  }
+
+  /**
+   * The folder rename (`main.ts`): the directory entry's own name changes,
+   * and everything under it follows because what moved is the directory.
+   * Occupied is a DIFFERENT directory, or any file, wearing the destination's
+   * exact name; the folded twin of the source IS the source.
+   */
+  async moveFolder(from, to) {
+    const source = this.resolveFolder(from);
+    if (source === undefined) return "missing";
+    const target = this.destination(to);
+    if (this.resolve(target) !== undefined) return "occupied";
+    const existing = this.resolveFolder(target);
+    if (existing !== undefined && existing !== source) return "occupied";
+    const prefix = `${source}/`;
+    for (const [path, file] of [...this.files]) {
+      if (!path.startsWith(prefix)) continue;
+      this.files.delete(path);
+      this.files.set(target + path.slice(source.length), file);
+    }
+    for (const folder of [...this.explicitFolders]) {
+      if (folder !== source && !folder.startsWith(prefix)) continue;
+      this.explicitFolders.delete(folder);
+      this.explicitFolders.add(target + folder.slice(source.length));
+    }
+    return "moved";
+  }
+
+  /**
+   * The name this vault really shows for a path (`main.ts`): the entry a
+   * lookup finds, spelled the way the directories keep it, and `null` where
+   * a lookup by this exact name finds nothing -- which is every second
+   * spelling on a host that keeps the two apart.
+   */
+  async spelling(path) {
+    return this.resolve(path) ?? this.resolveFolder(path) ?? null;
   }
 
   /** Every folder the vault holds, the way Obsidian's own tree reports them. */
@@ -1153,9 +1232,25 @@ export class EventVault extends FakeHost {
   }
 
   async move(from, to) {
+    // The path the entry really takes, which is what the vault reports: a
+    // destination that differs only in a directory component moves nothing,
+    // and Obsidian names the entry it has rather than the one that was asked
+    // for (`destination`).
+    const landed = this.destination(to);
     const outcome = await super.move(from, to);
     // Obsidian reports a rename this plugin performed like any other.
-    if (outcome === "moved") this.emit("rename", this.entry(to), from);
+    if (outcome === "moved") this.emit("rename", this.entry(landed), from);
+    return outcome;
+  }
+
+  async moveFolder(from, to) {
+    const source = this.resolveFolder(from);
+    const landed = this.destination(to);
+    const outcome = await super.moveFolder(from, to);
+    // ONE event, for the folder, exactly as Obsidian reports a folder rename
+    // the user made -- the fan-out to the files beneath it is the plugin's
+    // (`main.ts`).
+    if (outcome === "moved") this.emit("rename", this.entry(landed, true), source);
     return outcome;
   }
 

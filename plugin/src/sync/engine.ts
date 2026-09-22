@@ -194,6 +194,39 @@ export interface VaultHost {
    * adapter's case-sensitive existence check on mobile.
    */
   move(from: string, to: string): Promise<MoveResult>;
+  /**
+   * The name this vault REALLY shows for `path`, or `null` when nothing here
+   * answers to it.
+   *
+   * THE ONE QUESTION A RECORD MUST NOT GUESS AT (issue #124). `move` renames
+   * the entry the last component names; it cannot change the case of a
+   * DIRECTORY above it, because `rename(2)` resolves those components and a
+   * host that folds case finds the directory by either spelling and leaves
+   * the name it keeps alone. A device that wrote a record at the spelling it
+   * ASKED for, on a host that shows another, has a record its own listing
+   * contradicts -- and the scan pairs that difference as a move and
+   * publishes it, which is the livelock this answer exists to make
+   * impossible. Every component is resolved, not just the last.
+   *
+   * `null` is also the answer on a host that keeps the two spellings apart,
+   * where the folded twin of a name is a DIFFERENT entry and nothing here
+   * wears the name that was asked about.
+   */
+  spelling(path: string): Promise<string | null>;
+  /**
+   * Rename a FOLDER entry, refusing rather than replacing.
+   *
+   * The file `move` cannot do this: its own source and destination are files
+   * on every host, and a directory handed to it is refused. Re-casing a
+   * directory is the only operation that makes a folder renamed by
+   * capitalisation alone converge on a host that folds case, and a folder
+   * record -- which IS its path -- is the only thing entitled to ask for it.
+   *
+   * The destination is occupied when a DIFFERENT directory, or any file,
+   * wears its exact name; the folded twin of the source IS the source and is
+   * not a refusal.
+   */
+  moveFolder(from: string, to: string): Promise<MoveResult>;
   /** Every folder path this device may sync, excluding the vault root. */
   listFolders(): Promise<string[]>;
   /** Make this folder and anything missing above it; refuse if a FILE is there. */
@@ -795,6 +828,12 @@ export class SyncEngine {
    */
   folderRenamed(from: string, to: string): void {
     if (!this.running) return;
+    // The selection follows the folder whichever half runs first, so that a
+    // folder record published BEFORE the moves under it (`main.ts`, the
+    // case-only order) is still judged against the selection the rename
+    // leaves behind. Idempotent by construction: the second call finds no
+    // selected folder left to move and returns.
+    this.followSelection(from, to);
     const recorded = Object.keys(this.need().state.data.folders);
     for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
       this.folderDeleted(path);

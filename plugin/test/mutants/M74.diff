@@ -1,0 +1,12 @@
+# M74: the fake host renames a DIRECTORY component from a file's move
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -349,7 +349,7 @@
+   async move(from, to) {
+     const source = this.resolve(from);
+     if (source === undefined) return "missing";
+-    const target = this.destination(to);
++    const target = to;
+     const occupied = this.resolve(target);
+     if (occupied !== undefined && occupied !== source) return "occupied";
+     const file = this.files.get(source);

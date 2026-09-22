@@ -1,0 +1,12 @@
+# M79: a case-only folder rename publishes its folder record after the moves
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1595,7 +1595,7 @@
+           // a selected folder takes the selection with it. `folderRenamed`
+           // follows the selection too, so either order judges the records
+           // against the selection this rename leaves behind (`sync/engine.ts`).
+-          if (caseOnly(oldPath, file.path)) {
++          if (caseOnly(oldPath, oldPath)) {
+             this.engine?.folderRenamed(oldPath, file.path);
+             this.engine?.renamedFolder(oldPath, file.path);
+           } else {

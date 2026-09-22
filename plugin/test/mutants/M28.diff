@@ -1,7 +1,7 @@
 # M28: any held answer enters the rule, not only one about the destination
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -936,12 +936,8 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
+@@ -1117,12 +1117,8 @@
      // does, the rule hands the version to `updateSettled`, which re-checks
      // that source before writing a byte. Trashing a source that holds an
      // unpushed edit is the loss issue #98 is about.
@@ -15,4 +15,4 @@
 +    if (decided !== null) return decided;
    }
  
-   // A REMOTE RENAME IS A RENAME HERE TOO (issue #108, owner ruling
+   // NOTHING MOVED AND NOTHING CHANGED, SO NOTHING IS FETCHED (issue #108).

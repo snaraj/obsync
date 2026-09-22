@@ -610,6 +610,17 @@ async function applyFolder(
     await pruneEmptyParents(context, path);
     return "deleted";
   }
+  // A FOLDER RECORD IS THE ONLY THING THAT MAY RE-CASE A DIRECTORY (#124).
+  // The directory this record names may already be here under another
+  // capitalisation -- one entry, two spellings, on every host that folds case
+  // -- and `createFolder` would find it "already a directory" and do nothing,
+  // which is how the two devices ended up spelling one folder two ways and
+  // publishing the difference back and forth forever. A note's own move
+  // cannot repair it: `rename(2)` resolves the directory components of its
+  // destination and leaves their spelling alone. This record can, because a
+  // folder record IS its path.
+  const shown = await context.host.spelling(path);
+  if (shown !== null && caseOnly(shown, path)) return await recaseFolder(context, change, shown, path);
   // Marked before the call, like every other write this device makes: the
   // vault reports the new folder to this plugin's own create handler while
   // `createFolder` is still running (`engine.ts`, ECHOES).
@@ -630,6 +641,105 @@ async function applyFolder(
   context.state.setFolder(path, { fileId: change.file_id, versionId: change.version_id });
   await context.state.save();
   context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
+  return "applied";
+}
+
+/**
+ * Apply a folder record whose path differs from this vault's own spelling of
+ * it by capitalisation alone: rename the DIRECTORY ENTRY, then move every
+ * record under it with the entry (issue #124).
+ *
+ * WHY THE ENTRY AND NOT THE FILES. On a host that folds case `Team docs` and
+ * `team docs` are one directory, and the per-file move an incoming rename
+ * used to be applied by is a POSIX no-op for it: `rename(2)` resolves the
+ * directory components of its destination and renames only the last one. The
+ * receiving device therefore ended with records spelling a folder one way and
+ * a vault spelling it the other, and the scan's `(mtime, size)` pairing
+ * published that difference as a rename BACK -- one new version per note
+ * every SCAN_MS, on both devices, until the account quota answered 507.
+ *
+ * ORDER, AND WHAT MAKES IT SAFE EITHER WAY. The sender publishes this record
+ * before the moves under it (`main.ts`), so the ordinary course is: the
+ * directory is re-cased here, the records follow it, and each move that
+ * arrives next names a path this device already holds. A move that arrives
+ * FIRST -- from a device older than this version, which publishes no folder
+ * record at all -- changes nothing here and says so (`applyVersion`); it can
+ * never create the bounce, because nothing records a spelling this vault does
+ * not show.
+ *
+ * THE SELECTION IS NOT AN ISSUE HERE, and that is the scope rule rather than
+ * luck: a folder record is applied only when its path is strictly inside a
+ * selected folder (`inSyncScope`), and `parseSyncFolders` drops any selection
+ * that lives under another, so no selected folder can be at or under the one
+ * this renames.
+ */
+async function recaseFolder(
+  context: SyncContext,
+  change: ChangeRecord,
+  from: string,
+  to: string,
+): Promise<ApplyResult> {
+  const prefix = `${from}/`;
+  const under = (path: string): string => to + path.slice(from.length);
+  const files = Object.keys(context.state.data.files).filter((path) => path.startsWith(prefix));
+  const folders = Object.keys(context.state.data.folders)
+    .filter((path) => path === from || path.startsWith(prefix));
+  // Marked BEFORE the rename, like every other write this device makes. A
+  // folder rename is reported ONCE, for the folder, and this plugin fans that
+  // one event out into a move of every file beneath it and a
+  // tombstone-and-create of every folder record beneath it (`main.ts`).
+  // Unmarked, this device publishes the peer's own rename straight back at it
+  // (`engine.ts`, ECHOES; issue #96).
+  const echoes = files.map((path) => `${path}\u0000${under(path)}`);
+  const unmark = (): void => {
+    for (const echo of echoes) context.moved.delete(echo);
+    for (const folder of folders) {
+      context.trashed.delete(folder);
+      context.createdFolders.delete(under(folder));
+    }
+  };
+  for (const echo of echoes) context.moved.add(echo);
+  for (const folder of folders) {
+    context.trashed.add(folder);
+    context.createdFolders.add(under(folder));
+  }
+  const outcome = await context.host.moveFolder(from, to).catch((error: unknown) => {
+    unmark();
+    throw error;
+  });
+  // ASKED, NEVER ASSUMED. A host that answered `moved` for a rename that left
+  // the directory spelled the way it was would have this device write records
+  // its own listing contradicts -- which is the livelock, one layer up. The
+  // vault says what it shows, and nothing is recorded until it says this.
+  if (outcome !== "moved" || (await context.host.spelling(to)) !== to) {
+    unmark();
+    context.host.log(
+      `folder path_class=folder decision=case_refused ` +
+        `reason=${outcome === "moved" ? "not_respelled" : outcome} seq=${change.seq}`,
+    );
+    return "refused";
+  }
+  // THE RECORDS FOLLOW THE ENTRY, ALL OF THEM, BEFORE ANY CHILD WORK. What
+  // moved is the directory, so every path beneath it moved with it; a record
+  // left at the old spelling is one the next scan reads as a deletion of a
+  // live note.
+  for (const path of files) {
+    const record = context.state.fileByPath(path);
+    if (record === undefined) continue;
+    context.state.setFile(under(path), record);
+    context.state.forgetPath(path);
+  }
+  for (const folder of folders) {
+    const record = context.state.folderByPath(folder);
+    if (record === undefined) continue;
+    context.state.setFolder(under(folder), record);
+    context.state.forgetFolder(folder);
+  }
+  context.state.setFolder(to, { fileId: change.file_id, versionId: change.version_id });
+  await context.state.save();
+  context.host.log(
+    `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,
+  );
   return "applied";
 }
 
@@ -675,6 +785,29 @@ function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: st
   context.host.notify(
     `obsync did not delete ${path}: it holds changes this device has not uploaded yet. ` +
       `Another device deleted that note; this copy is kept here and is uploaded as a new version.`,
+  );
+}
+
+/**
+ * A folder another device spells differently, said once per folder.
+ *
+ * Nothing here failed and nothing was written: the two devices disagree about
+ * the capitalisation of a directory, and this one will not re-case a
+ * directory on the strength of a note's version -- only a folder record does
+ * that, and a device older than 1.1.0 publishes none. The message says what
+ * the user can do, because only they can: update the other device, or rename
+ * the folder here. Keyed by the FOLDER and not by the file id `refused`
+ * otherwise holds, so a folder of two hundred notes is one notice and not two
+ * hundred; a vault path and a file id cannot collide.
+ */
+function notifyFolderCase(context: SyncContext, folder: string): void {
+  if (context.refused.has(folder)) return;
+  context.refused.add(folder);
+  context.host.notify(
+    `obsync: another device spells the folder "${folder}" with different capitalisation than this one shows. ` +
+      "Notes under it are kept where they are; nothing was written, moved or deleted here. Update every device " +
+      "to this version and let each sync once, or rename the folder here to match -- see Troubleshooting, " +
+      '"Two folders that differ only in capitalisation".',
   );
 }
 
@@ -880,6 +1013,54 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   // both host models share: the host refuses if a DIFFERENT file wears the
   // destination's exact name, and that refusal is the real collision, which
   // falls through to the rule below untouched.
+  //
+  // AND A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE. Where the difference
+  // lies in a directory component, this rename is a POSIX no-op that answers
+  // `moved`: `rename(2)` resolves the destination's directories and renames
+  // only its last component, so the entry keeps the spelling it had. A device
+  // that recorded the new spelling anyway would hold a record its own listing
+  // contradicts, and the scan's `(mtime, size)` pairing publishes that
+  // difference as a rename BACK -- one version per note every SCAN_MS, on
+  // both devices, for as long as both run. The folder record is what re-cases
+  // a directory (`recaseFolder`) and the sender publishes it first
+  // (`main.ts`); this asks the vault what it shows, applies the move when the
+  // vault has already made it, and otherwise changes NOTHING and says so.
+  const folderOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  if (localPath !== undefined && caseOnly(localPath, manifest.path)) {
+    // TWO QUESTIONS, ASKED OF THE VAULT ITSELF. What does it show for the
+    // name this device holds, and what for the name the version wants? A host
+    // that keeps the two spellings apart answers `null` for a name nothing
+    // wears, and the rename below makes the move exactly as it did before.
+    const differ = folderOf(localPath) !== folderOf(manifest.path);
+    const shownSource = differ ? await context.host.spelling(localPath) : null;
+    const shownTarget = differ ? await context.host.spelling(manifest.path) : null;
+    if (shownSource === manifest.path) {
+      // ONE ENTRY, ALREADY SPELLED THE NEW WAY: the name this device holds
+      // and the name this version wants are the same directory entry, so the
+      // move has already happened -- the folder record made it -- and only
+      // the record is behind. Asked of the vault, never assumed from the
+      // folder record having run first.
+      const record = context.state.fileByPath(localPath);
+      if (record !== undefined) {
+        context.state.setFile(manifest.path, record);
+        context.state.forgetPath(localPath);
+        await context.state.save();
+      }
+      context.host.log(
+        `pull path_class=file decision=case_move_satisfied file=${change.file_id} seq=${change.seq}`,
+      );
+      localPath = manifest.path;
+    } else if (shownTarget !== null && shownTarget !== manifest.path) {
+      // The vault answers for the name this version wants with a DIFFERENT
+      // spelling of it, which is a host that folds case and a directory this
+      // record may not re-case. Nothing is moved and nothing is recorded.
+      context.host.log(
+        `pull path_class=file decision=case_move_refused reason=folder_case file=${change.file_id} seq=${change.seq}`,
+      );
+      notifyFolderCase(context, folderOf(manifest.path));
+      return "refused";
+    }
+  }
   if (localPath !== undefined && caseOnly(localPath, manifest.path)) {
     // Marked BEFORE the rename, not after it: the vault reports the rename
     // to this plugin's own handler while `move` is still running, and an
@@ -942,6 +1123,37 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     } else {
       return await keepBoth(context, change, manifest);
     }
+  }
+
+  // NOTHING MOVED AND NOTHING CHANGED, SO NOTHING IS FETCHED (issue #108).
+  // A version that names the path this device already holds, carrying the
+  // content this device already holds, is a version this device already has.
+  // A case-only rename arrives exactly like that -- the rename above has just
+  // put the entry at this very path, and a folder record that re-cased a
+  // directory brought its records with it -- and the changelog's promise for
+  // a rename is that nothing is downloaded. Without this, `materialise` below
+  // fetched a chunk and rewrote the whole note for a rename that changed no
+  // byte: a 900 MB note is 900 MB over the phone's data for a name, and the
+  // writer it goes through is the one window in which a save made here is
+  // lost. THE PROOFS ARE THE RENAME SHORTCUT'S, minus the move: `held` is
+  // null, so the file at this path still carries the `(mtime, size)` this
+  // device recorded for THIS file id, and the record's `sha256` is the digest
+  // `recordAt` wrote from the version's own sids. A version carrying any
+  // other content falls through to the download below.
+  if (
+    localPath === manifest.path &&
+    held === null &&
+    local !== undefined &&
+    local.size === manifest.size &&
+    local.sha256 === (await sidDigest(change.sids))
+  ) {
+    const landed = (await context.host.stat(manifest.path)) ??
+      { path: manifest.path, mtime: local.mtime, size: local.size };
+    await recordAt(context, change, manifest.path, landed);
+    context.host.log(
+      `pull path_class=file bytes=${manifest.size} decision=held file=${change.file_id} seq=${change.seq}`,
+    );
+    return "applied";
   }
 
   // A REMOTE RENAME IS A RENAME HERE TOO (issue #108, owner ruling

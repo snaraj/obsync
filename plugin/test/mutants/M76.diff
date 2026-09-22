@@ -1,0 +1,12 @@
+# M76: a note's move records a spelling the vault does not show
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1050,7 +1050,7 @@
+         `pull path_class=file decision=case_move_satisfied file=${change.file_id} seq=${change.seq}`,
+       );
+       localPath = manifest.path;
+-    } else if (shownTarget !== null && shownTarget !== manifest.path) {
++    } else if (shownTarget !== null && shownTarget !== shownTarget) {
+       // The vault answers for the name this version wants with a DIFFERENT
+       // spelling of it, which is a host that folds case and a directory this
+       // record may not re-case. Nothing is moved and nothing is recorded.

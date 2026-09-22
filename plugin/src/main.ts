@@ -74,6 +74,7 @@ import {
   VaultPathError,
   WalkResult,
   assertVaultPath,
+  caseOnly,
   chainRefusal,
   isVaultPath,
   sameFile,
@@ -157,6 +158,19 @@ function walker(fs: NodeFs): PathWalker {
       }
     },
   };
+}
+
+/**
+ * The one entry in a directory listing that IS this name: the exact spelling
+ * when the directory keeps it, and otherwise the single entry that differs
+ * from it in case alone. None, or two of them, is not an answer -- a
+ * directory holding both `Team` and `TEAM` is one that keeps the two apart,
+ * and neither of them is the name that was asked about.
+ */
+function soleSpelling(names: string[], segment: string): string | null {
+  if (names.includes(segment)) return segment;
+  const folded = names.filter((name) => caseOnly(name, segment));
+  return folded.length === 1 ? (folded[0] as string) : null;
 }
 
 /** The decisions that mean the plugin did NOT do what was asked. */
@@ -892,6 +906,105 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
+   * The name this vault really shows for `path` (`sync/engine.ts`).
+   *
+   * EVERY COMPONENT, NOT THE LAST ONE. `Team docs/One.md` and
+   * `team docs/One.md` name one file on a folding volume, and the difference
+   * between them is not in the name of the file at all. A caller asking what
+   * the vault shows is asking so that it can record THAT, so the answer is
+   * built out of the real directory entries from the vault root down.
+   *
+   * A LOOKUP THAT FINDS NOTHING IS THE ANSWER `null`, and it is also what
+   * makes this safe on a volume that keeps the two spellings apart: there the
+   * folded twin is a different entry, the lookup by the name that was asked
+   * about finds nothing, and no caller is told that some other entry is it.
+   * Desktop reads the directories itself; mobile asks the adapter, which is
+   * the only view it has, and whose listing gives the real names whatever the
+   * host app's version does with a case-sensitive `exists`.
+   */
+  async spelling(path: string): Promise<string | null> {
+    assertVaultPath(path);
+    const desktop = this.desktop;
+    const segments = path.split("/");
+    const out: string[] = [];
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      if (!(await adapter.exists(path))) return null;
+      for (const segment of segments) {
+        const at = out.join("/");
+        const listed = await adapter.list(at === "" ? "/" : at);
+        const names = [...listed.files, ...listed.folders].map((child) => child.slice(child.lastIndexOf("/") + 1));
+        const name = soleSpelling(names, segment);
+        if (name === null) return null;
+        out.push(name);
+      }
+      return out.join("/");
+    }
+    // The walk is the lookup, and it refuses a symlink component exactly as
+    // every other operation here does.
+    const found = await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+    if (found.final === "absent") return null;
+    let at = desktop.path.resolve(desktop.base);
+    for (const segment of segments) {
+      let names: string[];
+      try {
+        names = await desktop.fs.promises.readdir(at);
+      } catch {
+        return null;
+      }
+      const name = soleSpelling(names, segment);
+      if (name === null) return null;
+      at = desktop.path.resolve(at, name);
+      out.push(name);
+    }
+    return out.join("/");
+  }
+
+  /**
+   * Rename a FOLDER entry, refusing rather than replacing (`sync/engine.ts`).
+   *
+   * The same shape as `move` one kind over: the destination is occupied only
+   * when a DIFFERENT directory -- a different inode on desktop, a different
+   * exact name on mobile -- wears it, because the folded twin of the source
+   * IS the source and re-casing it is the whole operation. Nothing is created
+   * above the destination: a folder renamed in place keeps the parents it
+   * already had, and a destination whose parents are missing is a move this
+   * version does not make.
+   */
+  async moveFolder(from: string, to: string): Promise<MoveResult> {
+    assertSyncPath(from, this.plugin.state.data.syncFolders);
+    assertSyncPath(to, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      // The case-SENSITIVE existence check, and an Obsidian older than 1.7.2
+      // that ignores the argument answers for the folded name -- which
+      // refuses this rename rather than risking it, exactly as `move` does.
+      if (await adapter.exists(to, true)) return "occupied";
+      if ((await adapter.stat(from))?.type !== "folder") return "missing";
+      await adapter.rename(from, to);
+      return "moved";
+    }
+    const source = await this.confine(desktop, from, ["absent", "directory"]);
+    if (source.final === "absent") return "missing";
+    const found = await this.confine(desktop, to, ["absent", "directory"]);
+    if (
+      found.final === "directory" &&
+      (found.stat?.dev !== source.stat?.dev || found.stat?.ino !== source.stat?.ino)
+    ) {
+      return "occupied";
+    }
+    await desktop.fs.promises.rename(source.target, found.target);
+    // The parents only: the last link of each chain is the directory that has
+    // just been renamed, so asking for it by its old name is asking about an
+    // entry this call removed.
+    const refusal = await chainRefusal(source.chain.slice(0, -1), walker(desktop.fs)) ??
+      await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    return "moved";
+  }
+
+  /**
    * Obsidian's own vault-rooted delete; both path rules are applied first,
    * and on desktop the chain is checked again afterwards. A delete that went
    * somewhere else leaves the file we identified still sitting there, so
@@ -1464,15 +1577,31 @@ export default class ObsyncPlugin extends Plugin {
         if (file instanceof TFile) {
           this.engine?.renamed(oldPath, file.path);
         } else if (file instanceof TFolder) {
-          // One event covers every file beneath it, and a selected folder
-          // among them takes the selection with it (`sync/engine.ts`). That
-          // walk covers the records AND the work still pending for them,
-          // which is more than a listing of tracked paths can reach.
-          this.engine?.renamedFolder(oldPath, file.path);
-          // The files move; the folder records do not — a folder record IS
-          // its path — so the old ones are tombstoned and the new published,
-          // after the moves so the other devices see an empty folder go.
-          this.engine?.folderRenamed(oldPath, file.path);
+          // ORDER IS PART OF THE WIRE CONTRACT (issue #124, `docs/protocol.md`).
+          // A folder renamed by capitalisation ALONE is one directory entry on
+          // a host that folds case, and the receiving device can re-case that
+          // entry only from the FOLDER record: a per-file move cannot, because
+          // `rename(2)` resolves the directory components of its destination
+          // and leaves their spelling alone. So the folder record goes FIRST
+          // there, and the moves under it then find a directory already
+          // spelled the new way and settle without a rename of their own.
+          //
+          // Every OTHER rename keeps the old order: the old folder must be
+          // emptied by the moves before its tombstone, or the receiving device
+          // keeps a folder it was told to remove.
+          //
+          // `renamedFolder` covers the records AND the work still pending for
+          // them, which is more than a listing of tracked paths can reach, and
+          // a selected folder takes the selection with it. `folderRenamed`
+          // follows the selection too, so either order judges the records
+          // against the selection this rename leaves behind (`sync/engine.ts`).
+          if (caseOnly(oldPath, file.path)) {
+            this.engine?.folderRenamed(oldPath, file.path);
+            this.engine?.renamedFolder(oldPath, file.path);
+          } else {
+            this.engine?.renamedFolder(oldPath, file.path);
+            this.engine?.folderRenamed(oldPath, file.path);
+          }
         }
       }),
     );

@@ -19,11 +19,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { STEP_MS, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
+const { SCAN_MS } = require("../build/sync/engine.js");
 const { caseOnly } = require("../build/vaultPath.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -172,13 +173,239 @@ test("a case-only rename on the phone reaches the case-insensitive desktop as on
     false,
     `the same-name rule fired for a case-only move: ${pull.join(" | ")}`,
   );
-  assert.ok(pull.some((line) => line.includes("decision=case_move_moved")), pull.join(" | "));
+  // THE DIRECTORY ENTRY IS WHAT CHANGED, and the folder record is what
+  // changed it (#124, review round 1 finding 1): a per-file rename cannot,
+  // because `rename(2)` resolves the directory components of its destination.
+  // The moves that follow then name a path this device already holds, with
+  // content it already holds, and fetch nothing.
+  assert.ok(
+    a.host.logs.some((line) => line.includes("path_class=folder") && line.includes("decision=case_renamed")),
+    a.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  assert.ok(pull.some((line) => line.includes("decision=held")), pull.join(" | "));
+  assert.equal(
+    pull.some((line) => line.includes("decision=case_move_refused")),
+    false,
+    `the desktop refused the move its own folder record had already made: ${pull.join(" | ")}`,
+  );
   // Renaming this device's own entry is not a move this device publishes.
   assert.ok(
     a.host.logs.some((line) => line.includes("decision=echo_suppressed") && line.includes("event=rename")),
     a.host.logs.filter((line) => line.startsWith("watch")).join(" | "),
   );
   assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
+});
+
+// --- the livelock: two devices that BOTH fold case ----------------------
+
+/**
+ * THE DEFECT THIS SUITE MISSED, and the reason the fake now models
+ * `rename(2)` (review round 1, finding 1).
+ *
+ * Two devices that fold case, one case-only folder rename. The receiving
+ * device applied it as a per-file move, which on a folding volume renames the
+ * entry the LAST component names and resolves the directories above it: the
+ * directory kept its old spelling while the records took the new one, the
+ * scan's `(mtime, size)` pairing read that difference as a rename and
+ * published it BACK, and the device that made the rename applied that as
+ * another no-op and published again -- one new version per note every
+ * `SCAN_MS`, on both devices, with every note re-downloaded each time, until
+ * the account quota answered 507. Two full scan cycles with a frozen journal
+ * is the assertion that answers it; `realfs-case.test.mjs` is the same
+ * assertion over a real case-folding filesystem.
+ */
+test("a case-only folder rename between two devices that both fold case settles, and neither publishes it back", async (t) => {
+  const { server, timers, a, b, ids, keys } = await seeded(t, {
+    caseSensitiveA: false, caseSensitiveB: false, isMobileB: false,
+  });
+
+  b.host.renameFolder("Team docs", "team docs");
+  await timers.run(STEP_MS, () =>
+    a.host.files.has("team docs/One.md") && a.host.files.has("team docs/Two.md") &&
+    settled(a, "team docs/One.md") && settled(a, "team docs/Two.md"));
+  // Drain everything the rename started before the journal is frozen, so the
+  // assertion below is about the SCAN and not about work still in flight.
+  await timers.run(SCAN_MS);
+  const quiet = server.journal.length;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(server.journal.length, quiet, `a device published the rename back: ${story(server, a, b)}`);
+  for (const device of [a, b]) {
+    assert.deepEqual(
+      [...device.host.files.keys()].sort(),
+      ["team docs/One.md", "team docs/Two.md"],
+      `a device kept the old spelling on disk: ${story(server, a, b)}`,
+    );
+    assert.deepEqual(
+      Object.keys(device.state.data.files).sort(),
+      ["team docs/One.md", "team docs/Two.md"],
+      `a device's records disagree with its own vault: ${story(server, a, b)}`,
+    );
+  }
+  for (const id of ids) {
+    assert.equal(
+      (await published(server, id, keys.manifestKey)).length,
+      2,
+      `a note grew more than its push and its move: ${story(server, a, b)}`,
+    );
+  }
+  // AND BOTH DEVICES HOLD THE SAME VERSION. The folder record is published
+  // BEFORE the moves under it (`main.ts`) for exactly this: a move that
+  // reaches a device whose directory is still spelled the old way is refused,
+  // and a device left recording the version BEFORE the move would fork the
+  // note the next time the user touched it.
+  for (const path of ["team docs/One.md", "team docs/Two.md"]) {
+    assert.equal(
+      a.state.fileByPath(path).versionId,
+      b.state.fileByPath(path).versionId,
+      `the two devices hold different versions of one note: ${story(server, a, b)}`,
+    );
+  }
+  for (const device of [a, b]) {
+    assert.equal(
+      device.host.logs.filter((line) => line.startsWith("scan decision=queued")).every((line) => line.includes("moved=0")),
+      true,
+      device.host.logs.filter((line) => line.startsWith("scan")).join(" | "),
+    );
+  }
+});
+
+/**
+ * A device older than 1.1.0 publishes no folder record at all, so its
+ * case-only folder rename reaches this one as the per-file moves alone. A
+ * note's version does not get to re-case a directory -- the directory holds
+ * notes this version says nothing about -- so this device changes NOTHING,
+ * says so in one decision and one notice, and above all records no spelling
+ * its own vault does not show, which is what would bounce.
+ */
+test("a case-only folder move with no folder record behind it is refused, and never published back", async (t) => {
+  const { server, timers, a, keys } = await seeded(t, {
+    caseSensitiveA: false, caseSensitiveB: false, isMobileB: false,
+  });
+  await timers.run(SCAN_MS);
+  const record = a.state.fileByPath("Team docs/One.md");
+
+  await server.publish({
+    fileId: record.fileId,
+    path: "team docs/One.md",
+    bytes: enc(BODY),
+    mtime: 1000,
+    parents: [record.versionId],
+    domainKey: keys.domainKey,
+    manifestKey: keys.manifestKey,
+  });
+  await timers.run(STEP_MS, () =>
+    a.host.logs.some((line) => line.includes("decision=case_move_refused")));
+  const quiet = server.journal.length;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(server.journal.length, quiet, `the refusal was published back as a rename: ${story(server, a, a)}`);
+  assert.deepEqual(
+    [...a.host.files.keys()].sort(),
+    ["Team docs/One.md", "Team docs/Two.md"],
+    `a note's move re-cased the directory: ${story(server, a, a)}`,
+  );
+  assert.deepEqual(
+    Object.keys(a.state.data.files).sort(),
+    ["Team docs/One.md", "Team docs/Two.md"],
+    `a record took a spelling this vault does not show: ${story(server, a, a)}`,
+  );
+  assert.equal(a.state.fileByPath("Team docs/One.md").versionId, record.versionId, "a refused version was recorded anyway");
+  assert.equal(
+    a.host.notices.filter((message) => message.includes("capitalisation")).length,
+    1,
+    `the user was told ${a.host.notices.length} times, or not at all: ${a.host.notices.join(" | ")}`,
+  );
+});
+
+/** The peer's folder record, exactly as `pushFolder` builds one. */
+const folderRecord = async (r, path, { deleted = false, parents = [] } = {}) =>
+  r.server.publishManifest({
+    fileId: await c.folderFileId(r.keys.manifestKey, path),
+    manifest: {
+      v: 2, kind: "directory", path, domain: "0123456789abcdef0123456789abcdef",
+      size: 0, chunks: [], sha256: "", deleted,
+    },
+    sids: [],
+    parents,
+    deviceId: FOREIGN,
+    manifestKey: r.keys.manifestKey,
+    bytes: 0,
+  });
+
+/**
+ * A RENAME THAT CHANGED NO BYTE DOWNLOADS NO BYTE (review round 1, finding
+ * 3). The changelog's promise for a rename is that nothing is downloaded and
+ * nothing is trashed; a case-only rename went on to `materialise` anyway,
+ * because the rename shortcut requires the paths to differ and this one had
+ * just made them the same. For a 900 MB note on a phone that was 900 MB of
+ * the user's data for a name.
+ */
+test("a case-only rename downloads nothing: the note is already here, under this very name", async (t) => {
+  const r = await rig({ caseSensitive: false });
+  r.host.seed("Team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  const local = r.state.fileByPath("Team docs/One.md");
+  let fetched = 0;
+  const getChunk = r.transport.getChunk.bind(r.transport);
+  r.transport.getChunk = async (...args) => {
+    fetched++;
+    return getChunk(...args);
+  };
+
+  const change = await r.server.publish({
+    fileId: local.fileId,
+    path: "Team docs/ONE.md",
+    bytes: enc(BODY),
+    mtime: 1000,
+    parents: [local.versionId],
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+  assert.equal(await applyChange(r.context, change), "applied");
+
+  assert.equal(fetched, 0, `a rename that changed no byte fetched ${fetched} chunks`);
+  assert.deepEqual([...r.host.files.keys()], ["Team docs/ONE.md"], "the entry was not renamed in place");
+  assert.equal(r.host.text("Team docs/ONE.md"), BODY);
+  assert.deepEqual(r.host.trashed, [], "a rename trashed something");
+  assert.equal(r.state.fileByPath("Team docs/ONE.md").versionId, change.version_id);
+  assert.equal(r.state.fileByPath("Team docs/One.md"), undefined, "the old record was left behind");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=held")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+/**
+ * NEVER ASSUMED, ALWAYS ASKED. A host that answered `moved` for a rename it
+ * did not make -- a filesystem that folds more than case, an adapter that
+ * lies, a future host -- would otherwise have this device write records its
+ * own listing contradicts, which is the livelock. The vault is asked what it
+ * shows, and nothing is recorded until it says the new spelling.
+ */
+test("a host that reports a folder rename it did not make records nothing", async (t) => {
+  const r = await rig({ caseSensitive: false });
+  r.host.seed("Team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  r.host.moveFolder = async () => "moved";
+
+  const change = await folderRecord(r, "team docs");
+  assert.equal(await applyChange(r.context, change), "refused");
+
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=case_refused") && line.includes("reason=not_respelled")),
+    r.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  assert.deepEqual([...r.host.files.keys()], ["Team docs/One.md"]);
+  assert.deepEqual(Object.keys(r.state.data.files), ["Team docs/One.md"], "a record took the spelling anyway");
+  assert.equal(r.state.folderByPath("team docs"), undefined, "a folder record was written for a rename that did not happen");
+  // The echo marks were taken back, or the user's own next rename of that
+  // folder would be suppressed as this device's own.
+  assert.equal(r.context.moved.size, 0, "a rename that did not happen left an echo marker armed");
+  assert.equal(r.context.createdFolders.size, 0);
+  assert.equal(r.context.trashed.size, 0);
 });
 
 // --- the host models themselves -----------------------------------------
@@ -193,11 +420,34 @@ test("the two host models answer a second spelling differently, or these tests p
   assert.equal(await folding.host.read("team docs/One.md").then((b) => b.length), 4);
   await assert.rejects(() => apart.host.read("team docs/One.md"));
 
-  // One entry, renamed in place, against two entries where one is created.
+  // A RENAME RENAMES ITS LAST COMPONENT, and that is the whole of what
+  // `rename(2)` does: the directory components of the destination are
+  // RESOLVED -- a folding volume finds the directory by either spelling and
+  // leaves the name it keeps alone -- so a move that differs from its source
+  // in a directory component alone succeeds and changes nothing. A fake that
+  // rewrote its listing to the whole requested path modelled a filesystem
+  // that does not exist, and hid a livelock the real one produced (#124,
+  // review round 1 finding 1). Proved against a real case-insensitive APFS
+  // directory in `realfs-case.test.mjs`.
   assert.equal(await folding.host.move("Team docs/One.md", "team docs/One.md"), "moved");
-  assert.deepEqual([...folding.host.files.keys()], ["team docs/One.md"]);
+  assert.deepEqual(
+    [...folding.host.files.keys()],
+    ["Team docs/One.md"],
+    "the folding host re-cased a DIRECTORY component from a file's rename",
+  );
+  // The last component, on the same host, really is renamed.
+  assert.equal(await folding.host.move("team docs/One.md", "Team docs/ONE.md"), "moved");
+  assert.deepEqual([...folding.host.files.keys()], ["Team docs/ONE.md"]);
+  // And the host that keeps them apart moves the file into a second
+  // directory, because there the two names are two entries.
   assert.equal(await apart.host.move("Team docs/One.md", "team docs/One.md"), "moved");
   assert.deepEqual([...apart.host.files.keys()], ["team docs/One.md"]);
+  // The directory entry itself is the folder record's to rename, and only
+  // that operation changes what the folding host shows.
+  await folding.host.moveFolder("Team docs", "team docs");
+  assert.deepEqual([...folding.host.files.keys()], ["team docs/ONE.md"]);
+  assert.equal(await folding.host.spelling("TEAM DOCS/one.md"), "team docs/ONE.md");
+  assert.equal(await apart.host.spelling("TEAM DOCS/one.md"), null);
 });
 
 test("a rename refuses a destination a DIFFERENT file already wears", async (t) => {

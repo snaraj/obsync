@@ -1,0 +1,12 @@
+# M78: the folder re-case trusts the host's answer instead of the vault's listing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -711,7 +711,7 @@
+   // the directory spelled the way it was would have this device write records
+   // its own listing contradicts -- which is the livelock, one layer up. The
+   // vault says what it shows, and nothing is recorded until it says this.
+-  if (outcome !== "moved" || (await context.host.spelling(to)) !== to) {
++  if (outcome !== "moved" || (await context.host.spelling(to)) === undefined) {
+     unmark();
+     context.host.log(
+       `folder path_class=folder decision=case_refused ` +

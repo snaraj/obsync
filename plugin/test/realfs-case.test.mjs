@@ -1,0 +1,386 @@
+/**
+ * A case-only FOLDER rename between two devices, on a REAL case-folding
+ * filesystem, driven by the engine's own feed and its periodic scan.
+ *
+ * WHY THIS FILE EXISTS. `case-rename.test.mjs` proves the same behaviour
+ * against the hand-written vault, and a hand-written vault is exactly what
+ * hid this defect: its `move` rewrote its own listing to the whole requested
+ * path, so a per-file rename appeared to re-case a DIRECTORY component. No
+ * filesystem does that. `rename(2)` resolves the directory components of its
+ * destination -- a volume that folds case finds the directory by either
+ * spelling and leaves the name it keeps alone -- and renames only the last
+ * component, so the receiving device kept the old spelling on disk while its
+ * records carried the new one, its scan published that difference back as a
+ * rename, and the two devices bounced one rename between them every
+ * `SCAN_MS` forever, re-downloading every note under the folder each time
+ * (review round 1, finding 1; reproduced by the reviewer on this laptop's
+ * APFS). The fake now models `rename(2)`; this file is the second, harder
+ * proof: the REAL `ObsidianHost` over a REAL directory, with the real
+ * `SyncEngine` above it.
+ *
+ * WHERE IT RUNS. Wherever the temporary directory's filesystem folds case,
+ * which is detected here by creating `a` and asking for `A` -- macOS APFS and
+ * the owner's laptop do; an ext4 CI runner does not, and there the two
+ * spellings are two entries and there is nothing to converge. A filesystem
+ * that keeps them apart therefore RECORDS a skip that names its subject, and
+ * still asserts that the detection itself ran, so a detection that silently
+ * broke cannot pass as a skip.
+ *
+ * WHAT IT DOES NOT PROVE. No vault events are delivered here: Obsidian's
+ * watcher is the app's, and this harness is the filesystem plus the engine.
+ * The echo suppression that answers those events is proved in
+ * `case-rename.test.mjs` against the vault that fires them.
+ */
+
+import { strict as assert } from "node:assert";
+import test from "node:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  promises as fsPromises,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import nodePath, { join } from "node:path";
+import { FakeTimers, KEYS, STEP_MS, published, rig, sandbox } from "./fake.mjs";
+
+const require = createRequire(import.meta.url);
+const { pushFile } = require("../build/sync/push.js");
+const { SyncEngine, SCAN_MS } = require("../build/sync/engine.js");
+const c = require("../build/crypto.js");
+
+const enc = (text) => new TextEncoder().encode(text);
+const ONE = "ONE SENTINEL BODY\n";
+const TWO = "TWO SENTINEL BODY\n";
+const OTHER_DEVICE = "ffffffffffffffffffffffffffffffff";
+const DOMAIN = "0123456789abcdef0123456789abcdef";
+
+/** The subject a skip has to name, so a skipped run says what went untested. */
+const SUBJECT =
+  "a case-only folder rename applied by the engine's feed over a case-folding filesystem, " +
+  "and the periodic scan that must not publish it back";
+
+/**
+ * Does this filesystem fold case? Asked of the filesystem the test will use,
+ * by making one name and looking for the other -- never inferred from the
+ * platform, because a macOS volume can be formatted either way.
+ */
+function foldsCase(root) {
+  const at = join(root, "a");
+  writeFileSync(at, "");
+  const folds = existsSync(join(root, "A"));
+  rmSync(at);
+  return folds;
+}
+
+/** Every file under the vault root, with the spelling the DIRECTORY keeps. */
+function walk(root, folder = "") {
+  const out = { files: [], folders: [] };
+  const at = folder === "" ? root : join(root, folder);
+  for (const name of readdirSync(at)) {
+    if (name.startsWith(".")) continue;
+    const path = folder === "" ? name : `${folder}/${name}`;
+    const found = statSync(join(root, path));
+    if (found.isDirectory()) {
+      out.folders.push(path);
+      const below = walk(root, path);
+      out.files.push(...below.files);
+      out.folders.push(...below.folders);
+    } else {
+      out.files.push({ path, stat: { mtime: Math.round(found.mtimeMs), size: found.size } });
+    }
+  }
+  return out;
+}
+
+/**
+ * A real vault directory under the real desktop host, with the rig's state,
+ * server and keys behind it. The vault surface is Obsidian's, answered from
+ * the filesystem: its index IS the directory here, which is what makes a
+ * spelling the directory keeps and a spelling the record keeps comparable.
+ */
+async function vault(t, folderOnDisk) {
+  const r = await rig();
+  const box = sandbox();
+  const root = mkdtempSync(join(tmpdir(), "obsync-realfs-case-"));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(box.home, { recursive: true, force: true });
+  });
+  const folds = foldsCase(root);
+  mkdirSync(join(root, folderOnDisk));
+  const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const logs = [];
+  const notices = [];
+  const adapter = {
+    exists: async (path, sensitive) => {
+      if (sensitive !== true) return existsSync(join(root, path));
+      const at = path.lastIndexOf("/");
+      const folder = at === -1 ? "" : path.slice(0, at);
+      if (!existsSync(join(root, folder))) return false;
+      return readdirSync(join(root, folder)).includes(path.slice(at + 1));
+    },
+    rename: async (from, to) => fsPromises.rename(join(root, from), join(root, to)),
+    mkdir: async (path) => fsPromises.mkdir(join(root, path), { recursive: true }),
+    stat: async (path) => {
+      if (!existsSync(join(root, path))) return null;
+      const found = statSync(join(root, path));
+      return { type: found.isFile() ? "file" : "folder", mtime: Math.round(found.mtimeMs), size: found.size };
+    },
+    readBinary: async (path) => {
+      const bytes = readFileSync(join(root, path));
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+    writeBinary: async (path, data, options) => {
+      writeFileSync(join(root, path), new Uint8Array(data));
+      if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
+    },
+    remove: (path) => fsPromises.unlink(join(root, path)),
+    rmdir: (path) => fsPromises.rmdir(join(root, path)),
+    list: async (path) => {
+      const below = walk(root, path);
+      return { files: below.files.map((file) => file.path), folders: below.folders };
+    },
+  };
+  const vaultApi = {
+    adapter,
+    getFiles: () => walk(root).files,
+    getAllFolders: () => walk(root).folders.map((path) => ({ path })),
+    getAbstractFileByPath: () => null,
+    getFileByPath: (path) =>
+      existsSync(join(root, path)) && statSync(join(root, path)).isFile() ? { path } : null,
+    getFolderByPath: (path) =>
+      existsSync(join(root, path)) && statSync(join(root, path)).isDirectory() ? { path } : null,
+    createBinary: async (path, data, options) => {
+      writeFileSync(join(root, path), new Uint8Array(data), { flag: "wx" });
+      if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
+      const found = statSync(join(root, path));
+      return { path, stat: { mtime: Math.round(found.mtimeMs), size: found.size } };
+    },
+  };
+  const plugin = {
+    state: r.state,
+    log: (line) => logs.push(line),
+    app: {
+      vault: vaultApi,
+      fileManager: {
+        trashFile: async (file) => {
+          const target = join(root, file.path);
+          if (statSync(target).isDirectory()) await fsPromises.rmdir(target);
+          else await fsPromises.unlink(target);
+        },
+      },
+    },
+    manifest: { version: "1.1.0" },
+    platformName: () => "macos",
+    deviceName: () => "sentinel-device",
+  };
+  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises: fsPromises } });
+  host.notify = (message) => notices.push(message);
+  r.context.host = host;
+  // The two counters an assertion about "nothing was downloaded" and one
+  // about "the scan really ran" need; silence is not evidence of either.
+  const counts = { fetched: 0, scans: 0 };
+  const getChunk = r.transport.getChunk.bind(r.transport);
+  r.transport.getChunk = async (...args) => {
+    counts.fetched++;
+    return getChunk(...args);
+  };
+  const scan = host.scan.bind(host);
+  host.scan = async () => {
+    counts.scans++;
+    return scan();
+  };
+  const seed = (path, text, mtime) => {
+    writeFileSync(join(root, path), text);
+    utimesSync(join(root, path), mtime / 1000, mtime / 1000);
+  };
+  const names = () => readdirSync(root).filter((name) => !name.startsWith("."));
+  return { ...r, root, host, folds, seed, names, logs, notices, counts, box };
+}
+
+/** The peer's folder record, exactly as `pushFolder` builds one. */
+const folderRecord = async (r, path, { deleted = false, parents = [] } = {}) =>
+  r.server.publishManifest({
+    fileId: await c.folderFileId(r.keys.manifestKey, path),
+    manifest: { v: 2, kind: "directory", path, domain: DOMAIN, size: 0, chunks: [], sha256: "", deleted },
+    sids: [],
+    parents,
+    deviceId: OTHER_DEVICE,
+    manifestKey: r.keys.manifestKey,
+    bytes: 0,
+  });
+
+/** The peer's move of one note: the same bytes under the folder's new name. */
+const movedNote = (r, record, path, body, mtime) =>
+  r.server.publish({
+    fileId: record.fileId,
+    path,
+    bytes: enc(body),
+    mtime,
+    parents: [record.versionId],
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+
+/** Every version this device published for a note, oldest first. */
+const versions = (r, fileId) => published(r.server, fileId, r.keys.manifestKey);
+
+const story = (r) =>
+  [`disk=${JSON.stringify(walk(r.root).files.map((file) => file.path))}`,
+    `folders=${JSON.stringify(walk(r.root).folders)}`,
+    `records=${JSON.stringify(Object.keys(r.state.data.files))}`,
+    `journal=${r.server.journal.length}`,
+    `scans=${r.counts.scans}`,
+    `fetched=${r.counts.fetched}`].join(" ");
+
+/**
+ * Both directions, because the defect was symmetric: the device that made
+ * the rename applied the bounce back as another no-op and published again.
+ */
+const directions = [
+  { onDisk: "Team docs", incoming: "team docs" },
+  { onDisk: "team docs", incoming: "Team docs" },
+];
+
+for (const { onDisk, incoming } of directions) {
+  test(`real filesystem: a peer's case-only folder rename (${onDisk} -> ${incoming}) is applied to the DIRECTORY and never published back`, async (t) => {
+    const r = await vault(t, onDisk);
+    if (!r.folds) {
+      // A skip that says what went untested, and proves its own detection ran
+      // rather than having thrown or answered nothing.
+      assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+      assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+      t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+      t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+      return;
+    }
+    r.seed(`${onDisk}/One.md`, ONE, 1000);
+    r.seed(`${onDisk}/Two.md`, TWO, 1000);
+    await pushFile(r.context, `${onDisk}/One.md`);
+    await pushFile(r.context, `${onDisk}/Two.md`);
+    const one = r.state.fileByPath(`${onDisk}/One.md`);
+    const two = r.state.fileByPath(`${onDisk}/Two.md`);
+
+    // The peer renames the folder by capitalisation alone. A device on this
+    // version publishes the FOLDER record first and the moves under it after
+    // (`main.ts`), because only the folder record can re-case a directory.
+    const created = await folderRecord(r, onDisk);
+    await folderRecord(r, onDisk, { deleted: true, parents: [created.version_id] });
+    await folderRecord(r, incoming);
+    await movedNote(r, one, `${incoming}/One.md`, ONE, 1000);
+    await movedNote(r, two, `${incoming}/Two.md`, TWO, 1000);
+
+    const timers = new FakeTimers();
+    const engine = new SyncEngine({
+      state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+    });
+    t.after(async () => {
+      engine.stop();
+      r.server.releaseFeed();
+      await engine.stopAndWait();
+    });
+    await engine.start();
+    await timers.run(STEP_MS, () =>
+      r.state.pathByFileId(one.fileId) === `${incoming}/One.md` &&
+      r.state.pathByFileId(two.fileId) === `${incoming}/Two.md`);
+
+    // THE DIRECTORY ENTRY ITSELF, which is the whole repair: `readdir` is the
+    // filesystem's own answer, not the record's and not the manifest's.
+    assert.deepEqual(r.names(), [incoming], `the directory kept its old spelling: ${story(r)}`);
+    assert.equal(readFileSync(join(r.root, `${incoming}/One.md`), "utf8"), ONE, story(r));
+    assert.equal(readFileSync(join(r.root, `${incoming}/Two.md`), "utf8"), TWO, story(r));
+    assert.equal(r.counts.fetched, 0, `a rename that changed no byte downloaded one: ${story(r)}`);
+    assert.ok(
+      r.logs.some((line) => line.includes("path_class=folder") && line.includes("decision=case_renamed")),
+      r.logs.filter((line) => line.startsWith("folder")).join(" | "),
+    );
+
+    // TWO FULL SCAN CYCLES. The bounce was one new version per note per
+    // `SCAN_MS` on both devices; two cycles with a frozen journal is the
+    // assertion that answers it.
+    const settled = r.server.journal.length;
+    const scansBefore = r.counts.scans;
+    await timers.run(SCAN_MS);
+    await timers.run(SCAN_MS);
+
+    assert.ok(r.counts.scans >= scansBefore + 2, `the periodic scan did not run: ${story(r)}`);
+    assert.equal(r.server.journal.length, settled, `the scan published the rename back: ${story(r)}`);
+    assert.equal(
+      r.logs.filter((line) => line.startsWith("scan decision=queued")).every((line) => line.includes("moved=0")),
+      true,
+      r.logs.filter((line) => line.startsWith("scan")).join(" | "),
+    );
+    // ONE VERSION PER NOTE for what this device did: its own push and the
+    // peer's move, and nothing of its own after that.
+    for (const record of [one, two]) {
+      const all = await versions(r, record.fileId);
+      assert.equal(all.length, 2, `a note grew a version per scan: ${story(r)}`);
+      assert.equal(all[all.length - 1].path, `${incoming}/${all[all.length - 1].path.split("/")[1]}`, story(r));
+    }
+    assert.deepEqual(
+      Object.keys(r.state.data.files).sort(),
+      [`${incoming}/One.md`, `${incoming}/Two.md`],
+      `the records disagree with the directory: ${story(r)}`,
+    );
+    assert.equal(r.counts.fetched, 0, `the scan cycles downloaded something: ${story(r)}`);
+  });
+}
+
+test("real filesystem: a case-only folder move from a device that publishes no folder record changes nothing, and is not published back", async (t) => {
+  const r = await vault(t, "Team docs");
+  if (!r.folds) {
+    assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+    assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+    t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+    t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+    return;
+  }
+  r.seed("Team docs/One.md", ONE, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  const one = r.state.fileByPath("Team docs/One.md");
+
+  // A device older than 1.1.0 publishes no folder record at all: the rename
+  // reaches this device as the moves alone, and a note's version does not
+  // get to re-case a directory that holds other notes.
+  await movedNote(r, one, "team docs/One.md", ONE, 1000);
+
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+  });
+  t.after(async () => {
+    engine.stop();
+    r.server.releaseFeed();
+    await engine.stopAndWait();
+  });
+  await engine.start();
+  await timers.run(STEP_MS, () =>
+    r.logs.some((line) => line.includes("decision=case_move_refused")));
+
+  assert.deepEqual(r.names(), ["Team docs"], `the directory was re-cased by a note's move: ${story(r)}`);
+  assert.equal(r.state.pathByFileId(one.fileId), "Team docs/One.md", `the record left the directory behind: ${story(r)}`);
+  assert.equal(r.state.fileByPath("Team docs/One.md").versionId, one.versionId, story(r));
+  assert.equal(r.counts.fetched, 0, `a refused move downloaded the note: ${story(r)}`);
+  assert.equal(
+    r.notices.filter((message) => message.includes("capitalisation")).length,
+    1,
+    `the user was told ${r.notices.length} times, or not at all: ${r.notices.join(" | ")}`,
+  );
+
+  const settled = r.server.journal.length;
+  const scansBefore = r.counts.scans;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.ok(r.counts.scans >= scansBefore + 2, `the periodic scan did not run: ${story(r)}`);
+  assert.equal(r.server.journal.length, settled, `the refusal was published back as a rename: ${story(r)}`);
+  assert.equal((await versions(r, one.fileId)).length, 2, `the note grew a version: ${story(r)}`);
+});
