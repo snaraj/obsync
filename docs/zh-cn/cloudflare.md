@@ -70,6 +70,6 @@ Cloudflare 的菜单和套餐条款会变化。下面每一步给出的菜单路
 ## 接下来
 
 - [运行服务器](../server.md)：终止点、卷、设置令牌。
-- [Kubernetes](../../chart/README.md)：参考部署使用的 chart。
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md)：参考部署使用的 chart。
 - [平台接入](../platform-onboarding.md)：参考集群为公开主机名需要补充的内容。
 - [故障排查](../troubleshooting.md)：`edge_required`、`offline` 和证书。

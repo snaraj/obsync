@@ -174,7 +174,7 @@ exercée par aucune campagne enregistrée.
 
 - [Faire tourner le serveur](../server.md) : le terminateur, les volumes, le
   jeton d'installation.
-- [Kubernetes](../../chart/README.md) : le chart qu'utilise le déploiement
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md) : le chart qu'utilise le déploiement
   de référence.
 - [Intégration à la plateforme](../platform-onboarding.md) : ce que le
   cluster de référence ajouterait pour un nom d'hôte publié.

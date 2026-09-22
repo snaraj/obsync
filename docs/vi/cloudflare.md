@@ -161,7 +161,7 @@ ghi lại.
 
 - [Chạy máy chủ](../server.md): điểm kết thúc TLS, các ổ lưu trữ, token thiết
   lập.
-- [Kubernetes](../../chart/README.md): chart mà bản triển khai tham chiếu sử
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart mà bản triển khai tham chiếu sử
   dụng.
 - [Tích hợp nền tảng](../platform-onboarding.md): cụm tham chiếu sẽ bổ sung
   gì cho một tên máy chủ công khai.

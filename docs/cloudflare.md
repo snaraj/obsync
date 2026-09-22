@@ -156,7 +156,7 @@ recorded run.
 ## Next
 
 - [Run the server](server.md): the terminator, the volumes, the setup token.
-- [Kubernetes](../chart/README.md): the chart the reference deployment uses.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): the chart the reference deployment uses.
 - [Platform onboarding](platform-onboarding.md): what the reference cluster
   would add for a published hostname.
 - [Troubleshooting](troubleshooting.md): `edge_required`, `offline`, and the

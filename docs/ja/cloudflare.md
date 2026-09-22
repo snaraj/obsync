@@ -70,6 +70,6 @@ TLS を終端するものは、あなたの認証情報を読みますが、ノ�
 ## 次へ
 
 - [サーバーを動かす](../server.md)：終端、ボリューム、セットアップトークン。
-- [Kubernetes](../../chart/README.md)：リファレンス構成が使うチャート。
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md)：リファレンス構成が使うチャート。
 - [プラットフォームのオンボーディング](../platform-onboarding.md)：公開ホスト名のためにリファレンスクラスターが追加するもの。
 - [トラブルシューティング](../troubleshooting.md)：`edge_required`、`offline`、証明書。

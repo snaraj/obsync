@@ -167,7 +167,7 @@ przebieg na urządzeniach na trasie referencyjnej z zaliczonymi kontrolami
 
 - [Uruchamianie serwera](../server.md): terminator, wolumeny, token
   konfiguracji.
-- [Kubernetes](../../chart/README.md): chart używany przez instalację
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart używany przez instalację
   referencyjną.
 - [Wdrożenie platformy](../platform-onboarding.md): co klaster referencyjny
   dodałby dla opublikowanej nazwy hosta.

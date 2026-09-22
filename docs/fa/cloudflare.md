@@ -70,6 +70,6 @@
 ## بعدی
 
 - [اجرای سرور](../server.md): پایان‌دهنده، حجم‌ها، توکن راه‌اندازی.
-- [Kubernetes](../../chart/README.md): چارتی که استقرار مرجع به کار می‌برد.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): چارتی که استقرار مرجع به کار می‌برد.
 - [پیوستن به پلتفرم](../platform-onboarding.md): آنچه خوشهٔ مرجع برای یک نام میزبان منتشرشده اضافه می‌کرد.
 - [رفع اشکال](../troubleshooting.md): `edge_required`، `offline` و گواهی.

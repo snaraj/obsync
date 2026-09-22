@@ -171,7 +171,7 @@ esercitata da alcuna sessione registrata.
 
 - [Avviare il server](../server.md): il terminatore, i volumi, il token di
   configurazione.
-- [Kubernetes](../../chart/README.md): il chart usato dall'installazione di
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): il chart usato dall'installazione di
   riferimento.
 - [Onboarding della piattaforma](../platform-onboarding.md): cosa
   aggiungerebbe il cluster di riferimento per un nome host pubblicato.

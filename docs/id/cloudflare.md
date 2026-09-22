@@ -166,7 +166,7 @@ nama host publik belum pernah diuji dalam sesi mana pun yang tercatat.
 ## Selanjutnya
 
 - [Menjalankan server](../server.md): terminator, volume, token penyiapan.
-- [Kubernetes](../../chart/README.md): chart yang dipakai penyiapan acuan.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart yang dipakai penyiapan acuan.
 - [Penyambungan platform](../platform-onboarding.md): apa yang akan
   ditambahkan klaster acuan untuk nama host yang dipublikasikan.
 - [Pemecahan masalah](../troubleshooting.md): `edge_required`, `offline`,

@@ -70,6 +70,6 @@
 ## التالي
 
 - [تشغيل الخادم](../server.md): المُنهي، والأقراص، ورمز الإعداد.
-- [Kubernetes](../../chart/README.md): المخطط الذي يستخدمه النشر المرجعي.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): المخطط الذي يستخدمه النشر المرجعي.
 - [إلحاق المنصة](../platform-onboarding.md): ما الذي سيضيفه العنقود المرجعي من أجل اسم مضيف منشور.
 - [استكشاف الأخطاء](../troubleshooting.md): `edge_required` و`offline` والشهادة.

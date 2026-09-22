@@ -70,6 +70,6 @@ TLS를 종단하는 것은 무엇이든 자격 증명을 읽지만 노트는 절
 ## 다음
 
 - [서버 실행하기](../server.md): 종단 지점, 볼륨, 설정 토큰.
-- [Kubernetes](../../chart/README.md): 기준 배포가 쓰는 차트.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): 기준 배포가 쓰는 차트.
 - [플랫폼 온보딩](../platform-onboarding.md): 공개 호스트 이름을 위해 기준 클러스터가 추가할 것.
 - [문제 해결](../troubleshooting.md): `edge_required`, `offline`, 인증서.

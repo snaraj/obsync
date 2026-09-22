@@ -70,6 +70,6 @@
 ## ถัดไป
 
 - [การรันเซิร์ฟเวอร์](../server.md): จุดสิ้นสุด TLS โวลุ่ม และโทเค็นตั้งค่า
-- [Kubernetes](../../chart/README.md): chart ที่การติดตั้งอ้างอิงใช้
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart ที่การติดตั้งอ้างอิงใช้
 - [การเชื่อมต่อแพลตฟอร์ม](../platform-onboarding.md): สิ่งที่คลัสเตอร์อ้างอิงจะต้องเพิ่มสำหรับชื่อโฮสต์สาธารณะ
 - [การแก้ปัญหา](../troubleshooting.md): `edge_required`, `offline` และใบรับรอง

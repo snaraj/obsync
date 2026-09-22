@@ -171,7 +171,7 @@ sido ejercitada por ninguna ejecución registrada.
 
 - [Ejecutar el servidor](../server.md): el terminador, los volúmenes, el
   token de configuración.
-- [Kubernetes](../../chart/README.md): el chart que usa la instalación de
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): el chart que usa la instalación de
   referencia.
 - [Incorporación a la plataforma](../platform-onboarding.md): qué añadiría el
   clúster de referencia para un nombre de host publicado.

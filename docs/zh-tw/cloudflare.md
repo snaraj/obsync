@@ -70,6 +70,6 @@ Cloudflare 的選單與方案條款會變動。下面每個步驟給出的選單
 ## 接下來
 
 - [執行伺服器](../server.md)：終止點、磁碟區、設定權杖。
-- [Kubernetes](../../chart/README.md)：參考部署使用的 chart。
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md)：參考部署使用的 chart。
 - [平台導入](../platform-onboarding.md)：參考叢集為公開主機名稱需要補充的內容。
 - [疑難排解](../troubleshooting.md)：`edge_required`、`offline` 與憑證。

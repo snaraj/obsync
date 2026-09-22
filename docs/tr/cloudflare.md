@@ -164,7 +164,7 @@ denenmemiştir.
 
 - [Sunucuyu çalıştırma](../server.md): sonlandırıcı, birimler, kurulum
   belirteci.
-- [Kubernetes](../../chart/README.md): referans kurulumun kullandığı chart.
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): referans kurulumun kullandığı chart.
 - [Platform entegrasyonu](../platform-onboarding.md): referans kümenin
   yayımlanmış bir ana bilgisayar adı için ekleyecekleri.
 - [Sorun giderme](../troubleshooting.md): `edge_required`, `offline` ve

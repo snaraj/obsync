@@ -173,7 +173,7 @@ aufgezeichneten Lauf geprüft.
 
 - [Server betreiben](../server.md): der Terminator, die Volumes, das
   Setup-Token.
-- [Kubernetes](../../chart/README.md): das Chart, das die Referenzinstallation
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): das Chart, das die Referenzinstallation
   nutzt.
 - [Platform-Onboarding](../platform-onboarding.md): was der Referenz-Cluster
   für einen veröffentlichten Hostnamen ergänzen würde.

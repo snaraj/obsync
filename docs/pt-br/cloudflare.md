@@ -168,7 +168,7 @@ por nenhuma sessão registrada.
 
 - [Rodar o servidor](../server.md): o terminador, os volumes, o token de
   configuração.
-- [Kubernetes](../../chart/README.md): o chart que a instalação de
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): o chart que a instalação de
   referência usa.
 - [Integração à plataforma](../platform-onboarding.md): o que o cluster de
   referência acrescentaria para um nome de host publicado.

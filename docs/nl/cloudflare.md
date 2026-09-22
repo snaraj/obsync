@@ -168,7 +168,7 @@ De variant met publieke hostnaam is door geen enkele vastgelegde run beproefd.
 
 - [De server draaien](../server.md): de terminator, de volumes, het
   setup-token.
-- [Kubernetes](../../chart/README.md): de chart die de referentie-installatie
+- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): de chart die de referentie-installatie
   gebruikt.
 - [Platform-onboarding](../platform-onboarding.md): wat het referentiecluster
   zou toevoegen voor een gepubliceerde hostnaam.
