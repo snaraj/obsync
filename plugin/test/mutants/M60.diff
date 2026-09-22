@@ -1,0 +1,19 @@
+# M60: the put-back looks at the destination and then replaces whatever took it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -986,13 +986,9 @@
+   private async putBack(desktop: DesktopVault, source: string, target: string): Promise<boolean> {
+     const fs = desktop.fs;
+     for (const name of this.restoreNames(desktop, target)) {
++      if ((await walker(fs).lstat(name)) !== null) continue;
+       try {
+-        // `link` IS the check. Looking first and renaming second asks the
+-        // filesystem a question whose answer expires: a save can create that
+-        // name in between, and `rename` replaces it without a word. `link`
+-        // cannot replace anything, so a name taken in that instant fails the
+-        // call instead of overwriting the note that took it.
+-        await fs.promises.link(source, name);
++        await fs.promises.rename(source, name);
+         if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
+         return true;
+       } catch {

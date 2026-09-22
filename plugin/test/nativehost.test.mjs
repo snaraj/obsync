@@ -83,6 +83,10 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
   const trashed = [];
   const promises = {
     ...fsPromises,
+    unlink: async (path) => {
+      if (hooks.beforeUnlink) await hooks.beforeUnlink(root, path);
+      return fsPromises.unlink(path);
+    },
     link: async (from, to) => {
       // The seam for a filesystem that cannot give a second name: the hold
       // is the only link this path makes for a name of its own.
@@ -635,4 +639,138 @@ test("an in-place save before the move is put back, not removed", async (t) => {
     `the host did not report the edit: ${JSON.stringify(r.logs)}`,
   );
   assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
+});
+
+/**
+ * AND THE CASE UNDER THAT ONE: a restore that cannot land anywhere.
+ *
+ * The reviewer's blocked-restore case is answered by giving the restore more
+ * than one name to try, so it lands. This one takes the names away
+ * altogether -- every restoring `link` is refused -- and asks the question
+ * the repair is really about: the hold is the LAST name of bytes no version
+ * holds, so it is released only when those bytes are somewhere else. Here
+ * they are nowhere else, so the hidden name stays, and the answer is `kept`.
+ */
+test("a restore that lands nowhere keeps the hold rather than releasing it", async (t) => {
+  let edited = false;
+  const r = await native(t, {
+    link: async (from) => {
+      // Only the restores are refused: the hold itself, and the conflict
+      // copy's own publication, are links too, and a filesystem that refused
+      // those would refuse the copy rather than the restore.
+      if (!from.includes(".obsync-hold-") && !from.includes(".obsync-gone-")) return;
+      const error = new Error("link EPERM");
+      error.code = "EPERM";
+      throw error;
+    },
+    beforeTrash: async (root, path) => {
+      if (edited) return;
+      edited = true;
+      writeFileSync(join(root, path), EDIT);
+      utimesSync(join(root, path), 9.999, 9.999);
+    },
+  });
+  const frame = await collide(r);
+
+  const result = await applyChange(r.context, frame);
+
+  assert.ok(edited, "the held-inode save was never made");
+  assert.ok(
+    r.trashed.every((entry) => entry.path.includes(".obsync-gone-")),
+    `a deletion was aimed at a live name: ${JSON.stringify(r.trashed)}`,
+  );
+  const held = r.hidden().map((name) => readFileSync(join(r.root, "Notes", name), "utf8"));
+  assert.ok(
+    held.includes(EDIT),
+    `the only copy of the edit was released; result=${result}; hidden=${JSON.stringify(held)}; ` +
+      `live=${JSON.stringify(r.contents())}; logs=${JSON.stringify(r.logs)}`,
+  );
+  assert.ok(
+    r.logs.some((line) => line.includes("decision=kept reason=held")),
+    `the host did not report that it is still holding those bytes: ${JSON.stringify(r.logs)}`,
+  );
+});
+
+/**
+ * THE REVIEWER'S OWN INPUT CASES for round 5's findings 1 and 2 (PR #120,
+ * comment 5778412397), carried verbatim under the header they were given:
+ * a save that takes the restore destination between the look and the write,
+ * a restore blocked at every name it has, and a save an editor makes through
+ * its own descriptor after this device's last look at the hold. The only
+ * fixture seam they add is a hook immediately before the real unlink.
+ */
+test("review: restoring a changed moved file does not overwrite a later save", async (t) => {
+  const LATER = "LATER SAVE WHILE RESTORING SENTINEL, EXISTS NOWHERE ELSE\n";
+  let firstEdit = false, laterEdit = false;
+  const r = await native(t, {
+    beforeRename: async (root, from, to) => {
+      if (from === join(root, NOTE) && to.includes(".obsync-gone-") && !firstEdit) {
+        firstEdit = true;
+        writeFileSync(join(root, NOTE), EDIT);
+        utimesSync(join(root, NOTE), 9.999, 9.999);
+      }
+    },
+    // ONE EDIT, and it is the repair's own doing: the put-back is no longer
+    // a rename, so the second window moved with it. The restore is a `link`
+    // now, and this hook fires in the same place the reviewer's did -- after
+    // the caller decided on this destination, before the call that takes it.
+    link: async (from, to) => {
+      if (!from.includes(".obsync-gone-") || !to.endsWith(NOTE) || laterEdit) return;
+      laterEdit = true;
+      writeFileSync(to, LATER, { flag: "wx" });
+      utimesSync(to, 12.345, 12.345);
+    },
+  });
+  const frame = await collide(r);
+  const result = await applyChange(r.context, frame);
+  assert.ok(firstEdit && laterEdit, "both save windows must have been exercised");
+  assert.ok(r.contents().includes(EDIT), "the first edit must survive its restore");
+  assert.ok(r.contents().includes(LATER),
+    `restore overwrote later save; result=${result}; live=${JSON.stringify(r.contents())}; hidden=${JSON.stringify(r.hidden())}; logs=${JSON.stringify(r.logs)}`);
+});
+
+test("review: a blocked restore retains the only hold containing the later edit", async (t) => {
+  let edited = false;
+  const r = await native(t, {
+    beforeTrash: async (root, path) => {
+      if (edited) return;
+      edited = true;
+      // An in-place write reaches the held inode after it moved.
+      writeFileSync(join(root, path), EDIT);
+      utimesSync(join(root, path), 9.999, 9.999);
+      writeFileSync(join(root, NOTE), "NEW OCCUPANT SENTINEL\n", { flag: "wx" });
+      writeFileSync(join(root, "Notes/Same (obsync kept).md"), "EXISTING KEPT SENTINEL\n", { flag: "wx" });
+    },
+  });
+  const frame = await collide(r);
+  const result = await applyChange(r.context, frame);
+  assert.ok(edited, "the held-inode save must have been injected");
+  const allFiles = readdirSync(join(r.root, "Notes")).map(name => ({ name, text: readFileSync(join(r.root, "Notes", name), "utf8") }));
+  assert.ok(allFiles.some(file => file.text === EDIT),
+    `last hold discarded after restore failure; result=${result}; files=${JSON.stringify(allFiles)}; logs=${JSON.stringify(r.logs)}`);
+});
+
+
+test("review: a descriptor save after the final hold stat remains reachable", async (t) => {
+  let handle, edited = false;
+  const r = await native(t, {
+    beforeUnlink: async (root, path) => {
+      if (!path.includes(".obsync-hold-") || edited) return;
+      edited = true;
+      // removeHeld has already accepted its final hold stat. The editor
+      // still owns its original descriptor and saves before drop unlinks.
+      await handle.write(EDIT, 0, "utf8");
+      await handle.truncate(new TextEncoder().encode(EDIT).length);
+      await handle.utimes(9.999, 9.999);
+    },
+  });
+  const frame = await collide(r);
+  handle = await fsPromises.open(join(r.root, NOTE), "r+");
+  let result;
+  try { result = await applyChange(r.context, frame); }
+  finally { await handle.close(); }
+  assert.ok(edited, "the save must occur before the final hold is removed");
+  const allFiles = readdirSync(join(r.root, "Notes")).map(name => ({ name, text: readFileSync(join(r.root, "Notes", name), "utf8") }));
+  assert.ok(allFiles.some(file => file.text === EDIT),
+    `descriptor save lost after final check; result=${result}; files=${JSON.stringify(allFiles)}; logs=${JSON.stringify(r.logs)}`);
 });

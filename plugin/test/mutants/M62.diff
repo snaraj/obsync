@@ -1,0 +1,16 @@
+# M62: the hold is unlinked on a stat, with no descriptor left to answer for it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -907,11 +907,7 @@
+       // descriptor is still open on it, so a save that landed in the
+       // meantime is read back here and written out under a name of its own
+       // rather than lost with the name.
+-      const last = await handle.stat();
+-      if (holds(last)) return "removed";
+-      this.log("host path_class=file decision=kept reason=descriptor_save");
+-      await this.preserve(desktop, handle, found.target, last.size);
+-      return "kept";
++      return "removed";
+     } finally {
+       await handle.close().catch(() => undefined);
+     }
