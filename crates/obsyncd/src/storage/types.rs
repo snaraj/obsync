@@ -474,6 +474,10 @@ pub enum StoreError {
     DeviceRevoked,
     /// The device claimed a pairing but nobody has approved it.
     DevicePending,
+    /// A delete named a device that is not waiting for pairing approval.
+    /// Deletion destroys the record outright, so it is reserved for a claim
+    /// nobody approved; an approved device is revoked instead (issue #88).
+    DeviceNotPending,
     /// No such file.
     UnknownFile,
     /// No such domain: no file the store holds is in it.
@@ -555,6 +559,7 @@ impl fmt::Display for StoreError {
             StoreError::LastActiveDevice => f.write_str("the only active device"),
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
+            StoreError::DeviceNotPending => f.write_str("device is not pending approval"),
             StoreError::TooManyHeads { heads, max } => {
                 write!(f, "too many heads: {heads} heads, max {max}")
             }
@@ -607,6 +612,7 @@ impl StoreError {
             StoreError::LastActiveDevice => "last_device",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
+            StoreError::DeviceNotPending => "device_not_pending",
             StoreError::TooManyHeads { .. } => "too_many_heads",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",

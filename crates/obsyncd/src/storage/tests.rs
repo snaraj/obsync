@@ -944,15 +944,29 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         "the revoked device and the spare that made revoking it legal"
     );
 
-    store.delete_device(&id).expect("delete");
-    assert!(store.device(&id).is_none());
+    // Deletion is the rejected-claim path and nothing else
+    // (`only_a_pending_device_is_deleted`), so what this test destroys to
+    // reach the refusals below is a claim nobody approved.
+    let pending = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [0x5au8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("a claim creates a pending device")
+        .device_id;
+    store.delete_device(&pending).expect("delete");
+    assert!(store.device(&pending).is_none());
     assert!(matches!(
-        store.delete_device(&id),
+        store.delete_device(&pending),
         Err(StoreError::UnknownDevice)
     ));
     assert!(matches!(
         store.record_seen(
-            &id,
+            &pending,
             SeenEvent {
                 kind: SeenKind::Edit,
                 ts: UnixMs(1),
@@ -2512,6 +2526,57 @@ fn revoking_a_device_that_is_not_active_is_never_the_last_one() {
     assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
 }
 
+/// Issue #88: a delete takes a claim nobody approved, and nothing else.
+///
+/// The pairing table refuses a reject after the approval, and this is the
+/// wall behind it: the state check sits in the function that writes the
+/// frame, so a caller that forgets the first one still cannot delete a
+/// paired device. Revocation is how a paired device is taken away, and it
+/// keeps the row, destroys the secret, and refuses the account's last active
+/// device -- none of which a delete does.
+#[test]
+fn only_a_pending_device_is_deleted() {
+    let dir = TempDir::new("store-delete-states");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let account = store.setup("sentinel").expect("setup runs once");
+    let active = spare_device(&store, account);
+    let revoked = spare_device(&store, account);
+    store
+        .revoke_device_unless_last(&revoked)
+        .expect("two active devices, so one may go");
+
+    for (id, state) in [(active, "active"), (revoked, "revoked")] {
+        let seq = store.head_seq();
+        let refused = store
+            .delete_device(&id)
+            .expect_err("only a pending device is deleted");
+        assert!(
+            matches!(refused, StoreError::DeviceNotPending),
+            "{state}: {refused}"
+        );
+        assert!(
+            store.device(&id).is_some(),
+            "{state}: the refusal left the record where it was"
+        );
+        assert_eq!(store.head_seq(), seq, "{state}: a refusal appends no frame");
+    }
+
+    let pending = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "half-paired phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [6u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("the claimant")
+        .device_id;
+    store.delete_device(&pending).expect("a claim is deletable");
+    assert!(store.device(&pending).is_none());
+}
+
 /// Two devices revoking each other at the same instant cannot leave an
 /// account with nothing active.
 ///
@@ -2528,8 +2593,12 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
     let store = open(&cfg);
     let account = store.setup("sentinel").expect("setup runs once");
 
+    // The survivor of each round is a racer in the next one, so every round
+    // starts with exactly two active devices and no reset is needed. Deleting
+    // the pair used to be that reset, and deletion is now the rejected-claim
+    // path only: it takes a PENDING device and nothing else (issue #88).
+    let mut a = spare_device(&store, account);
     for round in 0..50 {
-        let a = spare_device(&store, account);
         let b = spare_device(&store, account);
         assert_eq!(
             store.devices().iter().filter(|d| d.active()).count(),
@@ -2553,6 +2622,9 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
             ra.is_ok() != rb.is_ok(),
             "round {round}: exactly one of two mutual revocations may land"
         );
+        // Which revocation landed is also which device is left active, and
+        // the next round needs that before the results are consumed below.
+        let survivor = if ra.is_ok() { a } else { b };
         let refused = ra.err().or(rb.err()).expect("one of them was refused");
         assert!(
             matches!(refused, StoreError::LastActiveDevice),
@@ -2563,12 +2635,13 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
             1,
             "round {round}: the account still has a device that can sync"
         );
-        // Clear the board for the next round: deletion is the pairing-reject
-        // path and takes an active device, which revocation deliberately
-        // will not.
-        for id in [a, b] {
-            store.delete_device(&id).expect("delete");
-        }
+        // Whichever revocation was refused left its target active: that is
+        // the device the next round races against a fresh one.
+        a = survivor;
+        assert!(
+            store.device(&a).expect("the survivor").active(),
+            "round {round}: the refused revocation left its target active"
+        );
     }
 }
 
