@@ -6,7 +6,7 @@ line, and this record is the output of one command:
 
     sh plugin/test/mutants/matrix.sh
 
-run over the sources this commit leaves in the tree, 484 tests, against the
+run over the sources this commit leaves in the tree, 508 tests, against the
 pinned TypeScript 5.9.3. One mutant can be re-measured on its own:
 
     sh plugin/test/mutants/run.sh plugin/test/mutants/M12.diff
@@ -18,34 +18,50 @@ than mutating something it was never written for.
 
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
-| M01 | the tie-break comparison reversed | 19/484 |
-| M02 | the tie-break always keeps the name | 6/484 |
-| M03 | the tie-break always renames | 14/484 |
-| M04 | a name this device already settled is ignored | 5/484 |
-| M05 | a settled occupant is written over unchecked | 3/484 |
-| M06 | keep-and-record records no copy | 10/484 |
-| M07 | the moved file's delete is left unmarked | 3/484 |
-| M08 | the moved file's record is left clean | 4/484 |
-| M09 | no free name reports the move as done | 1/484 |
-| M10 | an unidentified file is never settled | 3/484 |
-| M11 | the source of a move is never checked for a local edit | 1/484 |
-| M12 | adoption takes any occupant of the length | 2/484 |
-| M13 | identify believes any publish outcome | 1/484 |
-| M14 | a failed publish reports success | 1/484 |
-| M15 | one path pushed twice at once | 4/484 |
-| M16 | the source is not re-stat-ed before the trash | 1/484 |
-| M17 | the refusal is logged and the move reported as done | 1/484 |
-| M18 | the move reads the whole file again | 2/484 |
-| M19 | the copy window is the rest of the file | 1/484 |
-| M20 | a copy that failed under a moving source is raised, not refused | 1/484 |
-| M21 | the fake's create-only writer accepts a short copy | 1/484 |
-| M22 | the digest proof is bound to a fresh stat | 2/484 |
-| M23 | recordAt stats the file itself | 2/484 |
-| M24 | the settled write records a fresh stat | 1/484 |
-| M25 | the joined request is dropped, as before | 1/484 |
-| M26 | the follow-up is remembered and never queued | 1/484 |
-| M27 | the record is never saved | 1/484 |
+| M01 | the tie-break comparison reversed | 19/508 |
+| M02 | the tie-break always keeps the name | 6/508 |
+| M03 | the tie-break always renames | 14/508 |
+| M04 | a name this device already settled is ignored | 5/508 |
+| M05 | a settled occupant is written over unchecked | 3/508 |
+| M06 | keep-and-record records no copy | 10/508 |
+| M07 | the moved file's delete is left unmarked | 3/508 |
+| M08 | the moved file's record is left clean | 4/508 |
+| M09 | no free name reports the move as done | 1/508 |
+| M10 | an unidentified file is never settled | 2/508 |
+| M11 | the source of a move is never checked for a local edit | 1/508 |
+| M12 | adoption takes any occupant of the length | 2/508 |
+| M13 | identify believes any publish outcome | 1/508 |
+| M14 | a failed publish reports success | 1/508 |
+| M15 | one path pushed twice at once | 3/508 |
+| M16 | the source is not re-stat-ed before the trash | 1/508 |
+| M17 | the refusal is logged and the move reported as done | 1/508 |
+| M18 | the move reads the whole file again | 2/508 |
+| M19 | the copy window is the rest of the file | 1/508 |
+| M20 | a copy that failed under a moving source is raised, not refused | 1/508 |
+| M21 | the fake's create-only writer accepts a short copy | 1/508 |
+| M22 | the digest proof is bound to a fresh stat | 2/508 |
+| M23 | recordAt stats the file itself | 2/508 |
+| M24 | the settled write records a fresh stat | 1/508 |
+| M25 | the joined request is dropped, as before | 1/508 |
+| M26 | the follow-up is remembered and never queued | 1/508 |
+| M27 | the record is never saved | 1/508 |
 | M28 | any held answer enters the rule, not only one about the destination | survives, see below |
+| M29 | the id the server answers with is ignored | 3/508 |
+| M30 | a post never offers the version the server already holds | 3/508 |
+| M31 | a rename offers itself for deduplication | 1/508 |
+| M32 | the domain map offers itself for deduplication | 1/508 |
+| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/508 |
+| M34 | 121: sync now never drains again for work queued behind it | 1/508 |
+| M35 | 121: sync now always reports that it joined a running drain | 1/508 |
+| M36 | 56: the in-flight byte ceiling admits anything | 1/508 |
+| M37 | 56: a chunk already in flight is uploaded a second time | 1/508 |
+| M38 | 56: the probe always answers that the body never landed | 1/508 |
+| M39 | 56: the 409 retry re-uploads every chunk again | 1/508 |
+| M40 | 91: a renamed folder does not take the selection with it | 5/508 |
+| M41 | 91: a file leaving the selection is published as a deletion | 3/508 |
+| M42 | 91: both sides of the move are judged by the selection after it | 3/508 |
+| M43 | 91: the followed selection is never persisted | 1/508 |
+| M44 | 92: every scope change replays from zero, narrowing included | 1/508 |
 
 ## Which tests killed each mutant
 
@@ -126,16 +142,19 @@ than mutating something it was never written for.
 
 **M07** - the moved file's delete is left unmarked
 
+- a note written while this device was closed survives one the other device made at the same path
 - the holder of the higher id moves its own note aside and yields the path
 - a note far larger than memory is moved aside a window at a time
-- two devices that name one note twice converge, and stay converged
-- NOT A DETERMINISTIC COUNT. "two devices that name one note twice converge,
-  and stay converged" killed this mutant in one of two full runs at this head
-  and not in the other; the other tests named here killed it in both, so the
-  floor is one less than the count in the table. Two real engines on one
-  virtual clock resolve a collision in an order this mutant lets decide the
-  outcome, which is a property of the mutant rather than of the suite: the
-  pristine suite passed 484/484 in every run, mutation campaign included.
+- NOT A DETERMINISTIC COUNT. The number above is this run's; across two full
+  runs at this head the kill set of this mutant moved by one test, always one
+  of the two-device or offline rigs -- two engines on one virtual clock, or a
+  device that starts with work already queued, resolve their collision in an
+  order this mutant lets decide the outcome. That is a property of the mutant,
+  not of the suite: the pristine suite passed 508/508 in every run of the
+  campaign. The floor is what both runs reproduced: for M07 the higher-id move
+  aside and the multi-GiB move, for M10 both unpublished-note tests, and for
+  M15 the offline same-path survival, the edit that raced the push, and the
+  two-engine convergence.
 
 **M08** - the moved file's record is left clean
 
@@ -152,14 +171,16 @@ than mutating something it was never written for.
 
 - a note this device never published is given an id before the rule decides
 - and it yields the name once it has one, when the other id sorts lower
-- two devices that name one note twice converge, and stay converged
-- NOT A DETERMINISTIC COUNT. "two devices that name one note twice converge,
-  and stay converged" killed this mutant in one of two full runs at this head
-  and not in the other; the other tests named here killed it in both, so the
-  floor is one less than the count in the table. Two real engines on one
-  virtual clock resolve a collision in an order this mutant lets decide the
-  outcome, which is a property of the mutant rather than of the suite: the
-  pristine suite passed 484/484 in every run, mutation campaign included.
+- NOT A DETERMINISTIC COUNT. The number above is this run's; across two full
+  runs at this head the kill set of this mutant moved by one test, always one
+  of the two-device or offline rigs -- two engines on one virtual clock, or a
+  device that starts with work already queued, resolve their collision in an
+  order this mutant lets decide the outcome. That is a property of the mutant,
+  not of the suite: the pristine suite passed 508/508 in every run of the
+  campaign. The floor is what both runs reproduced: for M07 the higher-id move
+  aside and the multi-GiB move, for M10 both unpublished-note tests, and for
+  M15 the offline same-path survival, the edit that raced the push, and the
+  two-engine convergence.
 
 **M11** - the source of a move is never checked for a local edit
 
@@ -181,9 +202,18 @@ than mutating something it was never written for.
 **M15** - one path pushed twice at once
 
 - a note written while this device was closed survives one the other device made at the same path
-- a note the queue is already pushing is not published a second time
 - an edit made while a note is being pushed is not left behind
 - two devices that name one note twice converge, and stay converged
+- NOT A DETERMINISTIC COUNT. The number above is this run's; across two full
+  runs at this head the kill set of this mutant moved by one test, always one
+  of the two-device or offline rigs -- two engines on one virtual clock, or a
+  device that starts with work already queued, resolve their collision in an
+  order this mutant lets decide the outcome. That is a property of the mutant,
+  not of the suite: the pristine suite passed 508/508 in every run of the
+  campaign. The floor is what both runs reproduced: for M07 the higher-id move
+  aside and the multi-GiB move, for M10 both unpublished-note tests, and for
+  M15 the offline same-path survival, the edit that raced the push, and the
+  two-engine convergence.
 
 **M16** - the source is not re-stat-ed before the trash
 
@@ -248,3 +278,80 @@ than mutating something it was never written for.
   shape shows the cost: it needs a cast that asserts a type the value does not
   have, and it would make this decision depend on another function's re-check
   rather than on the answer in hand.
+
+**M29** - the id the server answers with is ignored
+
+- a post the server already holds is recorded under the id it answers with
+- a publish under an adopted file id that dedupes is adoption, and renames nothing
+- two engines that merge one note identically end on ONE version
+
+**M30** - a post never offers the version the server already holds
+
+- a post the server already holds is recorded under the id it answers with
+- a publish under an adopted file id that dedupes is adoption, and renames nothing
+- two engines that merge one note identically end on ONE version
+
+**M31** - a rename offers itself for deduplication
+
+- a rename is never deduplicated, so both devices still learn the new name
+
+**M32** - the domain map offers itself for deduplication
+
+- two different domain maps from one parent are two versions
+
+**M33** - 121: drain() resolves immediately while draining (the 1.0.6 early return)
+
+- sync now waits for the drain already running, and says which decision it took
+- sync now drains again for work queued after the drain it joined took its last batch
+
+**M34** - 121: sync now never drains again for work queued behind it
+
+- sync now drains again for work queued after the drain it joined took its last batch
+
+**M35** - 121: sync now always reports that it joined a running drain
+
+- sync now waits for the drain already running, and says which decision it took
+
+**M36** - 56: the in-flight byte ceiling admits anything
+
+- V7: killing an upload and reopening re-sends fewer than 8 MiB
+
+**M37** - 56: a chunk already in flight is uploaded a second time
+
+- a chunk in flight is never uploaded twice concurrently
+
+**M38** - 56: the probe always answers that the body never landed
+
+- a lost answer asks whether the body landed instead of re-sending it
+
+**M39** - 56: the 409 retry re-uploads every chunk again
+
+- a version refused for missing chunks re-uploads only what the server lacks
+
+**M40** - 91: a renamed folder does not take the selection with it
+
+- a selected folder renamed keeps its notes on every device, and the selection follows it
+- a selected folder moved into another folder keeps its notes on every device, and the selection follows it
+- a selected folder renamed where no device may sync publishes nothing and says so once
+- a rename above a selected folder moves the selection with it, persists it, and widens nothing
+- a failed save of a followed selection stops the engine instead of syncing an unrecorded scope
+
+**M41** - 91: a file leaving the selection is published as a deletion
+
+- a rename whose target is hidden is not synced, and neither is the plugin's own state
+- a selected folder renamed where no device may sync publishes nothing and says so once
+- moving local content into a selected folder creates a new identity; moving it out publishes nothing
+
+**M42** - 91: both sides of the move are judged by the selection after it
+
+- a selected folder renamed keeps its notes on every device, and the selection follows it
+- a selected folder moved into another folder keeps its notes on every device, and the selection follows it
+- a rename above a selected folder moves the selection with it, persists it, and widens nothing
+
+**M43** - 91: the followed selection is never persisted
+
+- a failed save of a followed selection stops the engine instead of syncing an unrecorded scope
+
+**M44** - 92: every scope change replays from zero, narrowing included
+
+- scope contraction waits for active work, retains state and cursor, and saves locally

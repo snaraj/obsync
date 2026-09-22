@@ -35,7 +35,11 @@ done
 restore() {
   status=$?
   for tree in src test; do
-    find "${root}/plugin/${tree}" -name '*.orig' -o -name '*.rej' -exec rm -f {} +
+    # The parentheses are load-bearing: `-o` binds looser than `-exec`, so
+    # without them only the second name is ever removed -- which left `.orig`
+    # files behind, and a leftover file is a difference, so the verification
+    # below declared a mutant left in a tree that had been restored correctly.
+    find "${root}/plugin/${tree}" \( -name '*.orig' -o -name '*.rej' \) -exec rm -f {} +
     cp -R "${pristine}/${tree}/." "${root}/plugin/${tree}/"
     if ! diff -r -q "${pristine}/${tree}" "${root}/plugin/${tree}" >/dev/null; then
       printf 'MUTANT LEFT IN THE TREE: restore plugin/%s from %s by hand\n' "${tree}" "${pristine}" >&2

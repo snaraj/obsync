@@ -1,0 +1,12 @@
+# M35: 121: sync now always reports that it joined a running drain
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -817,7 +817,7 @@
+     const followUp = this.queue.length > 0 || this.draining;
+     if (followUp) await this.drain();
+     this.options.host.log(
+-      `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
++      `sync_now decision=joined_running_drain queued=${queued} ` +
+         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
+     );
+     await this.repairTick();
