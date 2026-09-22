@@ -179,6 +179,8 @@ export class SyncEngine {
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
+  /** The drain in flight, so a second caller waits for it instead of for nothing. */
+  private drainWork: Promise<void> | null = null;
   private readonly pushing = new Map<string, Promise<void>>();
   /** Paths asked for while their push was in flight: one follow-up each. */
   private readonly again = new Set<string>();
@@ -498,8 +500,21 @@ export class SyncEngine {
 
   // --- push queue --------------------------------------------------------
 
-  private async drain(): Promise<void> {
-    if (this.draining) return;
+  /**
+   * One drain at a time, and every caller waits for the one that is running.
+   *
+   * Returning early to a caller that asked for the queue to be flushed is
+   * what let "Sync now" report done with the queue still full (issue #121).
+   * `draining` is set and cleared synchronously inside the loop, so it, not
+   * the settled promise, decides whether there is something to join.
+   */
+  private drain(): Promise<void> {
+    if (this.draining && this.drainWork !== null) return this.drainWork;
+    this.drainWork = this.drainQueue();
+    return this.drainWork;
+  }
+
+  private async drainQueue(): Promise<void> {
     this.draining = true;
     try {
       const context = this.need();
@@ -692,10 +707,28 @@ export class SyncEngine {
     );
   }
 
-  /** Everything the user's "Sync now" command does. */
+  /**
+   * Everything the user's "Sync now" command does.
+   *
+   * It resolves only once the queue it was asked to flush is empty. Joining
+   * the running drain is not enough on its own: a path queued after that
+   * drain took its last batch joins the very drain that will never look at
+   * the queue again, so one more drain follows. That second drain is a no-op
+   * when nothing is left, which is why one is enough.
+   */
   async syncNow(): Promise<void> {
+    const started = this.nowFn();
+    const joined = this.draining;
     await this.reconcile();
+    const queued = this.queue.length;
+    const inFlight = this.active;
     await this.drain();
+    const followUp = this.queue.length > 0 || this.draining;
+    if (followUp) await this.drain();
+    this.options.host.log(
+      `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
+        `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
+    );
     await this.repairTick();
   }
 
