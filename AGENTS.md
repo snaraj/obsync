@@ -204,7 +204,7 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 - `crates/obsyncd`: `config`, `signal` (the only unsafe), `log`,
   `storage/{blobs,journal,index,gc,scrub}`, `api/{auth,pairing,sync,
   chunks,changes,admin,plugin}`, `dashboard` (serves `OBSYNC_DASHBOARD_DIR`), `cli`
-  (`serve`, `check`, `export`, `bench`). Type declarations live in
+  (`serve`, `check`, `setup-token`, `export`, `bench`). Type declarations live in
   `types.rs` per module group; methods stay beside the logic they serve.
 - `plugin/src`: `main.ts` (plugin entry), `crypto.ts`, `chunker.ts`,
   `state.ts`, `transport.ts`, `sync/{push,pull,conflict}.ts`,

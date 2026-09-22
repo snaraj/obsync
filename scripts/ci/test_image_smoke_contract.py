@@ -746,7 +746,7 @@ REGION_PROOF = "full blob volume:"
 # reached, so this is the number a reader of the gate log sees. Property 10 is
 # the chart's own rendered environment, run on the shipped image; it stands
 # after property 9 so the region above keeps its meaning.
-PROPERTIES = 10
+PROPERTIES = 11
 # The line the server writes when a volume will not take the readiness probe.
 READINESS_LINE = "event=readiness decision=not_ready volume=blobs io=StorageFull"
 # The detail the wire refusal carries, and the code it carries it under.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # image-smoke -- run the SHIPPED image the way the README tells a stranger to
-# run it, and prove the ten properties that quick start, and the deployment
+# run it, and prove the eleven properties that quick start, and the deployment
 # it becomes, depend on.
 #
 # WHY THIS EXISTS. The `container` job proved the image BUILDS and that its
@@ -238,6 +238,19 @@ running_token="$(docker cp "${container}:${TOKEN_PATH}" - | tar -xO | tr -d '[:s
 printf '%s' "${running_token}" | grep -Eq "${hex}" \
   || deny "the setup token is not 64 lowercase hex characters (${#running_token} characters read)"
 prove "setup token: ${TOKEN_PATH} read from the running container is 64 lowercase hex characters"
+
+# (3b) THE COMMAND THE DOCUMENTS NOW TELL AN OPERATOR TO RUN (issue #73). The
+# `docker cp` above is the read that needs nothing inside the container at
+# all; this is the one the README, `chart/README.md` and `docs/recovery.md`
+# put first, because `kubectl cp` cannot do the same job -- it needs a `tar`
+# in the container, and this image has none. It runs the image's OWN binary,
+# so what is proved here is that the SHIPPED image can answer it: no shell,
+# no helper image, no network, and the same token the volume holds.
+exec_token="$(docker exec "${container}" obsyncd setup-token | tr -d '[:space:]')" \
+  || deny 'obsyncd setup-token failed inside the running container'
+[ "${exec_token}" = "${running_token}" ] \
+  || deny 'obsyncd setup-token printed a different token than the volume holds'
+prove 'setup token: obsyncd setup-token in the shipped image prints the token the volume holds'
 
 # (4) The same command against a STOPPED container: a different daemon path,
 # and the state an operator who has restarted their host is actually in.
