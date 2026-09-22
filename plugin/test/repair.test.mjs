@@ -482,7 +482,17 @@ test("engine cancellation releases a held metadata read without allowing any sub
   } finally {
     release.resolve();
     await within(underlying, "underlying metadata response");
-    await engine.stopAndWait();
+    // THE FEED IS PARKED AGAIN BY NOW, sometimes. `releaseFeed` above drained
+    // the poll that was outstanding when the stop began; the loop can take
+    // one more turn and park on a new one before `running` is observed false,
+    // and then this drain waits on a long poll nothing will ever answer. It
+    // is timing, so it showed up as a whole suite hanging once in a while
+    // rather than as a failure -- and under `--test-timeout` as a cancelled
+    // test, which the mutation matrix would have counted as a kill for every
+    // mutant. Releasing again is a no-op when nothing is waiting.
+    const drained = engine.stopAndWait();
+    r.server.releaseFeed();
+    await within(drained, "engine drain after the metadata response");
   }
   assert.equal(responseReleased, true);
   assert.equal(transport.manualRead, null);
