@@ -39,8 +39,8 @@ const HIGHER = "33".repeat(16);
 const copies = (host) => [...host.files.keys()].filter((path) => path.includes("(conflict from"));
 
 /** One device holding `ours` at `NOTE`, and one foreign version of `theirs`. */
-async function collision(ours, theirs) {
-  const r = await rig();
+async function collision(ours, theirs, options = {}) {
+  const r = await rig(options);
   r.host.seed(NOTE, MINE, 2000);
   await pushFile(r.context, NOTE);
   // A pushed file id is random; which one sorts lower is the whole decision,
@@ -729,6 +729,66 @@ test("a note far larger than memory is moved aside a window at a time", async ()
   assert.equal(r.state.fileByPath(copied.path).fileId, HIGHER);
   assert.equal(r.state.fileByPath(copied.path).mtime, -1);
   assert.ok(r.context.trashed.has(NOTE));
+});
+
+/**
+ * The same collision on a device that cannot stream (round 3, finding 3).
+ *
+ * The window above is a window in THIS file: the loop asks the host for 8 MiB
+ * at a time and hands the host 8 MiB at a time. On mobile the host underneath
+ * it allocates the declared size in one `Uint8Array` and reads the whole file
+ * to serve any range (`main.ts`), so the loop buys nothing there -- a 21-byte
+ * incoming version, colliding with a 3 GiB local note, asks a 512 MiB device
+ * for a 3 GiB buffer. Admission weighed the INCOMING size and says nothing
+ * about the local file.
+ *
+ * The vault below models the large note rather than allocating one, and fails
+ * the test if the move asks for the buffer at all: the refusal has to come
+ * BEFORE the allocation and before the read, not from either of them.
+ */
+test("a local note past this device's ceiling is left where it is", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER, { isMobile: true });
+  const SIZE = 3 * 1024 ** 3;
+  const stat = r.host.stat.bind(r.host);
+  r.host.stat = async (path) => (path === NOTE ? { path, mtime: 2000, size: SIZE } : stat(path));
+  const create = r.host.createWriter.bind(r.host);
+  let asked = 0;
+  r.host.createWriter = async (path, size, check) => {
+    if (size === SIZE) {
+      asked++;
+      throw new Error("sentinel: a whole-file buffer past this device's ceiling");
+    }
+    return create(path, size, check);
+  };
+  const touched = [];
+  const source = r.host.source.bind(r.host);
+  r.host.source = (path, size) => {
+    touched.push(path);
+    return source(path, size);
+  };
+  const read = r.host.read.bind(r.host);
+  r.host.read = async (path) => {
+    touched.push(path);
+    return read(path);
+  };
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(asked, 0, "the move asked for a buffer past this device's ceiling");
+  assert.ok(!touched.includes(NOTE), "the local note was read whole to copy it");
+  assert.equal(r.host.text(NOTE), MINE, "the local note did not stay where it is");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=per_file")),
+    `no ceiling refusal in the log: ${JSON.stringify(r.host.logs)}`,
+  );
+  assert.ok(
+    r.host.notices.some((notice) => notice.includes("512 MiB")),
+    `the user was not told which ceiling refused it: ${JSON.stringify(r.host.notices)}`,
+  );
+  // Nothing is lost by refusing: the other device's version is beside it and
+  // this device's note keeps its name, which is what 1.0.6 did for this pair.
+  assert.equal(copies(r.host).length, 1);
+  assert.equal(r.host.text(copies(r.host)[0]), THEIRS);
 });
 
 /**
