@@ -18,15 +18,15 @@ first activation of this chart actually meets.
 
 Two artifacts, both signed keyless by this repository's publisher, both
 verified before anything reaches the cluster. The versions below are the
-release being installed -- `1.1.0` here, `X.Y.Z` and `vX.Y.Z` for whichever
+release being installed -- `1.0.7` here, `X.Y.Z` and `vX.Y.Z` for whichever
 release you took off the Releases page:
 
 ```sh
-cosign verify ghcr.io/snaraj/charts/obsync:1.1.0 \
+cosign verify ghcr.io/snaraj/charts/obsync:1.0.7 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-cosign verify ghcr.io/snaraj/obsync:v1.1.0 \
+cosign verify ghcr.io/snaraj/obsync:v1.0.7 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

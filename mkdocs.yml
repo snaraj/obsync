@@ -128,6 +128,8 @@ nav:
       - Device validation: validation.md
       - Validation runs: validation-runs/README.md
       - 2026-09-14 run: validation-runs/2026-09-14.md
+      - 2026-09-20 run: validation-runs/2026-09-20.md
+      - 2026-09-21 run: validation-runs/2026-09-21.md
       - Releases: release.md
       - CI map: ci-map.md
       - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md

@@ -5,7 +5,7 @@ one dependency-free Rust binary with a built-in dashboard, plus an Obsidian
 plugin. Files of any size, bounded only by your disk. No subscription, no
 third-party service, no crates, no npm packages.
 
-1.1.0, in Obsidian's community plugin directory as **Self Hosted Private
+1.0.7, in Obsidian's community plugin directory as **Self Hosted Private
 Sync** (plugin id `obsync-private-sync`): install it from Settings → Community
 plugins → Browse, on every platform Obsidian runs on. The device run behind
 1.0.0 is [`docs/validation-runs/2026-09-14.md`](docs/validation-runs/2026-09-14.md):
@@ -100,7 +100,7 @@ signature, read the digest from the verified payload, and run exactly that
 digest. The tag below is the release you are installing.
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.1.0 \
+cosign verify ghcr.io/snaraj/obsync:v1.0.7 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
