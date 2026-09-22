@@ -29,10 +29,16 @@ down rather than implied:
   [`docs/validation-runs/`](docs/validation-runs/), including what each run did
   NOT cover. A platform that is not named in one of those runs has not been
   proven, whatever the feature list above says.
-- **If new `(conflict from ...)` copies of one note keep appearing**, two
-  different notes are sharing one name. Update every device: from 1.0.7 obsync
-  settles such a pair on two names by itself, the same two on every device.
-  Renaming one of the two yourself ends it on any version.
+- **If new `(conflict from ...)` copies of one note keep appearing**, one cause
+  is two different notes sharing one name; concurrent edits of one note make
+  copies too, and so does a device left on an older version. Update every
+  device: from 1.0.7 obsync settles a same-name pair on two names by itself,
+  and on the same two names on every device unless a device could not reach
+  the server at the moment it met the collision, in which case the two devices
+  can hold that pair under different names until that note is published and
+  edited again ([issue #122](https://github.com/snaraj/obsync/issues/122)).
+  Both notes exist on both devices throughout. Renaming one of the two
+  yourself ends it on any version.
 - **If you are seeing a stream of "merged concurrent edits" notices** on two
   devices editing one note, quit Obsidian on one of them. Stopping one
   participant can allow outstanding work on the other to drain. Update every
