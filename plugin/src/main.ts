@@ -854,8 +854,13 @@ export class ObsidianHost implements VaultHost {
       this.log(
         `host path_class=file decision=kept reason=${sameFile(held, gone) ? "source_changed" : "source_replaced"}`,
       );
-      await this.putBack(desktop, moved, found.target);
-      await drop();
+      // Only a put-back that really landed releases the hidden name, and
+      // only then is the hold released: while either still names the inode,
+      // those bytes are reachable.
+      if (await this.putBack(desktop, moved, found.target)) {
+        await fs.promises.unlink(moved).catch(() => undefined);
+        await drop();
+      }
       return "kept";
     }
     const refusal = await chainRefusal(found.chain, walker(fs));
@@ -871,22 +876,103 @@ export class ObsidianHost implements VaultHost {
     // And the hold has the last word, because a rename does not close an
     // editor's DESCRIPTOR: a program that still holds the file open writes
     // through it wherever its name has gone, including between the proof
-    // above and the removal. The hold is that same inode, so what it says
-    // now is what was actually removed; anything but the copied content goes
-    // back under the vault name.
-    const after = await walker(fs).lstat(hold);
-    if (after === null) {
+    // above and the removal, and including between this device's last look
+    // at the hold and the unlink that releases it. So the hold is OPENED
+    // first: the descriptor keeps the inode alive across its own unlink, and
+    // what it says afterwards is still readable. Nothing here is the last
+    // name of bytes this device has not published.
+    let handle: NodeFileHandle;
+    try {
+      handle = await fs.promises.open(hold, "r");
+    } catch {
       this.log("host path_class=file decision=restore_failed reason=hold_gone");
       return "removed";
     }
-    if (holds(after)) {
-      await drop();
-      return "removed";
+    try {
+      const after = await handle.stat();
+      if (!holds(after)) {
+        // The save reached the inode before the hold was released: it is
+        // still named, so it is put back by name, and only a put-back that
+        // landed releases the hold.
+        if (await this.putBack(desktop, hold, found.target)) {
+          this.log("host path_class=file decision=kept reason=restored");
+          await drop();
+          return "kept";
+        }
+        this.log("host path_class=file decision=kept reason=held");
+        return "kept";
+      }
+      await fs.promises.unlink(hold).catch(() => undefined);
+      // The unlink took the inode's last NAME, not the inode: this
+      // descriptor is still open on it, so a save that landed in the
+      // meantime is read back here and written out under a name of its own
+      // rather than lost with the name.
+      const last = await handle.stat();
+      if (holds(last)) return "removed";
+      this.log("host path_class=file decision=kept reason=descriptor_save");
+      await this.preserve(desktop, handle, found.target, last.size);
+      return "kept";
+    } finally {
+      await handle.close().catch(() => undefined);
     }
-    this.log("host path_class=file decision=kept reason=restored");
-    await this.putBack(desktop, hold, found.target, "link");
-    await drop();
-    return "kept";
+  }
+
+  /**
+   * The bytes an editor wrote into an inode this device has just unnamed.
+   * They exist only behind this descriptor now, so they are read back
+   * through it and written to a name of their own -- create-only, like every
+   * other publication here, so nothing standing anywhere is replaced.
+   */
+  private async preserve(
+    desktop: DesktopVault,
+    handle: NodeFileHandle,
+    target: string,
+    size: number,
+  ): Promise<void> {
+    const fs = desktop.fs;
+    const bytes = new Uint8Array(size);
+    let read = 0;
+    while (read < size) {
+      const chunk = await handle.read(bytes, read, size - read, read);
+      if (chunk.bytesRead === 0) break;
+      read += chunk.bytesRead;
+    }
+    for (const name of this.restoreNames(desktop, target)) {
+      // `wx` is create-only: a name another program took in the meantime
+      // fails the open instead of being written over.
+      let out: NodeFileHandle;
+      try {
+        out = await fs.promises.open(name, "wx");
+      } catch {
+        continue;
+      }
+      try {
+        await out.write(bytes.subarray(0, read));
+        await out.sync();
+      } finally {
+        await out.close().catch(() => undefined);
+      }
+      if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
+      return;
+    }
+    this.log("host path_class=file decision=restore_failed reason=name_taken");
+  }
+
+  /**
+   * The vault name first, then visible names beside it. A file the user
+   * cannot see is a file they have lost, so the alternatives are numbered
+   * rather than one-and-done: the name an editor recreated is exactly the
+   * one we are competing with, and it can be taken more than once.
+   */
+  private restoreNames(desktop: DesktopVault, target: string): string[] {
+    const dot = target.lastIndexOf(".");
+    const cut = dot > target.lastIndexOf(desktop.path.sep) ? dot : target.length;
+    const names = [target];
+    for (let attempt = 1; attempt <= 16; attempt++) {
+      const suffix = attempt === 1 ? " (obsync kept)" : ` (obsync kept ${attempt})`;
+      names.push(`${target.slice(0, cut)}${suffix}${target.slice(cut)}`);
+    }
+    return names;
   }
 
   /**
@@ -897,30 +983,24 @@ export class ObsidianHost implements VaultHost {
    * file is kept BESIDE it under a visible name instead, because a file the
    * user cannot see is a file they have lost.
    */
-  private async putBack(
-    desktop: DesktopVault,
-    source: string,
-    target: string,
-    how: "rename" | "link" = "rename",
-  ): Promise<void> {
+  private async putBack(desktop: DesktopVault, source: string, target: string): Promise<boolean> {
     const fs = desktop.fs;
-    const dot = target.lastIndexOf(".");
-    const cut = dot > target.lastIndexOf(desktop.path.sep) ? dot : target.length;
-    const names = [target, `${target.slice(0, cut)} (obsync kept)${target.slice(cut)}`];
-    for (const name of names) {
-      if ((await walker(fs).lstat(name)) !== null) continue;
+    for (const name of this.restoreNames(desktop, target)) {
       try {
-        // `link` cannot replace anything and `rename` is checked against an
-        // absent name first: either way nothing standing there is touched.
-        if (how === "link") await fs.promises.link(source, name);
-        else await fs.promises.rename(source, name);
+        // `link` IS the check. Looking first and renaming second asks the
+        // filesystem a question whose answer expires: a save can create that
+        // name in between, and `rename` replaces it without a word. `link`
+        // cannot replace anything, so a name taken in that instant fails the
+        // call instead of overwriting the note that took it.
+        await fs.promises.link(source, name);
         if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
-        return;
+        return true;
       } catch {
         // The next name, or the log line below.
       }
     }
     this.log("host path_class=file decision=restore_failed reason=name_taken");
+    return false;
   }
 
   /**
