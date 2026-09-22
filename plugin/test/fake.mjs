@@ -781,6 +781,40 @@ export async function keys() {
   };
 }
 
+/**
+ * What the SERVER holds for a file id, decrypted: every version's manifest,
+ * oldest first.
+ *
+ * A test that wants to know what was published -- the path a version carries,
+ * the digest of its content -- has to read the manifests, because the server
+ * holds nothing else about them and a log line is this device's account of
+ * its own decision rather than the published fact. The key is the vault's;
+ * the server never has it.
+ */
+export async function published(server, fileId, manifestKey) {
+  const file = server.files.get(fileId);
+  if (file === undefined) return [];
+  const manifests = [];
+  for (const version of [...file.versions].reverse()) {
+    const binder = await c.contentVersionId(fileId, version.parents, version.sids);
+    manifests.push(
+      JSON.parse(
+        await c.decryptManifest(
+          manifestKey,
+          fileId,
+          binder,
+          c.unhex(version.manifest_nonce),
+          c.unbase64(version.manifest_ct),
+        ),
+      ),
+    );
+  }
+  return manifests;
+}
+
+/** The plaintext digest a single-chunk manifest carries, for comparison. */
+export const digest = (text) => sha256(enc(text));
+
 /** The second device of a paired vault: its own id and its own secret. */
 export const DEVICE_B = "00112233445566778899aabbccddeeff";
 export const SECRET_B = "3c".repeat(32);

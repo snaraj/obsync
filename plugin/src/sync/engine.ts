@@ -180,6 +180,8 @@ export class SyncEngine {
   private active = 0;
   private draining = false;
   private readonly pushing = new Map<string, Promise<void>>();
+  /** Paths asked for while their push was in flight: one follow-up each. */
+  private readonly again = new Set<string>();
   private running = false;
   private cancelled = false;
   private feed: Promise<void> | null = null;
@@ -522,14 +524,34 @@ export class SyncEngine {
    * the record the other leaves (issue #113). Sharing the in-flight push is
    * what makes asking out of turn safe; a path pushed again AFTER one
    * finished is an ordinary second push, which is what a second edit needs.
+   *
+   * SHARED IS NOT THE SAME AS SATISFIED. The push in flight took its snapshot
+   * -- the file's stat and its bytes (`push.ts`) -- before the second request
+   * existed, so whatever caused that request is NOT in what is being
+   * published. Handing the caller the in-flight promise and nothing else
+   * consumed the watcher's trigger for a real edit: the file stayed dirty, the
+   * queue emptied, and the engine reported idle with an edit that had gone
+   * nowhere and would go nowhere until something touched that note again
+   * (review round 2, finding 3). So a path asked for while it is being pushed
+   * is remembered, and ONE follow-up push is queued when the one in flight
+   * finishes -- one per path however many callers arrive, and free when
+   * nothing really changed, because a push of an unchanged file re-chunks it,
+   * finds the recorded digest and posts nothing.
    */
   private pushOne(path: string): Promise<void> {
     const active = this.pushing.get(path);
-    if (active !== undefined) return active;
+    if (active !== undefined) {
+      this.again.add(path);
+      return active;
+    }
     const work = this.pushNow(path);
     this.pushing.set(path, work);
-    const clear = (): void => { if (this.pushing.get(path) === work) this.pushing.delete(path); };
-    void work.then(clear, clear);
+    const done = (): void => {
+      if (this.pushing.get(path) !== work) return;
+      this.pushing.delete(path);
+      if (this.again.delete(path)) this.enqueue(path);
+    };
+    void work.then(done, done);
     return work;
   }
 
