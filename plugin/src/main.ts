@@ -56,15 +56,15 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } f
 import type { App } from "obsidian";
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource } from "./chunker";
-import { State } from "./state";
+import { State, isPushed } from "./state";
 import { assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
-import { DeviceRecord, Transport, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
-import { ObsyncSettingTab } from "./ui/settings";
-import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import { ObsyncSettingTab, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import {
   FinalComponent,
@@ -78,6 +78,7 @@ import {
   isVaultPath,
   sameFile,
   vaultTarget,
+  vaultPathRefusal,
   walkVaultPath,
 } from "./vaultPath";
 
@@ -227,6 +228,19 @@ export function isNewer(candidate: string, current: string): boolean {
  * origin `null`, which a `javascript:` link resolved against it would match.
  */
 export type DashboardTarget = { url: string } | { reason: string; refused: string };
+
+/** What the user chose in the confirmation dialog before leaving a server. */
+export interface LeaveChoice {
+  /** Leave although this device holds edits the server never received. */
+  discardUnpushed: boolean;
+  /** Clear this device's pairing even though the server refused to revoke it. */
+  localOnly: boolean;
+}
+
+export type LeaveResult =
+  | { decision: "left"; revoked: boolean }
+  | { decision: "refused"; reason: "unpushed_edits"; unpushed: string[] }
+  | { decision: "refused"; reason: "last_device"; detail: string };
 
 export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
   const base = parseUrl(serverUrl);
@@ -1389,6 +1403,16 @@ export default class ObsyncPlugin extends Plugin {
       name: "Show sync status",
       callback: () => new StatusModal(this.app, this).open(),
     });
+    this.addCommand({
+      id: "leave-server",
+      name: "Leave this server",
+      callback: () => new LeaveServerModal(this.app, this, "leave").open(),
+    });
+    this.addCommand({
+      id: "switch-server",
+      name: "Switch server",
+      callback: () => new LeaveServerModal(this.app, this, "switch").open(),
+    });
 
     // Use the installation identity for both URI spellings without also
     // claiming the old generic action used by pre-directory installations.
@@ -1779,7 +1803,7 @@ export default class ObsyncPlugin extends Plugin {
    * A revoke is not repeatable, and a lost answer is the one case where both
    * guesses are harmful: "it failed" leaves the user believing a device they
    * wanted out still holds the vault, and a blind repeat can meet
-   * `only_device` on a revoke that already worked. The device list says which
+   * `last_device` on a revoke that already worked. The device list says which
    * it was, and reading it is repeatable.
    */
   async revokeDevice(deviceId: string): Promise<void> {
@@ -1795,6 +1819,146 @@ export default class ObsyncPlugin extends Plugin {
       this.engine = null;
       this.setStatus({ kind: "error", message: "this device was revoked" });
     }
+  }
+
+  // --- leaving a server --------------------------------------------------
+
+  /**
+   * Local edits the server never received: every in-scope vault file whose
+   * bytes this device has not pushed, plus every recorded path the vault no
+   * longer holds (a deletion this device has not published). The rule is the
+   * engine's own startup reconcile, through `isPushed`, so this counts
+   * exactly the work that leaving would strand.
+   */
+  async unpushedEdits(): Promise<string[]> {
+    const state = this.state;
+    const folders = state.data.syncFolders;
+    const tracked = async (path: string): Promise<boolean> =>
+      vaultPathRefusal(path) === null && inSyncScope(path, folders) && (await this.host.syncable(path));
+    const unpushed: string[] = [];
+    const seen = new Set<string>();
+    for (const file of await this.host.list()) {
+      if (!(await tracked(file.path))) continue;
+      seen.add(file.path);
+      if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
+    }
+    for (const path of Object.keys(state.data.files)) {
+      if (seen.has(path) || !(await tracked(path))) continue;
+      unpushed.push(path);
+    }
+    return unpushed.sort();
+  }
+
+  /**
+   * Leave this server (issue #79): revoke THIS device on the server, then
+   * forget the pairing, so the device is "not paired" again and can pair with
+   * the same server or another one WITHOUT starting a new vault. Before this
+   * existed the documented way out was a fresh vault, because a device that
+   * only changed its Server URL met `401 bad_signature` forever.
+   *
+   * THE ORDER IS THE WHOLE DESIGN. Quiesce, count, revoke, and only then
+   * clear: a state cleared before the server answers would leave a device
+   * with no credential and a server that still trusts one, which is exactly
+   * the stuck state this feature removes. Every refusal therefore leaves this
+   * device syncing as it was, and the one line this logs says which of the
+   * two happened.
+   *
+   * The server refuses to revoke the only ACTIVE device (`409 last_device`),
+   * because an account with no active device can never sync again and nothing
+   * in this release re-enrols one. That refusal is surfaced verbatim and the
+   * user may still leave LOCALLY, which is `localOnly`: this device forgets
+   * the server, the server keeps the device. No other device is touched on
+   * either path; only this device's id is ever sent.
+   *
+   * PLATFORM. Identical on desktop and mobile: one revoke, one metadata
+   * write, one secret write, and no filesystem work of any kind.
+   */
+  async leaveServer(choice: LeaveChoice): Promise<LeaveResult> {
+    const started = Date.now();
+    const { state, assertCurrent } = this.captureSession();
+    let revoked = false;
+    let reason = "ok";
+    let unpushed = 0;
+    let cleared = false;
+    let previous = "kept";
+    try {
+      const deviceId = state.data.deviceId;
+      if (deviceId === null) {
+        reason = "not_paired";
+        throw new Error("This device is not paired with a server.");
+      }
+      if (this.changingScope || this.restoring !== null) {
+        reason = "busy";
+        throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");
+      }
+      // Quiesce first, so the count below is a fact rather than a guess and
+      // no push, fetch or restore is still running against the credential
+      // this is about to give up.
+      await this.engine?.stopAndWait();
+      assertCurrent();
+      this.engine = null;
+      this.cancelHistories();
+      await Promise.allSettled(this.manualFetches);
+      await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+      assertCurrent();
+      const pending = await this.unpushedEdits();
+      unpushed = pending.length;
+      assertCurrent();
+      if (unpushed > 0 && !choice.discardUnpushed) {
+        reason = "unpushed_edits";
+        return { decision: "refused", reason: "unpushed_edits", unpushed: pending };
+      }
+      try {
+        await this.revokeDevice(deviceId);
+        revoked = true;
+      } catch (error) {
+        reason = error instanceof ApiError ? error.code : "local_or_lost";
+        if (!(error instanceof ApiError) || error.code !== "last_device") throw error;
+        if (!choice.localOnly) return { decision: "refused", reason: "last_device", detail: error.detail };
+      }
+      assertCurrent();
+      state.forgetPairing();
+      await state.save();
+      cleared = true;
+      // Past this point the captured session can no longer be asserted: the
+      // address it was captured with is exactly what that write dropped. A
+      // concurrent reload is settled by State's serialised writer, and a
+      // cleared state can start no engine, because `paired` is false.
+      try {
+        await state.forgetPreviousCredential();
+        previous = "dropped";
+      } catch {
+        new Notice(
+          "obsync: this device left the server. Obsidian's secret storage refused to drop the older credential record; the next pairing on this device replaces it.",
+          10000,
+        );
+      }
+      this.updateAvailable = null;
+      this.setStatus({ kind: "idle" });
+      return { decision: "left", revoked };
+    } finally {
+      this.log(
+        `unpair decision=${revoked ? "revoked" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+          `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
+      );
+      // However this ended, a device that is still paired goes on syncing:
+      // no refusal here may leave the engine stopped. A device that DID
+      // leave starts nothing, because `startEngine` requires `paired`.
+      await this.startEngine();
+    }
+  }
+
+  /**
+   * Adopt a server address: the one place a typed address is normalised,
+   * checked against mobile's HTTPS rule and saved, so the settings row and
+   * "Switch server" cannot come to disagree about what an address may be.
+   */
+  async setServerUrl(value: string): Promise<void> {
+    const url = normalizeServerUrl(value);
+    const refusal = serverUrlRefusal(url, this.isMobile);
+    if (refusal !== null) throw new Error(refusal);
+    this.state.data.serverUrl = url;
+    await this.state.save();
   }
 
   /**

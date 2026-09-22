@@ -37,7 +37,7 @@ import type { App, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes } from "../policy";
 import type { DeviceRecord } from "../transport";
-import { ConfirmModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
+import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -62,6 +62,18 @@ const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 export function normalizeServerUrl(value: string): string {
   const url = value.trim().replace(/\/+$/, "");
   return url === "" || SCHEME.test(url) ? url : "https://" + url;
+}
+
+/**
+ * Why this device may not adopt a normalised address, or `null`. Mobile
+ * Obsidian refuses plain HTTP outright, so it is refused at entry instead of
+ * failing on every request; an empty address is "not configured", not a
+ * refusal. The row below and `ObsyncPlugin.setServerUrl` share this rule.
+ */
+export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
+  return url !== "" && isMobile && !url.startsWith("https://")
+    ? "Mobile Obsidian only reaches HTTPS servers."
+    : null;
 }
 
 function message(error: unknown): string {
@@ -121,7 +133,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     return [
       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope()] },
-      { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled)] },
+      { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
     ];
@@ -139,8 +151,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
           .setValue(this.plugin.state.data.serverUrl)
           .onChange((value) => {
             const url = normalizeServerUrl(value);
-            if (url !== "" && this.plugin.isMobile && !url.startsWith("https://")) {
-              new Notice("Mobile Obsidian only reaches HTTPS servers.");
+            const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+            if (refusal !== null) {
+              new Notice(refusal);
               return;
             }
             this.plugin.state.data.serverUrl = url;
@@ -427,6 +440,39 @@ export class ObsyncSettingTab extends PluginSettingTab {
         }));
       },
     };
+  }
+
+  /**
+   * The way out of a server, which before this row did not exist: a device
+   * that only changed its Server URL met `401 bad_signature` forever and the
+   * documented answer was a fresh vault (issue #79). Both buttons open the
+   * same dialog; "Switch server" is the same leave followed by pairing, and
+   * it redraws this tab afterwards so the rows stop describing a server this
+   * device has left.
+   */
+  private leaving(visible: () => boolean): Row {
+    return {
+      name: "Leave this server",
+      desc: "Revokes THIS device on the server, then forgets the server address and this device's sync identity. Every note stays in this vault. \"Switch server\" does the same and then pairs this device with another server, keeping the same vault.",
+      visible,
+      render: (setting) => {
+        setting
+          .addButton((button) => button.setButtonText("Leave").setDestructive().onClick(() => {
+            new LeaveServerModal(this.app, this.plugin, "leave", () => { this.left(); }).open();
+          }))
+          .addButton((button) => button.setButtonText("Switch server").onClick(() => {
+            new LeaveServerModal(this.app, this.plugin, "switch", () => { this.left(); }).open();
+          }));
+      },
+    };
+  }
+
+  /** The device list and every row's description are about a server this device just left. */
+  private left(): void {
+    this.deviceList = null;
+    this.deviceListError = null;
+    this.draftName = null;
+    this.update();
   }
 
   // ---- Devices -------------------------------------------------------------

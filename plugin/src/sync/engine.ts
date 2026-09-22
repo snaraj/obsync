@@ -69,7 +69,7 @@ import {
   saveDomainMap,
   soleDomain,
 } from "../domainmap";
-import { State } from "../state";
+import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inSyncScope, parseSyncFolders } from "../syncScope";
@@ -1127,8 +1127,7 @@ export class SyncEngine {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
       seen.add(file.path);
-      const record = context.state.fileByPath(file.path);
-      if (record && record.mtime === file.mtime && record.size === file.size) continue;
+      if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) continue;
       fresh.push(file);
     }
     // The listing by folded name, built once: a vault of ten thousand files

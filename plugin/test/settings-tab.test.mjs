@@ -180,6 +180,22 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
 });
 
+test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {
+  const s = open(t);
+  const row = () => s.rows().find((item) => item.name === "Leave this server");
+  assert.ok(row(), "the row is indexed for the settings search either way");
+  assert.equal(row().visible(), false, "there is nothing to leave before enrolment");
+  assert.equal(row().group.heading, "This device");
+
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  assert.equal(row().visible(), true);
+  const made = s.render("Leave this server").made;
+  assert.deepEqual(made.map((component) => component.text), ["Leave", "Switch server"]);
+  assert.equal(s.button(made, "Leave").destructive, true, "leaving is never a plain button");
+  assert.match(row().desc, /Every note stays in this vault/);
+  assert.deepEqual(s.calls, [], "drawing the row asks the server nothing");
+});
+
 test("Set up applies an unsaved folder selection first, in that order, and keeps the token until enrolment", async (t) => {
   const s = open(t);
   s.render("Folder selection").made[0].change("selected");

@@ -56,6 +56,18 @@ export interface FolderRecord {
   versionId: string;
 }
 
+/**
+ * Has this device pushed exactly what the vault now holds at a path? ONE
+ * definition, shared by the engine's startup reconcile and by the
+ * unpushed-edit guard in front of leaving a server, so the two can never
+ * disagree about what "not pushed yet" means. A record is written only after
+ * the server acknowledges the version, and a rename clears its `mtime`
+ * (`sync/engine.ts`), so an unpublished move counts as unpushed too.
+ */
+export function isPushed(record: FileRecord | undefined, mtime: number, size: number): boolean {
+  return record !== undefined && record.mtime === mtime && record.size === size;
+}
+
 export interface RemoteOnlyRecord {
   path: string;
   size: number;
@@ -383,6 +395,67 @@ export class State {
       }
     })();
     return this.flushing;
+  }
+
+  /**
+   * Leave a server: drop this device's identity and everything derived from
+   * it, and nothing else. The caller saves.
+   *
+   * KEPT, deliberately: the vault key, so pairing again — with this server or
+   * another — is the SAME vault and not a new one; the folder selection, both
+   * ceilings and the name this device answers to, which are the user's
+   * choices and not the server's. DROPPED: the device id and its secret, the
+   * server address, the edge headers (a service token belongs to the server
+   * it was issued for and must never be sent to the next one), the change-feed
+   * cursor and every file record. No vault file is touched here; nothing in
+   * this class can touch one.
+   */
+  forgetPairing(): void {
+    this.assertAvailable();
+    this.data.deviceId = null;
+    this.data.deviceSecret = null;
+    this.data.serverUrl = "";
+    this.data.edgeHeaders = [];
+    this.data.lastSeq = 0;
+    this.data.files = {};
+    this.data.remoteOnly = {};
+  }
+
+  /**
+   * Drop the bounded previous revision, so a device that has just given up a
+   * server does not leave the credential it gave up sitting in the native
+   * store. `SecretStorage` declares no delete (`test/api-compatibility`), so
+   * the entry is rewritten without its history rather than removed.
+   *
+   * Crash-safe BY CONSTRUCTION, which is why it is a second write rather than
+   * part of `persist`: metadata still names `current`, and `current` is
+   * byte-identical in both envelopes, so an interruption between them leaves
+   * a revision that loads either way. It refuses unless the recorded revision
+   * IS `current` and `current` carries no credential, because collapsing
+   * history under any other condition could drop the revision an interrupted
+   * write is still named by.
+   */
+  async forgetPreviousCredential(): Promise<void> {
+    this.assertAvailable();
+    // Read the records only once nothing is mid-write, so the revision this
+    // decides on is the revision metadata actually names.
+    await this.settled();
+    this.assertAvailable();
+    const envelope = this.envelope;
+    if (envelope === null || envelope.previous === null) return;
+    if (this.record === null || this.record.revision !== envelope.current.revision ||
+      envelope.current.deviceId !== null || envelope.current.deviceSecret !== null) {
+      throw new StateStorageError("credential_present");
+    }
+    const ref = secretRef(this.installationId);
+    if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
+    const collapsed: SecretEnvelope = { ...envelope, previous: null };
+    const serialized = JSON.stringify(collapsed);
+    try { this.secrets.setSecret(ref, serialized); }
+    catch { throw new StateStorageError("secret_write_failed"); }
+    if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
+    this.envelope = collapsed;
+    this.serializedSecret = serialized;
   }
 
   /** True once this device holds a vault key and a device credential. */
