@@ -21,7 +21,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { DEVICE_B, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -794,7 +794,92 @@ test("a note the queue is already pushing is not published a second time", async
   );
 });
 
+/**
+ * And the edit that arrives while that shared push is in flight (review round
+ * 2, finding 3).
+ *
+ * Sharing the push is right -- two pushes of one unpublished file mint two
+ * file ids -- but the second request is not the first one repeated. The push
+ * in flight took its snapshot before that request existed, so what caused the
+ * request is not in it: the watcher's trigger for a real edit was consumed by
+ * a push that could not carry it, and the engine went idle with the edit still
+ * dirty and nothing queued. Nothing is lost locally, and nothing leaves the
+ * device either, until something else touches that note.
+ *
+ * A path asked for while it is being pushed is now remembered, and ONE
+ * follow-up push runs when the one in flight finishes.
+ */
+test("an edit made while a note is being pushed is not left behind", async (t) => {
+  const { server, timers, a, keys } = await pair(t);
+  const SAME = "Same name.md";
+  const MADE = "the note the desktop made\n";
+  const LATER = "the note the desktop made, and then edited\n";
 
+  // The note was made while this device was closed, and its FIRST push fails:
+  // a moment offline, which is exactly the state in which the feed can deliver
+  // a collision for a note that still has no id. The queue empties, so no
+  // drain is holding that path when the pull path asks for it.
+  a.host.write(SAME, MADE, 2000);
+  const read = a.host.read.bind(a.host);
+  const held = deferred();
+  const entered = deferred();
+  let broken = true;
+  let waiting = true;
+  a.host.read = async (path) => {
+    if (path === SAME && broken) {
+      broken = false;
+      throw new Error("sentinel: the note could not be read");
+    }
+    const bytes = await read(path);
+    // Held AFTER the snapshot -- the stat and the bytes this push will publish
+    // are both taken -- which is where a slow upload sits.
+    if (path === SAME && waiting) { waiting = false; entered.resolve(); await held.promise; }
+    return bytes;
+  };
+  await a.engine.start();
+  await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("push path_class=file decision=failed")));
+
+  // Now the other device's note of that name arrives. This device has no id
+  // for its own note, so the pull path publishes it out of the queue's turn
+  // (`identify`), and that publish is the one being held. Its id sorts above
+  // anything this device can mint, so this device keeps the name and moves
+  // nothing: the only thing that can carry the edit is a push of this path.
+  await server.publish({
+    fileId: HIGHEST, path: SAME, bytes: enc("the note the phone made\n"), mtime: 3000,
+    domainKey: keys.domainKey, manifestKey: keys.manifestKey, deviceId: DEVICE_B,
+  });
+  await timers.run(STEP_MS, () => !waiting);
+  await entered.promise;
+
+  // The user edits the note while that publish is still in flight, and the
+  // watcher's debounce and the queue both run to completion on it.
+  a.host.write(SAME, LATER, 4000);
+  await timers.run(STEP_MS);
+
+  held.resolve();
+  await timers.run(STEP_MS, () => settled(a, SAME));
+  const record = () => a.state.fileByPath(SAME);
+  await timers.run(STEP_MS, () => record()?.size === enc(LATER).length);
+  await timers.run(STEP_MS);
+
+  const story = () => `vault=${JSON.stringify([...a.host.files.keys()])} ` +
+    `record=${JSON.stringify(record())} versions=${server.journal.length}`;
+  assert.equal(a.host.text(SAME), LATER, `the note is not the edited one: ${story()}`);
+  // The edit reached the SERVER, which is the only place it could come back
+  // from: one of the published versions of this note carries its digest.
+  const mine = await published(server, record().fileId, keys.manifestKey);
+  assert.ok(
+    mine.some((manifest) => manifest.sha256 === digest(LATER)),
+    `the edit never left the device: ${JSON.stringify(mine.map((m) => m.size))} ${story()}`,
+  );
+  // And the engine is not idle with a dirty file: the record agrees with it.
+  const stat = await a.host.stat(SAME);
+  assert.equal(record().mtime, stat.mtime, `the engine is idle with a dirty file: ${story()}`);
+  assert.equal(record().size, stat.size, `the engine is idle with a dirty file: ${story()}`);
+  // Two notes and nothing else: the follow-up push is a version of this one,
+  // never a second file id for it.
+  assert.equal(server.vaultFiles().length, 2, `a third file id was published: ${story()}`);
+});
 
 test("two devices that name one note twice converge, and stay converged", async (t) => {
   const { server, timers, a, b } = await pair(t);
