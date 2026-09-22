@@ -910,7 +910,7 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
 });
 
 test("two devices that name one note twice converge, and stay converged", async (t) => {
-  const { server, timers, a, b } = await pair(t);
+  const { server, timers, a, b, keys } = await pair(t);
   const SAME = "Same name.md";
   const DESKTOP = "the note the desktop made\n";
   const PHONE = "the note the phone made\n";
@@ -941,10 +941,29 @@ test("two devices that name one note twice converge, and stay converged", async 
   }
   // Two notes, two file ids, and nothing published a third.
   assert.equal(server.vaultFiles().length, 3, `a third file id was published: ${story()}`);
-  // At most one rename was published: one version of one id carries a path
-  // that is not the one it was created under.
-  const renames = a.host.logs.concat(b.host.logs).filter((line) => line.includes("role=rename"));
-  assert.equal(renames.length, 1, `${renames.length} devices renamed: ${renames.join(" | ")}`);
+  // Exactly one rename was PUBLISHED, and by the device whose file moved.
+  // Measured on the server, not in the logs: a log line is a device's account
+  // of its own decision, while the manifests are what the other device will
+  // act on, and "one rename" is a claim about those (review round 2,
+  // finding 5). One file id's published path changes, exactly once, and it is
+  // the higher of the two ids that contested the name.
+  const walks = new Map();
+  for (const id of server.vaultFiles()) {
+    walks.set(id, (await published(server, id, keys.manifestKey)).map((manifest) => manifest.path));
+  }
+  const story2 = () => JSON.stringify([...walks]);
+  const moves = (walk) => walk.filter((path, index) => index > 0 && path !== walk[index - 1]).length;
+  const renamed = [...walks].filter(([, walk]) => moves(walk) > 0);
+  assert.equal(renamed.length, 1, `not exactly one file id published a rename: ${story2()}`);
+  const [mover, walk] = renamed[0];
+  assert.equal(moves(walk), 1, `the rename was published more than once: ${story2()}`);
+  assert.equal(walk[0], SAME, `the renamed note did not start at the shared name: ${story2()}`);
+  assert.notEqual(walk[walk.length - 1], SAME, `the renamed note did not end elsewhere: ${story2()}`);
+  const contested = [...walks].filter(([, each]) => each[0] === SAME).map(([id]) => id).sort();
+  assert.equal(contested.length, 2, `the pair did not contest one name: ${story2()}`);
+  assert.equal(mover, contested[1], `the holder of the LOWER id published the rename: ${story2()}`);
+  // And the name it moved to is the one both devices ended up using for it.
+  assert.ok(names(a).includes(walk[walk.length - 1]), `the published name is not in the vault: ${story()}`);
 
   // And a later edit on EITHER side applies plainly on the other: no merge,
   // no new copy. That is what "converged" has to mean.

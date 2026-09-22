@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1194,7 +1194,7 @@
+   const ours = context.state.fileByPath(manifest.path);
+   if (ours === undefined) return await keepBoth(context, change, manifest);
+ 
+-  if (ours.fileId < change.file_id) {
++  if (ours.fileId > change.file_id) {
+     const kept = await keepBothRecorded(context, change, manifest);
+     if (kept === "conflict_copy") {
+       context.host.log(

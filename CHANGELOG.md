@@ -8,8 +8,9 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 ## 1.0.7 - 2026-09-21
 
 **The other half of the problem 1.0.6 described: two notes that share one name
-are now given two names, the same two on every device. Update every device that
-syncs the vault.**
+are now given two names -- the same two on every device, except when a device
+cannot reach the server at the moment it meets the collision. Update every
+device that syncs the vault.**
 
 **Two notes, one name, settled once.** When two devices each made a note under
 the same name while one of them was closed, 1.0.5 and 1.0.6 kept both -- which
@@ -25,13 +26,24 @@ identities, without asking each other, so both end up with the same two names
 -- and from then on each note updates in place, wherever it is edited, instead
 of being copied again.
 
+**The exception, and it is a real one.** Working it out needs both identities,
+and a note a device has never managed to upload has none. If a device is
+offline exactly when it meets the collision, and its note would have sorted
+second, that device can keep the pair under different names from the other
+device's until its note is uploaded and edited again
+([issue #122](https://github.com/snaraj/obsync/issues/122)). Both notes exist
+on both devices the whole time; only the names differ, and renaming either one
+yourself settles it. A note roughly 8 MB or larger is also never recognised as
+one the server already holds (below), so on a restored vault it is copied
+beside itself rather than adopted -- a duplicate, never a missing note.
+
 **What you will see when you update.** On one of the two devices, the note that
 device made changes name once, to the `(conflict from ...)` name, and obsync
 tells you it has done it. Nothing is written over: both notes keep their text,
-and both end up on both devices under those same two names. Rename either of
-them afterwards as you would any note -- the copy name is a starting point, not
-a fixture. If you already renamed one of the pair yourself, there is no longer
-a collision and nothing here applies to it.
+and both end up on both devices -- under the same two names, with the
+exception above. Rename either of them afterwards as you would any note -- the
+copy name is a starting point, not a fixture. If you already renamed one of the
+pair yourself, there is no longer a collision and nothing here applies to it.
 
 **Two smaller things behind that.**
 
@@ -43,7 +55,10 @@ a collision and nothing here applies to it.
 - A note that is already exactly the version the server holds is now recognised
   as that version rather than copied beside itself. That is what a device meets
   after its vault folder is restored or replaced, where 1.0.6 would have made a
-  conflict copy of every note in it.
+  conflict copy of every note in it. Recognising it means proving it, byte for
+  byte, against the digest the version carries -- so it covers notes up to
+  roughly 8 MB, which carry one, and not larger ones, which do not. A larger
+  note is copied beside itself as before.
 
 **Update every device that syncs the vault.** A device still on 1.0.6 does not
 know the rule, and for any pair it has not yet settled it goes on making copies
