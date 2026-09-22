@@ -1,5 +1,7 @@
 > Diese Übersetzung folgt dem [englischen Original](../../README.md). Der englische Text ist maßgeblich; Befehle, Flags, URLs und Platzhalter bleiben unverändert.
 
+<img src="../../brand/obsync-icon-256.png" alt="obsync-Symbol: zwei ineinandergreifende Ringe" width="96" height="96">
+
 # Self Hosted Private Sync
 
 Selbst gehostete, Ende-zu-Ende-verschlüsselte Live-Synchronisation für

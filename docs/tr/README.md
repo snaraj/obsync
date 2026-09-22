@@ -1,5 +1,7 @@
 > Bu çeviri [İngilizce aslını](../../README.md) izler. Esas olan İngilizce metindir; komutlar, seçenekler, URL'ler ve yer tutucular olduğu gibi kalır.
 
+<img src="../../brand/obsync-icon-256.png" alt="obsync simgesi: iç içe geçmiş iki halka" width="96" height="96">
+
 # Self Hosted Private Sync
 
 [Obsidian](https://obsidian.md) için kendi sunucunuzda barındırılan, uçtan uca

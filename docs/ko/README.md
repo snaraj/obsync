@@ -1,5 +1,7 @@
 > 이 번역은 [영어 원문](../../README.md)을 따릅니다. 영어 문서가 기준이며, 명령어·플래그·URL·자리표시자는 영어 그대로 두었습니다.
 
+<img src="../../brand/obsync-icon-256.png" alt="obsync 아이콘: 서로 맞물린 두 개의 고리" width="96" height="96">
+
 # Self Hosted Private Sync
 
 [Obsidian](https://obsidian.md)을 위한 자체 호스팅 종단 간 암호화 실시간 동기화입니다. 직접 운영하는 의존성 없는 Rust 서버 하나에 대시보드가 내장돼 있고, 여기에 이 플러그인이 더해집니다. 크기를 가리지 않는 파일, 모든 Obsidian 플랫폼, 구독 없음, 제3자 없음.

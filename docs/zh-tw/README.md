@@ -1,5 +1,7 @@
 > 本譯文以[英文原文](../../README.md)為準。英文版是正式版本；指令、參數、URL 與預留位置保持英文原樣，未作更動。
 
+<img src="../../brand/obsync-icon-256.png" alt="obsync 圖示：兩個相互扣合的圓環" width="96" height="96">
+
 # Self Hosted Private Sync
 
 為 [Obsidian](https://obsidian.md) 打造的自架、端對端加密即時同步：一個由你自己執行、沒有任何相依套件並內建儀表板的 Rust 伺服器，加上這個外掛程式。檔案大小不限，支援每一種 Obsidian 平台，不必訂閱，也沒有第三方。

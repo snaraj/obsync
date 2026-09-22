@@ -1,5 +1,7 @@
 > Questa traduzione segue [l'originale in inglese](../../README.md). Il testo inglese è quello canonico; comandi, opzioni, URL e segnaposto restano invariati.
 
+<img src="../../brand/obsync-icon-256.png" alt="icona obsync: due anelli intrecciati" width="96" height="96">
+
 # Self Hosted Private Sync
 
 Sincronizzazione in tempo reale, cifrata end-to-end e ospitata da te, per

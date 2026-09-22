@@ -1,3 +1,5 @@
+<img src="../brand/obsync-icon-256.png" alt="obsync icon: two interlocked rings" width="96" height="96">
+
 # Documentation
 
 Every page under `docs/`, and the repository files a reader reaches for. The

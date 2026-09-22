@@ -1,5 +1,7 @@
 > Terjemahan ini mengikuti [teks asli berbahasa Inggris](../../README.md). Teks bahasa Inggris adalah acuan resminya; perintah, opsi, URL, dan placeholder tidak diubah.
 
+<img src="../../brand/obsync-icon-256.png" alt="ikon obsync: dua cincin yang saling terkait" width="96" height="96">
+
 # Self Hosted Private Sync
 
 Sinkronisasi langsung yang Anda hosting sendiri dan terenkripsi ujung ke

@@ -1,5 +1,7 @@
 > Deze vertaling volgt het [Engelse origineel](../../README.md). De Engelse tekst is leidend; opdrachten, opties, URL's en plaatshouders blijven ongewijzigd.
 
+<img src="../../brand/obsync-icon-256.png" alt="obsync-pictogram: twee in elkaar grijpende ringen" width="96" height="96">
+
 # Self Hosted Private Sync
 
 Zelf gehoste, end-to-end versleutelde live synchronisatie voor

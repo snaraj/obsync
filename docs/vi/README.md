@@ -1,5 +1,7 @@
 > Bản dịch này bám theo [bản gốc tiếng Anh](../../README.md). Văn bản tiếng Anh là bản chuẩn; các lệnh, tùy chọn, URL và chỗ giữ chỗ được giữ nguyên.
 
+<img src="../../brand/obsync-icon-256.png" alt="biểu tượng obsync: hai vòng lồng vào nhau" width="96" height="96">
+
 # Self Hosted Private Sync
 
 Đồng bộ trực tiếp, tự lưu trữ, mã hóa đầu cuối cho
