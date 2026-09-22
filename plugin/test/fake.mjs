@@ -82,9 +82,11 @@ const sameSet = (a, b) => {
 
 /** A vault of files in memory, with the `VaultHost` surface the engine needs. */
 export class FakeHost {
-  constructor({ isMobile = false, platform = "linux", appVersion = "0.1.0", deviceName = "test-device" } = {}) {
+  constructor({ isMobile = false, platform = "linux", appVersion = "0.1.0", deviceName = "test-device", caseSensitive = true } = {}) {
     /** Paths the host refuses to sync at all, as a symlinked folder is. */
     this.unsyncable = new Set();
+    /** Does this filesystem tell `Team docs` and `team docs` apart? (#124) */
+    this.caseSensitive = caseSensitive;
     this.isMobile = isMobile;
     this.supportsRangeReads = !isMobile;
     // A second name for a file is a desktop filesystem's to give (`main.ts`),
@@ -100,14 +102,36 @@ export class FakeHost {
     this.clock = 1757200000000;
   }
 
+  /**
+   * The directory entry this host really holds for `path`, or `undefined`.
+   *
+   * ONE DIFFERENCE, MODELLED IN ONE PLACE (#124). A case-INSENSITIVE volume
+   * holds ONE entry for two spellings: a lookup by either finds it, a write
+   * through either lands IN it, and only a rename changes the name the
+   * directory keeps. A case-SENSITIVE volume holds two entries and a lookup
+   * by the other spelling finds nothing. The folding is case and nothing
+   * else: a volume that also folds Unicode normalisation is a further host
+   * this fake does not claim to be, and two names that differ by anything
+   * but case are two files here, which is the side an over-eager fix fails.
+   */
+  resolve(path) {
+    if (this.files.has(path)) return path;
+    if (this.caseSensitive) return undefined;
+    const folded = path.toLowerCase();
+    for (const key of this.files.keys()) if (key.toLowerCase() === folded) return key;
+    return undefined;
+  }
+
   seed(path, content, mtime) {
     const bytes = typeof content === "string" ? enc(content) : content;
-    this.files.set(path, { bytes, mtime: mtime ?? this.clock });
+    // A write through the other spelling lands in the entry that is there
+    // and does NOT rename it, exactly as `open`/`write` does on macOS.
+    this.files.set(this.resolve(path) ?? path, { bytes, mtime: mtime ?? this.clock });
     return bytes;
   }
 
   text(path) {
-    const file = this.files.get(path);
+    const file = this.files.get(this.resolve(path) ?? "");
     return file ? new TextDecoder().decode(file.bytes) : null;
   }
 
@@ -125,12 +149,12 @@ export class FakeHost {
   }
 
   async stat(path) {
-    const file = this.files.get(path);
+    const file = this.files.get(this.resolve(path) ?? "");
     return file ? { path, mtime: file.mtime, size: file.bytes.length } : null;
   }
 
   async read(path) {
-    const file = this.files.get(path);
+    const file = this.files.get(this.resolve(path) ?? "");
     if (!file) throw new Error(`fake vault: ${path} does not exist`);
     return file.bytes;
   }
@@ -158,7 +182,7 @@ export class FakeHost {
           joined.set(part, at);
           at += part.length;
         }
-        host.files.set(path, { bytes: joined, mtime });
+        host.files.set(host.resolve(path) ?? path, { bytes: joined, mtime });
         return { path, mtime, size: joined.length };
       },
       async abort() {
@@ -187,7 +211,7 @@ export class FakeHost {
       commit: async (mtime) => {
         check();
         if (at !== size) throw new Error("copy content is incomplete");
-        if (this.files.has(path)) throw new Error("destination exists");
+        if (this.resolve(path) !== undefined) throw new Error("destination exists");
         return writer.commit(mtime);
       },
       abort: writer.abort,
@@ -210,9 +234,26 @@ export class FakeHost {
     if (expect !== undefined && now !== null) {
       if (now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
     }
-    this.trashed.push(path);
-    this.files.delete(path);
+    const key = this.resolve(path);
+    this.trashed.push(key ?? path);
+    if (key !== undefined) this.files.delete(key);
     return "removed";
+  }
+
+  /**
+   * The rename, refusing what the real one refuses: a destination whose
+   * EXACT name belongs to a different file (`main.ts`). On a case-folding
+   * host the two spellings are one entry, so nothing is there to refuse and
+   * the entry's name changes in place.
+   */
+  async move(from, to) {
+    const source = this.resolve(from);
+    if (source === undefined) return "missing";
+    if (this.files.has(to) && to !== source) return "occupied";
+    const file = this.files.get(source);
+    this.files.delete(source);
+    this.files.set(to, file);
+    return "moved";
   }
 
   notify(message) {
@@ -791,9 +832,9 @@ export async function fakeState(isMobile = false) {
  * every engine-level test starts from. It lives here rather than in a test
  * file because more than one suite drives the same rig.
  */
-export async function rig({ isMobile = false, policy } = {}) {
+export async function rig({ isMobile = false, policy, caseSensitive = true } = {}) {
   const { Transport } = require("../build/transport.js");
-  const host = new FakeHost({ isMobile });
+  const host = new FakeHost({ isMobile, caseSensitive });
   const server = new FakeServer();
   const { state, saved, reload } = await fakeState(isMobile);
   if (policy) state.data.policy = policy;
@@ -824,6 +865,7 @@ export async function rig({ isMobile = false, policy } = {}) {
     authored: new Set(),
     written: new Set(),
     trashed: new Set(),
+    moved: new Set(),
     refused: new Set(),
     merges: new Map(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
@@ -943,7 +985,7 @@ export class EventVault extends FakeHost {
   // --- what the plugin does to the vault, and what comes back ------------
 
   async trash(path, expect) {
-    const existed = this.files.has(path);
+    const existed = this.resolve(path) !== undefined;
     const verdict = await super.trash(path, expect);
     if (existed && verdict === "removed" && !this.silent.has(path)) this.emit("delete", this.entry(path));
     return verdict;
@@ -954,13 +996,20 @@ export class EventVault extends FakeHost {
     return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
   }
 
+  async move(from, to) {
+    const outcome = await super.move(from, to);
+    // Obsidian reports a rename this plugin performed like any other.
+    if (outcome === "moved") this.emit("rename", this.entry(to), from);
+    return outcome;
+  }
+
   async createWriter(path, size, check) {
     const writer = await super.createWriter(path, size, check);
     return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
   }
 
   async commit(writer, path, mtime) {
-    const existed = this.files.has(path);
+    const existed = this.resolve(path) !== undefined;
     const stat = await writer.commit(mtime);
     this.emit(existed ? "modify" : "create", this.entry(path));
     return stat;
@@ -970,24 +1019,36 @@ export class EventVault extends FakeHost {
 
   /** Type a note, or edit one. */
   write(path, text, mtime) {
-    const existed = this.files.has(path);
+    const existed = this.resolve(path) !== undefined;
     this.seed(path, text, mtime);
     this.emit(existed ? "modify" : "create", this.entry(path));
   }
 
-  /** Rename a note through its inline title: one event, one file. */
+  /**
+   * Rename a note through its inline title: one event, one file.
+   *
+   * A rename is the one operation that changes the NAME a case-insensitive
+   * directory keeps, so the source entry is removed before the destination
+   * is written: `Team docs` -> `team docs` leaves one entry, spelled the new
+   * way, on both host models.
+   */
   rename(from, to) {
-    this.files.set(to, this.files.get(from));
-    this.files.delete(from);
+    const source = this.resolve(from);
+    const file = this.files.get(source ?? "");
+    if (source !== undefined) this.files.delete(source);
+    const occupied = this.resolve(to);
+    if (occupied !== undefined) this.files.delete(occupied);
+    this.files.set(to, file);
     this.emit("rename", this.entry(to), from);
   }
 
   /** Rename a folder: every file under it moves, and Obsidian fires ONE event. */
   renameFolder(from, to) {
-    for (const path of [...this.files.keys()].filter((candidate) => candidate.startsWith(`${from}/`))) {
-      this.files.set(to + path.slice(from.length), this.files.get(path));
-      this.files.delete(path);
-    }
+    const moved = [...this.files.keys()]
+      .filter((candidate) => candidate.startsWith(`${from}/`))
+      .map((path) => [to + path.slice(from.length), this.files.get(path), path]);
+    for (const [, , path] of moved) this.files.delete(path);
+    for (const [path, file] of moved) this.files.set(path, file);
     this.emit("rename", this.entry(to, true), from);
   }
 
@@ -1001,7 +1062,7 @@ export class EventVault extends FakeHost {
 
   /** Delete a note, the way the user's own delete command does. */
   remove(path) {
-    this.files.delete(path);
+    this.files.delete(this.resolve(path) ?? path);
     this.emit("delete", this.entry(path));
   }
 }
@@ -1010,11 +1071,11 @@ export class EventVault extends FakeHost {
  * One device: its vault, its state, its own device secret, its engine, and
  * the plugin's real vault-event registration wired between the two.
  */
-async function device(box, server, timers, { id, secret, name, delivery, isMobile = false }) {
+async function device(box, server, timers, { id, secret, name, delivery, isMobile = false, caseSensitive = true }) {
   const { Transport } = require("../build/transport.js");
   const { SyncEngine } = require("../build/sync/engine.js");
   const obsidian = box.require("obsidian");
-  const host = new EventVault({ delivery, obsidian, isMobile, deviceName: name });
+  const host = new EventVault({ delivery, obsidian, isMobile, deviceName: name, caseSensitive });
   const { state } = await fakeState(isMobile);
   state.data.deviceId = id;
   state.data.deviceSecret = secret;
@@ -1049,7 +1110,11 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
  * answers back, so the whole path from a vault event to a posted version, and
  * from a feed record back to a vault event, is the product's.
  */
-export async function pair(t, delivery = "immediate", { isMobileB = true } = {}) {
+export async function pair(
+  t,
+  delivery = "immediate",
+  { isMobileB = true, caseSensitiveA = true, caseSensitiveB = true } = {},
+) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const server = new FakeServer();
@@ -1058,10 +1123,11 @@ export async function pair(t, delivery = "immediate", { isMobileB = true } = {})
   server.addDevice(DEVICE_B, SECRET_B, "phone");
   const timers = new FakeTimers();
   const a = await device(box, server, timers, {
-    id: KEYS.deviceId, secret: KEYS.deviceSecret, name: "desktop", delivery,
+    id: KEYS.deviceId, secret: KEYS.deviceSecret, name: "desktop", delivery, caseSensitive: caseSensitiveA,
   });
   const b = await device(box, server, timers, {
-    id: DEVICE_B, secret: SECRET_B, name: isMobileB ? "phone" : "laptop", delivery, isMobile: isMobileB,
+    id: DEVICE_B, secret: SECRET_B, name: isMobileB ? "phone" : "laptop", delivery,
+    isMobile: isMobileB, caseSensitive: caseSensitiveB,
   });
   t.after(() => { a.engine.stop(); b.engine.stop(); });
   return { server, timers, a, b, keys: k };

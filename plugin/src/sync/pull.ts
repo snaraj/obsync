@@ -88,7 +88,7 @@ import { ChangeRecord, FileRecord, ReadControl } from "../transport";
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit } from "../policy";
-import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
@@ -467,7 +467,7 @@ function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: st
 
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   const manifest = await decryptRecordManifest(context, change);
-  const localPath = context.state.pathByFileId(change.file_id);
+  let localPath = context.state.pathByFileId(change.file_id);
   // A remembered source can be outside the new scope even when the remote
   // destination is inside it. Refuse before a delete, conflict read or write.
   if (localPath !== undefined) assertSyncPath(localPath, context.state.data.syncFolders);
@@ -592,6 +592,47 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     }
     if (!reaches(file.versions, change.version_id, local.versionId)) {
       return await reconcile(context, file, change, manifest, localPath as string, local.versionId);
+    }
+  }
+
+  // A MOVE THAT CHANGES ONLY CASE IS ONE RENAME, NOT A WRITE AND A REMOVAL.
+  // On a host that folds case the two spellings are ONE entry, so the write
+  // below would land in the file this device already has -- leaving the
+  // directory spelling the old way -- and the removal that follows a move
+  // would then take that very file, the note gone with it. The same host
+  // answers `competing` for the destination with the SOURCE's own file,
+  // which no record explains under the new spelling, so the move also
+  // arrives at the same-name rule as a collision and is settled at the old
+  // name for good (issue #124). Renaming the entry first is the operation
+  // both host models share: the host refuses if a DIFFERENT file wears the
+  // destination's exact name, and that refusal is the real collision, which
+  // falls through to the rule below untouched.
+  if (localPath !== undefined && caseOnly(localPath, manifest.path)) {
+    // Marked BEFORE the rename, not after it: the vault reports the rename
+    // to this plugin's own handler while `move` is still running, and an
+    // unmarked echo is published as a move of this device's own -- which the
+    // device that made it then applies back (`engine.ts`, ECHOES; #96).
+    const echo = `${localPath}\u0000${manifest.path}`;
+    context.moved.add(echo);
+    const outcome = await context.host.move(localPath, manifest.path).catch((error: unknown) => {
+      context.moved.delete(echo);
+      throw error;
+    });
+    context.host.log(
+      `pull path_class=file decision=case_move_${outcome} file=${change.file_id} seq=${change.seq}`,
+    );
+    if (outcome !== "moved") context.moved.delete(echo);
+    if (outcome === "moved") {
+      const record = context.state.fileByPath(localPath);
+      if (record !== undefined) {
+        context.state.setFile(manifest.path, record);
+        context.state.forgetPath(localPath);
+      }
+      // Saved before the write, not after it: a record left at the old
+      // spelling while the entry wears the new one is what the next startup
+      // scan would read as a deletion of a live note.
+      await context.state.save();
+      localPath = manifest.path;
     }
   }
 

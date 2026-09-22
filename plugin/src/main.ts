@@ -58,7 +58,7 @@ import { ByteSource } from "./chunker";
 import { State } from "./state";
 import { assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
-import { EngineStatus, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
+import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
@@ -705,6 +705,56 @@ export class ObsidianHost implements VaultHost {
       },
       abort: discard,
     };
+  }
+
+  /**
+   * Rename one entry, refusing rather than replacing (issue #124).
+   *
+   * WHAT ONLY THE HOST CAN ANSWER. `Team docs/One.md` and `team docs/One.md`
+   * are one directory entry on a filesystem that folds case and two on one
+   * that does not, and no comparison of the two strings can tell which host
+   * this is. Desktop asks the kernel: one no-follow stat per name, and the
+   * destination is occupied only when it is a DIFFERENT inode. Mobile has no
+   * inode to ask for and asks the adapter's own case-SENSITIVE existence
+   * check instead, which answers for the exact spelling and nothing else.
+   * An Obsidian older than 1.7.2 ignores that argument and answers for the
+   * folded name, so the rename is REFUSED there rather than risked: the
+   * caller keeps both files, which is what every version before this one
+   * did with a case-only rename anyway.
+   *
+   * The destination folder is created when it is missing, because the device
+   * that keeps the two spellings apart has no folder under the new one yet.
+   * The old folder is left behind empty; nothing in this version deletes a
+   * folder, and an empty one holds no notes.
+   */
+  async move(from: string, to: string): Promise<MoveResult> {
+    assertSyncPath(from, this.plugin.state.data.syncFolders);
+    assertSyncPath(to, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    const folder = to.slice(0, Math.max(0, to.lastIndexOf("/")));
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      if (await adapter.exists(to, true)) return "occupied";
+      if ((await this.stat(from)) === null) return "missing";
+      if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
+      await adapter.rename(from, to);
+      return "moved";
+    }
+    const source = await this.confine(desktop, from, ["absent", "file"]);
+    if (source.final === "absent") return "missing";
+    const found = await this.confine(desktop, to, ["absent", "file"]);
+    if (found.final === "file" && !sameFile(source.stat, found.stat)) return "occupied";
+    if (folder !== "") {
+      const parent = await this.confine(desktop, folder, ["absent", "directory"]);
+      await desktop.fs.promises.mkdir(parent.target, { recursive: true });
+    }
+    await desktop.fs.promises.rename(source.target, found.target);
+    // The name is only ever as true as the directories it was resolved
+    // through, and a rename is no exception (`vaultPath.ts`).
+    const refusal = await chainRefusal(source.chain, walker(desktop.fs)) ??
+      await chainRefusal(found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    return "moved";
   }
 
   /**

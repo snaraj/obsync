@@ -104,7 +104,17 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
   };
   /** Obsidian's mobile surface: no filesystem, one adapter, one create. */
   const adapter = {
-    exists: async (path) => existsSync(join(root, path)),
+    // `sensitive` is the adapter's own case-SENSITIVE existence check
+    // (Obsidian 1.7.2), and the only thing a phone can ask to tell one entry
+    // wearing another spelling from a second file wearing that exact name.
+    exists: async (path, sensitive) => {
+      if (sensitive !== true) return existsSync(join(root, path));
+      const at = path.lastIndexOf("/");
+      const folder = at === -1 ? "" : path.slice(0, at);
+      if (!existsSync(join(root, folder))) return false;
+      return readdirSync(join(root, folder)).includes(path.slice(at + 1));
+    },
+    rename: async (from, to) => fsPromises.rename(join(root, from), join(root, to)),
     mkdir: async (path) => fsPromises.mkdir(join(root, path), { recursive: true }),
     stat: async (path) => {
       if (!existsSync(join(root, path))) return null;
@@ -774,3 +784,82 @@ test("review: a descriptor save after the final hold stat remains reachable", as
   assert.ok(allFiles.some(file => file.text === EDIT),
     `descriptor save lost after final check; result=${result}; files=${JSON.stringify(allFiles)}; logs=${JSON.stringify(r.logs)}`);
 });
+
+// --- the case-only rename on the real host (issue #124) -----------------
+
+/**
+ * WHAT THIS PROVES THAT THE FAKE CANNOT. `caseSensitive` in `fake.mjs` is a
+ * model of a filesystem; these run on the one under the test process. On
+ * macOS that is a folding volume and `Case.md` and `case.md` are one entry;
+ * on the Linux runners they are two. Both are covered by the same
+ * assertions, because the guarantee is the same on both: after the rename
+ * the directory holds the new spelling, holds no other, and the file that
+ * arrives there is the one that left -- by inode, which is the fact a fake
+ * vault has none of.
+ */
+const CASED = "Notes/Case.md";
+const LOWER_CASED = "Notes/case.md";
+
+for (const mobile of [false, true]) {
+  const platform = mobile ? "a phone" : "a desktop";
+
+  test(`${platform} renames one entry into another case and keeps the file`, async (t) => {
+    const r = await native(t, {}, { mobile });
+    r.seed(CASED, MINE, 2000);
+    const before = statSync(join(r.root, CASED));
+
+    assert.equal(await r.host.move(CASED, LOWER_CASED), "moved");
+
+    assert.deepEqual(
+      readdirSync(join(r.root, "Notes")).filter((name) => !name.startsWith(".")),
+      ["case.md"],
+      "the directory did not end with exactly the new spelling",
+    );
+    assert.equal(readFileSync(join(r.root, LOWER_CASED), "utf8"), MINE);
+    const after = statSync(join(r.root, LOWER_CASED));
+    assert.equal(after.ino, before.ino, "the note was copied and deleted rather than renamed");
+  });
+
+  test(`${platform} refuses a rename onto a file that is already there`, async (t) => {
+    const r = await native(t, {}, { mobile });
+    r.seed(CASED, MINE, 2000);
+    r.seed("Notes/Other.md", THEIRS, 2000);
+
+    assert.equal(await r.host.move(CASED, "Notes/Other.md"), "occupied");
+    assert.equal(readFileSync(join(r.root, "Notes/Other.md"), "utf8"), THEIRS, "the destination was replaced");
+    assert.equal(readFileSync(join(r.root, CASED), "utf8"), MINE, "the source was moved anyway");
+    assert.equal(await r.host.move("Notes/Absent.md", "Notes/Arrived.md"), "missing");
+  });
+
+  test(`${platform} applies an incoming case-only move as one entry`, async (t) => {
+    const r = await native(t, {}, { mobile });
+    r.seed(CASED, MINE, 2000);
+    await pushFile(r.context, CASED);
+    const record = r.state.fileByPath(CASED);
+    const change = await r.server.publish({
+      fileId: record.fileId,
+      path: LOWER_CASED,
+      bytes: enc(MINE),
+      mtime: 2000,
+      parents: [record.versionId],
+      domainKey: r.keys.domainKey,
+      manifestKey: r.keys.manifestKey,
+    });
+
+    assert.equal(await applyChange(r.context, change), "applied");
+
+    assert.deepEqual(
+      readdirSync(join(r.root, "Notes")).filter((name) => !name.startsWith(".")),
+      ["case.md"],
+      `the vault did not end with one entry: ${JSON.stringify(readdirSync(join(r.root, "Notes")))}`,
+    );
+    assert.equal(readFileSync(join(r.root, LOWER_CASED), "utf8"), MINE, "the note lost its bytes");
+    assert.equal(r.state.fileByPath(CASED), undefined, "the old spelling is still recorded");
+    assert.equal(r.state.fileByPath(LOWER_CASED).fileId, record.fileId, "the file id did not follow the move");
+    assert.deepEqual(r.trashed, [], "a case-only move removed a file");
+    assert.ok(
+      r.logs.some((line) => line.includes("decision=case_move_moved")),
+      `the host did not report the rename: ${JSON.stringify(r.logs)}`,
+    );
+  });
+}

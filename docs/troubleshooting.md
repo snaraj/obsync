@@ -261,6 +261,47 @@ demand, or raise the ceiling in settings if the device can take it.
 That is obsync refusing to discard an edit, not a failure. See
 [`conflicts.md`](conflicts.md).
 
+## Two folders that differ only in capitalisation
+
+One device shows two folders whose names differ only in capitalisation --
+`team docs` with your current notes and `Team docs` with copies that no
+longer change -- while another device shows one. A filesystem either folds
+case, and then the two spellings are ONE folder, or it does not, and then
+they are two; a version before 1.1.0 could publish a capitalisation-only
+rename made on a folding device as NEW notes instead of as the rename it
+was, so a device that keeps the two apart received the new spelling and was
+never told to retire the old one. From 1.1.0 a capitalisation-only rename is
+published as a rename and applied as one, in both directions.
+
+**Do not delete the stale folder first.** A deletion is published as a
+tombstone, and every device obeys a tombstone. On a device that folds case,
+the old spelling IS the live note's own directory entry, so a tombstone for
+it -- arriving at a device that still has the old names in its records --
+deletes the notes you are trying to keep, everywhere. The order below exists
+for exactly that reason.
+
+1. **Update every device** to 1.1.0 or later, open each one, and let it sync
+   once. On a device that folds case the startup scan drops the records that
+   still name the old spelling, publishes nothing, removes nothing, and says
+   so once in a notice. That is what disarms the tombstone.
+2. **Check the stale folder** on the device that shows two. Its notes should
+   be the ones you renamed away from. Anything you edited there after the
+   rename exists only there: move it into the live folder first, under a
+   name of its own.
+3. **Delete the stale folder on that one device.** Its tombstones retire the
+   abandoned copies on every device and touch nothing live.
+4. An EMPTY folder under the old spelling can stay or go as you like.
+   Nothing in this version deletes a folder, and an empty one holds no
+   notes.
+
+The plugin does not do step 3 for you. A device can prove what its own
+records say; it cannot prove that every other device has already been
+updated and rescanned, and publishing that tombstone one sync too early is
+the loss this order avoids. Nor can it tell the two apart later: a rename
+leaves a file's size and modification time exactly as they were, so the
+record for the abandoned copy and the record for the live note describe the
+same bytes.
+
 ## How to collect a report
 
 1. **The plugin's own log.** On desktop, open Obsidian's developer console

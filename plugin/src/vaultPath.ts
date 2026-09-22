@@ -131,6 +131,31 @@ export function vaultPathRefusal(value: unknown): VaultPathRefusal | null {
   return null;
 }
 
+/**
+ * Do two vault paths name the same thing in a different CASE, and in nothing
+ * else (issue #124)?
+ *
+ * A host whose filesystem folds case holds ONE directory entry for both, so
+ * `Team docs` -> `team docs` is a rename of that entry and never a second
+ * file; a host that does not holds two. The plugin cannot ask a path which
+ * kind of host it is on, but it can ask whether two paths differ only this
+ * way, and the answer decides whether an incoming move is applied as one
+ * rename or as a write and a removal that would take the live file with it
+ * on a folding host.
+ *
+ * FOLDING IS CASE AND NOTHING ELSE. The comparison is `toLowerCase`, never
+ * `toLocaleLowerCase`: the device locale is a per-device fact and two
+ * devices folding one name differently would each believe the other renamed
+ * it. Lengths must match, which keeps the two Unicode traps apart from this
+ * rule — a name in NFC and the same name in NFD differ in length, and the
+ * one-to-many foldings (a dotted capital I, a sharp S) lengthen too. Those
+ * are genuine renames of a name this device cannot claim is the same entry,
+ * and they take the ordinary path.
+ */
+export function caseOnly(a: string, b: string): boolean {
+  return a !== b && a.length === b.length && a.toLowerCase() === b.toLowerCase();
+}
+
 export function isVaultPath(value: unknown): value is string {
   return vaultPathRefusal(value) === null;
 }

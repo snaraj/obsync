@@ -49,7 +49,7 @@ import {
 } from "../domainmap";
 import { State } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
-import { VaultPathError, vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inSyncScope, parseSyncFolders } from "../syncScope";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile } from "./push";
@@ -74,6 +74,14 @@ export interface VaultStat {
  * caller keeps both files instead (round 3, finding 1, re-opened).
  */
 export type TrashResult = "removed" | "kept" | "unheld";
+
+/**
+ * What a rename of one vault entry did. `occupied` is the refusal that makes
+ * the operation safe on a case-sensitive host: a DIFFERENT file already
+ * wears the destination's exact name, and a rename that replaced it would
+ * destroy a note no version holds (issue #124).
+ */
+export type MoveResult = "moved" | "occupied" | "missing";
 
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
@@ -127,6 +135,21 @@ export interface VaultHost {
    * removal is unconditional, which is what a remote tombstone means.
    */
   trash(path: string, expect?: VaultStat): Promise<TrashResult>;
+  /**
+   * Rename one entry, and REFUSE rather than replace.
+   *
+   * This is the operation a case-only rename needs and that a write followed
+   * by a removal cannot be: on a host that folds case the two spellings are
+   * one entry, so writing at the new one lands in the old one and the
+   * removal that follows takes the note with it. A rename changes the name
+   * the directory keeps, on that host and on a host that keeps the two
+   * apart alike.
+   *
+   * The destination is occupied only when a DIFFERENT file wears its exact
+   * name, which only the host can answer: by inode on desktop, and by the
+   * adapter's case-sensitive existence check on mobile.
+   */
+  move(from: string, to: string): Promise<MoveResult>;
   notify(message: string): void;
   log(line: string): void;
 }
@@ -149,6 +172,8 @@ export interface SyncContext {
   readonly written: Set<string>;
   /** Paths the pull path trashed here, awaiting their watcher delete event. */
   readonly trashed: Set<string>;
+  /** `from\u0000to` of renames the pull path made, awaiting their watcher event. */
+  readonly moved: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
   /** Resolutions of one file inside the current window, for the merge breaker. */
@@ -230,6 +255,7 @@ export class SyncEngine {
   private repairWork: Promise<void> | null = null;
   private repairNoticeShown = false;
   private scopeExitNoticeShown = false;
+  private caseGhostNoticeShown = false;
   private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(private readonly options: EngineOptions) {
@@ -308,6 +334,7 @@ export class SyncEngine {
       authored: new Set<string>(),
       written: new Set<string>(),
       trashed: new Set<string>(),
+      moved: new Set<string>(),
       refused: new Set<string>(),
       merges: new Map<string, { since: number; count: number }>(),
       publish: (path) => this.pushOne(path),
@@ -429,6 +456,14 @@ export class SyncEngine {
     const source = this.tracked(from, "rename_from", sourceFolders);
     const target = this.tracked(to, "rename_to");
     if (vaultPathRefusal(from) !== null) return;
+    // The pull path's own rename comes back here as a vault event, exactly
+    // as its trash does. Publishing it would post a version for a move this
+    // device only APPLIED, which the device that made it then applies back
+    // -- the two spellings of one folder bouncing between devices (#124).
+    if (this.running && this.contextValue !== null && this.contextValue.moved.delete(`${from}\u0000${to}`)) {
+      this.options.host.log("watch path_class=file decision=echo_suppressed event=rename");
+      return;
+    }
     // A local move across the boundary is a create within the selected
     // folders, or a file leaving them. Never transfer a remembered outside
     // identity in -- and never publish the exit as a deletion, whether the
@@ -820,7 +855,7 @@ export class SyncEngine {
   private async reconcileLocal(): Promise<void> {
     const context = this.need();
     const started = context.now();
-    const seen = new Set<string>();
+    const listed: VaultStat[] = [];
     let queued = 0;
     let skipped = 0;
     for (const file of await context.host.list()) {
@@ -829,12 +864,23 @@ export class SyncEngine {
         skipped++;
         continue;
       }
-      seen.add(file.path);
-      const record = context.state.fileByPath(file.path);
-      if (record && record.mtime === file.mtime && record.size === file.size) continue;
-      this.enqueue(file.path);
-      queued++;
+      listed.push(file);
     }
+    const seen = new Set(listed.map((file) => file.path));
+    // The listing by folded name, built once: a vault of ten thousand files
+    // and a folder of a hundred deletions must not cost a million
+    // comparisons to ask one question about each.
+    const spellings = new Map<string, string[]>();
+    for (const file of listed) {
+      const folded = file.path.toLowerCase();
+      spellings.set(folded, [...(spellings.get(folded) ?? []), file.path]);
+    }
+    // RECORDS FIRST, and that order is the fix. A rename this device never
+    // heard as an event is a record whose path has left the listing and a
+    // listed path no record explains -- and queued in the other order the
+    // second is published as a NEW file id before the first is recognised
+    // as the rename it is, which is how one folder became two on every
+    // device that tells `Team docs` from `team docs` (issue #124).
     for (const path of Object.keys(context.state.data.files)) {
       if (!this.running) return;
       if (seen.has(path)) continue;
@@ -842,13 +888,72 @@ export class SyncEngine {
         skipped++;
         continue;
       }
+      if (await this.caseRenamed(context, path, spellings.get(path.toLowerCase()) ?? [])) continue;
       this.deletions.add(path);
       this.enqueue(path);
+      queued++;
+    }
+    for (const file of listed) {
+      if (!this.running) return;
+      const record = context.state.fileByPath(file.path);
+      if (record && record.mtime === file.mtime && record.size === file.size) continue;
+      this.enqueue(file.path);
       queued++;
     }
     context.host.log(
       `reconcile decision=queued files=${seen.size} queued=${queued} skipped=${skipped} duration_ms=${context.now() - started}`,
     );
+  }
+
+  /**
+   * Was this recorded path moved by CASE ALONE, on a host that folds case?
+   *
+   * TWO FACTS, AND ONLY A FOLDING HOST GIVES BOTH. The listing no longer
+   * spells this path but holds exactly one that differs from it in case
+   * alone, and the host still answers for the spelling its own listing has
+   * dropped. A host that keeps the two apart answers `null` for a file that
+   * is really gone, so this never fires there and a genuine deletion beside
+   * a genuinely different note whose name differs only in case still
+   * publishes its tombstone. On a folding host the two spellings ARE one
+   * directory entry, so what happened to it can only have been a rename:
+   * recording it as one keeps the file id, and every other device then MOVES
+   * its copy instead of receiving a second one it never retires.
+   *
+   * A NEW SPELLING THAT IS ALREADY TRACKED is the residue of that defect
+   * rather than the defect: a device published the rename as a new file
+   * before this version, and this record is a ghost of the id it left
+   * behind. Its deletion must never be published -- on this folding host the
+   * ghost's path IS the live note, and a tombstone is obeyed by every device
+   * -- so the record is dropped and nothing is published, removed or
+   * renamed. That is the half of the recovery a device can prove by itself;
+   * `docs/troubleshooting.md` carries the half only the user can do.
+   */
+  private async caseRenamed(context: SyncContext, path: string, folded: string[]): Promise<boolean> {
+    const spellings = folded.filter((candidate) => caseOnly(candidate, path));
+    const to = spellings.length === 1 ? (spellings[0] as string) : null;
+    if (to === null || (await context.host.stat(path)) === null) return false;
+    if (context.state.fileByPath(to) === undefined) {
+      context.host.log("reconcile path_class=file decision=case_renamed");
+      this.renamed(path, to);
+      return true;
+    }
+    context.state.forgetPath(path);
+    void this.track(context.state.save()).catch(() => {
+      this.stop();
+      context.host.log("reconcile decision=failed reason=state_not_saved");
+    });
+    context.host.log("reconcile path_class=file decision=case_ghost_forgotten");
+    if (!this.caseGhostNoticeShown) {
+      this.caseGhostNoticeShown = true;
+      context.host.notify(
+        "obsync: a folder here was renamed by capitalisation alone before this version could publish it as " +
+          "a rename, so an older version published the notes under it as new files. This device has stopped " +
+          "tracking the old spelling and deleted nothing. If another device shows TWO folders whose names " +
+          "differ only in capitalisation, update every device first, let each sync once, and only then delete " +
+          "the stale folder there -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+      );
+    }
+    return true;
   }
 
   /**

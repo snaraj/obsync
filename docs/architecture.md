@@ -591,6 +591,21 @@ returns immediately when a new frame lands.
    reconciliation that compares `(mtime, size)` per path against the local
    state and re-hashes anything that differs. Events are debounced 500 ms
    per path; a file still growing is retried, never uploaded torn.
+
+   THE SCAN READS RECORDS BEFORE THE LISTING, and that order carries one
+   fact. A rename the plugin never heard as an event -- made while Obsidian
+   was closed, or dropped by the host's index -- is a record whose path has
+   left the listing and a listed path no record explains. Queued the other
+   way round the second is published as a NEW file id before the first is
+   recognised, which on a filesystem that FOLDS CASE is how `Team docs`
+   renamed to `team docs` became two folders on every device that does not
+   fold (issue #124). Two spellings of one name are paired as the rename
+   they are when the listing holds exactly one of them and the host still
+   answers for the spelling its own listing dropped -- an answer only a
+   folding filesystem gives, and there the two spellings ARE one directory
+   entry. A host that keeps them apart answers nothing for a file that is
+   gone, so a deletion beside a genuinely different note whose name differs
+   only in case still publishes its tombstone.
 2. **Push.** Read, chunk, encrypt, batch-check existence (`POST
    /v1/chunks/exists`), upload missing chunks with bounded concurrency
    (4 on desktop, 2 on mobile) and resume by `sid`, then post the version.
@@ -602,7 +617,17 @@ returns immediately when a new frame lands.
    Node filesystem; adapter write on mobile). Echoes of the device's own
    versions are recognized by `version_id` and skipped. A version whose path
    moved is applied as a MOVE -- the new path is written, the old one
-   trashed -- and the vault reports that removal back to this plugin like any
+   trashed. Two spellings that differ only in CASE are the exception: that
+   is one rename of one entry on every host and must never be a write and a
+   removal, because on a folding filesystem the write lands in the file this
+   device already has and the removal then takes it, while the same host
+   answers the destination's lookup with the source's own file, which the
+   same-name rule settles as a collision at the old spelling for good
+   (issue #124). The host renames the entry instead, refusing when a
+   DIFFERENT file wears the destination's exact name -- proved by inode on
+   desktop and by the adapter's case-sensitive existence check on mobile --
+   and that refusal is the real collision, which takes the same-name rule as
+   before. The vault reports the ordinary move's removal back to this plugin like any
    other deletion, so the engine drops it once, by the path the pull path
    recorded before removing it. Without that gate a rename is republished as
    a tombstone and deletes the file on every device, which is what 1.0.4
