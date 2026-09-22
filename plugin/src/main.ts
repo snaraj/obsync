@@ -58,7 +58,7 @@ import { ByteSource } from "./chunker";
 import { State } from "./state";
 import { assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
 import { DeviceRecord, Transport, lostMessage } from "./transport";
-import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
+import { EngineStatus, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
@@ -672,14 +672,45 @@ export class ObsidianHost implements VaultHost {
    * and on desktop the chain is checked again afterwards. A delete that went
    * somewhere else leaves the file we identified still sitting there, so
    * finding it afterwards is the signal that the name moved under us.
+   *
+   * AND THE DELETE ITSELF IS A WINDOW. `FileManager.trashFile` is
+   * asynchronous and does work of its own -- a vault lookup, the user's
+   * "Deleted files" preference, a move into a bin -- before the file stops
+   * existing. An editor save can land inside that window, and nothing checked
+   * before the call can see it: not the caller's last stat, and not a stat
+   * taken on the line above this one. What the removal takes then is bytes
+   * that exist on this device and NOWHERE else (round 3, finding 1).
+   *
+   * So a caller that says WHICH CONTENT it is removing gets a HOLD first: a
+   * second name for the same inode, made with `link`, which cannot follow a
+   * symlink and cannot replace anything. The vault's name goes; the inode
+   * stays alive under ours; and an in-place save -- the shape an editor save
+   * has here -- is readable through the hold afterwards. A hold whose
+   * metadata no longer matches what the caller copied is linked BACK under
+   * the vault name and answered `kept`, so the save survives in the vault it
+   * was made in; one that still matches is dropped and the removal stands.
+   *
+   * Mobile has no second name to give. There the window is narrowed to the
+   * last instant this device controls and is NOT closed, which is what
+   * `decision=trash_unheld` in the log says.
    */
-  async trash(path: string): Promise<void> {
+  async trash(path: string, expect?: VaultStat): Promise<TrashResult> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {
       found = await this.confine(desktop, path, ["absent", "file"]);
-      if (found.final === "absent") return;
+      // Nothing here to remove, and so nothing here to preserve either.
+      if (found.final === "absent") return "removed";
+    }
+    const hold =
+      expect === undefined || desktop === null || found === null
+        ? null
+        : await this.hold(desktop, found);
+    if (expect !== undefined && hold === null) {
+      const now = await this.stat(path);
+      if (now === null || now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
+      this.log("host path_class=file decision=trash_unheld");
     }
     // `FileManager.trashFile` honours the user's own "Deleted files"
     // preference -- system bin, the vault's `.trash`, or permanent -- where
@@ -692,12 +723,84 @@ export class ObsidianHost implements VaultHost {
     } else {
       await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
     }
-    if (desktop === null || found === null) return;
+    if (desktop === null || found === null) return "removed";
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
-    if (refusal !== null) throw new VaultPathError(refusal);
-    if (sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
+    if (refusal !== null) {
+      // The hold is deliberately LEFT here: putting a file back through a
+      // chain that was swapped under us is how a restore writes outside the
+      // vault. The bytes are on disk; the name they are under is not.
+      if (hold !== null) this.log("host path_class=file decision=restore_failed reason=chain");
+      throw new VaultPathError(refusal);
+    }
+    const verdict =
+      hold === null ? "removed" : await this.settle(desktop, found.target, hold, expect as VaultStat);
+    if (verdict === "removed" && sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
       throw new VaultPathError("target_identity");
     }
+    return verdict;
+  }
+
+  /**
+   * A second NAME for the file about to be removed, beside it in its own
+   * directory, so the inode outlives the removal and a save made into it
+   * stays readable. `link` is the only primitive that gives one without
+   * following a link or replacing anything. A filesystem that refuses it --
+   * and every mobile device, which never reaches here -- leaves the window
+   * open rather than leaving the file unprotected, and says so.
+   */
+  private async hold(desktop: DesktopVault, found: WalkResult): Promise<string | null> {
+    const parent = found.target.slice(0, found.target.lastIndexOf(desktop.path.sep));
+    const hold = `${parent}${desktop.path.sep}.obsync-hold-${hex(randomBytes(8))}.tmp`;
+    try {
+      await desktop.fs.promises.link(found.target, hold);
+      return hold;
+    } catch {
+      this.log("host path_class=file decision=trash_unheld");
+      return null;
+    }
+  }
+
+  /**
+   * The hold, after the removal: is this still the content the caller copied?
+   *
+   * Metadata is the test the whole sync path uses for "has this file moved
+   * on", and it is asked here of the INODE rather than of a name, so nothing
+   * can have been swapped underneath the answer. Unchanged means the removal
+   * took what it was meant to take, and the hold is dropped. Changed means a
+   * save landed inside the removal, and the file goes back under its own name
+   * with those bytes in it.
+   */
+  private async settle(
+    desktop: DesktopVault,
+    target: string,
+    hold: string,
+    expect: VaultStat,
+  ): Promise<TrashResult> {
+    const fs = desktop.fs;
+    const drop = async (): Promise<void> => {
+      await fs.promises.unlink(hold).catch(() => undefined);
+    };
+    const after = await walker(fs).lstat(hold);
+    if (after === null) {
+      // Our own name for it is gone as well: there is nothing to put back,
+      // and nothing this device can honestly say about what was removed.
+      this.log("host path_class=file decision=restore_failed reason=hold_gone");
+      return "removed";
+    }
+    if (Math.round(after.mtimeMs) === expect.mtime && after.size === expect.size) {
+      await drop();
+      return "removed";
+    }
+    try {
+      // Create-only again: whatever stands at that name now is not ours to
+      // replace, and the bytes stay under the hold when it does.
+      await fs.promises.link(hold, target);
+    } catch {
+      this.log("host path_class=file decision=restore_failed reason=name_taken");
+      return "kept";
+    }
+    await drop();
+    return "kept";
   }
 
   notify(message: string): void {

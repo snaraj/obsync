@@ -1068,6 +1068,17 @@ async function copyThrough(
  * pull path uses for "has this file moved on"; an edit that changes neither
  * is invisible to it here exactly as it is there.
  *
+ * AND THE LAST STAT IS NOT THE LAST MOMENT. The trash is asynchronous and
+ * does work of its own before the file goes, so a save can land after the
+ * check above and still be inside the removal -- which is the same loss one
+ * instruction later, and no check made HERE can close it (round 3, finding
+ * 1). So the content being removed is named to the host, the removal is
+ * bound to it, and a host that reports `kept` has put the file back with the
+ * later bytes in it: the note keeps its name and its new text, the copy this
+ * function already published keeps the text it had a moment ago, and the
+ * caller falls back to keeping both. The binding is the host's to make and
+ * the hosts differ in what they can promise -- see `VaultHost.trash`.
+ *
  * AND THE LOCAL NOTE CAN BE ANY SIZE. The incoming version says nothing about
  * it: a 21-byte note from another device collides with whatever wears that
  * name here, and the desktop host reads a whole file by allocating its whole
@@ -1089,13 +1100,13 @@ async function moveAside(
     const now = await context.host.stat(from);
     return now === null || now.mtime !== before.mtime || now.size !== before.size;
   };
-  const refuse = (copy: string | null): null => {
+  const refuse = (copy: string | null, reason = "source_changed"): null => {
     context.host.log(
-      `pull path_class=file decision=move_aside_refused reason=source_changed file=${record.fileId}`,
+      `pull path_class=file decision=move_aside_refused reason=${reason} file=${record.fileId}`,
     );
     if (copy !== null) {
       context.host.notify(
-        `obsync left ${from} where it is: it changed while obsync was copying it. Your note and its ` +
+        `obsync left ${from} where it is: it changed while obsync was moving it. Your note and its ` +
           `new text are untouched, and the text it had a moment ago is in "${copy}".`,
       );
     }
@@ -1124,7 +1135,12 @@ async function moveAside(
   // own delete handler while the trash is still running, and an unmarked echo
   // publishes a tombstone for a file that is alive one name over (issue #96).
   context.trashed.add(from);
-  await context.host.trash(from);
+  // The removal names the bytes it is removing. `kept` means the host found
+  // other ones there and put the file back rather than take them, so this
+  // move did not happen and the pair is kept as 1.0.6 kept it.
+  if ((await context.host.trash(from, before)) === "kept") {
+    return refuse(landed.stat.path, "source_changed_in_trash");
+  }
   // `mtime: -1` and no digest, exactly as a user's own rename records it
   // (`engine.ts`): the bytes did not move, the PATH did, and the path lives
   // inside the manifest, so the push must post even though the content is

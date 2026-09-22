@@ -191,9 +191,22 @@ export class FakeHost {
     };
   }
 
-  async trash(path) {
+  /**
+   * The removal, refusing what the real one refuses: a caller that names the
+   * content it is removing gets that content removed OR nothing removed at
+   * all (`main.ts`, round 3 finding 1). A fake that removed whatever it found
+   * could not show a save arriving inside the removal, which is the defect.
+   */
+  async trash(path, expect) {
+    // Through `stat`, which is the seam a test overrides to model a file it
+    // does not hold, exactly as the unheld real path asks the filesystem.
+    const now = await this.stat(path);
+    if (expect !== undefined && now !== null) {
+      if (now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
+    }
     this.trashed.push(path);
     this.files.delete(path);
+    return "removed";
   }
 
   notify(message) {
@@ -923,10 +936,11 @@ export class EventVault extends FakeHost {
 
   // --- what the plugin does to the vault, and what comes back ------------
 
-  async trash(path) {
+  async trash(path, expect) {
     const existed = this.files.has(path);
-    await super.trash(path);
-    if (existed && !this.silent.has(path)) this.emit("delete", this.entry(path));
+    const verdict = await super.trash(path, expect);
+    if (existed && verdict === "removed" && !this.silent.has(path)) this.emit("delete", this.entry(path));
+    return verdict;
   }
 
   async writer(path) {
