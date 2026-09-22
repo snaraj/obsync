@@ -68,6 +68,27 @@ evidence.
 | V14 | Dashboard from a phone browser | usable at 390 px wide |
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
 | V16 | Native credential persistence on each required platform, after fresh setup and after upgrading legacy paired state | restart Obsidian; the same device resumes bidirectional sync without setup or re-pairing, preserving folder selection |
+| V17 | Create an EMPTY folder on the desktop | it appears on the phone within 3 s, still empty, and no file is created inside it |
+| V18 | Create an empty folder on the phone | it appears on the desktop; the same result in the other direction |
+| V19 | Create a nested empty chain (`A/B/C`) on one device | all three appear on the other, in one tree |
+| V20 | Delete a folder holding notes on the desktop, one level and then a three-level nest | the notes and the whole empty tree are gone on the phone; a sibling folder that still holds a note is untouched |
+| V21 | Delete a folder on the phone | it is gone on the desktop; the same result in the other direction |
+| V22 | Rename a folder holding notes on one device | renamed on the other, notes inside keep their content and their history, no duplicate folder under either name |
+| V23 | Rename an EMPTY folder on one device | renamed on the other; the old name is gone |
+| V24 | On device A put an extra file into a folder that device B then deletes | B's deletion removes the notes; A keeps the folder AND the extra file, and says so in the log (`folder … decision=kept reason=not_empty`) |
+| V25 | Two devices already holding a vault made before 1.1.0, both updated, both restarted | every existing folder converges without the user doing anything; the folders each device already had appear on the other |
+| V26 | A third device left on 1.0.4 while the other two are on 1.1.0 | it shows one refusal notice per folder and keeps syncing NOTES normally; no file is created at any folder's path; no tombstone is published for anything; updating it makes the folders appear and the notices stop |
+| V27 | On the 1.0.4 device, delete the last note out of a folder and KEEP the folder | the 1.1.0 devices delete the note and keep the folder: a device that says nothing about a folder never deletes it |
+
+V17-V27 are the folder-sync scenarios for 1.1.0 (issue #104). Run each in
+BOTH directions — desktop to phone and phone to desktop — and record which
+device originated each one, because the two platforms use different host
+primitives: desktop makes and removes folders through Node's filesystem after
+the component walk, mobile through the vault adapter. For V20 and V24, record
+what the file explorer shows on the receiving device AFTER a restart of
+Obsidian as well, since a stale explorer pane is not a sync result. For V26 and V27,
+record the exact notice text, the plugin version on each device, and that the
+old device's own notes still sync in both directions while it is refusing.
 
 For V16, record the Obsidian version (at least 1.13.0), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
 

@@ -41,6 +41,12 @@
  * vanished recorded path with a new unrecorded one of the same
  * `(mtime, size)` as a MOVE, but it never publishes a tombstone.
  *
+ * FOLDERS. A folder is synced as its own record — a manifest with a path and
+ * nothing else (`push.ts`, `FolderManifest`) — so an EMPTY folder reaches
+ * every device and a deleted one leaves every device (issue #104). The vault
+ * events for a folder come in here exactly as a file's do, and a folder the
+ * pull path made or removed is dropped as an echo the same way.
+ *
  * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
  * the watcher, startup reconciliation and the pull path all refuse anything
  * else, which is what takes `.obsidian/**` and `.git/**` out of sync in v0.1
@@ -68,7 +74,7 @@ import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inSyncScope, parseSyncFolders } from "../syncScope";
 import { applyChange } from "./pull";
-import { pushDelete, pushFile } from "./push";
+import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
 export interface VaultStat {
@@ -188,6 +194,17 @@ export interface VaultHost {
    * adapter's case-sensitive existence check on mobile.
    */
   move(from: string, to: string): Promise<MoveResult>;
+  /** Every folder path this device may sync, excluding the vault root. */
+  listFolders(): Promise<string[]>;
+  /** Make this folder and anything missing above it; refuse if a FILE is there. */
+  createFolder(path: string): Promise<void>;
+  /**
+   * Remove this folder through the user's own delete preference. `false`,
+   * having done nothing, when it still holds ANYTHING — including a file this
+   * device does not sync, which is the whole reason the host answers this and
+   * not the engine: only the host can see the filesystem.
+   */
+  trashFolder(path: string): Promise<boolean>;
   notify(message: string): void;
   log(line: string): void;
 }
@@ -212,6 +229,8 @@ export interface SyncContext {
   readonly trashed: Set<string>;
   /** `from\u0000to` of renames the pull path made, awaiting their watcher event. */
   readonly moved: Set<string>;
+  /** Folders the pull path made here, awaiting their watcher create event. */
+  readonly createdFolders: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
   /** Resolutions of one file inside the current window, for the merge breaker. */
@@ -302,6 +321,9 @@ export class SyncEngine {
   private readonly deletions = new Set<string>();
   /** Paths whose NAME changed: their bytes are identical, so the push must be forced. */
   private readonly renames = new Set<string>();
+  /** Queued folder paths to publish a record for, and to tombstone. */
+  private readonly folderPublishes = new Set<string>();
+  private readonly folderRemovals = new Set<string>();
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
@@ -403,6 +425,7 @@ export class SyncEngine {
       written: new Set<string>(),
       trashed: new Set<string>(),
       moved: new Set<string>(),
+      createdFolders: new Set<string>(),
       refused: new Set<string>(),
       merges: new Map<string, { since: number; count: number }>(),
       publish: (path) => this.pushOne(path),
@@ -673,6 +696,69 @@ export class SyncEngine {
     this.pending.delete(path);
   }
 
+  /**
+   * A folder appeared in the vault.
+   *
+   * Publishing it is what makes an EMPTY folder reach the other devices at
+   * all: a folder with notes in it arrives as a side effect of their paths,
+   * and a folder with none arrived as nothing before 1.1.0 (issue #104).
+   *
+   * THE ECHO. Obsidian reports a folder this plugin's own pull path made
+   * while `createFolder` is still running, so the report arrives BEFORE the
+   * record is written and `pushFolder`'s own idempotence cannot see it yet.
+   * Unmarked, that costs one signed request per pulled folder, and a folder
+   * being RE-created (parents = its old tombstone) would fork into a second
+   * head for no content difference at all.
+   */
+  folderCreated(path: string): void {
+    if (!this.running || !this.tracked(path, "folder_create")) return;
+    const context = this.need();
+    // A folder stands here again, so a delete event still owed for the one
+    // the pull path removed will never arrive (`deleted`, issue #96).
+    context.trashed.delete(path);
+    this.folderRemovals.delete(path);
+    if (context.createdFolders.delete(path)) {
+      this.options.host.log("watch path_class=folder decision=echo_suppressed event=create");
+      return;
+    }
+    this.folderPublishes.add(path);
+    this.enqueue(path);
+  }
+
+  /**
+   * A folder left the vault. Its files publish their own tombstones through
+   * the delete events Obsidian fires for each of them; this publishes the
+   * folder's, which is what removes the empty tree from every other device.
+   */
+  folderDeleted(path: string): void {
+    if (!this.running || !this.tracked(path, "folder_delete")) return;
+    const context = this.need();
+    context.createdFolders.delete(path);
+    this.folderPublishes.delete(path);
+    if (context.trashed.delete(path)) {
+      this.options.host.log("watch path_class=folder decision=echo_suppressed event=delete");
+      return;
+    }
+    this.folderRemovals.add(path);
+    this.enqueue(path);
+  }
+
+  /**
+   * A folder was renamed. A folder record IS its path — a folder has no
+   * content to carry an identity through a move — so the old one is
+   * tombstoned and the new one published, for this folder and for every
+   * folder recorded beneath it. The files inside move as ordinary per-file
+   * renames, which keep their file ids (`renamed`).
+   */
+  folderRenamed(from: string, to: string): void {
+    if (!this.running) return;
+    const recorded = Object.keys(this.need().state.data.folders);
+    for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
+      this.folderDeleted(path);
+      this.folderCreated(to + path.slice(from.length));
+    }
+  }
+
   /** The live context, for views that read remote-only accounting. */
   get context(): SyncContext | null {
     return this.contextValue;
@@ -836,6 +922,18 @@ export class SyncEngine {
   private async pushNow(path: string): Promise<void> {
     const context = this.need();
     try {
+      // Folder work first: a path is a folder or a file, never both, and the
+      // folder sets are the only ones that can name a path with no stat.
+      if (this.folderRemovals.delete(path)) {
+        const versionId = await pushFolderDelete(context, path);
+        if (versionId !== null) context.authored.add(versionId);
+        return;
+      }
+      if (this.folderPublishes.delete(path)) {
+        const versionId = await pushFolder(context, path);
+        if (versionId !== null) context.authored.add(versionId);
+        return;
+      }
       if (this.deletions.has(path)) {
         this.deletions.delete(path);
         const outcome = await pushDelete(context, path);
@@ -1012,6 +1110,19 @@ export class SyncEngine {
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
     let skipped = 0;
+    // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
+    // The scan is additive and never publishes a tombstone, and a folder
+    // record IS its path -- there is no content to converge from -- so a
+    // scan could only ever add folders the next reconcile adds anyway.
+    // Listing them every `SCAN_MS` would be a walk of the vault for nothing.
+    const folders = tombstones ? await context.host.listFolders() : [];
+    // START, with the budget this pass is bounded by: the vault's own
+    // inventory, walked once (requirement 12).
+    if (tombstones) {
+      context.host.log(
+        `${label} decision=start budget_files=${files.length} budget_folders=${folders.length}`,
+      );
+    }
     for (const file of files) {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
@@ -1111,14 +1222,47 @@ export class SyncEngine {
       this.enqueue(file.path);
       queued++;
     }
+    // Folders, the same two passes: publish a record for every folder that
+    // has none — which is how a vault that predates 1.1.0 converges once both
+    // devices update — and tombstone every record whose folder is gone, which
+    // is a folder deleted while Obsidian was closed. Both are deletions or
+    // publications about the vault's real shape, so they belong to the pass
+    // that reads Obsidian's own index, exactly like a file tombstone.
+    let folderQueued = 0;
+    let folderSkipped = 0;
+    const present = new Set<string>();
+    if (tombstones) {
+      for (const folder of folders) {
+        if (!this.running) return;
+        if (!this.tracked(folder, "reconcile_folder") || !(await context.host.syncable(folder))) {
+          folderSkipped++;
+          continue;
+        }
+        present.add(folder);
+        if (context.state.folderByPath(folder) !== undefined) continue;
+        this.folderPublishes.add(folder);
+        this.enqueue(folder);
+        folderQueued++;
+      }
+      for (const folder of Object.keys(context.state.data.folders)) {
+        if (!this.running) return;
+        if (present.has(folder)) continue;
+        if (!this.tracked(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        this.folderRemovals.add(folder);
+        this.enqueue(folder);
+        folderQueued++;
+      }
+    }
+
     const duration = context.now() - started;
     // The periodic pass is silent when it had nothing to say: one line every
     // 30 s about an unchanged vault buries the lines that matter. It speaks
     // whenever it acted, and whenever it overran the budget it is measured
     // against.
-    if (tombstones || queued + removed + skipped + moves + cased > 0 || duration > SCAN_BUDGET_MS) {
+    if (tombstones || queued + removed + skipped + moves + cased + folderQueued > 0 || duration > SCAN_BUDGET_MS) {
       context.host.log(
         `${label} decision=queued files=${seen.size} queued=${queued} moved=${moves} removed=${removed} ` +
+          `folders=${present.size} folders_queued=${folderQueued} folders_skipped=${folderSkipped} ` +
           `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased}`,
       );
     }

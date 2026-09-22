@@ -47,6 +47,15 @@ export interface FileRecord {
   sha256: string;
 }
 
+/**
+ * A folder this device has a published record for. It has no content, so
+ * there is nothing to remember but which version last said it exists.
+ */
+export interface FolderRecord {
+  fileId: string;
+  versionId: string;
+}
+
 export interface RemoteOnlyRecord {
   path: string;
   size: number;
@@ -71,6 +80,13 @@ export interface ObsyncData {
   lastSeq: number;
   /** Vault path to the last version this device wrote or read. */
   files: Record<string, FileRecord>;
+  /**
+   * Vault path to the folder record covering it. Separate from `files`
+   * because everything that walks `files` — startup reconciliation, the byte
+   * inventory, chunk repair — means FILES, and a folder in that map would be
+   * reconciled as a file the vault no longer has and tombstoned for it.
+   */
+  folders: Record<string, FolderRecord>;
   /** File id to the file this device declined to materialise. */
   remoteOnly: Record<string, RemoteOnlyRecord>;
   policy: Policy;
@@ -88,6 +104,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     edgeHeaders: [],
     lastSeq: 0,
     files: {},
+    folders: {},
     remoteOnly: {},
     policy: defaultPolicy(isMobile),
   };
@@ -198,6 +215,16 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
         size: num(record["size"], 0),
         sha256: str(record["sha256"], ""),
       };
+    }
+  }
+  const folders = loaded["folders"];
+  if (isRecord(folders)) {
+    for (const [path, record] of Object.entries(folders)) {
+      // Same rule as `files`: the data file is editable by anything that can
+      // reach the vault, so a path it names is input, not memory.
+      if (!isVaultPath(path) || !isRecord(record)) continue;
+      if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
+      data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
     }
   }
   const remoteOnly = loaded["remoteOnly"];
@@ -381,6 +408,18 @@ export class State {
 
   forgetPath(path: string): void {
     delete this.data.files[path];
+  }
+
+  folderByPath(path: string): FolderRecord | undefined {
+    return this.data.folders[path];
+  }
+
+  setFolder(path: string, record: FolderRecord): void {
+    this.data.folders[path] = record;
+  }
+
+  forgetFolder(path: string): void {
+    delete this.data.folders[path];
   }
 
   /** Bytes held locally, the input to the total-budget ceiling. */

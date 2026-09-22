@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
+const vp = require("../build/vaultPath.js");
 const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -120,9 +121,13 @@ export class FakeHost {
     this.appVersion = appVersion;
     this.deviceName = deviceName;
     this.files = new Map();
+    /** Folders that exist with nothing in them; the rest are implied by files. */
+    this.explicitFolders = new Set();
     this.logs = [];
     this.notices = [];
     this.trashed = [];
+    /** Every folder `trashFolder` was ASKED about, kept ones included. */
+    this.folderChecks = [];
     this.clock = 1757200000000;
   }
 
@@ -146,10 +151,40 @@ export class FakeHost {
     return undefined;
   }
 
+  /** Every folder above a path, deepest first, as the product computes them. */
+  static parents(path) {
+    const out = [];
+    for (let slash = path.lastIndexOf("/"); slash > 0; slash = path.lastIndexOf("/", slash - 1)) {
+      out.push(path.slice(0, slash));
+    }
+    return out;
+  }
+
+  /** True when this vault holds a folder here, explicitly or through a file. */
+  hasFolder(path) {
+    if (this.explicitFolders.has(path)) return true;
+    const prefix = `${path}/`;
+    return [...this.files.keys()].some((candidate) => candidate.startsWith(prefix));
+  }
+
+  /**
+   * Writing a file makes the folders above it, and they OUTLIVE the file, the
+   * way a real `mkdir -p` followed by an `unlink` does. A fake that forgot
+   * them would make every folder look empty the moment its last note went,
+   * and would hide exactly the behaviour issue #104 is about. Returns the
+   * folders it had to make, which is what Obsidian reports.
+   */
+  ensureParents(path) {
+    const made = FakeHost.parents(path).filter((parent) => !this.explicitFolders.has(parent)).reverse();
+    for (const parent of made) this.explicitFolders.add(parent);
+    return made;
+  }
+
   seed(path, content, mtime) {
     const bytes = typeof content === "string" ? enc(content) : content;
     // A write through the other spelling lands in the entry that is there
     // and does NOT rename it, exactly as `open`/`write` does on macOS.
+    this.ensureParents(path);
     this.files.set(this.resolve(path) ?? path, { bytes, mtime: mtime ?? this.clock });
     return bytes;
   }
@@ -206,6 +241,7 @@ export class FakeHost {
           joined.set(part, at);
           at += part.length;
         }
+        host.ensureParents(path);
         host.files.set(host.resolve(path) ?? path, { bytes: joined, mtime });
         return { path, mtime, size: joined.length };
       },
@@ -278,6 +314,35 @@ export class FakeHost {
     this.files.delete(source);
     this.files.set(to, file);
     return "moved";
+  }
+
+  /** Every folder the vault holds, the way Obsidian's own tree reports them. */
+  async listFolders() {
+    const out = new Set(this.explicitFolders);
+    for (const path of this.files.keys()) for (const parent of FakeHost.parents(path)) out.add(parent);
+    return [...out].filter((path) => !this.unsyncable.has(path));
+  }
+
+  /** A file standing here is refused, exactly as the real host refuses it. */
+  async createFolder(path) {
+    if (this.files.has(path)) throw new vp.VaultPathError("not_a_directory");
+    for (const parent of FakeHost.parents(path)) {
+      if (this.files.has(parent)) throw new vp.VaultPathError("not_a_directory");
+      this.explicitFolders.add(parent);
+    }
+    this.explicitFolders.add(path);
+  }
+
+  /** Empty means empty: a file or a folder anywhere under it keeps it. */
+  async trashFolder(path) {
+    this.folderChecks.push(path);
+    const prefix = `${path}/`;
+    const holds = [...this.files.keys(), ...this.explicitFolders]
+      .some((candidate) => candidate.startsWith(prefix));
+    if (holds) return false;
+    this.explicitFolders.delete(path);
+    this.trashed.push(path);
+    return true;
   }
 
   notify(message) {
@@ -605,6 +670,26 @@ export class FakeServer {
     return [...this.files.keys()].filter((id) => id !== this.mapFileId);
   }
 
+  /**
+   * The NOTE file ids among them. A folder is a file id here like any other
+   * from 1.1.0 (#104), and a folder record IS its path -- so renaming a
+   * folder legitimately retires one id and creates another, which is not a
+   * note being copied. Only the manifest says which kind a record is, so it
+   * is decrypted rather than guessed at from the frame.
+   */
+  async noteFiles(manifestKey) {
+    const out = new Set();
+    for (const frame of this.journal) {
+      if (frame.file_id === this.mapFileId) continue;
+      const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
+      const manifest = JSON.parse(await c.decryptManifest(
+        manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
+      ));
+      if (manifest.v !== 2) out.add(frame.file_id);
+    }
+    return [...out];
+  }
+
   async seedDomainMap(mapKeys, domainId) {
     this.mapFileId = mapKeys.fileId;
     const map = dm.defaultDomainMap(domainId);
@@ -707,7 +792,11 @@ export class FakeServer {
       domain_id: domainId,
       deleted,
       device_id: deviceId,
-      ts: manifest.mtime,
+      // The SERVER stamps a version, always: a folder manifest carries no
+      // `mtime` at all, and a frame without a `ts` is a fixture no obsyncd
+      // would ever emit -- and one the history reader refuses for the wrong
+      // reason.
+      ts: manifest.mtime ?? 1757200000000,
       seq: ++this.seq,
     };
     file.versions.unshift(version);
@@ -890,6 +979,7 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     written: new Set(),
     trashed: new Set(),
     moved: new Set(),
+    createdFolders: new Set(),
     refused: new Set(),
     merges: new Map(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
@@ -1015,6 +1105,21 @@ export class EventVault extends FakeHost {
     return verdict;
   }
 
+  async createFolder(path) {
+    const before = new Set(this.explicitFolders);
+    await super.createFolder(path);
+    // Obsidian reports each folder it had to make, the parents included.
+    for (const made of [...this.explicitFolders].filter((candidate) => !before.has(candidate))) {
+      this.emit("create", this.entry(made, true));
+    }
+  }
+
+  async trashFolder(path) {
+    const removed = await super.trashFolder(path);
+    if (removed && !this.silent.has(path)) this.emit("delete", this.entry(path, true));
+    return removed;
+  }
+
   async writer(path) {
     const writer = await super.writer(path);
     return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
@@ -1034,7 +1139,10 @@ export class EventVault extends FakeHost {
 
   async commit(writer, path, mtime) {
     const existed = this.resolve(path) !== undefined;
+    const missing = FakeHost.parents(path).filter((parent) => !this.explicitFolders.has(parent)).reverse();
     const stat = await writer.commit(mtime);
+    // Obsidian reports the folders a write had to make, before the file.
+    for (const made of missing) this.emit("create", this.entry(made, true));
     this.emit(existed ? "modify" : "create", this.entry(path));
     return stat;
   }
@@ -1044,8 +1152,19 @@ export class EventVault extends FakeHost {
   /** Type a note, or edit one. */
   write(path, text, mtime) {
     const existed = this.resolve(path) !== undefined;
+    const missing = FakeHost.parents(path).filter((parent) => !this.explicitFolders.has(parent)).reverse();
     this.seed(path, text, mtime);
+    for (const made of missing) this.emit("create", this.entry(made, true));
     this.emit(existed ? "modify" : "create", this.entry(path));
+  }
+
+  /** Make a folder in the file explorer: one event per folder created. */
+  makeFolder(path) {
+    for (const parent of [...FakeHost.parents(path)].reverse().concat(path)) {
+      if (this.explicitFolders.has(parent)) continue;
+      this.explicitFolders.add(parent);
+      this.emit("create", this.entry(parent, true));
+    }
   }
 
   /**
@@ -1073,6 +1192,10 @@ export class EventVault extends FakeHost {
       .map((path) => [to + path.slice(from.length), this.files.get(path), path]);
     for (const [, , path] of moved) this.files.delete(path);
     for (const [path, file] of moved) this.files.set(path, file);
+    for (const path of [...this.explicitFolders].filter((candidate) => candidate === from || candidate.startsWith(`${from}/`))) {
+      this.explicitFolders.delete(path);
+      this.explicitFolders.add(to + path.slice(from.length));
+    }
     this.emit("rename", this.entry(to, true), from);
   }
 
@@ -1081,6 +1204,10 @@ export class EventVault extends FakeHost {
     for (const path of [...this.files.keys()].filter((candidate) => candidate.startsWith(`${folder}/`))) {
       this.files.delete(path);
     }
+    for (const held of [...this.explicitFolders].filter((candidate) => candidate.startsWith(`${folder}/`))) {
+      this.explicitFolders.delete(held);
+    }
+    this.explicitFolders.delete(folder);
     this.emit("delete", this.entry(folder, true));
   }
 

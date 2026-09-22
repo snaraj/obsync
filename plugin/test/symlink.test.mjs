@@ -27,6 +27,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -74,10 +75,23 @@ async function vault({ fs: injected } = {}) {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
     remove: async (path) => unlinkSync(join(root, path)),
+    rmdir: async (path) => rmdirSync(join(root, path)),
   };
   const plugin = {
     state: { data: {} },
-    app: { vault: { adapter, getFiles: () => [], getAbstractFileByPath: () => null } },
+    app: {
+      vault: {
+        adapter,
+        getFiles: () => [],
+        getAbstractFileByPath: () => null,
+        // Obsidian's own cache knows nothing here, so the host falls back to
+        // the adapter: the filesystem is what these tests are about.
+        getFileByPath: () => null,
+        getFolderByPath: () => null,
+        getAllFolders: () => [],
+      },
+      fileManager: { trashFile: async () => assert.fail("the vault cache had no entry to trash") },
+    },
     log: (line) => logs.push(line),
   };
   const desktop = { fs: injected ?? { promises: { ...realFsPromises } }, path: nodePath, base: root };
@@ -106,6 +120,7 @@ async function vault({ fs: injected } = {}) {
     authored: new Set(),
     written: new Set(),
     trashed: new Set(),
+    createdFolders: new Set(),
     refused: new Set(),
     merges: new Map(),
     deviceNames: new Map(),
@@ -122,7 +137,18 @@ async function vault({ fs: injected } = {}) {
       domainKey: k.domainKey,
       manifestKey: k.manifestKey,
     });
-  return { host, root, outside, logs, notices: obsidian.notices, context, server, state, publish, applyChange, keys: k };
+  let folders = 0;
+  const publishFolder = (path, { deleted = false, parents = [] } = {}) =>
+    server.publishManifest({
+      fileId: `f${String(++folders).padStart(1, "0")}`.repeat(16).slice(0, 32),
+      manifest: { v: 2, kind: "directory", path, domain: KEYS.domainId, size: 0, chunks: [], sha256: "", deleted },
+      sids: [],
+      parents,
+      deviceId: "ffffffffffffffffffffffffffffffff",
+      manifestKey: k.manifestKey,
+      bytes: 0,
+    });
+  return { host, root, outside, logs, notices: obsidian.notices, context, server, state, publish, publishFolder, applyChange, keys: k };
 }
 
 const refusals = (logs) => logs.filter((line) => line.includes("decision=refused"));
@@ -444,4 +470,99 @@ test("a temp file swapped for a symlink between the open and the write is refuse
   assert.equal(left.length, 1, `nothing landed; only the plant remains: ${left.join(", ")}`);
   assert.equal(lstatSync(join(root, left[0])).isSymbolicLink(), true, "and it is the plant, not our file");
   assert.equal(logs.length, 0, "the writer refuses before it logs a write");
+});
+
+/**
+ * FOLDER RECORDS ON A REAL FILESYSTEM (issue #104).
+ *
+ * A folder record decides what a `mkdir` and an `rmdir` do, so it takes the
+ * same walk a file manifest takes: no component may be a symlink, nothing may
+ * be created or removed outside the vault, and a FILE standing at the path is
+ * refused rather than replaced. Removal additionally asks the filesystem
+ * whether the directory is empty — with `readdir`, which sees the hidden and
+ * unsynced files the vault's own inventory does not.
+ */
+test("a folder record through a directory symlink creates nothing outside", async () => {
+  const { root, outside, logs, context, publishFolder, applyChange } = await vault();
+  symlinkSync(outside, join(root, "Linked"), "dir");
+
+  assert.equal(await applyChange(context, await publishFolder("Linked/Inside")), "refused");
+
+  assert.deepEqual(readdirSync(outside), [], "a directory was made outside the vault");
+  assert.deepEqual(readdirSync(root), ["Linked"], "and nothing new inside it");
+  assert.ok(
+    refusals(logs).some((line) => line.includes("reason=symlink_component")),
+    refusals(logs).join(" | "),
+  );
+});
+
+test("a folder record where a real FILE stands is refused, and the file is untouched", async () => {
+  const { root, logs, context, publishFolder, applyChange } = await vault();
+  writeFileSync(join(root, "Notes"), "a file, not a folder\n");
+
+  assert.equal(await applyChange(context, await publishFolder("Notes")), "refused");
+
+  assert.equal(lstatSync(join(root, "Notes")).isFile(), true, "the file became something else");
+  assert.equal(readFileSync(join(root, "Notes"), "utf8"), "a file, not a folder\n");
+  assert.ok(
+    logs.some((line) => line.includes("folder path_class=folder decision=refused reason=not_a_directory")),
+    refusals(logs).join(" | "),
+  );
+});
+
+test("an ordinary folder record makes the folder, parents and all, and its tombstone takes it back", async () => {
+  const { root, logs, context, state, publishFolder, applyChange } = await vault();
+  const created = await publishFolder("Work/2026/Q3");
+  assert.equal(await applyChange(context, created), "applied");
+  assert.equal(lstatSync(join(root, "Work", "2026", "Q3")).isDirectory(), true, "the folder was not made");
+  assert.equal(state.folderByPath("Work/2026/Q3") !== undefined, true);
+
+  assert.equal(
+    await applyChange(context, await publishFolder("Work/2026/Q3", { deleted: true, parents: [created.version_id] })),
+    "deleted",
+  );
+  assert.equal(existsSync(join(root, "Work", "2026", "Q3")), false, "the folder outlived its tombstone");
+  // `Work/2026` and `Work` have no record of their own, so the same walk that
+  // cleans up after a deleted file takes them.
+  assert.deepEqual(readdirSync(root), [], "the empty parents were left behind");
+  assert.ok(logs.some((line) => line.includes("folder path_class=folder decision=removed reason=tombstone")));
+  assert.ok(logs.some((line) => line.includes("folder path_class=folder decision=removed reason=empty_parent")));
+});
+
+test("a folder still holding an unsynced or hidden file is kept, and the file with it", async () => {
+  const { root, logs, context, publishFolder, applyChange } = await vault();
+  const created = await publishFolder("Shared");
+  assert.equal(await applyChange(context, created), "applied");
+  // Neither of these is a file this device syncs: one is hidden, one is a
+  // note nobody has pushed. `readdir` is what sees them.
+  writeFileSync(join(root, "Shared", ".DS_Store"), "");
+  writeFileSync(join(root, "Shared", "local-only.md"), "not synced yet\n");
+
+  assert.equal(
+    await applyChange(context, await publishFolder("Shared", { deleted: true, parents: [created.version_id] })),
+    "skipped",
+  );
+
+  assert.equal(lstatSync(join(root, "Shared")).isDirectory(), true, "a folder with files in it was removed");
+  assert.deepEqual(readdirSync(join(root, "Shared")).sort(), [".DS_Store", "local-only.md"]);
+  assert.ok(logs.some((line) => line.includes("folder path_class=folder decision=kept reason=not_empty")));
+});
+
+test("a tombstoned note takes the real directory it emptied, and stops at one that is not empty", async () => {
+  const { root, context, server, publish, applyChange, keys: k } = await vault();
+  const deep = await publish("Tree/Deep/only.md", "the last note\n");
+  assert.equal(await applyChange(context, deep), "applied");
+  const kept = await publish("Tree/Keep/kept.md", "a note that stays\n");
+  assert.equal(await applyChange(context, kept), "applied");
+
+  assert.equal(await applyChange(context, await server.publishTombstone({
+    fileId: deep.file_id, path: "Tree/Deep/only.md", manifestKey: k.manifestKey, parents: [deep.version_id],
+  })), "deleted");
+
+  assert.equal(existsSync(join(root, "Tree", "Deep")), false, "the emptied directory was left behind");
+  // `Tree` still holds `Keep`, so the walk stops there: a folder holding a
+  // folder is not empty either.
+  assert.equal(lstatSync(join(root, "Tree")).isDirectory(), true, "a folder with a subfolder was removed");
+  assert.deepEqual(readdirSync(join(root, "Tree")), ["Keep"]);
+  assert.equal(readFileSync(join(root, "Tree", "Keep", "kept.md"), "utf8"), "a note that stays\n");
 });

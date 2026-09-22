@@ -108,6 +108,10 @@ interface NodeFs {
     rename(from: string, to: string): Promise<void>;
     link(from: string, to: string): Promise<void>;
     unlink(path: string): Promise<void>;
+    /** Names inside a directory, including the ones the vault does not show. */
+    readdir(path: string): Promise<string[]>;
+    /** Remove an EMPTY directory; the caller proves it is empty first. */
+    rmdir(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
     /** No-follow stat. Rejects when the path does not exist. */
@@ -581,6 +585,11 @@ export class ObsidianHost implements VaultHost {
         parts.push(bytes);
       },
       commit: async (mtime) => {
+        // A folder can stand where a remote manifest names a file now that
+        // folders sync, and `writeBinary` would not say so. Desktop refuses
+        // it in `confine`; mobile refuses it here, in the same words, so both
+        // platforms answer a file/folder collision identically (issue #104).
+        if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
         let total = 0;
         for (const part of parts) total += part.length;
@@ -1184,6 +1193,96 @@ export class ObsidianHost implements VaultHost {
     }
   }
 
+  /** Every folder this device may sync, from Obsidian's own file tree. */
+  async listFolders(): Promise<string[]> {
+    const folders = this.plugin.state.data.syncFolders;
+    const out: string[] = [];
+    for (const entry of this.plugin.app.vault.getAllFolders(false)) {
+      // `inSyncScope` carries the vault-path rule, so a hidden folder and a
+      // folder outside the selection are both out, in one check.
+      if (!inSyncScope(entry.path, folders)) continue;
+      if (this.desktop !== null) {
+        try {
+          await this.confine(this.desktop, entry.path, ["directory"]);
+        } catch (error) {
+          if (!(error instanceof VaultPathError)) throw error;
+          this.log(`list decision=not_synced reason=${error.refusal}`);
+          continue;
+        }
+      }
+      out.push(entry.path);
+    }
+    return out;
+  }
+
+  /**
+   * Make this folder, and anything missing above it.
+   *
+   * A FILE standing at the path is refused, not replaced: another device's
+   * manifest does not get to turn this device's note into a directory. On
+   * desktop the walk says so before `mkdir` runs, so nothing is created
+   * through a link either; on mobile the adapter is asked what is there.
+   */
+  async createFolder(path: string): Promise<void> {
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    if (desktop !== null) {
+      const found = await this.confine(desktop, path, ["absent", "directory"]);
+      if (found.final === "directory") return;
+      await desktop.fs.promises.mkdir(found.target, { recursive: true });
+      await this.confine(desktop, path, ["directory"]);
+      return;
+    }
+    const adapter = this.plugin.app.vault.adapter;
+    const stat = await adapter.stat(path);
+    if (stat !== null) {
+      if (stat.type !== "folder") throw new VaultPathError("not_a_directory");
+      return;
+    }
+    await adapter.mkdir(path);
+  }
+
+  /**
+   * Remove an EMPTY folder, through the same "Deleted files" preference a
+   * file delete honours. `false`, having removed nothing, when the folder
+   * still holds anything at all.
+   *
+   * The emptiness question is asked of the FILESYSTEM, not of the vault's
+   * synced inventory: a folder holding a hidden file, a file this device does
+   * not sync, or another plugin's data still holds something, and
+   * `trashFile` on a folder takes everything under it. Desktop reads the
+   * directory; mobile asks the adapter, which is all it has.
+   */
+  async trashFolder(path: string): Promise<boolean> {
+    assertSyncPath(path, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    let found: WalkResult | null = null;
+    if (desktop !== null) {
+      found = await this.confine(desktop, path, ["absent", "directory"]);
+      if (found.final === "absent") return true;
+      if ((await desktop.fs.promises.readdir(found.target)).length > 0) return false;
+    } else {
+      const adapter = this.plugin.app.vault.adapter;
+      if ((await adapter.stat(path))?.type !== "folder") return true;
+      const listed = await adapter.list(path);
+      if (listed.files.length > 0 || listed.folders.length > 0) return false;
+    }
+    const folder = this.plugin.app.vault.getFolderByPath(path);
+    if (folder) await this.plugin.app.fileManager.trashFile(folder);
+    else await this.plugin.app.vault.adapter.rmdir(path, false);
+    if (desktop === null || found === null) return true;
+    // The same proof `trash` takes, one link shorter: the walk's last link IS
+    // the folder just removed, so the chain checked here is the parents, and
+    // the folder itself must no longer be the directory that was walked.
+    const refusal = await chainRefusal(found.chain.slice(0, -1), walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    const after = await walker(desktop.fs).lstat(found.target);
+    if (after !== null && after.isDirectory() && after.dev === found.stat?.dev && after.ino === found.stat?.ino) {
+      throw new VaultPathError("target_identity");
+    }
+    return true;
+  }
+
   notify(message: string): void {
     new Notice(message, 10000);
   }
@@ -1316,6 +1415,7 @@ export default class ObsyncPlugin extends Plugin {
     this.registerEvent(
       vault.on("create", (file: TAbstractFile) => {
         if (file instanceof TFile) this.engine?.changed(file.path);
+        else if (file instanceof TFolder) this.engine?.folderCreated(file.path);
       }),
     );
     this.registerEvent(
@@ -1328,6 +1428,10 @@ export default class ObsyncPlugin extends Plugin {
         if (file instanceof TFile) this.engine?.deleted(file.path);
         else if (file instanceof TFolder) {
           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);
+          // The folder's own record, and every record beneath it: the files
+          // going is what empties the tree, the records going is what removes
+          // it from the other devices (issue #104).
+          for (const path of this.foldersUnder(file.path)) this.engine?.folderDeleted(path);
         }
       }),
     );
@@ -1337,8 +1441,14 @@ export default class ObsyncPlugin extends Plugin {
           this.engine?.renamed(oldPath, file.path);
         } else if (file instanceof TFolder) {
           // One event covers every file beneath it, and a selected folder
-          // among them takes the selection with it (`sync/engine.ts`).
+          // among them takes the selection with it (`sync/engine.ts`). That
+          // walk covers the records AND the work still pending for them,
+          // which is more than a listing of tracked paths can reach.
           this.engine?.renamedFolder(oldPath, file.path);
+          // The files move; the folder records do not — a folder record IS
+          // its path — so the old ones are tombstoned and the new published,
+          // after the moves so the other devices see an empty folder go.
+          this.engine?.folderRenamed(oldPath, file.path);
         }
       }),
     );
@@ -1347,6 +1457,15 @@ export default class ObsyncPlugin extends Plugin {
   private pathsUnder(folder: string): string[] {
     const prefix = `${folder}/`;
     return Object.keys(this.state.data.files).filter((path) => path.startsWith(prefix));
+  }
+
+  /** The folder itself and every folder record beneath it, deepest first. */
+  private foldersUnder(folder: string): string[] {
+    const prefix = `${folder}/`;
+    return Object.keys(this.state.data.folders)
+      .filter((path) => path.startsWith(prefix))
+      .sort((a, b) => b.length - a.length)
+      .concat(folder);
   }
 
   // --- lifecycle ---------------------------------------------------------

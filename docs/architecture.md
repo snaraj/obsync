@@ -211,6 +211,52 @@ sids[], bytes, manifest_ct, manifest_nonce, device_id, ts}`.
 recomputed by the server, so two devices producing the same version
 collide harmlessly. Paths live only inside `manifest_ct`.
 
+### 3.4.1 Folder records (1.1.0)
+
+A folder syncs as a version of its own, so an EMPTY folder can exist on every
+device and a deleted one can leave every device (issue #104). It is the same
+mechanism a file uses with nothing in it:
+
+```json
+{"v":2,"kind":"directory","path":"Notes/Ideas","domain":"<domain_id>",
+ "size":0,"chunks":[],"sha256":"","deleted":false}
+```
+
+The record it rides in has `sids: []` and `bytes: 0`, which is what the
+server already accepts for a tombstone, so the server stores, retains and
+feeds a folder exactly as it does a file and learns no more than it already
+did. **No server change.**
+
+`v: 2` is the compatibility boundary and the reason the field exists. A
+device on 1.0.x decodes every manifest through one function that refuses any
+`v` it does not know before it reads another field, so a folder record cannot
+become a FILE written at the folder's path there; it is refused, logged, shown
+to the user once per file id, and the feed moves on.
+
+Two properties make a folder record safe to publish from anywhere:
+
+- **Its file id is derived, not random:** the first 16 bytes of
+  `HMAC(K_m,d, "obsync/v1/folder" || 0x0a || path)`. A file carries its
+  identity through a rename because its CONTENT is what is tracked; a folder
+  has no content, so its path is the only thing its record can be about. Two
+  devices that create the same folder independently therefore arrive at ONE
+  record. With two, deleting the folder would tombstone one and leave the
+  other live, and the next device to read the feed would put the folder back.
+- **Its manifest carries no timestamp, and its nonce is derived** the way the
+  domain map's is (`HKDF(K_m,d, "obsync/v1/nonce", SHA-256(aad || plaintext))`).
+  The bytes two devices produce for the same folder in the same state are
+  then identical, so the `version_id` is identical and the second device's
+  post is the `200` no-op `docs/protocol.md` already promises. The key is
+  shared with the randomly-nonced file manifests and that costs nothing: a
+  nonce derived by HKDF from the message is a pseudorandom 96-bit value, so
+  the chance it meets a random one is the chance two random ones meet, and it
+  repeats only for a message identical in both AAD and plaintext — whose
+  ciphertext was already identical.
+
+What the server additionally learns is that a folder deleted and recreated at
+one path is the same opaque label, which is what a file id already tells it
+across a rename. The path itself never leaves `manifest_ct`.
+
 ### 3.5 Request authentication
 
 Every API request carries `X-Obsync-Device`, `X-Obsync-Ts` (unix seconds),
@@ -840,6 +886,62 @@ returns immediately when a new frame lands.
    file whole. Mobile reads whole files through the adapter, which is why
    the mobile per-file ceiling exists. Both facts are stated in the
    settings UI.
+
+### 6.2.0 Folder semantics (1.1.0)
+
+Folders converge in both directions, and the whole of it is one record type
+(3.4.1) plus one rule about when a folder may be removed.
+
+**Publishing.** A vault `create` event for a folder publishes its record; a
+`delete` event publishes a tombstone for it and for every folder record
+beneath it; a `rename` tombstones the old path and publishes the new one, for
+the folder and every record under it, while the files inside move as ordinary
+per-file renames that keep their file ids. A folder whose record this device
+already has is never republished, which makes the folder a pull just created
+free. Startup reconciliation publishes a record for every folder that has
+none and a tombstone for every record whose folder is gone, so a vault that
+predates 1.1.0 converges once both devices update. It logs its budget as a
+START line and its counts as a SUMMARY (requirement 12).
+
+**Removal, and the rule that governs it.** A folder is removed only when it is
+EMPTY on this device, and emptiness is asked of the FILESYSTEM, not of the
+synced inventory: a hidden file, an unsynced note, another plugin's data all
+keep it, and the file is never taken to make the folder go. Beyond that:
+
+- a folder WITH a record is removed by its own tombstone and by nothing else,
+  so an empty folder a user keeps does not vanish when its last note is
+  deleted on another device;
+- a folder with NO record is removed when a file leaving empties it, walking
+  up to (never into) the sync root and stopping at the first folder it keeps.
+  Nothing will ever tombstone such a folder, and it exists only to hold the
+  file that is leaving.
+
+ANOTHER DEVICE'S SILENCE IS NEVER A DELETION. A device on 1.0.x publishes no
+folder record and no folder tombstone, ever, so a peer that emptied a folder
+there has said nothing about the folder itself. The record rule above is what
+answers that: this device gives a record to every folder it holds — startup
+reconciliation to the ones it already had, the vault's own create event to the
+ones a pull makes on its way to a file — so a folder this device holds survives
+any number of files leaving it, and only a tombstone naming it removes it.
+
+A folder tombstone that finds the folder occupied forgets the record and keeps
+the folder: it is nobody's to manage now, and the empty-parent walk is what
+will take it when it empties.
+
+**Refusals.** A folder path takes the same vault-path rule and the same
+desktop component walk a file path takes, so no folder is created through a
+symlink or outside the vault. A folder record naming a path where a FILE
+stands is refused and logged, and so is a file manifest naming a path where a
+folder stands — on both platforms, since a folder can now arrive where a file
+used to be. Every folder decision logs one line: `folder path_class=folder
+decision=published|created|removed|kept|refused reason=… seq=…`.
+
+**Per platform.** Desktop makes folders with Node's `mkdir` after the
+component walk and reads the directory with `readdir` to decide emptiness;
+mobile uses the vault adapter's `mkdir` and `list`. Both remove through
+`FileManager.trashFile` when Obsidian's cache knows the folder, so the user's
+own "Deleted files" preference decides where it goes, and through the
+adapter's `rmdir` when it does not.
 
 ### 6.2.1 Device-local folder selection
 

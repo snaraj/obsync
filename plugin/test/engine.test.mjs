@@ -330,7 +330,10 @@ test("a tombstone deletes locally", async () => {
     parents: [created.version_id],
   });
   assert.equal(await applyChange(context, tombstone), "deleted");
-  assert.deepEqual(host.trashed, ["Notes/Doomed.md"]);
+  // The note, and then the folder it was the last thing in. No device ever
+  // published a record for `Notes`, so nothing will ever tombstone it and the
+  // note leaving is the only signal there is (issue #104, `pruneEmptyParents`).
+  assert.deepEqual(host.trashed, ["Notes/Doomed.md", "Notes"]);
   assert.equal(state.fileByPath("Notes/Doomed.md"), undefined);
 });
 
@@ -502,7 +505,13 @@ test("a host that cannot bind a removal still applies the deletion", async () =>
 
     assert.equal(await applyChange(context, tombstone), "deleted");
 
-    assert.deepEqual(host.trashed, ["Notes/Doomed.md"], JSON.stringify(options));
+    // THE EMPTY PARENT GOES WITH IT (issue #104). A folder this device holds no
+    // record for exists only to hold the file that is leaving, and nothing will
+    // ever tombstone it, so the pull path takes it once the last file under it
+    // is gone. A vault that has finished a startup reconciliation has a record
+    // for every folder and the walk stops at the first one, which is why a
+    // folder on a real device goes only by its own tombstone.
+    assert.deepEqual(host.trashed, ["Notes/Doomed.md", "Notes"], JSON.stringify(options));
     assert.equal(state.fileByPath("Notes/Doomed.md"), undefined);
   }
 });
@@ -1074,7 +1083,10 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
   });
   host.seed("Notes/Secret.md", "content", 1000);
   await engine.start();
-  await timers.run(1000, () => state.fileByPath("Notes/Secret.md") !== undefined);
+  // Both records the ordinary note produces -- itself and its folder -- so
+  // the snapshot below counts everything sync legitimately posts.
+  await timers.run(1000, () =>
+    state.fileByPath("Notes/Secret.md") !== undefined && state.folderByPath("Notes") !== undefined);
   const posted = server.journal.length;
 
   // The vault key lives in this file. A watcher event for it must never
@@ -1109,7 +1121,13 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
   // it was never posted. Both halves of that are exact: no manifest the
   // server holds names a hidden path, and no field the server can read
   // carries the key itself (64 hex characters, not a three-letter word).
-  assert.deepEqual(await postedPaths(server, k), ["Notes/Secret.md"], "only the ordinary note was posted");
+  // The note and the folder holding it, and nothing hidden: `.obsidian` and
+  // every folder under it fail the same gate its files fail.
+  assert.deepEqual(
+    (await postedPaths(server, k)).sort(),
+    ["Notes", "Notes/Secret.md"],
+    "only the ordinary note and its folder were posted",
+  );
   for (const request of server.requests) {
     assert.equal(clearFields(request.json).includes(KEYS.vrk), false, request.target);
   }
@@ -1122,6 +1140,13 @@ test("a rename whose target is hidden is not synced, and neither is the plugin's
   // And the scan cannot infer the deletion either: the note's absence from
   // `Notes/` is a move it already refused to publish.
   assert.equal(server.journal.filter((frame) => frame.deleted).length, 0, "the scan published a tombstone for a live note");
+  // `.obsidian`, `.obsidian/plugins` and `.obsidian/plugins/obsync` fail the
+  // same gate their files fail, and are counted apart from the files so the
+  // two numbers stay readable (requirement 12).
+  assert.ok(
+    host.logs.some((line) => line.includes("reconcile decision=queued") && line.includes("folders_skipped=3")),
+    host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
+  );
   engine.stop();
 });
 
@@ -1144,18 +1169,23 @@ test("a path the host cannot sync is skipped by the watcher and by reconciliatio
   // What the desktop host reports for a path under a symlinked folder: the
   // string is a fine vault path, the filesystem says otherwise.
   host.seed("Linked/note.md", "through a symlink", 1000);
+  // The folder is what the link IS, so the host refuses the folder and the
+  // file through it, exactly as `ObsidianHost.syncable` does.
   host.unsyncable.add("Linked/note.md");
+  host.unsyncable.add("Linked");
   host.seed("Notes/ok.md", "an ordinary note", 1000);
 
   await engine.start();
   await timers.run(1000, () => state.fileByPath("Notes/ok.md") !== undefined);
+  await timers.run(1000, () => state.folderByPath("Notes") !== undefined);
   assert.equal(state.fileByPath("Linked/note.md"), undefined, "reconciliation left it alone");
-  assert.equal(server.journal.length, 1, "only the ordinary note was posted");
+  assert.equal(state.folderByPath("Linked"), undefined, "and its folder was not published either");
+  assert.equal(server.journal.length, 2, "only the ordinary note and its folder were posted");
   assert.ok(host.logs.some((line) => line.includes("reconcile decision=queued") && line.includes("skipped=1")));
 
   engine.changed("Linked/note.md");
   await timers.run(1000);
-  assert.equal(server.journal.length, 1, "the watcher did not push it either");
+  assert.equal(server.journal.length, 2, "the watcher did not push it either");
   assert.equal(state.fileByPath("Linked/note.md"), undefined);
   engine.stop();
 });
@@ -1296,8 +1326,13 @@ test("a deletion refused because the file came back is published as the change i
   });
   host.seed("Notes/Back.md", "the first text\n", 1000);
   await engine.start();
-  await timers.run(1000, () => server.journal.length === 1);
+  await timers.run(1000, () => state.fileByPath("Notes/Back.md") !== undefined);
   const first = state.fileByPath("Notes/Back.md").versionId;
+  // BY FILE ID, not by position. From 1.1.0 the folder holding this note is
+  // published as a record of its own (#104), so the note's versions are no
+  // longer the whole journal and no longer at a fixed index in it.
+  const noteId = state.fileByPath("Notes/Back.md").fileId;
+  const posted = () => server.journal.filter((frame) => frame.file_id === noteId);
 
   host.files.delete("Notes/Back.md");
   // Back between the queue and the push, with text the server has never
@@ -1313,12 +1348,12 @@ test("a deletion refused because the file came back is published as the change i
   };
   engine.deleted("Notes/Back.md");
 
-  await timers.run(1000, () => server.journal.length === 2);
+  await timers.run(1000, () => posted().length === 2);
   assert.ok(returned, "the test never reached the window it exists for");
 
-  assert.equal(server.journal.length, 2, "the change was never published");
-  assert.notEqual(server.journal[1].deleted, true, "a tombstone was posted for a file that is there");
-  assert.equal(state.fileByPath("Notes/Back.md").versionId, server.journal[1].version_id);
+  assert.equal(posted().length, 2, "the change was never published");
+  assert.notEqual(posted()[1].deleted, true, "a tombstone was posted for a file that is there");
+  assert.equal(state.fileByPath("Notes/Back.md").versionId, posted()[1].version_id);
   assert.notEqual(state.fileByPath("Notes/Back.md").versionId, first, "the new text was not published");
   assert.ok(
     host.logs.some((line) => line.includes("push path_class=tombstone decision=refused reason=file_present")),

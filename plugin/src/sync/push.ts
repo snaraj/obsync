@@ -50,7 +50,9 @@ import {
   contentVersionId,
   decryptManifest,
   encryptChunk,
+  encryptFolderManifest,
   encryptManifest,
+  folderFileId,
   hex,
   randomBytes,
   sha256,
@@ -77,6 +79,36 @@ export interface Manifest {
   domain: string;
   chunks: ManifestChunk[];
   sha256: string;
+  deleted: boolean;
+}
+
+/**
+ * A FOLDER record: one version whose manifest names a path and nothing else.
+ *
+ * It is the same encrypted-manifest mechanism a file uses, with no chunks, no
+ * bytes and no timestamp, so the server stores and feeds it exactly as it
+ * stores a tombstone and learns exactly as little (requirement 6, and no
+ * server change at all). `v: 2` is what makes it SAFE to send to the ~100
+ * devices still on 1.0.x: their decoder refuses any manifest whose `v` is not
+ * 1 before it reads another field, so a folder record can never become a FILE
+ * written at the folder's path on a device that does not understand it.
+ *
+ * `kind` is redundant with `v` today and is carried anyway: `v` is the
+ * compatibility gate, which a later record type would also have to move, and
+ * `kind` is what says what this record IS to a reader holding it.
+ *
+ * NO `mtime`. A folder has no content to be newer or older than, and leaving
+ * the field out is what makes the manifest two devices produce for the same
+ * folder byte-identical — see `encryptFolderManifest`.
+ */
+export interface FolderManifest {
+  v: 2;
+  kind: "directory";
+  path: string;
+  domain: string;
+  size: 0;
+  chunks: never[];
+  sha256: "";
   deleted: boolean;
 }
 
@@ -308,6 +340,44 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
   return { status: "pushed", fileId: record.fileId, versionId: ack.versionId, ack: ack.ack };
 }
 
+/** The manifest every folder record carries; `deleted` is the only choice. */
+function folderManifest(context: SyncContext, path: string, deleted: boolean): FolderManifest {
+  return { v: 2, kind: "directory", path, domain: context.domainId, size: 0, chunks: [], sha256: "", deleted };
+}
+
+/**
+ * Publish the folder at `path`, once.
+ *
+ * A folder that this device already has a record for is already published —
+ * by this device or by another one whose record this device pulled — and
+ * re-posting it would buy a request and a second head for no change. That
+ * early return is also what makes startup reconciliation and the vault's own
+ * echo of a pull-created folder free (`engine.ts`).
+ */
+export async function pushFolder(context: SyncContext, path: string): Promise<string | null> {
+  assertSyncPath(path, context.state.data.syncFolders);
+  if (context.state.folderByPath(path) !== undefined) return null;
+  const fileId = await folderFileId(context.manifestKey, path);
+  const ack = await postManifest(context, fileId, [], [], folderManifest(context, path, false), 0, false);
+  context.state.setFolder(path, { fileId, versionId: ack.versionId });
+  await context.state.save();
+  context.host.log(`folder path_class=folder decision=published reason=created version=${ack.versionId}`);
+  return ack.versionId;
+}
+
+/** Tombstone a folder record. The files it held publish their own tombstones. */
+export async function pushFolderDelete(context: SyncContext, path: string): Promise<string | null> {
+  assertVaultPath(path);
+  const record = context.state.folderByPath(path);
+  if (record === undefined) return null;
+  const parents = record.versionId !== "" ? [record.versionId] : [];
+  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false);
+  context.state.forgetFolder(path);
+  await context.state.save();
+  context.host.log(`folder path_class=folder decision=published reason=deleted version=${ack.versionId}`);
+  return ack.versionId;
+}
+
 /**
  * Encrypt the manifest, compute the version id the server will recompute,
  * and post it. `409 missing_chunks` means the server garbage-collected a
@@ -321,13 +391,14 @@ export async function postManifest(
   fileId: string,
   parents: string[],
   sids: string[],
-  manifest: Manifest,
+  manifest: Manifest | FolderManifest,
   bytes: number,
   acceptExisting: boolean,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   assertSyncPath(manifest.path, context.state.data.syncFolders);
   const binder = await contentVersionId(fileId, parents, sids);
-  const { nonce, ciphertext } = await encryptManifest(
+  const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
+  const { nonce, ciphertext } = await seal(
     context.manifestKey,
     fileId,
     binder,
@@ -400,7 +471,17 @@ async function sameOperation(
   context: SyncContext,
   fileId: string,
   answered: string,
-  manifest: Manifest,
+  // A FOLDER RECORD IS TYPED THROUGH HERE, though it never arrives: folder
+  // posts do not offer `accept_existing`, so their `settled` never retries
+  // and never asks this question (issue #104). A folder manifest is sealed
+  // under a DERIVED nonce, so two devices publishing one folder compute the
+  // SAME version id and there is nothing to adopt; offering the existing
+  // version instead makes the server answer a republication with the copy it
+  // already holds and append nothing, which is how a folder this device has
+  // lost its record for would stop being republished at all. `path`, `size`
+  // and `deleted` are the three fields both shapes carry, so if a caller
+  // ever does offer it, the guard holds rather than being typed out of reach.
+  manifest: Manifest | FolderManifest,
 ): Promise<boolean> {
   try {
     const file = await context.transport.getFile(fileId);

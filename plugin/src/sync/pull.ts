@@ -36,6 +36,13 @@
  * lengths are checked again against the bytes themselves as each chunk
  * decrypts, so nothing unverified is written even if the two agreed.
  *
+ * FOLDERS. A record whose manifest says `v: 2` is a FOLDER (`push.ts`,
+ * `FolderManifest`), and it is the one record type this path applies without
+ * fetching a byte: it makes the folder, or removes it when nothing is left in
+ * it, and nothing else. A file tombstone additionally takes the folders it
+ * empties, and ONLY the ones no record covers, so a device that says nothing
+ * about a folder never deletes it here (issue #104).
+ *
  * ECHOES. A write this device made comes back down the feed. It is dropped
  * twice over: by `version_id` (the ids this device authored) and by the
  * `(path, mtime, size)` of the writes this device made, which is what stops
@@ -99,7 +106,7 @@ import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { assertSyncPath, inSyncScope } from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
-import { Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -143,12 +150,11 @@ function digest32(value: unknown): boolean {
 }
 
 /**
- * The runtime schema check for a decrypted manifest: every field is verified
- * against the shape `Manifest` claims, and `path` against the vault-path rule,
- * BEFORE any of it is used. Without this the type assertion is a promise the
- * compiler cannot keep — the bytes came off the wire from another device.
+ * The head every decrypted manifest shares: it is an object, and its `path`
+ * passes the one vault-path rule (`vaultPath.ts`) BEFORE anything else reads
+ * it. What kind of manifest it is comes next, in `parseEntry`.
  */
-export function parseManifest(json: string): Manifest {
+function manifestObject(json: string): Record<string, unknown> {
   let value: unknown;
   try {
     value = JSON.parse(json);
@@ -158,6 +164,54 @@ export function parseManifest(json: string): Manifest {
   if (!isRecord(value)) throw new ManifestError("not_an_object");
   const refusal = vaultPathRefusal(value["path"]);
   if (refusal !== null) throw new ManifestError(`path_${refusal}`);
+  return value;
+}
+
+/**
+ * The runtime schema check for a decrypted FILE manifest: every field is
+ * verified against the shape `Manifest` claims, and `path` against the
+ * vault-path rule, BEFORE any of it is used. Without this the type assertion
+ * is a promise the compiler cannot keep — the bytes came off the wire from
+ * another device.
+ */
+export function parseManifest(json: string): Manifest {
+  return fileManifest(manifestObject(json));
+}
+
+/**
+ * Route a decrypted manifest by its `v`, and check every field of whatever it
+ * turns out to be. This is the ONLY place `v` is read: it is the
+ * compatibility contract with every 1.0.x device, which refuses a shape it
+ * does not know rather than guessing at it, and this version owes a NEWER
+ * record exactly the same refusal — `fileManifest` gives it, because anything
+ * that is not 2 has to be 1.
+ */
+export function parseEntry(json: string): Manifest | FolderManifest {
+  const value = manifestObject(json);
+  return value["v"] === 2 ? folderManifest(value) : fileManifest(value);
+}
+
+/**
+ * A FOLDER record (`push.ts`, `FolderManifest`), checked field by field like
+ * a file manifest and for the same reason: these bytes came off the wire from
+ * another device, and what they say decides what happens to a directory in
+ * this vault. Everything a folder does NOT have is checked too — no chunks,
+ * no bytes, no digest — so a live file wearing `kind: "directory"` cannot
+ * reach the folder path, which never fetches or writes content at all.
+ */
+function folderManifest(value: Record<string, unknown>): FolderManifest {
+  if (value["kind"] !== "directory") throw new ManifestError("kind");
+  if (typeof value["domain"] !== "string") throw new ManifestError("domain");
+  if (typeof value["deleted"] !== "boolean") throw new ManifestError("deleted");
+  if (value["size"] !== 0) throw new ManifestError("size");
+  if (value["sha256"] !== "") throw new ManifestError("sha256");
+  const chunks = value["chunks"];
+  if (!Array.isArray(chunks)) throw new ManifestError("chunks");
+  if (chunks.length !== 0) throw new ManifestError("chunk_count");
+  return value as unknown as FolderManifest;
+}
+
+function fileManifest(value: Record<string, unknown>): Manifest {
   if (value["v"] !== 1) throw new ManifestError("version");
   if (!size(value["size"])) throw new ManifestError("size");
   if (typeof value["mtime"] !== "number" || !Number.isFinite(value["mtime"])) throw new ManifestError("mtime");
@@ -258,10 +312,34 @@ export function bindManifestToRecord(
   }
 }
 
-export async function decryptRecordManifest(
+/**
+ * Bind a folder record to the version it rode in, before anything touches a
+ * directory. The same rule as `bindManifestToRecord` and the same reason: the
+ * record is what the server retains, accounts and will authorize on, and a
+ * folder record that disagreed with it could carry a chunk list the server
+ * never saw or a delete bit the server never recorded.
+ */
+export function bindFolderToRecord(
+  record: BoundRecord,
+  manifest: FolderManifest,
+  engineDomain: string,
+): void {
+  if (record.domain_id !== engineDomain) throw new ManifestError("record_domain");
+  if (manifest.domain !== record.domain_id) throw new ManifestError("manifest_domain");
+  if (record.sids.length !== 0) throw new ManifestError("record_sid_count");
+  if (record.bytes !== 0) throw new ManifestError("record_bytes");
+  if (manifest.deleted !== record.deleted) throw new ManifestError("record_deleted");
+}
+
+/**
+ * Decrypt one record and bind whatever it turns out to be. The feed is the
+ * only caller that may act on a folder; everything else means a file and
+ * goes through `decryptRecordManifest`, which refuses one.
+ */
+export async function decodeRecordManifest(
   context: SyncContext,
   record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
-): Promise<Manifest> {
+): Promise<Manifest | FolderManifest> {
   const binder = await contentVersionId(record.file_id, record.parents, record.sids);
   const json = await decryptManifest(
     context.manifestKey,
@@ -270,13 +348,27 @@ export async function decryptRecordManifest(
     unhex(record.manifest_nonce),
     unbase64(record.manifest_ct),
   );
-  const manifest = parseManifest(json);
+  const entry = parseEntry(json);
+  if (entry.v === 2) bindFolderToRecord(record, entry, context.domainId);
+  else bindManifestToRecord(record, entry, context.domainId);
+  assertSyncPath(entry.path, context.state.data.syncFolders);
+  return entry;
+}
+
+export async function decryptRecordManifest(
+  context: SyncContext,
+  record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
+): Promise<Manifest> {
   // The one choke point: every path that decrypts a manifest from a record
-  // -- the feed, an on-demand fetch, a conflict head, a merge base -- comes
-  // through here, so none of them can forget to bind it.
-  bindManifestToRecord(record, manifest, context.domainId);
-  assertSyncPath(manifest.path, context.state.data.syncFolders);
-  return manifest;
+  // -- the feed, an on-demand fetch, a conflict head, a merge base, a history
+  // row, a repair source -- comes through here or through `decodeRecord-
+  // Manifest` beneath it, so none of them can forget to bind it.
+  const entry = await decodeRecordManifest(context, record);
+  // Every caller but the feed means CONTENT: a file to download, to merge, to
+  // restore, to re-seal. A folder record has none, so it is refused here in
+  // the same words a 1.0.x device refuses it in.
+  if (entry.v !== 1) throw new ManifestError("version");
+  return entry;
 }
 
 /**
@@ -325,6 +417,62 @@ export async function assembleBytes(context: SyncContext, manifest: Manifest): P
     at += part.length;
   }
   return out;
+}
+
+/** Every folder above `path`, deepest first. `"A/B/c.md"` → `["A/B", "A"]`. */
+export function ancestors(path: string): string[] {
+  const out: string[] = [];
+  for (let slash = path.lastIndexOf("/"); slash > 0; slash = path.lastIndexOf("/", slash - 1)) {
+    out.push(path.slice(0, slash));
+  }
+  return out;
+}
+
+/**
+ * Remove one folder through the host's own folder-delete path, marking the
+ * echo BEFORE the call for the reason issue #96 established: Obsidian reports
+ * the removal to this plugin's delete handler while `trashFolder` is still
+ * running, and an unmarked echo becomes a folder tombstone this device
+ * publishes for a folder the remote side already owns.
+ *
+ * `false` means the host found something still in it and did nothing, so the
+ * mark is taken back: a suppression owed to an event that will never arrive
+ * would swallow the user's own next deletion of that folder.
+ */
+async function removeFolder(context: SyncContext, path: string): Promise<boolean> {
+  context.trashed.add(path);
+  const removed = await context.host.trashFolder(path);
+  if (!removed) context.trashed.delete(path);
+  return removed;
+}
+
+/**
+ * After a file leaves this vault, take the folders it leaves empty with it —
+ * but only the folders NO record covers.
+ *
+ * A folder with a record is a folder some device published on purpose; it
+ * exists until its own tombstone says otherwise, even while it is empty. That
+ * is the rule that keeps ANOTHER DEVICE'S SILENCE from becoming a deletion: a
+ * device on 1.0.x publishes no folder record and no folder tombstone, ever, so
+ * a peer that emptied a folder there has said exactly nothing about the
+ * folder, and a folder this device holds a record for stays. This device gives
+ * a record to every folder it holds — startup reconciliation to the ones it
+ * already had, the vault's own create event to the ones a pull makes on its
+ * way to a file — so what is reachable here is the narrow set nobody has
+ * claimed yet: a publish that has not run, or a vault older than 1.1.0 whose
+ * reconciliation has not finished. Those exist only to hold the file that is
+ * leaving, and nothing will ever tombstone them.
+ *
+ * The walk stops at the first folder it keeps: a folder holding a folder is
+ * not empty either.
+ */
+export async function pruneEmptyParents(context: SyncContext, path: string): Promise<void> {
+  for (const folder of ancestors(path)) {
+    if (!inSyncScope(folder, context.state.data.syncFolders)) return;
+    if (context.state.folderByPath(folder) !== undefined) return;
+    if (!(await removeFolder(context, folder))) return;
+    context.host.log(`folder path_class=folder decision=removed reason=empty_parent`);
+  }
 }
 
 /**
@@ -383,7 +531,7 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
   if (!context.refused.has(change.file_id)) {
     context.refused.add(change.file_id);
     context.host.notify(
-      `obsync refused a change from another device: it does not name a plain file inside this vault (${reason}). ` +
+      `obsync refused a change from another device: it does not name a file or folder this device can write inside this vault (${reason}). ` +
         `Nothing was written. File id ${change.file_id}.`,
     );
   }
@@ -426,6 +574,63 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     }
     throw error;
   }
+}
+
+/**
+ * Apply one folder record: the whole of folder sync on the receiving side.
+ *
+ * A create makes the folder (and anything missing above it) and remembers the
+ * record. A tombstone removes the folder, but ONLY when it holds nothing — a
+ * folder still holding a note, an untracked file or another device's ignored
+ * file is kept, and the empty-parent walk that runs when its last file leaves
+ * will take it then — and forgets the record either way. Nothing here fetches,
+ * decrypts or writes a byte of content: a folder record has none.
+ */
+async function applyFolder(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: FolderManifest,
+): Promise<ApplyResult> {
+  const path = manifest.path;
+  if (manifest.deleted) {
+    // Removed FIRST, forgotten after. The record is what `pushFolderDelete`
+    // needs to publish a tombstone, so it is still there while the removal
+    // runs and the vault reports it — which is what `trashed` suppresses
+    // (`engine.ts`, ECHOES; issue #96). Forgotten either way: a folder kept
+    // because it still holds something is a folder no device manages now, and
+    // the empty-parent walk is what will take it when it empties.
+    const removed = await removeFolder(context, path);
+    context.state.forgetFolder(path);
+    await context.state.save();
+    if (!removed) {
+      context.host.log(`folder path_class=folder decision=kept reason=not_empty seq=${change.seq}`);
+      return "skipped";
+    }
+    context.host.log(`folder path_class=folder decision=removed reason=tombstone seq=${change.seq}`);
+    await pruneEmptyParents(context, path);
+    return "deleted";
+  }
+  // Marked before the call, like every other write this device makes: the
+  // vault reports the new folder to this plugin's own create handler while
+  // `createFolder` is still running (`engine.ts`, ECHOES).
+  context.createdFolders.add(path);
+  try {
+    await context.host.createFolder(path);
+  } catch (error) {
+    context.createdFolders.delete(path);
+    if (error instanceof VaultPathError) {
+      // A FILE stands where another device says a folder is. Named here as a
+      // folder decision as well, because `refuse` can only say "manifest".
+      context.host.log(
+        `folder path_class=folder decision=refused reason=${error.refusal} seq=${change.seq}`,
+      );
+    }
+    throw error;
+  }
+  context.state.setFolder(path, { fileId: change.file_id, versionId: change.version_id });
+  await context.state.save();
+  context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
+  return "applied";
 }
 
 /**
@@ -474,7 +679,11 @@ function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: st
 }
 
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
-  const manifest = await decryptRecordManifest(context, change);
+  const entry = await decodeRecordManifest(context, change);
+  if (entry.v === 2) return await applyFolder(context, change, entry);
+  const manifest = entry;
+  // `let`, because a case-only move renames the entry and then continues
+  // down the ordinary path under the new spelling (issue #124).
   let localPath = context.state.pathByFileId(change.file_id);
   // A remembered source can be outside the new scope even when the remote
   // destination is inside it. Refuse before a delete, conflict read or write.
@@ -595,6 +804,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
       context.state.forgetPath(localPath);
       await context.state.save();
       context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}`);
+      await pruneEmptyParents(context, localPath);
       return "deleted";
     }
     delete context.state.data.remoteOnly[change.file_id];
@@ -763,6 +973,9 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
       await context.host.trash(localPath);
     }
     context.state.forgetPath(localPath);
+    // The folder the file moved OUT of may now be empty. Same rule as a
+    // deletion, and the same walk.
+    await pruneEmptyParents(context, localPath);
   }
   await recordAt(context, change, manifest.path, landed);
   context.host.log(

@@ -226,6 +226,39 @@ retain the account-wide authority described below.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
 
+### Folder records (plugin 1.1.0)
+
+A folder is one more version on this same endpoint, with no chunks. The
+server has no folder concept and needs none: `sids` is empty and `bytes` is
+`0`, which it already accepts for a tombstone, and the manifest — which it
+cannot read — says the rest. **No server change; a 1.0.x server serves this.**
+
+Inside `manifest_ct`:
+
+| Field | Value |
+| --- | --- |
+| `v` | `2` — a file manifest is `1` and is unchanged |
+| `kind` | `"directory"` |
+| `path` | the folder's canonical relative vault path |
+| `domain` | the domain id, as a file manifest carries it |
+| `size` | `0` |
+| `chunks` | `[]` |
+| `sha256` | `""` |
+| `deleted` | `false` to create the folder, `true` to remove it |
+
+There is no `mtime`: a folder has no content to be newer than, and leaving it
+out is what makes the manifest two devices produce for one folder identical
+(`docs/architecture.md` 3.4.1). With the file id derived from the path and the
+nonce derived from the message, two devices publishing the same folder produce
+the same `version_id`, so the second post is the `200` no-op this document
+already specifies for a version the server holds.
+
+**`v` is the compatibility contract.** A device that does not know a `v`
+refuses the manifest before reading any other field, writes nothing, and lets
+the feed advance. Plugins 1.0.0 through 1.0.4 do exactly that with `v: 2`, so
+a folder record can never be written as a file at the folder's path there.
+Any later record type must move `v` again for the same reason.
+
 ## Change feed
 
 - `GET /v1/changes?since=<seq>&wait=<seconds ≤ 55>&limit=<n ≤ 1000>` →

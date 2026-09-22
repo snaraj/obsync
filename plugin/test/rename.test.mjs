@@ -42,6 +42,7 @@ import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, settled } from "./
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
+const c = require("../build/crypto.js");
 
 /** An identity the fixture never enrols, and a secret no device holds. */
 const UNENROLLED = "deadbeefdeadbeefdeadbeefdeadbeef";
@@ -56,6 +57,15 @@ const landed = (server, condition) => () => tombstones(server).length > 0 || con
 
 /** Every tombstone the server holds: what a renamed file must never produce. */
 const tombstones = (server) => server.journal.filter((frame) => frame.deleted);
+
+/**
+ * Every tombstone naming one of these FILE ids. Since 1.1.0 a folder rename
+ * legitimately publishes a folder tombstone (issue #104), so the invariant is
+ * stated about the files that must survive rather than about the count of
+ * deleted frames — which makes it sharper, not looser: it names them.
+ */
+const tombstonesFor = (server, ids) =>
+  server.journal.filter((frame) => frame.deleted && ids.includes(frame.file_id));
 
 /** What the two devices did to each other, for a failure that has to be read. */
 const story = (server, a, b) =>
@@ -109,8 +119,8 @@ for (const delivery of ["immediate", "deferred"]) {
   });
 }
 
-test("a renamed folder moves every file it holds, and neither device publishes a tombstone", async (t) => {
-  const { server, timers, a, b } = await pair(t, "immediate");
+test("a renamed folder moves every file it holds, and only the folder is tombstoned", async (t) => {
+  const { server, timers, a, b, keys: k } = await pair(t, "immediate");
 
   a.host.write("Notes/One.md", "first\n", 1000);
   a.host.write("Notes/Two.md", "second\n", 1000);
@@ -122,19 +132,35 @@ test("a renamed folder moves every file it holds, and neither device publishes a
   const ids = ["Notes/One.md", "Notes/Two.md"].map((path) => a.state.fileByPath(path).fileId);
 
   a.host.renameFolder("Notes", "Archive");
-  await timers.run(STEP_MS, landed(server, () =>
+  await timers.run(STEP_MS, () => tombstonesFor(server, ids).length > 0 || (
     b.host.text("Archive/One.md") === "first\n" && b.host.text("Archive/Two.md") === "second\n" &&
     settled(b, "Archive/One.md") && settled(b, "Archive/Two.md")));
+  await timers.run(STEP_MS, () => b.host.hasFolder("Archive") && !b.host.hasFolder("Notes"));
   await timers.run(STEP_MS);
 
-  assert.deepEqual(tombstones(server), [], `a folder rename published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(tombstonesFor(server, ids), [], `a folder rename tombstoned a note: ${story(server, a, b)}`);
   for (const [index, path] of ["Archive/One.md", "Archive/Two.md"].entries()) {
     assert.equal(a.host.text(path), index === 0 ? "first\n" : "second\n", `the desktop lost ${path}`);
     assert.equal(b.host.text(path), index === 0 ? "first\n" : "second\n", `the phone lost ${path}`);
     assert.equal(b.state.fileByPath(path).fileId, ids[index], "each file kept its identity");
   }
   assert.deepEqual([...b.host.files.keys()].filter((path) => path.startsWith("Notes/")), []);
-  assert.equal(server.vaultFiles().length, 2, "no files were duplicated");
+  // Two notes and two folder records — the tombstoned `Notes` and the live
+  // `Archive`. Neither note was re-uploaded under a new identity, which is
+  // what `ids` above pins.
+  assert.deepEqual(
+    server.vaultFiles().sort(),
+    [...ids, await c.folderFileId(k.manifestKey, "Notes"), await c.folderFileId(k.manifestKey, "Archive")].sort(),
+    "a file was duplicated",
+  );
+  // The folder moved too, on both devices, and only the FOLDER record was
+  // tombstoned to do it (issue #104).
+  assert.equal(b.host.hasFolder("Archive"), true, `the phone has no Archive: ${story(server, a, b)}`);
+  assert.equal(b.host.hasFolder("Notes"), false, `the phone kept an empty Notes: ${story(server, a, b)}`);
+  assert.equal(b.state.folderByPath("Archive") !== undefined, true, "the phone recorded the new folder");
+  assert.equal(b.state.folderByPath("Notes"), undefined, "and forgot the old one");
+  assert.equal(tombstones(server).length, 1, "exactly one tombstone, and it is the folder's");
+  assert.equal(tombstones(server)[0].file_id, await c.folderFileId(k.manifestKey, "Notes"));
 });
 
 test("a deletion the user makes after a pull-applied move is still published", async (t) => {
@@ -293,7 +319,7 @@ async function selectedFolder(t, folder = "Notes") {
 
 for (const [destination, what] of [["Journal", "renamed"], ["Archive/Notes", "moved into another folder"]]) {
   test(`a selected folder ${what} keeps its notes on every device, and the selection follows it`, async (t) => {
-    const { server, timers, a, b, ids } = await selectedFolder(t);
+    const { server, timers, a, b, ids, keys } = await selectedFolder(t);
 
     a.host.renameFolder("Notes", destination);
     await timers.run(STEP_MS, landed(server, () => Object.entries(NOTES).every(([name, body]) =>
@@ -310,7 +336,9 @@ for (const [destination, what] of [["Journal", "renamed"], ["Archive/Notes", "mo
       assert.equal(b.state.fileByPath(`Notes/${name}`), undefined);
     }
     assert.deepEqual([...b.host.files.keys()].filter((path) => path.startsWith("Notes/")), []);
-    assert.equal(server.vaultFiles().length, 3, "no files were duplicated");
+    // Notes only: a folder rename retires the old folder record and
+    // publishes the new one, which is not a note being copied (#104).
+    assert.equal((await server.noteFiles(keys.manifestKey)).length, 3, "no files were duplicated");
     // The selection is what the device syncs from now on, so it names the
     // folder that exists (requirement 12 says so in one line).
     assert.deepEqual(a.state.data.syncFolders, [destination]);

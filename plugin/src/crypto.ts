@@ -44,6 +44,7 @@ export const LABEL = {
   manifest: "obsync/v1/manifest",
   domainMap: "obsync/v1/domainmap",
   domainMapId: "obsync/v1/domain-map",
+  folder: "obsync/v1/folder",
   chunk: "obsync/v1/chunk",
   nonce: "obsync/v1/nonce",
   pair: "obsync/v1/pair",
@@ -290,6 +291,30 @@ export async function domainMapIds(mapKey: Bytes): Promise<{ fileId: string; dom
   return { fileId: hex(mac.subarray(0, 16)), domainId: hex(mac.subarray(16, 32)) };
 }
 
+/**
+ * A folder's file id: the first 16 bytes of
+ * `HMAC(K_m,d, "obsync/v1/folder" || 0x0a || path)`.
+ *
+ * DERIVED, NOT RANDOM, and that is the whole design. A file carries its
+ * identity through a rename because its CONTENT is the thing being tracked;
+ * a folder has no content, so the only thing a folder record can be about is
+ * its path. Two devices that create `Projects/` independently must therefore
+ * arrive at one record, not two — with two, deleting the folder on one device
+ * would tombstone one record and leave the other live, and the next device to
+ * read the feed would put the folder straight back. Deriving the id from the
+ * path makes that state unrepresentable.
+ *
+ * It is keyed by the domain's manifest key, so the id is unguessable without
+ * the vault key and the server learns from it exactly what it learns from a
+ * random one: an opaque 16-byte label (requirement 6). What it additionally
+ * learns is that a folder deleted and recreated at the same path is the same
+ * label — the same thing a file id already tells it across a rename.
+ */
+export async function folderFileId(manifestKey: Bytes, path: string): Promise<string> {
+  const mac = await hmacSha256(manifestKey, utf8(`${LABEL.folder}\n${path}`));
+  return hex(mac.subarray(0, 16));
+}
+
 /** `K_pair = HKDF(PS, salt="obsync/v1/pair", info=utf8(pairing_id))`. */
 export function pairingKey(pairingSecret: Bytes, pairingId: string): Promise<Bytes> {
   return hkdf(pairingSecret, utf8(LABEL.pair), utf8(pairingId), KEY_BYTES);
@@ -398,16 +423,55 @@ export async function decryptManifest(
  * both, and two different messages under one key and nonce would leak the
  * GCM authentication key.
  */
-export async function encryptDomainMap(
-  mapKey: Bytes,
+async function sealDerivedNonce(
+  key: Bytes,
   fileId: string,
   versionId: string,
   json: string,
 ): Promise<{ nonce: Bytes; ciphertext: Bytes }> {
   const aad = manifestAad(fileId, versionId);
   const plaintext = utf8(json);
-  const nonce = await hkdf(mapKey, utf8(LABEL.nonce), await sha256(concat(aad, plaintext)), NONCE_BYTES);
-  return { nonce, ciphertext: await aesGcmEncrypt(mapKey, nonce, plaintext, aad) };
+  const nonce = await hkdf(key, utf8(LABEL.nonce), await sha256(concat(aad, plaintext)), NONCE_BYTES);
+  return { nonce, ciphertext: await aesGcmEncrypt(key, nonce, plaintext, aad) };
+}
+
+export function encryptDomainMap(
+  mapKey: Bytes,
+  fileId: string,
+  versionId: string,
+  json: string,
+): Promise<{ nonce: Bytes; ciphertext: Bytes }> {
+  return sealDerivedNonce(mapKey, fileId, versionId, json);
+}
+
+/**
+ * Seal a FOLDER manifest, with the domain map's derived nonce rather than
+ * `encryptManifest`'s random one, for the domain map's reason.
+ *
+ * A folder manifest carries no content and no timestamp, so the bytes two
+ * devices produce for the same folder in the same state are identical. A
+ * derived nonce makes the CIPHERTEXT identical too, which makes the
+ * `version_id` identical, which makes the second device's post the `200`
+ * no-op `docs/protocol.md` promises for a version the server already holds.
+ * With a random nonce the same folder would fork into two heads every time a
+ * second device published it, for no content difference at all.
+ *
+ * The key is the domain's manifest key, shared with the randomly-nonced file
+ * manifests, and that costs nothing: a nonce derived by HKDF from
+ * `SHA-256(aad || plaintext)` is a pseudorandom 96-bit value, so the chance
+ * that it meets a file manifest's random nonce is the chance two random
+ * nonces meet. It repeats only for a message identical in BOTH the AAD and
+ * the plaintext — the same message, whose ciphertext was already identical —
+ * which is the one repeat AES-GCM does not mind (`encryptChunk` rests on the
+ * same property).
+ */
+export function encryptFolderManifest(
+  manifestKey: Bytes,
+  fileId: string,
+  versionId: string,
+  json: string,
+): Promise<{ nonce: Bytes; ciphertext: Bytes }> {
+  return sealDerivedNonce(manifestKey, fileId, versionId, json);
 }
 
 /** Inverse of `encryptDomainMap`. A wrong key or a wrong binder fails here. */
