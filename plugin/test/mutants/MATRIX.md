@@ -19,19 +19,19 @@ than mutating something it was never written for.
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
 | M01 | the tie-break comparison reversed | 30/522 |
-| M02 | the tie-break always keeps the name | 16/522 |
+| M02 | the tie-break always keeps the name | 15/522 |
 | M03 | the tie-break always renames | 16/522 |
 | M04 | a name this device already settled is ignored | 7/522 |
-| M05 | a settled occupant is written over unchecked | 6/522 |
-| M06 | keep-and-record records no copy | 14/522 |
+| M05 | a settled occupant is written over unchecked | 5/522 |
+| M06 | keep-and-record records no copy | 13/522 |
 | M07 | the moved file's delete is left unmarked | 3/522 |
-| M08 | the moved file's record is left clean | 5/522 |
+| M08 | the moved file's record is left clean | 4/522 |
 | M09 | no free name reports the move as done | 1/522 |
-| M10 | an unidentified file is never settled | 3/522 |
-| M11 | the source of a move is never checked for a local edit | 2/522 |
-| M12 | adoption takes any occupant of the length | 3/522 |
-| M13 | identify believes any publish outcome | 2/522 |
-| M14 | a failed publish reports success | 2/522 |
+| M10 | an unidentified file is never settled | 2/522 |
+| M11 | the source of a move is never checked for a local edit | 1/522 |
+| M12 | adoption takes any occupant of the length | 2/522 |
+| M13 | identify believes any publish outcome | 1/522 |
+| M14 | a failed publish reports success | 1/522 |
 | M15 | one path pushed twice at once | 4/522 |
 | M16 | the source is not re-stat-ed before the trash | 1/522 |
 | M17 | the refusal is logged and the move reported as done | 2/522 |
@@ -46,7 +46,7 @@ than mutating something it was never written for.
 | M26 | the follow-up is remembered and never queued | 1/522 |
 | M27 | the record is never saved | 1/522 |
 | M28 | any held answer enters the rule, not only one about the destination | survives, see below |
-| M29 | the id the server answers with is ignored | 4/522 |
+| M29 | the id the server answers with is ignored | 3/522 |
 | M30 | a post never offers the version the server already holds | 3/522 |
 | M31 | a rename offers itself for deduplication | 1/522 |
 | M32 | the domain map offers itself for deduplication | 1/522 |
@@ -123,7 +123,6 @@ than mutating something it was never written for.
 - a local note past this device's ceiling is left where it is
 - a note truncated while it is being copied aside is refused, not torn
 - two devices that name one note twice converge, and stay converged
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M03** - the tie-break always renames
 
@@ -161,7 +160,6 @@ than mutating something it was never written for.
 - an edited conflict copy survives the next version that would take its name
 - an unpushed local edit at the settled name is kept, not replaced
 - a save that lands on a settled copy as it is written is not recorded as that version
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M06** - keep-and-record records no copy
 
@@ -178,13 +176,12 @@ than mutating something it was never written for.
 - a copy replaced while it is being matched is not recorded as the version
 - a save that lands on a settled copy as it is written is not recorded as that version
 - a device that cannot bind a removal keeps both instead of moving its own note
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M07** - the moved file's delete is left unmarked
 
+- a note written while this device was closed survives one the other device made at the same path
 - the holder of the higher id moves its own note aside and yields the path
 - a note far larger than memory is moved aside a window at a time
-- two devices that name one note twice converge, and stay converged
 - NOT A DETERMINISTIC COUNT. The number above is this run's; across the runs
   at this head the kill set of this mutant moved by one test, always one of the
   two-device or offline rigs -- two engines on one virtual clock, or a device
@@ -202,7 +199,6 @@ than mutating something it was never written for.
 - and it yields the name once it has one, when the other id sorts lower
 - a note far larger than memory is moved aside a window at a time
 - two devices that name one note twice converge, and stay converged
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M09** - no free name reports the move as done
 
@@ -212,7 +208,6 @@ than mutating something it was never written for.
 
 - a note this device never published is given an id before the rule decides
 - and it yields the name once it has one, when the other id sorts lower
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 - NOT A DETERMINISTIC COUNT. The number above is this run's; across the runs
   at this head the kill set of this mutant moved by one test, always one of the
   two-device or offline rigs -- two engines on one virtual clock, or a device
@@ -227,23 +222,19 @@ than mutating something it was never written for.
 **M11** - the source of a move is never checked for a local edit
 
 - a move never trashes a local file this device has not pushed
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M12** - adoption takes any occupant of the length
 
 - an occupied name whose bytes are not this version's is not mistaken for it
 - a local file of the same length that is NOT this version is never adopted
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M13** - identify believes any publish outcome
 
 - a publisher that leaves no record is not taken at its word
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M14** - a failed publish reports success
 
 - a note that cannot be published keeps both, and the copy is still recorded
-- widening to a second folder publishes its local notes and pulls the ones only the server had
 
 **M15** - one path pushed twice at once
 
@@ -336,7 +327,6 @@ than mutating something it was never written for.
 - a post the server already holds is recorded under the id it answers with
 - a publish under an adopted file id that dedupes is adoption, and renames nothing
 - two engines that merge one note identically end on ONE version
-- two devices resolving one concurrent edit settle instead of looping
 
 **M30** - a post never offers the version the server already holds
 
@@ -444,5 +434,5 @@ than mutating something it was never written for.
 
 **M52** - a host that cannot bind a removal is asked to move anyway, and copies first
 
+- a note written while this device was closed survives one the other device made at the same path
 - a device that cannot bind a removal keeps both instead of moving its own note
-- a note the queue is already pushing is not published a second time

@@ -999,8 +999,14 @@ test("widening to a second folder publishes its local notes and pulls the ones o
   const { server, timers, a, b, cursor, remoteId } = rig;
 
   await save(rig, ["Notes", "Work"]);
+  // Every RECORD this test goes on to read, not only every file: the pull
+  // path writes a file and records it in that order, so a vault that has the
+  // bytes is a device that may still be a turn away from tracking them. The
+  // phone's record of the desktop's note is the one that was missing, and on
+  // a loaded machine it is missing often (hosted gate at `4349a91`).
   await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" &&
-    b.host.text("Work/Local.md") === "local\n" && settled(a, "Work/Remote.md") && settled(a, "Work/Local.md"));
+    b.host.text("Work/Local.md") === "local\n" && settled(a, "Work/Remote.md") &&
+    settled(a, "Work/Local.md") && settled(b, "Work/Local.md"));
 
   assert.deepEqual(a.state.data.syncFolders, ["Notes", "Work"]);
   assert.equal(a.state.fileByPath("Work/Remote.md").fileId, remoteId, "the remote note arrived as itself");
@@ -1024,7 +1030,8 @@ test("widening to the whole vault brings in everything the server holds", async 
 
   await save(rig, undefined);
   await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" && a.host.text("Root.md") === "root\n" &&
-    b.host.text("Work/Local.md") === "local\n");
+    b.host.text("Work/Local.md") === "local\n" && settled(a, "Root.md") && settled(b, "Root.md") &&
+    settled(b, "Work/Local.md"));
 
   assert.equal(a.state.data.syncFolders, undefined);
   assert.equal(a.host.text("Root.md"), "root\n", "including a file no folder selection would have covered");
