@@ -753,18 +753,25 @@ newer load's engine or state. A local data write already issued may still
 finish; cancellation asks the user to check the saved selection after
 restart, without claiming either a successful change or an undone write.
 
-**No blind history replay.** Once this device has sync history, its
-selection may only narrow. Adding folders or returning to whole-vault mode
-is refused with an explanation: the skipped history has not been applied,
-and rewinding the chronological feed could overwrite newer local notes.
-To add local content within the same vault, move it into a folder already
-selected and run **Sync now**. For a staged first sync, select the final
-folder before pairing, keep personal files in an excluded staging folder
-within the vault, validate disposable files inside the selected folder,
-then move in the personal files. A different selection for an existing
-shared vault needs a fresh local vault configured before pairing; deleting
-plugin state or re-pairing over existing files is not a safe resync recipe.
-Automatic reconciliation of current heads on expansion is not implemented.
+**Widening replays the history this device skipped.** A selection that
+gains a folder, or returns to whole-vault mode, rewinds this device's feed
+cursor to 0; the restart then walks the change feed from the beginning, the
+way a device syncing for the first time does, and the startup scan publishes
+the newly covered local files. There is no "list the vault's files" call to
+ask instead: for a file this device never covered, the feed is the only place
+it exists. Narrowing keeps its cursor, because nothing new is covered.
+
+The replay is safe because the pull path answers each record against what
+this device holds NOW rather than against the order it arrives in: a version
+this device authored is its own echo, a version its head already reaches is
+`already_incorporated`, a tombstone for a file it no longer tracks is
+skipped, and local content the server never received is kept beside the
+incoming version instead of replaced (6.2 item 3). It is not free: replaying a file whose
+history this device already holds spends one `GET /v1/files/{id}` per foreign
+version older than its own head, and the decision line records the cursor it
+rewound from. No
+re-pairing, state reset or fresh vault is involved, and another device's
+selection is untouched.
 
 This limits obsync's file operations, not the Obsidian application, another
 plugin, an OS process or a paired device's access to previously uploaded

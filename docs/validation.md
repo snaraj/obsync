@@ -37,10 +37,11 @@ Before setup or pairing, save the final **Sync folders on this device**
 selection independently on each device. For a staged first sync in one
 vault, keep personal files in an excluded staging folder and validate only
 disposable notes inside the selected folder. After acceptance, move the
-personal files into that selected folder and run **Sync now**. This needs
-no expansion, state reset or re-pairing over existing files. Narrowing a
-used selection is supported; expansion requires safe current-head resync,
-which this version does not implement.
+personal files into that selected folder and run **Sync now**. Both
+directions are supported afterwards: narrowing keeps the local files and the
+cursor, and widening replays the history this device skipped so the files
+under a newly selected folder arrive. Neither needs a state reset or
+re-pairing.
 
 Validate a subsequent update using Community plugins → Check for updates.
 Confirm the installed version, preserved pairing and folder selection, then

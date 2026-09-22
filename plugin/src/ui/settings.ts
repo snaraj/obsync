@@ -272,7 +272,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private saveScope(): Row {
     return {
       name: "Save on this device",
-      desc: "Waits for active transfers, then rescans. Once sync has history the selection can only narrow; removed folders keep their local files and their history.",
+      desc: "Waits for active transfers, then rescans. Adding a folder also brings in what the server already holds under it, which can take a while on a large vault; removed folders keep their local files and their history.",
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Save").onClick(() => {
           button.setDisabled(true).setButtonText("Waiting for transfers…");

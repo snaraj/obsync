@@ -437,10 +437,12 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    enter relative folders such as `Notes`, one per line. **Set up** and
    **Pair this device** apply what you typed; **Save** applies it on its own.
    An empty selected list syncs no files; **Whole vault** is the default.
-   Select the final folders now: after sync has history, the selection may
-   only narrow. To stage a first sync within one vault, keep personal files
-   in an excluded folder, test disposable notes inside the selected folder,
-   then move the personal files in and run **Sync now**.
+   The selection can change later on this device: removing a folder keeps its
+   local files, and adding one publishes the local files under it and pulls
+   what the server already holds there. To stage a first sync within one
+   vault, keep personal files in an excluded folder, test disposable notes
+   inside the selected folder, then move the personal files in and run
+   **Sync now**.
 5. Under **First-time setup**, paste the setup token and select **Set up**:
    the plugin creates the account and this device, generates the vault key
    on this computer, and shows the **recovery phrase** (24 words).
