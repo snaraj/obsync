@@ -1,5 +1,7 @@
 # Self Hosted Private Sync
 
+Read in your language: [English](README.md) • [العربية](docs/ar/README.md) • [Deutsch](docs/de/README.md) • [Español](docs/es/README.md) • [فارسی](docs/fa/README.md) • [Français](docs/fr/README.md) • [Bahasa Indonesia](docs/id/README.md) • [Italiano](docs/it/README.md) • [Nederlands](docs/nl/README.md) • [Polski](docs/pl/README.md) • [Português](docs/pt/README.md) • [Português (Brasil)](docs/pt-br/README.md) • [Русский](docs/ru/README.md) • [ไทย](docs/th/README.md) • [Türkçe](docs/tr/README.md) • [Українська](docs/uk/README.md) • [Tiếng Việt](docs/vi/README.md) • [日本語](docs/ja/README.md) • [한국어](docs/ko/README.md) • [中文简体](docs/zh-cn/README.md) • [中文繁體](docs/zh-tw/README.md)
+
 Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md):
 one dependency-free Rust server with a built-in dashboard that you run
 yourself, plus this plugin. Files of any size, every Obsidian platform, no
@@ -181,8 +183,8 @@ docker run -d --name obsync -p 127.0.0.1:8080:8080 \
 At first boot the server mints a setup token and writes it to its journal
 volume, mode 0600, never logged. The token creates your account once, and it
 then remains the dashboard's recovery sign-in for the life of the server: keep
-it with the same care as the recovery phrase. Read it from the container itself, with no
-helper image. On the Compose path:
+it with the same care as the recovery phrase. Read it from the container
+itself, with no helper image. On the Compose path:
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
@@ -223,7 +225,6 @@ On iOS, trusting the certificate is a second switch after installing it.
    Write down the 24-word recovery phrase and keep it off this device.
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](docs/assets/settings-setup.png)
-
 
 ### 5. Pair the second device
 
@@ -331,6 +332,7 @@ sending: [Troubleshooting](docs/troubleshooting.md).
 | [Storage](docs/storage.md) | Volumes, durability, retention, scrub, and every refusal |
 | [Validation](docs/validation.md) | The device validation plan and what "ready" means |
 | [Releases](docs/release.md) | How a release is cut, signed, and audited |
+| [Translations](docs/translations.md) | Which languages the guides exist in, and how they are kept current |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed in each version |
 | [`SECURITY.md`](SECURITY.md) | Posture, supported versions, and how to report a vulnerability |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to work on this repository |
