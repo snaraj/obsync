@@ -244,3 +244,18 @@ test("review: a scope exit during upload must preserve the other device's live n
   assert.equal(b.host.text(path), "EDIT MOVED OUTSIDE SCOPE SENTINEL",
     "the other device must retain its copy after a local scope exit");
 });
+
+test("review: a folder rename retains the pending upload of an untracked new note", async (t) => {
+  const { a, b, server, timers } = await pair(t);
+  a.state.data.syncFolders = ["Notes"];
+  await a.engine.start();
+  await b.engine.start();
+  a.host.write("Notes/new.md", "NEW NOTE SENTINEL", 1000);
+  assert.equal(a.state.fileByPath("Notes/new.md"), undefined, "the new note is still debouncing");
+  a.host.renameFolder("Notes", "Journal");
+  await timers.run(STEP_MS);
+  t.diagnostic(JSON.stringify({ scope: a.state.data.syncFolders, desktop: a.host.text("Journal/new.md"),
+    phone: b.host.text("Journal/new.md"), serverFiles: server.vaultFiles().length,
+    desktopLogs: a.host.logs }));
+  assert.equal(b.host.text("Journal/new.md"), "NEW NOTE SENTINEL", "rename must not drop the pending new note");
+});

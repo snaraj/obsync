@@ -479,7 +479,16 @@ export class SyncEngine {
     const before = this.options.state.data.syncFolders;
     this.followSelection(from, to);
     const prefix = `${from}/`;
-    for (const path of Object.keys(this.options.state.data.files)) {
+    // RECORDS ARE NOT THE WHOLE OF WHAT THIS DEVICE OWES. A note written
+    // moments ago is still in the debounce, or already in the push queue,
+    // and has no record at all -- nothing about it is in `files` yet. Moving
+    // only the records left that work pointing at a name the folder no
+    // longer has, where it was then refused as outside the selection, and
+    // the note stayed on this device alone until something else triggered a
+    // reconciliation. Pending work moves with the folder like everything
+    // else under it.
+    const pending = [...this.pending.keys(), ...this.queue];
+    for (const path of new Set([...Object.keys(this.options.state.data.files), ...pending])) {
       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
     }
   }
