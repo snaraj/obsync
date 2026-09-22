@@ -1,0 +1,15 @@
+# M11: the source of a move is never checked for a local edit
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -518,10 +518,7 @@
+   // the file agreeing and send nothing, which is how the edit left no trace
+   // anywhere (issue #98). The move's trash half is the same loss one path over.
+   const atTarget = await competing(context, manifest.path, change.file_id);
+-  const atSource =
+-    localPath !== undefined && localPath !== manifest.path
+-      ? await competing(context, localPath, change.file_id)
+-      : null;
++  const atSource = null;
+   const held = atTarget ?? atSource;
+   if (held !== null) {
+     context.host.log(

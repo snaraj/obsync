@@ -1,3 +1,4 @@
+# M26: the follow-up is remembered and never queued
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -549,7 +549,7 @@

@@ -1,0 +1,12 @@
+# M09: no free name reports the move as done
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1118,7 +1118,7 @@
+     if (await changed()) return refuse(null);
+     throw error;
+   }
+-  if (landed === null) return null;
++  if (landed === null) return from;
+   if (await changed()) return refuse(landed.stat.path);
+   // Marked BEFORE the trash: the vault reports the removal to this plugin's
+   // own delete handler while the trash is still running, and an unmarked echo

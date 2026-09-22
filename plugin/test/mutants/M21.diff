@@ -1,3 +1,4 @@
+# M21: the fake's create-only writer accepts a short copy
 --- a/plugin/test/fake.mjs
 +++ b/plugin/test/fake.mjs
 @@ -176,7 +176,6 @@
