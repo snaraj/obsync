@@ -1,11 +1,11 @@
 # M07: the moved file's delete is left unmarked
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1123,7 +1123,6 @@
+@@ -1162,7 +1162,6 @@
    // Marked BEFORE the trash: the vault reports the removal to this plugin's
    // own delete handler while the trash is still running, and an unmarked echo
    // publishes a tombstone for a file that is alive one name over (issue #96).
 -  context.trashed.add(from);
-   await context.host.trash(from);
-   // `mtime: -1` and no digest, exactly as a user's own rename records it
-   // (`engine.ts`): the bytes did not move, the PATH did, and the path lives
+   // The removal names the bytes it is removing. `kept` means the host found
+   // other ones there and put the file back rather than take them, so this
+   // move did not happen and the pair is kept as 1.0.6 kept it.

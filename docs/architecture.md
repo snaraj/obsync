@@ -614,7 +614,20 @@ returns immediately when a new frame lands.
    filesystem, not on the string: every path component from the vault root
    down is checked with a no-follow stat and must be a real directory,
    never a symlink; the temp file is opened exclusive-create and verified
-   by descriptor before writing and after the rename. Hidden folders
+   by descriptor before writing and after the rename.
+
+   A write and a removal each report on themselves, because neither is
+   atomic against the user. The metadata a writer answers with is the
+   metadata of the bytes IT committed -- the descriptor's own stat, or the
+   byte count handed to the adapter -- never a fresh look at the name, which
+   after an in-place save describes another file under the same inode. And a
+   caller that removes a file NAMES the content it is removing: the desktop
+   host holds that file under a second name across the vault's own
+   asynchronous trash and puts it back if what was removed is no longer what
+   was copied, while a device that cannot make a second name narrows the
+   window to its last instant and logs that it could not close it. Both are
+   what keep a record truthful about a file the user was typing into at that
+   moment (`plugin/src/main.ts`). Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
 
