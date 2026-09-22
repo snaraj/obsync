@@ -1,7 +1,7 @@
-r"""The five README captures are a control, not a caption.
+r"""The five validated-run captures are a control, not a caption.
 
-WHY. `docs/captures/README.md` says "README.md references exactly these names,
-in this order". Nothing enforced it. The sentence was deleted from README.md in
+WHY. `docs/captures/README.md` says the quickstart "references exactly these
+names, in this order". Nothing enforced it. The sentence was deleted from README.md in
 a scratch copy -- one image reference removed, nothing else -- and all 519
 contract tests stayed green, exactly the shape `test_onboarding_contract.py`
 was written for one document earlier: prose that is a control needs a control.
@@ -26,11 +26,11 @@ WHAT THIS SUITE ESTABLISHES, exactly and only:
      point is that a file which cannot produce one is refused.
   3. THE SIZE CEILING. Each capture is at most 409,600 bytes, and the
      convention still states the sentence that number comes from.
-  4. THE README'S DECLARED FORM. Inside one bounded section of README.md the
+  4. THE PAGE'S DECLARED FORM. Inside one bounded section of docs/quickstart.md the
      five captures are displayed, each alone on its line, in the convention's
      order, with non-empty alternative text, and none of the constructs that
      turn an image into literal text appears anywhere in that section.
-  5. SET EQUALITY. What `docs/captures/` holds, what README.md displays, and
+  5. SET EQUALITY. What `docs/captures/` holds, what docs/quickstart.md displays, and
      what the convention's table names are the same five names in the same
      order -- no extra committed capture, no missing one.
 
@@ -40,7 +40,7 @@ request; this file cannot and does not stand in for it.
 
 THE DECLARED DOCUMENT FORM, and why it is a form rather than a markdown
 parser. Four versions of this rule have been walked through. The first counted
-`](docs/captures/...)` as a raw substring, so an HTML comment around the five
+`](captures/...)` as a raw substring, so an HTML comment around the five
 lines hid every screenshot with the count unchanged. The second stripped
 comments, column-zero fences and inline code, and a `~~~` fence, an escaped
 `\!`, and a `<pre>` walked through that. The third bounded a section, and a
@@ -137,11 +137,11 @@ from typing import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 CAPTURES = ROOT / "docs" / "captures"
-README = ROOT / "README.md"
+PAGE = ROOT / "docs" / "quickstart.md"
 CONVENTION = CAPTURES / "README.md"
 
-# The five, in the order the README walks a reader through them. Changing this
-# tuple is changing the README, which is the point of writing it down once.
+# The five, in the order the quickstart walks a reader through them. Changing
+# this tuple is changing that page, which is the point of writing it down once.
 NAMES = (
     "01-install-from-directory.png",
     "02-first-time-setup.png",
@@ -158,7 +158,7 @@ SIZE_CEILING = 409600
 # number here has lost its source and this suite says so.
 CEILING_SENTENCE = "400 KB"
 
-# ---- the declared README form --------------------------------------------
+# ---- the declared page form ----------------------------------------------
 
 CAPTURE_SECTION = "## Get synced in five steps"
 # One image, alone on its line, indented by exactly the three spaces that
@@ -176,7 +176,7 @@ CAPTURE_SECTION = "## Get synced in five steps"
 # letter or a digit.
 ALT_TEXT = r"[A-Za-z0-9][A-Za-z0-9 ,.\'-]*"
 IMAGE_LINE_RE = re.compile(
-    r"^ {3}!\[" + ALT_TEXT + r"\]\(docs/captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
+    r"^ {3}!\[" + ALT_TEXT + r"\]\(captures/(0[1-5]-[a-z0-9-]+\.png)\)$"
 )
 # THE SECTION GRAMMAR. Every line of the capture section must match exactly one
 # of these shapes; anything else is refused by name. It is a WHITELIST because
@@ -204,7 +204,7 @@ SECTION_LINES = (
 )
 # Any other way a line can mention a capture: a link with no bang, an image
 # with empty alternative text, an image sharing its line with prose.
-MENTION = "](docs/captures/"
+MENTION = "](captures/"
 
 # A fenced code block (CommonMark 4.5): up to three spaces of indent, then a
 # run of at least three backticks or tildes. A BACKTICK fence's info string may
@@ -292,7 +292,7 @@ def _html_end(lines: Sequence[str], start: int, closer: re.Pattern[str]) -> int:
 
 
 def visible(readme: str) -> str:
-    """README.md with the literal contents of every enclosing block removed.
+    """docs/quickstart.md with the literal contents of every enclosing block removed.
 
     A block-level pass, in document order, over the WHOLE file: whatever is
     inside a fenced code block or one of the five HTML-block kinds that end at
@@ -365,10 +365,10 @@ def section_refusals(readme: str) -> list[str]:
     section = capture_section(readme)
     if section is None:
         # Not a fallback and not a shrug: a heading that is absent from the
-        # visible document is a README with no screenshots in it.
+        # visible document is a quickstart with no screenshots in it.
         return [
             f"the capture section `{CAPTURE_SECTION}` is hidden or missing from "
-            "the visible README"
+            "the visible docs/quickstart.md"
         ]
     found: list[str] = []
     # HTML blocks of CommonMark types 6 and 7 end at the next BLANK LINE rather
@@ -629,7 +629,7 @@ def committed() -> dict[str, bytes]:
 
 
 def documents() -> tuple[str, str]:
-    return README.read_text(encoding="utf-8"), CONVENTION.read_text(encoding="utf-8")
+    return PAGE.read_text(encoding="utf-8"), CONVENTION.read_text(encoding="utf-8")
 
 
 # ---- fixtures: every negative below is a mutation of one of these ----------
@@ -850,7 +850,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     def with_readme(self, readme: str, needle: str, case: str) -> None:
         self.kills(self.refusing(readme, self.convention, self.files, case), needle)
 
-    # ---- the declared README form -----------------------------------------
+    # ---- the declared page form --------------------------------------------
 
     def section_span(self) -> tuple[int, int]:
         lines = self.readme.splitlines()
@@ -868,12 +868,12 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         return "\n".join(lines[:start] + rewrite(lines[start:end]) + lines[end:]) + "\n"
 
     def test_dropping_a_readme_image_is_refused(self):
-        readme = self.readme.replace(f"](docs/captures/{NAMES[4]})", "]()", 1)
+        readme = self.readme.replace(f"](captures/{NAMES[4]})", "]()", 1)
         self.with_readme(readme, "in order", "a dropped image")
 
     def test_reordering_the_readme_images_is_refused(self):
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[0]})", f"](docs/captures/{NAMES[1]})", 1
+            f"](captures/{NAMES[0]})", f"](captures/{NAMES[1]})", 1
         )
         self.with_readme(readme, "in order", "reordered images")
 
@@ -986,7 +986,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # Mid-line, so the block pass keeps it and the TOKEN rule is what
         # catches it -- which is the comparison that has to fold case.
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[4]})", f"](docs/captures/{NAMES[4]}) <PRE>", 1
+            f"](captures/{NAMES[4]})", f"](captures/{NAMES[4]}) <PRE>", 1
         )
         self.with_readme(readme, "declared grammar admits", "an uppercase pre tag on an image line")
 
@@ -1028,7 +1028,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     FULL_ALT = ALT_ANCHOR + ", its words obscured"
 
     def test_a_bracket_before_every_closing_bracket_is_refused(self):
-        # The reviewer's fixture: `![alt[](docs/captures/...)`. Under
+        # The reviewer's fixture: `![alt[](captures/...)`. Under
         # CommonMark's bracket rules that is not an image any more, and the
         # negated class this grammar used to carry admitted all five.
         readme = self.readme
@@ -1038,7 +1038,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_an_escaped_closing_bracket_is_refused(self):
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[4]})", f"\\](docs/captures/{NAMES[4]})", 1
+            f"](captures/{NAMES[4]})", f"\\](captures/{NAMES[4]})", 1
         )
         self.with_readme(readme, "declared grammar admits", "an escaped closing bracket")
 
@@ -1199,7 +1199,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         self.with_readme(readme, "declared grammar admits", "an eight-space prose line")
 
     def test_an_image_with_no_blank_line_before_it_is_refused(self):
-        marker = f"](docs/captures/{NAMES[2]})"
+        marker = f"](captures/{NAMES[2]})"
         line = next(
             candidate
             for candidate in self.readme.splitlines()
@@ -1355,20 +1355,23 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_a_comment_opened_mid_line_above_the_section_is_refused(self):
         readme = self.readme.replace(
-            "writers on one vault", "writers <!-- on one vault", 1
-        ).replace("## Get syncing\n", "-->\n\n## Get syncing\n", 1)
+            "every step in full", "every <!-- step in full", 1
+        ).replace(
+            "## Set up this computer", "-->\n\n## Set up this computer", 1
+        )
         self.with_readme(readme, "hidden or missing", "a closed mid-line comment")
 
     def test_an_unclosed_mid_line_comment_above_the_section_is_refused(self):
         readme = self.readme.replace(
-            "writers on one vault", "writers <!-- on one vault", 1
+            "every step in full", "every <!-- step in full", 1
         )
         self.with_readme(readme, "hidden or missing", "an unclosed mid-line comment")
 
     def test_a_fenced_block_elsewhere_in_the_readme_is_not_a_refusal(self):
-        # The README's own quick start is full of ``` blocks. Removing their
-        # contents must not disturb a section they do not enclose, or this
-        # whole pass would be unusable on the document it reads.
+        # The README's quick start, where this section first lived, is full of
+        # ``` blocks. Removing their contents must not disturb a section they
+        # do not enclose, or this whole pass would be unusable on the document
+        # it reads.
         self.assertIn(CAPTURE_SECTION, visible(self.readme))
         self.assertEqual(list(NAMES), displayed_names(capture_section(self.readme)))
 
@@ -1432,13 +1435,13 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # Not a fence opener -- it shares its line -- so the token rule is what
         # catches it, and that is the entry this proves is reachable.
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[2]})", f"](docs/captures/{NAMES[2]}) ~~~", 1
+            f"](captures/{NAMES[2]})", f"](captures/{NAMES[2]}) ~~~", 1
         )
         self.with_readme(readme, "declared grammar admits", "a tilde run on an image line")
 
     def test_a_pre_tag_on_an_image_line_is_refused(self):
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[3]})", f"](docs/captures/{NAMES[3]}) <pre>", 1
+            f"](captures/{NAMES[3]})", f"](captures/{NAMES[3]}) <pre>", 1
         )
         self.with_readme(readme, "declared grammar admits", "a pre tag on an image line")
 
@@ -1474,7 +1477,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_trailing_whitespace_after_an_image_is_refused(self):
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[0]})\n", f"](docs/captures/{NAMES[0]}) \n", 1
+            f"](captures/{NAMES[0]})\n", f"](captures/{NAMES[0]}) \n", 1
         )
         found = self.refusing(readme, self.convention, self.files, "a trailing space")
         self.kills(found, "declared grammar admits")
@@ -1482,7 +1485,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_an_image_naming_an_unknown_capture_is_refused(self):
         readme = self.readme.replace(
-            f"](docs/captures/{NAMES[1]})", "](docs/captures/06-extra.png)", 1
+            f"](captures/{NAMES[1]})", "](captures/06-extra.png)", 1
         )
         # The anchored name group refuses the LINE, which is a better message
         # than counting a sixth capture and complaining about the order.
@@ -1502,14 +1505,14 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_an_img_tag_in_the_section_is_refused(self):
         def rewrite(section):
-            return section + ['<img src="docs/captures/01-install-from-directory.png">']
+            return section + ['<img src="captures/01-install-from-directory.png">']
 
         self.with_readme(self.rewrite_section(rewrite), "declared grammar admits", "an img tag")
 
     def test_empty_alternative_text_is_refused(self):
         readme = re.sub(
-            r"!\[[^\]]+\]\(docs/captures/" + re.escape(NAMES[2]) + r"\)",
-            f"![](docs/captures/{NAMES[2]})",
+            r"!\[[^\]]+\]\(captures/" + re.escape(NAMES[2]) + r"\)",
+            f"![](captures/{NAMES[2]})",
             self.readme,
             count=1,
         )

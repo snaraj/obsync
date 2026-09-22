@@ -69,6 +69,17 @@ It has no subscription, advertising or telemetry service. Obsidian contacts
 its directory and GitHub to install and update community plugins. Optional
 network access providers are chosen by the server operator.
 
+Three more surfaces the plugin touches, each only on the reader's own action:
+
+- **Your edge, only if you configured one.** Headers you paste under **Edge
+  service-token headers** ride on every request to the Server URL, because
+  the proxy that needs them is on the path to your server.
+- **Your browser, when you ask for the dashboard.** **Open dashboard** opens a
+  sign-in link in your browser, and only when that link is on your server's
+  own origin.
+- **Obsidian's secret storage.** The vault key, the device secret and any edge
+  header values live there, never in plain plugin data.
+
 Releases from 0.1.15 also publish native GitHub Actions build provenance for
 all three installation files. The publisher and read-only audit verify it
 against the exact protected-main source. Directory acceptance is still a

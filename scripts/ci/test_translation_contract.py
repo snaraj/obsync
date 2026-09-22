@@ -303,7 +303,9 @@ class TheTranslationsFollowTheEnglishText(unittest.TestCase):
     def test_the_english_pages_carry_commands_to_compare(self):
         # Non-vacuity for the rule above: a README with no fenced block would
         # make byte-equality true of every translation, including an empty one.
-        self.assertGreaterEqual(len(fenced_blocks(README.read_text(encoding="utf-8"))), 5)
+        # The short README carries three: cosign verify, the compose command,
+        # the token read.
+        self.assertGreaterEqual(len(fenced_blocks(README.read_text(encoding="utf-8"))), 3)
 
     def test_every_relative_link_under_docs_and_in_the_readme_resolves(self):
         pages = [README, *sorted(DOCS.rglob("*.md"))]

@@ -193,6 +193,7 @@ QUICKSTART_GUIDE = ROOT / "docs" / "quickstart.md"
 DASHBOARD_GUIDE = ROOT / "docs" / "dashboard.md"
 DAILY_USE_GUIDE = ROOT / "docs" / "daily-use.md"
 ARCHITECTURE = ROOT / "docs" / "architecture.md"
+SERVER = ROOT / "docs" / "server.md"
 COMPOSE = ROOT / "deploy" / "compose" / "docker-compose.yml"
 SETTINGS = ROOT / "plugin" / "src" / "ui" / "settings.ts"
 DASHBOARD = ROOT / "dashboard" / "index.html"
@@ -204,6 +205,7 @@ QUICKSTART_GUIDE_NAME = "docs/quickstart.md"
 DASHBOARD_GUIDE_NAME = "docs/dashboard.md"
 DAILY_USE_GUIDE_NAME = "docs/daily-use.md"
 ARCHITECTURE_NAME = "docs/architecture.md"
+SERVER_NAME = "docs/server.md"
 COMPOSE_NAME = "deploy/compose/docker-compose.yml"
 SETTINGS_NAME = "plugin/src/ui/settings.ts"
 DASHBOARD_NAME = "dashboard/index.html"
@@ -1175,6 +1177,7 @@ def documents() -> dict[str, str]:
         DASHBOARD_GUIDE_NAME: DASHBOARD_GUIDE.read_text(encoding="utf-8"),
         DAILY_USE_GUIDE_NAME: DAILY_USE_GUIDE.read_text(encoding="utf-8"),
         ARCHITECTURE_NAME: ARCHITECTURE.read_text(encoding="utf-8"),
+        SERVER_NAME: SERVER.read_text(encoding="utf-8"),
         COMPOSE_NAME: COMPOSE.read_text(encoding="utf-8"),
         SETTINGS_NAME: SETTINGS.read_text(encoding="utf-8"),
         DASHBOARD_NAME: DASHBOARD.read_text(encoding="utf-8"),
@@ -1271,18 +1274,22 @@ class TheParserFindsWhatItClaimsTo(unittest.TestCase):
 
     def test_the_quick_start_section_is_found_and_bounded(self):
         quick_start = section(documents()["README.md"], "## Get syncing")
-        self.assertIn("docker run", quick_start)
-        self.assertNotIn("## What it does", quick_start)
+        self.assertIn("docker compose", quick_start)
+        self.assertNotIn("## Advanced: Cloudflare", quick_start)
 
     def test_every_documented_command_is_read(self):
         lines = logical_lines(documents()["README.md"])
-        self.assertTrue(any(line.startswith("docker run ") for line in lines))
         self.assertTrue(any(line.startswith("cosign verify ") for line in lines))
+        self.assertTrue(any(" docker compose " in line for line in lines))
+        # The bare-server path, and its `docker run`, moved to docs/server.md
+        # and is judged there by the same rules.
+        lines = logical_lines(documents()[SERVER_NAME])
+        self.assertTrue(any(line.startswith("docker run ") for line in lines))
 
-    def test_the_image_is_found_past_every_flag_the_readme_uses(self):
+    def test_the_image_is_found_past_every_flag_the_documents_use(self):
         line = next(
             line
-            for line in logical_lines(documents()["README.md"])
+            for line in logical_lines(documents()[SERVER_NAME])
             if line.startswith("docker run ")
         )
         image = _image_of(shlex.split(line)[2:])
@@ -1325,9 +1332,17 @@ class TheParserFindsWhatItClaimsTo(unittest.TestCase):
 
     def test_both_install_paths_are_counted_as_server_starts(self):
         # The floor in `_token_read_refusals` is this number, so a counter that
-        # silently found nothing would make that rule vacuous.
+        # silently found nothing would make that rule vacuous. The README's
+        # quick start carries the compose start alone; the bare-server run in
+        # docs/server.md, appended to it, must count as the second spelling.
         quick_start = section(documents()[README_NAME], "## Get syncing")
-        self.assertEqual(_server_starts(quick_start), 2)
+        self.assertEqual(_server_starts(quick_start), 1)
+        bare = next(
+            line
+            for line in logical_lines(documents()[SERVER_NAME])
+            if line.startswith("docker run ")
+        )
+        self.assertEqual(_server_starts(quick_start + "\n```sh\n" + bare + "\n```\n"), 2)
 
     def test_a_compose_verb_is_found_past_its_global_flags(self):
         self.assertEqual(
@@ -1351,9 +1366,11 @@ class TheParserFindsWhatItClaimsTo(unittest.TestCase):
 
 
 
-# The quick start's own token read, as committed. Every mutation below either
-# replaces this line or hangs a hostile one off it, so it is named once.
-QUICK_START_READ = f"docker cp obsync{TOKEN_PATH} - | tar -xO"
+# The quick start's own token read, as committed: the compose path's, since
+# the README's simple path is Compose and the bare-server path lives in
+# docs/server.md. Every mutation below either replaces this line or hangs a
+# hostile one off it, so it is named once.
+QUICK_START_READ = f"docker cp obsync-obsync-1{TOKEN_PATH} - | tar -xO"
 
 # The compose path's own two lines, named once for the same reason.
 COMPOSE_UP_IMAGE = f"OBSYNC_IMAGE={SERVER_IMAGE_PREFIX}<digest>"
@@ -1677,7 +1694,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
 
     def test_an_unparseable_command_block_is_refused(self):
         found = self.mutate(
-            "README.md", "docker volume create obsync-blobs", "docker run 'unclosed"
+            SERVER_NAME, "docker volume create obsync-blobs", "docker run 'unclosed"
         )
         self.kills(found, "unparseable command")
 

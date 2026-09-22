@@ -1,14 +1,17 @@
 # README captures
 
-`README.md` leads with captures of the plugin and the dashboard (`AGENTS.md`,
-"Docs and README conventions"). They are committed PNG files in this folder,
-never generated at build time, and a pull request that changes what either
-surface renders asks the owner for fresh ones and says so in its body.
+`README.md` leads with captures of the plugin (`AGENTS.md`, "Docs and README
+conventions"; the short guide's own captures live in `docs/assets/`). The five
+validated-run captures are committed PNG files in this folder, displayed by
+`docs/quickstart.md`, never generated at build time; a pull request that
+changes what the plugin or the dashboard renders asks the owner for fresh ones
+and says so in its body.
 
 ## The five
 
-`README.md` references exactly these names, in this order, one sentence each.
-The names are part of the README and do not change without changing it:
+`docs/quickstart.md` references exactly these names, in this order, one
+sentence each. The names are part of that page and do not change without
+changing it:
 
 | File | Shows |
 | --- | --- |
@@ -30,7 +33,7 @@ what each must show, and where they go are in
 about how to take one, and everything under requirement 11, applies to them
 exactly as it does to the five.
 
-## How README.md displays them
+## How docs/quickstart.md displays them
 
 `scripts/ci/test_capture_contract.py` refuses anything but this form, so it is
 written here rather than only in the suite. It is deliberately narrower than
@@ -39,8 +42,8 @@ SEE five screenshots".
 
 ### The visible document
 
-`README.md` is first reduced to what a reader actually sees, by removing the
-literal contents of every block that can ENCLOSE a heading. Comment stripping
+`docs/quickstart.md` is first reduced to what a reader actually sees, by
+removing the literal contents of every block that can ENCLOSE a heading. Comment stripping
 alone is not that, and saying it was is how three separate constructs got past
 this rule: a `~~~` fence, a ``` fence, and an outer `<PRE>` each hid all five
 screenshots with the section itself unchanged.
@@ -63,7 +66,7 @@ screenshots with the section itself unchanged.
 
 The CAPTURE SECTION is the lines of that visible text from
 `## Get synced in five steps` up to the next line beginning `## `. If the
-heading is not in the visible text at all, the README has no screenshots in it
+heading is not in the visible text at all, the page has no screenshots in it
 and that is a refusal, not an empty count. The line above the heading must be
 blank.
 
@@ -83,7 +86,7 @@ anywhere, so neither can start in this section at all.
 | a step opener | `1.` to `5.`, a space, then a bold run |
 | a continuation line | EXACTLY three spaces, then text that does not start with `!` |
 | a prose line | no indent, and does not start with `#` or `!` |
-| an image line | three spaces, then `![<alt>](docs/captures/<name>)`, with a BLANK LINE on each side |
+| an image line | three spaces, then `![<alt>](captures/<name>)`, with a BLANK LINE on each side |
 | an alt text | a letter or digit, then letters, digits, spaces, commas, periods, apostrophes and hyphens |
 
 Every shape but the heading forbids a backtick, a tilde, a backslash and a `<`
@@ -100,12 +103,12 @@ image syntax.
 
 There must be exactly five image lines, in the order of the table above, each
 with alternative text that is not empty. Any other mention of
-`docs/captures/` -- a link with no `!`, an image with empty alternative text,
+`captures/` -- a link with no `!`, an image with empty alternative text,
 an image sharing a line with prose -- is refused rather than counted.
 
-Outside that section README.md may say whatever it likes, including the
-comment that records this rule and the fenced blocks of the quick start; this
-is a form for one section, not a markdown policy. Renaming the heading is a
+Outside that section docs/quickstart.md may say whatever it likes, including
+the comment that records this rule and the inline code of the steps that
+follow; this is a form for one section, not a markdown policy. Renaming the heading is a
 change to this convention and to the suite, in one pull request.
 
 ## How to take them
@@ -122,7 +125,7 @@ change to this convention and to the suite, in one pull request.
 4. Keep them small. A capture over about 400 KB is a full-screen capture that
    wanted cropping; the repository carries these forever.
 5. Name the file exactly as the table above spells it and put it in this
-   folder. The README references it by relative path.
+   folder. The quickstart references it by relative path.
 
 ## What must not be in a capture (requirement 11)
 
