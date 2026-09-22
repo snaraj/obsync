@@ -2891,8 +2891,15 @@ fn reviewer_mutation_probe_sid_order_changes_content() {
     let first = version(&setup, file(1), "first-manifest", &[], &[a, b], false);
     let swapped = version(&setup, file(1), "swapped-manifest", &[], &[b, a], false);
     setup.store.append_version_idempotent(first).expect("first");
-    let answer = setup.store.append_version_idempotent(swapped.clone()).expect("swapped");
-    assert_eq!(answer.decision, AppendDecision::Appended, "opposite chunk order is different content");
+    let answer = setup
+        .store
+        .append_version_idempotent(swapped.clone())
+        .expect("swapped");
+    assert_eq!(
+        answer.decision,
+        AppendDecision::Appended,
+        "opposite chunk order is different content"
+    );
     assert_eq!(answer.version_id, swapped.version_id);
 }
 
@@ -2904,11 +2911,32 @@ fn reviewer_mutation_probe_repeated_parent_is_one_position() {
     let sid = put(&setup, b"ciphertext-chunk-a");
     let root = version(&setup, file(1), "root", &[], &[sid], false);
     setup.store.append_version(root.clone()).expect("root");
-    let first = version(&setup, file(1), "first-manifest", &[root.version_id], &[sid], false);
-    let twin = version(&setup, file(1), "twin-manifest", &[root.version_id, root.version_id], &[sid], false);
-    setup.store.append_version_idempotent(first.clone()).expect("first");
+    let first = version(
+        &setup,
+        file(1),
+        "first-manifest",
+        &[root.version_id],
+        &[sid],
+        false,
+    );
+    let twin = version(
+        &setup,
+        file(1),
+        "twin-manifest",
+        &[root.version_id, root.version_id],
+        &[sid],
+        false,
+    );
+    setup
+        .store
+        .append_version_idempotent(first.clone())
+        .expect("first");
     let answer = setup.store.append_version_idempotent(twin).expect("twin");
-    assert_eq!(answer.decision, AppendDecision::Deduplicated, "parents are a set, including duplicates");
+    assert_eq!(
+        answer.decision,
+        AppendDecision::Deduplicated,
+        "parents are a set, including duplicates"
+    );
     assert_eq!(answer.version_id, first.version_id);
 }
 
@@ -2921,10 +2949,22 @@ fn reviewer_mutation_probe_oldest_legacy_twin_wins() {
     let first = version(&setup, file(1), "first-manifest", &[], &[sid], false);
     let later = version(&setup, file(1), "later-manifest", &[], &[sid], false);
     let offered = version(&setup, file(1), "offered-manifest", &[], &[sid], false);
-    let original = setup.store.append_version(first.clone()).expect("old-client first");
-    setup.store.append_version(later).expect("old-client duplicate");
-    let answer = setup.store.append_version_idempotent(offered).expect("opt-in third");
+    let original = setup
+        .store
+        .append_version(first.clone())
+        .expect("old-client first");
+    setup
+        .store
+        .append_version(later)
+        .expect("old-client duplicate");
+    let answer = setup
+        .store
+        .append_version_idempotent(offered)
+        .expect("opt-in third");
     assert_eq!(answer.decision, AppendDecision::Deduplicated);
-    assert_eq!(answer.version_id, first.version_id, "first retained twin is the documented stable answer");
+    assert_eq!(
+        answer.version_id, first.version_id,
+        "first retained twin is the documented stable answer"
+    );
     assert_eq!(answer.seq, original.seq);
 }
