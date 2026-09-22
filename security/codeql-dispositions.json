@@ -46,5 +46,14 @@
     "reason": "false positive",
     "comment": "ExportReport::print, the operator report: counts, ciphertext chunk sids and fixed content/result labels; every println! in this file is in that report",
     "disposition": "https://github.com/snaraj/obsync/issues/23"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/setup_token.rs",
+    "line_is": "println!(\"{token}\");",
+    "reviewed_sha256": "076f3ba3ca64f1c532d2e19e951be32d6f119baf27ff4ca6e4d81b546e425f55",
+    "reason": "won't fix",
+    "comment": "printing the setup token on stdout IS this command (#73): the operator reads it with no shell in the image. Deliberate, not a mistake; the structured log records only decision=printed",
+    "disposition": "https://github.com/snaraj/obsync/issues/73"
   }
 ]
