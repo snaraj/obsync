@@ -9,30 +9,34 @@
 # prose meant (review round 2, finding 7). The output is TAP: every `not ok`
 # line names a test the mutant killed, and their number IS the kill count.
 #
-# THE TREE IS RESTORED FROM A COPY, NEVER FROM GIT. `git checkout -- plugin/src`
-# would erase uncommitted work belonging to whoever is running this, so the
-# pristine source is copied out first, copied back on every exit path including
-# an interrupt, verified against that copy, and rebuilt -- a restored source
-# over a mutated `build/` is still a mutated suite. A mutation tool that can
-# leave a mutant behind is a worse defect than the one it is hunting.
+# THE TREE IS RESTORED FROM A COPY, NEVER FROM GIT. `git checkout -- plugin`
+# would erase uncommitted work belonging to whoever is running this, so both
+# the source and the suite (a mutant may target a fake's fidelity) are copied
+# out first, copied back on every exit path including an interrupt, verified
+# against that copy, and rebuilt -- a restored source over a mutated `build/`
+# is still a mutated suite. A mutation tool that can leave a mutant behind is a
+# worse defect than the one it is hunting.
 set -eu
 
 patch_file="${1:?usage: run.sh <mutant.diff>}"
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
-src="${root}/plugin/src"
 pristine="$(mktemp -d)"
 
-cp -R "${src}/." "${pristine}/"
+for tree in src test; do
+  mkdir -p "${pristine}/${tree}"
+  cp -R "${root}/plugin/${tree}/." "${pristine}/${tree}/"
+done
 
 restore() {
-  cp -R "${pristine}/." "${src}/"
-  if diff -r -q "${pristine}" "${src}" >/dev/null; then
-    rm -rf "${pristine}"
-    (cd "${root}/plugin" && npm run build >/dev/null)
-  else
-    printf 'MUTANT LEFT IN THE TREE: restore from %s by hand\n' "${pristine}" >&2
-    exit 2
-  fi
+  for tree in src test; do
+    cp -R "${pristine}/${tree}/." "${root}/plugin/${tree}/"
+    if ! diff -r -q "${pristine}/${tree}" "${root}/plugin/${tree}" >/dev/null; then
+      printf 'MUTANT LEFT IN THE TREE: restore plugin/%s from %s by hand\n' "${tree}" "${pristine}" >&2
+      exit 2
+    fi
+  done
+  rm -rf "${pristine}"
+  (cd "${root}/plugin" && npm run build >/dev/null)
 }
 trap restore EXIT INT TERM
 

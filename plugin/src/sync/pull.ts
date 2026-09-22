@@ -1011,6 +1011,32 @@ async function writeCopy(
 }
 
 /**
+ * A local file's bytes into a writer, one bounded window at a time.
+ *
+ * NEVER `host.read`, which allocates the file's whole size on desktop and is
+ * why a note larger than this device's memory could not be moved at all
+ * (review round 2, finding 4). `CHUNK_MAX` is the push path's own window, so
+ * the two paths cost the same and neither is bounded by the file.
+ *
+ * The walk advances by the window it ASKED for, not by the bytes it got, so
+ * it terminates whatever the vault hands back. A file that ends early while it
+ * is being rewritten therefore delivers fewer bytes than its declared size,
+ * and the create-only writer's byte budget refuses that copy rather than
+ * publishing a torn one; `moveAside` turns that refusal into its own.
+ */
+async function copyThrough(
+  context: SyncContext,
+  from: string,
+  size: number,
+  writer: VaultWriter,
+): Promise<void> {
+  const source = context.host.source(from, size);
+  for (let at = 0; at < size; at += CHUNK_MAX) {
+    await writer.write(await source.read(at, Math.min(CHUNK_MAX, size - at)));
+  }
+}
+
+/**
  * This device's OWN file, moved to the conflict name because it lost the
  * same-name tie-break, and left DIRTY so the next push publishes the move as a
  * version of this device's file id. That published rename is the one thing
@@ -1029,6 +1055,15 @@ async function writeCopy(
  * anyway. The comparison is `(mtime, size)`, the same metadata test the whole
  * pull path uses for "has this file moved on"; an edit that changes neither
  * is invisible to it here exactly as it is there.
+ *
+ * AND THE LOCAL NOTE CAN BE ANY SIZE. The incoming version says nothing about
+ * it: a 21-byte note from another device collides with whatever wears that
+ * name here, and the desktop host reads a whole file by allocating its whole
+ * size (`main.ts`). So the copy streams through the host's windowed source in
+ * the same 8 MiB windows the push path uses, and a multi-GiB note costs what a
+ * note costs (review round 2, finding 4). Mobile has no windowed read and
+ * buffers the file once, as it does everywhere else -- that is what the mobile
+ * per-file ceiling exists for.
  */
 async function moveAside(
   context: SyncContext,
@@ -1038,25 +1073,41 @@ async function moveAside(
 ): Promise<string | null> {
   const before = await context.host.stat(from);
   if (before === null) return null;
-  const bytes = await context.host.read(from);
-  const landed = await writeBeside(
-    context, from, context.deviceNameFor(context.deviceId), when, bytes.length, record.mtime,
-    async (writer) => { await writer.write(bytes); },
-    // Never reused: this is a MOVE of a file that must really arrive.
-    async () => false,
-  );
-  if (landed === null || landed.stat === null) return null;
-  const now = await context.host.stat(from);
-  if (now === null || now.mtime !== before.mtime || now.size !== before.size) {
+  const changed = async (): Promise<boolean> => {
+    const now = await context.host.stat(from);
+    return now === null || now.mtime !== before.mtime || now.size !== before.size;
+  };
+  const refuse = (copy: string | null): null => {
     context.host.log(
       `pull path_class=file decision=move_aside_refused reason=source_changed file=${record.fileId}`,
     );
-    context.host.notify(
-      `obsync left ${from} where it is: it changed while obsync was copying it. Your note and its ` +
-        `new text are untouched, and the text it had a moment ago is in "${landed.stat.path}".`,
-    );
+    if (copy !== null) {
+      context.host.notify(
+        `obsync left ${from} where it is: it changed while obsync was copying it. Your note and its ` +
+          `new text are untouched, and the text it had a moment ago is in "${copy}".`,
+      );
+    }
     return null;
+  };
+  let landed: Awaited<ReturnType<typeof writeBeside>>;
+  try {
+    landed = await writeBeside(
+      context, from, context.deviceNameFor(context.deviceId), when, before.size, record.mtime,
+      async (writer) => { await copyThrough(context, from, before.size, writer); },
+      // Never reused: this is a MOVE of a file that must really arrive.
+      async () => false,
+    );
+  } catch (error) {
+    // A copy that failed BECAUSE the note was being written while it was
+    // copied is the same refusal, not an error: the create-only writer's byte
+    // budget is what catches a note that grew or shrank mid-copy, and it
+    // refuses rather than publishing a torn one. Anything else is a real
+    // failure and is raised.
+    if (await changed()) return refuse(null);
+    throw error;
   }
+  if (landed === null || landed.stat === null) return null;
+  if (await changed()) return refuse(landed.stat.path);
   // Marked BEFORE the trash: the vault reports the removal to this plugin's
   // own delete handler while the trash is still running, and an unmarked echo
   // publishes a tombstone for a file that is alive one name over (issue #96).
