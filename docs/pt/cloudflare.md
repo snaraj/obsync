@@ -12,12 +12,12 @@ acesso à frente.
 
 Os menus da Cloudflare e as condições dos seus planos mudam. Cada passo
 abaixo indica o caminho de menu tal como a documentação da Cloudflare o dava
-em 2026-09-22; consulte a página actual antes de confiar num limite ou num
+em 2026-09-22; consulte a página atual antes de confiar num limite ou num
 preço.
 
 ## Qual a variante
 
-| Variante | O que os dispositivos vêem | O que a internet vê | Primeira sincronização grande |
+| Variante | O que os dispositivos veem | O que a internet vê | Primeira sincronização grande |
 | --- | --- | --- | --- |
 | **Rota privada** (a instalação de referência) | o seu próprio endereço privado e o seu nome, através do cliente Cloudflare One | nada: nem nome de anfitrião nem porta aberta | tráfego de rede privada, sem passar por um nome de anfitrião público |
 | **Nome de anfitrião público com Access** | um nome público, uma política de Access, um token de serviço no plugin | o nome de anfitrião, atrás do Access | encaminhado pela Cloudflare, nas condições do fornecedor para ficheiros grandes |
@@ -56,7 +56,7 @@ de casa.
    ou no mesmo anfitrião.
 2. **Encaminhe o endereço privado do servidor pelo túnel.** Vá a
    **Networking** > **Routes**, escolha **Create route** > **Tunnel CIDR**,
-   seleccione o túnel e introduza o endereço privado ou a sub-rede do
+   selecione o túnel e introduza o endereço privado ou a sub-rede do
    servidor. Um endereço chega; uma sub-rede pode ser alargada mais tarde.
 3. **Inscreva cada dispositivo.** Instale o cliente Cloudflare One, escreva o
    nome da sua equipa, conclua a autenticação que a sua organização exigir e
@@ -73,7 +73,7 @@ de casa.
    dispositivo em mobilidade: uma rota por nome de anfitrião, Local Domain
    Fallback para o seu próprio resolvedor, ou uma entrada DNS privada. Um
    nome que resolve para um endereço que o cliente não encaminha falha
-   exactamente como um servidor desligado.
+   exatamente como um servidor desligado.
 6. **Termine o TLS por si.** A rota leva o seu tráfego até ao seu próprio
    terminador: um ingress ou um proxy inverso à frente do servidor com um
    certificado em que todos os dispositivos confiam, como em
@@ -109,7 +109,7 @@ túnel publica esse nome para o endereço privado do servidor, e o Cloudflare
 Access fica à frente: uma política de identidade para o painel e um token de
 serviço para as chamadas à API do plugin. É a variante que a
 [integração na plataforma](../platform-onboarding.md) descreve para o cluster
-de referência, e a que a instalação de referência não adoptou.
+de referência, e a que a instalação de referência não adotou.
 
 1. **Publique o nome de anfitrião.** Na configuração do túnel, adicione uma
    rota de aplicação publicada do seu nome de anfitrião (`sync.example.com`
@@ -126,7 +126,7 @@ de referência, e a que a instalação de referência não adoptou.
    vez. Adicione à aplicação uma política **Service Auth** que inclua esse
    token, para os caminhos que o plugin usa (`/v1/*`).
 4. **Cole o token no plugin.** Em **Edge service-token headers**, um por
-   linha, exactamente como a Cloudflare lhes chama:
+   linha, exatamente como a Cloudflare lhes chama:
 
    ```text
    CF-Access-Client-Id: <the client id>
