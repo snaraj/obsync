@@ -470,8 +470,15 @@ export class ObsidianHost implements VaultHost {
           at += part.length;
         }
         await adapter.writeBinary(path, joined.buffer, { mtime });
+        // The SIZE is ours: the bytes handed to the adapter, not what a look
+        // at the name says a moment later. The mtime is taken from the name
+        // only while the name still holds that many bytes -- a save landing
+        // between the write and the lookup must not have its metadata
+        // recorded as this version's (round 3, finding 2).
         const stat = await this.stat(path);
-        return { path, mtime: stat?.mtime ?? mtime, size: stat?.size ?? total };
+        if (stat !== null && stat.size === total) return { path, mtime: stat.mtime, size: total };
+        if (stat !== null) this.log("host path_class=file decision=write_superseded");
+        return { path, mtime, size: total };
       },
       abort: async () => {
         parts.length = 0;
@@ -508,7 +515,10 @@ export class ObsidianHost implements VaultHost {
             // The public Vault primitive rejects an existing file; the
             // adapter's writeBinary would silently replace it.
             const file = await vault.createBinary(path, bytes.buffer, { mtime });
-            return { path: file.path, mtime: file.stat.mtime, size: file.stat.size };
+            // `size` is the budget this writer enforced to the byte, so it is
+            // the size of what was published here whatever the vault's cached
+            // stat says after a later save (round 3, finding 2).
+            return { path: file.path, mtime: file.stat.mtime, size };
           } catch {
             throw new CopyPublicationError(path);
           }
@@ -564,6 +574,10 @@ export class ObsidianHost implements VaultHost {
         if (at !== size) throw new Error("Restore content is incomplete.");
         await handle.utimes(mtime / 1000, mtime / 1000);
         await handle.sync();
+        // `fstat` of the file we hold open: the metadata of OUR bytes, taken
+        // while they are still under a name nothing else knows, and the only
+        // metadata this writer will answer with (round 3, finding 2).
+        const wrote = await handle.stat();
         await bind();
         await handle.close();
         open = false;
@@ -579,7 +593,10 @@ export class ObsidianHost implements VaultHost {
           const landed = await walker(fs).lstat(found.target);
           if (refusal !== null || !sameFile(opened, landed)) throw new Error("Restore publication identity changed.");
           const stat = landed as PathStat;
-          return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+          if (stat.size !== wrote.size || Math.round(stat.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+            this.log("host path_class=file decision=write_superseded");
+          }
+          return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
         } catch { throw new CopyPublicationError(path); }
       },
       abort: discard,
@@ -645,6 +662,12 @@ export class ObsidianHost implements VaultHost {
         open = false;
         const seconds = mtime / 1000;
         await fs.promises.utimes(temp, seconds, seconds);
+        // The metadata of OUR bytes, read from the inode while it is still
+        // under the temp name, because the rename is the last instant at
+        // which the name and the bytes are certainly the same thing (round
+        // 3, finding 2).
+        const wrote = await walker(fs).lstat(temp);
+        if (wrote === null) throw new VaultPathError("temp_identity");
         await fs.promises.rename(temp, target);
         // The rename is the moment the file takes its real name, so the
         // chain is checked again here: a parent swapped after the last
@@ -660,8 +683,15 @@ export class ObsidianHost implements VaultHost {
           }
           throw new VaultPathError(refusal ?? "target_identity");
         }
+        // The rename kept the inode, and the inode is what `sameFile` proves
+        // -- but an ordinary in-place save keeps the inode too, so identity
+        // alone does not say these are still our bytes. The answer is bound
+        // to what was written; the name is only reported on.
         const ours = landed as PathStat;
-        return { path, mtime: Math.round(ours.mtimeMs), size: ours.size };
+        if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+          this.log("host path_class=file decision=write_superseded");
+        }
+        return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
       },
       abort: discard,
     };

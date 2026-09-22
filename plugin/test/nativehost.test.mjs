@@ -125,6 +125,41 @@ async function native(t, hooks = {}) {
   return { ...r, root, host, seed, contents, hidden, logs, trashed, notices };
 }
 
+/**
+ * The other half of the pair: this device holds the LOWER id, so its own note
+ * KEEPS the name and the incoming file is the one given a name of its own.
+ * Every later version of that id lands at the name this device gave it, which
+ * is `updateSettled`, which is where the writer's answer is recorded.
+ */
+async function settle(r) {
+  r.seed(NOTE, MINE, 2000);
+  await pushFile(r.context, NOTE);
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), fileId: LOWER });
+  const first = await r.server.publish({
+    fileId: HIGHER,
+    path: NOTE,
+    bytes: enc(THEIRS),
+    mtime: 4000,
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+  assert.equal(await applyChange(r.context, first), "conflict_copy");
+  return { first, copy: r.state.pathByFileId(HIGHER) };
+}
+
+/** A descendant of `parent`, for the file that was given a name of its own. */
+function descend(r, parent, text, mtime) {
+  return r.server.publish({
+    fileId: HIGHER,
+    path: NOTE,
+    bytes: enc(THEIRS + text),
+    mtime,
+    parents: [parent],
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+}
+
 /** This device holds the HIGHER id, so its own note is the one that moves. */
 async function collide(r) {
   r.seed(NOTE, MINE, 2000);
@@ -198,4 +233,73 @@ test("an ordinary native move drops its hold and leaves the copy behind", async 
   assert.deepEqual(r.trashed.map((entry) => entry.path), [NOTE]);
   assert.equal(r.trashed[0].bytes, MINE, "the removal took bytes other than the ones it copied");
   assert.deepEqual(r.hidden(), [], "a hold was left behind by a move that completed");
+});
+
+test("a native settled write records the metadata of the bytes it committed", async (t) => {
+  let armed = false;
+  let injected = false;
+  let copy;
+  const r = await native(t, {
+    afterRename: async (root, from, to) => {
+      // An ordinary in-place editor save: it keeps the INODE, so the writer's
+      // identity proof still holds while the bytes under it are someone
+      // else's. The window is inside the host's own commit.
+      if (!armed || injected || to !== join(root, copy)) return;
+      injected = true;
+      writeFileSync(to, EDIT);
+      utimesSync(to, 9.999, 9.999);
+    },
+  });
+  const settled = await settle(r);
+  copy = settled.copy;
+  armed = true;
+  const second = await descend(r, settled.first.version_id, "SECOND\n", 5000);
+  assert.equal(await applyChange(r.context, second), "applied");
+  assert.ok(injected, "the test never entered the writer's commit");
+  assert.equal(readFileSync(join(r.root, copy), "utf8"), EDIT);
+  const recorded = r.state.fileByPath(copy);
+  assert.notEqual(recorded.mtime, 9999, `the save's metadata was recorded as the version's: ${JSON.stringify(recorded)}`);
+  assert.ok(
+    r.logs.some((line) => line.includes("decision=write_superseded")),
+    `no superseded write in the log: ${JSON.stringify(r.logs)}`,
+  );
+  // And the record's whole point: the NEXT version of that id finds a file
+  // that does not match what this device wrote, so it copies beside rather
+  // than replacing bytes no version holds.
+  const third = await descend(r, second.version_id, "THIRD\n", 6000);
+  const result = await applyChange(r.context, third);
+  assert.ok(
+    r.contents().includes(EDIT),
+    `edit absent from live vault; result=${result}; recorded=${JSON.stringify(recorded)}; live=${JSON.stringify(r.contents())}`,
+  );
+});
+
+test("control: a native settled copy protects a save made after commit returns", async (t) => {
+  const r = await native(t);
+  const settled = await settle(r);
+  const make = r.host.writer.bind(r.host);
+  let injected = false;
+  r.host.writer = async (path) => {
+    const writer = await make(path);
+    return {
+      ...writer,
+      commit: async (mtime) => {
+        const stat = await writer.commit(mtime);
+        // The window round 2 covers: the save lands after the commit has
+        // answered, so the answer is right and the RECORD is what protects
+        // the file.
+        if (path === settled.copy && !injected) {
+          injected = true;
+          r.seed(settled.copy, EDIT, 9999);
+        }
+        return stat;
+      },
+    };
+  };
+  const second = await descend(r, settled.first.version_id, "SECOND\n", 5000);
+  assert.equal(await applyChange(r.context, second), "applied");
+  const third = await descend(r, second.version_id, "THIRD\n", 6000);
+  assert.equal(await applyChange(r.context, third), "conflict_copy");
+  assert.ok(injected);
+  assert.ok(r.contents().includes(EDIT));
 });
