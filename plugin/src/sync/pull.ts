@@ -1084,9 +1084,18 @@ async function copyThrough(
  * name here, and the desktop host reads a whole file by allocating its whole
  * size (`main.ts`). So the copy streams through the host's windowed source in
  * the same 8 MiB windows the push path uses, and a multi-GiB note costs what a
- * note costs (review round 2, finding 4). Mobile has no windowed read and
- * buffers the file once, as it does everywhere else -- that is what the mobile
- * per-file ceiling exists for.
+ * note costs (review round 2, finding 4).
+ *
+ * WHICH IS NO ANSWER AT ALL ON A HOST THAT CANNOT STREAM. Mobile's writer
+ * allocates the declared size in one `Uint8Array` and its source reads the
+ * whole file, so a windowed loop above them still asks for the whole note at
+ * once: a 21-byte incoming version, colliding with a 3 GiB local note, asks
+ * a 512 MiB device for a 3 GiB buffer (round 3, finding 3). Admission has
+ * already weighed the INCOMING size against this device's ceiling and says
+ * nothing about the local file, so the local file is weighed here, before
+ * anything is allocated or read, on exactly the hosts that cannot stream.
+ * Above the ceiling the move is refused and the note is left where it is:
+ * the pair is kept as 1.0.6 kept it, which costs a name and loses nothing.
  */
 async function moveAside(
   context: SyncContext,
@@ -1096,6 +1105,25 @@ async function moveAside(
 ): Promise<string | null> {
   const before = await context.host.stat(from);
   if (before === null) return null;
+  // Before the copy asks for anything: on a host whose writer and source hold
+  // a whole file, the local note must fit this device's own ceiling, because
+  // the copy costs its size in memory however the loop above is written
+  // (round 3, finding 3).
+  if (context.host.supportsRangeReads !== true) {
+    const room = admit(context.state.data.policy, context.state.localBytes(), before.size);
+    if (!room.ok) {
+      context.host.log(
+        `pull path_class=file bytes=${before.size} decision=move_aside_refused ` +
+          `reason=${room.reason} file=${record.fileId}`,
+      );
+      context.host.notify(
+        `obsync left ${from} where it is: copying it to a name of its own would need more memory ` +
+          `than this device allows (${admissionReason(context.state.data.policy, room.reason)}). ` +
+          `Your note is untouched, and the other device's version is beside it.`,
+      );
+      return null;
+    }
+  }
   const changed = async (): Promise<boolean> => {
     const now = await context.host.stat(from);
     return now === null || now.mtime !== before.mtime || now.size !== before.size;
