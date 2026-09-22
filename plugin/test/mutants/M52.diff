@@ -1,0 +1,16 @@
+# M52: a host that cannot bind a removal is asked to move anyway, and copies first
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1116,12 +1116,6 @@
+   // Asked first, because the answer decides whether this move can happen at
+   // all: a device that cannot bind a removal to what it removes settles the
+   // pair by keeping both, and nothing here is written, copied or removed.
+-  if (context.host.bindsRemoval !== true) {
+-    context.host.log(
+-      `pull path_class=file decision=move_aside_refused reason=unheld file=${record.fileId}`,
+-    );
+-    return null;
+-  }
+   const before = await context.host.stat(from);
+   if (before === null) return null;
+   // Before the copy asks for anything: on a host whose writer and source hold

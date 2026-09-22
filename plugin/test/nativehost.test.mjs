@@ -25,7 +25,12 @@
  * than closing it fails one of them.
  *
  * The cases, the injection points and the sentinels are the reviewer's, from
- * the regression attached to receipt 5771502579 on PR #120.
+ * the regression attached to receipt 5771502579 on PR #120, and the coverage
+ * their response (5771836148) asked for: the paths where the host CANNOT
+ * hold the file -- a phone, and a filesystem that refuses a second name --
+ * and a save that replaces the source inode instead of writing into it.
+ * Every removal here is permanent: the vault's "Deleted files" preference is
+ * set to delete, so nothing is recoverable from a bin afterwards.
  */
 
 import { strict as assert } from "node:assert";
@@ -37,7 +42,9 @@ import {
   promises as fsPromises,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -62,8 +69,8 @@ const LOWER = "11".repeat(16);
  * A real vault directory under the real host, wired into the rig's state,
  * server and keys. `hooks` fire INSIDE the host's own filesystem calls.
  */
-async function native(t, hooks = {}) {
-  const r = await rig();
+async function native(t, hooks = {}, { mobile = false } = {}) {
+  const r = await rig({ isMobile: mobile });
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-native-"));
   mkdirSync(join(root, "Notes"));
@@ -76,18 +83,46 @@ async function native(t, hooks = {}) {
   const trashed = [];
   const promises = {
     ...fsPromises,
-    link: async (...args) => {
-      await fsPromises.link(...args);
-      if (hooks.afterLink) await hooks.afterLink(root, ...args);
+    link: async (from, to) => {
+      // The seam for a filesystem that cannot give a second name: the hold
+      // is the only link this path makes for a name of its own.
+      if (hooks.link) await hooks.link(from, to);
+      await fsPromises.link(from, to);
+      if (hooks.afterLink) await hooks.afterLink(root, from, to);
     },
     rename: async (...args) => {
       await fsPromises.rename(...args);
       if (hooks.afterRename) await hooks.afterRename(root, ...args);
     },
   };
+  /** Obsidian's mobile surface: no filesystem, one adapter, one create. */
+  const adapter = {
+    exists: async (path) => existsSync(join(root, path)),
+    mkdir: async (path) => fsPromises.mkdir(join(root, path), { recursive: true }),
+    stat: async (path) => {
+      if (!existsSync(join(root, path))) return null;
+      const found = statSync(join(root, path));
+      return { type: found.isFile() ? "file" : "folder", mtime: Math.round(found.mtimeMs), size: found.size };
+    },
+    readBinary: async (path) => {
+      const bytes = readFileSync(join(root, path));
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+    writeBinary: async (path, data, options) => {
+      writeFileSync(join(root, path), new Uint8Array(data));
+      if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
+    },
+    remove: (path) => fsPromises.unlink(join(root, path)),
+  };
   const vault = {
     getFileByPath: (path) => (existsSync(join(root, path)) ? { path } : null),
-    adapter: { remove: (path) => fsPromises.unlink(join(root, path)) },
+    adapter,
+    createBinary: async (path, data, options) => {
+      writeFileSync(join(root, path), new Uint8Array(data), { flag: "wx" });
+      if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
+      const found = statSync(join(root, path));
+      return { path, stat: { mtime: Math.round(found.mtimeMs), size: found.size } };
+    },
   };
   const plugin = {
     state: r.state,
@@ -95,8 +130,9 @@ async function native(t, hooks = {}) {
     app: {
       vault,
       fileManager: {
-        // The vault's own trash: asynchronous, and doing work of its own
-        // before the file stops existing.
+        // The vault's own trash, with the user's "Deleted files" preference
+        // set to PERMANENT: no bin, no restore, the name and its inode gone
+        // unless something else is holding it.
         trashFile: async (file) => {
           if (hooks.beforeTrash) await hooks.beforeTrash(root, file.path);
           trashed.push({ path: file.path, bytes: readFileSync(join(root, file.path), "utf8") });
@@ -105,10 +141,10 @@ async function native(t, hooks = {}) {
       },
     },
     manifest: { version: "1.0.7" },
-    platformName: () => "linux",
+    platformName: () => (mobile ? "ios" : "linux"),
     deviceName: () => "sentinel-device",
   };
-  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises } });
+  const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises } });
   const notices = [];
   host.notify = (message) => notices.push(message);
   r.context.host = host;
@@ -217,6 +253,10 @@ test("a native move preserves an edit arriving inside the trash operation", asyn
     r.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed_in_trash")),
     `no refusal in the log: ${JSON.stringify(r.logs)}`,
   );
+  assert.ok(
+    r.logs.some((line) => line.includes("host path_class=file decision=kept reason=restored")),
+    `the host did not report the restore: ${JSON.stringify(r.logs)}`,
+  );
   // The move did not happen, so this device keeps its own file id at its own
   // name and the pair is kept as 1.0.6 kept it: a copy beside, nothing gone.
   assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER);
@@ -302,4 +342,131 @@ test("control: a native settled copy protects a save made after commit returns",
   assert.equal(await applyChange(r.context, third), "conflict_copy");
   assert.ok(injected);
   assert.ok(r.contents().includes(EDIT));
+});
+
+/**
+ * A PHONE, where there is no second name to give (round 3, finding 1, as
+ * re-opened by receipt 5771836148).
+ *
+ * The mobile host reaches the vault through Obsidian's adapter and has no
+ * `link`: nothing it can do keeps the file reachable across the vault's own
+ * trash, so it cannot put back a save that lands inside one. It therefore
+ * removes NOTHING. The save below is injected at the boundary the desktop
+ * path protects, and the assertion is that the boundary is never reached:
+ * the note keeps its name and its text, and the pair is kept as 1.0.6 kept
+ * it.
+ */
+test("a mobile host removes nothing, and the note survives the window", async (t) => {
+  let entered = false;
+  const r = await native(
+    t,
+    {
+      beforeTrash: async (root, path) => {
+        entered = true;
+        writeFileSync(join(root, path), EDIT);
+        utimesSync(join(root, path), 9.999, 9.999);
+      },
+    },
+    { mobile: true },
+  );
+  const frame = await collide(r);
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(entered, false, "a device that cannot bind a removal entered the removal anyway");
+  assert.deepEqual(r.trashed, [], "a phone removed a note it could not put back");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), MINE, "the note did not keep its own name");
+  assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
+  assert.ok(
+    r.logs.some((line) => line.includes("decision=move_aside_refused reason=unheld")),
+    `no unheld refusal in the log: ${JSON.stringify(r.logs)}`,
+  );
+  assert.deepEqual(r.hidden(), [], "a hold was left in the vault");
+});
+
+/**
+ * A DESKTOP FILESYSTEM THAT REFUSES THE SECOND NAME. exFAT, some network
+ * mounts and some container filesystems answer `link` with EPERM or EXDEV,
+ * and an adapter can simply not have it. The host cannot tell in advance --
+ * it asks -- and a refusal there is the same answer as a phone's: nothing is
+ * removed, and the save that would have landed inside the removal is still
+ * in the vault under its own name.
+ */
+for (const refusal of ["EPERM", "EXDEV", "unsupported"]) {
+  test(`a hold refused with ${refusal} removes nothing, and the note survives the window`, async (t) => {
+    let entered = false;
+    const r = await native(t, {
+      link: async (from, to) => {
+        // Only the HOLD is refused: the conflict copy's own publication is a
+        // link too, and a filesystem that refused that would refuse the copy
+        // rather than the removal.
+        if (!to.includes(".obsync-hold-")) return;
+        if (refusal === "unsupported") throw new TypeError("fs.promises.link is not a function");
+        const error = new Error(`link ${refusal}`);
+        error.code = refusal;
+        throw error;
+      },
+      beforeTrash: async (root, path) => {
+        entered = true;
+        writeFileSync(join(root, path), EDIT);
+        utimesSync(join(root, path), 9.999, 9.999);
+      },
+    });
+    const frame = await collide(r);
+
+    assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+    assert.equal(entered, false, "the removal ran without a hold behind it");
+    assert.deepEqual(r.trashed, [], "a note was removed with no way to put it back");
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), MINE);
+    assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
+    assert.ok(
+      r.logs.some((line) => line.includes("host path_class=file decision=kept reason=unheld")),
+      `the host did not report the unheld removal: ${JSON.stringify(r.logs)}`,
+    );
+    assert.deepEqual(r.hidden(), [], "a hold was left in the vault");
+  });
+}
+
+/**
+ * A SAVE THAT REPLACES THE FILE rather than writing into it.
+ *
+ * Editors save either way. An in-place save keeps the inode, and the hold
+ * sees it (above). A write-temp-then-rename save leaves a DIFFERENT file at
+ * the name, whose bytes the hold does not have and no version holds either:
+ * preserving "the held inode" would be preserving the wrong thing, and the
+ * removal would take a note that exists nowhere else. So the name is
+ * re-identified against the hold immediately before the removal -- same
+ * device, same inode -- and a replacement keeps everything where it is.
+ */
+test("a save that replaces the source between the hold and the removal is preserved", async (t) => {
+  let replaced = false;
+  const r = await native(t, {
+    afterLink: async (root, from, to) => {
+      if (!to.includes(".obsync-hold-") || replaced) return;
+      replaced = true;
+      // The editor's own save: a temp file, then a rename over the note.
+      const temp = join(root, "Notes", ".editor-save.tmp");
+      writeFileSync(temp, EDIT);
+      utimesSync(temp, 9.999, 9.999);
+      renameSync(temp, join(root, NOTE));
+    },
+  });
+  const frame = await collide(r);
+
+  const result = await applyChange(r.context, frame);
+
+  assert.ok(replaced, "the test never reached the window it exists for");
+  assert.equal(
+    readFileSync(join(r.root, NOTE), "utf8"),
+    EDIT,
+    `the replacing save was removed; result=${result}; live=${JSON.stringify(r.contents())}`,
+  );
+  assert.deepEqual(r.trashed, [], "the removal took a file the hold did not have");
+  assert.ok(
+    r.logs.some((line) => line.includes("host path_class=file decision=kept reason=source_replaced")),
+    `the host did not report the replacement: ${JSON.stringify(r.logs)}`,
+  );
+  assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
+  assert.deepEqual(r.hidden(), [], "the hold was left in the vault");
 });

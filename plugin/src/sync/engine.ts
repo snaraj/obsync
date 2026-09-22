@@ -66,9 +66,14 @@ export interface VaultStat {
  *
  * `kept` means the file is STILL THERE: it no longer held the content the
  * caller bound the removal to, so what it holds now is bytes this device has
- * not copied anywhere and nothing threw them away (round 3, finding 1).
+ * not copied anywhere and nothing threw them away.
+ *
+ * `unheld` means NOTHING WAS REMOVED, because this host could not promise to
+ * preserve a save that landed inside the removal. A narrowed window is not a
+ * closed one, and a removal this device cannot undo is not made at all: the
+ * caller keeps both files instead (round 3, finding 1, re-opened).
  */
-export type TrashResult = "removed" | "kept";
+export type TrashResult = "removed" | "kept" | "unheld";
 
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
@@ -82,6 +87,15 @@ export interface VaultHost {
   readonly isMobile: boolean;
   /** True only when source() can read a range without buffering the entire file. */
   readonly supportsRangeReads?: boolean;
+  /**
+   * True only when a removal can be BOUND to the content it removes -- that
+   * is, when this host can keep the file reachable across the vault's own
+   * asynchronous trash and put it back if a save landed inside it. A caller
+   * whose removal must not lose a save asks this BEFORE it does the work
+   * that leads to one: a host that answers otherwise is never asked to
+   * remove anything, and the caller takes its non-destructive path instead.
+   */
+  readonly bindsRemoval?: boolean;
   readonly platform: string;
   readonly appVersion: string;
   readonly deviceName: string;
@@ -106,10 +120,11 @@ export interface VaultHost {
    * before the file goes (`main.ts`), so a save landing inside that window is
    * invisible to every check the caller can make beforehand -- including a
    * stat taken on the line above the call. A host that can keep the file
-   * reachable across the removal puts it back and answers `kept`; one that
-   * cannot narrows the window to its last instant, says so in the log, and
-   * answers as best it can. Without `expect` the removal is unconditional,
-   * which is what a remote tombstone means.
+   * reachable across the removal removes it, puts it back if what it took
+   * had changed, and answers `removed` or `kept`. A host that CANNOT --
+   * because it has no second name to give, or because the filesystem refused
+   * one -- removes nothing at all and answers `unheld`. Without `expect` the
+   * removal is unconditional, which is what a remote tombstone means.
    */
   trash(path: string, expect?: VaultStat): Promise<TrashResult>;
   notify(message: string): void;

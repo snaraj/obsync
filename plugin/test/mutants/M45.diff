@@ -1,15 +1,12 @@
-# M45: the removal is never bound to the content it was told to remove (no hold is taken)
+# M45: no hold is ever taken, so no move is ever completed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -703,10 +703,7 @@
-       // Nothing here to remove, and so nothing here to preserve either.
-       if (found.final === "absent") return "removed";
-     }
--    const hold =
--      expect === undefined || desktop === null || found === null
--        ? null
--        : await this.hold(desktop, found);
+@@ -752,7 +752,7 @@
+     // name to give, and a filesystem can refuse one; either way the file
+     // stays exactly where it is and the caller keeps both (round 3,
+     // finding 1). A narrowed window is not a closed one.
+-    const hold = desktop === null || found === null ? null : await this.hold(desktop, found);
 +    const hold: string | null = null;
-     if (expect !== undefined && hold === null) {
-       const now = await this.stat(path);
-       if (now === null || now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
+     if (hold === null || desktop === null || found === null) {
+       this.log("host path_class=file decision=kept reason=unheld");
+       return "unheld";

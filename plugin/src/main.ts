@@ -297,6 +297,16 @@ export class ObsidianHost implements VaultHost {
     return this.desktop !== null;
   }
 
+  /**
+   * Can a removal be BOUND to what it removes here? Only where a second name
+   * for the same file can be made, which is the desktop filesystem. A caller
+   * that must not lose a save asks this before it starts, so a device that
+   * cannot promise it is never asked to remove anything (`trash`).
+   */
+  get bindsRemoval(): boolean {
+    return this.desktop !== null;
+  }
+
   get platform(): string {
     return this.plugin.platformName();
   }
@@ -733,50 +743,132 @@ export class ObsidianHost implements VaultHost {
       // Nothing here to remove, and so nothing here to preserve either.
       if (found.final === "absent") return "removed";
     }
-    const hold =
-      expect === undefined || desktop === null || found === null
-        ? null
-        : await this.hold(desktop, found);
-    if (expect !== undefined && hold === null) {
-      const now = await this.stat(path);
-      if (now === null || now.mtime !== expect.mtime || now.size !== expect.size) return "kept";
-      this.log("host path_class=file decision=trash_unheld");
+    if (expect === undefined) {
+      await this.remove(path);
+      if (desktop !== null && found !== null) await this.proveRemoved(desktop, found);
+      return "removed";
     }
-    // `FileManager.trashFile` honours the user's own "Deleted files"
-    // preference -- system bin, the vault's `.trash`, or permanent -- where
-    // `Vault.trash(file, true)` overrode it with the system bin. The file
-    // lookup is file-only on purpose: a folder standing where a remote
-    // manifest names a file must never be deleted with its contents.
+    // A removal this device cannot undo is not made. Mobile has no second
+    // name to give, and a filesystem can refuse one; either way the file
+    // stays exactly where it is and the caller keeps both (round 3,
+    // finding 1). A narrowed window is not a closed one.
+    const hold = desktop === null || found === null ? null : await this.hold(desktop, found);
+    if (hold === null || desktop === null || found === null) {
+      this.log("host path_class=file decision=kept reason=unheld");
+      return "unheld";
+    }
+    return await this.removeHeld(desktop, found, hold, expect, path);
+  }
+
+  /**
+   * The vault's own removal. `FileManager.trashFile` honours the user's own
+   * "Deleted files" preference -- system bin, the vault's `.trash`, or
+   * permanent deletion -- where `Vault.trash(file, true)` overrode it with
+   * the system bin. The file lookup is file-only on purpose: a folder
+   * standing where a remote manifest names a file must never be deleted with
+   * its contents.
+   */
+  private async remove(path: string): Promise<void> {
     const file = this.plugin.app.vault.getFileByPath(path);
     if (file) {
       await this.plugin.app.fileManager.trashFile(file);
     } else {
       await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
     }
-    if (desktop === null || found === null) return "removed";
+  }
+
+  /** The removal went where it was aimed: the chain held and the file is gone. */
+  private async proveRemoved(desktop: DesktopVault, found: WalkResult): Promise<void> {
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    if (sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
+      throw new VaultPathError("target_identity");
+    }
+  }
+
+  /**
+   * The bound removal, in three checks around one destructive call.
+   *
+   * BEFORE: the name must still MEAN the file we hold -- same device, same
+   * inode -- and that file must still hold the content the caller copied. An
+   * editor that saves by writing a temp file and renaming it over the note
+   * leaves a DIFFERENT file at the name, whose bytes the hold does not have
+   * and no version holds either; removing that is the same loss by another
+   * route. Either mismatch keeps the file and removes nothing.
+   *
+   * DURING: the hold keeps the inode alive whatever the vault does with the
+   * name -- system bin, `.trash`, or permanent deletion, which is only an
+   * unlink of the name we are not holding.
+   *
+   * AFTER: the hold is the source of truth. It is the same inode the removal
+   * took, so a save that landed inside the removal is readable through it; a
+   * hold whose metadata no longer matches what was copied is linked BACK
+   * under the vault name, and the answer is `kept`.
+   */
+  private async removeHeld(
+    desktop: DesktopVault,
+    found: WalkResult,
+    hold: string,
+    expect: VaultStat,
+    path: string,
+  ): Promise<TrashResult> {
+    const fs = desktop.fs;
+    const drop = async (): Promise<void> => {
+      await fs.promises.unlink(hold).catch(() => undefined);
+    };
+    const held = await walker(fs).lstat(hold);
+    const before = await walker(fs).lstat(found.target);
+    const holds = (stat: PathStat | null): boolean =>
+      stat !== null && Math.round(stat.mtimeMs) === expect.mtime && stat.size === expect.size;
+    if (held === null || !sameFile(held, before) || !holds(before)) {
+      this.log(
+        `host path_class=file decision=kept reason=${sameFile(held, before) ? "source_changed" : "source_replaced"}`,
+      );
+      await drop();
+      return "kept";
+    }
+    await this.remove(path);
+    const refusal = await chainRefusal(found.chain, walker(fs));
     if (refusal !== null) {
       // The hold is deliberately LEFT here: putting a file back through a
       // chain that was swapped under us is how a restore writes outside the
       // vault. The bytes are on disk; the name they are under is not.
-      if (hold !== null) this.log("host path_class=file decision=restore_failed reason=chain");
+      this.log("host path_class=file decision=restore_failed reason=chain");
       throw new VaultPathError(refusal);
     }
-    const verdict =
-      hold === null ? "removed" : await this.settle(desktop, found.target, hold, expect as VaultStat);
-    if (verdict === "removed" && sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
-      throw new VaultPathError("target_identity");
+    const after = await walker(fs).lstat(hold);
+    if (after === null) {
+      // Our own name for it is gone as well: there is nothing to put back,
+      // and nothing this device can honestly say about what was removed.
+      this.log("host path_class=file decision=restore_failed reason=hold_gone");
+      return "removed";
     }
-    return verdict;
+    if (holds(after)) {
+      await drop();
+      await this.proveRemoved(desktop, found);
+      return "removed";
+    }
+    try {
+      // Create-only again: whatever stands at that name now is not ours to
+      // replace, and the bytes stay under the hold when it does.
+      await fs.promises.link(hold, found.target);
+    } catch {
+      this.log("host path_class=file decision=restore_failed reason=name_taken");
+      return "kept";
+    }
+    await drop();
+    this.log("host path_class=file decision=kept reason=restored");
+    return "kept";
   }
 
   /**
    * A second NAME for the file about to be removed, beside it in its own
    * directory, so the inode outlives the removal and a save made into it
-   * stays readable. `link` is the only primitive that gives one without
-   * following a link or replacing anything. A filesystem that refuses it --
-   * and every mobile device, which never reaches here -- leaves the window
-   * open rather than leaving the file unprotected, and says so.
+   * stays readable afterwards. `link` is the only primitive that gives one
+   * without following a link and without replacing anything. A filesystem
+   * that refuses it -- exFAT, some network mounts, a container that forbids
+   * it -- gets no removal at all: `null` here is the whole answer, and the
+   * caller keeps both files instead.
    */
   private async hold(desktop: DesktopVault, found: WalkResult): Promise<string | null> {
     const parent = found.target.slice(0, found.target.lastIndexOf(desktop.path.sep));
@@ -785,52 +877,8 @@ export class ObsidianHost implements VaultHost {
       await desktop.fs.promises.link(found.target, hold);
       return hold;
     } catch {
-      this.log("host path_class=file decision=trash_unheld");
       return null;
     }
-  }
-
-  /**
-   * The hold, after the removal: is this still the content the caller copied?
-   *
-   * Metadata is the test the whole sync path uses for "has this file moved
-   * on", and it is asked here of the INODE rather than of a name, so nothing
-   * can have been swapped underneath the answer. Unchanged means the removal
-   * took what it was meant to take, and the hold is dropped. Changed means a
-   * save landed inside the removal, and the file goes back under its own name
-   * with those bytes in it.
-   */
-  private async settle(
-    desktop: DesktopVault,
-    target: string,
-    hold: string,
-    expect: VaultStat,
-  ): Promise<TrashResult> {
-    const fs = desktop.fs;
-    const drop = async (): Promise<void> => {
-      await fs.promises.unlink(hold).catch(() => undefined);
-    };
-    const after = await walker(fs).lstat(hold);
-    if (after === null) {
-      // Our own name for it is gone as well: there is nothing to put back,
-      // and nothing this device can honestly say about what was removed.
-      this.log("host path_class=file decision=restore_failed reason=hold_gone");
-      return "removed";
-    }
-    if (Math.round(after.mtimeMs) === expect.mtime && after.size === expect.size) {
-      await drop();
-      return "removed";
-    }
-    try {
-      // Create-only again: whatever stands at that name now is not ours to
-      // replace, and the bytes stay under the hold when it does.
-      await fs.promises.link(hold, target);
-    } catch {
-      this.log("host path_class=file decision=restore_failed reason=name_taken");
-      return "kept";
-    }
-    await drop();
-    return "kept";
   }
 
   notify(message: string): void {

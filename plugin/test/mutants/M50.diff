@@ -1,0 +1,15 @@
+# M50: the name is not re-identified against the hold before the removal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -820,10 +820,7 @@
+     const before = await walker(fs).lstat(found.target);
+     const holds = (stat: PathStat | null): boolean =>
+       stat !== null && Math.round(stat.mtimeMs) === expect.mtime && stat.size === expect.size;
+-    if (held === null || !sameFile(held, before) || !holds(before)) {
+-      this.log(
+-        `host path_class=file decision=kept reason=${sameFile(held, before) ? "source_changed" : "source_replaced"}`,
+-      );
++    if (held === null) {
+       await drop();
+       return "kept";
+     }
