@@ -1041,3 +1041,56 @@ test("widening to the whole vault brings in everything the server holds", async 
     a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
   );
 });
+
+/**
+ * WHAT THE REPLAY MEETS: a note this device has not published.
+ *
+ * Rewinding to zero hands the pull path the whole history at once, against a
+ * vault the user has gone on editing -- inside the newly covered folder,
+ * which nothing here was watching, and inside the folders that were already
+ * synced. Every one of those edits exists on this device and nowhere else,
+ * so the replay must treat them exactly as a concurrent edit is treated:
+ * keep them, and let the push carry them. The sentinel is unique, so the
+ * assertion is "these bytes are still in this vault", whatever name they
+ * ended up under.
+ */
+const LOCAL_ONLY = "DESKTOP UNPUBLISHED SENTINEL, present nowhere else\n";
+const holds = (device, text) =>
+  [...device.host.files.keys()].some((path) => device.host.text(path) === text);
+const vaultNames = (device) => JSON.stringify([...device.host.files.keys()].sort());
+
+test("a widening keeps a note the newly covered folder held and the server also has", async (t) => {
+  const rig = await widening(t);
+  const { timers, a, b } = rig;
+  b.host.write("Work/Shared.md", "PHONE VERSION\n", 2000);
+  await timers.run(STEP_MS, () => settled(b, "Work/Shared.md"));
+  // Seeded, not written: this folder was outside the selection, so nothing
+  // on this device was watching the note the user wrote there.
+  a.host.seed("Work/Shared.md", LOCAL_ONLY, 3000);
+
+  await save(rig, ["Notes", "Work"]);
+  await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" &&
+    settled(a, "Work/Shared.md") && holds(a, "PHONE VERSION\n"));
+
+  assert.ok(holds(a, LOCAL_ONLY), `the unpublished note is gone: ${vaultNames(a)}`);
+  assert.ok(holds(a, "PHONE VERSION\n"), `the phone's note never arrived: ${vaultNames(a)}`);
+});
+
+for (const placement of ["before the widening", "between the rewind and the first frame"]) {
+  test(`an edit made ${placement} survives the replay of a folder already synced`, async (t) => {
+    const rig = await widening(t);
+    const { timers, a } = rig;
+    const edit = () => a.host.seed("Notes/In.md", LOCAL_ONLY, 6000);
+    if (placement === "before the widening") edit();
+    else {
+      const start = a.plugin.startEngine;
+      a.plugin.startEngine = async () => { edit(); await start(); };
+    }
+
+    await save(rig, ["Notes", "Work"]);
+    await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n");
+
+    assert.ok(holds(a, LOCAL_ONLY), `the edit is gone: ${vaultNames(a)}`);
+  });
+}
+

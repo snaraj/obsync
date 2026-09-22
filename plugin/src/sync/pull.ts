@@ -451,6 +451,20 @@ async function competing(
   return null;
 }
 
+/**
+ * A deletion this device declined to apply, said once per file. The note is
+ * still there and still the user's, and the next push carries it back to the
+ * other devices, so the message says what happened rather than what failed.
+ */
+function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string): void {
+  if (context.refused.has(change.file_id)) return;
+  context.refused.add(change.file_id);
+  context.host.notify(
+    `obsync did not delete ${path}: it holds changes this device has not uploaded yet. ` +
+      `Another device deleted that note; this copy is kept here and is uploaded as a new version.`,
+  );
+}
+
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   const manifest = await decryptRecordManifest(context, change);
   const localPath = context.state.pathByFileId(change.file_id);
@@ -461,12 +475,84 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
 
   if (manifest.deleted) {
     if (localPath !== undefined) {
+      // THE HALF THE SERVER CANNOT SEE, one branch over (issue #98). A
+      // deletion is the change that leaves nothing behind, and the file at
+      // this path may hold bytes no version holds: typed while Obsidian was
+      // closed, or while this folder was outside the selection -- which a
+      // widening replays the whole feed against, tombstones included. The
+      // server's frame says the file was deleted THERE; it says nothing
+      // about what this device has written here since. Delete-versus-edit
+      // keeps BOTH sides (`docs/architecture.md`, section 4), so the file is
+      // proved against the record before anything is removed, and the record
+      // is left in place so the push republishes those bytes as a version of
+      // their own.
+      //
+      // And the graph is asked first, exactly as it is for a version that is
+      // not this device's child: a tombstone whose parents do not include the
+      // version this device holds is one side of a FORK, not an instruction.
+      // A widening replays the feed from zero, so a deletion this device
+      // already applied -- or one another device made before this device
+      // published the edit that came after it -- arrives again, years of
+      // journal later, against a file that has moved on.
+      if (local !== undefined && local.versionId !== "" && !change.parents.includes(local.versionId)) {
+        const file = await context.transport.getFile(change.file_id);
+        if (reaches(file.versions, local.versionId, change.version_id)) {
+          context.host.log(
+            `pull path_class=tombstone decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,
+          );
+          return "skipped";
+        }
+        if (!reaches(file.versions, change.version_id, local.versionId)) {
+          context.host.log(
+            `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
+          );
+          notifyKeptDeletion(context, change, localPath);
+          return "skipped";
+        }
+      }
+      const held = await competing(context, localPath, change.file_id);
+      if (held !== null) {
+        context.host.log(
+          `pull path_class=tombstone decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
+        );
+        notifyKeptDeletion(context, change, localPath);
+        return "skipped";
+      }
       // Marked BEFORE the trash, not after: Obsidian reports the removal to
       // this plugin's own delete handler while `trash` is still running, and
       // an unmarked echo becomes a tombstone this device publishes for a file
       // the remote side already owns (`engine.ts`, ECHOES; issue #96).
       context.trashed.add(localPath);
-      await context.host.trash(localPath);
+      // And the removal names the bytes it removes, on a host that can bind
+      // one: the check above is a stat, and a save landing between it and
+      // the deletion is exactly what the bound removal exists for.
+      const verdict = await context.host.trash(
+        localPath,
+        context.host.bindsRemoval === true && local !== undefined
+          ? { path: localPath, mtime: local.mtime, size: local.size }
+          : undefined,
+      );
+      if (verdict === "kept") {
+        // The host found other bytes there and left them. Nothing was
+        // removed, so no delete event is owed and the record stays: the push
+        // carries what is on the disk.
+        context.trashed.delete(localPath);
+        context.host.log(
+          `pull path_class=tombstone decision=local_edit_kept reason=source_changed_in_trash file=${change.file_id} seq=${change.seq}`,
+        );
+        return "skipped";
+      }
+      if (verdict === "unheld") {
+        // The host cannot bind a removal after all -- a filesystem that
+        // refuses `link`, or refuses the atomic move. Refusing here would
+        // drop this deletion for good, because the feed advances past it, so
+        // the device falls back to the unbound removal and the stat above is
+        // what it could prove. That residual is named in the changelog.
+        context.host.log(
+          `pull path_class=tombstone decision=deleted reason=unheld file=${change.file_id} seq=${change.seq}`,
+        );
+        await context.host.trash(localPath);
+      }
       context.state.forgetPath(localPath);
       await context.state.save();
       context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}`);
@@ -549,9 +635,29 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   if (localPath !== undefined && localPath !== manifest.path) {
     // The move's delete half. The same echo, and the one that cost a renamed
     // note on every device before 1.0.4: here the file is not deleted at all,
-    // it is the SAME file id, alive at `manifest.path`.
+    // it is the SAME file id, alive at `manifest.path`. The source was proved
+    // against its record above, and the removal names those bytes too, so a
+    // save landing between the two is kept rather than taken.
     context.trashed.add(localPath);
-    await context.host.trash(localPath);
+    const verdict = await context.host.trash(
+      localPath,
+      context.host.bindsRemoval === true && local !== undefined
+        ? { path: localPath, mtime: local.mtime, size: local.size }
+        : undefined,
+    );
+    if (verdict === "kept") {
+      // Those bytes are in no version: they stay under the old name as local
+      // content, and the scan publishes them as a file of their own.
+      context.trashed.delete(localPath);
+      context.host.log(
+        `pull path_class=file decision=local_edit_kept reason=source_changed_in_trash file=${change.file_id} seq=${change.seq}`,
+      );
+    } else if (verdict === "unheld") {
+      // A host that cannot bind one removes the old name the way every
+      // device did before 1.0.7, rather than leaving a renamed note under
+      // two names for good.
+      await context.host.trash(localPath);
+    }
     context.state.forgetPath(localPath);
   }
   await recordAt(context, change, manifest.path, landed);
