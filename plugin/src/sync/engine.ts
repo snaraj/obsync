@@ -689,8 +689,15 @@ export class SyncEngine {
       if (this.deletions.has(path)) {
         this.deletions.delete(path);
         const outcome = await pushDelete(context, path);
-        if (outcome) context.authored.add(outcome.versionId);
-        return;
+        if (outcome !== null) {
+          context.authored.add(outcome.versionId);
+          return;
+        }
+        // No tombstone was posted: either nothing was recorded to delete, or
+        // the file is there after all and `pushDelete` refused to say it was
+        // gone. A file that is there is a change, which is the rest of this
+        // function; a path with nothing at it and nothing recorded is done.
+        if ((await context.host.stat(path)) === null) return;
       }
       const outcome = await pushFile(context, path, this.renames.delete(path));
       if (outcome.status === "unchanged") return;

@@ -1,0 +1,12 @@
+# M49: a refused deletion is dropped instead of published as the change it is
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -697,7 +697,7 @@
+         // the file is there after all and `pushDelete` refused to say it was
+         // gone. A file that is there is a change, which is the rest of this
+         // function; a path with nothing at it and nothing recorded is done.
+-        if ((await context.host.stat(path)) === null) return;
++        return;
+       }
+       const outcome = await pushFile(context, path, this.renames.delete(path));
+       if (outcome.status === "unchanged") return;

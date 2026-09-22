@@ -497,6 +497,10 @@ test("what an honest device posts is exactly what its manifest says", async () =
   context.state.setFile("Notes/Renamed.md", context.state.fileByPath("Notes/Ideas.md"));
   context.state.forgetPath("Notes/Ideas.md");
   await pushFile(context, "Notes/Renamed.md", true);
+  // Gone from the vault before its tombstone is posted, which is the only
+  // state a device ever posts one from: `pushDelete` asks the vault one last
+  // time and refuses to say a file is deleted while it is on the disk.
+  host.files.delete("gone.md");
   await pushDelete(context, "gone.md");
 
   assert.ok(server.journal.length >= 6, `every push landed a version: ${server.journal.length}`);

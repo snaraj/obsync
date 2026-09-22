@@ -6,7 +6,7 @@ line, and this record is the output of one command:
 
     sh plugin/test/mutants/matrix.sh
 
-run over the sources this commit leaves in the tree, 514 tests, against the
+run over the sources this commit leaves in the tree, 516 tests, against the
 pinned TypeScript 5.9.3. One mutant can be re-measured on its own:
 
     sh plugin/test/mutants/run.sh plugin/test/mutants/M12.diff
@@ -18,53 +18,55 @@ than mutating something it was never written for.
 
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
-| M01 | the tie-break comparison reversed | 24/514 |
-| M02 | the tie-break always keeps the name | 9/514 |
-| M03 | the tie-break always renames | 16/514 |
-| M04 | a name this device already settled is ignored | 7/514 |
-| M05 | a settled occupant is written over unchecked | 5/514 |
-| M06 | keep-and-record records no copy | 12/514 |
-| M07 | the moved file's delete is left unmarked | 3/514 |
-| M08 | the moved file's record is left clean | 4/514 |
-| M09 | no free name reports the move as done | 1/514 |
-| M10 | an unidentified file is never settled | 3/514 |
-| M11 | the source of a move is never checked for a local edit | 1/514 |
-| M12 | adoption takes any occupant of the length | 2/514 |
-| M13 | identify believes any publish outcome | 1/514 |
-| M14 | a failed publish reports success | 1/514 |
-| M15 | one path pushed twice at once | 4/514 |
-| M16 | the source is not re-stat-ed before the trash | 1/514 |
-| M17 | the refusal is logged and the move reported as done | 2/514 |
-| M18 | the move reads the whole file again | 2/514 |
-| M19 | the copy window is the rest of the file | 1/514 |
-| M20 | a copy that failed under a moving source is raised, not refused | 1/514 |
-| M21 | the fake's create-only writer accepts a short copy | 1/514 |
-| M22 | the digest proof is bound to a fresh stat | 2/514 |
-| M23 | recordAt stats the file itself | 4/514 |
-| M24 | the settled write records a fresh stat | 3/514 |
-| M25 | the joined request is dropped, as before | 1/514 |
-| M26 | the follow-up is remembered and never queued | 1/514 |
-| M27 | the record is never saved | 1/514 |
+| M01 | the tie-break comparison reversed | 24/516 |
+| M02 | the tie-break always keeps the name | 9/516 |
+| M03 | the tie-break always renames | 16/516 |
+| M04 | a name this device already settled is ignored | 7/516 |
+| M05 | a settled occupant is written over unchecked | 5/516 |
+| M06 | keep-and-record records no copy | 12/516 |
+| M07 | the moved file's delete is left unmarked | 2/516 |
+| M08 | the moved file's record is left clean | 4/516 |
+| M09 | no free name reports the move as done | 1/516 |
+| M10 | an unidentified file is never settled | 3/516 |
+| M11 | the source of a move is never checked for a local edit | 1/516 |
+| M12 | adoption takes any occupant of the length | 2/516 |
+| M13 | identify believes any publish outcome | 1/516 |
+| M14 | a failed publish reports success | 1/516 |
+| M15 | one path pushed twice at once | 3/516 |
+| M16 | the source is not re-stat-ed before the trash | 1/516 |
+| M17 | the refusal is logged and the move reported as done | 2/516 |
+| M18 | the move reads the whole file again | 2/516 |
+| M19 | the copy window is the rest of the file | 1/516 |
+| M20 | a copy that failed under a moving source is raised, not refused | 1/516 |
+| M21 | the fake's create-only writer accepts a short copy | 1/516 |
+| M22 | the digest proof is bound to a fresh stat | 2/516 |
+| M23 | recordAt stats the file itself | 4/516 |
+| M24 | the settled write records a fresh stat | 3/516 |
+| M25 | the joined request is dropped, as before | 1/516 |
+| M26 | the follow-up is remembered and never queued | 1/516 |
+| M27 | the record is never saved | 1/516 |
 | M28 | any held answer enters the rule, not only one about the destination | survives, see below |
-| M29 | the id the server answers with is ignored | 3/514 |
-| M30 | a post never offers the version the server already holds | 3/514 |
-| M31 | a rename offers itself for deduplication | 1/514 |
-| M32 | the domain map offers itself for deduplication | 1/514 |
-| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/514 |
-| M34 | 121: sync now never drains again for work queued behind it | 1/514 |
-| M35 | 121: sync now always reports that it joined a running drain | 1/514 |
-| M36 | 56: the in-flight byte ceiling admits anything | 1/514 |
-| M37 | 56: a chunk already in flight is uploaded a second time | 1/514 |
-| M38 | 56: the probe always answers that the body never landed | 1/514 |
-| M39 | 56: the 409 retry re-uploads every chunk again | 1/514 |
-| M40 | 91: a renamed folder does not take the selection with it | 5/514 |
-| M41 | 91: a file leaving the selection is published as a deletion | 3/514 |
-| M42 | 91: both sides of the move are judged by the selection after it | 3/514 |
-| M43 | 91: the followed selection is never persisted | 1/514 |
-| M44 | 92: every scope change replays from zero, narrowing included | 1/514 |
-| M45 | the removal is never bound to the content it was told to remove (no hold is taken) | 1/514 |
-| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/514 |
-| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/514 |
+| M29 | the id the server answers with is ignored | 4/516 |
+| M30 | a post never offers the version the server already holds | 3/516 |
+| M31 | a rename offers itself for deduplication | 1/516 |
+| M32 | the domain map offers itself for deduplication | 1/516 |
+| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/516 |
+| M34 | 121: sync now never drains again for work queued behind it | 1/516 |
+| M35 | 121: sync now always reports that it joined a running drain | 1/516 |
+| M36 | 56: the in-flight byte ceiling admits anything | 1/516 |
+| M37 | 56: a chunk already in flight is uploaded a second time | 1/516 |
+| M38 | 56: the probe always answers that the body never landed | 1/516 |
+| M39 | 56: the 409 retry re-uploads every chunk again | 1/516 |
+| M40 | 91: a renamed folder does not take the selection with it | 5/516 |
+| M41 | 91: a file leaving the selection is published as a deletion | 3/516 |
+| M42 | 91: both sides of the move are judged by the selection after it | 3/516 |
+| M43 | 91: the followed selection is never persisted | 1/516 |
+| M44 | 92: every scope change replays from zero, narrowing included | 1/516 |
+| M45 | the removal is never bound to the content it was told to remove (no hold is taken) | 1/516 |
+| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/516 |
+| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/516 |
+| M48 | a tombstone is posted without asking whether the file is still there | 2/516 |
+| M49 | a refused deletion is dropped instead of published as the change it is | 1/516 |
 
 ## Which tests killed each mutant
 
@@ -163,13 +165,12 @@ than mutating something it was never written for.
 
 - the holder of the higher id moves its own note aside and yields the path
 - a note far larger than memory is moved aside a window at a time
-- two devices that name one note twice converge, and stay converged
 - NOT A DETERMINISTIC COUNT. The number above is this run's; across the runs
   at this head the kill set of this mutant moved by one test, always one of the
   two-device or offline rigs -- two engines on one virtual clock, or a device
   that starts with work already queued, resolve their collision in an order
   this mutant lets decide the outcome. That is a property of the mutant, not of
-  the suite: the pristine suite passed 514/514 in every run of the campaign. The
+  the suite: the pristine suite passed 516/516 in every run of the campaign. The
   floor is what every run reproduced: for M07 the higher-id move aside and the
   multi-GiB move, for M10 both unpublished-note tests, and for M15 the offline
   same-path survival, the edit that raced the push, and the two-engine
@@ -196,7 +197,7 @@ than mutating something it was never written for.
   two-device or offline rigs -- two engines on one virtual clock, or a device
   that starts with work already queued, resolve their collision in an order
   this mutant lets decide the outcome. That is a property of the mutant, not of
-  the suite: the pristine suite passed 514/514 in every run of the campaign. The
+  the suite: the pristine suite passed 516/516 in every run of the campaign. The
   floor is what every run reproduced: for M07 the higher-id move aside and the
   multi-GiB move, for M10 both unpublished-note tests, and for M15 the offline
   same-path survival, the edit that raced the push, and the two-engine
@@ -222,7 +223,6 @@ than mutating something it was never written for.
 **M15** - one path pushed twice at once
 
 - a note written while this device was closed survives one the other device made at the same path
-- a note the queue is already pushing is not published a second time
 - an edit made while a note is being pushed is not left behind
 - two devices that name one note twice converge, and stay converged
 - NOT A DETERMINISTIC COUNT. The number above is this run's; across the runs
@@ -230,7 +230,7 @@ than mutating something it was never written for.
   two-device or offline rigs -- two engines on one virtual clock, or a device
   that starts with work already queued, resolve their collision in an order
   this mutant lets decide the outcome. That is a property of the mutant, not of
-  the suite: the pristine suite passed 514/514 in every run of the campaign. The
+  the suite: the pristine suite passed 516/516 in every run of the campaign. The
   floor is what every run reproduced: for M07 the higher-id move aside and the
   multi-GiB move, for M10 both unpublished-note tests, and for M15 the offline
   same-path survival, the edit that raced the push, and the two-engine
@@ -310,6 +310,7 @@ than mutating something it was never written for.
 - a post the server already holds is recorded under the id it answers with
 - a publish under an adopted file id that dedupes is adoption, and renames nothing
 - two engines that merge one note identically end on ONE version
+- two devices resolving one concurrent edit settle instead of looping
 
 **M30** - a post never offers the version the server already holds
 
@@ -393,3 +394,12 @@ than mutating something it was never written for.
 **M47** - the local-copy bound is applied to the streaming host instead of the one that buffers
 
 - a local note past this device's ceiling is left where it is
+
+**M48** - a tombstone is posted without asking whether the file is still there
+
+- a file the pull writes while the scan is listing is not published as a tombstone
+- a deletion refused because the file came back is published as the change it is
+
+**M49** - a refused deletion is dropped instead of published as the change it is
+
+- a deletion refused because the file came back is published as the change it is

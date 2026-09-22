@@ -216,11 +216,32 @@ export async function pushFile(context: SyncContext, path: string, force = false
   return { status: "pushed", fileId, versionId: ack.versionId, ack: ack.ack };
 }
 
-/** Post a tombstone: a version with `deleted:true` and no sids. */
+/**
+ * Post a tombstone: a version with `deleted:true` and no sids.
+ *
+ * AND ONLY FOR A FILE THAT IS REALLY GONE. A tombstone deletes the file on
+ * EVERY device, and both things that queue one speak from a moment that has
+ * already passed: a vault delete event, and the startup scan, which infers a
+ * deletion from a LISTING it took before it walked the state (`engine.ts`).
+ * A version arriving from another device is written and recorded inside that
+ * gap, so its path is in the record and not in the listing, and the file the
+ * inference names is sitting on the disk -- where this would delete it,
+ * everywhere, and drop the record that says what it was. So the file is asked
+ * for once more, here, at the moment the decision is actually made, and a
+ * file that is there is not a deletion. The caller publishes it as the change
+ * it is.
+ */
 export async function pushDelete(context: SyncContext, path: string): Promise<PushOutcome | null> {
   assertVaultPath(path);
+  // Before any I/O, as `pushFile` does it: a path this device does not sync
+  // is refused without the vault being touched at all (`scope.test.mjs`).
+  assertSyncPath(path, context.state.data.syncFolders);
   const record = context.state.fileByPath(path);
   if (!record) return null;
+  if ((await context.host.stat(path)) !== null) {
+    context.host.log("push path_class=tombstone decision=refused reason=file_present");
+    return null;
+  }
   const manifest: Manifest = {
     v: 1,
     path,

@@ -79,6 +79,17 @@ lost.
 
 ### Also in this release
 
+**A note that arrives while obsync is checking the vault is no longer deleted
+everywhere.** When obsync starts, and whenever you change which folders it
+syncs, it lists the vault and compares that list against what it remembers --
+which is how a note you deleted while Obsidian was closed reaches your other
+devices. A note arriving from another device in the middle of that check was
+in the record and not in the list, so obsync published it as a deletion and
+removed a note that was sitting on the disk from every device. It now asks the
+vault once more, at the moment it would publish the deletion, and a note that
+is there is published as the note it is instead. This was found by this
+release's own gate, on a machine slow enough to lose that race.
+
 **A selected folder you rename keeps syncing, and renaming one no longer
 deletes its notes elsewhere.** If you sync only some folders and then renamed
 or moved one of them in Obsidian, the notes inside it left the selection the
