@@ -1,12 +1,12 @@
 # M29: the id the server answers with is ignored
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -269,7 +269,7 @@
-   // also what the lost-answer settlement returns, because it only settles on
-   // finding THIS id in the file record (issue #114).
-   const settled = (ack: VersionAck): { versionId: string; ack: VersionAck } => ({
--    versionId: ack.version_id ?? id,
-+    versionId: id,
-     ack,
-   });
-   try {
+@@ -341,7 +341,7 @@
+   // Otherwise the post is repeated with the offer withdrawn, which is a
+   // position the store must append.
+   const settled = async (ack: VersionAck, retry: boolean): Promise<{ versionId: string; ack: VersionAck }> => {
+-    const answered = ack.version_id ?? id;
++    const answered = id;
+     if (answered === id || !retry) return { versionId: answered, ack };
+     if (await sameOperation(context, fileId, answered, manifest)) return { versionId: answered, ack };
+     context.host.log(

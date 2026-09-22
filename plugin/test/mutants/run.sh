@@ -62,5 +62,8 @@ if ! npm run build >/dev/null 2>&1; then
   printf 'COMPILE ERROR: this mutant is not behavioural, and is not a kill\n'
   exit 0
 fi
-node --test --test-reporter=tap test/*.test.mjs 2>&1 |
+# A PER-TEST TIMEOUT, because a mutant can make a test wait for something
+# that will never happen: a runner that stalls hides every mutant after it,
+# and a stall is a kill this matrix would otherwise never record.
+node --test --test-timeout=60000 --test-reporter=tap test/*.test.mjs 2>&1 |
   grep -E '^(not ok|# (pass|fail) )' || true

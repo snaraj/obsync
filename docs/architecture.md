@@ -647,8 +647,24 @@ returns immediately when a new frame lands.
    is untouched. Afterwards the hold still has the last word, because a
    rename does not close an editor's DESCRIPTOR: a program that still holds
    the file open writes through it wherever its name has gone, including
-   between the proof and the removal. A hold whose metadata no longer
-   matches what was copied is linked back under the vault name. One window
+   between the proof and the removal, and including between this device's
+   last look at the hold and the unlink that releases it. So the hold is
+   OPENED before it is judged: the descriptor keeps the inode alive across
+   its own unlink, which is what makes the unlink stop being the last word.
+   A save that reached the inode before the release is put back by name; a
+   save that lands after it is read back THROUGH that descriptor and written
+   out under a name of its own. Either way nothing is released until the
+   bytes are somewhere else: a restore that lands nowhere keeps the hidden
+   name rather than dropping it.
+
+   A RESTORE NEVER REPLACES WHAT TOOK THE NAME. Looking at a destination and
+   then renaming onto it asks a question whose answer expires -- a save can
+   create that name in between, and `rename` replaces it without a word --
+   so `link` IS the check: it cannot replace anything, so a name taken in
+   that instant fails the call instead of overwriting the note that took it.
+   The alternatives are numbered (`(obsync kept)`, `(obsync kept 2)`, ...)
+   because the name being competed for can be taken more than once, and a
+   file the user cannot see is a file they have lost. One window
    remains, and it is stated rather than claimed away: an in-place write to
    the held inode, between the copy and the move, that leaves both the size
    and the whole-second modification time unchanged. A host that cannot make
@@ -664,6 +680,41 @@ returns immediately when a new frame lands.
    pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
+
+   A DELETION IS A CHANGE LIKE ANY OTHER, and is answered with the same two
+   questions. A tombstone whose parents do not include the version this
+   device holds is one side of a fork: the graph says whether this device
+   has already incorporated it (skip), whether it descends from what this
+   device holds (apply), or neither, which is delete-versus-edit and keeps
+   BOTH sides. Then the file at the path is proved against the record, so a
+   note typed while Obsidian was closed -- or while its folder was outside
+   the selection, which a widening replays the whole feed against -- is kept
+   and republished rather than removed. The removal itself is bound like
+   every other: `expect` on a host that can bind one, and the unbound
+   removal every device made before 1.0.7 where it cannot, because refusing
+   there would drop a deletion the feed never delivers again.
+
+   WHAT A PUSH RECORDS IS A PATH IT STILL SYNCS. Everything before the
+   acknowledgement is asynchronous, so the file can leave the selection, or
+   the vault, while the upload is in flight. The version stays published --
+   other devices receive it -- but the record is written only if the path is
+   still inside the selection and a file is still standing there. Writing it
+   regardless put back a path the rename handler had deliberately forgotten,
+   and the next scan read its absence as a deletion and took the note off
+   every other device.
+
+   AND A VERSION THIS DEVICE DID NOT COMPUTE IS PROVED BEFORE IT IS ADOPTED.
+   The store answers a post that offers `accept_existing` with the version
+   it already holds at that position, and its key -- `(file_id, parent set,
+   sids, deleted)` -- cannot include the path, which lives inside a manifest
+   the store cannot read. An ordinary edit and another device's rename-and-
+   edit from the same parent to the same bytes are therefore the same key.
+   The device reads that version back and adopts it only when its
+   authenticated manifest describes the same operation (same path, same
+   size, same deleted bit); otherwise it reposts with the offer withdrawn.
+   Adopting blindly recorded the other device's path as this one's and
+   marked its rename as this device's own echo, so the rename was lost on
+   both sides.
 
    The record is the authority for what a version IS, and the manifest is
    bound to it field by field before policy, download, or a write. Decryption
@@ -790,7 +841,12 @@ moves the selection with it, in the parser's canonical form. Each file under
 the folder is judged against the selection in force on EACH side of the
 move — its old name against the selection before, its new name against the
 selection after — so the files are published as renames and a record the
-selection never covered is not brought in. A destination this version syncs
+selection never covered is not brought in. What moves is everything the
+device owes under that folder, not only the records: a note written moments
+earlier is still in the debounce or the push queue with no record at all,
+and leaving that work pointing at a name the folder no longer has left the
+note on this device alone until something else triggered a reconciliation.
+A destination this version syncs
 in neither direction (hidden, malformed) cannot be followed: the selection
 stays where it is and the files leave the scope unpublished.
 
