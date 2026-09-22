@@ -10,7 +10,7 @@
 #     first start and keeps on the `caddy-data` volume. Needs no port open to
 #     the internet, no domain you own, no account with anybody -- a LAN name or
 #     a name you resolve yourself is enough. The price is that every device
-#     must be told to trust that authority once; README.md, "Any network, no
+#     must be told to trust that authority once; docs/server.md, "Any network, no
 #     provider", has the five platforms' steps.
 #
 #   public ACME (the commented block)  A certificate every device already
@@ -39,7 +39,7 @@
 	# filesystem is read-only by design, and without this line every start logs
 	# an alarming `failed to install root certificate` error for an operation
 	# that had no purpose here. The devices are where that root has to be
-	# trusted, and README.md says how per platform.
+	# trusted, and docs/server.md says how per platform.
 	skip_install_trust
 }
 

@@ -16,7 +16,7 @@ internet.
 
 So the private path is validated FIRST: the devices reach the server over the
 LAN, or over a VPN back to it, with a certificate the phone trusts. The
-Compose-plus-Caddy route (`deploy/compose`, README.md "Any network, no
+Compose-plus-Caddy route (`deploy/compose`, `docs/server.md` "Any network, no
 provider") is the template for that path -- a private name, a private
 certificate authority exported once and installed on each device, HTTPS
 because mobile Obsidian accepts nothing else. A tunnel, a public hostname, or

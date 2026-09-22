@@ -1260,7 +1260,7 @@ what the service is called and which devices trust it; the bind address
 settles which interface accepts connections and nothing about their source,
 since routed, VPN or forwarded traffic arriving at a LAN address is accepted
 unless a firewall or the router's forwarding rules refuse it. The compose file requires that variable and
-defaults it to nothing. `README.md`, "Any network, no provider", is its
+defaults it to nothing. `docs/server.md`, "Any network, no provider", is its
 install path.
 
 ## 11. Current and deferred scope

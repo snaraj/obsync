@@ -25,8 +25,8 @@ settings, or reaches something that is not it.
 3. Check the scheme. Obsidian on iOS and Android speaks HTTPS only and refuses
    plain HTTP outright.
 4. Check the route. If the server is on a LAN or behind a VPN, the device has
-   to be on that network, and the name has to resolve there — see the README's
-   "Reaching it from outside your LAN".
+   to be on that network, and the name has to resolve there — see
+   [`server.md`](server.md#reaching-it-from-outside-your-lan).
 5. Check the server: `GET /readyz` answers `{"ready":true,"seq":<n>}` when it
    is serving. If it answers `not_ready`, read the volume section of
    [`storage.md`](storage.md) — the server refuses readiness rather than lying
@@ -89,8 +89,8 @@ steps rather than one.
 - **Linux:** the distribution's CA anchors directory, then `update-ca-trust` or
   `update-ca-certificates`.
 
-The README's "Trust the certificate authority, once per device" has the exact
-commands for the Compose route.
+[`server.md`](server.md#trust-the-certificate-authority-once-per-device) has
+the exact commands for the Compose route.
 
 ## "A TLS error caused the secure connection to fail"
 

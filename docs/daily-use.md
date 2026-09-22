@@ -2,7 +2,7 @@
 
 Once two devices are paired, sync runs on its own. This page is the rest of
 it: the commands, what the status bar is telling you, what obsync does and
-does not touch, and how to get an older version of a note back.
+does not touch, how to get an older version of a note back, and the dashboard.
 
 ## Commands and the status bar
 
@@ -23,28 +23,12 @@ The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
 `obsync: syncing <n>` while `n` files are in flight, `obsync: offline` when the
 server is unreachable, and `obsync: error — <reason>` when sync has stopped.
 
-## If something looks wrong
-
-- **The status bar says `offline`.** The device cannot reach the server:
-  check the URL in settings, the certificate, and the private network if the
-  deployment needs one. Mobile Obsidian refuses plain HTTP entirely.
-- **Sync stopped with an error.** The plugin stops rather than guessing. The
-  message names the cause; `Show sync status` repeats it. Credential-storage
-  failures are covered in
-  [installation trust and distribution](community-plugin.md).
-- **A file is not syncing.** Hidden folders (`.obsidian`, `.git`), symlinked
-  folders, and anything outside this device's folder selection are excluded by
-  design — see *What syncs and what does not* below.
-
-Every other symptom, the error codes you are most likely to meet, and how to
-collect a report worth sending are in [Troubleshooting](troubleshooting.md).
-
 ## What syncs and what does not
 
 - obsync syncs one person's vault across their own devices. Every device you
-  pair has owner access; the current runtime has no recipient role. Giving
-  anyone else access to part of a vault is phase 2 work, gated on the
-  acceptance criteria in [architecture](architecture.md) section 5.
+  pair has owner access; the current runtime has no recipient role. Giving anyone else
+  access to part of a vault is phase 2 work, gated on the acceptance
+  criteria in `architecture.md` section 5.
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
 - A saved folder selection limits obsync's reads, writes and deletions on
@@ -60,23 +44,20 @@ collect a report worth sending are in [Troubleshooting](troubleshooting.md).
   are settings. Computers have no ceiling.
 - Every edit is kept as a version for 30 days and at least the last 10
   versions per file; conflicts never discard an edit — text merges cleanly or
-  you get a conflict copy ([Conflicts](conflicts.md)).
+  you get a conflict copy ([`conflicts.md`](conflicts.md)).
 - Update through Settings → Community plugins → Check for updates on each
   device. The plugin never installs code from the sync server. See
   [installation trust and distribution](community-plugin.md).
 
-Every setting named above, its default, and when to change it are in the
-[settings reference](settings.md).
-
 ## Restore a retained version
 
-Open **Self Hosted Private Sync: Restore from history** in the command
-palette. Optionally enter part of a filename, select **Restart search**, then
-**Load next**. Versions appear oldest first, including retained content of
-deleted notes. Each click checks at most 20 records; an empty filtered page can
-still have more history after it. Select **Restore a copy** on a content
-version to create a uniquely named sibling inside the currently selected
-folder. Deletion markers themselves contain no file bytes.
+Open **Self Hosted Private Sync: Restore from history** in the command palette. Optionally
+enter part of a filename, select **Restart search**, then **Load next**.
+Versions appear oldest first, including retained content of deleted notes.
+Each click checks at most 20 records; an empty filtered page can still have
+more history after it. Select **Restore a copy** on a content version to
+create a uniquely named sibling inside the currently selected folder.
+Deletion markers themselves contain no file bytes.
 
 The original file, unsynced edits and original history remain unchanged.
 The notice first confirms a local copy and requests ordinary sync; check
@@ -92,8 +73,10 @@ before a size check is possible. Reopening history does not start another
 manual request until the outstanding one settles. These are platform
 limits, not a claim of power-loss or real-device validation.
 
-## Next
+## See your devices
 
-- [The dashboard](dashboard.md): every device, storage, and the revoke button.
-- [Conflicts](conflicts.md): what a conflict copy is and what to do with it.
-- [Recovery](recovery.md): a lost device, a lost server, a rotated token.
+On any paired computer, run **Open dashboard**: it mints a one-time sign-in
+link to the dashboard, where you see every device (type, address, country,
+last sign-in, last edit), storage per volume, scrub and garbage-collection
+state, and installation guidance. Revoke a lost device there or
+from the **Devices** list in the plugin settings.
