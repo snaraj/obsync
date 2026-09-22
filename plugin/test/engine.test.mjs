@@ -381,7 +381,52 @@ test("a tombstone does not take an edit this device never published", async () =
     host.logs.some((line) => line.includes("path_class=tombstone decision=local_edit_kept reason=local_edit")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
+  // COMPOSED BEHAVIOUR (#106 meeting #98). Keeping the bytes is no longer
+  // the whole answer: they are published again under the SAME file id, so
+  // the note returns on every device instead of waiting for the next push.
+  // The weaker "did not delete" notice is what a revive that could not
+  // reach the server falls back to, and the test below is that side.
+  assert.match(host.notices.join(" "), /was kept and published again/);
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=pushed")),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("a tombstone whose revive cannot publish keeps the file and says only that", async () => {
+  const { host, state, server, context, keys: k, created } = await doomed();
+  host.seed("Notes/Doomed.md", "TYPED WHILE CLOSED SENTINEL\n", 1757200009000);
+  // The note is still being written when the tombstone arrives, so the
+  // revive's own end-of-read guard abandons it (issue #99). Nothing was
+  // published, so the notice must not claim the note is back everywhere --
+  // it says the true, weaker thing, and the next push carries the bytes.
+  const realRead = host.read.bind(host);
+  host.read = async (path) => {
+    const bytes = await realRead(path);
+    host.seed(path, "TYPED WHILE CLOSED SENTINEL, AND STILL TYPING\n", 1757200010000);
+    return bytes;
+  };
+  const tombstone = await server.publishTombstone({
+    fileId: "13".repeat(16),
+    path: "Notes/Doomed.md",
+    manifestKey: k.manifestKey,
+    parents: [created.version_id],
+  });
+
+  assert.equal(await applyChange(context, tombstone), "skipped");
+
+  assert.deepEqual(host.trashed, [], "a file holding bytes that exist nowhere else was deleted");
+  assert.ok(state.fileByPath("Notes/Doomed.md"), "the record was dropped, so nothing will publish those bytes");
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=growing")),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
   assert.match(host.notices.join(" "), /did not delete/);
+  assert.doesNotMatch(
+    host.notices.join(" "),
+    /published again/,
+    "the user was told the note is back on every device when nothing was published",
+  );
 });
 
 test("a tombstone that forks from the version this device holds is one side of a fork", async () => {

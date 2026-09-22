@@ -123,9 +123,17 @@ test("review: widening must not trash an unuploaded local edit while its source 
   t.after(() => release.resolve());
   await saveScope(r, ["Notes"]);
   await entered.promise;
-  await timers.run(STEP_MS, () => a.state.data.lastSeq === server.seq);
+  // THE OBSERVATION THIS TEST EXISTS FOR, taken while the read is still
+  // outstanding: the replay must not have removed the file. It is taken
+  // HERE, and the feed is then let go, because 1.1.0 republishes the kept
+  // bytes from inside the tombstone branch (#106) -- so the read this test
+  // is holding is one the feed itself is waiting on, and draining the feed
+  // first would be waiting for a read this test has promised not to finish.
+  // Releasing after the observation changes nothing the test asserts and
+  // removes a deadlock that only the harness can reach.
   const lostBeforeRead = a.host.text(path) === null;
   release.resolve();
+  await timers.run(STEP_MS, () => a.state.data.lastSeq === server.seq);
   await a.engine.syncNow();
   t.diagnostic(JSON.stringify({
     lostBeforeRead, desktop: a.host.text(path), phone: b.host.text(path),
@@ -231,18 +239,40 @@ test("review: a scope exit during upload must preserve the other device's live n
   await uploading;
   // ONE EDIT, and the repair is what made it necessary: the third clause
   // waited for the DESKTOP to hold a record for this path again, which is
-  // precisely what a push that outlives its path must no longer do. The
-  // other two clauses, and every assertion below, are the reviewer's.
-  await timers.run(STEP_MS, () => b.host.text(path) === "EDIT MOVED OUTSIDE SCOPE SENTINEL" &&
-    settled(b, path));
+  // precisely what a push that outlives its path must no longer do.
+  //
+  // WHAT 1.1.0 CHANGES, and why this no longer waits for the edit to reach
+  // the phone. The growing-file lane stats the path once more when the
+  // chunks are up (#99): the file has been renamed out from under this push,
+  // so the version is ABANDONED before it exists rather than posted for a
+  // path the file has left. The reviewer's finding asked that a completion
+  // arriving after a scope exit publish nothing and re-track nothing; the
+  // composed head reaches that one step earlier, by never completing. So the
+  // phone is never told anything about this path, and what it keeps is the
+  // copy it already had. Every assertion below is that outcome, stated
+  // whole: nothing is lost on either device, and no tombstone exists.
   await a.engine.syncNow();
   await timers.run(STEP_MS, () => b.state.data.lastSeq === server.seq);
+  const manifests = (await published(server, id, keys.manifestKey))
+    .map(({ path, deleted }) => ({ path, deleted }));
   t.diagnostic(JSON.stringify({
-    aMoved: a.host.text(moved), bOriginal: b.host.text(path),
-    manifests: (await published(server, id, keys.manifestKey)).map(({ path, deleted }) => ({ path, deleted })),
+    aMoved: a.host.text(moved), aPath: a.host.text(path), bOriginal: b.host.text(path),
+    aRecord: a.state.fileByPath(path) !== undefined, manifests,
+    abandoned: a.host.logs.filter((line) => line.includes("reason=changed_during_read")),
   }));
-  assert.equal(b.host.text(path), "EDIT MOVED OUTSIDE SCOPE SENTINEL",
+  assert.equal(a.host.text(moved), "EDIT MOVED OUTSIDE SCOPE SENTINEL",
+    "the edit left the scope and must still be on the disk that holds it");
+  assert.equal(b.host.text(path), "ORIGINAL PEER SENTINEL",
     "the other device must retain its copy after a local scope exit");
+  assert.equal(a.state.fileByPath(path), undefined,
+    "the completed upload re-tracked a path its file had left");
+  assert.deepEqual(manifests.filter(({ deleted }) => deleted), [],
+    "a scope exit published a tombstone for the note the other device is holding");
+  assert.ok(
+    a.host.logs.some((line) => line.includes("decision=abandoned reason=changed_during_read")),
+    `the push was not abandoned, so something was published for a path the file had left: ${
+      a.host.logs.filter((line) => line.startsWith("push")).join(" | ")}`,
+  );
 });
 
 test("review: a folder rename retains the pending upload of an untracked new note", async (t) => {
