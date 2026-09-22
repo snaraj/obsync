@@ -181,11 +181,15 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // file that moved is abandoned BEFORE a version exists. Uploaded chunks are
   // content-addressed and unreferenced, so nothing durable was published; the
   // caller re-arms the debounce and the finished file is pushed whole.
-  const after = await context.host.stat(path);
-  if (after === null || after.size !== stat.size || after.mtime !== stat.mtime) {
+  // Named for the read it closes, because this function now has a second
+  // "after": the transport's upload counters, taken at the end for the
+  // per-run summary. One name for two different measurements is how a
+  // composition loses one of them.
+  const afterRead = await context.host.stat(path);
+  if (afterRead === null || afterRead.size !== stat.size || afterRead.mtime !== stat.mtime) {
     context.host.log(
       `push path_class=file decision=abandoned reason=changed_during_read bytes=${stat.size} ` +
-        `bytes_after=${after === null ? -1 : after.size} duration_ms=${context.now() - started}`,
+        `bytes_after=${afterRead === null ? -1 : afterRead.size} duration_ms=${context.now() - started}`,
     );
     return { status: "growing", fileId, versionId: "" };
   }
