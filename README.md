@@ -4,11 +4,19 @@ Read in your language: [English](README.md) • [العربية](docs/ar/README.
 
 Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md):
 one dependency-free Rust server with a built-in dashboard that you run
-yourself, plus this plugin. Files of any size, every Obsidian platform, no
-subscription, no third party.
+yourself, plus this plugin. Every Obsidian platform, no subscription, no third
+party. The server takes a file of any size; a phone keeps a per-file ceiling
+and a total budget you can see and change, because a phone cannot hold what a
+desktop can ([`docs/troubleshooting.md`](docs/troubleshooting.md)).
 
 Install it from Settings → Community plugins → Browse as **Self Hosted Private
 Sync** (plugin id `obsync-private-sync`), on Obsidian 1.13.0 or newer.
+
+**Versions.** The LATEST release is the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest), and that is
+what Obsidian installs and updates to. `main` is the EDGE: merged but
+unreleased work, for people building from source. There is no beta channel and
+no pre-release tag; the changelog's Unreleased section is the edge's record.
 
 > [!IMPORTANT]
 > - It syncs to a server **you** run: no hosted service, no account elsewhere.

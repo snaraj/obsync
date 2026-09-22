@@ -210,6 +210,15 @@ COMPOSE_NAME = "deploy/compose/docker-compose.yml"
 SETTINGS_NAME = "plugin/src/ui/settings.ts"
 DASHBOARD_NAME = "dashboard/index.html"
 MARKDOWN = (README_NAME, SERVER_GUIDE_NAME, ARCHITECTURE_NAME)
+# THE PAGES THAT PUBLISH A CONTAINER PORT. Rule 13 runs over every document in
+# `MARKDOWN`, and it must: a `docker run -p` appearing in any of them is judged
+# wherever it appears. This narrower tuple is only what the MUTATION tests can
+# break, and it is narrower because a mutation needs the text it mutates. The
+# README became a short front door and its `## Get syncing` now starts the
+# server with `docker compose … up -d`; the `docker run` with a port mapping
+# lives on `docs/server.md`, which is where the reader is sent for it. Mutating
+# a line the README does not have was an assertion no edit could fail.
+PORT_MAPPING_DOCUMENTS = (SERVER_GUIDE_NAME,)
 # Rule 5's document set: everywhere a person reads the words "setup token".
 # `docs/daily-use.md` is deliberately NOT here. It never names the setup token
 # -- it is the page about a vault that is already syncing -- so rule 5 has
@@ -1899,7 +1908,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # and a reader pastes whichever one is in front of them. This is the
         # mutant that survived the first head: the guidance is emphatic about
         # the Compose bind address and had nothing to say about this one.
-        for name in (README_NAME, SERVER_GUIDE_NAME):
+        for name in PORT_MAPPING_DOCUMENTS:
             with self.subTest(document=name):
                 self.setUp()
                 found = self.mutate(
@@ -1912,7 +1921,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # The same exposure with nobody having chosen it: `-p 8080:8080`
         # publishes on every address the host has, which is what the omitted
         # field means to Docker and is the shape a reader shortens the line to.
-        for name in (README_NAME, SERVER_GUIDE_NAME):
+        for name in PORT_MAPPING_DOCUMENTS:
             with self.subTest(document=name):
                 self.setUp()
                 found = self.mutate(
@@ -1925,7 +1934,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # The review's surviving regression: the first version of this guard
         # compared the LAST colon-separated segment with `8080`, so `/tcp`
         # made the mapping invisible to it and all 84 tests stayed green.
-        for name in (README_NAME, SERVER_GUIDE_NAME):
+        for name in PORT_MAPPING_DOCUMENTS:
             with self.subTest(document=name):
                 self.setUp()
                 found = self.mutate(
@@ -1938,7 +1947,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         # The other half of the same regression: the documented mapping stays
         # exactly as it is and a second one is ADDED. Judging one publication
         # per command would have called this clean.
-        for name in (README_NAME, SERVER_GUIDE_NAME):
+        for name in PORT_MAPPING_DOCUMENTS:
             with self.subTest(document=name):
                 self.setUp()
                 found = self.mutate(

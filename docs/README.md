@@ -3,6 +3,12 @@
 Every page under `docs/`, and the repository files a reader reaches for. The
 [README](../README.md) is the short guide; these are the long ones.
 
+**Versions.** These pages describe `main`, which is the EDGE: merged but
+unreleased work. The LATEST release is the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest) and is what
+Obsidian installs; read the [`CHANGELOG.md`](../CHANGELOG.md) entry for the
+version you run. There is no beta channel and no pre-release tag.
+
 | Page | What it answers |
 | --- | --- |
 | [Quickstart](quickstart.md) | The first device and the second one, every step in full, with the validated-run captures |
@@ -14,6 +20,7 @@ Every page under `docs/`, and the repository files a reader reaches for. The
 | [Troubleshooting](troubleshooting.md) | Symptom, cause, fix, and how to collect a report |
 | [Conflicts](conflicts.md) | What a conflict copy is and what to do with it |
 | [Recovery](recovery.md) | A lost device, a lost server, a moved server, a rotated token |
+| [Purging a server](purge.md) | Wiping the journal and the blobs, and re-pairing every device afterwards |
 | [Installing and updating](community-plugin.md) | Obsidian's directory, updates, credential custody, the listing review |
 | [Threat model](threat-model.md) | What is defended, and what is not |
 | [The dashboard's threat model](security/dashboard.md) | Sessions, sign-in, revocation, residuals |

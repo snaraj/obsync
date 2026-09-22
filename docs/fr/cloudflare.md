@@ -20,7 +20,7 @@ limite ou à un prix.
 | Variante | Ce que voient les appareils | Ce que voit Internet | Première synchronisation volumineuse |
 | --- | --- | --- | --- |
 | **Route privée** (le déploiement de référence) | votre propre adresse privée et votre nom, via le client Cloudflare One | rien : ni nom d'hôte ni port ouvert | trafic de réseau privé, sans passer par un nom d'hôte public |
-| **Nom d'hôte public avec Access** | un nom public, une politique Access, un jeton de service dans le plugin | le nom d'hôte, derrière Access | relayé par Cloudflare, aux conditions du fournisseur pour les gros fichiers |
+| **Nom d'hôte public avec Access** | un nom public, une politique Access, un jeton de service dans le module | le nom d'hôte, derrière Access | relayé par Cloudflare, aux conditions du fournisseur pour les gros fichiers |
 
 La route privée est la référence parce que le serveur reste invisible et
 parce que la documentation de Cloudflare elle-même y envoie les gros
@@ -69,7 +69,7 @@ appareil qui synchronisera hors de chez vous.
    client. En mode **Exclude**, retirez le bloc RFC 1918 qui la contient et
    rajoutez les plages que vous voulez encore exclure ; en mode **Include**,
    ajoutez l'adresse ou le sous-réseau.
-5. **Faites résoudre le nom sur l'appareil.** Le plugin envoie chaque requête
+5. **Faites résoudre le nom sur l'appareil.** Le module envoie chaque requête
    à l'URL du serveur que vous avez saisie, donc ce nom doit résoudre sur
    l'appareil itinérant : une route de nom d'hôte, Local Domain Fallback vers
    votre propre résolveur, ou une entrée DNS privée. Un nom qui résout vers
@@ -87,7 +87,7 @@ appareil qui synchronisera hors de chez vous.
    serveur, et bloquer tout le reste sur cette route.
 8. **Vérifiez depuis un appareil hors de votre réseau.** Ouvrez l'URL du
    serveur dans un navigateur de cet appareil et attendez-vous à la page de
-   connexion du tableau de bord. Dans le plugin, choisissez **Check** sous
+   connexion du tableau de bord. Dans le module, choisissez **Check** sous
    **Connection** : un seul aller-retour prouve à la fois l'adresse, le
    certificat et l'identifiant.
 
@@ -109,7 +109,7 @@ Compromis :
 Le serveur reçoit un nom d'hôte sur un domaine que vous avez chez Cloudflare.
 Le tunnel publie ce nom vers l'adresse privée du serveur, et Cloudflare
 Access se place devant : une politique d'identité pour le tableau de bord et
-un jeton de service pour les appels d'API du plugin. C'est la variante que
+un jeton de service pour les appels d'API du module. C'est la variante que
 [l'intégration à la plateforme](../platform-onboarding.md) décrit pour le
 cluster de référence, et celle que le déploiement de référence n'a pas
 retenue.
@@ -123,12 +123,12 @@ retenue.
    et ajoutez une politique d'identité qui n'autorise que vous, par exemple un
    code PIN à usage unique envoyé à votre propre adresse, pour le tableau de
    bord.
-3. **Créez un jeton de service pour le plugin.** Allez dans **Zero Trust** >
+3. **Créez un jeton de service pour le module.** Allez dans **Zero Trust** >
    **Access controls** > **Service credentials** > **Service Tokens**, créez-en
    un et copiez le Client ID et le Client Secret ; le secret n'est affiché
    qu'une fois. Ajoutez à l'application une politique **Service Auth** qui
-   inclut ce jeton, pour les chemins qu'utilise le plugin (`/v1/*`).
-4. **Collez le jeton dans le plugin.** Sous **Edge service-token headers**, un
+   inclut ce jeton, pour les chemins qu'utilise le module (`/v1/*`).
+4. **Collez le jeton dans le module.** Sous **Edge service-token headers**, un
    par ligne, exactement comme Cloudflare les nomme :
 
    ```text
@@ -143,7 +143,7 @@ retenue.
    requête, et une requête qui arrive en contournant la bordure est refusée
    avec `421 edge_required` ([dépannage](../troubleshooting.md#edge_required)).
 6. **Vérifiez.** Ouvrez le nom d'hôte dans un navigateur et attendez-vous à la
-   connexion Access, puis au tableau de bord. Dans le plugin, choisissez
+   connexion Access, puis au tableau de bord. Dans le module, choisissez
    **Check** sous **Connection**.
 
 Compromis :

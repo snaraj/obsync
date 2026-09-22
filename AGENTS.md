@@ -436,10 +436,13 @@ signature and nothing after it.
 
 - `docs/` holds durable design and operating documents, dated where facts
   drift. Process history stays out of product files.
-- The README leads with screenshot captures of the dashboard and the plugin.
-  A PR that changes what either renders asks the owner for a fresh capture
-  and says so in its body; captures are committed under `docs/captures/`
-  as PNG, never generated at build time.
+- The onboarding pages lead with screenshot captures of the dashboard and the
+  plugin. `docs/quickstart.md` carries the validated set -- the README is a
+  short front door and links to it -- and the image files are committed under
+  `docs/assets/` as PNG, never generated at build time.
+  `docs/captures/README.md` is the convention: what each capture must show,
+  the numbering, and the redaction rules. A PR that changes what either
+  surface renders asks the owner for a fresh capture and says so in its body.
 - Numbers in docs are reproducible: every figure names the command that
   produced it.
 

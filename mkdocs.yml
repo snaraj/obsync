@@ -39,6 +39,15 @@ edit_uri: blob/main/docs/
 docs_dir: docs
 site_dir: site
 
+# `docs/README.md` is the folder's index for somebody browsing the repository
+# on GitHub, where a directory shows its README. MkDocs treats README.md as a
+# directory's index too, so inside `docs/` it collides with `index.md` -- a
+# warning, and under `--strict` a failed build. The site's home page is
+# `index.md`; the GitHub one stays where GitHub looks for it and is left out
+# of the build rather than deleted or renamed.
+exclude_docs: |
+  README.md
+
 theme:
   name: material
   language: en
@@ -118,8 +127,10 @@ nav:
       - Conflicts: conflicts.md
       - Troubleshooting: troubleshooting.md
       - Recovery: recovery.md
+      - Purging a server: purge.md
+      - Translations: translations.md
   - Trust:
-      - What this plugin talks to: https://github.com/snaraj/obsync#what-this-plugin-talks-to
+      - What this plugin accesses: https://github.com/snaraj/obsync#what-this-plugin-accesses
       - Threat model: threat-model.md
       - The dashboard's threat model: security/dashboard.md
       - Security policy: https://github.com/snaraj/obsync/blob/main/SECURITY.md
