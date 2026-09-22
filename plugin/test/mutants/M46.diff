@@ -1,0 +1,15 @@
+# M46: the desktop writer answers with a fresh look at the name instead of the bytes it committed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -688,10 +688,7 @@
+         // alone does not say these are still our bytes. The answer is bound
+         // to what was written; the name is only reported on.
+         const ours = landed as PathStat;
+-        if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+-          this.log("host path_class=file decision=write_superseded");
+-        }
+-        return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
++        return { path, mtime: Math.round(ours.mtimeMs), size: ours.size };
+       },
+       abort: discard,
+     };
