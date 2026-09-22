@@ -9,8 +9,7 @@
  * folder records. So the released decoder is copied in, verbatim, and the
  * record this branch publishes is fed to it.
  *
- * PROVENANCE, AND HOW TO RE-DERIVE IT. Copied from tag `1.0.4`, which is the
- * newest shipped 1.0.x:
+ * PROVENANCE, AND HOW TO RE-DERIVE IT. Copied from tag `1.0.4`:
  *
  *   plugin/src/sync/pull.ts
  *     sha256 1574690f33013f4ddedd8e35a44aeca31969043497abed2686cf86ef9d6171a3
@@ -21,8 +20,11 @@
  *     git show 1.0.4:plugin/src/sync/pull.ts | shasum -a 256
  *     git show 1.0.4:plugin/src/vaultPath.ts | shasum -a 256
  *
- * ONE COPY COVERS EVERY 1.0.x. `parseManifest` is byte-identical at 1.0.0,
- * 1.0.1, 1.0.2, 1.0.3 and 1.0.4 —
+ * ONE COPY COVERS EVERY 1.0.x, 1.0.5 and 1.0.6 INCLUDED, which is what makes
+ * a copy taken at 1.0.4 the right fixture for every shipped install rather
+ * than only for the ones that stopped there (review round 1, finding 4).
+ * `parseManifest` is byte-identical at 1.0.0, 1.0.1, 1.0.2, 1.0.3, 1.0.4,
+ * 1.0.5 and 1.0.6 —
  * sha256 8aa8a2df240bcd8ffba197fc9b2e238bb9b727ef0416007eb526a3082e8aa4de of
  *
  *     git show <tag>:plugin/src/sync/pull.ts \

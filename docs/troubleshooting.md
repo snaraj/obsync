@@ -355,7 +355,20 @@ they are two; a version before 1.1.0 could publish a capitalisation-only
 rename made on a folding device as NEW notes instead of as the rename it
 was, so a device that keeps the two apart received the new spelling and was
 never told to retire the old one. From 1.1.0 a capitalisation-only rename is
-published as a rename and applied as one, in both directions.
+published as a rename: the FOLDER's own record carries the new spelling and is
+published before the notes under it move, and the device receiving it renames
+the directory entry itself and carries its records along. That is the only
+thing that can re-case a folder on a device that folds case, because renaming
+a note inside a folder cannot change how the folder is spelled -- the
+operating system finds the folder by either spelling and leaves the name it
+keeps alone.
+
+**If the other device is still on 1.0.x**, it sends no folder record, so this
+device sees notes asking for a folder spelled a way it does not show. It
+refuses those moves, changes nothing at all, and tells you once per folder.
+Update that device, or rename the folder here to match, and the two agree
+again. While they disagree, edits made under that folder on the older device
+do not arrive here.
 
 **Do not delete the stale folder first.** A deletion is published as a
 tombstone, and every device obeys a tombstone. On a device that folds case,

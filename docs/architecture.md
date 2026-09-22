@@ -682,8 +682,13 @@ returns immediately when a new frame lands.
    `sha256`, and write atomically (temp file plus rename on desktop via the
    Node filesystem; adapter write on mobile). Echoes of the device's own
    versions are recognized by `version_id` and skipped. A version whose path
-   moved is applied as a MOVE -- the new path is written, the old one
-   trashed. Two spellings that differ only in CASE are the exception: that
+   moved is applied as a MOVE, and from 1.1.0 that is the host's own atomic
+   rename whenever the source still holds exactly the content the version
+   carries (issue #108): nothing is downloaded and nothing is trashed. A
+   source holding anything else takes the older path -- the new name is
+   written and the old one trashed -- and so does a version this device holds
+   under no name at all. Two spellings that differ only in CASE are one more
+   case of the same rule, and the one place it can never be a write: that
    is one rename of one entry on every host and must never be a write and a
    removal, because on a folding filesystem the write lands in the file this
    device already has and the removal then takes it, while the same host
@@ -693,7 +698,17 @@ returns immediately when a new frame lands.
    DIFFERENT file wears the destination's exact name -- proved by inode on
    desktop and by the adapter's case-sensitive existence check on mobile --
    and that refusal is the real collision, which takes the same-name rule as
-   before. The vault reports the ordinary move's removal back to this plugin like any
+   before. A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
+   an entry rename cannot do: `rename(2)` resolves the directory components
+   of its destination, so a per-file rename whose difference lies above the
+   last component renames nothing and reports success. The FOLDER record
+   re-cases the directory entry itself and carries every record beneath it
+   with it (`pull.ts`, `recaseFolder`), the sender publishes that record
+   BEFORE the moves under it (`main.ts`), and a per-file move reaching a
+   device whose directory still wears the old spelling is REFUSED rather than
+   recorded: a record spelling a folder a way the vault does not show is what
+   the scan reads as a rename and publishes back, which cost one version per
+   note every `SCAN_MS` on both devices until the quota answered. The vault reports the ordinary move's removal back to this plugin like any
    other deletion, so the engine drops it once, by the path the pull path
    recorded before removing it. Without that gate a rename is republished as
    a tombstone and deletes the file on every device, which is what 1.0.4

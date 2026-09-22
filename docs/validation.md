@@ -77,10 +77,22 @@ evidence.
 | V23 | Rename an EMPTY folder on one device | renamed on the other; the old name is gone |
 | V24 | On device A put an extra file into a folder that device B then deletes | B's deletion removes the notes; A keeps the folder AND the extra file, and says so in the log (`folder … decision=kept reason=not_empty`) |
 | V25 | Two devices already holding a vault made before 1.1.0, both updated, both restarted | every existing folder converges without the user doing anything; the folders each device already had appear on the other |
-| V26 | A third device left on 1.0.4 while the other two are on 1.1.0 | it shows one refusal notice per folder and keeps syncing NOTES normally; no file is created at any folder's path; no tombstone is published for anything; updating it makes the folders appear and the notices stop |
-| V27 | On the 1.0.4 device, delete the last note out of a folder and KEEP the folder | the 1.1.0 devices delete the note and keep the folder: a device that says nothing about a folder never deletes it |
+| V26 | A third device left on 1.0.6, the newest shipped 1.0.x, while the other two are on 1.1.0 | it shows one refusal notice per folder and keeps syncing NOTES normally; no file is created at any folder's path; no tombstone is published for anything; updating it makes the folders appear and the notices stop |
+| V27 | On the 1.0.6 device, delete the last note out of a folder and KEEP the folder | the 1.1.0 devices delete the note and keep the folder: a device that says nothing about a folder never deletes it |
+| V28 | Rename a folder by CAPITALISATION alone (`Team docs` to `team docs`), from the desktop and then from the phone, with notes inside | the other device renames the folder itself and shows ONE folder under the new spelling; the notes keep their content and their history; nothing lands in either device's trash; leave both devices running for five minutes and no note gains a version, and no folder gains one, in either direction |
 
-V17-V27 are the folder-sync scenarios for 1.1.0 (issue #104). Run each in
+V28 is the one scenario no test on a computer can close, and it is the reason
+that row says "and then from the phone": a capitalisation-only rename made on
+a phone goes through Obsidian's own `adapter.rename` rather than through the
+filesystem, and only a real phone can say what that adapter does with a
+spelling the vault already holds. The desktop half of it IS covered by tests
+against a real case-folding filesystem (`plugin/test/realfs-case.test.mjs`);
+the phone half is claimed nowhere until this journey is recorded. The
+five-minute wait is the point of the row: the defect it exists to catch
+published one version per note per thirty seconds rather than failing outright
+(review round 1, finding 1).
+
+V17-V28 are the folder-sync scenarios for 1.1.0 (issue #104). Run each in
 BOTH directions — desktop to phone and phone to desktop — and record which
 device originated each one, because the two platforms use different host
 primitives: desktop makes and removes folders through Node's filesystem after

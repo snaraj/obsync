@@ -37,12 +37,16 @@ note is deleted somewhere else.
 
 **What a device still on 1.0.x does.** It does not know this kind of record,
 so it refuses each one: one notice per folder, no file written, nothing
-deleted, and its notes keep syncing throughout. That notice reads "obsync
-refused a change from another device: it does not name a file or folder this
-device can write inside this vault (version). Nothing was written." It stops
-as soon as that device is updated. This was proved against the decoder
-shipped in 1.0.0 through 1.0.4, copied into the test suite from the released
-tag rather than described.
+deleted, and its notes keep syncing throughout. On 1.0.6, the newest 1.0.x,
+that notice reads "obsync refused a change from another device: it does not
+name a plain file inside this vault (version). Nothing was written. File id
+..." -- those are the words to search for if you see it. It stops as soon as
+that device is updated. This was proved against the decoder shipped in 1.0.0
+through 1.0.6, copied into the test suite from the released tag rather than
+described; the function that does the refusing, `parseManifest`, is
+byte-identical at all seven of those tags -- sha256
+`8aa8a2df240bcd8ffba197fc9b2e238bb9b727ef0416007eb526a3082e8aa4de` of it at
+each, which `plugin/test/fixtures/decoder-1.0.x.mjs` says how to re-derive.
 
 **Two folders that differ only in capitalisation.** A folder renamed by
 capitalisation alone -- `Team docs` to `team docs` -- was published as NEW
@@ -50,7 +54,33 @@ notes by versions before 1.1.0, because the computer that made the rename sees
 one folder where a phone sees two. Devices that tell the two apart received
 the new names and were never told to retire the old ones, so they ended up
 showing both: one live folder and one that never changes again. From 1.1.0
-such a rename is published as the rename it is, in both directions.
+such a rename is published as the rename it is, and the device receiving it
+renames the folder itself.
+
+**Be precise about what renames it, because that is what decides whether two
+devices ever agree.** On a computer, `Team docs` and `team docs` are ONE
+folder on the disk, and renaming a note inside it cannot change how the folder
+itself is spelled -- the operating system finds the folder by either spelling
+and leaves the name it keeps alone. So the folder's own record is what
+re-cases it, and obsync publishes that record BEFORE the notes underneath
+move. A device receiving it renames the directory, carries every note under it
+with the rename, downloads nothing, and publishes nothing back. Before this
+release the receiving device took the new spelling into its records while its
+disk kept the old one; its next scan read that difference as a rename and
+published it back, the other device did the same in reverse, and the two
+traded one rename every thirty seconds, re-downloading every note under the
+folder each time, for as long as both ran. If you saw a folder's notes gaining
+versions endlessly, that was this.
+
+**If the rename comes from a device still on 1.0.x**, there is no folder
+record to send, so the notes arrive asking for a folder spelled a way this
+device does not show. obsync refuses those moves rather than guessing: nothing
+is written, moved or deleted, your notes stay where they are, and you are told
+once per folder -- update the other device, or rename the folder here to
+match, and both devices agree again. While the two spell it differently, edits
+made under that folder on the older device do not reach this one; that is the
+honest cost of not letting one note's version rename a folder full of other
+people's notes.
 
 If a device of yours already shows both, there is a recovery, and its order
 matters: **do not delete the stale folder first.** On a device that folds case
@@ -75,8 +105,11 @@ under its new name and send the old name to the system trash -- so every
 rename made on one device left a full copy of that note in every other
 device's trash, which on a phone is somewhere you can barely reach. It is now
 one rename: nothing is downloaded, nothing is trashed, and the note keeps its
-identity. A rename arriving over a note you have changed here and not yet
-uploaded is still kept as two notes, exactly as before.
+identity. That is true of a rename that changes only capitalisation as well --
+it used to rename the entry and then fetch and rewrite the whole note anyway,
+which on a phone was the note's full size in data for a change of name. A
+rename arriving over a note you have changed here and not yet uploaded is
+still kept as two notes, exactly as before.
 
 **obsync no longer tells your other devices to delete everything when it
 loses sight of a folder.** If a folder you sync is renamed or moved from
@@ -172,10 +205,22 @@ is no beta channel and no pre-release tag.
   below. The computer publishes the rename and the phone follows it.
 - **A save landing in one particular instant can still be lost**, described
   under "The one gap left, said plainly" below. Nothing about it changed here.
-- **Folder support has not been driven on a real Windows device.** What has
-  been driven is macOS, Linux and a phone, plus the filesystem-level tests on
-  a real temporary vault. The Windows folder scenario is recorded as not
-  attempted in the validation plan rather than claimed.
+- **Folder support has not been driven on a real device yet, of any kind.**
+  What exists is the test suite, including tests that drive the plugin's own
+  desktop code against a real temporary folder on a real case-folding
+  filesystem. The device pass in `docs/validation.md` -- macOS, Linux, a
+  phone, and the Windows scenario -- is recorded as not attempted rather than
+  claimed, and `docs/validation-runs/` holds no run of it.
+- **A folder renamed by capitalisation alone on a phone is not proved.** The
+  rename goes through Obsidian's own adapter there rather than through the
+  filesystem, and only the device pass can say what that adapter does with a
+  spelling it already holds. Until then the phone is covered by the same
+  refusal as any other unprovable rename: it changes nothing and says so.
+- **A device still on 1.0.x that renames a folder by capitalisation alone
+  does not converge with this one** until it is updated, as described under
+  "Two folders that differ only in capitalisation". Nothing is lost on either
+  side; the two simply spell the folder differently, and the edits made under
+  it there do not arrive here meanwhile.
 - **A note roughly 8 MB or larger is still not recognised as one the server
   already holds**, so on a restored vault it is copied beside itself rather
   than adopted -- a duplicate, never a missing note.
@@ -395,6 +440,23 @@ This applies once BOTH the server and the device run 1.0.7: an older device
 keeps the version it computed for itself, and is never answered with another
 id. Renames are never treated this way -- what changed there is the name, which
 the server cannot see -- so a rename always lands as a version of its own.
+
+### A correction to what 1.0.3 promised
+
+1.0.3 said "your vault, your devices and your pairing are untouched, and the
+plugin does not change", which was broader than what had been established.
+The plugin really did not change, and no note, key or pairing was touched.
+Three behaviours a paired device can see DID change on purpose, and they are
+the narrower guarantee that entry should have made
+([issue #87](https://github.com/snaraj/obsync/issues/87)):
+
+- Two devices revoking each other in the same instant no longer both succeed,
+  so one of those two clicks now fails where before both went through.
+- A request from a device that is pending or revoked is refused as that,
+  before its signature is checked, rather than being classified by the shape
+  of what it asked for.
+- Sign-in links a device minted, and dashboard sessions opened from them, end
+  when that device is revoked instead of outliving it by up to twelve hours.
 
 ## 1.0.6 - 2026-09-21
 

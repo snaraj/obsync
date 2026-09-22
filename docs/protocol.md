@@ -253,10 +253,31 @@ nonce derived from the message, two devices publishing the same folder produce
 the same `version_id`, so the second post is the `200` no-op this document
 already specifies for a version the server holds.
 
+**Publication order, for a rename that changes case alone.** A folder rename
+publishes a tombstone for the old path, a record for the new one, and a move
+per file beneath it. For an ordinary rename the moves go FIRST, so the old
+folder is empty on the receiving device by the time its tombstone arrives. For
+a rename that changes only capitalisation the FOLDER RECORD goes first, and
+that order is load-bearing rather than cosmetic: on a host that folds case the
+two spellings are one directory entry, `rename(2)` resolves the directory
+components of a destination and renames only its last component, so no
+per-file move can re-case a directory. The folder record is the only record
+entitled to, and a receiver applies it by renaming the directory entry itself
+and carrying every record beneath it along. A receiver that meets a per-file
+move whose only difference lies in a directory component -- the shape a device
+older than 1.1.0 publishes, which sends no folder record at all -- REFUSES it
+(`decision=case_move_refused reason=folder_case`, one notice per folder) and
+changes nothing, because recording a spelling its own listing contradicts is
+what makes two devices trade the same rename forever.
+
 **`v` is the compatibility contract.** A device that does not know a `v`
 refuses the manifest before reading any other field, writes nothing, and lets
-the feed advance. Plugins 1.0.0 through 1.0.4 do exactly that with `v: 2`, so
-a folder record can never be written as a file at the folder's path there.
+the feed advance. Plugins 1.0.0 through 1.0.6 -- every shipped 1.0.x -- do
+exactly that with `v: 2`, so a folder record can never be written as a file at
+the folder's path there. `parseManifest` is byte-identical at all seven of
+those tags (sha256 `8aa8a2df240bcd8ffba197fc9b2e238bb9b727ef0416007eb526a3082e8aa4de`
+of the function at each), and the copy the tests run against is
+`plugin/test/fixtures/decoder-1.0.x.mjs`, which says how to re-derive both.
 Any later record type must move `v` again for the same reason.
 
 ## Change feed
