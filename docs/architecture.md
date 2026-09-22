@@ -317,7 +317,13 @@ goes through pairing and pairing needs an already-paired device. The
 plugin then generates `VRK` locally. The token is consumed for setup once,
 but it is not discarded: it remains the dashboard's recovery sign-in for
 the life of the server (§4.5), so its custody equals the recovery
-phrase's. The user is shown the
+phrase's. An operator asks the server for it: `obsyncd setup-token` prints
+it on standard output and nothing else, reading the same file through the
+same measured volume pass a start uses and opening no journal, so
+`kubectl exec deploy/obsync -- obsyncd setup-token` answers from a pod that
+is serving and needs no shell in the image. Reading the file off the volume
+remains the fallback for a server that is not running (`docs/recovery.md`).
+The user is shown the
 recovery phrase (the `VRK` as 24 words from a fixed 2048-word list, with a
 checksum) once and must confirm it. Without any paired device and without
 that phrase the vault is unrecoverable by design.

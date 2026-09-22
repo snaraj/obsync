@@ -149,9 +149,24 @@ volume, mode 0600, never logged. It creates the account once and then remains
 the dashboard's recovery sign-in, so keep it as carefully as the recovery
 phrase.
 
-`kubectl exec` and `kubectl cp` cannot read it: the image is distroless and has
-no shell and no `tar` for either of them to use. That is the container this
-project ships on purpose, so the file is read from the volume instead.
+Ask the running server for it. `kubectl exec` runs the image's own binary, so
+the distroless image's missing shell is no obstacle:
+
+```sh
+kubectl exec deploy/obsync --namespace obsidian -- obsyncd setup-token
+```
+
+Standard output is the token and a newline and nothing else, so the command
+pipes into whatever keeps your secrets; every diagnostic goes to standard
+error, and a run with no token to print exits non-zero and says why. It reads
+the file the server read at boot, through the same measured handle, and opens
+no journal, so it needs no downtime, no second pod, and no replica change: the
+pod keeps serving while it answers.
+
+`kubectl cp` still cannot read the file — it needs a `tar` in the container,
+and this image has none — so when there is no running pod to exec into (a
+volume you are preparing, a Deployment scaled to zero, or a pod that refuses
+to start), the file is read from the volume instead:
 
 - **A local volume:** read it on the node that holds it, at the directory the
   PersistentVolume names.

@@ -147,6 +147,15 @@ mode it was read at and is never corrected, since it is not the server's to
 change). A posture that cannot be corrected exits non-zero, exactly as it
 refuses a start.
 
+`obsyncd setup-token` runs that same pass and then reads the setup token
+through the handle the pass measured, printing it on standard output alone
+(`docs/recovery.md`, "Reading the setup token"). It opens no store, so it
+takes no journal lock: it is the one verb that answers while `serve` holds
+the journal, which is what makes `kubectl exec … -- obsyncd setup-token` a
+read an operator can perform on a pod that is serving. Every refusal the
+pass makes on a credential file it makes here too, and a file that does not
+hold 64 hex characters is refused rather than printed.
+
 The chart sets no `fsGroup`. It is a group-sharing mechanism: the kubelet
 would make the mount point and everything under it writable by that group,
 and a mount point a group may write is refused above. The image ships

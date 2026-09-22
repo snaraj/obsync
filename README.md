@@ -237,17 +237,29 @@ never logged, to `v1/setup-token` on the journal volume. The token creates
 the account once, and it then remains the dashboard's recovery sign-in for
 the life of the server (`docs/architecture.md` section 4.5), so keep it
 with the same care as the recovery phrase: anyone holding it can sign in to
-the dashboard and revoke devices. Read it without any helper image, from the
-container's own volume, running or stopped:
+the dashboard and revoke devices. Ask the running server for it — the binary
+prints it, with no shell in the image and no helper of any kind:
+
+```sh
+docker exec obsync obsyncd setup-token
+```
+
+Standard output is the token and a newline, so the command pipes into
+whatever keeps your secrets; everything else it says goes to standard error,
+and it exits non-zero, naming the reason, when no token stands on the volume.
+It reads the file the server read at boot, through the same measured handle,
+and opens no journal, so it answers while the server keeps serving.
+
+A STOPPED container has no process to exec into, and the file is then read
+from the container's own volume, still with no helper image:
 
 ```sh
 docker cp obsync:/data/journal/v1/setup-token - | tar -xO
 ```
 
-On Kubernetes the same file is on the journal volume, and
-[`chart/README.md`](chart/README.md) gives the two ways to read it there —
-`kubectl exec` and `kubectl cp` are not among them, because the image has no
-shell and no `tar` for either to use. The journal
+On Kubernetes those same two reads are `kubectl exec` and the volume itself,
+and [`chart/README.md`](chart/README.md) has both — `kubectl cp` is not among
+them, because it needs a `tar` this image does not have. The journal
 volume also carries the journal itself and, when
 `OBSYNC_SERVER_KEY` is not supplied, the generated server key: back it up as
 the sensitive volume it is.
@@ -336,8 +348,14 @@ command. An explicit value always wins over the file's default, and it is the
 address the plugin checks a generated link against, so it must be the address
 your devices actually use.
 
-The setup token is read the same way as in step 1, from the container compose
-created:
+The setup token is read the same two ways as in step 1. While the service is
+up, the server prints it:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml exec obsync obsyncd setup-token
+```
+
+and from the container compose created, up or down:
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO

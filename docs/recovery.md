@@ -107,6 +107,25 @@ the journal has replayed.
   "every device is gone" case, arriving from the server's side. Back the key up
   the way you back up a password.
 
+## Reading the setup token
+
+Ask the server: `obsyncd setup-token` prints the token that stands on the
+journal volume on standard output, alone and newline terminated, and nothing
+else — every diagnostic is on standard error and the token reaches no log
+line. It reads the same file a start reads, through the same measured volume
+pass, and opens no journal, so it answers from a server that is serving:
+`kubectl exec deploy/obsync -- obsyncd setup-token` on Kubernetes,
+`docker compose exec obsync obsyncd setup-token` under Compose, neither
+needing a shell the image does not have.
+
+It exits non-zero and names the reason when there is nothing to print: no
+token stands on these volumes yet (`reason=absent`, the state between the two
+steps below), the file is not a token (`reason=corrupt`), or the volume itself
+is refused (`reason=unsafe_posture`). Reading the file off the volume — the
+node's copy, or a read-only mount of the claim — stays the fallback for a
+server that is not running; `chart/README.md` and `README.md` have the exact
+commands for each deployment.
+
 ## Minting a new setup token
 
 The token is written once, at first boot, and then stands: it is the
