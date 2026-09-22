@@ -1,5 +1,5 @@
-//! The `obsyncd` command line: `serve` (the default), `check`, `export`, and
-//! `version`.
+//! The `obsyncd` command line: `serve` (the default), `check`, `setup-token`,
+//! `export`, and `version`.
 //!
 //! Configuration is environment only (`docs/architecture.md` 9), so the
 //! command line stays this small on purpose: one verb per operating task and
@@ -9,6 +9,7 @@
 pub mod check;
 pub mod export;
 pub mod serve;
+pub mod setup_token;
 
 use std::path::PathBuf;
 
@@ -20,8 +21,9 @@ use crate::types::DomainId;
 /// What `obsyncd help` prints, on standard error.
 pub const USAGE: &str = "\
 Usage:
-  obsyncd [serve]    serve the sync API, dashboard, and plugin bundle
-  obsyncd check      verify every stored chunk and journal frame
+  obsyncd [serve]        serve the sync API, dashboard, and plugin bundle
+  obsyncd check          verify every stored chunk and journal frame
+  obsyncd setup-token    print the standing setup token, and nothing else
   obsyncd export --domain <32hex> --key <64hex> --out <dir>
   obsyncd version
 
@@ -45,6 +47,12 @@ pub fn run(args: &[String]) -> i32 {
         Some("check") => with_config(|cfg| {
             let log = Log::new(cfg.log_level);
             report(check::run(&cfg, &log), "check", &log)
+        }),
+        // Not through `report`: this verb's standard output is the credential
+        // and nothing else, so it prints and decides for itself.
+        Some("setup-token") => with_config(|cfg| {
+            let log = Log::new(cfg.log_level);
+            setup_token::run(&cfg, &log)
         }),
         Some("export") => match ExportArgs::parse(&args[1..]) {
             Ok(a) => with_config(|cfg| {
@@ -227,6 +235,47 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// Every verb the dispatch answers is a verb `obsyncd help` names.
+    ///
+    /// Read off this file's own source rather than a list typed twice: a verb
+    /// the dispatch takes and the help never mentions is a verb an operator
+    /// cannot discover, and `setup-token` exists for the operator who has no
+    /// other way to ask — no shell in the image to read the file with
+    /// (issue #73).
+    #[test]
+    fn every_verb_the_dispatch_answers_is_named_in_the_usage() {
+        // The dispatch is everything above the first helper, so the scan
+        // never reads this test module's own text.
+        let dispatch = include_str!("mod.rs")
+            .split("fn with_config")
+            .next()
+            .expect("the dispatch stands above the helpers");
+        let needle = "Some(\"";
+        let verbs: Vec<&str> = dispatch
+            .match_indices(needle)
+            .map(|(at, _)| {
+                let rest = &dispatch[at + needle.len()..];
+                &rest[..rest.find('"').expect("a closed string literal")]
+            })
+            .filter(|verb| *verb != "help")
+            .collect();
+        assert!(
+            verbs.len() >= 4,
+            "the dispatch scan read no match arms: {verbs:?}"
+        );
+        for verb in verbs {
+            assert!(
+                USAGE.contains(verb),
+                "the dispatch answers {verb:?} and the usage never names it"
+            );
+        }
+        assert_eq!(
+            run(&args(&["setup-tokens"])),
+            2,
+            "a near miss is not a verb, and the refusal reprints the usage"
+        );
     }
 
     #[test]

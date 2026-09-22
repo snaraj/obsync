@@ -338,7 +338,11 @@ fn nap(app: &Arc<App>, total: Duration) {
 /// reaches the log: the logger takes no free text for a credential
 /// (`doctrine_test`), and a prefix in a log file is a prefix an attacker
 /// reading logs does not have to guess.
-fn setup_token(
+///
+/// [`crate::cli::setup_token`] prints what this left standing, and reads it
+/// through this same pass rather than by name, so the operator's read and
+/// the server's read cannot come to disagree (issue #73).
+pub(crate) fn setup_token(
     cfg: &Config,
     store: &Store,
     posture: &Posture,
