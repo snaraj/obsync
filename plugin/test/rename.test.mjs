@@ -110,14 +110,76 @@ for (const delivery of ["immediate", "deferred"]) {
       false,
       "no version of this file id says deleted",
     );
-    // The phone's own vault told it the pull's trash had happened; it
-    // recognised the echo instead of publishing it (requirement 12).
+    // NOTHING IN THE TRASH (issue #108). Until 1.1.0 the phone applied a
+    // rename by writing the new name and trashing the old, so every rename
+    // made on one device left a full copy of the note in every other
+    // device's system trash -- on mobile, somewhere the user can barely
+    // reach. It is one host rename now, so the trash is untouched and the
+    // bytes are never downloaded again.
+    assert.deepEqual(b.host.trashed, [], `the phone trashed the old name: ${story(server, a, b)}`);
     assert.ok(
-      b.host.logs.some((line) => line.includes("decision=echo_suppressed") && line.includes("event=delete")),
+      b.host.logs.some((line) => line.includes("path_class=file") && line.includes("decision=renamed")),
+      b.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+    );
+    // The phone's own vault told it the pull's RENAME had happened; it
+    // recognised the echo instead of publishing it (requirement 12). This
+    // was a delete echo before the rename became one operation.
+    assert.ok(
+      b.host.logs.some((line) => line.includes("decision=echo_suppressed") && line.includes("event=rename")),
       b.host.logs.filter((line) => line.startsWith("watch")).join(" | "),
     );
   });
 }
+
+/**
+ * THE OTHER HALF OF #108. The atomic rename is taken only when the source
+ * still holds exactly what this device recorded there. A source carrying an
+ * unpushed edit is the delete-versus-edit case (#98), and a rename that moved
+ * that file would carry those bytes away under a name their author never gave
+ * them -- or, once the other device pulled the move back, lose them.
+ */
+test("a rename over an unpushed local edit keeps both, and renames nothing", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate");
+
+  a.host.write("Note.md", BODY, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () =>
+    b.host.text("Note.md") === BODY && settled(a, "Note.md") && settled(b, "Note.md"));
+
+  // The phone stops listening and its user edits the note; the desktop, which
+  // never sees that edit, renames it.
+  b.engine.stop();
+  b.host.write("Note.md", "TYPED ON THE PHONE SENTINEL", 5000);
+  a.host.rename("Note.md", "Renamed.md");
+  await timers.run(STEP_MS, () => settled(a, "Renamed.md"));
+
+  await b.engine.start();
+  await timers.run(STEP_MS, () => [...b.host.files.values()].some((file) =>
+    new TextDecoder().decode(file.bytes) === BODY && b.host.text("Note.md") !== BODY));
+  await timers.run(STEP_MS);
+
+  // WHAT THE COMPOSED HEAD DOES, stated rather than assumed: the phone's own
+  // edit keeps the name it was typed under, and the version the desktop
+  // renamed arrives beside it as a named conflict copy. Both notes exist on
+  // this device, nothing was trashed, and no tombstone exists -- which is
+  // delete-versus-edit keeping both (#98), reached because the source could
+  // not be proved and the rename path was therefore never taken.
+  assert.equal(b.host.text("Note.md"), "TYPED ON THE PHONE SENTINEL",
+    `the phone's own edit was carried away by the rename: ${story(server, a, b)}`);
+  assert.ok(
+    [...b.host.files.entries()].some(([path, file]) =>
+      path !== "Note.md" && new TextDecoder().decode(file.bytes) === BODY),
+    `the renamed version reached the phone under no name at all: ${story(server, a, b)}`,
+  );
+  assert.equal(
+    b.host.logs.some((line) => line.includes("decision=renamed")),
+    false,
+    `a source holding an unpushed edit was renamed: ${b.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
+  assert.deepEqual(b.host.trashed, [], `keeping both trashed something: ${story(server, a, b)}`);
+  assert.deepEqual(tombstones(server), [], `keeping both published a tombstone: ${story(server, a, b)}`);
+});
 
 test("a renamed folder moves every file it holds, and only the folder is tombstoned", async (t) => {
   const { server, timers, a, b, keys: k } = await pair(t, "immediate");

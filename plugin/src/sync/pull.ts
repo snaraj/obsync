@@ -944,6 +944,74 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     }
   }
 
+  // A REMOTE RENAME IS A RENAME HERE TOO (issue #108, owner ruling
+  // 2026-09-22). Applying one as a write at the new name and a removal of the
+  // old left a full copy of every renamed note in the receiving device's
+  // system trash -- on mobile, somewhere the user can barely reach -- and
+  // re-downloaded bytes the device already had. When the source still holds
+  // exactly the content this version carries, the host's own atomic rename IS
+  // the whole operation: no download, nothing trashed, the file id unchanged.
+  //
+  // WHAT MAKES IT SAFE was proved above, not added here. `held` is null, so
+  // the file at the source still carries the `(mtime, size)` this device
+  // recorded for THIS file id, and nothing else wears the destination's name.
+  // The content test is the record's own `sha256`, which `recordAt` writes as
+  // the digest of the version's sids -- so this asks that same question
+  // backwards, and a version with any other content falls through to the
+  // download below.
+  //
+  // THE FALLBACK IS NOT A SECOND PATH. `occupied` and `missing` fall through
+  // to the write-and-trash below exactly as before, which is also what this
+  // code did for every rename until now; the tests in
+  // `plugin/test/rename.test.mjs` name the trash, so a mutant that forces
+  // that fallback for every rename dies there rather than passing quietly.
+  if (
+    localPath !== undefined &&
+    localPath !== manifest.path &&
+    held === null &&
+    local !== undefined &&
+    local.size === manifest.size &&
+    local.sha256 === (await sidDigest(change.sids))
+  ) {
+    // The destination is about to be handed to the host, so it is checked
+    // here for the same reason `materialise` checks it: nothing reaches a
+    // vault operation unchecked.
+    assertVaultPath(manifest.path);
+    // Marked BEFORE the rename: the vault reports it to this plugin's own
+    // handler while `move` is still running, and an unmarked echo is
+    // published as a move of this device's own (`engine.ts`, ECHOES; #96).
+    const echo = `${localPath}\u0000${manifest.path}`;
+    context.moved.add(echo);
+    const outcome = await context.host.move(localPath, manifest.path).catch((error: unknown) => {
+      context.moved.delete(echo);
+      throw error;
+    });
+    if (outcome !== "moved") context.moved.delete(echo);
+    if (outcome === "moved") {
+      // A rename preserves both dimensions, so what the source was PROVED to
+      // hold is what the destination holds; the host's own stat is preferred
+      // where it gives one, and a host that cannot stat does not lose the
+      // record.
+      const landed = (await context.host.stat(manifest.path)) ??
+        { path: manifest.path, mtime: local.mtime, size: local.size };
+      const from = localPath;
+      context.state.forgetPath(from);
+      await recordAt(context, change, manifest.path, landed);
+      // The folder the file moved OUT of may now be empty: the same rule and
+      // the same walk as the removal branch below.
+      await pruneEmptyParents(context, from);
+      context.host.log(
+        `pull path_class=file bytes=${manifest.size} decision=renamed file=${change.file_id} seq=${change.seq}`,
+      );
+      return "applied";
+    }
+    // No path in the line: a name is vault content (requirement 6), so the
+    // issue's suggested `from=`/`to=` fields are deliberately not written.
+    context.host.log(
+      `pull path_class=file decision=rename_fallback reason=${outcome} file=${change.file_id} seq=${change.seq}`,
+    );
+  }
+
   const started = context.now();
   const landed = await materialise(context, manifest);
   if (localPath !== undefined && localPath !== manifest.path) {
