@@ -969,7 +969,13 @@ test("a tombstone for a file this device no longer tracks leaves the path alone"
   host.seed(NOTE, MINE, 4000);
   assert.equal(await applyChange(context, await tombstone()), "skipped");
   assert.equal(host.text(NOTE), MINE);
-  assert.deepEqual(host.trashed, [NOTE], "only the first, tracked deletion trashed anything");
+  // THE EMPTY PARENT GOES WITH IT (issue #104). A folder this device holds no
+  // record for exists only to hold the file that is leaving, and nothing will
+  // ever tombstone it, so the pull path takes it once the last file under it
+  // is gone. A vault that has finished a startup reconciliation has a record
+  // for every folder and the walk stops at the first one, which is why a
+  // folder on a real device goes only by its own tombstone.
+  assert.deepEqual(host.trashed, [NOTE, "Notes"], "only the first, tracked deletion trashed anything");
 });
 
 test("a plain remote delete still trashes the note and forgets it", async () => {
@@ -986,7 +992,13 @@ test("a plain remote delete still trashes the note and forgets it", async () => 
   assert.equal(await applyChange(context, tombstone), "deleted");
 
   assert.equal(host.files.has(NOTE), false, "the note is gone from the vault");
-  assert.deepEqual(host.trashed, [NOTE], "through the host's trash");
+  // THE EMPTY PARENT GOES WITH IT (issue #104). A folder this device holds no
+  // record for exists only to hold the file that is leaving, and nothing will
+  // ever tombstone it, so the pull path takes it once the last file under it
+  // is gone. A vault that has finished a startup reconciliation has a record
+  // for every folder and the walk stops at the first one, which is why a
+  // folder on a real device goes only by its own tombstone.
+  assert.deepEqual(host.trashed, [NOTE, "Notes"], "through the host's trash");
   assert.equal(state.fileByPath(NOTE), undefined, "and the path is forgotten");
   assert.equal(host.notices.length, 0, "an ordinary deletion says nothing");
   assert.ok(host.logs.some((entry) => entry.includes("path_class=tombstone decision=deleted")));

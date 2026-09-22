@@ -32,8 +32,28 @@ const FOREIGN = "ffffffffffffffffffffffffffffffff";
 const BODY = "# A note\nthat must survive a rename of its folder's case\n";
 const OTHER = "second note\n";
 
-/** Every tombstone the server holds: what a renamed file must never produce. */
-const tombstones = (server) => server.journal.filter((frame) => frame.deleted);
+const c = require("../build/crypto.js");
+
+/**
+ * Every NOTE tombstone the server holds: what a renamed file must never
+ * produce. Folder records are tombstoned in their own right from 1.1.0
+ * (#104) -- a folder record IS its path, so renaming a folder retires the
+ * old record and publishes the new one, and that is how the other device
+ * ends with ONE folder rather than two. Only the manifest says which kind a
+ * frame is, so it is decrypted rather than guessed at from the frame.
+ */
+const tombstones = async (server, manifestKey) => {
+  const out = [];
+  for (const frame of server.journal) {
+    if (!frame.deleted) continue;
+    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
+    const manifest = JSON.parse(await c.decryptManifest(
+      manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
+    ));
+    if (manifest.v !== 2) out.push(frame);
+  }
+  return out;
+};
 
 const story = (server, a, b) =>
   [`journal=${server.journal.map((frame) => `${frame.seq}${frame.deleted ? ":tombstone" : ""}`).join(",")}`,
@@ -72,7 +92,7 @@ async function seeded(t, options, folder = "Team docs") {
 }
 
 test("a case-only folder rename the desktop publishes leaves the phone one folder", async (t) => {
-  const { server, timers, a, b, ids } = await seeded(t, { caseSensitiveA: false });
+  const { server, timers, a, b, ids, keys } = await seeded(t, { caseSensitiveA: false });
 
   a.host.renameFolder("Team docs", "team docs");
   await timers.run(STEP_MS, () =>
@@ -80,7 +100,7 @@ test("a case-only folder rename the desktop publishes leaves the phone one folde
     settled(b, "team docs/One.md") && settled(b, "team docs/Two.md"));
   await timers.run(STEP_MS);
 
-  assert.deepEqual(tombstones(server), [], `a case-only rename published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(await tombstones(server, keys.manifestKey), [], `a case-only rename published a tombstone: ${story(server, a, b)}`);
   assert.deepEqual(
     [...b.host.files.keys()].sort(),
     ["team docs/One.md", "team docs/Two.md"],
@@ -92,11 +112,11 @@ test("a case-only folder rename the desktop publishes leaves the phone one folde
     ids,
     `the phone copied the notes instead of moving them: ${story(server, a, b)}`,
   );
-  assert.equal(server.vaultFiles().length, 2, `files were duplicated: ${story(server, a, b)}`);
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
 });
 
 test("a case-only folder rename the desktop only DISCOVERS leaves the phone one folder", async (t) => {
-  const { server, timers, a, b, ids } = await seeded(t, { caseSensitiveA: false });
+  const { server, timers, a, b, ids, keys } = await seeded(t, { caseSensitiveA: false });
 
   quietRenameFolder(a.host, "Team docs", "team docs");
   await a.engine.syncNow();
@@ -104,7 +124,7 @@ test("a case-only folder rename the desktop only DISCOVERS leaves the phone one 
     b.host.text("team docs/One.md") === BODY && b.host.text("team docs/Two.md") === OTHER);
   await timers.run(STEP_MS);
 
-  assert.deepEqual(tombstones(server), [], `a discovered case-only rename published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(await tombstones(server, keys.manifestKey), [], `a discovered case-only rename published a tombstone: ${story(server, a, b)}`);
   assert.deepEqual(
     [...b.host.files.keys()].sort(),
     ["team docs/One.md", "team docs/Two.md"],
@@ -115,17 +135,17 @@ test("a case-only folder rename the desktop only DISCOVERS leaves the phone one 
     ids,
     `the rename was published as two new files: ${story(server, a, b)}`,
   );
-  assert.equal(server.vaultFiles().length, 2, `files were duplicated: ${story(server, a, b)}`);
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
 });
 
 test("a case-only rename on the phone reaches the case-insensitive desktop as one entry", async (t) => {
-  const { server, timers, a, b, ids } = await seeded(t, { caseSensitiveA: false });
+  const { server, timers, a, b, ids, keys } = await seeded(t, { caseSensitiveA: false });
 
   b.host.renameFolder("Team docs", "team docs");
   await timers.run(STEP_MS, () => settled(a, "team docs/One.md") && settled(a, "team docs/Two.md"));
   await timers.run(STEP_MS);
 
-  assert.deepEqual(tombstones(server), [], `the incoming case-only rename published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(await tombstones(server, keys.manifestKey), [], `the incoming case-only rename published a tombstone: ${story(server, a, b)}`);
   assert.equal(a.host.text("team docs/One.md"), BODY, `the desktop lost the note: ${story(server, a, b)}`);
   assert.equal(a.host.text("team docs/Two.md"), OTHER, `the desktop lost the note: ${story(server, a, b)}`);
   assert.deepEqual(
@@ -158,7 +178,7 @@ test("a case-only rename on the phone reaches the case-insensitive desktop as on
     a.host.logs.some((line) => line.includes("decision=echo_suppressed") && line.includes("event=rename")),
     a.host.logs.filter((line) => line.startsWith("watch")).join(" | "),
   );
-  assert.equal(server.vaultFiles().length, 2, `files were duplicated: ${story(server, a, b)}`);
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
 });
 
 // --- the host models themselves -----------------------------------------
@@ -284,7 +304,7 @@ test("a case-only move is refused, not forced, when another file wears the desti
 });
 
 test("a deletion beside a note whose name differs only in case is still a deletion", async (t) => {
-  const { server, timers, a, b } = await seeded(t, {});
+  const { server, timers, a, b, keys } = await seeded(t, {});
   const going = a.state.fileByPath("Team docs/One.md").fileId;
 
   // The user deletes one note in Finder and types a DIFFERENT one whose name
@@ -296,8 +316,8 @@ test("a deletion beside a note whose name differs only in case is still a deleti
   await timers.run(STEP_MS, () => b.host.text("team docs/One.md") === "a different note entirely\n");
   await timers.run(STEP_MS);
 
-  assert.equal(tombstones(server).length, 1, `the deletion was not published: ${story(server, a, b)}`);
-  assert.equal(tombstones(server)[0].file_id, going, "a tombstone was published for the wrong file");
+  assert.equal((await tombstones(server, keys.manifestKey)).length, 1, `the deletion was not published: ${story(server, a, b)}`);
+  assert.equal((await tombstones(server, keys.manifestKey))[0].file_id, going, "a tombstone was published for the wrong file");
   assert.equal(b.host.text("Team docs/One.md"), null, "the other device kept a deleted note");
   assert.notEqual(
     a.state.fileByPath("team docs/One.md").fileId,
@@ -307,7 +327,7 @@ test("a deletion beside a note whose name differs only in case is still a deleti
 });
 
 test("a host that lists two spellings and answers for a third renames nothing", async (t) => {
-  const { server, timers, a, b } = await seeded(t, {});
+  const { server, timers, a, b, keys } = await seeded(t, {});
   const going = a.state.fileByPath("Team docs/One.md").fileId;
   const listing = await a.host.list();
 
@@ -373,14 +393,14 @@ test("a rename that changes case AND text takes the ordinary move, on both host 
 test("a folder renamed from NFD to NFC moves as an ordinary rename, not a case change", async (t) => {
   const nfd = "Cafe\u0301 notes";
   const nfc = "Caf\u00e9 notes";
-  const { server, timers, a, b, ids } = await seeded(t, { caseSensitiveA: false }, nfd);
+  const { server, timers, a, b, ids, keys } = await seeded(t, { caseSensitiveA: false }, nfd);
 
   a.host.renameFolder(nfd, nfc);
   await timers.run(STEP_MS, () =>
     b.host.text(`${nfc}/One.md`) === BODY && settled(b, `${nfc}/One.md`));
   await timers.run(STEP_MS);
 
-  assert.deepEqual(tombstones(server), [], `a normalisation rename published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(await tombstones(server, keys.manifestKey), [], `a normalisation rename published a tombstone: ${story(server, a, b)}`);
   assert.deepEqual(
     [...b.host.files.keys()].sort(),
     [`${nfc}/One.md`, `${nfc}/Two.md`],
@@ -474,7 +494,7 @@ test("the startup scan drops the ghost record, publishes nothing, and disarms th
 
   assert.equal(a.state.fileByPath("Team docs/One.md"), undefined, "the ghost record is still armed");
   assert.equal(a.host.text("team docs/One.md"), BODY, "the scan removed the live note");
-  assert.deepEqual(tombstones(server), [], `the scan published a tombstone: ${story(server, a, b)}`);
+  assert.deepEqual(await tombstones(server, keys.manifestKey), [], `the scan published a tombstone: ${story(server, a, b)}`);
   assert.ok(
     a.host.logs.some((line) => line.includes("decision=case_ghost_forgotten")),
     a.host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),

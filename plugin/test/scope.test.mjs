@@ -996,7 +996,7 @@ async function save(rig, folders) {
 
 test("widening to a second folder publishes its local notes and pulls the ones only the server had", async (t) => {
   const rig = await widening(t);
-  const { server, timers, a, b, cursor, remoteId } = rig;
+  const { server, timers, a, b, cursor, remoteId, keys } = rig;
 
   await save(rig, ["Notes", "Work"]);
   // Every RECORD this test goes on to read, not only every file: the pull
@@ -1015,7 +1015,8 @@ test("widening to a second folder publishes its local notes and pulls the ones o
   assert.equal(a.state.fileByPath("Notes/In.md").versionId, b.state.fileByPath("Notes/In.md").versionId,
     "the replay did not fork the note this device already had");
   assert.deepEqual(server.journal.filter((frame) => frame.deleted), [], "widening published a tombstone");
-  assert.equal(server.vaultFiles().length, 4, "no file was duplicated by the replay");
+  // Notes only: the folders themselves are records of their own from 1.1.0.
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 4, "no file was duplicated by the replay");
   assert.ok(
     a.host.logs.some((line) => line.includes("scope decision=saved mode=selected_folders folders=2") &&
       line.includes(`replay=from_zero from_seq=${cursor}`)),

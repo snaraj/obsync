@@ -67,10 +67,22 @@ async function postedPaths(server, k) {
     const manifest = JSON.parse(await c.decryptManifest(
       k.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
     ));
-    paths.push({ path: manifest.path, deleted: manifest.deleted, fileId: frame.file_id });
+    paths.push({ path: manifest.path, deleted: manifest.deleted, fileId: frame.file_id, folder: manifest.v === 2 });
   }
   return paths;
 }
+
+/**
+ * The NOTE versions among them. Folders are published in their own right
+ * from 1.1.0 (#104), so startup reconciliation posts a record for every
+ * folder this vault holds; these tests are about what happens to the notes,
+ * and each one asserts separately that NOTHING was tombstoned, folders
+ * included, so the split hides nothing.
+ */
+const notes = (posted) => posted.filter((version) => !version.folder);
+
+/** How many NOTE versions the server holds. Folder records are not notes. */
+const noteVersions = async (server, k) => notes(await postedPaths(server, k)).length;
 
 /**
  * A host whose OWN listing is the filesystem and whose `list()` is a stale
@@ -125,12 +137,14 @@ test("a move Obsidian never reported converges as a MOVE within one scan", async
   assert.equal(state.fileByPath("Notes/Moved.md"), undefined, "the old path is forgotten");
   assert.equal(state.fileByPath("Notes/Archive/Moved.md").fileId, fileId, "the same file id moved");
   const posted = await postedPaths(server, k);
+  assert.equal(posted.some((version) => version.deleted), false,
+    "the scan published a tombstone, for a note or for a folder");
   assert.deepEqual(
-    posted.map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
+    notes(posted).map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
     ["+Notes/Moved.md", "+Notes/Archive/Moved.md"],
     "a move, never a tombstone and a new file",
   );
-  assert.equal(new Set(posted.map((version) => version.fileId)).size, 1, "one file id throughout");
+  assert.equal(new Set(notes(posted).map((version) => version.fileId)).size, 1, "one file id throughout");
   assert.ok(
     latency <= SCAN_MS + 5000,
     `it converged within one scan interval plus the push (${latency} ms of ${SCAN_MS} ms)`,
@@ -152,7 +166,7 @@ test("the periodic scan never publishes a tombstone, whatever its listing omits"
   vault.seed("Notes/Kept.md", "a note nobody touched\n", 1000);
   await engine.start();
   await timers.run(100, () => state.fileByPath("Notes/Kept.md") !== undefined);
-  const versions = server.journal.length;
+  const versions = await noteVersions(server, rigged.keys);
 
   // A directory the scan could not read comes back as an absent file. It is
   // not a deletion, and the scan may never treat it as one.
@@ -163,7 +177,7 @@ test("the periodic scan never publishes a tombstone, whatever its listing omits"
   engine.stop();
   assert.ok(scans >= 2, `the scan really ran over the empty listing (${scans})`);
 
-  assert.equal(server.journal.length, versions, "no version was posted at all");
+  assert.equal(await noteVersions(server, rigged.keys), versions, "no version was posted at all");
   assert.equal((await postedPaths(server, k)).some((version) => version.deleted), false);
   assert.notEqual(state.fileByPath("Notes/Kept.md"), undefined, "and the record is untouched");
 });
@@ -192,7 +206,7 @@ test("two files sharing a size and an mtime are never paired as a move", async (
 
   const posted = await postedPaths(server, k);
   assert.equal(posted.some((version) => version.deleted), false, "the scan still publishes no tombstone");
-  const ids = new Set(posted.map((version) => version.fileId));
+  const ids = new Set(notes(posted).map((version) => version.fileId));
   assert.equal(ids.size, 3, "three file ids: the original and two new notes, none of them guessed");
   assert.ok(host.logs.some((line) => /^scan decision=queued .*moved=0 /.test(line)), host.logs.join(" | "));
 });
@@ -219,7 +233,7 @@ test("a listing that spells a recorded name differently is never a move", async 
   await engine.start();
   await timers.run(100, () => state.fileByPath(NFC) !== undefined);
   const fileId = state.fileByPath(NFC).fileId;
-  const versions = server.journal.length;
+  const versions = await noteVersions(server, rigged.keys);
 
   // The host's own listing reports the decomposed spelling: the same bytes,
   // the same (mtime, size), a name the record has never held. Paired as a
@@ -237,7 +251,8 @@ test("a listing that spells a recorded name differently is never a move", async 
   await timers.run(1000);
   engine.stop();
 
-  assert.equal(server.journal.length, versions, "no rename was published, and no version at all");
+  assert.equal(await noteVersions(server, rigged.keys), versions,
+    "no rename was published, and no version at all");
   assert.equal(state.fileByPath(NFD), undefined, "the other spelling was never queued");
   assert.equal(state.fileByPath(NFC)?.fileId, fileId, "and the record still holds the name Obsidian has");
   assert.ok(
@@ -277,11 +292,13 @@ test("a spelling twin is a candidate for nothing else either", async () => {
   assert.equal(state.fileByPath(NFD), undefined, "the twin was never queued");
   assert.equal(state.fileByPath(NFC)?.fileId, fileId, "and the record never moved");
   const posted = await postedPaths(server, k);
+  assert.equal(posted.some((version) => version.deleted), false,
+    "the scan published a tombstone, for a note or for a folder");
   assert.deepEqual(
-    posted.map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
+    notes(posted).map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
     [`+${NFC}`, "+Notes/Nueva.md"],
   );
-  assert.equal(new Set(posted.map((version) => version.fileId)).size, 2, "two notes, two ids: nothing was renamed");
+  assert.equal(new Set(notes(posted).map((version) => version.fileId)).size, 2, "two notes, two ids: nothing was renamed");
 });
 
 test("an accented note that really moved is still one rename", async () => {
@@ -308,8 +325,10 @@ test("an accented note that really moved is still one rename", async () => {
   assert.equal(state.fileByPath(NFC), undefined, "the old path is forgotten");
   assert.equal(state.fileByPath(moved).fileId, fileId, "the same file id moved");
   const posted = await postedPaths(server, k);
+  assert.equal(posted.some((version) => version.deleted), false,
+    "the scan published a tombstone, for a note or for a folder");
   assert.deepEqual(
-    posted.map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
+    notes(posted).map((version) => `${version.deleted ? "-" : "+"}${version.path}`),
     [`+${NFC}`, `+${moved}`],
     "exactly one rename, and never a tombstone",
   );
@@ -481,7 +500,7 @@ test("a path the scan proposes is still refused by the filesystem gate before an
   engine.stop();
 
   assert.equal(state.fileByPath("Linked/through.md"), undefined, "it was never queued");
-  assert.equal(server.journal.length, 1, "and never published");
+  assert.equal(await noteVersions(server, rigged.keys), 1, "and never published");
   assert.match(host.logs.find((line) => line.startsWith("scan decision=queued")), /skipped=[1-9]/);
 });
 
