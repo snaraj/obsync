@@ -45,6 +45,17 @@ exception above. Rename either of them afterwards as you would any note -- the
 copy name is a starting point, not a fixture. If you already renamed one of the
 pair yourself, there is no longer a collision and nothing here applies to it.
 
+**If you are typing in that note at the moment it happens.** The note is left
+exactly where it is, with the text you just typed, and obsync says so instead
+of renaming it; the other device's note is kept beside it under a name of its
+own, the way 1.0.6 kept it. On a computer that holds for text you type at any
+moment of the rename, including while the old copy is being cleared away. On a
+phone or tablet the same note is also left alone when it is larger than that
+device's per-file limit (512 MB unless you changed it), because copying it
+there would mean holding the whole note in memory; the pair keeps one name on
+that device until the note is smaller or you raise the limit, and both notes
+are still there.
+
 **Two smaller things behind that.**
 
 - A note a device has never uploaded is now uploaded before obsync decides
