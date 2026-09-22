@@ -1,3 +1,4 @@
+# M24: the settled write records a fresh stat
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -1239,7 +1239,8 @@

@@ -1,3 +1,4 @@
+# M23: recordAt stats the file itself
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -1353,11 +1353,12 @@

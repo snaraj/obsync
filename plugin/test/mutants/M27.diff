@@ -1,3 +1,4 @@
+# M27: the record is never saved
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -1360,7 +1360,6 @@

@@ -1,3 +1,4 @@
+# M22: the digest proof is bound to a fresh stat
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -890,9 +890,7 @@

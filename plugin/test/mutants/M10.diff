@@ -1,0 +1,13 @@
+# M10: an unidentified file is never settled
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1305,8 +1305,7 @@
+     context.host.log(`pull path_class=file decision=not_identified file=${fileId}`);
+     return false;
+   }
+-  const record = context.state.fileByPath(path);
+-  return record !== undefined && record.fileId !== fileId;
++  return false;
+ }
+ 
+ /**

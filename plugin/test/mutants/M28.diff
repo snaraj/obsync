@@ -1,0 +1,17 @@
+# M28: any held answer enters the rule, not only one about the destination
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -536,12 +536,8 @@
+     // does, the rule hands the version to `updateSettled`, which re-checks
+     // that source before writing a byte. Trashing a source that holds an
+     // unpushed edit is the loss issue #98 is about.
+-    if (atTarget === "other_file" || atTarget === "no_record") {
+-      const decided = await sameNameTiebreak(context, change, manifest, atTarget);
++      const decided = await sameNameTiebreak(context, change, manifest, held as "other_file" | "no_record");
+       if (decided !== null) return decided;
+-    } else {
+-      return await keepBoth(context, change, manifest);
+-    }
+   }
+ 
+   const started = context.now();

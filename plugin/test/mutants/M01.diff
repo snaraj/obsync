@@ -1,3 +1,4 @@
+# M01: the tie-break comparison reversed
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -1194,7 +1194,7 @@

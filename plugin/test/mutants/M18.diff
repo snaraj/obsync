@@ -1,11 +1,12 @@
+# M18: the move reads the whole file again
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1093,7 +1093,7 @@
+@@ -1105,7 +1105,7 @@
    try {
      landed = await writeBeside(
        context, from, context.deviceNameFor(context.deviceId), when, before.size, record.mtime,
 -      async (writer) => { await copyThrough(context, from, before.size, writer); },
 +      async (writer) => { await writer.write(await context.host.read(from)); },
        // Never reused: this is a MOVE of a file that must really arrive.
-       async () => false,
+       async () => null,
      );
