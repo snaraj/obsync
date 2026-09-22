@@ -721,18 +721,30 @@ export class ObsidianHost implements VaultHost {
    * taken on the line above this one. What the removal takes then is bytes
    * that exist on this device and NOWHERE else (round 3, finding 1).
    *
-   * So a caller that says WHICH CONTENT it is removing gets a HOLD first: a
-   * second name for the same inode, made with `link`, which cannot follow a
-   * symlink and cannot replace anything. The vault's name goes; the inode
-   * stays alive under ours; and an in-place save -- the shape an editor save
-   * has here -- is readable through the hold afterwards. A hold whose
-   * metadata no longer matches what the caller copied is linked BACK under
-   * the vault name and answered `kept`, so the save survives in the vault it
-   * was made in; one that still matches is dropped and the removal stands.
+   * AND NO CHECK BINDS A PATH-BASED REMOVAL. Checking the name and then
+   * handing that NAME to the vault leaves the vault free to remove whatever
+   * is at it when it gets there -- a save that replaces the file inside the
+   * removal is unlinked, and the hold, which still has the original inode,
+   * happily agrees that nothing changed (round 3, finding 1, third pass).
+   * The answer is not another check: it is never to aim the destructive call
+   * at a name an editor writes to.
    *
-   * Mobile has no second name to give. There the window is narrowed to the
-   * last instant this device controls and is NOT closed, which is what
-   * `decision=trash_unheld` in the log says.
+   * So the removal is a MOVE and then a delete of what moved. A caller that
+   * says WHICH CONTENT it is removing gets a HOLD -- a second name for that
+   * inode, made with `link`, which cannot follow a symlink and cannot
+   * replace anything -- and then the vault name is RENAMED to a hidden name
+   * of ours. Rename is atomic: it takes whatever inode is at the name at
+   * that instant and leaves the name free, so a save landing afterwards
+   * creates a fresh file there that this device never touches. What moved is
+   * then compared with what was copied, by device and inode as well as by
+   * metadata; a mismatch means a replacement moved instead, and it is put
+   * BACK under the vault name (or kept beside it) and answered `kept`. Only
+   * an entry that matches is handed to the vault's own deletion, by its
+   * hidden name, where no editor is writing.
+   *
+   * Mobile has no second name to give, and a filesystem can refuse either
+   * primitive. Those devices remove NOTHING and answer `unheld`, which is
+   * what `decision=kept reason=unheld` in the log says.
    */
   async trash(path: string, expect?: VaultStat): Promise<TrashResult> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
@@ -787,23 +799,26 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
-   * The bound removal, in three checks around one destructive call.
+   * The bound removal: move the file out of the vault's way, prove what
+   * moved, and only then delete it -- by the name it moved to.
    *
-   * BEFORE: the name must still MEAN the file we hold -- same device, same
-   * inode -- and that file must still hold the content the caller copied. An
-   * editor that saves by writing a temp file and renaming it over the note
-   * leaves a DIFFERENT file at the name, whose bytes the hold does not have
-   * and no version holds either; removing that is the same loss by another
-   * route. Either mismatch keeps the file and removes nothing.
+   * The rename is the whole repair. It is atomic, it takes whatever inode is
+   * at the name at that instant, and it leaves the name FREE: an editor that
+   * saves a moment later writes a new file there, which this device has no
+   * reason to touch and never names to the vault. Every check after it is
+   * about a file nothing else can reach.
    *
-   * DURING: the hold keeps the inode alive whatever the vault does with the
-   * name -- system bin, `.trash`, or permanent deletion, which is only an
-   * unlink of the name we are not holding.
+   * What moved is compared with what the caller copied -- device and inode
+   * from the hold, size and modification time from the caller -- because the
+   * rename may have moved a REPLACEMENT that landed before it. A replacement
+   * holds bytes no version holds, so it goes back under the vault name, or
+   * beside it when the name has been taken again, and the answer is `kept`.
    *
-   * AFTER: the hold is the source of truth. It is the same inode the removal
-   * took, so a save that landed inside the removal is readable through it; a
-   * hold whose metadata no longer matches what was copied is linked BACK
-   * under the vault name, and the answer is `kept`.
+   * Only a match is handed to the vault's own deletion, by the hidden name.
+   * A vault that does not index that name deletes it outright rather than
+   * moving it to the user's bin; by then its bytes are the ones this device
+   * has already published beside it, so what the "Deleted files" preference
+   * governs -- the note the user keeps -- is untouched.
    */
   private async removeHeld(
     desktop: DesktopVault,
@@ -817,48 +832,95 @@ export class ObsidianHost implements VaultHost {
       await fs.promises.unlink(hold).catch(() => undefined);
     };
     const held = await walker(fs).lstat(hold);
-    const before = await walker(fs).lstat(found.target);
     const holds = (stat: PathStat | null): boolean =>
       stat !== null && Math.round(stat.mtimeMs) === expect.mtime && stat.size === expect.size;
-    if (held === null || !sameFile(held, before) || !holds(before)) {
+    if (held === null) {
+      this.log("host path_class=file decision=kept reason=hold_gone");
+      return "kept";
+    }
+    const name = `.obsync-gone-${hex(randomBytes(8))}.tmp`;
+    const moved = `${found.target.slice(0, found.target.lastIndexOf(desktop.path.sep))}${desktop.path.sep}${name}`;
+    try {
+      await fs.promises.rename(found.target, moved);
+    } catch {
+      // Nothing moved, so nothing is removed and the name is still the
+      // user's. A host that cannot make this move cannot make the promise.
+      this.log("host path_class=file decision=kept reason=move_refused");
+      await drop();
+      return "unheld";
+    }
+    const gone = await walker(fs).lstat(moved);
+    if (!sameFile(held, gone) || !holds(gone)) {
       this.log(
-        `host path_class=file decision=kept reason=${sameFile(held, before) ? "source_changed" : "source_replaced"}`,
+        `host path_class=file decision=kept reason=${sameFile(held, gone) ? "source_changed" : "source_replaced"}`,
       );
+      await this.putBack(desktop, moved, found.target);
       await drop();
       return "kept";
     }
-    await this.remove(path);
     const refusal = await chainRefusal(found.chain, walker(fs));
     if (refusal !== null) {
-      // The hold is deliberately LEFT here: putting a file back through a
-      // chain that was swapped under us is how a restore writes outside the
-      // vault. The bytes are on disk; the name they are under is not.
+      // Putting a file back through a chain that was swapped under us is how
+      // a restore writes outside the vault, so the bytes stay where they are
+      // and the refusal is raised.
       this.log("host path_class=file decision=restore_failed reason=chain");
       throw new VaultPathError(refusal);
     }
+    // The destructive call, at last, and aimed at a name no editor writes to.
+    await this.remove(`${path.slice(0, path.lastIndexOf("/") + 1)}${name}`);
+    // And the hold has the last word, because a rename does not close an
+    // editor's DESCRIPTOR: a program that still holds the file open writes
+    // through it wherever its name has gone, including between the proof
+    // above and the removal. The hold is that same inode, so what it says
+    // now is what was actually removed; anything but the copied content goes
+    // back under the vault name.
     const after = await walker(fs).lstat(hold);
     if (after === null) {
-      // Our own name for it is gone as well: there is nothing to put back,
-      // and nothing this device can honestly say about what was removed.
       this.log("host path_class=file decision=restore_failed reason=hold_gone");
       return "removed";
     }
     if (holds(after)) {
       await drop();
-      await this.proveRemoved(desktop, found);
       return "removed";
     }
-    try {
-      // Create-only again: whatever stands at that name now is not ours to
-      // replace, and the bytes stay under the hold when it does.
-      await fs.promises.link(hold, found.target);
-    } catch {
-      this.log("host path_class=file decision=restore_failed reason=name_taken");
-      return "kept";
-    }
-    await drop();
     this.log("host path_class=file decision=kept reason=restored");
+    await this.putBack(desktop, hold, found.target, "link");
+    await drop();
     return "kept";
+  }
+
+  /**
+   * The entry that moved was not the one the caller copied, so it holds
+   * bytes this device has not published anywhere: it goes back under the
+   * vault name it came from. If that name has been taken again in the
+   * meantime -- an editor recreating it is exactly why we are here -- the
+   * file is kept BESIDE it under a visible name instead, because a file the
+   * user cannot see is a file they have lost.
+   */
+  private async putBack(
+    desktop: DesktopVault,
+    source: string,
+    target: string,
+    how: "rename" | "link" = "rename",
+  ): Promise<void> {
+    const fs = desktop.fs;
+    const dot = target.lastIndexOf(".");
+    const cut = dot > target.lastIndexOf(desktop.path.sep) ? dot : target.length;
+    const names = [target, `${target.slice(0, cut)} (obsync kept)${target.slice(cut)}`];
+    for (const name of names) {
+      if ((await walker(fs).lstat(name)) !== null) continue;
+      try {
+        // `link` cannot replace anything and `rename` is checked against an
+        // absent name first: either way nothing standing there is touched.
+        if (how === "link") await fs.promises.link(source, name);
+        else await fs.promises.rename(source, name);
+        if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
+        return;
+      } catch {
+        // The next name, or the log line below.
+      }
+    }
+    this.log("host path_class=file decision=restore_failed reason=name_taken");
   }
 
   /**

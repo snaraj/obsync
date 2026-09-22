@@ -1,15 +1,17 @@
-# M50: the name is not re-identified against the hold before the removal
+# M50: a move the filesystem refused is removed by its live name anyway
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -820,10 +820,7 @@
-     const before = await walker(fs).lstat(found.target);
-     const holds = (stat: PathStat | null): boolean =>
-       stat !== null && Math.round(stat.mtimeMs) === expect.mtime && stat.size === expect.size;
--    if (held === null || !sameFile(held, before) || !holds(before)) {
--      this.log(
--        `host path_class=file decision=kept reason=${sameFile(held, before) ? "source_changed" : "source_replaced"}`,
--      );
-+    if (held === null) {
+@@ -843,11 +843,9 @@
+     try {
+       await fs.promises.rename(found.target, moved);
+     } catch {
+-      // Nothing moved, so nothing is removed and the name is still the
+-      // user's. A host that cannot make this move cannot make the promise.
+-      this.log("host path_class=file decision=kept reason=move_refused");
++      await this.remove(path);
        await drop();
-       return "kept";
+-      return "unheld";
++      return "removed";
      }
+     const gone = await walker(fs).lstat(moved);
+     if (!sameFile(held, gone) || !holds(gone)) {

@@ -49,9 +49,22 @@ pair yourself, there is no longer a collision and nothing here applies to it.
 **If you are typing in that note at the moment it happens.** The note is left
 exactly where it is, with the text you just typed, and obsync says so instead
 of renaming it; the other device's note is kept beside it under a name of its
-own, the way 1.0.6 kept it. That holds for text you type at any moment of the
-rename, including while the old copy is being cleared away, and whether your
-editor saves into the note or replaces it.
+own, the way 1.0.6 kept it. That holds whether your editor saves into the note
+or replaces it, and at every step of the rename -- because obsync never aims a
+deletion at the name you are typing into. It moves the note aside first, to a
+hidden name of its own; checks that what moved is the copy it made, and puts
+it straight back if it is not; and only then clears that copy away, by the
+hidden name. A note your editor recreates under the old name while this is
+going on is kept as it is, and the pair is settled by keeping both instead.
+
+**The one gap left, said plainly.** A save that lands in the instant between
+obsync copying your note and moving it aside, AND leaves both the note's size
+and its modification time (which the disk keeps to the second) exactly as they
+were, cannot be told apart from no save at all -- so that text can be lost.
+Every other moment is covered. One more detail worth knowing: the copy obsync
+clears away is deleted outright rather than sent to whatever your "Deleted
+files" setting points at, because by then its text has already been written
+beside it under the new name.
 
 **On phones and tablets, obsync renames nothing at all.** Settling the pair
 means moving one note aside, and moving a note means removing the old copy

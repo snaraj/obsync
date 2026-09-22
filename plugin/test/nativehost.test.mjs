@@ -90,9 +90,12 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
       await fsPromises.link(from, to);
       if (hooks.afterLink) await hooks.afterLink(root, from, to);
     },
-    rename: async (...args) => {
-      await fsPromises.rename(...args);
-      if (hooks.afterRename) await hooks.afterRename(root, ...args);
+    rename: async (from, to) => {
+      // Before the rename lands is the only window left in which a save can
+      // reach the file the removal is about; the hooks open it on purpose.
+      if (hooks.beforeRename) await hooks.beforeRename(root, from, to);
+      await fsPromises.rename(from, to);
+      if (hooks.afterRename) await hooks.afterRename(root, from, to);
     },
   };
   /** Obsidian's mobile surface: no filesystem, one adapter, one create. */
@@ -234,8 +237,11 @@ test("a native move preserves an edit arriving inside the trash operation", asyn
   let injected = false;
   const r = await native(t, {
     beforeTrash: async (root, path) => {
-      // INSIDE `trashFile`, which no check made before the call can see.
-      if (path !== NOTE || injected) return;
+      // INSIDE the destructive call, and into the file it is about: a rename
+      // does not close an editor's descriptor, so a program that still holds
+      // the note open writes THERE, wherever its name has gone. Nothing this
+      // device checked before the call can see it.
+      if (injected) return;
       injected = true;
       writeFileSync(join(root, path), EDIT);
       utimesSync(join(root, path), 9.999, 9.999);
@@ -270,9 +276,16 @@ test("an ordinary native move drops its hold and leaves the copy behind", async 
   assert.equal(await applyChange(r.context, frame), "applied");
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), THEIRS, "the incoming version did not take the name");
   assert.ok(r.contents().includes(MINE), "this device's own note was not moved aside");
-  assert.deepEqual(r.trashed.map((entry) => entry.path), [NOTE]);
+  assert.equal(r.trashed.length, 1, "the removal happened once");
   assert.equal(r.trashed[0].bytes, MINE, "the removal took bytes other than the ones it copied");
-  assert.deepEqual(r.hidden(), [], "a hold was left behind by a move that completed");
+  // AND IT NEVER NAMED A FILE THE USER CAN SEE. The vault is handed the
+  // hidden name the note was moved to, so whatever an editor writes at the
+  // note's own name afterwards is not what the removal is about.
+  assert.ok(
+    r.trashed[0].path.startsWith("Notes/.obsync-"),
+    `the destructive call named a visible file: ${r.trashed[0].path}`,
+  );
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
 });
 
 test("a native settled write records the metadata of the bytes it committed", async (t) => {
@@ -429,6 +442,50 @@ for (const refusal of ["EPERM", "EXDEV", "unsupported"]) {
 }
 
 /**
+ * A FILESYSTEM THAT REFUSES THE MOVE ITSELF. The whole promise rests on one
+ * atomic rename: it is what takes the name out of every editor's way before
+ * anything is deleted. A host that cannot make that move has no way to aim a
+ * removal at anything but the live name, so it is an unheld path like a
+ * phone's -- nothing is removed, the hold is dropped, and the caller keeps
+ * both notes instead.
+ */
+test("a move refused with EXDEV removes nothing, and the note survives the window", async (t) => {
+  let refused = false;
+  let entered = false;
+  const r = await native(t, {
+    beforeRename: async (root, from, to) => {
+      // Only the removal's own move is refused: the writers rename their
+      // temporary files too, and a filesystem that refused those would
+      // refuse the conflict copy rather than the removal.
+      if (!to.includes(".obsync-gone-")) return;
+      refused = true;
+      const error = new Error("rename EXDEV");
+      error.code = "EXDEV";
+      throw error;
+    },
+    beforeTrash: async (root, path) => {
+      entered = true;
+      writeFileSync(join(root, path), EDIT);
+      utimesSync(join(root, path), 9.999, 9.999);
+    },
+  });
+  const frame = await collide(r);
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.ok(refused, "the test never reached the move it exists for");
+  assert.equal(entered, false, "a removal was aimed at a name that had not moved");
+  assert.deepEqual(r.trashed, [], "a note was removed on a host that could not move it");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), MINE, "the note did not keep its own name");
+  assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
+  assert.ok(
+    r.logs.some((line) => line.includes("host path_class=file decision=kept reason=move_refused")),
+    `the host did not report the refused move: ${JSON.stringify(r.logs)}`,
+  );
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
+});
+
+/**
  * A SAVE THAT REPLACES THE FILE rather than writing into it.
  *
  * Editors save either way. An in-place save keeps the inode, and the hold
@@ -469,4 +526,113 @@ test("a save that replaces the source between the hold and the removal is preser
   );
   assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
   assert.deepEqual(r.hidden(), [], "the hold was left in the vault");
+});
+/**
+ * The reviewer's follow-up case, from receipt 5772520551, at the boundary
+ * this head leaves. Their body is unchanged except for its guard: it fired
+ * only while the destructive call named `Notes/Same.md`, and the repair is
+ * that no destructive call ever names it again. The injection is therefore
+ * unconditional -- same instant, inside the removal, and aimed at the name
+ * the user's editor writes to. It fails at `2b56875`, where the removal
+ * still names the note and unlinks the replacement.
+ */
+test("follow-up: a replacing save inside permanent removal remains in the vault", async (t) => {
+  let replaced = false;
+  const r = await native(t, {
+    beforeTrash: async (root, path) => {
+      if (replaced) return;
+      replaced = true;
+      // This hook runs inside FileManager.trashFile, after removeHeld has
+      // completed its final source identity and metadata check.
+      const temp = join(root, "Notes", ".editor-save.tmp");
+      // The file the removal is about, which is no longer at the note's own
+      // name: that name is free, which is the repair.
+      const before = statSync(join(root, path));
+      writeFileSync(temp, EDIT);
+      utimesSync(temp, 9.999, 9.999);
+      renameSync(temp, join(root, NOTE));
+      const after = statSync(join(root, NOTE));
+      assert.notEqual(after.ino, before.ino, "the save must replace the inode");
+      assert.notEqual(after.size, before.size);
+      assert.notEqual(after.mtimeMs, before.mtimeMs);
+    },
+  });
+  const frame = await collide(r);
+  const result = await applyChange(r.context, frame);
+  assert.ok(replaced, "the test never entered the removal boundary");
+  assert.ok(
+    r.contents().includes(EDIT),
+    `replacing save absent; result=${result}; permanently_removed=${JSON.stringify(r.trashed)}; live=${JSON.stringify(r.contents())}; hidden=${JSON.stringify(r.hidden())}; logs=${JSON.stringify(r.logs)}`,
+  );
+});
+
+/**
+ * The window the repair leaves in front of the move: a save that REPLACES
+ * the note after it was copied and before the rename takes it away. The
+ * rename then moves the replacement, whose bytes no version holds, and the
+ * proof afterwards is what notices: it goes back under its own name and the
+ * move is refused.
+ */
+test("a replacement that lands before the move is put back, not removed", async (t) => {
+  let replaced = false;
+  const r = await native(t, {
+    beforeRename: async (root, from) => {
+      if (replaced || !from.endsWith(NOTE.slice(NOTE.lastIndexOf("/") + 1))) return;
+      replaced = true;
+      const temp = join(root, "Notes", ".editor-save.tmp");
+      writeFileSync(temp, EDIT);
+      utimesSync(temp, 9.999, 9.999);
+      renameSync(temp, join(root, NOTE));
+    },
+  });
+  const frame = await collide(r);
+
+  const result = await applyChange(r.context, frame);
+
+  assert.ok(replaced, "the test never reached the window it exists for");
+  assert.equal(
+    readFileSync(join(r.root, NOTE), "utf8"),
+    EDIT,
+    `the replacement was not put back; result=${result}; live=${JSON.stringify(r.contents())}`,
+  );
+  assert.deepEqual(r.trashed, [], "a file the hold did not have was removed");
+  assert.ok(
+    r.logs.some((line) => line.includes("host path_class=file decision=kept reason=source_replaced")),
+    `the host did not report the replacement: ${JSON.stringify(r.logs)}`,
+  );
+  assert.ok(r.contents().includes(THEIRS), "the other device's version was not kept beside it");
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
+});
+
+/**
+ * And the same window for an IN-PLACE save, which keeps the inode: the
+ * rename carries that inode away with the new bytes in it, and the proof
+ * afterwards compares metadata, not only identity.
+ */
+test("an in-place save before the move is put back, not removed", async (t) => {
+  let edited = false;
+  const r = await native(t, {
+    beforeRename: async (root, from) => {
+      if (edited || !from.endsWith(NOTE.slice(NOTE.lastIndexOf("/") + 1))) return;
+      edited = true;
+      writeFileSync(join(root, NOTE), EDIT);
+      utimesSync(join(root, NOTE), 9.999, 9.999);
+    },
+  });
+  const frame = await collide(r);
+
+  const result = await applyChange(r.context, frame);
+
+  assert.ok(edited, "the test never reached the window it exists for");
+  assert.equal(
+    readFileSync(join(r.root, NOTE), "utf8"),
+    EDIT,
+    `the edit was not put back; result=${result}; live=${JSON.stringify(r.contents())}`,
+  );
+  assert.deepEqual(r.trashed, [], "a file that no longer held the copied bytes was removed");
+  assert.ok(
+    r.logs.some((line) => line.includes("host path_class=file decision=kept reason=source_changed")),
+    `the host did not report the edit: ${JSON.stringify(r.logs)}`,
+  );
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
 });

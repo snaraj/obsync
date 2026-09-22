@@ -622,23 +622,46 @@ returns immediately when a new frame lands.
    byte count handed to the adapter -- never a fresh look at the name, which
    after an in-place save describes another file under the same inode.
 
-   A REMOVAL HAPPENS ONLY BEHIND A PROVEN HOLD. A caller that removes a file
-   names the content it is removing, and the desktop host first gives that
-   file a second name with `link`, so the inode outlives whatever the vault's
+   A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
+   the content it is removing, and the desktop host first gives that file a
+   second name with `link`, so the inode outlives whatever the vault's
    "Deleted files" preference does with the first -- including permanent
-   deletion, which is an unlink of the name it is not holding. Immediately
-   before the removal the name is re-identified against that hold, by device
-   and inode as well as by metadata: an editor that saves by renaming a temp
-   file over the note leaves a DIFFERENT file there, which the hold does not
-   have, and nothing is removed. Afterwards the hold is the source of truth:
-   a hold whose metadata no longer matches what was copied is linked back
-   under the vault name. A host that cannot make that second name at all --
-   every mobile device, and a filesystem that refuses `link` -- removes
-   NOTHING, and the caller takes its non-destructive path instead, because a
-   narrowed window is not a closed one. That is why the same-name rule
+   deletion, which is an unlink of the name it is not holding. The vault name
+   itself is then MOVED: one atomic `rename` to a hidden name in the same
+   directory, which takes whatever inode stands at that name in that instant
+   and leaves the name FREE. No check can bind a path-based destructive
+   call -- whatever a check found, the name can be replaced before the call
+   reaches it -- so the check is moved to the far side of the rename, where
+   it is about a file nothing else can reach. What MOVED is compared with
+   what the caller copied: device and inode from the hold, size and
+   modification time from the caller. A mismatch means the rename moved a
+   REPLACEMENT -- an editor that saves by renaming a temp file over the note
+   leaves a DIFFERENT file there -- so what moved is renamed back under the
+   vault name, or kept beside it under a visible name when that name has
+   been taken again, and the answer is `kept`. Only a match is handed to the
+   vault's own deletion, BY THE HIDDEN NAME, so the destructive call cannot
+   reach a file an editor has since created at the vault name. A vault that
+   does not index that hidden name deletes it outright rather than moving it
+   to the user's bin; by then its bytes are the ones this device has already
+   published beside it, so the note the "Deleted files" preference is about
+   is untouched. Afterwards the hold still has the last word, because a
+   rename does not close an editor's DESCRIPTOR: a program that still holds
+   the file open writes through it wherever its name has gone, including
+   between the proof and the removal. A hold whose metadata no longer
+   matches what was copied is linked back under the vault name. One window
+   remains, and it is stated rather than claimed away: an in-place write to
+   the held inode, between the copy and the move, that leaves both the size
+   and the whole-second modification time unchanged. A host that cannot make
+   that second name at all -- every mobile device, and a filesystem that
+   refuses `link` -- or cannot make that move, removes NOTHING, and the
+   caller takes its non-destructive path instead, because a narrowed window
+   is not a closed one. That is why the same-name rule
    settles a pair by renaming on a computer and by keeping both on a phone
    (`plugin/src/sync/pull.ts`, `VaultHost.bindsRemoval`), and the cost is a
-   name rather than a note. Hidden folders
+   name rather than a note. The name the moved file VACATES is taken with
+   the create-only writer rather than a plain write, so a file an editor
+   recreated there while the old one was being cleared away is kept and the
+   pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
 

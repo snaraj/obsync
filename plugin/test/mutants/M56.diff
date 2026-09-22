@@ -1,0 +1,24 @@
+# M56: a save made through an open descriptor after the move is not noticed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -874,19 +874,8 @@
+     // above and the removal. The hold is that same inode, so what it says
+     // now is what was actually removed; anything but the copied content goes
+     // back under the vault name.
+-    const after = await walker(fs).lstat(hold);
+-    if (after === null) {
+-      this.log("host path_class=file decision=restore_failed reason=hold_gone");
+-      return "removed";
+-    }
+-    if (holds(after)) {
+-      await drop();
+-      return "removed";
+-    }
+-    this.log("host path_class=file decision=kept reason=restored");
+-    await this.putBack(desktop, hold, found.target, "link");
+     await drop();
+-    return "kept";
++    return "removed";
+   }
+ 
+   /**

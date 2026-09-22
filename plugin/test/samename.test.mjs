@@ -594,6 +594,13 @@ test("when no name is free this device keeps its own note and takes none", async
   assert.equal(r.host.text(NOTE), MINE, "the note was moved or replaced with nowhere to put it");
   assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER, "and this device still holds it under its own id");
   assert.match(r.host.notices.join(" "), /could not place/);
+  // A refusal is terminal. The name is free to write into only because the
+  // move RENAMED the note out of it, so a device that moved nothing must
+  // never reach the write at that name -- not even to find it occupied.
+  assert.ok(
+    !r.host.logs.some((line) => line.includes("decision=vacated_name_taken")),
+    `a move that never happened went on to take the name: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
+  );
 });
 
 /**
@@ -652,6 +659,13 @@ test("an edit typed while the note is being moved aside is never trashed", async
     // give the one that happened (requirement 12).
     r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed file=")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+  // And the refusal is terminal: this device's note is still under its own
+  // name, so the write at that name -- which exists only for a name a move
+  // VACATED -- must not be attempted at all.
+  assert.ok(
+    !r.host.logs.some((line) => line.includes("decision=vacated_name_taken")),
+    `a refused move went on to take the name: ${r.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
   );
 });
 
