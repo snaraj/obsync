@@ -412,13 +412,49 @@ test("a tombstone for the old spelling takes the live note on a folding device",
     fileId: GHOST,
     path: "Team docs/One.md",
     manifestKey: r.keys.manifestKey,
+    // THE ANCESTRY THIS HAZARD ACTUALLY HAS, stated rather than left empty.
+    // The abandoned record IS the record for the abandoned id, so a deletion
+    // of the stale folder descends from the version that record holds, and
+    // the delete-versus-edit fork guard 1.1.0 adds never fires. Left empty,
+    // the tombstone would be a fork and the guard would refuse it -- a
+    // kinder answer this device cannot count on, and one that would let this
+    // test pass while the documented hazard stayed unproved. The companion
+    // test below pins that refusal on the shape that does fork.
+    parents: [live.versionId],
   });
   assert.equal(await applyChange(r.context, tombstone), "deleted");
 
   // THIS is why the stale folder is not deleted before every device has
   // upgraded and scanned: the tombstone is obeyed, and on this device the
-  // old spelling is the live note's own entry.
+  // old spelling is the live note's own entry. A rename leaves size and
+  // modification time exactly as they were, so the stale record describes
+  // the live bytes and `competing` finds nothing to keep.
   assert.equal(r.host.text("team docs/One.md"), null, "the live note survived a tombstone for its own entry");
+});
+
+test("a ghost tombstone that forks from the record is refused, and the note stays", async (t) => {
+  const r = await rig({ caseSensitive: false });
+  r.host.seed("team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "team docs/One.md");
+  const live = r.state.fileByPath("team docs/One.md");
+  r.state.setFile("Team docs/One.md", { ...live, fileId: GHOST });
+
+  // The other half of the residue: a deletion whose version graph does not
+  // reach the version the stale record holds. That is one side of a fork,
+  // and 1.1.0 keeps both sides of a fork (#106, `pull.ts` delete-versus-edit)
+  // -- which on a folding host means keeping the live note. The guard is not
+  // this lane's; the composition is what puts it under this shape.
+  const tombstone = await r.server.publishTombstone({
+    fileId: GHOST,
+    path: "Team docs/One.md",
+    manifestKey: r.keys.manifestKey,
+  });
+  assert.equal(await applyChange(r.context, tombstone), "skipped");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=local_edit_kept reason=delete_vs_edit")),
+    `the fork guard did not refuse the ghost tombstone: ${JSON.stringify(r.host.logs)}`,
+  );
+  assert.equal(r.host.text("team docs/One.md"), BODY, "a forked ghost tombstone took the live note");
 });
 
 test("the startup scan drops the ghost record, publishes nothing, and disarms that tombstone", async (t) => {
