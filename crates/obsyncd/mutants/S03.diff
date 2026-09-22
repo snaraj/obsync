@@ -1,0 +1,12 @@
+# S03: the newest retained twin answers instead of the oldest
+--- a/crates/obsyncd/src/storage/index.rs
++++ b/crates/obsyncd/src/storage/index.rs
+@@ -302,7 +302,7 @@
+         let wanted = parent_set(parents);
+         entry
+             .versions
+-            .iter()
++            .iter().rev()
+             .find(|v| {
+                 v.deleted == deleted
+                     && parent_set(&v.parents) == wanted

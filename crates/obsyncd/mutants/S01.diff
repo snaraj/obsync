@@ -1,0 +1,12 @@
+# S01: the sid vectors are sorted before they are compared
+--- a/crates/obsyncd/src/storage/index.rs
++++ b/crates/obsyncd/src/storage/index.rs
+@@ -306,7 +306,7 @@
+             .find(|v| {
+                 v.deleted == deleted
+                     && parent_set(&v.parents) == wanted
+-                    && v.sids.as_slice() == sids
++                    && { let mut a = v.sids.clone(); let mut b = sids.to_vec(); a.sort_unstable(); b.sort_unstable(); a == b }
+             })
+             .map(|v| (v.seq, v.version_id))
+     }
