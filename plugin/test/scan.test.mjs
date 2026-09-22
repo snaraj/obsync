@@ -116,6 +116,15 @@ test("a move Obsidian never reported converges as a MOVE within one scan", async
   const rigged = await rig();
   const { host, server, state, keys: k } = rigged;
   const vault = withScan(host);
+  // Count the passes. What "within one scan" means is that the FIRST pass
+  // after the move converged it, and that is a fact about the engine. The
+  // virtual clock is not: see the assertion below.
+  let scans = 0;
+  const scanning = host.scan;
+  host.scan = async () => {
+    scans++;
+    return await scanning();
+  };
   const timers = new FakeTimers();
   const engine = engineOf(rigged, timers);
 
@@ -125,13 +134,35 @@ test("a move Obsidian never reported converges as a MOVE within one scan", async
   const fileId = state.fileByPath("Notes/Moved.md").fileId;
   const before = timers.now;
 
+  // Passes that ran while the vault was still settling are not this move's.
+  const scansBefore = scans;
   // `mv Notes/Moved.md Notes/Archive/Moved.md` outside the app: no vault
   // event, and Obsidian's index still lists the old path.
   vault.moveUnseen("Notes/Moved.md", "Notes/Archive/Moved.md");
 
-  await timers.run(1000, () => state.fileByPath("Notes/Archive/Moved.md") !== undefined);
+  // The pass that converged it, captured AS it converges rather than after,
+  // so a later pass cannot be counted against it.
+  let scansToConverge = 0;
+  await timers.run(1000, () => {
+    if (scansToConverge === 0 && state.fileByPath("Notes/Archive/Moved.md") !== undefined) {
+      scansToConverge = scans - scansBefore;
+    }
+    return scansToConverge !== 0;
+  });
   await timers.run(1000, () => (state.fileByPath("Notes/Archive/Moved.md")?.mtime ?? -1) !== -1);
   const latency = timers.now - before;
+
+  // WAIT ON WHAT IS ASSERTED, NOT ON A PROXY FOR IT. The record is written
+  // when the scan decides; the version reaches the server a few turns later.
+  // The assertions below are about the JOURNAL, so stopping at the record
+  // asserts on a push still in flight -- which holds or not depending on how
+  // many turns the apply took, a property of the machine rather than of the
+  // product. The frame's `file_id` is in the clear, so this counts versions
+  // of THIS note without decrypting anything: one for the original, one for
+  // the move. `>=` rather than `==` because a count is sampled between
+  // rounds and a test must not depend on catching one.
+  const publishedHere = () => server.journal.filter((frame) => frame.file_id === fileId).length;
+  await timers.run(1000, () => publishedHere() >= 2);
   engine.stop();
 
   assert.equal(state.fileByPath("Notes/Moved.md"), undefined, "the old path is forgotten");
@@ -145,9 +176,21 @@ test("a move Obsidian never reported converges as a MOVE within one scan", async
     "a move, never a tombstone and a new file",
   );
   assert.equal(new Set(notes(posted).map((version) => version.fileId)).size, 1, "one file id throughout");
-  assert.ok(
-    latency <= SCAN_MS + 5000,
-    `it converged within one scan interval plus the push (${latency} ms of ${SCAN_MS} ms)`,
+  // THE CLAIM IS "WITHIN ONE SCAN", AND THIS IS HOW IT IS MEASURED. It used
+  // to be `latency <= SCAN_MS + 5000`, and that bound is not a property of
+  // the product: `latency` is VIRTUAL time, and `FakeTimers` advances the
+  // virtual clock by `advanceMs` on every round that fires nothing, so the
+  // number grows with how many idle rounds this machine needed -- which
+  // grows with LOAD. Five rounds of headroom is what `+ 5000` bought, and a
+  // loaded machine spends six: it failed at 36000 of 35000 with nothing
+  // wrong, and any `not ok` is counted as a kill by the mutation runner, so
+  // a bound like that manufactures kills on a busy CI box. The pass count
+  // cannot drift that way. One scan noticed the move; the defect this test
+  // is about took the scan out of the picture entirely and waited minutes
+  // for something else to notice.
+  assert.equal(
+    scansToConverge, 1,
+    `it took ${scansToConverge} scan passes to converge, ${latency} virtual ms of a ${SCAN_MS} ms interval`,
   );
   const line = host.logs.find((entry) => entry.startsWith("scan decision=queued"));
   assert.ok(line, host.logs.join(" | "));

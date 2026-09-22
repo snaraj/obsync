@@ -163,7 +163,13 @@ test("a remote rename that also edits the note downloads it rather than renaming
   await timers.run(STEP_MS, () => settled(a, "Renamed.md"));
   a.host.write("Renamed.md", EDITED, 5000);
   await timers.run(STEP_MS, () => settled(a, "Renamed.md") && a.host.text("Renamed.md") === EDITED);
-  await timers.run(STEP_MS, () => b.host.text("Renamed.md") === EDITED);
+  // WAIT ON WHAT IS ASSERTED, NOT ON A PROXY FOR IT. The bytes land before
+  // the record does, so waiting for the TEXT and then asserting on the RECORD
+  // asserts on a half-finished apply: whether it holds is decided by how many
+  // turns the apply took, which is a property of the machine and of any
+  // mutation under test rather than of the product. Both halves are waited
+  // for here.
+  await timers.run(STEP_MS, () => b.host.text("Renamed.md") === EDITED && settled(b, "Renamed.md"));
 
   assert.equal(b.host.text("Renamed.md"), EDITED,
     `the phone kept the text from before the rename: ${story(server, a, b)}`);
