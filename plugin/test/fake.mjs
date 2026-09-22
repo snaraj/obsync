@@ -73,6 +73,13 @@ module.exports = {
 const enc = (text) => new TextEncoder().encode(text);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+/** Two parent lists that name one position: a set, not an order (#114). */
+const sameSet = (a, b) => {
+  const left = [...new Set(a)].sort();
+  const right = [...new Set(b)].sort();
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+};
+
 /** A vault of files in memory, with the `VaultHost` surface the engine needs. */
 export class FakeHost {
   constructor({ isMobile = false, platform = "linux", appVersion = "0.1.0", deviceName = "test-device" } = {}) {
@@ -209,6 +216,10 @@ export class FakeServer {
     this.files = new Map();
     this.journal = [];
     this.seq = 0;
+    /** Posts this server answered with a version it already held (#114). */
+    this.deduplicated = [];
+    /** Set to model a server before 1.0.7: no `version_id` in the answer. */
+    this.oldServer = false;
     this.devices = [
       {
         device_id: deviceId,
@@ -274,6 +285,17 @@ export class FakeServer {
 
   json(status, value) {
     return { status, headers: {}, text: JSON.stringify(value), arrayBuffer: new ArrayBuffer(0) };
+  }
+
+  /**
+   * A version acknowledgement. `version_id` names the version the store holds
+   * for the post (issue #114); `oldServer` models a server before 1.0.7,
+   * which sends no such field, so the device must fall back to the id it
+   * computed itself.
+   */
+  ack(seq, versionId, file) {
+    const body = { seq, heads: file.heads, conflicted: file.heads.length > 1 };
+    return this.oldServer ? body : { ...body, version_id: versionId };
   }
 
   error(status, code, detail = "") {
@@ -413,7 +435,26 @@ export class FakeServer {
         return this.error(409, "domain_mismatch", file.domain_id);
       }
       if (file.versions.some((version) => version.version_id === posted.version_id)) {
-        return this.json(200, { seq: this.seq, heads: file.heads, conflicted: file.heads.length > 1 });
+        return this.json(200, this.ack(this.seq, posted.version_id, file));
+      }
+      // One position, one version (`docs/protocol.md`; issue #114). A post
+      // that promises to store the id it is answered with, and whose
+      // `(parent set, sids in order, tombstone flag)` a version of this file
+      // already holds, is answered with THAT version and writes no frame.
+      // The comparison deliberately excludes the encrypted manifest, exactly
+      // as the server's does, which is why a rename must not promise this.
+      if (posted.accept_existing === true) {
+        const twin = file.versions.find(
+          (version) =>
+            Boolean(version.deleted) === Boolean(posted.deleted) &&
+            sameSet(version.parents, posted.parents) &&
+            version.sids.length === posted.sids.length &&
+            version.sids.every((sid, index) => sid === posted.sids[index]),
+        );
+        if (twin) {
+          this.deduplicated.push({ fileId, posted: posted.version_id, existing: twin.version_id });
+          return this.json(200, this.ack(twin.seq, twin.version_id, file));
+        }
       }
       const sameHeads =
         file.heads.length === posted.parents.length &&
@@ -428,7 +469,7 @@ export class FakeServer {
       file.versions.unshift(version);
       this.journal.push({ ...version, file_id: fileId, heads: file.heads, conflicted: file.heads.length > 1 });
       this.releaseFeed();
-      return this.json(201, { seq: version.seq, heads: file.heads, conflicted: file.heads.length > 1 });
+      return this.json(201, this.ack(version.seq, version.version_id, file));
     }
 
     const versionGet = /^\/v1\/files\/([0-9a-f]{32})\/versions\/([0-9a-f]{64})$/.exec(path);

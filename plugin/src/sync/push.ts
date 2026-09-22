@@ -178,7 +178,16 @@ export async function pushFile(context: SyncContext, path: string, force = false
     deleted: false,
   };
   const parents = record && record.versionId !== "" ? [record.versionId] : [];
-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size);
+  // A RENAME IS NEVER OFFERED FOR DEDUPLICATION. The server's identity for a
+  // position is `(file_id, parent set, sids, deleted)` and does not cover the
+  // encrypted manifest (`docs/protocol.md`, "One position, one version"), and
+  // a forced post is exactly the case whose only new fact lives in there: the
+  // path. Two devices renaming one note from the same version would otherwise
+  // be answered with each other's id, record it, drop the other's frame as
+  // their own echo -- `authored` -- and keep two different paths for one file
+  // id with no version left that could settle it. Every other post offers it:
+  // same parents, same chunks, same path is the same version (issue #114).
+  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
   context.state.setFile(path, {
     fileId,
     versionId: ack.versionId,
@@ -223,7 +232,13 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
     deleted: true,
   };
   const parents = record.versionId !== "" ? [record.versionId] : [];
-  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0);
+  // Two devices deleting one file from the same version say the same thing,
+  // and the tombstone flag is part of what the server compares, so a delete
+  // is never answered with a live version of the same position. The same
+  // manifest blind spot applies in principle -- a tombstone's manifest names
+  // a path -- and matters less, because a deleted file has no later path for
+  // the two devices to disagree about.
+  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true);
   context.state.forgetPath(path);
   await context.state.save();
   context.host.log(`push path_class=tombstone decision=deleted version=${ack.versionId}`);
@@ -245,6 +260,7 @@ export async function postManifest(
   sids: string[],
   manifest: Manifest,
   bytes: number,
+  acceptExisting: boolean,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   assertSyncPath(manifest.path, context.state.data.syncFolders);
   const binder = await contentVersionId(fileId, parents, sids);
@@ -267,9 +283,19 @@ export async function postManifest(
     manifest_ct: base64(ciphertext),
     manifest_nonce: hex(nonce),
     deleted: manifest.deleted,
+    accept_existing: acceptExisting,
   };
+  // The id the STORE holds for this post, which is the posted one unless the
+  // server answered with a version it already had at this position. A server
+  // older than 1.0.7 sends no such field and the computed id stands, which is
+  // also what the lost-answer settlement returns, because it only settles on
+  // finding THIS id in the file record (issue #114).
+  const settled = (ack: VersionAck): { versionId: string; ack: VersionAck } => ({
+    versionId: ack.version_id ?? id,
+    ack,
+  });
   try {
-    return { versionId: id, ack: await postOnce(context, fileId, id, post) };
+    return settled(await postOnce(context, fileId, id, post));
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
     const missing = new Set(await context.transport.missingChunks(sids));
@@ -277,7 +303,7 @@ export async function postManifest(
       `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
     );
     await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
-    return { versionId: id, ack: await postOnce(context, fileId, id, post) };
+    return settled(await postOnce(context, fileId, id, post));
   }
 }
 

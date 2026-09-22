@@ -238,6 +238,16 @@ export async function saveDomainMap(
     manifest_ct: base64(ciphertext),
     manifest_nonce: hex(nonce),
     deleted: false,
+    // NEVER for the map. The server recognises "the same version at the same
+    // position" by `(file_id, parent set, sids, deleted)` and never by the
+    // sealed body (`docs/protocol.md`, "One position, one version"). The map
+    // carries NO sids and is never a tombstone, so for this one file that key
+    // is just its parents: two devices writing DIFFERENT maps from the same
+    // parent -- one adding a domain, the other adding another -- would be
+    // answered with each other's version and would record a write that never
+    // landed. The map's whole content lives where the server cannot look, so
+    // it is never offered for deduplication (issue #114).
+    accept_existing: false,
   };
   if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {
     if ((await transport.postVersion(keys.fileId, post)).outcome === "lost") {
