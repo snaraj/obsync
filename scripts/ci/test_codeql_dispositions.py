@@ -1380,9 +1380,17 @@ class ReviewedContent(unittest.TestCase):
         cls.shipped = json.loads(DISPOSITIONS.read_text(encoding="utf-8"))
 
     def content_tree(self, root: Path, edits: dict[str, str] | None = None) -> Path:
-        """The reviewed files, byte-identical unless an edit says otherwise."""
+        """The reviewed files, byte-identical unless an edit says otherwise.
+
+        The set is READ FROM the shipped file rather than listed here: every
+        entry carrying a `reviewed_sha256` is re-verified on every run whether
+        or not an alert touches it, so a fixture that named its files by hand
+        would make the next accepted file fail this test for the wrong reason
+        -- absent from a temporary directory, not changed in the tree.
+        """
         tree = root / "content"
-        for path in (*self.PRINTERS, "crates/obsyncd/src/storage/mod.rs"):
+        reviewed = [entry["path"] for entry in self.shipped if "reviewed_sha256" in entry]
+        for path in (*reviewed, "crates/obsyncd/src/storage/mod.rs"):
             target = tree / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / path).read_bytes())
