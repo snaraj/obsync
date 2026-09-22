@@ -393,6 +393,61 @@ test("when no name is free this device keeps its own note and takes none", async
   assert.match(r.host.notices.join(" "), /could not place/);
 });
 
+/**
+ * The window between the copy and the trash (review round 2, finding 1).
+ *
+ * Moving this device's own note aside is a create-only copy and then a trash
+ * of the original, and those are two operations with a gap between them. A
+ * note open in the editor is saved on a timer, so the user can type into the
+ * original inside that gap -- and those bytes exist on this device and nowhere
+ * else, because the push that would carry them has not run. The trash is what
+ * takes them.
+ *
+ * So the source is stat-ed before the copy and again immediately before the
+ * trash, and a source that moved REFUSES the move: the note stays where it is
+ * with the new text in it, nothing is trashed, and the answer falls back to
+ * keeping both exactly as 1.0.6 did.
+ */
+test("an edit typed while the note is being moved aside is never trashed", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  const TYPED = `${MINE}a line typed while the move was running\n`;
+  const createWriter = r.host.createWriter.bind(r.host);
+  let typed = false;
+  r.host.createWriter = async (target, size, check) => {
+    const writer = await createWriter(target, size, check);
+    return {
+      ...writer,
+      commit: async (mtime) => {
+        const stat = await writer.commit(mtime);
+        // The user types into the original, after the copy of it has landed
+        // and before the trash that would take the original away.
+        if (!typed) {
+          typed = true;
+          r.host.seed(NOTE, TYPED, 9000);
+        }
+        return stat;
+      },
+    };
+  };
+
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+
+  assert.equal(r.host.text(NOTE), TYPED, "the edit was trashed with the note it was typed into");
+  assert.deepEqual(r.host.trashed, [], "a file holding bytes that exist nowhere else was trashed");
+  // The record is untouched and now disagrees with the file, which is what
+  // makes the queued push carry those bytes.
+  assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER, "this device stopped tracking its own note");
+  assert.notEqual(r.state.fileByPath(NOTE).mtime, 9000, "the edit was recorded as if it had been pushed");
+  // Both notes still exist, and so does the older text the refused move had
+  // already copied: nothing this device held was removed.
+  assert.equal(r.host.text(copies(r.host).find((path) => path.includes("iPhone"))), THEIRS);
+  assert.equal(r.host.text(copies(r.host).find((path) => path.includes("this device"))), MINE);
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=move_aside_refused reason=source_changed")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
 // --- and the same thing, on two engines, from both sides at once ------------
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };

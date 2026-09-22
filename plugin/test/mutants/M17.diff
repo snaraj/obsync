@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1055,7 +1055,7 @@
+       `obsync left ${from} where it is: it changed while obsync was copying it. Your note and its ` +
+         `new text are untouched, and the text it had a moment ago is in "${landed.stat.path}".`,
+     );
+-    return null;
++    return landed.stat.path;
+   }
+   // Marked BEFORE the trash: the vault reports the removal to this plugin's
+   // own delete handler while the trash is still running, and an unmarked echo

@@ -1015,14 +1015,30 @@ async function writeCopy(
  * same-name tie-break, and left DIRTY so the next push publishes the move as a
  * version of this device's file id. That published rename is the one thing
  * either device says about the collision.
+ *
+ * THE MOVE IS A COPY AND THEN A TRASH, AND THE USER CAN TYPE BETWEEN THEM.
+ * The vault offers no atomic rename this device could use for a destination
+ * that must not be replaced, so the copy publishes first and the original is
+ * removed second -- and Obsidian saves an open note on a timer, so bytes that
+ * exist on this device and NOWHERE else can arrive in that gap. The trash
+ * would take them: not a conflict copy, not a version on the server, gone
+ * (review round 2, finding 1). So the source is stat-ed before the copy and
+ * again immediately before the trash, and a source that moved refuses the
+ * move: the note keeps its name and its new text, nothing is removed, and the
+ * caller falls back to keeping both, which is what 1.0.6 did for this pair
+ * anyway. The comparison is `(mtime, size)`, the same metadata test the whole
+ * pull path uses for "has this file moved on"; an edit that changes neither
+ * is invisible to it here exactly as it is there.
  */
 async function moveAside(
   context: SyncContext,
   from: string,
-  bytes: Bytes,
   record: FileState,
   when: Date,
 ): Promise<string | null> {
+  const before = await context.host.stat(from);
+  if (before === null) return null;
+  const bytes = await context.host.read(from);
   const landed = await writeBeside(
     context, from, context.deviceNameFor(context.deviceId), when, bytes.length, record.mtime,
     async (writer) => { await writer.write(bytes); },
@@ -1030,6 +1046,17 @@ async function moveAside(
     async () => false,
   );
   if (landed === null || landed.stat === null) return null;
+  const now = await context.host.stat(from);
+  if (now === null || now.mtime !== before.mtime || now.size !== before.size) {
+    context.host.log(
+      `pull path_class=file decision=move_aside_refused reason=source_changed file=${record.fileId}`,
+    );
+    context.host.notify(
+      `obsync left ${from} where it is: it changed while obsync was copying it. Your note and its ` +
+        `new text are untouched, and the text it had a moment ago is in "${landed.stat.path}".`,
+    );
+    return null;
+  }
   // Marked BEFORE the trash: the vault reports the removal to this plugin's
   // own delete handler while the trash is still running, and an unmarked echo
   // publishes a tombstone for a file that is alive one name over (issue #96).
@@ -1114,8 +1141,7 @@ async function sameNameTiebreak(
     return kept;
   }
 
-  const mine = await context.host.read(manifest.path);
-  const moved = await moveAside(context, manifest.path, mine, ours, when);
+  const moved = await moveAside(context, manifest.path, ours, when);
   if (moved === null) return await keepBoth(context, change, manifest);
   context.host.log(
     `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
