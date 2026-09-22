@@ -1,23 +1,45 @@
 # M56: a save made through an open descriptor after the move is not noticed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -874,19 +874,8 @@
-     // above and the removal. The hold is that same inode, so what it says
-     // now is what was actually removed; anything but the copied content goes
-     // back under the vault name.
--    const after = await walker(fs).lstat(hold);
--    if (after === null) {
+@@ -881,40 +881,8 @@
+     // first: the descriptor keeps the inode alive across its own unlink, and
+     // what it says afterwards is still readable. Nothing here is the last
+     // name of bytes this device has not published.
+-    let handle: NodeFileHandle;
+-    try {
+-      handle = await fs.promises.open(hold, "r");
+-    } catch {
 -      this.log("host path_class=file decision=restore_failed reason=hold_gone");
 -      return "removed";
 -    }
--    if (holds(after)) {
--      await drop();
--      return "removed";
+-    try {
+-      const after = await handle.stat();
+-      if (!holds(after)) {
+-        // The save reached the inode before the hold was released: it is
+-        // still named, so it is put back by name, and only a put-back that
+-        // landed releases the hold.
+-        if (await this.putBack(desktop, hold, found.target)) {
+-          this.log("host path_class=file decision=kept reason=restored");
+-          await drop();
+-          return "kept";
+-        }
+-        this.log("host path_class=file decision=kept reason=held");
+-        return "kept";
+-      }
+-      await fs.promises.unlink(hold).catch(() => undefined);
+-      // The unlink took the inode's last NAME, not the inode: this
+-      // descriptor is still open on it, so a save that landed in the
+-      // meantime is read back here and written out under a name of its own
+-      // rather than lost with the name.
+-      const last = await handle.stat();
+-      if (holds(last)) return "removed";
+-      this.log("host path_class=file decision=kept reason=descriptor_save");
+-      await this.preserve(desktop, handle, found.target, last.size);
+-      return "kept";
+-    } finally {
+-      await handle.close().catch(() => undefined);
 -    }
--    this.log("host path_class=file decision=kept reason=restored");
--    await this.putBack(desktop, hold, found.target, "link");
-     await drop();
--    return "kept";
++    await drop();
 +    return "removed";
    }
  

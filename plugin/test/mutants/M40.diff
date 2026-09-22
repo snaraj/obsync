@@ -1,11 +1,11 @@
 # M40: 91: a renamed folder does not take the selection with it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -440,7 +440,6 @@
+@@ -477,7 +477,6 @@
      // selection never covered is therefore still out of scope on both sides,
      // and moving a selected folder cannot smuggle it into sync.
      const before = this.options.state.data.syncFolders;
 -    this.followSelection(from, to);
      const prefix = `${from}/`;
-     for (const path of Object.keys(this.options.state.data.files)) {
-       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
+     // RECORDS ARE NOT THE WHOLE OF WHAT THIS DEVICE OWES. A note written
+     // moments ago is still in the debounce, or already in the push queue,

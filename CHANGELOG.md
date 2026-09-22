@@ -61,10 +61,21 @@ going on is kept as it is, and the pair is settled by keeping both instead.
 obsync copying your note and moving it aside, AND leaves both the note's size
 and its modification time (which the disk keeps to the second) exactly as they
 were, cannot be told apart from no save at all -- so that text can be lost.
-Every other moment is covered. One more detail worth knowing: the copy obsync
-clears away is deleted outright rather than sent to whatever your "Deleted
-files" setting points at, because by then its text has already been written
-beside it under the new name.
+Every other moment is covered, including a save made through a file your
+editor still has open while obsync is finishing: those bytes are read back
+and kept under a name of their own. One more detail worth knowing: the copy
+obsync clears away is deleted outright rather than sent to whatever your
+"Deleted files" setting points at, because by then its text has already been
+written beside it under the new name.
+
+**And the same gap, for a note another device deleted.** obsync checks the
+note against what it last uploaded before applying someone else's deletion,
+and on a computer it also holds the note across the deletion itself. A phone,
+and a few unusual disks and network drives, cannot hold it: there, a save
+made in the instant between that check and the deletion is not caught.
+Deleting the note anyway is the deliberate choice -- a deletion that is
+refused on those devices would never be delivered again, and the note would
+come back for everyone.
 
 **On phones and tablets, obsync renames nothing at all.** Settling the pair
 means moving one note aside, and moving a note means removing the old copy
@@ -101,6 +112,55 @@ under one name -- both notes survived on both devices and no note content was
 lost.
 
 ### Also in this release
+
+**A note another device deleted is no longer deleted here if you have changed
+it since.** Two devices can disagree about a note: one deleted it, the other
+typed into it. obsync now keeps both sides of that disagreement, the way it
+already did for two edits. A deletion arriving for a note whose text differs
+from the last version this device uploaded is not applied: the note stays,
+and your next sync uploads it again, so it comes back everywhere. That
+matters most when you add a folder to the ones this device syncs: obsync then
+replays everything that happened while the folder was out, including
+deletions from years back, against notes you may have written in the
+meantime. In the case reproduced here -- a note deleted on the phone and
+edited on the computer while the computer was not syncing that folder -- the
+edit was previously lost on both devices; it now survives on both.
+
+**A note moved out of the synced folders while it was still uploading no
+longer disappears from your other devices.** If you moved a note out of the
+folders this device syncs at the moment obsync was uploading it, the finished
+upload made this device start tracking the old location again, and the next
+check decided the note had been deleted -- so it was removed from your other
+devices, even though the file was sitting safely in its new folder here.
+obsync now finishes such an upload without claiming to track a path it no
+longer syncs. The version it uploaded stays published, so your other devices
+keep the note and its latest text.
+
+**A note you have just written is no longer left behind when you rename its
+folder.** Renaming a synced folder carried every note obsync already knew
+about, but a note created seconds earlier -- still waiting for obsync to pick
+it up -- was left pointing at the old folder name and then ignored. It stayed
+on that one device until something else prompted a full check. It now moves
+with the folder like everything else in it.
+
+**Two devices that edit one note to the same text no longer lose a rename.**
+If one device renamed a note and edited it, and another device made the same
+edit without renaming, the server could answer the second device with the
+first one's version -- they look identical to a server that cannot read your
+notes -- and the rename was then treated as something this device had already
+done. The two devices kept two different names for one note with nothing left
+to settle it. obsync now checks that the version it is offered really
+describes what it just uploaded, and uploads its own version if it does not.
+
+**A note obsync puts back is never written over a note you just saved.**
+When obsync has to return a note it moved aside -- because you typed into it
+at that moment -- it used to check that the name was free and then write
+there, which is a gap another save can slip into. It now uses an operation
+that cannot replace anything: if the name has been taken in the meantime, the
+note is kept beside it under a numbered "(obsync kept)" name instead, and
+both texts survive. And the copy obsync holds during a removal is released
+only once its text is safely somewhere else -- including text an editor
+writes through a file it still has open at the moment obsync is finishing.
 
 **A note that arrives while obsync is checking the vault is no longer deleted
 everywhere.** When obsync starts, and whenever you change which folders it
