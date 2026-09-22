@@ -345,15 +345,15 @@ export class LeaveServerModal extends Modal {
     this.contentEl.empty();
   }
 
-  private cancel(setting: Setting): Setting {
-    return setting.addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  private cancel(setting: Setting, text = "Cancel"): Setting {
+    return setting.addButton((button) => button.setButtonText(text).onClick(() => this.close()));
   }
 
   /** Count first: what the count is decides which buttons this offers. */
   private async show(): Promise<void> {
     if (this.plugin.state.data.deviceId === null) {
       this.contentEl.createEl("p", { text: "This device is not paired with a server, so there is nothing to leave." });
-      this.cancel(new Setting(this.contentEl));
+      this.cancel(new Setting(this.contentEl), "Close");
       return;
     }
     this.contentEl.createEl("p", { text: "Checking for changes the server has not received…" });
@@ -386,7 +386,7 @@ export class LeaveServerModal extends Modal {
     this.cancel(
       new Setting(this.contentEl).addButton((button) =>
         button
-          .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and ${leaving.toLowerCase()}`)
+          .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
           .setDestructive()
           .onClick(() => {
             void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
@@ -403,11 +403,13 @@ export class LeaveServerModal extends Modal {
       fail(error);
       return;
     }
-    if (!this.live) return;
+    // A leave that happened is reported even if the dialog was closed while
+    // it ran: the action is done, and only the drawing needs a live dialog.
     if (result.decision === "left") {
       this.left(result.revoked);
       return;
     }
+    if (!this.live) return;
     // The count is taken with the queue stopped, so a set that grew since the
     // dialog drew it is the user's own editing: draw the new one and ask again.
     if (result.reason === "unpushed_edits") {
@@ -438,7 +440,7 @@ export class LeaveServerModal extends Modal {
       10000,
     );
     this.onLeft();
-    if (this.mode !== "switch") {
+    if (!this.live || this.mode !== "switch") {
       this.close();
       return;
     }

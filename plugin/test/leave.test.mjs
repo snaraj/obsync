@@ -313,6 +313,28 @@ test("a revoke whose answer never arrived leaves this device paired", async (t) 
   assert.match(r.unpair()[0], /decision=refused reason=local_or_lost unpushed=0 local_cleared=false/);
 });
 
+test("a plugin reload during the revoke stops the clear and says so", async (t) => {
+  const r = await fixture(t, { devices: 2 });
+  const route = r.instance.transport.options.request;
+  r.instance.transport.options.request = async (request) => {
+    const response = await route(request);
+    // The load that issued this is gone: Obsidian reloaded the plugin while
+    // the server was answering.
+    if (request.url.endsWith("/revoke")) r.instance.lifecycle = {};
+    return response;
+  };
+
+  await assert.rejects(
+    () => r.instance.leaveServer({ discardUnpushed: false, localOnly: false }),
+    /previous plugin session is inactive/,
+  );
+
+  assert.equal(r.old.devices[0].revoked, true, "the server was asked, and answered");
+  assert.equal(r.state().deviceId, KEYS.deviceId, "but this load cleared nothing");
+  assert.equal(r.metadata().deviceId, KEYS.deviceId);
+  assert.match(r.unpair()[0], /decision=revoked reason=unfinished unpushed=0 local_cleared=false/);
+});
+
 test("leaving refuses while a folder change or a restore is in flight", async (t) => {
   for (const busy of ["changingScope", "restoring"]) {
     const r = await fixture(t, { devices: 2 });

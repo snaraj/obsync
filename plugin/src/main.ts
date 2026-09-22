@@ -1877,7 +1877,9 @@ export default class ObsyncPlugin extends Plugin {
     const started = Date.now();
     const { state, assertCurrent } = this.captureSession();
     let revoked = false;
-    let reason = "ok";
+    // Never "ok" until something finished: an exception anywhere below leaves
+    // this line saying the attempt stopped part way, which is the truth.
+    let reason = "unfinished";
     let unpushed = 0;
     let cleared = false;
     let previous = "kept";
@@ -1935,6 +1937,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       this.updateAvailable = null;
       this.setStatus({ kind: "idle" });
+      if (revoked) reason = "ok";
       return { decision: "left", revoked };
     } finally {
       this.log(
