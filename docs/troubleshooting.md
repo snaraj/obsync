@@ -365,10 +365,19 @@ keeps alone.
 
 **If the other device is still on 1.0.x**, it sends no folder record, so this
 device sees notes asking for a folder spelled a way it does not show. It
-refuses those moves, changes nothing at all, and tells you once per folder.
-Update that device, or rename the folder here to match, and the two agree
-again. While they disagree, edits made under that folder on the older device
-do not arrive here.
+refuses those moves and tells you once per folder: the notes you already have
+stay where they are, and nothing of yours is written over, moved or deleted. A
+note CREATED on the other device meanwhile is not a move and is not refused --
+it is written here, in the folder this device shows, and the difference in
+spelling is not published back. Update that device, or rename the folder here
+to match, and the two agree again, including the notes edited there while they
+disagreed: settling the spelling brings their current versions down with it.
+
+**Two devices renaming the same folder to two different capitalisations at
+once** end with copies of its notes on both, the way two devices renaming one
+folder to two different names at once already did. Nothing is lost: rename the
+folder on ONE device, let every device sync once, and then delete the copies
+you do not want.
 
 **Do not delete the stale folder first.** A deletion is published as a
 tombstone, and every device obeys a tombstone. On a device that folds case,

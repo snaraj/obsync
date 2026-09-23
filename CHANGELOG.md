@@ -74,13 +74,16 @@ versions endlessly, that was this.
 
 **If the rename comes from a device still on 1.0.x**, there is no folder
 record to send, so the notes arrive asking for a folder spelled a way this
-device does not show. obsync refuses those moves rather than guessing: nothing
-is written, moved or deleted, your notes stay where they are, and you are told
-once per folder -- update the other device, or rename the folder here to
-match, and both devices agree again. While the two spell it differently, edits
-made under that folder on the older device do not reach this one; that is the
-honest cost of not letting one note's version rename a folder full of other
-people's notes.
+device does not show. obsync refuses those moves rather than guessing: the
+notes you already have stay exactly where they are -- nothing of yours is
+written over, moved or deleted -- and you are told once per folder. A note
+CREATED on the other device meanwhile is not a move and is not refused: it is
+written here, in the folder this device shows, and the difference in spelling
+is not published back. Update the other device, or rename the folder here to
+match, and both devices agree again -- including the edits made there while
+the two disagreed, which the folder record brings down with it as it settles
+the spelling. Not letting one note's version rename a folder full of other
+people's notes is what makes the refusal the safe answer meanwhile.
 
 If a device of yours already shows both, there is a recovery, and its order
 matters: **do not delete the stale folder first.** On a device that folds case
@@ -217,10 +220,17 @@ is no beta channel and no pre-release tag.
   spelling it already holds. Until then the phone is covered by the same
   refusal as any other unprovable rename: it changes nothing and says so.
 - **A device still on 1.0.x that renames a folder by capitalisation alone
-  does not converge with this one** until it is updated, as described under
-  "Two folders that differ only in capitalisation". Nothing is lost on either
-  side; the two simply spell the folder differently, and the edits made under
-  it there do not arrive here meanwhile.
+  does not converge with this one** until it is updated, or until the folder
+  is renamed here to match, as described under "Two folders that differ only
+  in capitalisation". Nothing is lost on either side; the two simply spell the
+  folder differently meanwhile, and the notes edited there arrive when the
+  spelling is settled rather than while it is not.
+- **Two devices renaming ONE folder to two different capitalisations at the
+  same time end with copies of the notes under it on both**, the way two
+  devices renaming one folder to two different NAMES at the same time already
+  did, and more of them. Nothing is lost and nothing keeps changing: rename
+  the folder on one device, let every device sync once, and delete the copies
+  you do not want.
 - **A note roughly 8 MB or larger is still not recognised as one the server
   already holds**, so on a restored vault it is copied beside itself rather
   than adopted -- a duplicate, never a missing note.

@@ -263,12 +263,36 @@ two spellings are one directory entry, `rename(2)` resolves the directory
 components of a destination and renames only its last component, so no
 per-file move can re-case a directory. The folder record is the only record
 entitled to, and a receiver applies it by renaming the directory entry itself
-and carrying every record beneath it along. A receiver that meets a per-file
-move whose only difference lies in a directory component -- the shape a device
-older than 1.1.0 publishes, which sends no folder record at all -- REFUSES it
+and carrying every record beneath it along.
+
+**First on the WIRE, not first in a queue.** A sender drains its queue in
+batches and posts each batch concurrently, so a record enqueued first can
+still be journaled after one enqueued behind it. For this record that is not
+good enough, and the guarantee is therefore stated as an order on the wire:
+the sender waits for the server to acknowledge the folder record before it
+sends any move under it. A receiver that meets a per-file move whose only
+difference lies in a directory component -- the shape a device older than
+1.1.0 publishes, which sends no folder record at all -- REFUSES it
 (`decision=case_move_refused reason=folder_case`, one notice per folder) and
 changes nothing, because recording a spelling its own listing contradicts is
 what makes two devices trade the same rename forever.
+
+**A refusal is not a loss, and it is not permanent.** A version refused while
+the two devices spelled the folder differently is never re-delivered by the
+feed, which advances past it. So when the folder record does arrive and the
+directory is re-cased, the receiver asks the server for the head of every
+record that re-case carried -- one `GET /v1/files/{id}` per record, bounded by
+the folder -- and applies each one through the ordinary path. A note edited on
+the other device while the two disagreed arrives then, rather than waiting for
+whatever touches it next.
+
+**What a receiver writes for a NEW file under such a folder.** A move is
+refused; a file id the receiver has never seen is not a move, and it is
+written. It lands in the directory the vault shows, because creating a
+directory that is already there changes nothing, and it is RECORDED at the
+spelling the vault shows rather than the one the manifest carries. A record
+that disagreed with its own vault was published back as a rename the sender
+never made, which a folding device answers with a conflict copy.
 
 **`v` is the compatibility contract.** A device that does not know a `v`
 refuses the manifest before reading any other field, writes nothing, and lets
