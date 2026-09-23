@@ -130,6 +130,20 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
       if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
     },
     remove: (path) => fsPromises.unlink(join(root, path)),
+    // The adapter's own directory listing, which is how a PHONE asks what a
+    // vault really spells a name (`ObsidianHost.spelling`): one level, with
+    // vault-relative paths, exactly as Obsidian answers it. Absent here, this
+    // fake modelled a mobile adapter that does not exist and the host's
+    // mobile branch went untested under it.
+    list: async (path) => {
+      const at = path === "/" ? root : join(root, path);
+      const out = { files: [], folders: [] };
+      for (const name of readdirSync(at)) {
+        const child = path === "/" ? name : `${path}/${name}`;
+        (statSync(join(root, child)).isDirectory() ? out.folders : out.files).push(child);
+      }
+      return out;
+    },
   };
   const vault = {
     getFileByPath: (path) => (existsSync(join(root, path)) ? { path } : null),

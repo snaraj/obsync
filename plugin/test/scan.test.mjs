@@ -38,6 +38,8 @@ import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const { SCAN_MS, SyncEngine } = require("../build/sync/engine.js");
+const { applyChange } = require("../build/sync/pull.js");
+const { pushFile } = require("../build/sync/push.js");
 const c = require("../build/crypto.js");
 
 function engineOf({ host, server, state }, timers) {
@@ -580,4 +582,86 @@ test("a host with no Node filesystem has no listing of its own", async (t) => {
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const host = new ObsidianHost({ state: { data: {} }, app: { vault: { adapter: {} } } }, null);
   assert.equal(await host.scan(), null, "mobile answers null and the engine falls back to the index");
+});
+
+/**
+ * AN ECHO MARK IS ARMED FOR AN EVENT, AND SOME EVENTS NEVER COME (review
+ * round 2, finding 5).
+ *
+ * Every removal, move and write the pull path makes is marked first, because
+ * Obsidian reports it to this plugin's own handlers and an unmarked report is
+ * published straight back at the device that made the change. The mark is
+ * consumed by the event it was armed for -- when one arrives. Obsidian's
+ * desktop watcher is asynchronous and misses changes outright, which is the
+ * whole reason this periodic pass exists, so a mark can outlive its event;
+ * and the next GENUINE change at that exact path is then swallowed as the
+ * echo. A suppressed deletion is the expensive one: the note stays on every
+ * other device with nothing left here to re-derive it from.
+ *
+ * The bound is one whole scan cycle. Below, the vault never delivers a single
+ * event: the peer's rename is applied as a write and a trash, the file
+ * reappears at the trashed name from outside Obsidian (a file manager, a
+ * checkout, another sync tool -- the case this pass exists for), and the user
+ * then deletes it. That deletion IS this device's to publish.
+ */
+test("a removal mark outlives no scan cycle, so a later deletion of that path is published", async () => {
+  const rigged = await rig();
+  const { host, server, state, keys: k } = rigged;
+  host.seed("Notes/One.md", "first\n", 1000);
+  await pushFile(rigged.context, "Notes/One.md");
+  const one = state.fileByPath("Notes/One.md");
+
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  const context = engine.context;
+
+  // A peer renames the note AND edits it in one version, which is the
+  // write-at-the-new-name and trash-the-old path: the trash is marked.
+  const renamed = await server.publish({
+    fileId: one.fileId,
+    path: "Notes/Renamed.md",
+    bytes: new TextEncoder().encode("second\n"),
+    mtime: 2000,
+    parents: [one.versionId],
+    domainKey: k.domainKey,
+    manifestKey: k.manifestKey,
+  });
+  console.log("MARK before applyChange");
+  assert.equal(await applyChange(context, renamed), "applied");
+  console.log("MARK after applyChange");
+  assert.ok(context.trashed.has("Notes/One.md"), "nothing was armed, so this test proves nothing");
+
+  // The name is taken again by something Obsidian never reported, and the
+  // scan is what finds it: one file, published as the new note it is.
+  host.seed("Notes/One.md", "third\n", 3000);
+  console.log("MARK before scan1");
+  await timers.run(SCAN_MS);
+  console.log("MARK after scan1");
+  await timers.run(SCAN_MS);
+  console.log("MARK before syncNow1");
+  await engine.syncNow();
+  console.log("MARK after syncNow1");
+
+  assert.equal(context.trashed.has("Notes/One.md"), false, "the mark outlived two scan cycles");
+  const back = state.fileByPath("Notes/One.md");
+  assert.ok(back !== undefined && back.fileId !== one.fileId, "the new note was never published");
+
+  // And now the user deletes it in Obsidian, which is this device's to say:
+  // the note leaves the vault and the event reaches the engine's handler.
+  host.files.delete("Notes/One.md");
+  engine.deleted("Notes/One.md");
+  await engine.syncNow();
+  engine.stop();
+  server.releaseFeed();
+
+  assert.equal(
+    host.logs.some((line) => line.includes("decision=echo_suppressed") && line.includes("event=delete")),
+    false,
+    host.logs.filter((line) => line.startsWith("watch")).join(" | "),
+  );
+  assert.ok(
+    notes(await postedPaths(server, k)).some((version) => version.deleted && version.fileId === back.fileId),
+    `the deletion was swallowed as an echo: ${JSON.stringify(notes(await postedPaths(server, k)))}`,
+  );
 });

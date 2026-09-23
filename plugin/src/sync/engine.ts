@@ -350,6 +350,9 @@ export const FEED_ERROR_BACKOFF_MS = 5000;
 /** `QUIET_MS` of stillness, counted in rechecks because that is what fires. */
 const QUIET_RECHECKS = Math.ceil(QUIET_MS / RECHECK_MS);
 
+/** The directory a path lives in; `""` for a path at the vault root. */
+const folderOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+
 const defaultTimers: Timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
   clear: (handle) => window.clearTimeout(handle as number),
@@ -367,6 +370,14 @@ export class SyncEngine {
   /** Queued folder paths to publish a record for, and to tombstone. */
   private readonly folderPublishes = new Set<string>();
   private readonly folderRemovals = new Set<string>();
+  /**
+   * Queued paths that must reach the server BEFORE anything queued behind
+   * them: the wire order, which a batch under `Promise.all` is not
+   * (`takeBatch`).
+   */
+  private readonly barriers = new Set<string>();
+  /** Echo marks already armed at the previous scan: what this one expires. */
+  private echoSweep = new Set<string>();
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
@@ -645,14 +656,21 @@ export class SyncEngine {
    * a tombstone for a note that is alive under its new name -- which every
    * other device then obeys, and the note is gone everywhere (issue #91).
    */
-  renamedFolder(from: string, to: string): void {
+  renamedFolder(from: string, to: string, sourceFolders: SyncFolders = this.options.state.data.syncFolders): void {
     if (!this.running) return;
     // Each file is judged by the selection in force on EACH side of the move:
     // its old name against the selection before the follow, its new one
     // against the selection after. A record under the renamed folder that the
     // selection never covered is therefore still out of scope on both sides,
     // and moving a selected folder cannot smuggle it into sync.
-    const before = this.options.state.data.syncFolders;
+    //
+    // THE SELECTION BEFORE THE MOVE IS THE CALLER'S TO CAPTURE, because the
+    // OTHER half of a folder rename moves it too (`folderRenamed`) and either
+    // half may run first (`main.ts`). Read here, it would be the selection the
+    // rename LEAVES BEHIND whenever the other half ran first -- every old name
+    // out of scope, every note under a selected folder published as a NEW file
+    // with a new id, and the old ids never retired (review round 2, finding 1).
+    const before = sourceFolders;
     this.followSelection(from, to);
     const prefix = `${from}/`;
     // RECORDS ARE NOT THE WHOLE OF WHAT THIS DEVICE OWES. A note written
@@ -786,7 +804,7 @@ export class SyncEngine {
    * being RE-created (parents = its old tombstone) would fork into a second
    * head for no content difference at all.
    */
-  folderCreated(path: string): void {
+  folderCreated(path: string, barrier = false): void {
     if (!this.running || !this.tracked(path, "folder_create")) return;
     const context = this.need();
     // A folder stands here again, so a delete event still owed for the one
@@ -798,6 +816,10 @@ export class SyncEngine {
       return;
     }
     this.folderPublishes.add(path);
+    // ARMED BEFORE THE ENQUEUE, because `enqueue` drains synchronously as far
+    // as its first await: a barrier armed afterwards could be armed for a path
+    // already posted.
+    if (barrier) this.barriers.add(path);
     this.enqueue(path);
   }
 
@@ -806,8 +828,8 @@ export class SyncEngine {
    * the delete events Obsidian fires for each of them; this publishes the
    * folder's, which is what removes the empty tree from every other device.
    */
-  folderDeleted(path: string): void {
-    if (!this.running || !this.tracked(path, "folder_delete")) return;
+  folderDeleted(path: string, folders: SyncFolders = this.options.state.data.syncFolders): void {
+    if (!this.running || !this.tracked(path, "folder_delete", folders)) return;
     const context = this.need();
     context.createdFolders.delete(path);
     this.folderPublishes.delete(path);
@@ -826,18 +848,29 @@ export class SyncEngine {
    * folder recorded beneath it. The files inside move as ordinary per-file
    * renames, which keep their file ids (`renamed`).
    */
-  folderRenamed(from: string, to: string): void {
+  folderRenamed(from: string, to: string, sourceFolders: SyncFolders = this.options.state.data.syncFolders): void {
     if (!this.running) return;
-    // The selection follows the folder whichever half runs first, so that a
-    // folder record published BEFORE the moves under it (`main.ts`, the
-    // case-only order) is still judged against the selection the rename
-    // leaves behind. Idempotent by construction: the second call finds no
-    // selected folder left to move and returns.
+    // The selection follows the folder whichever half runs first; the
+    // selection each old name is judged against is the caller's, captured
+    // before either half ran (`renamedFolder`, `main.ts`). Idempotent by
+    // construction: the second call finds no selected folder left to move
+    // and returns.
     this.followSelection(from, to);
     const recorded = Object.keys(this.need().state.data.folders);
+    // THE FOLDER RECORD IS A WIRE BARRIER FOR A RENAME BY CAPITALISATION
+    // ALONE. Only a folder record can re-case a directory on a host that
+    // folds case, so a move that overtakes it is refused there with a notice
+    // naming a cause that is not the one, and the receiver re-cases with the
+    // pre-move version ids (`docs/protocol.md`; review round 2, finding 2).
+    // Enqueuing it first is not enough -- a batch runs under `Promise.all` and
+    // its journal order is completion order -- so the record's own post is
+    // awaited before anything queued behind it is sent (`takeBatch`). Only
+    // this folder's record needs it: everything beneath it moved with the
+    // directory entry, and the receiver carries those records along.
+    const barrier = caseOnly(from, to);
     for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
-      this.folderDeleted(path);
-      this.folderCreated(to + path.slice(from.length));
+      this.folderDeleted(path, sourceFolders);
+      this.folderCreated(to + path.slice(from.length), barrier && path === from);
     }
   }
 
@@ -950,16 +983,40 @@ export class SyncEngine {
     try {
       const context = this.need();
       while (this.queue.length > 0 && this.running) {
-        const batch = this.queue.splice(0, context.concurrency);
+        const batch = this.takeBatch(context.concurrency);
         this.status({ kind: "syncing", pending: this.queue.length + batch.length });
         this.active = batch.length;
         await Promise.all(batch.map((path) => this.pushOne(path)));
         this.active = 0;
       }
+      // Nothing is queued behind anything any more, so no barrier can still
+      // mean something. Expiring them here is what keeps one armed for a path
+      // that never reached the queue from serialising a later push of that
+      // same name.
+      this.barriers.clear();
       this.status({ kind: "idle" });
     } finally {
       this.draining = false;
     }
+  }
+
+  /**
+   * The next batch, and the one place the WIRE order is decided.
+   *
+   * A batch runs under `Promise.all`, so every path in it is posted
+   * concurrently and the journal's order is completion order. For the folder
+   * record of a rename that changes case alone that is not good enough: it is
+   * the only record entitled to re-case a directory, and a move that reaches
+   * the receiver first is refused there (`docs/protocol.md`). Such a record is
+   * a BARRIER: taken alone, and awaited -- the loop above finishes a batch
+   * before it takes another -- so nothing queued behind it is sent until the
+   * server has acknowledged it. Paths queued BEFORE it still go together: a
+   * barrier orders what follows it, it does not stop the queue.
+   */
+  private takeBatch(concurrency: number): string[] {
+    if (this.barriers.delete(this.queue[0] as string)) return this.queue.splice(0, 1);
+    const behind = this.queue.findIndex((path) => this.barriers.has(path));
+    return this.queue.splice(0, behind === -1 ? concurrency : Math.min(concurrency, behind));
   }
 
   /**
@@ -1223,6 +1280,11 @@ export class SyncEngine {
       spellings.set(folded, [...(spellings.get(folded) ?? []), path]);
     }
     const gone = Object.keys(context.state.data.files).filter((path) => !seen.has(path));
+    // The directories this device's records live in, taken ONCE before
+    // anything moves: `recordsOnly` asks whether the destination's is already
+    // one of them, and a pass that re-read it would answer differently for the
+    // second file of a folder than for the first.
+    const recordedFolders = new Set(Object.keys(context.state.data.files).map(folderOf));
 
     // NORMALISATION IS NOT A MOVE. A listing can spell a recorded name
     // differently without anything having happened: Obsidian's index is NFC
@@ -1252,6 +1314,7 @@ export class SyncEngine {
     // file, and a paired source must not also be tombstoned. A path the
     // normalisation check settled is handled in exactly the same way.
     let moves = 0;
+    let declined = 0;
     for (const from of gone) {
       if (!this.running) return;
       const record = context.state.fileByPath(from);
@@ -1261,6 +1324,12 @@ export class SyncEngine {
         context.state.fileByPath(file.path) === undefined);
       if (candidates.length !== 1) continue;
       const to = (candidates[0] as VaultStat).path;
+      if (await this.recordsOnly(context, from, to, recordedFolders, label)) {
+        settled.add(to);
+        settled.add(from);
+        declined++;
+        continue;
+      }
       if (!(await context.host.syncable(to))) { skipped++; continue; }
       settled.add(to);
       settled.add(from);
@@ -1284,7 +1353,7 @@ export class SyncEngine {
       if (!this.running) return;
       if (settled.has(from)) continue;
       if (!this.tracked(from, `${label}_state`) || !(await context.host.syncable(from))) { skipped++; continue; }
-      if (await this.caseRenamed(context, from, spellings.get(from.toLowerCase()) ?? [], label)) {
+      if (await this.caseRenamed(context, from, spellings.get(from.toLowerCase()) ?? [], recordedFolders, label)) {
         settled.add(from);
         cased++;
         continue;
@@ -1390,13 +1459,114 @@ export class SyncEngine {
     // 30 s about an unchanged vault buries the lines that matter. It speaks
     // whenever it acted, and whenever it overran the budget it is measured
     // against.
-    if (tombstones || queued + removed + skipped + moves + cased + folderQueued > 0 || duration > SCAN_BUDGET_MS) {
+    if (tombstones || queued + removed + skipped + moves + cased + declined + folderQueued > 0 || duration > SCAN_BUDGET_MS) {
       context.host.log(
         `${label} decision=queued files=${seen.size} queued=${queued} moved=${moves} removed=${removed} ` +
           `folders=${present.size} folders_queued=${folderQueued} folders_skipped=${folderSkipped} ` +
-          `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased}`,
+          `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased} ` +
+          `not_paired=${declined}`,
       );
     }
+    // LAST, because this pass's own pairings consume marks (`renamed`).
+    this.sweepEchoes(context, label);
+  }
+
+  /**
+   * Expire the echo marks armed for vault events that never arrived.
+   *
+   * Every write, move and removal the pull path makes is marked before it
+   * runs, because Obsidian reports it to this plugin's own handlers and an
+   * unmarked report is published straight back at the device that made it
+   * (ECHOES, issue #96). A mark is consumed by the event it was armed for --
+   * on a host that delivers one. The desktop watcher is asynchronous and a
+   * folder re-case fans out into per-file moves the app never reports at all
+   * (`pull.ts`, `recaseFolder`), so marks are left armed for events that will
+   * never come, and the NEXT genuine rename, deletion or creation of exactly
+   * those paths is suppressed once instead -- a suppressed folder tombstone
+   * being one no later scan re-derives (review round 2, finding 5).
+   *
+   * SO THEY ARE BOUNDED, by one whole scan cycle: a mark still armed when a
+   * second pass finds it is expired there. That is `SCAN_MS` of grace for an
+   * event Obsidian delivers in the same turn or the next one, and it asks the
+   * vault nothing -- the periodic pass deliberately does not list folders
+   * (`survey`, COST), so a folder mark could not be tested against a listing
+   * without walking the vault every 30 s for a set that is almost always
+   * empty. An expired mark costs at most one republished change, which the
+   * device that made it applies as the no-op it is; an unexpired one costs a
+   * change that is never published at all.
+   */
+  private sweepEchoes(context: SyncContext, label: string): void {
+    const armed = new Set<string>();
+    let expired = 0;
+    for (const [name, marks] of [
+      ["moved", context.moved],
+      ["trashed", context.trashed],
+      ["created_folders", context.createdFolders],
+    ] as [string, Set<string>][]) {
+      for (const mark of marks) {
+        const tagged = `${name}\u0000${mark}`;
+        if (this.echoSweep.has(tagged)) {
+          marks.delete(mark);
+          expired++;
+        } else {
+          armed.add(tagged);
+        }
+      }
+    }
+    this.echoSweep = armed;
+    // No path in the line: a name is vault content (requirement 6).
+    if (expired > 0) context.host.log(`${label} decision=echo_expired marks=${expired} armed=${armed.size}`);
+  }
+
+  /**
+   * A pairing whose difference lies in a DIRECTORY component, where the vault
+   * has not moved anything: the record follows the vault's spelling, and
+   * nothing is published.
+   *
+   * `rename(2)` resolves the directory components of a destination and renames
+   * only the last one, so a note's own version can never re-case the folder it
+   * lives in -- only a folder record can (`pull.ts`, `recaseFolder`).
+   * Published as a rename, such a pairing is a rename no device made: a
+   * device that folds case finds no record at that spelling, keeps both, and
+   * every note created in that folder while the two spellings disagree becomes
+   * a duplicate on both devices (review round 2, finding 3).
+   *
+   * THREE FACTS, AND ALL THREE ARE NEEDED. The two names differ in a directory
+   * component and in case alone; the host still answers for the name its own
+   * listing dropped, which is the folding host where the two are ONE entry and
+   * nothing can have moved; and this device already records other files under
+   * the destination's own spelling of that directory, which is what tells a
+   * stale record apart from a folder rename this device has just DISCOVERED --
+   * there, every record under the folder is moving and none names the
+   * destination's spelling yet, and those moves must publish or a
+   * case-sensitive device never learns of them.
+   *
+   * The record follows the vault rather than being dropped: the file keeps its
+   * id, its later versions take the refusal path exactly as a tracked note's
+   * do, and the next scan finds a record that agrees with the listing instead
+   * of re-offering the same pairing every 30 s.
+   */
+  private async recordsOnly(
+    context: SyncContext,
+    from: string,
+    to: string,
+    recordedFolders: Set<string>,
+    label: string,
+  ): Promise<boolean> {
+    if (!caseOnly(from, to) || folderOf(from) === folderOf(to)) return false;
+    if (!recordedFolders.has(folderOf(to))) return false;
+    if ((await context.host.stat(from)) === null) return false;
+    const record = context.state.fileByPath(from);
+    if (record !== undefined) {
+      context.state.setFile(to, record);
+      context.state.forgetPath(from);
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        context.host.log(`${label} decision=failed reason=state_not_saved`);
+      });
+    }
+    context.host.log(`${label} path_class=file decision=not_paired reason=folder_case`);
+    return true;
   }
 
   /**
@@ -1414,9 +1584,10 @@ export class SyncEngine {
    * its copy instead of receiving a second one it never retires.
    *
    * A NEW SPELLING THAT IS ALREADY TRACKED is the residue of that defect
-   * rather than the defect: a device published the rename as a new file
-   * before this version, and this record is a ghost of the id it left
-   * behind. Its deletion must never be published -- on this folding host the
+   * rather than the defect: something published the rename as new files
+   * instead of as a move -- a device older than 1.1.0, or this one before the
+   * selection was captured for both halves of a folder rename (review round
+   * 2, finding 1) -- and this record is a ghost of the id it left behind. Its deletion must never be published -- on this folding host the
    * ghost's path IS the live note, and a tombstone is obeyed by every device
    * -- so the record is dropped and nothing is published, removed or
    * renamed. That is the half of the recovery a device can prove by itself;
@@ -1426,12 +1597,18 @@ export class SyncEngine {
     context: SyncContext,
     path: string,
     folded: string[],
+    recordedFolders: Set<string>,
     label: string,
   ): Promise<boolean> {
     const spellings = folded.filter((candidate) => caseOnly(candidate, path));
     const to = spellings.length === 1 ? (spellings[0] as string) : null;
     if (to === null || (await context.host.stat(path)) === null) return false;
     if (context.state.fileByPath(to) === undefined) {
+      // The host answered for a name its own listing has dropped, so the two
+      // spellings are one entry here; `recordsOnly` is what separates a
+      // DIRECTORY this device's records already resolve the other way from a
+      // folder rename this device has only just discovered.
+      if (await this.recordsOnly(context, path, to, recordedFolders, label)) return true;
       context.host.log(`${label} path_class=file decision=case_renamed`);
       this.renamed(path, to);
       return true;
@@ -1445,11 +1622,11 @@ export class SyncEngine {
     if (!this.caseGhostNoticeShown) {
       this.caseGhostNoticeShown = true;
       context.host.notify(
-        "obsync: a folder here was renamed by capitalisation alone before this version could publish it as " +
-          "a rename, so an older version published the notes under it as new files. This device has stopped " +
-          "tracking the old spelling and deleted nothing. If another device shows TWO folders whose names " +
-          "differ only in capitalisation, update every device first, let each sync once, and only then delete " +
-          "the stale folder there -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+        "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
+          "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
+          "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
+          "capitalisation, update every device first, let each sync once, and only then delete the stale " +
+          "folder there -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
       );
     }
     return true;

@@ -1592,15 +1592,27 @@ export default class ObsyncPlugin extends Plugin {
           //
           // `renamedFolder` covers the records AND the work still pending for
           // them, which is more than a listing of tracked paths can reach, and
-          // a selected folder takes the selection with it. `folderRenamed`
-          // follows the selection too, so either order judges the records
-          // against the selection this rename leaves behind (`sync/engine.ts`).
+          // a selected folder takes the selection with it.
+          //
+          // THE SELECTION IS CAPTURED ONCE, HERE, BEFORE EITHER HALF RUNS.
+          // Both halves move the selection with the folder, and each judges a
+          // path by the selection in force on ITS OWN side of the move -- an
+          // old name against the selection before, a new one against the
+          // selection after. Whichever half runs first is the one that moves
+          // it, so a half that read the selection for itself would judge every
+          // old name against the one the rename LEAVES BEHIND: out of scope,
+          // so every note under a renamed SELECTED folder was published as a
+          // new file with a new id, its old id never retired, and the scan
+          // re-offered the rename every 30 s for good (review round 2, finding
+          // 1). Capturing it here is what makes the two orders below differ in
+          // what they SEND and not in what they judge (`sync/engine.ts`).
+          const before = this.state.data.syncFolders;
           if (caseOnly(oldPath, file.path)) {
-            this.engine?.folderRenamed(oldPath, file.path);
-            this.engine?.renamedFolder(oldPath, file.path);
+            this.engine?.folderRenamed(oldPath, file.path, before);
+            this.engine?.renamedFolder(oldPath, file.path, before);
           } else {
-            this.engine?.renamedFolder(oldPath, file.path);
-            this.engine?.folderRenamed(oldPath, file.path);
+            this.engine?.renamedFolder(oldPath, file.path, before);
+            this.engine?.folderRenamed(oldPath, file.path, before);
           }
         }
       }),

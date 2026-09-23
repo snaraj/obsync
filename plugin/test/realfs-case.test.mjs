@@ -52,6 +52,7 @@ import nodePath, { join } from "node:path";
 import { FakeTimers, KEYS, STEP_MS, published, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
 const { SyncEngine, SCAN_MS } = require("../build/sync/engine.js");
 const c = require("../build/crypto.js");
@@ -383,4 +384,180 @@ test("real filesystem: a case-only folder move from a device that publishes no f
   assert.ok(r.counts.scans >= scansBefore + 2, `the periodic scan did not run: ${story(r)}`);
   assert.equal(r.server.journal.length, settled, `the refusal was published back as a rename: ${story(r)}`);
   assert.equal((await versions(r, one.fileId)).length, 2, `the note grew a version: ${story(r)}`);
+});
+
+/**
+ * A NOTE CREATED ON THE OTHER DEVICE WHILE THE TWO SPELL THE FOLDER
+ * DIFFERENTLY (review round 2, finding 3).
+ *
+ * The refusal path covers the notes this device already TRACKS: their moves
+ * are refused, nothing is written, and the records stay where the vault shows
+ * them. A note this device has never seen is not refused -- it is a new file
+ * id, it belongs in the vault, and it is written. The directory it lands in
+ * is the one this vault shows, because creating a directory that is already
+ * there changes nothing; the record used to take the manifest's spelling
+ * instead, so the very next scan paired the difference as a move and this
+ * device published a rename the other one never made. A device that folds
+ * case answers that rename with a conflict copy, so both devices gained a
+ * duplicate of every note created in that folder. The record now follows the
+ * vault (`pull.ts`, `landedAt`), and the scan declines the pairing whatever a
+ * record says (`engine.ts`, `recordsOnly`).
+ */
+test("real filesystem: a NEW note from a device that publishes no folder record lands under the folder this vault shows, and nothing is published back", async (t) => {
+  const r = await vault(t, "Team docs");
+  if (!r.folds) {
+    assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+    assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+    t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+    t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+    return;
+  }
+  r.seed("Team docs/One.md", ONE, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  const newId = "1234567890abcdef1234567890abcdef";
+  await r.server.publish({
+    fileId: newId, path: "team docs/New.md", bytes: enc(TWO), mtime: 1500, parents: [],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+  });
+  t.after(async () => {
+    engine.stop();
+    r.server.releaseFeed();
+    await engine.stopAndWait();
+  });
+  await engine.start();
+  await timers.run(STEP_MS, () =>
+    r.state.pathByFileId(newId) !== undefined && r.state.folderByPath("Team docs") !== undefined);
+
+  const settledAt = r.server.journal.length;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(
+    r.state.pathByFileId(newId),
+    "Team docs/New.md",
+    `the record spells the folder a way the vault does not show: ${story(r)}`,
+  );
+  assert.deepEqual(
+    walk(r.root).files.map((file) => file.path).sort(),
+    ["Team docs/New.md", "Team docs/One.md"],
+    `the note landed somewhere else: ${story(r)}`,
+  );
+  assert.equal(readFileSync(join(r.root, "Team docs/New.md"), "utf8"), TWO, story(r));
+  assert.equal(
+    r.server.journal.length,
+    settledAt,
+    `this device published a rename the peer never made: ${story(r)}`,
+  );
+});
+
+/**
+ * THE ECHO MARKS A RE-CASE ARMS, ON A HOST THAT REPORTS NOTHING (review round
+ * 2, finding 5).
+ *
+ * `recaseFolder` marks every file it moves and every folder record it carries
+ * before it renames the directory, because on a vault that answers back each
+ * one returns as a vault event and an unmarked event is published straight
+ * back at the device that made the rename. This harness has no watcher at all
+ * -- and neither, for this operation, does the real desktop app: the fan-out
+ * in `main.ts` finds no records under the old prefix by the time Obsidian
+ * notices, if it notices. The marks were then left armed for events that
+ * never come, and the next genuine rename, deletion or creation of exactly
+ * those paths was suppressed instead. They are now bounded by one whole scan
+ * cycle: the second pass that still finds one expires it, and says how many.
+ */
+test("real filesystem: the echo marks a re-case arms for events this host never reports expire with the next scans", async (t) => {
+  const r = await vault(t, "Team docs");
+  if (!r.folds) {
+    assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+    assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+    t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+    t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+    return;
+  }
+  mkdirSync(join(r.root, "Team docs/Sub"));
+  r.seed("Team docs/One.md", ONE, 1000);
+  r.seed("Team docs/Sub/Two.md", TWO, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  await pushFile(r.context, "Team docs/Sub/Two.md");
+  const one = r.state.fileByPath("Team docs/One.md");
+  const two = r.state.fileByPath("Team docs/Sub/Two.md");
+  const created = await folderRecord(r, "Team docs");
+  await folderRecord(r, "Team docs/Sub");
+  await folderRecord(r, "Team docs", { deleted: true, parents: [created.version_id] });
+  await folderRecord(r, "team docs");
+  await movedNote(r, one, "team docs/One.md", ONE, 1000);
+  await movedNote(r, two, "team docs/Sub/Two.md", TWO, 1000);
+
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+  });
+  t.after(async () => {
+    engine.stop();
+    r.server.releaseFeed();
+    await engine.stopAndWait();
+  });
+  await engine.start();
+  await timers.run(STEP_MS, () => r.state.pathByFileId(one.fileId) === "team docs/One.md");
+  const context = engine.context;
+
+  // The defect's own shape, recorded before it is repaired: marks armed for
+  // events that are never coming.
+  assert.ok(
+    context.moved.size + context.trashed.size + context.createdFolders.size > 0,
+    `nothing was armed, so this test proves nothing: ${story(r)}`,
+  );
+  assert.deepEqual(r.names(), ["team docs"], `the directory kept its old spelling: ${story(r)}`);
+
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(context.moved.size, 0, `a file echo stayed armed: ${story(r)}`);
+  assert.equal(context.trashed.size, 0, `a folder tombstone echo stayed armed: ${story(r)}`);
+  assert.equal(context.createdFolders.size, 0, `a folder creation echo stayed armed: ${story(r)}`);
+  assert.ok(
+    r.logs.some((line) => line.includes("decision=echo_expired")),
+    r.logs.filter((line) => line.startsWith("scan")).join(" | "),
+  );
+});
+
+/**
+ * THE WRITE ITSELF, with no scan anywhere near it. The pass above proves the
+ * device publishes nothing; this proves the record is right the moment it is
+ * written, which is what keeps the pairing from ever arising.
+ */
+test("real filesystem: a file written into a folder this vault spells another way is recorded the way the vault spells it", async (t) => {
+  const r = await vault(t, "Team docs");
+  if (!r.folds) {
+    assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+    assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+    t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+    t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+    return;
+  }
+  const newId = "1234567890abcdef1234567890abcdef";
+  const change = await r.server.publish({
+    fileId: newId, path: "team docs/New.md", bytes: enc(TWO), mtime: 1500, parents: [],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, change), "applied");
+
+  assert.equal(
+    r.state.pathByFileId(newId),
+    "Team docs/New.md",
+    `the record took the manifest's spelling: ${story(r)}`,
+  );
+  assert.deepEqual(
+    walk(r.root).files.map((file) => file.path),
+    ["Team docs/New.md"],
+    `the note landed somewhere else: ${story(r)}`,
+  );
+  assert.equal(readFileSync(join(r.root, "Team docs/New.md"), "utf8"), TWO, story(r));
+  assert.deepEqual(walk(r.root).folders, ["Team docs"], `a second directory was created: ${story(r)}`);
 });

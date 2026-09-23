@@ -487,16 +487,62 @@ async function materialise(context: SyncContext, manifest: Manifest): Promise<Va
   const writer = await context.host.writer(manifest.path);
   try {
     await writeVerified(context, manifest, writer);
-    const stat = await writer.commit(manifest.mtime);
-    context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
     // The commit's own stat, handed back rather than looked up again: it is
     // the metadata of the bytes THIS write put there, and a second stat would
     // describe whatever the user saved a moment later instead (finding 2).
-    return stat;
+    return await landedAt(context, await writer.commit(manifest.mtime));
   } catch (error) {
     await writer.abort();
     throw error;
   }
+}
+
+/**
+ * What a write left behind, named the way the VAULT spells it.
+ *
+ * NEVER RECORD A SPELLING THE VAULT DOES NOT SHOW (#124). A write names the
+ * path it was ASKED for; on a host that folds case the directory it lands in
+ * may be spelled another way, because creating a directory that is already
+ * there changes nothing and `rename(2)` resolves a destination's directory
+ * components without touching them. A record written from the manifest's path
+ * would then disagree with this device's own listing, and the scan pairs that
+ * difference as a move and publishes a rename the other device never made --
+ * which a device that folds case answers with a conflict copy, so both
+ * devices gain a duplicate of every note created in that folder while the two
+ * spellings disagree (review round 2, finding 3). Tracked notes were already
+ * covered, by the refusal path and by the folder record that carries their
+ * records with the directory; a note this device is MATERIALISING for the
+ * first time was the one writer left unguarded.
+ *
+ * ASKED ONLY WHERE IT CAN DIFFER, because `spelling` is a directory walk and
+ * a phone walks it through the vault adapter. A path with no directory
+ * component has nothing to ask about: a file's own LAST component is never
+ * the difference, since a name whose folded twin is already in the vault is
+ * settled by the same-name rules long before a writer sees it (`competing`).
+ * A folder RECORD at exactly this directory's spelling is a spelling the
+ * VAULT gave: `applyFolder` writes one only after creating that directory, or
+ * after re-casing it and proving the vault shows the new name, and the
+ * startup pass publishes one for every folder the vault has. So the walk
+ * falls to the first file landing in a directory nothing records yet, and a
+ * settled vault pays nothing at all. Nothing is asked either for a version
+ * that changes nothing (the `held` rule), for a rename (the host's own move
+ * answers), or for a record this device only re-stamps.
+ *
+ * THE ECHO KEY IS REGISTERED FOR BOTH SPELLINGS, because which one the vault
+ * reports back is the vault's business: Obsidian's index answers with the
+ * spelling it keeps, and a host that echoes the name it was handed answers
+ * with the other. A mark nothing consumes expires with the next scan cycle
+ * (`engine.ts`, `sweepEchoes`); an unmarked write is published back.
+ */
+async function landedAt(context: SyncContext, stat: VaultStat): Promise<VaultStat> {
+  context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+  const folder = stat.path.slice(0, Math.max(0, stat.path.lastIndexOf("/")));
+  if (folder === "" || context.state.folderByPath(folder) !== undefined) return stat;
+  const shown = await context.host.spelling(stat.path);
+  if (shown === null || shown === stat.path) return stat;
+  context.written.add(`${shown}:${stat.mtime}:${stat.size}`);
+  context.host.log("pull path_class=file decision=recorded reason=vault_spelling");
+  return { ...stat, path: shown };
 }
 
 /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
@@ -740,7 +786,71 @@ async function recaseFolder(
   context.host.log(
     `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,
   );
+  await refetchCarried(context, files.map(under), change.seq);
   return "applied";
+}
+
+/**
+ * The heads that were refused while the two spellings disagreed.
+ *
+ * A version naming the new spelling that arrived BEFORE this folder record --
+ * a move that lost the race on the sender's own queue, or an edit made on a
+ * device that publishes no folder record at all -- was refused
+ * (`case_move_refused reason=folder_case`), and the feed advanced past it.
+ * Nothing re-delivers it: this device holds the version it had when the
+ * disagreement began, the server holds the newer one, and only the NEXT edit
+ * of that note would bring it down. So "update that device and the two agree
+ * again" was true of the folder's spelling and not of its notes
+ * (`CHANGELOG.md`, `docs/troubleshooting.md`; review round 2, findings 2
+ * and 4).
+ *
+ * Now that the directory and the records agree, each carried record's head is
+ * asked for once and applied through the ordinary path, which fetches nothing
+ * for a version this device already holds (the `held` rule) and merges,
+ * renames or downloads exactly as the feed would have. ONE `getFile` PER
+ * CARRIED RECORD, bounded by the folder that was re-cased and not by the
+ * vault; a folder holding nothing costs nothing. A failure here is logged and
+ * dropped rather than raised: the re-case itself has already succeeded and is
+ * saved, and the feed must not be wedged by a request that can be made again
+ * at the next one.
+ */
+async function refetchCarried(context: SyncContext, paths: string[], seq: number): Promise<void> {
+  const started = context.now();
+  let applied = 0;
+  let failed = 0;
+  for (const path of paths) {
+    const record = context.state.fileByPath(path);
+    if (record === undefined) continue;
+    try {
+      const file = await context.transport.getFile(record.fileId);
+      for (const head of file.heads) {
+        const current = context.state.fileByPath(path)?.versionId;
+        if (head === current) continue;
+        const version = file.versions.find((candidate) => candidate.version_id === head);
+        if (version === undefined) continue;
+        // A version record names neither its file nor its domain: the server
+        // renders both on the file object (`engine.ts`, `reconcileFile`).
+        await applyChange(context, {
+          ...version,
+          file_id: record.fileId,
+          domain_id: file.domain_id,
+          seq: context.state.data.lastSeq,
+          heads: file.heads,
+          conflicted: file.heads.length > 1,
+        });
+        applied++;
+      }
+    } catch (error) {
+      failed++;
+      context.host.log(
+        `folder path_class=file decision=head_not_refetched reason=${error instanceof Error ? error.message : String(error)} seq=${seq}`,
+      );
+    }
+  }
+  context.host.log(
+    `folder path_class=folder decision=heads_refetched records=${paths.length} applied=${applied} ` +
+      `failed=${failed} seq=${seq} duration_ms=${context.now() - started}`,
+  );
 }
 
 /**
@@ -1257,7 +1367,9 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     // deletion, and the same walk.
     await pruneEmptyParents(context, localPath);
   }
-  await recordAt(context, change, manifest.path, landed);
+  // `landed.path`, never `manifest.path`: what the vault shows for the file
+  // this write put there (`landedAt`, review round 2, finding 3).
+  await recordAt(context, change, landed.path, landed);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} chunks=${manifest.chunks.length} decision=applied seq=${change.seq} duration_ms=${context.now() - started}`,
   );
@@ -1282,9 +1394,11 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
     file_id: fileId,
     domain_id: file.domain_id,
   });
-  await materialise(context, manifest);
-  const stat = await context.host.stat(manifest.path);
-  context.state.setFile(manifest.path, {
+  const written = await materialise(context, manifest);
+  const stat = await context.host.stat(written.path);
+  // The vault's own spelling of what was written, exactly as every other
+  // record this device writes for a file it materialised (`landedAt`).
+  context.state.setFile(written.path, {
     fileId,
     versionId: head.version_id,
     mtime: stat?.mtime ?? manifest.mtime,
@@ -1293,7 +1407,7 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   });
   await context.state.save();
   context.host.log(`pull path_class=file bytes=${manifest.size} decision=fetched_on_demand`);
-  return manifest.path;
+  return written.path;
 }
 
 /** A version graph, as `GET /v1/files/{id}` renders it. */
@@ -1709,20 +1823,22 @@ async function writeCopy(
   deviceName: string,
   when: Date,
 ): Promise<{ path: string; attempt: number; stat: VaultStat } | null> {
-  const landed = await writeBeside(
+  const beside = await writeBeside(
     context, manifest.path, deviceName, when, manifest.size, manifest.mtime,
     (writer, target) => writeVerified(context, { ...manifest, path: target }, writer),
     (target, occupant) => alreadyCopied(context, manifest, target, occupant),
   );
-  if (landed === null) return null;
-  if (landed.written) {
-    context.written.add(`${landed.stat.path}:${landed.stat.mtime}:${landed.stat.size}`);
-  } else {
+  if (beside === null) return null;
+  if (!beside.written) {
     context.host.log(
-      `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${landed.attempt}`,
+      `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${beside.attempt}`,
     );
+    return { path: beside.path, attempt: beside.attempt, stat: beside.stat };
   }
-  return { path: landed.path, attempt: landed.attempt, stat: landed.stat };
+  // The same rule as any other write of this device's: the copy is recorded
+  // under the name the vault shows for it, not the one it was asked for.
+  const stat = await landedAt(context, beside.stat);
+  return { path: stat.path, attempt: beside.attempt, stat };
 }
 
 /**
@@ -2017,7 +2133,7 @@ async function takeVacated(
     );
     return await keepBothRecorded(context, change, manifest);
   }
-  await recordAt(context, change, manifest.path, landed);
+  await recordAt(context, change, landed.path, landed);
   context.host.log(
     `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
   );
@@ -2062,8 +2178,7 @@ async function createOnly(context: SyncContext, manifest: Manifest): Promise<Vau
   } catch {
     context.host.log("pull decision=copy_temp_not_removed published=true name_attempt=0");
   }
-  context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
-  return stat;
+  return await landedAt(context, stat);
 }
 
 /**
@@ -2089,7 +2204,8 @@ async function updateSettled(
   if ((await competing(context, settled, change.file_id)) !== null) {
     return await keepBoth(context, change, manifest);
   }
-  await recordAt(context, change, settled, await materialise(context, { ...manifest, path: settled }));
+  const beside = await materialise(context, { ...manifest, path: settled });
+  await recordAt(context, change, beside.path, beside);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
   );
