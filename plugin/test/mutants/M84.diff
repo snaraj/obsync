@@ -1,0 +1,11 @@
+# M84: a re-case carries the records and leaves their heads behind
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -786,7 +786,6 @@
+   context.host.log(
+     `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,
+   );
+-  await refetchCarried(context, files.map(under), change.seq);
+   return "applied";
+ }
+ 

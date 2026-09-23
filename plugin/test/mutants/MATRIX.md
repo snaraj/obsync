@@ -7,9 +7,9 @@ numbers and `record.py` writes this file from them, so a table whose counts
 have drifted from the suite is a table anyone can catch.
 
     sh plugin/test/mutants/matrix.sh > matrix.log
-    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants 696
+    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants 705
 
-The last argument is the size of the clean suite -- 696 tests here, which
+The last argument is the size of the clean suite -- 705 tests here, which
 `node --test` prints as `# tests` -- so every count below is out of the whole
 suite. One mutant can be re-measured on its own:
 
@@ -20,89 +20,99 @@ count and names the tests that produced it, or says why no test can produce
 one. The runner applies with `-F0`: a patch whose context has moved fails
 loudly rather than mutating something it was never written for, and a patch
 that fails to apply is neither a kill nor a survival -- it is an unmeasured
-guard, which is why the four the composition moved were re-cut.
+guard, which is why every mutant whose context a repair moves is re-cut in
+the same range as the repair.
 
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
-| M01 | the tie-break comparison reversed | 39/696 |
-| M02 | the tie-break always keeps the name | 23/696 |
-| M03 | the tie-break always renames | 17/696 |
-| M04 | a name this device already settled is ignored | 8/696 |
-| M05 | a settled occupant is written over unchecked | 5/696 |
-| M06 | keep-and-record records no copy | 13/696 |
-| M07 | the moved file's delete is left unmarked | 3/696 |
-| M08 | the moved file's record is left clean | 4/696 |
-| M09 | no free name reports the move as done | 1/696 |
-| M10 | an unidentified file is never settled | 2/696 |
-| M11 | the source of a move is never checked for a local edit | 2/696 |
-| M12 | adoption takes any occupant of the length | 2/696 |
-| M13 | identify believes any publish outcome | 1/696 |
-| M14 | a failed publish reports success | 1/696 |
-| M15 | one path pushed twice at once | 3/696 |
-| M16 | the source is not re-stat-ed before the trash | 1/696 |
-| M17 | the refusal is logged and the move reported as done | 1/696 |
-| M18 | the move reads the whole file again | 2/696 |
-| M19 | the copy window is the rest of the file | 1/696 |
-| M20 | a copy that failed under a moving source is raised, not refused | 1/696 |
-| M21 | the fake's create-only writer accepts a short copy | 1/696 |
-| M22 | the digest proof is bound to a fresh stat | 2/696 |
-| M23 | recordAt stats the file itself | 4/696 |
-| M24 | the settled write records a fresh stat | 3/696 |
-| M25 | the joined request is dropped, as before | **SURVIVES** 0/696 |
-| M26 | the follow-up is remembered and never queued | **SURVIVES** 0/696 |
-| M27 | the record is never saved | 1/696 |
+| M01 | the tie-break comparison reversed | 39/705 |
+| M02 | the tie-break always keeps the name | 23/705 |
+| M03 | the tie-break always renames | 17/705 |
+| M04 | a name this device already settled is ignored | 8/705 |
+| M05 | a settled occupant is written over unchecked | 5/705 |
+| M06 | keep-and-record records no copy | 13/705 |
+| M07 | the moved file's delete is left unmarked | 3/705 |
+| M08 | the moved file's record is left clean | 4/705 |
+| M09 | no free name reports the move as done | 1/705 |
+| M10 | an unidentified file is never settled | 2/705 |
+| M11 | the source of a move is never checked for a local edit | 2/705 |
+| M12 | adoption takes any occupant of the length | 2/705 |
+| M13 | identify believes any publish outcome | 1/705 |
+| M14 | a failed publish reports success | 1/705 |
+| M15 | one path pushed twice at once | 4/705 |
+| M16 | the source is not re-stat-ed before the trash | 1/705 |
+| M17 | the refusal is logged and the move reported as done | 1/705 |
+| M18 | the move reads the whole file again | 2/705 |
+| M19 | the copy window is the rest of the file | 1/705 |
+| M20 | a copy that failed under a moving source is raised, not refused | 1/705 |
+| M21 | the fake's create-only writer accepts a short copy | 1/705 |
+| M22 | the digest proof is bound to a fresh stat | 2/705 |
+| M23 | recordAt stats the file itself | 4/705 |
+| M24 | the settled write records a fresh stat | 3/705 |
+| M25 | the joined request is dropped, as before | **SURVIVES** 0/705 |
+| M26 | the follow-up is remembered and never queued | **SURVIVES** 0/705 |
+| M27 | the record is never saved | 1/705 |
 | M28 | any held answer enters the rule, not only one about the destination | equivalent, see below |
-| M29 | the id the server answers with is ignored | 6/696 |
-| M30 | a post never offers the version the server already holds | 3/696 |
-| M31 | a rename offers itself for deduplication | 1/696 |
-| M32 | the domain map offers itself for deduplication | 1/696 |
-| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/696 |
-| M34 | 121: sync now never drains again for work queued behind it | 1/696 |
-| M35 | 121: sync now always reports that it joined a running drain | 1/696 |
-| M36 | 56: the in-flight byte ceiling admits anything | 1/696 |
-| M37 | 56: a chunk already in flight is uploaded a second time | 1/696 |
-| M38 | 56: the probe always answers that the body never landed | 1/696 |
-| M39 | 56: the 409 retry re-uploads every chunk again | 1/696 |
-| M40 | 91: a renamed folder does not take the selection with it | 5/696 |
-| M41 | 91: a file leaving the selection is published as a deletion | 6/696 |
-| M42 | 91: both sides of the move are judged by the selection after it | 3/696 |
-| M43 | 91: the followed selection is never persisted | 1/696 |
-| M44 | 92: every scope change replays from zero, narrowing included | 1/696 |
-| M45 | no hold is ever taken, so no move is ever completed | 11/696 |
-| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/696 |
-| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/696 |
-| M48 | a tombstone is posted without asking whether the file is still there | 3/696 |
-| M49 | a refused deletion is dropped instead of published as the change it is | 1/696 |
-| M50 | a move the filesystem refused is removed by its live name anyway | 1/696 |
-| M51 | a removal with no hold behind it is made anyway, with the window open | 3/696 |
-| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 3/696 |
-| M53 | what moved is not proved against what was copied | 4/696 |
-| M54 | the file is put back and deleted by the name an editor writes to | 4/696 |
-| M55 | the vacated name is written over instead of created | 1/696 |
-| M56 | a save made through an open descriptor after the move is not noticed | 4/696 |
-| M57 | a tombstone is applied without proving the file against its record | 3/696 |
-| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 6/696 |
-| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/696 |
-| M60 | the put-back looks at the destination and then replaces whatever took it | 2/696 |
-| M61 | the hold is released whether or not the restore landed | 1/696 |
-| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/696 |
-| M63 | an upload that outlived its path records it anyway | 1/696 |
-| M64 | a folder rename moves the records and leaves the pending work behind | 1/696 |
-| M65 | the adopted version is proved by everything except the path | 3/696 |
-| M66 | the repost after a refused adoption offers the promise again | 3/696 |
-| M67 | the bulk-deletion floor is removed, so any pass can hold | 2/696 |
-| M68 | a count alone decides a bulk deletion, without the share | 1/696 |
-| M69 | the periodic scan may clear a hold the startup pass took | 2/696 |
-| M70 | the confirmation queues nothing, so a real deletion never publishes | 1/696 |
-| M71 | every remote rename falls back to write-then-trash | 2/696 |
-| M72 | the rename shortcut stops proving the source holds this content | 1/696 |
-| M73 | leaving a server keeps the folder records it minted | 1/696 |
-| M74 | the fake host renames a DIRECTORY component from a file's move | 1/696 |
-| M75 | a folder record stops re-casing the directory it names | 5/696 |
-| M76 | a note's move records a spelling the vault does not show | 2/696 |
-| M77 | a rename that changed no byte downloads the note again | 4/696 |
-| M78 | the folder re-case trusts the host's answer instead of the vault's listing | 1/696 |
-| M79 | a case-only folder rename publishes its folder record after the moves | 2/696 |
+| M29 | the id the server answers with is ignored | 5/705 |
+| M30 | a post never offers the version the server already holds | 3/705 |
+| M31 | a rename offers itself for deduplication | 1/705 |
+| M32 | the domain map offers itself for deduplication | 1/705 |
+| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 2/705 |
+| M34 | 121: sync now never drains again for work queued behind it | 1/705 |
+| M35 | 121: sync now always reports that it joined a running drain | 2/705 |
+| M36 | 56: the in-flight byte ceiling admits anything | 1/705 |
+| M37 | 56: a chunk already in flight is uploaded a second time | 1/705 |
+| M38 | 56: the probe always answers that the body never landed | 1/705 |
+| M39 | 56: the 409 retry re-uploads every chunk again | 1/705 |
+| M40 | 91: a renamed folder does not take the selection with it | 5/705 |
+| M41 | 91: a file leaving the selection is published as a deletion | 6/705 |
+| M42 | 91: both sides of the move are judged by the selection after it | 4/705 |
+| M43 | 91: the followed selection is never persisted | 1/705 |
+| M44 | 92: every scope change replays from zero, narrowing included | 1/705 |
+| M45 | no hold is ever taken, so no move is ever completed | 11/705 |
+| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/705 |
+| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/705 |
+| M48 | a tombstone is posted without asking whether the file is still there | 3/705 |
+| M49 | a refused deletion is dropped instead of published as the change it is | 1/705 |
+| M50 | a move the filesystem refused is removed by its live name anyway | 1/705 |
+| M51 | a removal with no hold behind it is made anyway, with the window open | 3/705 |
+| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 3/705 |
+| M53 | what moved is not proved against what was copied | 4/705 |
+| M54 | the file is put back and deleted by the name an editor writes to | 4/705 |
+| M55 | the vacated name is written over instead of created | 1/705 |
+| M56 | a save made through an open descriptor after the move is not noticed | 4/705 |
+| M57 | a tombstone is applied without proving the file against its record | 3/705 |
+| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 6/705 |
+| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/705 |
+| M60 | the put-back looks at the destination and then replaces whatever took it | 2/705 |
+| M61 | the hold is released whether or not the restore landed | 1/705 |
+| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/705 |
+| M63 | an upload that outlived its path records it anyway | 1/705 |
+| M64 | a folder rename moves the records and leaves the pending work behind | 1/705 |
+| M65 | the adopted version is proved by everything except the path | 3/705 |
+| M66 | the repost after a refused adoption offers the promise again | 3/705 |
+| M67 | the bulk-deletion floor is removed, so any pass can hold | 2/705 |
+| M68 | a count alone decides a bulk deletion, without the share | 1/705 |
+| M69 | the periodic scan may clear a hold the startup pass took | 2/705 |
+| M70 | the confirmation queues nothing, so a real deletion never publishes | 1/705 |
+| M71 | every remote rename falls back to write-then-trash | 2/705 |
+| M72 | the rename shortcut stops proving the source holds this content | 2/705 |
+| M73 | leaving a server keeps the folder records it minted | 1/705 |
+| M74 | the fake host renames a DIRECTORY component from a file's move | 1/705 |
+| M75 | a folder record stops re-casing the directory it names | 8/705 |
+| M76 | a note's move records a spelling the vault does not show | 4/705 |
+| M77 | a rename that changed no byte downloads the note again | 4/705 |
+| M78 | the folder re-case trusts the host's answer instead of the vault's listing | 1/705 |
+| M79 | a case-only folder rename publishes its folder record after the moves | 2/705 |
+| M80 | each half of a folder rename reads the selection for itself | 1/705 |
+| M81 | the case-only folder record is enqueued first and not held to | 1/705 |
+| M82 | a batch takes its paths without looking for a barrier | 1/705 |
+| M83 | a materialised file is recorded at the manifest's spelling | 1/705 |
+| M84 | a re-case carries the records and leaves their heads behind | 1/705 |
+| M85 | the scan's move pairing stops asking about a directory's case | 1/705 |
+| M86 | a folder rename this device DISCOVERS is declined as a stale record | 1/705 |
+| M87 | a pairing is declined on a host that keeps the two spellings apart | 1/705 |
+| M88 | an echo mark armed for an event that never comes is never expired | 2/705 |
 
 ## Which tests killed each mutant
 
@@ -272,6 +282,7 @@ guard, which is why the four the composition moved were re-cut.
 **M15** - one path pushed twice at once
 
 - a note written while this device was closed survives one the other device made at the same path
+- a note the queue is already pushing is not published a second time
 - an edit made while a note is being pushed is not left behind
 - two devices that name one note twice converge, and stay converged
 
@@ -377,7 +388,6 @@ guard, which is why the four the composition moved were re-cut.
 - two engines that merge one note identically end on ONE version
 - ordinary concurrent edit must not adopt another device's rename-and-edit manifest
 - a persisted unposted rename must retain the dedupe opt-out after state reload
-- two devices resolving one concurrent edit settle instead of looping
 
 **M30** - a post never offers the version the server already holds
 
@@ -405,6 +415,7 @@ guard, which is why the four the composition moved were re-cut.
 **M35** - 121: sync now always reports that it joined a running drain
 
 - sync now waits for the drain already running, and says which decision it took
+- two devices that name one note twice converge, and stay converged
 
 **M36** - 56: the in-flight byte ceiling admits anything
 
@@ -441,6 +452,7 @@ guard, which is why the four the composition moved were re-cut.
 
 **M42** - 91: both sides of the move are judged by the selection after it
 
+- a case-only rename of a SELECTED folder publishes moves, not new notes
 - a selected folder renamed keeps its notes on every device, and the selection follows it
 - a selected folder moved into another folder keeps its notes on every device, and the selection follows it
 - a rename above a selected folder moves the selection with it, persists it, and widens nothing
@@ -604,6 +616,7 @@ guard, which is why the four the composition moved were re-cut.
 **M72** - the rename shortcut stops proving the source holds this content
 
 - one version that renames AND edits is downloaded, not applied as a bare rename
+- a removal mark outlives no scan cycle, so a later deletion of that path is published
 
 **M73** - leaving a server keeps the folder records it minted
 
@@ -618,12 +631,17 @@ guard, which is why the four the composition moved were re-cut.
 - a case-only rename on the phone reaches the case-insensitive desktop as one entry
 - a case-only folder rename between two devices that both fold case settles, and neither publishes it back
 - a host that reports a folder rename it did not make records nothing
+- the folder record reaches the server before the moves under it, whatever the transport does
+- a folder record re-cased here brings down the versions refused while the spellings disagreed
 - real filesystem: a peer's case-only folder rename (Team docs -> team docs) is applied to the DIRECTORY and never published back
 - real filesystem: a peer's case-only folder rename (team docs -> Team docs) is applied to the DIRECTORY and never published back
+- real filesystem: the echo marks a re-case arms for events this host never reports expire with the next scans
 
 **M76** - a note's move records a spelling the vault does not show
 
 - a case-only folder move with no folder record behind it is refused, and never published back
+- a case-only rename of a SELECTED folder publishes moves, not new notes
+- a folder record re-cased here brings down the versions refused while the spellings disagreed
 - real filesystem: a case-only folder move from a device that publishes no folder record changes nothing, and is not published back
 
 **M77** - a rename that changed no byte downloads the note again
@@ -640,4 +658,41 @@ guard, which is why the four the composition moved were re-cut.
 **M79** - a case-only folder rename publishes its folder record after the moves
 
 - a case-only rename on the phone reaches the case-insensitive desktop as one entry
-- a case-only folder rename between two devices that both fold case settles, and neither publishes it back
+- the folder record reaches the server before the moves under it, whatever the transport does
+
+**M80** - each half of a folder rename reads the selection for itself
+
+- a case-only rename of a SELECTED folder publishes moves, not new notes
+
+**M81** - the case-only folder record is enqueued first and not held to
+
+- the folder record reaches the server before the moves under it, whatever the transport does
+
+**M82** - a batch takes its paths without looking for a barrier
+
+- the folder record reaches the server before the moves under it, whatever the transport does
+
+**M83** - a materialised file is recorded at the manifest's spelling
+
+- real filesystem: a file written into a folder this vault spells another way is recorded the way the vault spells it
+
+**M84** - a re-case carries the records and leaves their heads behind
+
+- a folder record re-cased here brings down the versions refused while the spellings disagreed
+
+**M85** - the scan's move pairing stops asking about a directory's case
+
+- a record naming a folder this vault spells another way follows the vault, and nothing is published
+
+**M86** - a folder rename this device DISCOVERS is declined as a stale record
+
+- a case-only folder rename the desktop only DISCOVERS leaves the phone one folder
+
+**M87** - a pairing is declined on a host that keeps the two spellings apart
+
+- a note moved between two folders that differ only in case is a move, where the two are two folders
+
+**M88** - an echo mark armed for an event that never comes is never expired
+
+- real filesystem: the echo marks a re-case arms for events this host never reports expire with the next scans
+- a removal mark outlives no scan cycle, so a later deletion of that path is published

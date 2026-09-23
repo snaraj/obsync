@@ -1,0 +1,11 @@
+# M87: a pairing is declined on a host that keeps the two spellings apart
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1555,7 +1555,6 @@
+   ): Promise<boolean> {
+     if (!caseOnly(from, to) || folderOf(from) === folderOf(to)) return false;
+     if (!recordedFolders.has(folderOf(to))) return false;
+-    if ((await context.host.stat(from)) === null) return false;
+     const record = context.state.fileByPath(from);
+     if (record !== undefined) {
+       context.state.setFile(to, record);

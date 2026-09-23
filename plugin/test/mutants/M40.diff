@@ -1,10 +1,10 @@
 # M40: 91: a renamed folder does not take the selection with it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -477,7 +477,6 @@
-     // selection never covered is therefore still out of scope on both sides,
-     // and moving a selected folder cannot smuggle it into sync.
-     const before = this.options.state.data.syncFolders;
+@@ -671,7 +671,6 @@
+     // out of scope, every note under a selected folder published as a NEW file
+     // with a new id, and the old ids never retired (review round 2, finding 1).
+     const before = sourceFolders;
 -    this.followSelection(from, to);
      const prefix = `${from}/`;
      // RECORDS ARE NOT THE WHOLE OF WHAT THIS DEVICE OWES. A note written

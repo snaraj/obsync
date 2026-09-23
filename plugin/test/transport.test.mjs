@@ -42,8 +42,12 @@ function harness(responses, options = {}) {
   const transport = new Transport({
     request: async (request) => {
       sent.push(request);
-      const next = queue.shift();
+      let next = queue.shift();
       if (next === undefined) throw new Error("the fake server ran out of responses");
+      // A response the TEST decides the timing of: a function is awaited, so
+      // a request can be left in flight for as long as the test needs the
+      // server to be busy.
+      if (typeof next === "function") next = await next();
       if (next instanceof Error) throw next;
       return {
         status: next.status,
@@ -534,10 +538,30 @@ test("body hashing is the protocol's, including the empty body", async () => {
 test("a manual read refusal names its reason, and budget_bytes only for the size one", async () => {
   // busy: the slot is already held, so nothing is sent and nothing is
   // measured against a byte budget (issue #103).
-  const held = harness([]);
+  //
+  // THE SLOT IS TAKEN ASYNCHRONOUSLY, so this waits for it. `readOnce` signs
+  // its request before it claims `manualRead`, and two reads issued in the
+  // same turn therefore RACE for the slot: the refusal landed on whichever
+  // one lost, so this assertion read the fake server's "ran out of responses"
+  // where it expected the collision. That is how it failed once in 25
+  // mutation runs, under a mutant it has nothing to do with, and a flake in a
+  // mutation matrix is a kill nobody can trust (review round 2, finding 7).
+  // The first read now holds the slot until this test releases it, and the
+  // second is issued only once the transport says the slot is held.
+  let release;
+  // The latch is made BEFORE the request that waits on it: the slot is
+  // claimed for a request that has not been sent yet, so a hold created
+  // inside the fake server could be released before it exists.
+  const hold = new Promise((resolve) => { release = resolve; });
+  const held = harness([async () => { await hold; return { status: 200, text: "{}" }; }]);
   const first = held.transport.historyChanges(0, READ_CONTROL);
+  for (let turn = 0; turn < 1000 && !held.transport.manualBusy; turn++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(held.transport.manualBusy, "the first read never took the slot, so nothing could collide with it");
   const collided = await held.transport.historyVersion(FILE_ID, "11".repeat(32), READ_CONTROL)
     .catch((error) => error);
+  release();
   await first.catch(() => undefined);
   assert.equal(collided.name, "HistoryBusyError");
   const busy = held.logged.filter((line) => line.startsWith("history_http decision=refused reason=busy"));
