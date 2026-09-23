@@ -1,0 +1,12 @@
+# M26: the follow-up is remembered and never queued
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -549,7 +549,7 @@
+     const done = (): void => {
+       if (this.pushing.get(path) !== work) return;
+       this.pushing.delete(path);
+-      if (this.again.delete(path)) this.enqueue(path);
++      this.again.delete(path);
+     };
+     void work.then(done, done);
+     return work;

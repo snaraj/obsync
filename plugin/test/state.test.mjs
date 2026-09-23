@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { State, defaultData, parseData } = require("../build/state.js");
+const { State, defaultData, isPushed, parseData } = require("../build/state.js");
 const policy = require("../build/policy.js");
 
 function store() {
@@ -107,6 +107,49 @@ test("recording a file clears its remote-only entry", async () => {
   state.data.remoteOnly["f1"] = { path: "big.bin", size: 99 };
   state.setFile("big.bin", { fileId: "f1", versionId: "v", mtime: 1, size: 99, sha256: "s" });
   assert.equal(state.data.remoteOnly["f1"], undefined);
+});
+
+test("pushed means the record matches the bytes the vault holds now", () => {
+  const record = { fileId: "f1", versionId: "v1", mtime: 5, size: 7, sha256: "s" };
+  assert.equal(isPushed(record, 5, 7), true);
+  assert.equal(isPushed(undefined, 5, 7), false, "a file with no record was never pushed");
+  assert.equal(isPushed(record, 6, 7), false, "a newer mtime is an edit");
+  assert.equal(isPushed(record, 5, 8), false, "the same mtime with another size is an edit too");
+  assert.equal(isPushed({ ...record, mtime: -1 }, 5, 7), false, "a rename waiting to be published is unpushed");
+});
+
+test("forgetting a pairing drops the identity and everything derived from it, and nothing else", async () => {
+  const state = await State.open(store(), false, memorySecrets());
+  Object.assign(state.data, {
+    vrk: "aa".repeat(32), deviceId: "bb".repeat(16), deviceSecret: "cc".repeat(32),
+    deviceName: "Study laptop", serverUrl: "https://sync.example.invalid",
+    edgeHeaders: [{ name: "X-Edge", value: "EDGE SENTINEL" }], lastSeq: 9,
+    files: { "Notes/a.md": { fileId: "f1", versionId: "v1", mtime: 1, size: 2, sha256: "s" } },
+    // A FOLDER RECORD IS A PAIRING FACT TOO (#104): its file id is derived
+    // from the domain's manifest key, so it means nothing to a different
+    // server and must go with the identity, exactly as `files` does.
+    folders: { "Notes": { fileId: "f3", versionId: "v3" } },
+    remoteOnly: { f2: { path: "Notes/big.bin", size: 3 } },
+    // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT, which names records on the
+    // server this device is leaving: a retirement admits a folder record one
+    // capitalisation off a selected folder, and a barrier is a record still
+    // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
+    retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
+    syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+  });
+
+  state.forgetPairing();
+
+  assert.deepEqual(
+    { ...state.data },
+    {
+      vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
+      serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
+      retiredRoots: {}, folderBarriers: [],
+      syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+    },
+  );
+  assert.equal(state.paired, false);
 });
 
 test("paired means a key, a device and a secret", async () => {

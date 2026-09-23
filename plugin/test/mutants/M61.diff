@@ -1,0 +1,19 @@
+# M61: the hold is released whether or not the restore landed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -894,12 +894,9 @@
+         // The save reached the inode before the hold was released: it is
+         // still named, so it is put back by name, and only a put-back that
+         // landed releases the hold.
+-        if (await this.putBack(desktop, hold, found.target)) {
+-          this.log("host path_class=file decision=kept reason=restored");
+-          await drop();
+-          return "kept";
+-        }
+-        this.log("host path_class=file decision=kept reason=held");
++        await this.putBack(desktop, hold, found.target);
++        this.log("host path_class=file decision=kept reason=restored");
++        await drop();
+         return "kept";
+       }
+       await fs.promises.unlink(hold).catch(() => undefined);

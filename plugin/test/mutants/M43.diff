@@ -1,0 +1,14 @@
+# M43: 91: the followed selection is never persisted
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -755,10 +755,6 @@
+     if (followed === null) return;
+     state.data.syncFolders = followed.folders;
+     host.log(`scope decision=followed_rename folders=${followed.moved} selected=${followed.folders.length}`);
+-    void this.track(state.save()).catch(() => {
+-      this.stop();
+-      host.log("scope decision=failed reason=state_not_saved");
+-    });
+   }
+ 
+   /**

@@ -47,6 +47,27 @@ export interface FileRecord {
   sha256: string;
 }
 
+/**
+ * A folder this device has a published record for. It has no content, so
+ * there is nothing to remember but which version last said it exists.
+ */
+export interface FolderRecord {
+  fileId: string;
+  versionId: string;
+}
+
+/**
+ * Has this device pushed exactly what the vault now holds at a path? ONE
+ * definition, shared by the engine's startup reconcile and by the
+ * unpushed-edit guard in front of leaving a server, so the two can never
+ * disagree about what "not pushed yet" means. A record is written only after
+ * the server acknowledges the version, and a rename clears its `mtime`
+ * (`sync/engine.ts`), so an unpublished move counts as unpushed too.
+ */
+export function isPushed(record: FileRecord | undefined, mtime: number, size: number): boolean {
+  return record !== undefined && record.mtime === mtime && record.size === size;
+}
+
 export interface RemoteOnlyRecord {
   path: string;
   size: number;
@@ -71,8 +92,36 @@ export interface ObsyncData {
   lastSeq: number;
   /** Vault path to the last version this device wrote or read. */
   files: Record<string, FileRecord>;
+  /**
+   * Vault path to the folder record covering it. Separate from `files`
+   * because everything that walks `files` — startup reconciliation, the byte
+   * inventory, chunk repair — means FILES, and a folder in that map would be
+   * reconciled as a file the vault no longer has and tombstoned for it.
+   */
+  folders: Record<string, FolderRecord>;
   /** File id to the file this device declined to materialise. */
   remoteOnly: Record<string, RemoteOnlyRecord>;
+  /**
+   * Selected folders whose OWN record a tombstone has just retired, to the
+   * file id it retired -- the one state in which a folder record that differs
+   * from a selected folder by capitalisation alone is this device's own
+   * folder under a new name rather than a second folder on a device that
+   * keeps the two spellings apart (`sync/pull.ts`, `admitFolderRecord`;
+   * review round 4, finding 1). Persisted because the tombstone and the
+   * record that follows it are two feed entries, and a restart between them
+   * must not turn a rename into a stranger.
+   */
+  retiredRoots: Record<string, string>;
+  /**
+   * Folder records this device owes the server that ORDER the moves queued
+   * behind them: a rename by capitalisation alone, whose record is the only
+   * thing entitled to re-case a directory on a folding receiver
+   * (`sync/engine.ts`, `takeBatch`; `docs/protocol.md`). Persisted because a
+   * stop between the publication and its acknowledgement would otherwise
+   * leave the next start's pass to re-derive the record with no barrier, and
+   * the moves went out in front of it (review round 4, finding 3).
+   */
+  folderBarriers: string[];
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
@@ -88,7 +137,10 @@ export function defaultData(isMobile: boolean): ObsyncData {
     edgeHeaders: [],
     lastSeq: 0,
     files: {},
+    folders: {},
     remoteOnly: {},
+    retiredRoots: {},
+    folderBarriers: [],
     policy: defaultPolicy(isMobile),
   };
 }
@@ -198,6 +250,34 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
         size: num(record["size"], 0),
         sha256: str(record["sha256"], ""),
       };
+    }
+  }
+  const folders = loaded["folders"];
+  if (isRecord(folders)) {
+    for (const [path, record] of Object.entries(folders)) {
+      // Same rule as `files`: the data file is editable by anything that can
+      // reach the vault, so a path it names is input, not memory.
+      if (!isVaultPath(path) || !isRecord(record)) continue;
+      if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
+      data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
+    }
+  }
+  // Both of these are the device's own bookkeeping about work in flight, and
+  // the data file is editable by anything that can reach the vault, so every
+  // entry is judged as input: a path that is not a vault path, or a value of
+  // the wrong shape, is dropped rather than handed to the engine.
+  const retired = loaded["retiredRoots"];
+  if (isRecord(retired)) {
+    for (const [path, fileId] of Object.entries(retired)) {
+      if (!isVaultPath(path) || typeof fileId !== "string") continue;
+      data.retiredRoots[path] = fileId;
+    }
+  }
+  const barriers = loaded["folderBarriers"];
+  if (Array.isArray(barriers)) {
+    for (const path of barriers as unknown[]) {
+      if (!isVaultPath(path) || data.folderBarriers.includes(path)) continue;
+      data.folderBarriers.push(path);
     }
   }
   const remoteOnly = loaded["remoteOnly"];
@@ -358,6 +438,82 @@ export class State {
     return this.flushing;
   }
 
+  /**
+   * Leave a server: drop this device's identity and everything derived from
+   * it, and nothing else. The caller saves.
+   *
+   * KEPT, deliberately: the vault key, so pairing again — with this server or
+   * another — is the SAME vault and not a new one; the folder selection, both
+   * ceilings and the name this device answers to, which are the user's
+   * choices and not the server's. DROPPED: the device id and its secret, the
+   * server address, the edge headers (a service token belongs to the server
+   * it was issued for and must never be sent to the next one), the change-feed
+   * cursor and every file record. No vault file is touched here; nothing in
+   * this class can touch one.
+   */
+  forgetPairing(): void {
+    this.assertAvailable();
+    this.data.deviceId = null;
+    this.data.deviceSecret = null;
+    this.data.serverUrl = "";
+    this.data.edgeHeaders = [];
+    this.data.lastSeq = 0;
+    this.data.files = {};
+    // FOLDER RECORDS GO WITH THE FILE RECORDS, for the same reason and one
+    // sharper. A folder's file id is `HMAC(K_m,d, …)` over its path, so it
+    // names nothing on a different server -- and `pushFolder` returns early
+    // when a record exists, so a record kept across a leave would tell this
+    // device that every folder it has is already published, and the new
+    // server would never receive one (#79 meeting #104).
+    this.data.folders = {};
+    // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT WITH THEM. A retirement names
+    // a folder record this device no longer has, and a barrier is a record
+    // owed to a server this device has left: carried across a leave, the
+    // first would admit a stranger's folder record at a selected folder and
+    // the second would post a record for a vault the new server knows nothing
+    // about.
+    this.data.retiredRoots = {};
+    this.data.folderBarriers = [];
+    this.data.remoteOnly = {};
+  }
+
+  /**
+   * Drop the bounded previous revision, so a device that has just given up a
+   * server does not leave the credential it gave up sitting in the native
+   * store. `SecretStorage` declares no delete (`test/api-compatibility`), so
+   * the entry is rewritten without its history rather than removed.
+   *
+   * Crash-safe BY CONSTRUCTION, which is why it is a second write rather than
+   * part of `persist`: metadata still names `current`, and `current` is
+   * byte-identical in both envelopes, so an interruption between them leaves
+   * a revision that loads either way. It refuses unless the recorded revision
+   * IS `current` and `current` carries no credential, because collapsing
+   * history under any other condition could drop the revision an interrupted
+   * write is still named by.
+   */
+  async forgetPreviousCredential(): Promise<void> {
+    this.assertAvailable();
+    // Read the records only once nothing is mid-write, so the revision this
+    // decides on is the revision metadata actually names.
+    await this.settled();
+    this.assertAvailable();
+    const envelope = this.envelope;
+    if (envelope === null || envelope.previous === null) return;
+    if (this.record === null || this.record.revision !== envelope.current.revision ||
+      envelope.current.deviceId !== null || envelope.current.deviceSecret !== null) {
+      throw new StateStorageError("credential_present");
+    }
+    const ref = secretRef(this.installationId);
+    if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
+    const collapsed: SecretEnvelope = { ...envelope, previous: null };
+    const serialized = JSON.stringify(collapsed);
+    try { this.secrets.setSecret(ref, serialized); }
+    catch { throw new StateStorageError("secret_write_failed"); }
+    if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
+    this.envelope = collapsed;
+    this.serializedSecret = serialized;
+  }
+
   /** True once this device holds a vault key and a device credential. */
   get paired(): boolean {
     return this.failure === null && this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null;
@@ -381,6 +537,24 @@ export class State {
 
   forgetPath(path: string): void {
     delete this.data.files[path];
+  }
+
+  folderByPath(path: string): FolderRecord | undefined {
+    return this.data.folders[path];
+  }
+
+  setFolder(path: string, record: FolderRecord): void {
+    this.data.folders[path] = record;
+    // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
+    // rule is "the tombstone for this folder's record has been applied and no
+    // record has been written for it since" (`sync/pull.ts`,
+    // `admitFolderRecord`), and this is every writer of one -- the feed's own
+    // create, a re-case, and this device's own publication.
+    delete this.data.retiredRoots[path];
+  }
+
+  forgetFolder(path: string): void {
+    delete this.data.folders[path];
   }
 
   /** Bytes held locally, the input to the total-budget ceiling. */

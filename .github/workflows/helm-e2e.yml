@@ -1,0 +1,79 @@
+name: Helm end to end
+
+# The chart, installed into a throwaway `kind` cluster with the storage and the
+# values docs/kubernetes.md SHOWS, with the image this commit builds.
+# `scripts/ci/helm-e2e.sh` says what each property is and why; the short
+# version is that `helm lint`, `helm template` and chart_pins.py prove what the
+# chart RENDERS, and every refusal the reference activation actually met --- a
+# claim that binds on first consumer, a volume the runtime uid cannot write, a
+# digest nothing can resolve --- renders perfectly.
+#
+# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
+# release publisher authorizes against the job inventories of pr-gate.yml and
+# codeql.yml alone. Whether it becomes a REQUIRED check is the owner's ruleset
+# decision, not this file's.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: helm-e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  helm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # ONE name for the cluster this run creates, read by the script and by
+      # the cleanup below, so neither can delete a cluster this job did not
+      # create.
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Install checksum-verified tools
+        # For `helm`: the same pinned, checksum-verifying script the gate's
+        # `chart` and `container` jobs use, so every job in this repository
+        # renders with one helm.
+        run: ./scripts/ci/install-tools.sh
+      - name: Install the pinned kind
+        run: ./scripts/ci/install-kind.sh
+      - name: Build the shipped image under the name the chart deploys
+        # The values schema fixes `image.repository` to this repository's own
+        # name and the release contract fixes the tag to this VERSION, so the
+        # only image the chart can be asked to run is this one. That is a
+        # property worth keeping rather than working around: the cluster
+        # deploys the reference the published install deploys, by digest.
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          docker build --tag "ghcr.io/snaraj/obsync:v${version}" .
+          printf 'OBSYNC_E2E_IMAGE=ghcr.io/snaraj/obsync:v%s\n' "${version}" >> "${GITHUB_ENV}"
+      - name: Install the chart the Kubernetes guide shows
+        run: scripts/ci/helm-e2e.sh "${OBSYNC_E2E_IMAGE}"
+      - name: Delete anything the run left behind
+        # The script deletes its cluster from a trap, and this runs whatever
+        # happened to the script: a kind cluster left standing holds a
+        # container, a network and a volume on the runner. It names THIS run's
+        # cluster: a fixed name would delete a cluster this job never created.
+        if: always()
+        run: |
+          set -uo pipefail
+          kind delete cluster --name "obsync-e2e-${OBSYNC_E2E_RUN_ID}" || true
+          exit 0

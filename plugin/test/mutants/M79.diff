@@ -1,0 +1,12 @@
+# M79: a case-only folder rename publishes its folder record after the moves
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1607,7 +1607,7 @@
+           // 1). Capturing it here is what makes the two orders below differ in
+           // what they SEND and not in what they judge (`sync/engine.ts`).
+           const before = this.state.data.syncFolders;
+-          if (caseOnly(oldPath, file.path)) {
++          if (caseOnly(oldPath, oldPath)) {
+             this.engine?.folderRenamed(oldPath, file.path, before);
+             this.engine?.renamedFolder(oldPath, file.path, before);
+           } else {

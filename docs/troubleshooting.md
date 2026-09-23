@@ -25,12 +25,45 @@ settings, or reaches something that is not it.
 3. Check the scheme. Obsidian on iOS and Android speaks HTTPS only and refuses
    plain HTTP outright.
 4. Check the route. If the server is on a LAN or behind a VPN, the device has
-   to be on that network, and the name has to resolve there — see the README's
-   "Reaching it from outside your LAN".
+   to be on that network, and the name has to resolve there — see
+   [`server.md`](server.md#reaching-it-from-outside-your-lan).
 5. Check the server: `GET /readyz` answers `{"ready":true,"seq":<n>}` when it
    is serving. If it answers `not_ready`, read the volume section of
    [`storage.md`](storage.md) — the server refuses readiness rather than lying
    about it.
+
+## "A server with the specified hostname could not be found"
+
+**Symptom.** On a phone or tablet, on your OWN Wi-Fi, obsync reports that the
+hostname could not be found — while a laptop on the same network syncs, and
+the same phone works over cellular or over the VPN.
+
+**Cause.** The router's DNS-rebinding protection. Many home routers drop a DNS
+answer that points at a private address (`192.168.…`, `10.…`, `172.16–31.…`)
+when it comes back from a public zone, because that pattern is also how a
+rebinding attack works. Your name is exactly that shape: a public name whose
+answer is a private address. The device is not told the answer was filtered,
+so it reports the name as not existing at all.
+
+**Fix,** any one of these, and the first is usually the least work:
+
+1. **Point the device at a public resolver** rather than at the router — a
+   phone's Wi-Fi settings can set DNS per network, and the answer is then
+   never filtered on the way in.
+2. **Use the VPN's resolver**, which is where a split-DNS or overlay name is
+   answered anyway, and is the route that also works away from home.
+3. **Allow the name in the router's rebinding protection.** Most routers that
+   filter offer an exception list, by name; that is the setting to look for,
+   and it is worded differently on every one.
+4. **Confirm the diagnosis before changing anything:** on cellular, with the
+   VPN up, the same name resolves and syncs. That is the whole test, and it
+   takes ten seconds.
+
+This is not the server, the certificate or the plugin — nothing reaches obsync
+at all — so nothing in the deployment needs changing to fix it. The shape to
+recognise is narrow: the router answers the name with nothing, the device
+reports it as not existing, and the same name resolves the moment the device
+asks a resolver that does not filter private answers.
 
 ## The certificate is not trusted on this device
 
@@ -56,8 +89,55 @@ steps rather than one.
 - **Linux:** the distribution's CA anchors directory, then `update-ca-trust` or
   `update-ca-certificates`.
 
-The README's "Trust the certificate authority, once per device" has the exact
-commands for the Compose route.
+[`server.md`](server.md#trust-the-certificate-authority-once-per-device) has
+the exact commands for the Compose route.
+
+## "A TLS error caused the secure connection to fail"
+
+**Symptom.** On a phone, behind an access-controlled edge (a Zero Trust proxy,
+a tunnel with an access policy in front of it), every request fails with a TLS
+error. The same name works from a computer, or from the same phone on another
+network, and the certificate itself is in date and trusted.
+
+**Cause.** Usually the edge's own decision rather than the certificate — and
+there are THREE of those decisions that look identical from the device, because
+each of them resets the TCP flow while the handshake is still in progress. A
+client that never completed a handshake can only report a TLS failure, so the
+message names the layer the failure surfaced at and never the decision that
+caused it:
+
+1. **A device-posture policy this device no longer passes.** An enrolment that
+   lapsed, a posture check that is failing, a rule that admits the user but not
+   this device.
+2. **An allow policy that demands the identity be re-authenticated.** An edge
+   that enforces re-authentication on a cadence (weekly is a common setting)
+   stops admitting a device whose session has aged out. Its log shows the flow
+   matching the allow rule with the action taken recorded as `authenticate`
+   rather than as an allow.
+3. **The certificate really has expired** — the one cause that is not the edge,
+   and the one that fails every device at once rather than one at a time.
+
+**Fix.** Read the edge policy for THAT device first. It is what separates the
+three, and it is the one thing the device cannot tell you:
+
+1. **Read the edge's own log for that device.** It names the decision the phone
+   cannot see: the matched rule, the action taken, the device identity. An
+   action of `authenticate` is cause 2; a rule that stopped matching this
+   device, or a posture check reported as failing, is cause 1.
+2. **Do what that entry says.** For cause 2, re-authenticate the edge client on
+   that device — sign in again in the client app rather than merely
+   reconnecting it, which costs a tap. For cause 1, repair the enrolment or the
+   posture the rule requires; nothing on the device's own network settings will
+   help.
+3. **Only then look at the certificate**, which is quickest to rule out from a
+   computer on the same route: if a browser there is happy with it, the
+   certificate is not what the phone is failing on. A certificate expires for
+   every device at once; an edge decision refuses one device at a time, which
+   is why the policy is what you read first.
+
+Causes 1 and 2 are written down separately because they are separate
+decisions that produce the identical message, and an edge can take both within
+the same hour: fixing one does not tell you the other was not also true.
 
 ## The plugin says this device is not paired
 
@@ -193,6 +273,10 @@ volume restored from a backup older than this pairing.
 **Fix.** Both are the same repair: pair this device again. If the server was
 rebuilt or restored, see [`recovery.md`](recovery.md) before pairing anything,
 because the server key decides whether existing devices can be kept at all.
+If this appeared after pointing the device at a DIFFERENT server, its stored
+credential belongs to the old one: **This device** → **Leave this server** →
+**Switch server** (["moving this vault to a different
+server"](recovery.md#moving-this-vault-to-a-different-server)).
 
 ## Other refusals a device can show
 
@@ -237,9 +321,12 @@ error.
 symlinked folders, and anything outside this device's saved folder selection
 are not synced in either direction.
 
-**Fix.** Check the folder selection under **Sync folders on this device**. A
-used device's selection may only narrow: to bring more content in, move the
-files into a folder that is already selected and run **Sync now**.
+**Fix.** Check the folder selection under **Sync folders on this device**.
+Adding the file's folder there and selecting **Save** brings in both halves:
+the local files under it are published, and whatever the server already
+holds under it is pulled by replaying the history this device skipped. On a
+vault with long history that replay takes a while; the local log records the
+cursor it rewound from.
 
 ## A large file did not arrive on a phone
 
@@ -257,6 +344,102 @@ demand, or raise the ceiling in settings if the device can take it.
 
 That is obsync refusing to discard an edit, not a failure. See
 [`conflicts.md`](conflicts.md).
+
+## Two folders that differ only in capitalisation
+
+One device shows two folders whose names differ only in capitalisation --
+`team docs` with your current notes and `Team docs` with copies that no
+longer change -- while another device shows one. A filesystem either folds
+case, and then the two spellings are ONE folder, or it does not, and then
+they are two; a version before 1.1.0 could publish a capitalisation-only
+rename made on a folding device as NEW notes instead of as the rename it
+was, so a device that keeps the two apart received the new spelling and was
+never told to retire the old one. From 1.1.0 a capitalisation-only rename is
+published as a rename: the FOLDER's own record carries the new spelling and is
+published before the notes under it move, and the device receiving it renames
+the directory entry itself and carries its records along. That is the only
+thing that can re-case a folder on a device that folds case, because renaming
+a note inside a folder cannot change how the folder is spelled -- the
+operating system finds the folder by either spelling and leaves the name it
+keeps alone.
+
+**If the other device is still on 1.0.x**, it sends no folder record, so this
+device sees notes asking for a folder spelled a way it does not show. It
+refuses those moves and tells you once per folder: the notes you already have
+stay where they are, and nothing of yours is written over, moved or deleted. A
+note CREATED on the other device meanwhile is not a move and is not refused --
+it is written here, in the folder this device shows, and the difference in
+spelling is not published back. Update that device, or rename the folder here
+to match, and the two agree again, including the notes edited there while they
+disagreed: settling the spelling brings their current versions down with it.
+
+**If a device syncs only some folders**, the folder it selects is published in
+its own right from 1.1.0, so re-capitalising that selected folder is carried
+as the one rename it is. A device receiving such a rename for the folder IT
+selects keeps syncing it under the new spelling without being re-selected --
+IF that device's filesystem folds case, which is every Mac and Windows device
+and most iPhones. **A device that keeps the two spellings apart does not
+follow it.** On Linux, and on Android, `Team docs` and `team docs` are two
+folders, so a record naming the second one names a folder that device does not
+have: it keeps its own folder under the old spelling, says nothing, and from
+then on receives nothing you put in that folder on the other devices -- your
+notes there are safe, and so is everything on the device that renamed it, but
+the two have stopped meeting. Rename the folder on that device to the new
+spelling (or select it again under the new name in "Sync folders on this
+device"), let it sync once, and the two agree again, including everything
+added in the meantime. The same is true in reverse: a folder ABOVE a selected
+one is outside what that device syncs in either direction, so re-capitalising
+one elsewhere is not carried to it, and the notes under it are refused with
+the notice above until the folder is renamed to match on one of the two
+devices.
+
+**"Another device published a folder called ... and this device syncs ..."**
+This is the notice for a folder on ANOTHER device that differs from the one
+this device syncs by capitalisation alone -- and is not a rename of it. The
+device that sent it keeps the two spellings apart and has both folders, which
+is what a capitalisation-only rename made before 1.1.0 leaves behind. Nothing
+here was renamed, moved or deleted, and this device keeps syncing the folder
+you selected: obsync will not move your selection onto a folder you never
+chose, because everything you then wrote in it would stop reaching the other
+device. Open the device that holds both folders, move the notes out of the one
+you do not want and delete it -- taking "Do not delete the stale folder
+first", below, seriously if the two devices still disagree about the spelling
+-- and let each device sync once.
+
+**Two devices renaming the same folder to two different capitalisations at
+once** end with copies of its notes on both, the way two devices renaming one
+folder to two different names at once already did. Nothing is lost: rename the
+folder on ONE device, let every device sync once, and then delete the copies
+you do not want.
+
+**Do not delete the stale folder first.** A deletion is published as a
+tombstone, and every device obeys a tombstone. On a device that folds case,
+the old spelling IS the live note's own directory entry, so a tombstone for
+it -- arriving at a device that still has the old names in its records --
+deletes the notes you are trying to keep, everywhere. The order below exists
+for exactly that reason.
+
+1. **Update every device** to 1.1.0 or later, open each one, and let it sync
+   once. On a device that folds case the startup scan drops the records that
+   still name the old spelling, publishes nothing, removes nothing, and says
+   so once in a notice. That is what disarms the tombstone.
+2. **Check the stale folder** on the device that shows two. Its notes should
+   be the ones you renamed away from. Anything you edited there after the
+   rename exists only there: move it into the live folder first, under a
+   name of its own.
+3. **Delete the stale folder on that one device.** Its tombstones retire the
+   abandoned copies on every device and touch nothing live.
+4. An EMPTY folder under the old spelling can stay or go as you like.
+   Nothing in this version deletes a folder, and an empty one holds no
+   notes.
+
+The plugin does not do step 3 for you. A device can prove what its own
+records say; it cannot prove that every other device has already been
+updated and rescanned, and publishing that tombstone one sync too early is
+the loss this order avoids. Nor can it tell the two apart later: a rename
+leaves a file's size and modification time exactly as they were, so the
+record for the abandoned copy and the record for the live note describe the
+same bytes.
 
 ## How to collect a report
 

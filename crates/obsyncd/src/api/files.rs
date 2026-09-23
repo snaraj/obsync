@@ -61,6 +61,12 @@ pub fn post_version(
         .collect::<Result<_, _>>()?;
     let bytes = render::field_u64(&body, "bytes")?;
     let deleted = render::field_bool(&body, "deleted");
+    // A 1.0.x client computes its own version id and keeps it, so it is
+    // never answered with another: absent, this field is false and the post
+    // takes the plain append it always took (`docs/protocol.md`, "Files and
+    // versions"). A client that sets it promises to store the `version_id`
+    // the answer names.
+    let accept_existing = render::field_bool(&body, "accept_existing");
 
     let manifest_ct_b64 = render::field_str(&body, "manifest_ct")?;
     if manifest_ct_b64.len() > MANIFEST_CT_MAX {
@@ -85,7 +91,7 @@ pub fn post_version(
         return Err(ApiError::bad_request("a tombstone carries no sids"));
     }
 
-    let outcome = app.store.append_version(NewVersion {
+    let new = NewVersion {
         account_id: app.account_id()?,
         file_id,
         domain_id,
@@ -97,16 +103,26 @@ pub fn post_version(
         manifest_nonce,
         deleted,
         device_id: authed.id,
-    })?;
+    };
+    let outcome = if accept_existing {
+        app.store.append_version_idempotent(new)
+    } else {
+        app.store.append_version(new)
+    }?;
 
-    if !outcome.existed {
+    if outcome.decision.wrote() {
         auth::record_edit(app, &authed.id, client);
     }
-    let status = if outcome.existed { 200 } else { 201 };
+    let status = if outcome.decision.wrote() { 201 } else { 200 };
     Ok(Response::json(
         status,
         &obj(vec![
             ("seq", render::seq(outcome.seq)),
+            // The version the store holds for this post. Equal to the posted
+            // id unless the store recognised the post as a version it
+            // already had under another id, which is the one case a client
+            // cannot work out for itself.
+            ("version_id", s(&outcome.version_id.to_string())),
             (
                 "heads",
                 render::strs(outcome.heads.iter().map(ToString::to_string)),

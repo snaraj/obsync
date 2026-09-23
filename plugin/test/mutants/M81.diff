@@ -1,0 +1,12 @@
+# M81: the case-only folder record is enqueued first and not held to
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -955,7 +955,7 @@
+         continue;
+       }
+       this.folderDeleted(path, sourceFolders);
+-      this.folderCreated(target, barrier && path === from);
++      this.folderCreated(target, false);
+     }
+   }
+ 

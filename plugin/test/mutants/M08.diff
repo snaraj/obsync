@@ -1,0 +1,12 @@
+# M08: the moved file's record is left clean
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1130,7 +1130,7 @@
+   // inside the manifest, so the push must post even though the content is
+   // unchanged. The write above is deliberately not echo-suppressed for the
+   // same reason -- that event is what carries this move to the push queue.
+-  context.state.setFile(landed.stat.path, { ...record, mtime: -1, sha256: "" });
++  context.state.setFile(landed.stat.path, { ...record });
+   context.state.forgetPath(from);
+   await context.state.save();
+   return landed.stat.path;

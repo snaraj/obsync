@@ -151,7 +151,7 @@ test("revoking another device takes effect and does not disturb this one", async
   assert.equal(revoke.method, "POST");
 });
 
-test("the only device cannot revoke itself, and the server's reason is surfaced", async () => {
+test("the only active device cannot be revoked, and the server's reason is surfaced", async () => {
   const { instance, server } = await plugin();
   assert.equal(server.devices.length, 1);
 
@@ -160,8 +160,8 @@ test("the only device cannot revoke itself, and the server's reason is surfaced"
     (error) => {
       assert.ok(error instanceof ApiError, "the refusal keeps its status and code");
       assert.equal(error.status, 409);
-      assert.equal(error.code, "only_device");
-      assert.match(error.message, /the only device cannot revoke itself/);
+      assert.equal(error.code, "last_device", "obsyncd's own code, not a stub's invention");
+      assert.match(error.message, /the only active device cannot be revoked; pair another first/);
       return true;
     },
   );

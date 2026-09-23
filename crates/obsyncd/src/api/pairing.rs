@@ -262,20 +262,8 @@ impl PairingTable {
         }
         match p.state {
             State::Claimed => {}
-            State::Open => {
-                return Err(ApiError::new(
-                    409,
-                    "not_claimed",
-                    "no device has claimed the pairing",
-                ));
-            }
-            _ => {
-                return Err(ApiError::new(
-                    409,
-                    "already_approved",
-                    "the pairing is already approved",
-                ));
-            }
+            State::Open => return Err(not_claimed()),
+            _ => return Err(already_approved()),
         }
         let claimant = p
             .claimant
@@ -289,17 +277,33 @@ impl PairingTable {
 
     /// The creator rejects the claimant. Returns the device to delete.
     ///
+    /// ONLY A CLAIMED PAIRING. Rejection exists to destroy a device nobody
+    /// approved, and the caller acts on the answer by DELETING that device.
+    /// Approval is the moment the claimant stops being a claim and becomes a
+    /// paired device holding the vault key, so a reject that still answered
+    /// after it would delete a live device on a second click of a screen the
+    /// creator had already answered -- silently, because deletion is not
+    /// revocation and carries no last-active guard (issue #88). An approved
+    /// pairing therefore refuses by name, and taking a paired device away is
+    /// `POST /v1/devices/{id}/revoke`, which refuses the last active one.
+    ///
     /// # Errors
-    /// `404 unknown_pairing`, `403 not_creator`, `409 not_claimed`.
+    /// `404 unknown_pairing`, `403 not_creator`, `409 not_claimed`,
+    /// `409 already_approved`.
     pub fn reject(&mut self, id: &str, actor: &DeviceId) -> Result<DeviceId, ApiError> {
         let p = self.entries.get(id).ok_or_else(unknown)?;
         if &p.creator != actor {
             return Err(not_creator());
         }
+        match p.state {
+            State::Claimed => {}
+            State::Open => return Err(not_claimed()),
+            _ => return Err(already_approved()),
+        }
         let claimant = p
             .claimant
             .as_ref()
-            .ok_or_else(|| ApiError::new(409, "not_claimed", "no device has claimed the pairing"))?
+            .expect("a claimed pairing has one")
             .device_id;
         self.entries.remove(id);
         Ok(claimant)
@@ -355,6 +359,14 @@ fn unknown() -> ApiError {
 
 fn not_creator() -> ApiError {
     ApiError::new(403, "not_creator", "only the pairing's creator may do this")
+}
+
+fn not_claimed() -> ApiError {
+    ApiError::new(409, "not_claimed", "no device has claimed the pairing")
+}
+
+fn already_approved() -> ApiError {
+    ApiError::new(409, "already_approved", "the pairing is already approved")
 }
 
 /// `POST /v1/pairing`: a paired device opens a pairing.
@@ -504,11 +516,14 @@ pub fn approve(
     Ok(Response::empty(204))
 }
 
-/// `POST /v1/pairing/{id}/reject`: the creator refuses; the claimant device is
-/// deleted, so its secret stops working immediately.
+/// `POST /v1/pairing/{id}/reject`: the creator refuses a CLAIM; the claimant
+/// device is deleted, so its secret stops working immediately. A pairing the
+/// creator already approved is refused and changes nothing
+/// ([`PairingTable::reject`]).
 ///
 /// # Errors
-/// `404 unknown_pairing`, `403 not_creator`, `409 not_claimed`.
+/// `404 unknown_pairing`, `403 not_creator`, `409 not_claimed`,
+/// `409 already_approved`.
 pub fn reject(
     app: &App,
     req: &mut Request,
@@ -516,14 +531,38 @@ pub fn reject(
     id: &str,
 ) -> Result<Response, ApiError> {
     let authed = auth::device(app, req, client)?;
-    let claimant = app
+    let claimant = match app
         .pairings
         .lock()
         .expect("pairings")
-        .reject(id, &authed.id)?;
+        .reject(id, &authed.id)
+    {
+        Ok(claimant) => claimant,
+        // The refusal names itself, because the one this issue is about --
+        // a reject arriving after the approval -- is indistinguishable from a
+        // creator answering twice, and an operator asking why a device is
+        // still listed needs the reason and not just the status
+        // (requirement 12). The state is not in the line: the reason IS it.
+        Err(e) => {
+            app.log.warn(
+                "pairing_reject",
+                &[
+                    ("by_device", Val::device(&authed.id)),
+                    ("decision", Val::word("refused")),
+                    ("reason", Val::word(e.code)),
+                ],
+            );
+            return Err(e);
+        }
+    };
     app.store.delete_device(&claimant)?;
-    app.log
-        .info("pairing_rejected", &[("device", Val::device(&claimant))]);
+    app.log.info(
+        "pairing_rejected",
+        &[
+            ("device", Val::device(&claimant)),
+            ("decision", Val::word("deleted")),
+        ],
+    );
     Ok(Response::empty(204))
 }
 
@@ -746,6 +785,36 @@ mod tests {
             t.state_for("p1", &creator, NOW).expect_err("gone").code,
             "unknown_pairing"
         );
+    }
+
+    /// Issue #88: the reject that arrives after the approval.
+    #[test]
+    fn an_approved_pairing_refuses_a_reject_and_keeps_its_claimant() {
+        for consume in [false, true] {
+            let (mut t, creator, claimant) = claimed();
+            t.approve("p1", &creator, "ct", "aa", NOW)
+                .expect("approved");
+            if consume {
+                t.take_envelope("p1", &claimant).expect("fetched");
+            }
+            let e = t
+                .reject("p1", &creator)
+                .expect_err("an approved pairing is not rejectable");
+            assert_eq!(e.status, 409, "consumed: {consume}");
+            assert_eq!(e.code, "already_approved", "consumed: {consume}");
+            // Nothing moved: the refusal names no device, so the caller has
+            // nothing to delete, and the pairing is still the one it was.
+            let (state, seen) = t.state_for("p1", &creator, NOW).expect("still held");
+            assert_eq!(
+                state,
+                if consume {
+                    State::Consumed
+                } else {
+                    State::Approved
+                }
+            );
+            assert_eq!(seen.expect("claimant").device_id, claimant);
+        }
     }
 
     #[test]

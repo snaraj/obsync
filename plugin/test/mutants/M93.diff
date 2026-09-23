@@ -1,0 +1,12 @@
+# M93: a folder is removed though the vault spells it another way
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -470,7 +470,7 @@
+   path: string,
+   shown: string | null,
+ ): Promise<"removed" | "not_empty" | "vault_spelling"> {
+-  if (shown !== null && shown !== path) {
++  if (shown !== null && shown !== path && false) {
+     context.host.log("folder path_class=folder decision=kept reason=vault_spelling");
+     return "vault_spelling";
+   }

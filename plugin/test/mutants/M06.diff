@@ -1,0 +1,11 @@
+# M06: keep-and-record records no copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1329,7 +1329,6 @@
+ ): Promise<ApplyResult> {
+   const copy = await keepBothAt(context, change, manifest);
+   if (copy === null) return "refused";
+-  await recordAt(context, change, copy.path, copy.stat);
+   return "conflict_copy";
+ }
+ 

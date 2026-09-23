@@ -1,0 +1,11 @@
+# S02: a parent named twice is two parents
+--- a/crates/obsyncd/src/storage/index.rs
++++ b/crates/obsyncd/src/storage/index.rs
+@@ -35,7 +35,6 @@
+ fn parent_set(parents: &[VersionId]) -> Vec<VersionId> {
+     let mut ids = parents.to_vec();
+     ids.sort_unstable();
+-    ids.dedup();
+     ids
+ }
+ 

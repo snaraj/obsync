@@ -53,17 +53,27 @@
  */
 
 import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import type { App } from "obsidian";
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource } from "./chunker";
-import { State } from "./state";
-import { SCOPE_EXPANSION_MESSAGE, assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
-import { DeviceRecord, Transport, lostMessage } from "./transport";
-import { EngineStatus, SyncContext, SyncEngine, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
+import { State, isPushed } from "./state";
+import {
+  assertFolderCaseScope,
+  assertFolderScope,
+  assertSyncPath,
+  expandsSyncScope,
+  inFolderScope,
+  inSyncScope,
+  inSyncTree,
+  parseSyncFolders,
+} from "./syncScope";
+import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
+import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
-import { ObsyncSettingTab } from "./ui/settings";
-import { PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import { ObsyncSettingTab, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import {
   FinalComponent,
@@ -73,11 +83,23 @@ import {
   VaultPathError,
   WalkResult,
   assertVaultPath,
+  caseOnly,
   chainRefusal,
   isVaultPath,
   sameFile,
+  vaultTarget,
+  vaultPathRefusal,
   walkVaultPath,
 } from "./vaultPath";
+
+/**
+ * How deep the filesystem scan walks before it stops and says so.
+ *
+ * Symlinks are skipped, so there is no loop to fall into; this is a bound on
+ * an absurd tree rather than a defence, and a vault nested deeper than this
+ * is past what any Obsidian platform handles.
+ */
+const SCAN_MAX_DEPTH = 32;
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these calls are used, and only on desktop.
@@ -97,10 +119,16 @@ interface NodeFs {
     rename(from: string, to: string): Promise<void>;
     link(from: string, to: string): Promise<void>;
     unlink(path: string): Promise<void>;
+    /** Names inside a directory, including the ones the vault does not show. */
+    readdir(path: string): Promise<string[]>;
+    /** Remove an EMPTY directory; the caller proves it is empty first. */
+    rmdir(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
     /** No-follow stat. Rejects when the path does not exist. */
     lstat(path: string): Promise<PathStat>;
+    /** Entry names only: the walk lstats each one itself, without following. */
+    readdir(path: string): Promise<string[]>;
   };
 }
 declare const require: (id: string) => unknown;
@@ -142,17 +170,49 @@ function walker(fs: NodeFs): PathWalker {
 }
 
 /**
- * The one sentence the notice and the settings tab both show when the server
- * runs a newer plugin than this device. Obsidian's plugin manager owns
- * installation and updates; this server can never supply executable code.
+ * The one entry in a directory listing that IS this name: the exact spelling
+ * when the directory keeps it, and otherwise the single entry that differs
+ * from it in case alone. None, or two of them, is not an answer -- a
+ * directory holding both `Team` and `TEAM` is one that keeps the two apart,
+ * and neither of them is the name that was asked about.
  */
+function soleSpelling(names: string[], segment: string): string | null {
+  if (names.includes(segment)) return segment;
+  const folded = names.filter((name) => caseOnly(name, segment));
+  return folded.length === 1 ? (folded[0] as string) : null;
+}
+
 /** The decisions that mean the plugin did NOT do what was asked. */
 const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
 
+/** What Obsidian's plugin manager calls this plugin, as `manifest.json` names it. */
+const PLUGIN_NAME = "Self Hosted Private Sync";
+
+/** The tab id of Obsidian's own Community plugins page, where an update is installed. */
+const COMMUNITY_PLUGINS_TAB = "community-plugins";
+
+/**
+ * Obsidian's settings window, which the app sets on `App` at runtime and the
+ * vendored API declaration does not list. Narrow, optional, and never assumed:
+ * a host without it is a host where the button does nothing but say so.
+ */
+interface SettingsHost {
+  setting?: { open(): void; openTabById(id: string): void };
+}
+
+/**
+ * The one sentence the notice and the settings tab both show when the server
+ * runs a newer plugin than this device. Obsidian's plugin manager owns
+ * installation and updates; this server can never supply executable code.
+ *
+ * The plugin's own name comes FIRST: a phone-width notice wraps or truncates,
+ * and a reader who cannot see the whole sentence still has to learn what is
+ * available and which version they run before anything else.
+ */
 export function updateMessage(server: string, local: string): string {
   return (
-    `Server runs ${server}, you have ${local}. Open Settings → Community plugins → ` +
-    "Check for updates, then update Self Hosted Private Sync."
+    `${PLUGIN_NAME} ${server} is available (this device runs ${local}). ` +
+    "Open Settings → Community plugins → Check for updates."
   );
 }
 
@@ -191,6 +251,19 @@ export function isNewer(candidate: string, current: string): boolean {
  * origin `null`, which a `javascript:` link resolved against it would match.
  */
 export type DashboardTarget = { url: string } | { reason: string; refused: string };
+
+/** What the user chose in the confirmation dialog before leaving a server. */
+export interface LeaveChoice {
+  /** Leave although this device holds edits the server never received. */
+  discardUnpushed: boolean;
+  /** Clear this device's pairing even though the server refused to revoke it. */
+  localOnly: boolean;
+}
+
+export type LeaveResult =
+  | { decision: "left"; revoked: boolean }
+  | { decision: "refused"; reason: "unpushed_edits"; unpushed: string[] }
+  | { decision: "refused"; reason: "last_device"; detail: string };
 
 export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
   const base = parseUrl(serverUrl);
@@ -275,8 +348,11 @@ export class ObsidianHost implements VaultHost {
    * through Obsidian's adapter, which the host app confines, so there is
    * nothing here to walk.
    */
-  async syncable(path: string): Promise<boolean> {
-    if (!inSyncScope(path, this.plugin.state.data.syncFolders)) return false;
+  async syncable(path: string, kind: "file" | "folder" = "file"): Promise<boolean> {
+    const folders = this.plugin.state.data.syncFolders;
+    // The folder rule at the one point it differs: the selected folder itself
+    // is a folder this device publishes a record for (`syncScope.ts`).
+    if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
     const desktop = this.desktop;
     if (desktop === null) return isVaultPath(path);
     try {
@@ -294,6 +370,16 @@ export class ObsidianHost implements VaultHost {
   }
 
   get supportsRangeReads(): boolean {
+    return this.desktop !== null;
+  }
+
+  /**
+   * Can a removal be BOUND to what it removes here? Only where a second name
+   * for the same file can be made, which is the desktop filesystem. A caller
+   * that must not lose a save asks this before it starts, so a device that
+   * cannot promise it is never asked to remove anything (`trash`).
+   */
+  get bindsRemoval(): boolean {
     return this.desktop !== null;
   }
 
@@ -344,6 +430,85 @@ export class ObsidianHost implements VaultHost {
       this.plugin.log(`list decision=skipped_unsyncable files=${files.length - synced.length}`);
     }
     return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+  }
+
+  /**
+   * The vault as the FILESYSTEM has it, or `null` on a host with no view of
+   * its own (`VaultHost.scan`).
+   *
+   * `list()` above is Obsidian's index, and the index is never fresher than
+   * the vault events this plugin already handles: a note moved into a
+   * subfolder from a file manager is absent from both until the app notices,
+   * which is why such a move took about four minutes to sync while an
+   * external EDIT took seconds (issue #101). One `readdir` per directory and
+   * one no-follow `lstat` per entry answer the same question independently.
+   *
+   * The rules are the ones every other path takes: hidden and non-canonical
+   * names are skipped (`vaultPath.ts`), symlinks are skipped in both roles
+   * (a symlinked folder is out of sync in v0.1, in both directions), and only
+   * the selected folders are walked. A directory that cannot be read is
+   * skipped rather than reported as empty -- this listing may only ADD work
+   * (`engine.ts`), but a caller that mistook an unreadable folder for a
+   * vanished one would be one refactor away from a tombstone.
+   *
+   * Names come back in Obsidian's own form, NFC (see `walk`). On a volume
+   * that tells NFC and NFD apart, a FOLDER whose name is decomposed on disk
+   * is then read under its composed name and reported unreadable, which
+   * skips that subtree rather than proposing paths the index can never hold.
+   */
+  async scan(): Promise<VaultStat[] | null> {
+    const desktop = this.desktop;
+    if (desktop === null) return null;
+    const folders = this.plugin.state.data.syncFolders;
+    const files: VaultStat[] = [];
+    for (const root of folders ?? [""]) await this.walk(desktop, root, files, 0);
+    return files;
+  }
+
+  /** One directory, then its subdirectories, to a bounded depth. */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number): Promise<void> {
+    if (depth > SCAN_MAX_DEPTH) {
+      this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
+      return;
+    }
+    const at = folder === "" ? desktop.path.resolve(desktop.base) : vaultTarget(desktop.base, folder, desktop.path);
+    let names: string[];
+    try {
+      names = await desktop.fs.promises.readdir(at);
+    } catch {
+      // Unreadable is not empty, and this listing never deletes anything.
+      this.log("scan decision=skipped reason=unreadable_directory");
+      return;
+    }
+    const folders = this.plugin.state.data.syncFolders;
+    for (const name of names) {
+      // THE NAME AS OBSIDIAN HAS IT, NOT AS THE VOLUME SPELLS IT. Every path
+      // Obsidian's index reports has been through `normalizePath`, which ends
+      // in `.normalize("NFC")`; a macOS app writing an accented name through
+      // Cocoa leaves it DECOMPOSED on the volume, so `readdir` hands the same
+      // note back in NFD. Reported raw, that name is one the record has never
+      // held while the recorded one looks gone, and `survey()` would pair the
+      // two as a move and publish a rename to the other spelling -- which on a
+      // normalisation-insensitive volume names the same file, so the device
+      // applying it writes one path and trashes the other: the note is gone,
+      // the #96 class of loss. Only the name REPORTED is normalised; every
+      // syscall below still takes the raw name the directory gave.
+      const path = folder === "" ? name.normalize("NFC") : `${folder}/${name.normalize("NFC")}`;
+      // A NO-FOLLOW stat, so a link is neither a file nor a directory here
+      // and is listed as neither; `inSyncTree` and `inSyncScope` carry the
+      // string rule (`vaultPath.ts`), so a hidden or non-canonical name is
+      // neither walked nor listed. None of this is the AUTHORITY on what may
+      // be synced: this listing only proposes paths, and `syncable()` walks
+      // every component of each one before the engine acts on it.
+      const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
+      if (stat === null) continue;
+      if (stat.isDirectory()) {
+        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1);
+        continue;
+      }
+      if (!stat.isFile() || !inSyncScope(path, folders)) continue;
+      out.push({ path, mtime: Math.round(stat.mtimeMs), size: stat.size });
+    }
   }
 
   /**
@@ -460,6 +625,11 @@ export class ObsidianHost implements VaultHost {
         parts.push(bytes);
       },
       commit: async (mtime) => {
+        // A folder can stand where a remote manifest names a file now that
+        // folders sync, and `writeBinary` would not say so. Desktop refuses
+        // it in `confine`; mobile refuses it here, in the same words, so both
+        // platforms answer a file/folder collision identically (issue #104).
+        if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
         let total = 0;
         for (const part of parts) total += part.length;
@@ -470,8 +640,15 @@ export class ObsidianHost implements VaultHost {
           at += part.length;
         }
         await adapter.writeBinary(path, joined.buffer, { mtime });
+        // The SIZE is ours: the bytes handed to the adapter, not what a look
+        // at the name says a moment later. The mtime is taken from the name
+        // only while the name still holds that many bytes -- a save landing
+        // between the write and the lookup must not have its metadata
+        // recorded as this version's (round 3, finding 2).
         const stat = await this.stat(path);
-        return { path, mtime: stat?.mtime ?? mtime, size: stat?.size ?? total };
+        if (stat !== null && stat.size === total) return { path, mtime: stat.mtime, size: total };
+        if (stat !== null) this.log("host path_class=file decision=write_superseded");
+        return { path, mtime, size: total };
       },
       abort: async () => {
         parts.length = 0;
@@ -508,7 +685,10 @@ export class ObsidianHost implements VaultHost {
             // The public Vault primitive rejects an existing file; the
             // adapter's writeBinary would silently replace it.
             const file = await vault.createBinary(path, bytes.buffer, { mtime });
-            return { path: file.path, mtime: file.stat.mtime, size: file.stat.size };
+            // `size` is the budget this writer enforced to the byte, so it is
+            // the size of what was published here whatever the vault's cached
+            // stat says after a later save (round 3, finding 2).
+            return { path: file.path, mtime: file.stat.mtime, size };
           } catch {
             throw new CopyPublicationError(path);
           }
@@ -564,6 +744,10 @@ export class ObsidianHost implements VaultHost {
         if (at !== size) throw new Error("Restore content is incomplete.");
         await handle.utimes(mtime / 1000, mtime / 1000);
         await handle.sync();
+        // `fstat` of the file we hold open: the metadata of OUR bytes, taken
+        // while they are still under a name nothing else knows, and the only
+        // metadata this writer will answer with (round 3, finding 2).
+        const wrote = await handle.stat();
         await bind();
         await handle.close();
         open = false;
@@ -579,7 +763,10 @@ export class ObsidianHost implements VaultHost {
           const landed = await walker(fs).lstat(found.target);
           if (refusal !== null || !sameFile(opened, landed)) throw new Error("Restore publication identity changed.");
           const stat = landed as PathStat;
-          return { path, mtime: Math.round(stat.mtimeMs), size: stat.size };
+          if (stat.size !== wrote.size || Math.round(stat.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+            this.log("host path_class=file decision=write_superseded");
+          }
+          return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
         } catch { throw new CopyPublicationError(path); }
       },
       abort: discard,
@@ -645,6 +832,12 @@ export class ObsidianHost implements VaultHost {
         open = false;
         const seconds = mtime / 1000;
         await fs.promises.utimes(temp, seconds, seconds);
+        // The metadata of OUR bytes, read from the inode while it is still
+        // under the temp name, because the rename is the last instant at
+        // which the name and the bytes are certainly the same thing (round
+        // 3, finding 2).
+        const wrote = await walker(fs).lstat(temp);
+        if (wrote === null) throw new VaultPathError("temp_identity");
         await fs.promises.rename(temp, target);
         // The rename is the moment the file takes its real name, so the
         // chain is checked again here: a parent swapped after the last
@@ -660,11 +853,171 @@ export class ObsidianHost implements VaultHost {
           }
           throw new VaultPathError(refusal ?? "target_identity");
         }
+        // The rename kept the inode, and the inode is what `sameFile` proves
+        // -- but an ordinary in-place save keeps the inode too, so identity
+        // alone does not say these are still our bytes. The answer is bound
+        // to what was written; the name is only reported on.
         const ours = landed as PathStat;
-        return { path, mtime: Math.round(ours.mtimeMs), size: ours.size };
+        if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+          this.log("host path_class=file decision=write_superseded");
+        }
+        return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
       },
       abort: discard,
     };
+  }
+
+  /**
+   * Rename one entry, refusing rather than replacing (issue #124).
+   *
+   * WHAT ONLY THE HOST CAN ANSWER. `Team docs/One.md` and `team docs/One.md`
+   * are one directory entry on a filesystem that folds case and two on one
+   * that does not, and no comparison of the two strings can tell which host
+   * this is. Desktop asks the kernel: one no-follow stat per name, and the
+   * destination is occupied only when it is a DIFFERENT inode. Mobile has no
+   * inode to ask for and asks the adapter's own case-SENSITIVE existence
+   * check instead, which answers for the exact spelling and nothing else.
+   * An Obsidian older than 1.7.2 ignores that argument and answers for the
+   * folded name, so the rename is REFUSED there rather than risked: the
+   * caller keeps both files, which is what every version before this one
+   * did with a case-only rename anyway.
+   *
+   * The destination folder is created when it is missing, because the device
+   * that keeps the two spellings apart has no folder under the new one yet.
+   * The old folder is left behind empty; nothing in this version deletes a
+   * folder, and an empty one holds no notes.
+   */
+  async move(from: string, to: string): Promise<MoveResult> {
+    assertSyncPath(from, this.plugin.state.data.syncFolders);
+    assertSyncPath(to, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    const folder = to.slice(0, Math.max(0, to.lastIndexOf("/")));
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      if (await adapter.exists(to, true)) return "occupied";
+      if ((await this.stat(from)) === null) return "missing";
+      if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
+      await adapter.rename(from, to);
+      return "moved";
+    }
+    const source = await this.confine(desktop, from, ["absent", "file"]);
+    if (source.final === "absent") return "missing";
+    const found = await this.confine(desktop, to, ["absent", "file"]);
+    if (found.final === "file" && !sameFile(source.stat, found.stat)) return "occupied";
+    if (folder !== "") {
+      const parent = await this.confine(desktop, folder, ["absent", "directory"]);
+      await desktop.fs.promises.mkdir(parent.target, { recursive: true });
+    }
+    await desktop.fs.promises.rename(source.target, found.target);
+    // The name is only ever as true as the directories it was resolved
+    // through, and a rename is no exception (`vaultPath.ts`).
+    const refusal = await chainRefusal(source.chain, walker(desktop.fs)) ??
+      await chainRefusal(found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    return "moved";
+  }
+
+  /**
+   * The name this vault really shows for `path` (`sync/engine.ts`).
+   *
+   * EVERY COMPONENT, NOT THE LAST ONE. `Team docs/One.md` and
+   * `team docs/One.md` name one file on a folding volume, and the difference
+   * between them is not in the name of the file at all. A caller asking what
+   * the vault shows is asking so that it can record THAT, so the answer is
+   * built out of the real directory entries from the vault root down.
+   *
+   * A LOOKUP THAT FINDS NOTHING IS THE ANSWER `null`, and it is also what
+   * makes this safe on a volume that keeps the two spellings apart: there the
+   * folded twin is a different entry, the lookup by the name that was asked
+   * about finds nothing, and no caller is told that some other entry is it.
+   * Desktop reads the directories itself; mobile asks the adapter, which is
+   * the only view it has, and whose listing gives the real names whatever the
+   * host app's version does with a case-sensitive `exists`.
+   */
+  async spelling(path: string): Promise<string | null> {
+    assertVaultPath(path);
+    const desktop = this.desktop;
+    const segments = path.split("/");
+    const out: string[] = [];
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      if (!(await adapter.exists(path))) return null;
+      for (const segment of segments) {
+        const at = out.join("/");
+        const listed = await adapter.list(at === "" ? "/" : at);
+        const names = [...listed.files, ...listed.folders].map((child) => child.slice(child.lastIndexOf("/") + 1));
+        const name = soleSpelling(names, segment);
+        if (name === null) return null;
+        out.push(name);
+      }
+      return out.join("/");
+    }
+    // The walk is the lookup, and it refuses a symlink component exactly as
+    // every other operation here does.
+    const found = await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+    if (found.final === "absent") return null;
+    let at = desktop.path.resolve(desktop.base);
+    for (const segment of segments) {
+      let names: string[];
+      try {
+        names = await desktop.fs.promises.readdir(at);
+      } catch {
+        return null;
+      }
+      const name = soleSpelling(names, segment);
+      if (name === null) return null;
+      at = desktop.path.resolve(at, name);
+      out.push(name);
+    }
+    return out.join("/");
+  }
+
+  /**
+   * Rename a FOLDER entry, refusing rather than replacing (`sync/engine.ts`).
+   *
+   * The same shape as `move` one kind over: the destination is occupied only
+   * when a DIFFERENT directory -- a different inode on desktop, a different
+   * exact name on mobile -- wears it, because the folded twin of the source
+   * IS the source and re-casing it is the whole operation. Nothing is created
+   * above the destination: a folder renamed in place keeps the parents it
+   * already had, and a destination whose parents are missing is a move this
+   * version does not make.
+   */
+  async moveFolder(from: string, to: string): Promise<MoveResult> {
+    // BOTH NAMES BY THE FOLDER RULE, and its case tolerance is what makes a
+    // rename of the SELECTED folder expressible at all: one of the two names
+    // is the selection and the other is the same directory under the
+    // capitalisation this rename gives it or takes from it (`syncScope.ts`).
+    assertFolderCaseScope(from, this.plugin.state.data.syncFolders);
+    assertFolderCaseScope(to, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    if (desktop === null) {
+      const adapter = this.plugin.app.vault.adapter;
+      // The case-SENSITIVE existence check, and an Obsidian older than 1.7.2
+      // that ignores the argument answers for the folded name -- which
+      // refuses this rename rather than risking it, exactly as `move` does.
+      if (await adapter.exists(to, true)) return "occupied";
+      if ((await adapter.stat(from))?.type !== "folder") return "missing";
+      await adapter.rename(from, to);
+      return "moved";
+    }
+    const source = await this.confine(desktop, from, ["absent", "directory"]);
+    if (source.final === "absent") return "missing";
+    const found = await this.confine(desktop, to, ["absent", "directory"]);
+    if (
+      found.final === "directory" &&
+      (found.stat?.dev !== source.stat?.dev || found.stat?.ino !== source.stat?.ino)
+    ) {
+      return "occupied";
+    }
+    await desktop.fs.promises.rename(source.target, found.target);
+    // The parents only: the last link of each chain is the directory that has
+    // just been renamed, so asking for it by its old name is asking about an
+    // entry this call removed.
+    const refusal = await chainRefusal(source.chain.slice(0, -1), walker(desktop.fs)) ??
+      await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    return "moved";
   }
 
   /**
@@ -672,32 +1025,407 @@ export class ObsidianHost implements VaultHost {
    * and on desktop the chain is checked again afterwards. A delete that went
    * somewhere else leaves the file we identified still sitting there, so
    * finding it afterwards is the signal that the name moved under us.
+   *
+   * AND THE DELETE ITSELF IS A WINDOW. `FileManager.trashFile` is
+   * asynchronous and does work of its own -- a vault lookup, the user's
+   * "Deleted files" preference, a move into a bin -- before the file stops
+   * existing. An editor save can land inside that window, and nothing checked
+   * before the call can see it: not the caller's last stat, and not a stat
+   * taken on the line above this one. What the removal takes then is bytes
+   * that exist on this device and NOWHERE else (round 3, finding 1).
+   *
+   * AND NO CHECK BINDS A PATH-BASED REMOVAL. Checking the name and then
+   * handing that NAME to the vault leaves the vault free to remove whatever
+   * is at it when it gets there -- a save that replaces the file inside the
+   * removal is unlinked, and the hold, which still has the original inode,
+   * happily agrees that nothing changed (round 3, finding 1, third pass).
+   * The answer is not another check: it is never to aim the destructive call
+   * at a name an editor writes to.
+   *
+   * So the removal is a MOVE and then a delete of what moved. A caller that
+   * says WHICH CONTENT it is removing gets a HOLD -- a second name for that
+   * inode, made with `link`, which cannot follow a symlink and cannot
+   * replace anything -- and then the vault name is RENAMED to a hidden name
+   * of ours. Rename is atomic: it takes whatever inode is at the name at
+   * that instant and leaves the name free, so a save landing afterwards
+   * creates a fresh file there that this device never touches. What moved is
+   * then compared with what was copied, by device and inode as well as by
+   * metadata; a mismatch means a replacement moved instead, and it is put
+   * BACK under the vault name (or kept beside it) and answered `kept`. Only
+   * an entry that matches is handed to the vault's own deletion, by its
+   * hidden name, where no editor is writing.
+   *
+   * Mobile has no second name to give, and a filesystem can refuse either
+   * primitive. Those devices remove NOTHING and answer `unheld`, which is
+   * what `decision=kept reason=unheld` in the log says.
    */
-  async trash(path: string): Promise<void> {
+  async trash(path: string, expect?: VaultStat): Promise<TrashResult> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {
       found = await this.confine(desktop, path, ["absent", "file"]);
-      if (found.final === "absent") return;
+      // Nothing here to remove, and so nothing here to preserve either.
+      if (found.final === "absent") return "removed";
     }
-    // `FileManager.trashFile` honours the user's own "Deleted files"
-    // preference -- system bin, the vault's `.trash`, or permanent -- where
-    // `Vault.trash(file, true)` overrode it with the system bin. The file
-    // lookup is file-only on purpose: a folder standing where a remote
-    // manifest names a file must never be deleted with its contents.
+    if (expect === undefined) {
+      await this.remove(path);
+      if (desktop !== null && found !== null) await this.proveRemoved(desktop, found);
+      return "removed";
+    }
+    // A removal this device cannot undo is not made. Mobile has no second
+    // name to give, and a filesystem can refuse one; either way the file
+    // stays exactly where it is and the caller keeps both (round 3,
+    // finding 1). A narrowed window is not a closed one.
+    const hold = desktop === null || found === null ? null : await this.hold(desktop, found);
+    if (hold === null || desktop === null || found === null) {
+      this.log("host path_class=file decision=kept reason=unheld");
+      return "unheld";
+    }
+    return await this.removeHeld(desktop, found, hold, expect, path);
+  }
+
+  /**
+   * The vault's own removal. `FileManager.trashFile` honours the user's own
+   * "Deleted files" preference -- system bin, the vault's `.trash`, or
+   * permanent deletion -- where `Vault.trash(file, true)` overrode it with
+   * the system bin. The file lookup is file-only on purpose: a folder
+   * standing where a remote manifest names a file must never be deleted with
+   * its contents.
+   */
+  private async remove(path: string): Promise<void> {
     const file = this.plugin.app.vault.getFileByPath(path);
     if (file) {
       await this.plugin.app.fileManager.trashFile(file);
     } else {
       await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
     }
-    if (desktop === null || found === null) return;
+  }
+
+  /** The removal went where it was aimed: the chain held and the file is gone. */
+  private async proveRemoved(desktop: DesktopVault, found: WalkResult): Promise<void> {
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
     if (sameFile(found.stat, await walker(desktop.fs).lstat(found.target))) {
       throw new VaultPathError("target_identity");
     }
+  }
+
+  /**
+   * The bound removal: move the file out of the vault's way, prove what
+   * moved, and only then delete it -- by the name it moved to.
+   *
+   * The rename is the whole repair. It is atomic, it takes whatever inode is
+   * at the name at that instant, and it leaves the name FREE: an editor that
+   * saves a moment later writes a new file there, which this device has no
+   * reason to touch and never names to the vault. Every check after it is
+   * about a file nothing else can reach.
+   *
+   * What moved is compared with what the caller copied -- device and inode
+   * from the hold, size and modification time from the caller -- because the
+   * rename may have moved a REPLACEMENT that landed before it. A replacement
+   * holds bytes no version holds, so it goes back under the vault name, or
+   * beside it when the name has been taken again, and the answer is `kept`.
+   *
+   * Only a match is handed to the vault's own deletion, by the hidden name.
+   * A vault that does not index that name deletes it outright rather than
+   * moving it to the user's bin; by then its bytes are the ones this device
+   * has already published beside it, so what the "Deleted files" preference
+   * governs -- the note the user keeps -- is untouched.
+   */
+  private async removeHeld(
+    desktop: DesktopVault,
+    found: WalkResult,
+    hold: string,
+    expect: VaultStat,
+    path: string,
+  ): Promise<TrashResult> {
+    const fs = desktop.fs;
+    const drop = async (): Promise<void> => {
+      await fs.promises.unlink(hold).catch(() => undefined);
+    };
+    const held = await walker(fs).lstat(hold);
+    const holds = (stat: PathStat | null): boolean =>
+      stat !== null && Math.round(stat.mtimeMs) === expect.mtime && stat.size === expect.size;
+    if (held === null) {
+      this.log("host path_class=file decision=kept reason=hold_gone");
+      return "kept";
+    }
+    const name = `.obsync-gone-${hex(randomBytes(8))}.tmp`;
+    const moved = `${found.target.slice(0, found.target.lastIndexOf(desktop.path.sep))}${desktop.path.sep}${name}`;
+    try {
+      await fs.promises.rename(found.target, moved);
+    } catch {
+      // Nothing moved, so nothing is removed and the name is still the
+      // user's. A host that cannot make this move cannot make the promise.
+      this.log("host path_class=file decision=kept reason=move_refused");
+      await drop();
+      return "unheld";
+    }
+    const gone = await walker(fs).lstat(moved);
+    if (!sameFile(held, gone) || !holds(gone)) {
+      this.log(
+        `host path_class=file decision=kept reason=${sameFile(held, gone) ? "source_changed" : "source_replaced"}`,
+      );
+      // Only a put-back that really landed releases the hidden name, and
+      // only then is the hold released: while either still names the inode,
+      // those bytes are reachable.
+      if (await this.putBack(desktop, moved, found.target)) {
+        await fs.promises.unlink(moved).catch(() => undefined);
+        await drop();
+      }
+      return "kept";
+    }
+    const refusal = await chainRefusal(found.chain, walker(fs));
+    if (refusal !== null) {
+      // Putting a file back through a chain that was swapped under us is how
+      // a restore writes outside the vault, so the bytes stay where they are
+      // and the refusal is raised.
+      this.log("host path_class=file decision=restore_failed reason=chain");
+      throw new VaultPathError(refusal);
+    }
+    // The destructive call, at last, and aimed at a name no editor writes to.
+    await this.remove(`${path.slice(0, path.lastIndexOf("/") + 1)}${name}`);
+    // And the hold has the last word, because a rename does not close an
+    // editor's DESCRIPTOR: a program that still holds the file open writes
+    // through it wherever its name has gone, including between the proof
+    // above and the removal, and including between this device's last look
+    // at the hold and the unlink that releases it. So the hold is OPENED
+    // first: the descriptor keeps the inode alive across its own unlink, and
+    // what it says afterwards is still readable. Nothing here is the last
+    // name of bytes this device has not published.
+    let handle: NodeFileHandle;
+    try {
+      handle = await fs.promises.open(hold, "r");
+    } catch {
+      this.log("host path_class=file decision=restore_failed reason=hold_gone");
+      return "removed";
+    }
+    try {
+      const after = await handle.stat();
+      if (!holds(after)) {
+        // The save reached the inode before the hold was released: it is
+        // still named, so it is put back by name, and only a put-back that
+        // landed releases the hold.
+        if (await this.putBack(desktop, hold, found.target)) {
+          this.log("host path_class=file decision=kept reason=restored");
+          await drop();
+          return "kept";
+        }
+        this.log("host path_class=file decision=kept reason=held");
+        return "kept";
+      }
+      await fs.promises.unlink(hold).catch(() => undefined);
+      // The unlink took the inode's last NAME, not the inode: this
+      // descriptor is still open on it, so a save that landed in the
+      // meantime is read back here and written out under a name of its own
+      // rather than lost with the name.
+      const last = await handle.stat();
+      if (holds(last)) return "removed";
+      this.log("host path_class=file decision=kept reason=descriptor_save");
+      await this.preserve(desktop, handle, found.target, last.size);
+      return "kept";
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * The bytes an editor wrote into an inode this device has just unnamed.
+   * They exist only behind this descriptor now, so they are read back
+   * through it and written to a name of their own -- create-only, like every
+   * other publication here, so nothing standing anywhere is replaced.
+   */
+  private async preserve(
+    desktop: DesktopVault,
+    handle: NodeFileHandle,
+    target: string,
+    size: number,
+  ): Promise<void> {
+    const fs = desktop.fs;
+    const bytes = new Uint8Array(size);
+    let read = 0;
+    while (read < size) {
+      const chunk = await handle.read(bytes, read, size - read, read);
+      if (chunk.bytesRead === 0) break;
+      read += chunk.bytesRead;
+    }
+    for (const name of this.restoreNames(desktop, target)) {
+      // `wx` is create-only: a name another program took in the meantime
+      // fails the open instead of being written over.
+      let out: NodeFileHandle;
+      try {
+        out = await fs.promises.open(name, "wx");
+      } catch {
+        continue;
+      }
+      try {
+        await out.write(bytes.subarray(0, read));
+        await out.sync();
+      } finally {
+        await out.close().catch(() => undefined);
+      }
+      if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
+      return;
+    }
+    this.log("host path_class=file decision=restore_failed reason=name_taken");
+  }
+
+  /**
+   * The vault name first, then visible names beside it. A file the user
+   * cannot see is a file they have lost, so the alternatives are numbered
+   * rather than one-and-done: the name an editor recreated is exactly the
+   * one we are competing with, and it can be taken more than once.
+   */
+  private restoreNames(desktop: DesktopVault, target: string): string[] {
+    const dot = target.lastIndexOf(".");
+    const cut = dot > target.lastIndexOf(desktop.path.sep) ? dot : target.length;
+    const names = [target];
+    for (let attempt = 1; attempt <= 16; attempt++) {
+      const suffix = attempt === 1 ? " (obsync kept)" : ` (obsync kept ${attempt})`;
+      names.push(`${target.slice(0, cut)}${suffix}${target.slice(cut)}`);
+    }
+    return names;
+  }
+
+  /**
+   * The entry that moved was not the one the caller copied, so it holds
+   * bytes this device has not published anywhere: it goes back under the
+   * vault name it came from. If that name has been taken again in the
+   * meantime -- an editor recreating it is exactly why we are here -- the
+   * file is kept BESIDE it under a visible name instead, because a file the
+   * user cannot see is a file they have lost.
+   */
+  private async putBack(desktop: DesktopVault, source: string, target: string): Promise<boolean> {
+    const fs = desktop.fs;
+    for (const name of this.restoreNames(desktop, target)) {
+      try {
+        // `link` IS the check. Looking first and renaming second asks the
+        // filesystem a question whose answer expires: a save can create that
+        // name in between, and `rename` replaces it without a word. `link`
+        // cannot replace anything, so a name taken in that instant fails the
+        // call instead of overwriting the note that took it.
+        await fs.promises.link(source, name);
+        if (name !== target) this.log("host path_class=file decision=kept reason=kept_beside");
+        return true;
+      } catch {
+        // The next name, or the log line below.
+      }
+    }
+    this.log("host path_class=file decision=restore_failed reason=name_taken");
+    return false;
+  }
+
+  /**
+   * A second NAME for the file about to be removed, beside it in its own
+   * directory, so the inode outlives the removal and a save made into it
+   * stays readable afterwards. `link` is the only primitive that gives one
+   * without following a link and without replacing anything. A filesystem
+   * that refuses it -- exFAT, some network mounts, a container that forbids
+   * it -- gets no removal at all: `null` here is the whole answer, and the
+   * caller keeps both files instead.
+   */
+  private async hold(desktop: DesktopVault, found: WalkResult): Promise<string | null> {
+    const parent = found.target.slice(0, found.target.lastIndexOf(desktop.path.sep));
+    const hold = `${parent}${desktop.path.sep}.obsync-hold-${hex(randomBytes(8))}.tmp`;
+    try {
+      await desktop.fs.promises.link(found.target, hold);
+      return hold;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Every folder this device may sync, from Obsidian's own file tree. */
+  async listFolders(): Promise<string[]> {
+    const folders = this.plugin.state.data.syncFolders;
+    const out: string[] = [];
+    for (const entry of this.plugin.app.vault.getAllFolders(false)) {
+      // `inFolderScope` carries the vault-path rule, so a hidden folder and a
+      // folder outside the selection are both out, in one check -- and the
+      // SELECTED folder itself is in, because a folder record is what carries
+      // its creation, its removal and its own rename (`syncScope.ts`).
+      if (!inFolderScope(entry.path, folders)) continue;
+      if (this.desktop !== null) {
+        try {
+          await this.confine(this.desktop, entry.path, ["directory"]);
+        } catch (error) {
+          if (!(error instanceof VaultPathError)) throw error;
+          this.log(`list decision=not_synced reason=${error.refusal}`);
+          continue;
+        }
+      }
+      out.push(entry.path);
+    }
+    return out;
+  }
+
+  /**
+   * Make this folder, and anything missing above it.
+   *
+   * A FILE standing at the path is refused, not replaced: another device's
+   * manifest does not get to turn this device's note into a directory. On
+   * desktop the walk says so before `mkdir` runs, so nothing is created
+   * through a link either; on mobile the adapter is asked what is there.
+   */
+  async createFolder(path: string): Promise<void> {
+    assertFolderScope(path, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    if (desktop !== null) {
+      const found = await this.confine(desktop, path, ["absent", "directory"]);
+      if (found.final === "directory") return;
+      await desktop.fs.promises.mkdir(found.target, { recursive: true });
+      await this.confine(desktop, path, ["directory"]);
+      return;
+    }
+    const adapter = this.plugin.app.vault.adapter;
+    const stat = await adapter.stat(path);
+    if (stat !== null) {
+      if (stat.type !== "folder") throw new VaultPathError("not_a_directory");
+      return;
+    }
+    await adapter.mkdir(path);
+  }
+
+  /**
+   * Remove an EMPTY folder, through the same "Deleted files" preference a
+   * file delete honours. `false`, having removed nothing, when the folder
+   * still holds anything at all.
+   *
+   * The emptiness question is asked of the FILESYSTEM, not of the vault's
+   * synced inventory: a folder holding a hidden file, a file this device does
+   * not sync, or another plugin's data still holds something, and
+   * `trashFile` on a folder takes everything under it. Desktop reads the
+   * directory; mobile asks the adapter, which is all it has.
+   */
+  async trashFolder(path: string): Promise<boolean> {
+    assertFolderScope(path, this.plugin.state.data.syncFolders);
+    const desktop = this.desktop;
+    let found: WalkResult | null = null;
+    if (desktop !== null) {
+      found = await this.confine(desktop, path, ["absent", "directory"]);
+      if (found.final === "absent") return true;
+      if ((await desktop.fs.promises.readdir(found.target)).length > 0) return false;
+    } else {
+      const adapter = this.plugin.app.vault.adapter;
+      if ((await adapter.stat(path))?.type !== "folder") return true;
+      const listed = await adapter.list(path);
+      if (listed.files.length > 0 || listed.folders.length > 0) return false;
+    }
+    const folder = this.plugin.app.vault.getFolderByPath(path);
+    if (folder) await this.plugin.app.fileManager.trashFile(folder);
+    else await this.plugin.app.vault.adapter.rmdir(path, false);
+    if (desktop === null || found === null) return true;
+    // The same proof `trash` takes, one link shorter: the walk's last link IS
+    // the folder just removed, so the chain checked here is the parents, and
+    // the folder itself must no longer be the directory that was walked.
+    const refusal = await chainRefusal(found.chain.slice(0, -1), walker(desktop.fs));
+    if (refusal !== null) throw new VaultPathError(refusal);
+    const after = await walker(desktop.fs).lstat(found.target);
+    if (after !== null && after.isDirectory() && after.dev === found.stat?.dev && after.ino === found.stat?.ino) {
+      throw new VaultPathError("target_identity");
+    }
+    return true;
   }
 
   notify(message: string): void {
@@ -716,6 +1444,8 @@ export default class ObsyncPlugin extends Plugin {
   engine: SyncEngine | null = null;
   /** The newer version the server reports, for the settings tab to name. */
   updateAvailable: string | null = null;
+  /** Whether this session has already raised the update notice. */
+  private updateNotified = false;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
@@ -804,6 +1534,16 @@ export default class ObsyncPlugin extends Plugin {
       name: "Show sync status",
       callback: () => new StatusModal(this.app, this).open(),
     });
+    this.addCommand({
+      id: "leave-server",
+      name: "Leave this server",
+      callback: () => new LeaveServerModal(this.app, this, "leave").open(),
+    });
+    this.addCommand({
+      id: "switch-server",
+      name: "Switch server",
+      callback: () => new LeaveServerModal(this.app, this, "switch").open(),
+    });
 
     // Use the installation identity for both URI spellings without also
     // claiming the old generic action used by pre-directory installations.
@@ -830,6 +1570,7 @@ export default class ObsyncPlugin extends Plugin {
     this.registerEvent(
       vault.on("create", (file: TAbstractFile) => {
         if (file instanceof TFile) this.engine?.changed(file.path);
+        else if (file instanceof TFolder) this.engine?.folderCreated(file.path);
       }),
     );
     this.registerEvent(
@@ -842,6 +1583,10 @@ export default class ObsyncPlugin extends Plugin {
         if (file instanceof TFile) this.engine?.deleted(file.path);
         else if (file instanceof TFolder) {
           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);
+          // The folder's own record, and every record beneath it: the files
+          // going is what empties the tree, the records going is what removes
+          // it from the other devices (issue #104).
+          for (const path of this.foldersUnder(file.path)) this.engine?.folderDeleted(path);
         }
       }),
     );
@@ -850,11 +1595,42 @@ export default class ObsyncPlugin extends Plugin {
         if (file instanceof TFile) {
           this.engine?.renamed(oldPath, file.path);
         } else if (file instanceof TFolder) {
-          // A folder rename moves every tracked path beneath it; each file
-          // keeps its file id so other devices move it instead of
-          // re-uploading it.
-          for (const path of this.pathsUnder(oldPath)) {
-            this.engine?.renamed(path, file.path + path.slice(oldPath.length));
+          // ORDER IS PART OF THE WIRE CONTRACT (issue #124, `docs/protocol.md`).
+          // A folder renamed by capitalisation ALONE is one directory entry on
+          // a host that folds case, and the receiving device can re-case that
+          // entry only from the FOLDER record: a per-file move cannot, because
+          // `rename(2)` resolves the directory components of its destination
+          // and leaves their spelling alone. So the folder record goes FIRST
+          // there, and the moves under it then find a directory already
+          // spelled the new way and settle without a rename of their own.
+          //
+          // Every OTHER rename keeps the old order: the old folder must be
+          // emptied by the moves before its tombstone, or the receiving device
+          // keeps a folder it was told to remove.
+          //
+          // `renamedFolder` covers the records AND the work still pending for
+          // them, which is more than a listing of tracked paths can reach, and
+          // a selected folder takes the selection with it.
+          //
+          // THE SELECTION IS CAPTURED ONCE, HERE, BEFORE EITHER HALF RUNS.
+          // Both halves move the selection with the folder, and each judges a
+          // path by the selection in force on ITS OWN side of the move -- an
+          // old name against the selection before, a new one against the
+          // selection after. Whichever half runs first is the one that moves
+          // it, so a half that read the selection for itself would judge every
+          // old name against the one the rename LEAVES BEHIND: out of scope,
+          // so every note under a renamed SELECTED folder was published as a
+          // new file with a new id, its old id never retired, and the scan
+          // re-offered the rename every 30 s for good (review round 2, finding
+          // 1). Capturing it here is what makes the two orders below differ in
+          // what they SEND and not in what they judge (`sync/engine.ts`).
+          const before = this.state.data.syncFolders;
+          if (caseOnly(oldPath, file.path)) {
+            this.engine?.folderRenamed(oldPath, file.path, before);
+            this.engine?.renamedFolder(oldPath, file.path, before);
+          } else {
+            this.engine?.renamedFolder(oldPath, file.path, before);
+            this.engine?.folderRenamed(oldPath, file.path, before);
           }
         }
       }),
@@ -864,6 +1640,15 @@ export default class ObsyncPlugin extends Plugin {
   private pathsUnder(folder: string): string[] {
     const prefix = `${folder}/`;
     return Object.keys(this.state.data.files).filter((path) => path.startsWith(prefix));
+  }
+
+  /** The folder itself and every folder record beneath it, deepest first. */
+  private foldersUnder(folder: string): string[] {
+    const prefix = `${folder}/`;
+    return Object.keys(this.state.data.folders)
+      .filter((path) => path.startsWith(prefix))
+      .sort((a, b) => b.length - a.length)
+      .concat(folder);
   }
 
   // --- lifecycle ---------------------------------------------------------
@@ -943,11 +1728,10 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private cancelHistories(): void {
-    for (const browser of this.histories) browser.operation.cancel();
-    this.histories.clear();
+    for (const browser of [...this.histories]) this.closeHistory(browser);
   }
 
-  openHistory(): HistoryBrowser {
+  openHistory(newestFirst = true): HistoryBrowser {
     const context = this.syncContext();
     if (!context) throw new Error("Start sync on this paired device before opening history.");
     const generation = this.lifecycle;
@@ -956,14 +1740,17 @@ export default class ObsyncPlugin extends Plugin {
     const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
       !this.changingScope && (this.restoring === null || this.restoring === operation) &&
       this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
-    const browser = new HistoryBrowser(context, operation);
+    const browser = new HistoryBrowser(context, operation, { newestFirst });
     this.histories.add(browser);
+    // The transport's manual read slot is held for as long as the dialog is
+    // open, so the repair tick yields to it instead of colliding (#103).
+    this.transport.openManual();
     return browser;
   }
 
   closeHistory(browser: HistoryBrowser): void {
     browser.operation.cancel();
-    this.histories.delete(browser);
+    if (this.histories.delete(browser)) this.transport.closeManual();
   }
 
   restoreHistory(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
@@ -1024,7 +1811,27 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
-  /** A local scope change never alters policy on the server or replays old versions. */
+  /**
+   * A local scope change never alters policy on the server or another
+   * device's selection.
+   *
+   * WIDENING REPLAYS THE FEED THIS DEVICE SKIPPED. The files a newly
+   * selected folder holds on the server were published before this device's
+   * cursor, and the change feed is the only place they exist for it: there is
+   * no "list the vault's files" call to ask instead. So a selection that
+   * gains a folder, or returns to the whole vault, rewinds the cursor to 0
+   * and the restart walks the feed from the beginning, exactly as a device
+   * syncing for the first time does (issue #92). The newly covered LOCAL
+   * files are the startup scan's half of the same restart.
+   *
+   * Replay is safe because the pull path answers each record against what
+   * this device holds NOW, not against the order it arrives in: a version
+   * this device authored is its own echo, a version its head already reaches
+   * is `already_incorporated`, a tombstone for a file it no longer tracks is
+   * skipped, and local content the server never received is kept beside the
+   * incoming version rather than replaced (`sync/pull.ts`). Narrowing keeps
+   * its cursor: nothing new is covered, so there is nothing to replay.
+   */
   async saveSyncFolders(value: string[] | undefined): Promise<void> {
     const generation = this.lifecycle;
     const assertActive = (): void => {
@@ -1041,15 +1848,6 @@ export default class ObsyncPlugin extends Plugin {
       this.log("scope decision=refused reason=invalid_selection");
       throw error;
     }
-    const assertChange = (): void => {
-      const used = state.data.lastSeq !== 0 || Object.keys(state.data.files).length !== 0 ||
-        Object.keys(state.data.remoteOnly).length !== 0;
-      if (used && expandsSyncScope(state.data.syncFolders, folders)) {
-        this.log("scope decision=refused reason=expansion_requires_resync");
-        throw new Error(SCOPE_EXPANSION_MESSAGE);
-      }
-    };
-    assertChange();
     if (this.changingScope) throw new Error("A folder selection is already being saved.");
     this.changingScope = true;
     this.cancelHistories();
@@ -1062,17 +1860,25 @@ export default class ObsyncPlugin extends Plugin {
       await Promise.allSettled(this.manualFetches);
       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
       assertActive();
-      assertChange();
       const previous = state.data.syncFolders;
+      const cursor = state.data.lastSeq;
+      // Decided after the quiesce, against the selection that was in force
+      // while the stopped work ran.
+      const widened = expandsSyncScope(previous, folders);
       state.data.syncFolders = folders;
+      if (widened) state.data.lastSeq = 0;
       try {
         await state.save();
       } catch (error) {
         state.data.syncFolders = previous;
+        state.data.lastSeq = cursor;
         throw error;
       }
       assertActive();
-      this.log(`scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0}`);
+      this.log(
+        `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
+          `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
+      );
     } catch (error) {
       if (this.isCurrent(generation)) {
         this.log("scope decision=failed reason=not_saved");
@@ -1156,7 +1962,7 @@ export default class ObsyncPlugin extends Plugin {
    * A revoke is not repeatable, and a lost answer is the one case where both
    * guesses are harmful: "it failed" leaves the user believing a device they
    * wanted out still holds the vault, and a blind repeat can meet
-   * `only_device` on a revoke that already worked. The device list says which
+   * `last_device` on a revoke that already worked. The device list says which
    * it was, and reading it is repeatable.
    */
   async revokeDevice(deviceId: string): Promise<void> {
@@ -1172,6 +1978,149 @@ export default class ObsyncPlugin extends Plugin {
       this.engine = null;
       this.setStatus({ kind: "error", message: "this device was revoked" });
     }
+  }
+
+  // --- leaving a server --------------------------------------------------
+
+  /**
+   * Local edits the server never received: every in-scope vault file whose
+   * bytes this device has not pushed, plus every recorded path the vault no
+   * longer holds (a deletion this device has not published). The rule is the
+   * engine's own startup reconcile, through `isPushed`, so this counts
+   * exactly the work that leaving would strand.
+   */
+  async unpushedEdits(): Promise<string[]> {
+    const state = this.state;
+    const folders = state.data.syncFolders;
+    const tracked = async (path: string): Promise<boolean> =>
+      vaultPathRefusal(path) === null && inSyncScope(path, folders) && (await this.host.syncable(path));
+    const unpushed: string[] = [];
+    const seen = new Set<string>();
+    for (const file of await this.host.list()) {
+      if (!(await tracked(file.path))) continue;
+      seen.add(file.path);
+      if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
+    }
+    for (const path of Object.keys(state.data.files)) {
+      if (seen.has(path) || !(await tracked(path))) continue;
+      unpushed.push(path);
+    }
+    return unpushed.sort();
+  }
+
+  /**
+   * Leave this server (issue #79): revoke THIS device on the server, then
+   * forget the pairing, so the device is "not paired" again and can pair with
+   * the same server or another one WITHOUT starting a new vault. Before this
+   * existed the documented way out was a fresh vault, because a device that
+   * only changed its Server URL met `401 bad_signature` forever.
+   *
+   * THE ORDER IS THE WHOLE DESIGN. Quiesce, count, revoke, and only then
+   * clear: a state cleared before the server answers would leave a device
+   * with no credential and a server that still trusts one, which is exactly
+   * the stuck state this feature removes. Every refusal therefore leaves this
+   * device syncing as it was, and the one line this logs says which of the
+   * two happened.
+   *
+   * The server refuses to revoke the only ACTIVE device (`409 last_device`),
+   * because an account with no active device can never sync again and nothing
+   * in this release re-enrols one. That refusal is surfaced verbatim and the
+   * user may still leave LOCALLY, which is `localOnly`: this device forgets
+   * the server, the server keeps the device. No other device is touched on
+   * either path; only this device's id is ever sent.
+   *
+   * PLATFORM. Identical on desktop and mobile: one revoke, one metadata
+   * write, one secret write, and no filesystem work of any kind.
+   */
+  async leaveServer(choice: LeaveChoice): Promise<LeaveResult> {
+    const started = Date.now();
+    const { state, assertCurrent } = this.captureSession();
+    let revoked = false;
+    // Never "ok" until something finished: an exception anywhere below leaves
+    // this line saying the attempt stopped part way, which is the truth.
+    let reason = "unfinished";
+    let unpushed = 0;
+    let cleared = false;
+    let previous = "kept";
+    try {
+      const deviceId = state.data.deviceId;
+      if (deviceId === null) {
+        reason = "not_paired";
+        throw new Error("This device is not paired with a server.");
+      }
+      if (this.changingScope || this.restoring !== null) {
+        reason = "busy";
+        throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");
+      }
+      // Quiesce first, so the count below is a fact rather than a guess and
+      // no push, fetch or restore is still running against the credential
+      // this is about to give up.
+      await this.engine?.stopAndWait();
+      assertCurrent();
+      this.engine = null;
+      this.cancelHistories();
+      await Promise.allSettled(this.manualFetches);
+      await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+      assertCurrent();
+      const pending = await this.unpushedEdits();
+      unpushed = pending.length;
+      assertCurrent();
+      if (unpushed > 0 && !choice.discardUnpushed) {
+        reason = "unpushed_edits";
+        return { decision: "refused", reason: "unpushed_edits", unpushed: pending };
+      }
+      try {
+        await this.revokeDevice(deviceId);
+        revoked = true;
+      } catch (error) {
+        reason = error instanceof ApiError ? error.code : "local_or_lost";
+        if (!(error instanceof ApiError) || error.code !== "last_device") throw error;
+        if (!choice.localOnly) return { decision: "refused", reason: "last_device", detail: error.detail };
+      }
+      assertCurrent();
+      state.forgetPairing();
+      await state.save();
+      cleared = true;
+      // Past this point the captured session can no longer be asserted: the
+      // address it was captured with is exactly what that write dropped. A
+      // concurrent reload is settled by State's serialised writer, and a
+      // cleared state can start no engine, because `paired` is false.
+      try {
+        await state.forgetPreviousCredential();
+        previous = "dropped";
+      } catch {
+        new Notice(
+          "obsync: this device left the server. Obsidian's secret storage refused to drop the older credential record; the next pairing on this device replaces it.",
+          10000,
+        );
+      }
+      this.updateAvailable = null;
+      this.setStatus({ kind: "idle" });
+      if (revoked) reason = "ok";
+      return { decision: "left", revoked };
+    } finally {
+      this.log(
+        `unpair decision=${revoked ? "revoked" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+          `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
+      );
+      // However this ended, a device that is still paired goes on syncing:
+      // no refusal here may leave the engine stopped. A device that DID
+      // leave starts nothing, because `startEngine` requires `paired`.
+      await this.startEngine();
+    }
+  }
+
+  /**
+   * Adopt a server address: the one place a typed address is normalised,
+   * checked against mobile's HTTPS rule and saved, so the settings row and
+   * "Switch server" cannot come to disagree about what an address may be.
+   */
+  async setServerUrl(value: string): Promise<void> {
+    const url = normalizeServerUrl(value);
+    const refusal = serverUrlRefusal(url, this.isMobile);
+    if (refusal !== null) throw new Error(refusal);
+    this.state.data.serverUrl = url;
+    await this.state.save();
   }
 
   /**
@@ -1267,17 +2216,68 @@ export default class ObsyncPlugin extends Plugin {
       if (!this.isCurrent(generation)) return;
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
-      this.log(`update decision=available server=${remote.version} local=${this.manifest.version}`);
-      new Notice(updateMessage(remote.version, this.manifest.version), 15000);
+      // ONE notice per session. The settings row says the same thing for as
+      // long as it stays true, so a toast raised again on every later probe
+      // is noise -- and on a phone it lands on top of what the reader opened
+      // the app to do.
+      if (this.updateNotified) return;
+      this.updateNotified = true;
+      this.log(`update decision=notified server=${remote.version} local=${this.manifest.version}`);
+      // A Notice is not a control on its own: a tap dismisses it and leaves
+      // the reader where they were, several taps from the page that updates.
+      // The listener goes on `containerEl`, the whole notice box: `noticeEl`
+      // is an alias of `messageEl`, the text element INSIDE it, so a tap that
+      // landed on the box's padding would only dismiss. A click on the text
+      // bubbles up to the box, so one listener covers both.
+      const notice = new Notice(updateMessage(remote.version, this.manifest.version), 15000);
+      notice.containerEl.addEventListener("click", () => {
+        this.openPluginManager();
+      });
     } catch (error) {
       if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * The settings tab's deletions-held line, or `null` when the last pass
+   * published everything it found (issue #123).
+   */
+  heldDeletionLine(): string | null {
+    const held = this.engine?.heldDeletionCount ?? 0;
+    if (held === 0) return null;
+    return `obsync can no longer see ${held} note(s) it syncs here and has NOT told your other devices. ` +
+      "If a folder was renamed or moved outside Obsidian, put it back or select it under its new name. " +
+      "Confirm only if you really deleted them: this removes them from every device.";
+  }
+
+  /** The user's word that the held deletions were real (issue #123). */
+  confirmHeldDeletions(): void {
+    this.engine?.confirmHeldDeletions();
   }
 
   /** The settings tab's update line, or `null` when this device is current. */
   updateLine(): string | null {
     const server = this.updateAvailable;
     return server === null ? null : updateMessage(server, this.manifest.version);
+  }
+
+  /**
+   * Open Obsidian's own Community plugins page, where **Check for updates**
+   * installs. The app owns that page and the download; this plugin still
+   * writes no code of its own (`docs/architecture.md` 6.3). `app.setting` is
+   * set by the host and absent from the vendored declaration, so it is read
+   * through a narrow optional interface and its absence is a logged refusal,
+   * never a crash inside a click handler.
+   */
+  openPluginManager(): void {
+    const settings = (this.app as App & SettingsHost).setting;
+    if (settings === undefined) {
+      this.log("update decision=refused reason=settings_window_unavailable");
+      return;
+    }
+    settings.open();
+    settings.openTabById(COMMUNITY_PLUGINS_TAB);
+    this.log("update decision=opened_plugin_manager");
   }
 
   // --- status ------------------------------------------------------------

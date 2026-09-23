@@ -16,18 +16,71 @@ const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
+/**
+ * A bound on a HANG, not a performance assertion, and that distinction sets
+ * the number. One second was a guess about how long a drain takes on an idle
+ * machine; this suite runs forty files at once, and under that load the
+ * drain in `engine cancellation releases a held metadata read` legitimately
+ * took longer -- so the guess failed about once in two full-suite runs, with
+ * nothing wrong. That matters beyond the noise: `plugin/test/mutants/run.sh`
+ * counts every `not ok` as a kill, so a flake here adds one phantom kill to
+ * EVERY mutant in the matrix, including any mutant that is really alive.
+ *
+ * The budget is the same wall clock `FakeTimers.run` waits on for the same
+ * reason. A real hang still fails here, with the milestone that did not
+ * finish, well inside the runner's own test timeout.
+ */
+const WITHIN_BUDGET_MS = 10_000;
+
 async function within(work, milestone) {
   const pending = Symbol("pending");
   let timer;
   try {
     const result = await Promise.race([work, new Promise((resolve) => {
-      timer = setTimeout(() => resolve(pending), 1000);
+      timer = setTimeout(() => resolve(pending), WITHIN_BUDGET_MS);
     })]);
-    assert.notEqual(result, pending, `${milestone} did not settle within 1000 ms`);
+    assert.notEqual(result, pending, `${milestone} did not settle within ${WITHIN_BUDGET_MS} ms`);
     return result;
   } finally { clearTimeout(timer); }
 }
 const puts = (r) => r.server.requests.filter((request) => request.method === "PUT");
+
+/**
+ * Await `work` while answering every long poll the engine parks on.
+ *
+ * THE LEAK THIS CLOSES. One `releaseFeed()` answers the poll outstanding at
+ * that instant. A stopping engine can take one more turn round the feed loop
+ * and park on a NEW poll before it observes `running === false`; nobody
+ * answers that one, so the drain never settles, the test's `finally` cannot
+ * release the held metadata read either, and the transport's one manual-read
+ * slot stays owned -- which is why the failure did not stay local: the next
+ * test to ask for a history read was refused with "The previous history
+ * request is still settling".
+ *
+ * The window is a scheduling one. It appeared under the full parallel suite
+ * and not when this file runs alone, and widening the bound only moved it --
+ * at 30 s it still failed three runs in five. So the release is driven by the
+ * test's OWN condition, the work settling, rather than by a delay: a release
+ * is a no-op when nothing is waiting, and the loop ends because the work
+ * ends. `within` stays as a bound on a genuine hang, not as the mechanism.
+ */
+async function drainingFeed(server, work, milestone) {
+  let settled = false;
+  const watched = Promise.resolve(work).finally(() => { settled = true; });
+  const answering = (async () => {
+    while (!settled) {
+      server.releaseFeed();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  })();
+  try {
+    return await within(watched, milestone);
+  } finally {
+    settled = true;
+    await answering;
+  }
+}
+
 
 async function note() {
   const r = await rig();
@@ -470,8 +523,8 @@ test("engine cancellation releases a held metadata read without allowing any sub
   const underlying = transport.manualRead;
   assert.ok(underlying instanceof Promise);
   try {
-    const stopping = engine.stopAndWait(); r.server.releaseFeed();
-    await within(Promise.all([work, stopping]), "cancelled repair and engine drain");
+    await drainingFeed(r.server, Promise.all([work, engine.stopAndWait()]),
+      "cancelled repair and engine drain");
     assert.equal(responseReleased, false, "logical drain must not need the held metadata response");
     assert.equal(transport.manualRead, underlying, "the underlying read remains owned until it settles");
     assert.equal(metadataCalls, 1);
@@ -482,7 +535,8 @@ test("engine cancellation releases a held metadata read without allowing any sub
   } finally {
     release.resolve();
     await within(underlying, "underlying metadata response");
-    await engine.stopAndWait();
+    await drainingFeed(r.server, engine.stopAndWait(),
+      "engine drain after the metadata response");
   }
   assert.equal(responseReleased, true);
   assert.equal(transport.manualRead, null);
@@ -538,4 +592,70 @@ test("native host reports actual range capability and closes its bounded source 
   failRead = true;
   await assert.rejects(host.source("source.bin", 100).read(40, 10), /synthetic range read failure/);
   assert.equal(closed, 2);
+});
+
+// --- the repair tick and an open history dialog (#103) ----------------------
+
+test("the repair tick yields to an open history operation instead of failing the step", async () => {
+  const r = await note(), timers = new FakeTimers(), statuses = [];
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const before = statuses.length;
+
+  // What `plugin.openHistory()` does: the dialog holds the one manual read
+  // slot for as long as it is open.
+  r.transport.openManual();
+  await engine.syncNow();
+
+  const line = r.host.logs.find((entry) => entry.startsWith("repair decision=deferred"));
+  assert.ok(line, r.host.logs.join(" | "));
+  assert.match(line, /reason=busy/);
+  assert.match(line, /budget_sids=64 budget_chunks=1 duration_ms=\d+/);
+  assert.equal(
+    statuses.slice(before).some((status) => status.kind === "error"),
+    false,
+    "a scheduling collision never sets the error status",
+  );
+  assert.equal(
+    r.host.logs.some((entry) => entry.includes("read_or_write_failed")),
+    false,
+    "and it is never reported as a failed read or write",
+  );
+  // It comes back a second later, not five minutes later.
+  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_TICK_MS));
+  assert.equal(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS), false);
+
+  r.transport.closeManual();
+  await timers.run(REPAIR_TICK_MS, () => r.host.logs.some((entry) => entry.startsWith("repair decision=resumed")));
+  assert.match(
+    r.host.logs.find((entry) => entry.startsWith("repair decision=resumed")),
+    /reason=history_closed ticks=\d+ duration_ms=\d+/,
+  );
+  await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});
+
+test("a read that loses the slot mid-step is deferred, never a could-not-verify error", async () => {
+  const r = await note(), timers = new FakeTimers(), statuses = [];
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const before = statuses.length;
+
+  // The dialog takes the slot after the tick's own check: the transport is
+  // the only thing that can see it, and it refuses without sending.
+  const { HistoryBusyError } = require("../build/transport.js");
+  r.transport.historyVersion = async () => { throw new HistoryBusyError(); };
+  await engine.syncNow();
+
+  assert.ok(
+    r.host.logs.some((entry) => /^repair decision=deferred reason=busy budget_sids=64/.test(entry)),
+    r.host.logs.join(" | "),
+  );
+  assert.equal(statuses.slice(before).some((status) => status.kind === "error"), false);
+  assert.equal(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS), false,
+    "a collision does not push the next attempt five minutes out");
+  await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
 });

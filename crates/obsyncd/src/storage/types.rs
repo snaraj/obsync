@@ -366,17 +366,52 @@ pub enum PutOutcome {
     Existed,
 }
 
+/// What one append decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppendDecision {
+    /// The store did not hold this version; a frame was written.
+    Appended,
+    /// The posted version id was already stored; nothing was written.
+    Existed,
+    /// Another version of this file already holds this parent set and this
+    /// chunk list, so its id is the answer; nothing was written
+    /// (`docs/protocol.md`, "Files and versions").
+    Deduplicated,
+}
+
+impl AppendDecision {
+    /// The word this decision logs under (requirement 12).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AppendDecision::Appended => "appended",
+            AppendDecision::Existed => "existed",
+            AppendDecision::Deduplicated => "deduplicated",
+        }
+    }
+
+    /// Whether a frame was written. Everything that follows an append --
+    /// the `201`, the edit the device is credited with -- follows from this
+    /// and not from the request, so the two no-op decisions cannot drift
+    /// apart in what they cost.
+    pub const fn wrote(self) -> bool {
+        matches!(self, AppendDecision::Appended)
+    }
+}
+
 /// What appending a version did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppendOutcome {
-    /// The journal position of the version.
+    /// The journal position of the version this answer names.
     pub seq: Seq,
+    /// The version the store holds for this post: the posted id, or the id
+    /// of the version this one was recognised as.
+    pub version_id: VersionId,
     /// The file's heads afterwards.
     pub heads: Vec<VersionId>,
     /// Whether the file conflicts afterwards.
     pub conflicted: bool,
-    /// Whether this version was already stored (an idempotent repost).
-    pub existed: bool,
+    /// What the append did.
+    pub decision: AppendDecision,
 }
 
 /// Every way the storage engine refuses or fails.
@@ -474,6 +509,10 @@ pub enum StoreError {
     DeviceRevoked,
     /// The device claimed a pairing but nobody has approved it.
     DevicePending,
+    /// A delete named a device that is not waiting for pairing approval.
+    /// Deletion destroys the record outright, so it is reserved for a claim
+    /// nobody approved; an approved device is revoked instead (issue #88).
+    DeviceNotPending,
     /// No such file.
     UnknownFile,
     /// No such domain: no file the store holds is in it.
@@ -555,6 +594,7 @@ impl fmt::Display for StoreError {
             StoreError::LastActiveDevice => f.write_str("the only active device"),
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
+            StoreError::DeviceNotPending => f.write_str("device is not pending approval"),
             StoreError::TooManyHeads { heads, max } => {
                 write!(f, "too many heads: {heads} heads, max {max}")
             }
@@ -607,6 +647,7 @@ impl StoreError {
             StoreError::LastActiveDevice => "last_device",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
+            StoreError::DeviceNotPending => "device_not_pending",
             StoreError::TooManyHeads { .. } => "too_many_heads",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",

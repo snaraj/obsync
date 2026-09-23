@@ -217,6 +217,50 @@ test("the single owned entry retains only the current and previous valid credent
   await assert.rejects(r.open(), /identity_mismatch/);
 });
 
+test("the previous credential record is collapsed only once the current one holds none", async () => {
+  const r = backing(legacy()), state = await r.open(), ref = r.metadata().credentialRef;
+  const held = () => JSON.parse(r.entries.get(ref));
+  state.data.vrk = "ab".repeat(32);
+  await state.save();
+  assert.equal(held().previous.deviceSecret, KEYS.deviceSecret, "the fixture really did keep it");
+
+  // A live credential is a revision an interrupted write may still be named
+  // by, so history is never collapsed under it.
+  await assert.rejects(() => state.forgetPreviousCredential(), /credential_present/);
+  assert.equal(held().previous.revision, 1, "and nothing was dropped");
+
+  state.forgetPairing();
+  await state.save();
+  await state.forgetPreviousCredential();
+
+  const envelope = held();
+  assert.equal(envelope.previous, null);
+  assert.equal(envelope.current.revision, 3);
+  assert.equal(r.metadata().credentialRevision, 3, "metadata names the revision that survived");
+  assert.equal(JSON.stringify(envelope).includes(KEYS.deviceSecret), false);
+  assert.equal(JSON.stringify(envelope).includes("LOCAL TOKEN SENTINEL"), false);
+  assert.equal(envelope.current.vrk, "ab".repeat(32), "the vault key is not a credential");
+  assert.equal(r.entries.size, 1, "one owned entry, still");
+  // Collapsing again is a no-op rather than a second write.
+  const calls = r.calls.length;
+  await state.forgetPreviousCredential();
+  assert.equal(r.calls.length, calls);
+  assert.equal((await restored({ metadata: r.metadata(), envelope: r.entries.get(ref) }).open()).paired, false);
+});
+
+test("a native entry changed by something else is not overwritten while collapsing", async () => {
+  const r = backing(legacy()), state = await r.open(), ref = r.metadata().credentialRef;
+  state.forgetPairing();
+  await state.save();
+  // Another writer advanced the entry between the save and this write.
+  const foreign = JSON.parse(r.entries.get(ref));
+  foreign.current = { ...foreign.current, revision: foreign.current.revision + 1 };
+  r.entries.set(ref, JSON.stringify(foreign));
+  const before = r.entries.get(ref);
+  await assert.rejects(() => state.forgetPreviousCredential(), /secret_changed/);
+  assert.equal(r.entries.get(ref), before, "the other writer's entry stands");
+});
+
 test("an inactive load does not migrate or touch the secret store", async () => {
   const r = backing(legacy());
   await assert.rejects(State.open(r.store, false, r.secrets, () => {}, () => false), /inactive_load/);

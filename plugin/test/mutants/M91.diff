@@ -1,0 +1,11 @@
+# M91: a received re-case leaves the selection at the old spelling
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -855,7 +855,6 @@
+   // whose own folder just changed its capitalisation (review round 3,
+   // finding 1). Nothing else in the selection moves: `parseSyncFolders` drops
+   // a selected folder that lives under another.
+-  followSelection(context, from, to);
+   // THE RECORDS FOLLOW THE ENTRY, ALL OF THEM, BEFORE ANY CHILD WORK. What
+   // moved is the directory, so every path beneath it moved with it; a record
+   // left at the old spelling is one the next scan reads as a deletion of a

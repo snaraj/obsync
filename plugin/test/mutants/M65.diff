@@ -1,0 +1,16 @@
+# M65: the adopted version is proved by everything except the path
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -391,11 +391,7 @@
+         unbase64(version.manifest_ct),
+       ),
+     ) as Partial<Manifest>;
+-    return (
+-      theirs.path === manifest.path &&
+-      theirs.size === manifest.size &&
+-      theirs.deleted === manifest.deleted
+-    );
++    return theirs.size === manifest.size && theirs.deleted === manifest.deleted;
+   } catch {
+     return false;
+   }

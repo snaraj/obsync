@@ -1,0 +1,12 @@
+# M71: every remote rename falls back to write-then-trash
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -967,7 +967,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
+   // that fallback for every rename dies there rather than passing quietly.
+   if (
+     localPath !== undefined &&
+-    localPath !== manifest.path &&
++    localPath === manifest.path &&
+     held === null &&
+     local !== undefined &&
+     local.size === manifest.size &&

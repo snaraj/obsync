@@ -33,6 +33,13 @@
  * and half random so a fleet of devices does not resynchronise on the same
  * second. 4xx never retries: a refusal is a decision.
  *
+ * CHUNK UPLOADS ARE BUDGETED. A chunk body is the only request whose retry
+ * costs megabytes, and it is the only one that cannot be resumed, so
+ * `putChunk` owns three rules the generic retry cannot express: one upload
+ * per sid, a ceiling on the BYTES in flight rather than on their count, and
+ * a question — has this body already landed? — before any re-send
+ * (`UPLOAD_INFLIGHT_MAX`, `docs/validation.md` V7).
+ *
  * PLATFORM. Identical on desktop and mobile. Mobile is HTTPS-only, so a
  * plain-HTTP server URL is rejected at the settings tab, not here.
  */
@@ -71,6 +78,32 @@ export interface ReadControl {
 }
 
 export const HISTORY_RESPONSE_BYTES = 6 * 1024 * 1024;
+
+/**
+ * A manual read arrived while another still held the slot.
+ *
+ * This is a scheduling decision on THIS device, not a failure of anything:
+ * nothing was sent, nothing was measured against a budget, and the caller
+ * that can wait should wait. The repair tick tells it apart from a read that
+ * really failed after leaving the device, which is what stopped a benign
+ * collision raising "could not verify a retained file" for five minutes
+ * (issue #103).
+ */
+export class HistoryBusyError extends Error {
+  constructor() {
+    super("The previous history request is still settling. Retry after it finishes.");
+    this.name = "HistoryBusyError";
+  }
+}
+
+/** Why a manual read was refused, for the one log line it writes. */
+function refusalReason(error: unknown): string {
+  if (error instanceof HistoryBusyError) return "busy";
+  if (error instanceof ApiError) {
+    return error.code === "response_too_large" ? "too_large" : error.code;
+  }
+  return error instanceof Error && error.name === "HistoryCancelled" ? "cancelled" : "failed";
+}
 
 export class ApiError extends Error {
   constructor(
@@ -246,6 +279,17 @@ export interface VersionPost {
   manifest_ct: string;
   manifest_nonce: string;
   deleted: boolean;
+  /**
+   * This device's promise to store the `version_id` the answer names, so the
+   * server may answer with a version it already holds at this position
+   * instead of forking the file (`docs/protocol.md`, "One position, one
+   * version"; issue #114). It is the caller's decision, not a constant,
+   * because the server's identity for "this position and this content" is
+   * `(file_id, parent set, sids, deleted)` and does NOT cover the encrypted
+   * manifest -- so a post whose only new fact is inside that manifest, which
+   * is what a rename is, must not offer this (`push.ts`).
+   */
+  accept_existing: boolean;
 }
 
 /**
@@ -257,6 +301,14 @@ export interface VersionPost {
 export interface VersionAck {
   heads: string[];
   conflicted: boolean;
+  /**
+   * The version the store holds for this post: the posted id, except when the
+   * server recognised the post as a version it already had under another id.
+   * OPTIONAL because a server older than 1.0.7 does not send it, and `decode`
+   * keeps whatever the answer contains and nothing else, so the caller falls
+   * back to the id it computed itself (issue #114).
+   */
+  version_id?: string;
 }
 
 export interface DeviceRecord {
@@ -306,6 +358,33 @@ export const MAX_WAIT_SECONDS = 55;
 const BACKOFF_START_MS = 1000;
 const BACKOFF_CEILING_MS = 60000;
 
+/**
+ * The retransmission budget `docs/validation.md` V7 sets: killing Obsidian
+ * mid-upload and reopening may re-send FEWER than 8 MiB of ciphertext.
+ */
+export const UPLOAD_BUDGET_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The ceiling on chunk bytes in flight, which is what turns that budget from
+ * a hope into a property of this client.
+ *
+ * A chunk upload cannot be resumed: `PUT /v1/chunks/{sid}` carries a whole
+ * body and the server keeps nothing until the body hashes to the sid
+ * (`docs/protocol.md`), so every byte in flight when the process dies is a
+ * byte the restart sends again. Bounding the SUM of the bodies in flight
+ * rather than their COUNT bounds that loss — four concurrent uploads of up to
+ * `CHUNK_CIPHERTEXT_MAX` each put 32 MiB at risk, four times the budget, and
+ * issue #56 measured at least 10,910,020 bytes duplicated with four uploads
+ * interrupted at once. `- 1` because V7 says "fewer than".
+ *
+ * A body above the ceiling still goes, alone: refusing it would be a file
+ * this device could never push. A maximal chunk is therefore the one case an
+ * interruption can still exceed the budget, by at most the 16-byte
+ * authentication tag, and closing that needs a resumable upload the protocol
+ * does not have.
+ */
+export const UPLOAD_INFLIGHT_MAX = UPLOAD_BUDGET_BYTES - 1;
+
 type CallOptions = {
   auth: "device" | "none";
   json?: unknown;
@@ -342,6 +421,16 @@ export class Transport {
   // Shared across modal close/reopen. Cancellation discards a late result,
   // but cannot permit a second buffered request before the first settles.
   private manualRead: Promise<Attempt> | null = null;
+  /** sid → the one upload of that chunk this client has in flight. */
+  private readonly uploading = new Map<string, Promise<void>>();
+  /** Ciphertext bytes claimed by uploads in flight, against the ceiling. */
+  private uploadBytes = 0;
+  /** Uploads waiting for room, oldest first, so a maximal body cannot starve. */
+  private readonly admitting: { bytes: number; resume: () => void }[] = [];
+  /** What the uploader has done, for the per-run summary its caller logs. */
+  private readonly upload = { chunks: 0, resent: 0, deduped: 0 };
+  /** Manual history operations currently open, whether or not one is reading. */
+  private manualSessions = 0;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
@@ -479,15 +568,34 @@ export class Transport {
   }
 
   /** One attempt, one outstanding manual request, and a post-buffer ceiling. */
+  /**
+   * Is a manual history operation open, or one of its reads in flight?
+   *
+   * The repair tick asks before it starts so the two share the slot in order
+   * rather than colliding (issue #103); an open dialog is enough, because the
+   * tick runs every second and the user is in front of the other one.
+   */
+  get manualBusy(): boolean {
+    return this.manualSessions > 0 || this.manualRead !== null;
+  }
+
+  openManual(): void {
+    this.manualSessions++;
+  }
+
+  closeManual(): void {
+    if (this.manualSessions > 0) this.manualSessions--;
+  }
+
   private async readOnce(target: string, control: ReadControl, maxBytes: number, json?: unknown): Promise<HttpResponse> {
     const started = this.now();
     try {
       control.check();
-      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      if (this.manualRead !== null) throw new HistoryBusyError();
       const method = json === undefined ? "GET" : "POST";
       const sending = await this.prepare(target, { auth: "device", json });
       control.check();
-      if (this.manualRead !== null) throw new Error("The previous history request is still settling. Retry after it finishes.");
+      if (this.manualRead !== null) throw new HistoryBusyError();
       const pending = this.attempt(method, target, sending, () => control.check());
       this.manualRead = pending;
       void pending.finally(() => {
@@ -504,7 +612,15 @@ export class Transport {
       }
       return this.settle(method, target, response, 1, started);
     } catch (error) {
-      this.log(`history_http decision=refused budget_bytes=${maxBytes} duration_ms=${this.now() - started}`);
+      // `budget_bytes` belongs to the size refusal alone. A read that never
+      // left the device was never measured against a byte budget, and naming
+      // one made a scheduling collision read like an oversize response.
+      const reason = refusalReason(error);
+      this.log(
+        `history_http decision=refused reason=${reason}` +
+          (reason === "too_large" ? ` budget_bytes=${maxBytes}` : "") +
+          ` duration_ms=${this.now() - started}`,
+      );
       throw error;
     }
   }
@@ -621,8 +737,120 @@ export class Transport {
     return missing;
   }
 
+  /**
+   * Upload one chunk: once per sid, inside the in-flight ceiling, and never a
+   * body the server already holds.
+   *
+   * ONE UPLOAD PER SID. Two files that share a chunk, a push racing the
+   * repair walk, and a pull re-sealing a chunk it just verified all name the
+   * same sid, and each of them asked `/v1/chunks/exists` before any of the
+   * others finished, so each believes the chunk is missing. A sid IS the hash
+   * of its bytes, so the second caller wants exactly the bytes the first is
+   * already sending: it awaits that upload instead of putting a second copy
+   * of up to 8 MiB on the wire beside it.
+   */
   async putChunk(sid: string, ciphertext: Bytes): Promise<void> {
-    await this.call("PUT", `/v1/chunks/${sid}`, { auth: "device", binary: ciphertext });
+    const running = this.uploading.get(sid);
+    if (running) {
+      this.upload.deduped += 1;
+      await running;
+      return;
+    }
+    const upload = this.uploadChunk(sid, ciphertext);
+    this.uploading.set(sid, upload);
+    try {
+      await upload;
+    } finally {
+      this.uploading.delete(sid);
+    }
+  }
+
+  /**
+   * One chunk body, retried like any repeatable route — except that a retry
+   * ASKS before it re-sends. An unsettled attempt is not a failed one: the
+   * body may have arrived, been verified and been stored, and only the answer
+   * lost. `/v1/chunks/exists` settles that for a few hundred bytes instead of
+   * up to 8 MiB, and a probe that does not settle answers "no", which sends.
+   */
+  private async uploadChunk(sid: string, ciphertext: Bytes): Promise<void> {
+    const target = `/v1/chunks/${sid}`;
+    await this.admit(ciphertext.length);
+    try {
+      const sending = await this.prepare(target, { auth: "device", binary: ciphertext });
+      const started = this.now();
+      for (let attempt = 1; ; attempt++) {
+        const outcome = await this.attempt("PUT", target, sending);
+        if (outcome.kind === "settled") {
+          this.settle("PUT", target, outcome.response, attempt, started);
+          this.upload.chunks += 1;
+          return;
+        }
+        if (attempt >= this.maxAttempts) {
+          this.log(`http PUT ${target} ${outcome.reason} decision=gave_up attempts=${attempt} duration_ms=${this.now() - started}`);
+          throw new ApiError(outcome.status, "unreachable", outcome.reason);
+        }
+        const delay = this.backoffMs(attempt);
+        this.log(`http PUT ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
+        await this.sleep(delay);
+        if (await this.landed(sid)) {
+          this.log(`upload decision=landed bytes=${ciphertext.length} attempts=${attempt} duration_ms=${this.now() - started}`);
+          this.upload.chunks += 1;
+          return;
+        }
+        this.upload.resent += ciphertext.length;
+      }
+    } finally {
+      this.release(ciphertext.length);
+    }
+  }
+
+  /** Does this body fit in flight? A pipe holding nothing fits anything. */
+  private fits(bytes: number): boolean {
+    return this.uploadBytes === 0 || this.uploadBytes + bytes <= UPLOAD_INFLIGHT_MAX;
+  }
+
+  /** Claim room for one body, in arrival order. */
+  private async admit(bytes: number): Promise<void> {
+    if (this.admitting.length === 0 && this.fits(bytes)) {
+      this.uploadBytes += bytes;
+      return;
+    }
+    await new Promise<void>((resume) => this.admitting.push({ bytes, resume }));
+  }
+
+  /** Give the room back and hand it to the waiters that now fit. */
+  private release(bytes: number): void {
+    this.uploadBytes -= bytes;
+    for (let head = this.admitting[0]; head !== undefined && this.fits(head.bytes); head = this.admitting[0]) {
+      this.admitting.shift();
+      // Claimed HERE, before the waiter resumes, so the next head measures
+      // against a pipe that already holds it.
+      this.uploadBytes += head.bytes;
+      head.resume();
+    }
+  }
+
+  /** Has this chunk already landed? One attempt; anything else answers no. */
+  private async landed(sid: string): Promise<boolean> {
+    const target = "/v1/chunks/exists";
+    try {
+      const sending = await this.prepare(target, { auth: "device", json: { sids: [sid] } });
+      const probe = await this.attempt("POST", target, sending);
+      if (probe.kind !== "settled" || probe.response.status >= 400) return false;
+      return decode<{ missing: string[] }>(probe.response).missing.length === 0;
+    } catch {
+      // The probe saves bytes; it can never cost a chunk.
+      return false;
+    }
+  }
+
+  /**
+   * What the chunk uploader has done so far, so a caller can log its own run
+   * (requirement 12). `resent` counts ciphertext bytes put on the wire for a
+   * chunk whose body this client had already sent: the quantity V7 bounds.
+   */
+  uploadStats(): { chunks: number; resent: number; deduped: number } {
+    return { ...this.upload };
   }
 
   async getChunk(sid: string, control?: ReadControl): Promise<Bytes> {

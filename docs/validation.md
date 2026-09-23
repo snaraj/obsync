@@ -16,7 +16,7 @@ internet.
 
 So the private path is validated FIRST: the devices reach the server over the
 LAN, or over a VPN back to it, with a certificate the phone trusts. The
-Compose-plus-Caddy route (`deploy/compose`, README.md "Any network, no
+Compose-plus-Caddy route (`deploy/compose`, `docs/server.md` "Any network, no
 provider") is the template for that path -- a private name, a private
 certificate authority exported once and installed on each device, HTTPS
 because mobile Obsidian accepts nothing else. A tunnel, a public hostname, or
@@ -37,10 +37,11 @@ Before setup or pairing, save the final **Sync folders on this device**
 selection independently on each device. For a staged first sync in one
 vault, keep personal files in an excluded staging folder and validate only
 disposable notes inside the selected folder. After acceptance, move the
-personal files into that selected folder and run **Sync now**. This needs
-no expansion, state reset or re-pairing over existing files. Narrowing a
-used selection is supported; expansion requires safe current-head resync,
-which this version does not implement.
+personal files into that selected folder and run **Sync now**. Both
+directions are supported afterwards: narrowing keeps the local files and the
+cursor, and widening replays the history this device skipped so the files
+under a newly selected folder arrive. Neither needs a state reset or
+re-pairing.
 
 Validate a subsequent update using Community plugins → Check for updates.
 Confirm the installed version, preserved pairing and folder selection, then
@@ -54,7 +55,7 @@ evidence.
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
 | V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
 | V3 | Type in a note on iPhone | appears on the other three within 3 s |
-| V4 | Rename and move a populated folder on Windows, wholly inside every participating device’s selected folders | mirrored everywhere, no duplicates |
+| V4 | Rename and move a populated folder on Windows, including a folder that IS a selected sync folder on that device | mirrored everywhere, no duplicates, no deletions in the journal; the selection names the new path. The note-level half is proven: [issue #96](https://github.com/snaraj/obsync/issues/96) shipped in 1.0.4, and the [2026-09-21 run](validation-runs/2026-09-21.md) renamed a synced note in BOTH directions with both devices on 1.0.4 and saw a move, not a deletion. The Windows folder scenario itself is still `not attempted`: no run has been made on Windows |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
 | V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
 | V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; fewer than 8 MiB re-sent |
@@ -67,6 +68,42 @@ evidence.
 | V14 | Dashboard from a phone browser | usable at 390 px wide |
 | V15 | Compose path from scratch on a second machine: `deploy/compose` up, root certificate exported and installed, iPhone paired over the LAN | sync works with no provider, no public hostname, and no port reachable from the internet |
 | V16 | Native credential persistence on each required platform, after fresh setup and after upgrading legacy paired state | restart Obsidian; the same device resumes bidirectional sync without setup or re-pairing, preserving folder selection |
+| V17 | Create an EMPTY folder on the desktop | it appears on the phone within 3 s, still empty, and no file is created inside it |
+| V18 | Create an empty folder on the phone | it appears on the desktop; the same result in the other direction |
+| V19 | Create a nested empty chain (`A/B/C`) on one device | all three appear on the other, in one tree |
+| V20 | Delete a folder holding notes on the desktop, one level and then a three-level nest | the notes and the whole empty tree are gone on the phone; a sibling folder that still holds a note is untouched |
+| V21 | Delete a folder on the phone | it is gone on the desktop; the same result in the other direction |
+| V22 | Rename a folder holding notes on one device | renamed on the other, notes inside keep their content and their history, no duplicate folder under either name |
+| V23 | Rename an EMPTY folder on one device | renamed on the other; the old name is gone |
+| V24 | On device A put an extra file into a folder that device B then deletes | B's deletion removes the notes; A keeps the folder AND the extra file, and says so in the log (`folder … decision=kept reason=not_empty`) |
+| V25 | Two devices already holding a vault made before 1.1.0, both updated, both restarted | every existing folder converges without the user doing anything; the folders each device already had appear on the other |
+| V26 | A third device left on 1.0.6, the newest shipped 1.0.x, while the other two are on 1.1.0 | it shows one refusal notice per folder and keeps syncing NOTES normally; no file is created at any folder's path; no tombstone is published for anything; updating it makes the folders appear and the notices stop |
+| V27 | On the 1.0.6 device, delete the last note out of a folder and KEEP the folder | the 1.1.0 devices delete the note and keep the folder: a device that says nothing about a folder never deletes it |
+| V28 | Rename a folder by CAPITALISATION alone (`Team docs` to `team docs`), from the desktop and then from the phone, with notes inside | the other device renames the folder itself and shows ONE folder under the new spelling; the notes keep their content and their history; nothing lands in either device's trash; leave both devices running for five minutes and no note gains a version, and no folder gains one, in either direction |
+
+V28 is the one scenario no test on a computer can close, and it is the reason
+that row says "and then from the phone": a capitalisation-only rename made on
+a phone goes through Obsidian's own `adapter.rename` rather than through the
+filesystem, and only a real phone can say what that adapter does with a
+spelling the vault already holds. The desktop half of it IS covered by tests
+against a real case-folding filesystem (`plugin/test/realfs-case.test.mjs`);
+the phone half is claimed nowhere until this journey is recorded. The
+five-minute wait is the point of the row: the defect it exists to catch
+published one version per note per thirty seconds rather than failing outright
+(review round 1, finding 1).
+
+V17-V28 are the folder-sync scenarios for 1.1.0 (issue #104). Run each in
+BOTH directions — desktop to phone and phone to desktop — and record which
+device originated each one, because the two platforms use different host
+primitives: desktop makes and removes folders through Node's filesystem after
+the component walk, mobile through the vault adapter. For V20 and V24, record
+what the file explorer shows on the receiving device AFTER a restart of
+Obsidian as well, since a stale explorer pane is not a sync result. For V26 and V27,
+record the exact notice text, the plugin version on each device, and that the
+old device's own notes still sync in both directions while it is refusing.
+
+V4 covers renames wholly inside the selection; the same rename seen from a
+second device is J4 below, and a move that leaves the selection is J6.
 
 For V16, record the Obsidian version (at least 1.13.0), plugin version and redacted before/after device identity. Confirm native secret storage is available and ordinary plugin metadata contains references, not the vault key, device secret or edge-token values. Do not enumerate native secret entries or record their contents. Local host stubs prove migration and failure handling only; they do not satisfy native application restart persistence.
 
@@ -99,6 +136,45 @@ mobile, refuses automatic content reads when the whole local file exceeds
 reads. Record that capability limitation explicitly; it does not satisfy
 large-file restoration using only non-streaming devices, and it does not
 waive V12 or replace real-device results with a synthetic test.
+
+## User journeys
+
+The scenarios above prove the protocol. The 2026-09-20 device run showed what
+they leave out: the journeys a person performs on day one -- the first note,
+the first folder rename, the first relaunch -- were not in the plan at all, so
+a run could pass every V row and still ship a plugin that loses a folder the
+first time someone reorganises one. The journeys below are that half. They are
+written for a stranger with no knowledge of any particular deployment: each
+needs two real devices in one account, one desktop and one phone, and nothing
+else. The acting device is named first.
+
+| # | Journey | Pass condition | Devices |
+| --- | --- | --- | --- |
+| J1 | Create a note on the phone | the desktop shows the note under the same name with the same bytes, with no action taken on the desktop | phone acts, desktop observes |
+| J2 | Create a note on the desktop | the phone shows the note under the same name with the same bytes, with no action taken on the phone | desktop acts, phone observes |
+| J3 | Rename the vault folder on the desktop, then reopen that vault | the plugin is still paired: no setup token, no pairing code, the same one device in Devices, the same folder selection; an edit made after the reopen reaches the phone | desktop acts, phone observes |
+| J4 | Rename a selected folder on one device | the other device lists that folder under its new name holding the same file names and the same bytes; the file count matches; nothing is deleted and nothing lands in trash | either device acts, the other observes |
+| J5 | Move a note between two selected folders | the other device shows exactly one copy, under the destination folder only, with the same bytes | either device acts, the other observes |
+| J6 | Move a note out of the selected folders | the plugin asks before the move takes effect and names the consequence for the other device in that prompt; the answer given is the outcome observed, and nothing is removed anywhere without it | either device acts, the other observes |
+| J7 | Create a new top-level folder after pairing, then add it to the selection on that same device | the folder is offered in **Sync folders on this device** and the saved selection survives a restart; its notes then sync, or the plugin states in the UI why an expanded selection is refused. Either way every already-selected folder keeps every file | either device acts, the other observes |
+| J8 | Quit and relaunch Obsidian on both devices | each device returns to idle on its own, with no tap, no **Sync now**, and no setup or pairing prompt; record the time each took | both devices act |
+| J9 | Open a vault that also holds a large non-note folder tree (record the file count and total size) | the vault opens and the plugin reaches idle within a recorded time, or it says why not in one visible line naming the budget it exceeded and what it skipped (requirement 12); silence, a hang, or an unexplained partial scan is a fail | desktop acts, phone observes |
+| J10 | Unpair the device, then pair the same vault again | every local note is still on disk with unchanged bytes, the device appears exactly once in Devices, and sync resumes both ways; no duplicate note and no conflict copy | either device acts, the other observes |
+
+Every release whose range touches `plugin/` or the server's sync path -- the
+chunk, change, and file handlers in `crates/obsyncd/src/api/` and the storage
+they call -- runs the affected journeys on real devices before it ships and
+records their outcomes in [`docs/validation-runs/`](validation-runs/README.md),
+in the existing format: one row per journey with `pass`, `fail`, or
+`not attempted`, the measured time wherever the pass condition names one, and
+one sentence of what was observed. Silence is not a pass here either.
+
+Requirement 11 governs those rows as it governs every other line of a run
+record. A journey row names CLASSES -- "desktop", "phone", an operating-system
+version, a plugin version, a folder count -- and never a device name, serial,
+account, hostname, address, vault name, or note title from anybody's real
+vault. A journey that needs a private fact to be legible is naming the wrong
+fact: use disposable notes and name the class.
 
 ## Routes
 

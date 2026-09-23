@@ -36,10 +36,23 @@
  * lengths are checked again against the bytes themselves as each chunk
  * decrypts, so nothing unverified is written even if the two agreed.
  *
+ * FOLDERS. A record whose manifest says `v: 2` is a FOLDER (`push.ts`,
+ * `FolderManifest`), and it is the one record type this path applies without
+ * fetching a byte: it makes the folder, or removes it when nothing is left in
+ * it, and nothing else. A file tombstone additionally takes the folders it
+ * empties, and ONLY the ones no record covers, so a device that says nothing
+ * about a folder never deletes it here (issue #104).
+ *
  * ECHOES. A write this device made comes back down the feed. It is dropped
  * twice over: by `version_id` (the ids this device authored) and by the
  * `(path, mtime, size)` of the writes this device made, which is what stops
  * the vault watcher from pushing our own pull back up.
+ *
+ * A TOMBSTONE IS THE SAME DECISION. A remote deletion over a local file that
+ * no longer holds what this device pushed is delete-versus-edit, not a
+ * deletion: the local bytes are kept and published as a new version of the
+ * same file id, which brings the note back everywhere, and the user is told
+ * once (issue #106).
  *
  * CONFLICTS. A version is written over a local file only when it DESCENDS
  * from the version this device recorded and the file still carries the SIZE
@@ -66,7 +79,9 @@
  * so a crash mid-write cannot leave a torn note, and streams a file of any
  * size. Mobile buffers the file and writes it with `adapter.writeBinary`,
  * which is why the mobile per-file ceiling exists; a file above the ceiling
- * is never downloaded and is listed as remote-only instead.
+ * is never downloaded and is listed as remote-only instead, and any older
+ * local copy of that file goes to the system trash so the device never shows
+ * a stale file and a remote-only entry for the same path (issue #100).
  */
 
 import type { SyncContext, VaultStat, VaultWriter } from "./engine";
@@ -83,12 +98,23 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ChangeRecord, FileRecord, ReadControl } from "../transport";
+import { ApiError, ChangeRecord, FileRecord, ReadControl } from "../transport";
+// The per-path record this device keeps, named apart from the SERVER's file
+// record above, which is a different thing with the same name.
+import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit } from "../policy";
-import { VaultPathError, assertVaultPath, vaultPathRefusal } from "../vaultPath";
-import { assertSyncPath, inSyncScope } from "../syncScope";
+import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
+import {
+  assertFolderScope,
+  assertSyncPath,
+  caseTwinRoot,
+  inFolderScope,
+  inSyncScope,
+  movedSelection,
+  selectionAfterRename,
+} from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
-import { Manifest, ManifestChunk, postManifest, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -132,12 +158,11 @@ function digest32(value: unknown): boolean {
 }
 
 /**
- * The runtime schema check for a decrypted manifest: every field is verified
- * against the shape `Manifest` claims, and `path` against the vault-path rule,
- * BEFORE any of it is used. Without this the type assertion is a promise the
- * compiler cannot keep — the bytes came off the wire from another device.
+ * The head every decrypted manifest shares: it is an object, and its `path`
+ * passes the one vault-path rule (`vaultPath.ts`) BEFORE anything else reads
+ * it. What kind of manifest it is comes next, in `parseEntry`.
  */
-export function parseManifest(json: string): Manifest {
+function manifestObject(json: string): Record<string, unknown> {
   let value: unknown;
   try {
     value = JSON.parse(json);
@@ -147,6 +172,54 @@ export function parseManifest(json: string): Manifest {
   if (!isRecord(value)) throw new ManifestError("not_an_object");
   const refusal = vaultPathRefusal(value["path"]);
   if (refusal !== null) throw new ManifestError(`path_${refusal}`);
+  return value;
+}
+
+/**
+ * The runtime schema check for a decrypted FILE manifest: every field is
+ * verified against the shape `Manifest` claims, and `path` against the
+ * vault-path rule, BEFORE any of it is used. Without this the type assertion
+ * is a promise the compiler cannot keep — the bytes came off the wire from
+ * another device.
+ */
+export function parseManifest(json: string): Manifest {
+  return fileManifest(manifestObject(json));
+}
+
+/**
+ * Route a decrypted manifest by its `v`, and check every field of whatever it
+ * turns out to be. This is the ONLY place `v` is read: it is the
+ * compatibility contract with every 1.0.x device, which refuses a shape it
+ * does not know rather than guessing at it, and this version owes a NEWER
+ * record exactly the same refusal — `fileManifest` gives it, because anything
+ * that is not 2 has to be 1.
+ */
+export function parseEntry(json: string): Manifest | FolderManifest {
+  const value = manifestObject(json);
+  return value["v"] === 2 ? folderManifest(value) : fileManifest(value);
+}
+
+/**
+ * A FOLDER record (`push.ts`, `FolderManifest`), checked field by field like
+ * a file manifest and for the same reason: these bytes came off the wire from
+ * another device, and what they say decides what happens to a directory in
+ * this vault. Everything a folder does NOT have is checked too — no chunks,
+ * no bytes, no digest — so a live file wearing `kind: "directory"` cannot
+ * reach the folder path, which never fetches or writes content at all.
+ */
+function folderManifest(value: Record<string, unknown>): FolderManifest {
+  if (value["kind"] !== "directory") throw new ManifestError("kind");
+  if (typeof value["domain"] !== "string") throw new ManifestError("domain");
+  if (typeof value["deleted"] !== "boolean") throw new ManifestError("deleted");
+  if (value["size"] !== 0) throw new ManifestError("size");
+  if (value["sha256"] !== "") throw new ManifestError("sha256");
+  const chunks = value["chunks"];
+  if (!Array.isArray(chunks)) throw new ManifestError("chunks");
+  if (chunks.length !== 0) throw new ManifestError("chunk_count");
+  return value as unknown as FolderManifest;
+}
+
+function fileManifest(value: Record<string, unknown>): Manifest {
   if (value["v"] !== 1) throw new ManifestError("version");
   if (!size(value["size"])) throw new ManifestError("size");
   if (typeof value["mtime"] !== "number" || !Number.isFinite(value["mtime"])) throw new ManifestError("mtime");
@@ -247,10 +320,34 @@ export function bindManifestToRecord(
   }
 }
 
-export async function decryptRecordManifest(
+/**
+ * Bind a folder record to the version it rode in, before anything touches a
+ * directory. The same rule as `bindManifestToRecord` and the same reason: the
+ * record is what the server retains, accounts and will authorize on, and a
+ * folder record that disagreed with it could carry a chunk list the server
+ * never saw or a delete bit the server never recorded.
+ */
+export function bindFolderToRecord(
+  record: BoundRecord,
+  manifest: FolderManifest,
+  engineDomain: string,
+): void {
+  if (record.domain_id !== engineDomain) throw new ManifestError("record_domain");
+  if (manifest.domain !== record.domain_id) throw new ManifestError("manifest_domain");
+  if (record.sids.length !== 0) throw new ManifestError("record_sid_count");
+  if (record.bytes !== 0) throw new ManifestError("record_bytes");
+  if (manifest.deleted !== record.deleted) throw new ManifestError("record_deleted");
+}
+
+/**
+ * Decrypt one record and bind whatever it turns out to be. The feed is the
+ * only caller that may act on a folder; everything else means a file and
+ * goes through `decryptRecordManifest`, which refuses one.
+ */
+export async function decodeRecordManifest(
   context: SyncContext,
   record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
-): Promise<Manifest> {
+): Promise<Manifest | FolderManifest> {
   const binder = await contentVersionId(record.file_id, record.parents, record.sids);
   const json = await decryptManifest(
     context.manifestKey,
@@ -259,13 +356,107 @@ export async function decryptRecordManifest(
     unhex(record.manifest_nonce),
     unbase64(record.manifest_ct),
   );
-  const manifest = parseManifest(json);
+  const entry = parseEntry(json);
+  // A FOLDER RECORD IS JUDGED BY THE FOLDER RULE, which differs from a file's
+  // at the selection root: the selected folder itself has a record, and that
+  // record is the only thing that can carry its own rename (`syncScope.ts`,
+  // `inFolderScope`; review round 3, finding 1).
+  if (entry.v === 2) {
+    bindFolderToRecord(record, entry, context.domainId);
+    admitFolderRecord(context, entry.path);
+  } else {
+    bindManifestToRecord(record, entry, context.domainId);
+    assertSyncPath(entry.path, context.state.data.syncFolders);
+  }
+  return entry;
+}
+
+/**
+ * Admit one RECEIVED folder record, and tell a re-case of the folder this
+ * device syncs from a SECOND folder that only looks like one (review round 4,
+ * finding 1).
+ *
+ * THE STRING RULE CANNOT TELL THEM APART AND NEITHER CAN THE VAULT. A record
+ * naming `team docs` where this device selects `Team docs` is, on a host that
+ * folds case, one directory entry either way: the vault answers "one entry"
+ * BY CONSTRUCTION, so `applyFolder` would re-case the directory and move the
+ * selection onto it. But the sender may be a device that keeps the two apart
+ * and holds BOTH -- the twin a 1.0.x rename leaves behind
+ * (`docs/troubleshooting.md`) -- and there the record names a folder this
+ * device never selected. Followed, this device's selection lands on the twin:
+ * every later change under the folder it DID select is skipped as out of
+ * scope, a note written there never arrives, and its own edits come back to
+ * the other device as conflict copies inside the twin. Silently.
+ *
+ * WHAT TELLS THEM APART IS THE TOMBSTONE, because a re-case is a RENAME and a
+ * rename retires the old name. Both senders of one -- `folderRenamed` for a
+ * rename this device is told about, and the start-up pass `recaseFolders` for
+ * one it discovers -- publish the old spelling's tombstone BEFORE the new
+ * record, behind the wire barrier the protocol states (`docs/protocol.md`). A
+ * twin carries no tombstone: the receiver's own record for the folder it
+ * selects is still live when it arrives.
+ *
+ * SO THE ADMISSION RULE IS: the tombstone for the selected folder's own
+ * folder file id has been applied, no record has been written for that folder
+ * since (`state.ts`, `setFolder`), and no folder record has used that
+ * admission since -- the retirement is spent by the first record that takes
+ * it. Anything else is refused exactly as it was before the tolerance existed
+ * (`decision=not_synced reason=outside_sync_scope`), with one notice naming
+ * both spellings. A whole-vault device has no selection and no tolerance to
+ * narrow: every folder record is in its scope by the folder rule itself.
+ */
+function admitFolderRecord(context: SyncContext, entryPath: string): void {
+  const path = assertVaultPath(entryPath);
+  const folders = context.state.data.syncFolders;
+  if (inFolderScope(path, folders)) return;
+  const selected = caseTwinRoot(path, folders);
+  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) {
+    // SPENT HERE. The record the retirement was waiting for has arrived, so a
+    // second record one capitalisation off that folder is a twin again --
+    // including the twin a case-sensitive sender publishes moments later.
+    delete context.state.data.retiredRoots[selected];
+    return;
+  }
+  if (selected !== null) notifyFolderTwin(context, selected, path);
+  throw new VaultPathError("outside_sync_scope");
+}
+
+/**
+ * ONE NOTICE FOR A TWIN, per folder and per engine, because SILENCE is what
+ * made this dangerous: the device that holds two folders is the only one that
+ * can see them both, and the user of this one is owed the reason its folder
+ * stopped agreeing with the other device. The text claims only what is true
+ * on both sides of the wire -- two names differing in capitalisation alone,
+ * nothing renamed, moved or deleted here -- and names the remedy the
+ * troubleshooting page carries.
+ */
+function notifyFolderTwin(context: SyncContext, selected: string, twin: string): void {
+  const key = `twin\u0000${selected}`;
+  if (context.refused.has(key)) return;
+  context.refused.add(key);
+  context.host.notify(
+    `obsync: another device published a folder called "${twin}", and this device syncs "${selected}" -- ` +
+      "two names that differ only in capitalisation. On a device that keeps those two apart they are two " +
+      `folders, so nothing here was renamed, moved or deleted and this device keeps syncing "${selected}". ` +
+      "If that device instead renamed the folder you sync here, rename it here to match -- see " +
+      'Troubleshooting, "Two folders that differ only in capitalisation".',
+  );
+}
+
+export async function decryptRecordManifest(
+  context: SyncContext,
+  record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
+): Promise<Manifest> {
   // The one choke point: every path that decrypts a manifest from a record
-  // -- the feed, an on-demand fetch, a conflict head, a merge base -- comes
-  // through here, so none of them can forget to bind it.
-  bindManifestToRecord(record, manifest, context.domainId);
-  assertSyncPath(manifest.path, context.state.data.syncFolders);
-  return manifest;
+  // -- the feed, an on-demand fetch, a conflict head, a merge base, a history
+  // row, a repair source -- comes through here or through `decodeRecord-
+  // Manifest` beneath it, so none of them can forget to bind it.
+  const entry = await decodeRecordManifest(context, record);
+  // Every caller but the feed means CONTENT: a file to download, to merge, to
+  // restore, to re-seal. A folder record has none, so it is refused here in
+  // the same words a 1.0.x device refuses it in.
+  if (entry.v !== 1) throw new ManifestError("version");
+  return entry;
 }
 
 /**
@@ -316,11 +507,86 @@ export async function assembleBytes(context: SyncContext, manifest: Manifest): P
   return out;
 }
 
+/** Every folder above `path`, deepest first. `"A/B/c.md"` → `["A/B", "A"]`. */
+export function ancestors(path: string): string[] {
+  const out: string[] = [];
+  for (let slash = path.lastIndexOf("/"); slash > 0; slash = path.lastIndexOf("/", slash - 1)) {
+    out.push(path.slice(0, slash));
+  }
+  return out;
+}
+
+/**
+ * Remove one folder through the host's own folder-delete path, marking the
+ * echo BEFORE the call for the reason issue #96 established: Obsidian reports
+ * the removal to this plugin's delete handler while `trashFolder` is still
+ * running, and an unmarked echo becomes a folder tombstone this device
+ * publishes for a folder the remote side already owns.
+ *
+ * `not_empty` means the host found something still in it and did nothing, so
+ * the mark is taken back: a suppression owed to an event that will never
+ * arrive would swallow the user's own next deletion of that folder.
+ *
+ * AND NOTHING IS REMOVED BY A NAME THE VAULT SPELLS ANOTHER WAY (review round
+ * 3, finding 2). A removal names a path; the walk that resolves it on a host
+ * that folds case finds the one directory entry, whatever capitalisation the
+ * caller asked with. So a tombstone for `Team docs` arriving after this
+ * device has already re-cased that directory to `team docs` -- the order a
+ * rename discovered at start-up used to publish in -- resolved to the folder
+ * the re-case had just produced, found it empty and deleted it, and the next
+ * pass here tombstoned the record too, so an empty folder renamed by
+ * capitalisation alone was gone on every device. The vault is asked what it
+ * shows, and a name it shows differently is not this removal's to take.
+ */
+async function removeFolder(
+  context: SyncContext,
+  path: string,
+  shown: string | null,
+): Promise<"removed" | "not_empty" | "vault_spelling"> {
+  if (shown !== null && shown !== path) {
+    context.host.log("folder path_class=folder decision=kept reason=vault_spelling");
+    return "vault_spelling";
+  }
+  context.trashed.add(path);
+  const removed = await context.host.trashFolder(path);
+  if (!removed) context.trashed.delete(path);
+  return removed ? "removed" : "not_empty";
+}
+
+/**
+ * After a file leaves this vault, take the folders it leaves empty with it —
+ * but only the folders NO record covers.
+ *
+ * A folder with a record is a folder some device published on purpose; it
+ * exists until its own tombstone says otherwise, even while it is empty. That
+ * is the rule that keeps ANOTHER DEVICE'S SILENCE from becoming a deletion: a
+ * device on 1.0.x publishes no folder record and no folder tombstone, ever, so
+ * a peer that emptied a folder there has said exactly nothing about the
+ * folder, and a folder this device holds a record for stays. This device gives
+ * a record to every folder it holds — startup reconciliation to the ones it
+ * already had, the vault's own create event to the ones a pull makes on its
+ * way to a file — so what is reachable here is the narrow set nobody has
+ * claimed yet: a publish that has not run, or a vault older than 1.1.0 whose
+ * reconciliation has not finished. Those exist only to hold the file that is
+ * leaving, and nothing will ever tombstone them.
+ *
+ * The walk stops at the first folder it keeps: a folder holding a folder is
+ * not empty either.
+ */
+export async function pruneEmptyParents(context: SyncContext, path: string): Promise<void> {
+  for (const folder of ancestors(path)) {
+    if (!inSyncScope(folder, context.state.data.syncFolders)) return;
+    if (context.state.folderByPath(folder) !== undefined) return;
+    if ((await removeFolder(context, folder, await context.host.spelling(folder))) !== "removed") return;
+    context.host.log(`folder path_class=folder decision=removed reason=empty_parent`);
+  }
+}
+
 /**
  * Write a manifest's content into the vault atomically and return the stat
  * of what landed, which becomes the echo-suppression key.
  */
-async function materialise(context: SyncContext, manifest: Manifest): Promise<void> {
+async function materialise(context: SyncContext, manifest: Manifest): Promise<VaultStat> {
   // The single choke point for every byte this device writes: the decoded
   // manifest's path was checked at decode, a conflict copy's derived path is
   // checked here, and neither reaches a writer unchecked.
@@ -328,12 +594,62 @@ async function materialise(context: SyncContext, manifest: Manifest): Promise<vo
   const writer = await context.host.writer(manifest.path);
   try {
     await writeVerified(context, manifest, writer);
-    const stat = await writer.commit(manifest.mtime);
-    context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+    // The commit's own stat, handed back rather than looked up again: it is
+    // the metadata of the bytes THIS write put there, and a second stat would
+    // describe whatever the user saved a moment later instead (finding 2).
+    return await landedAt(context, await writer.commit(manifest.mtime));
   } catch (error) {
     await writer.abort();
     throw error;
   }
+}
+
+/**
+ * What a write left behind, named the way the VAULT spells it.
+ *
+ * NEVER RECORD A SPELLING THE VAULT DOES NOT SHOW (#124). A write names the
+ * path it was ASKED for; on a host that folds case the directory it lands in
+ * may be spelled another way, because creating a directory that is already
+ * there changes nothing and `rename(2)` resolves a destination's directory
+ * components without touching them. A record written from the manifest's path
+ * would then disagree with this device's own listing, and the scan pairs that
+ * difference as a move and publishes a rename the other device never made --
+ * which a device that folds case answers with a conflict copy, so both
+ * devices gain a duplicate of every note created in that folder while the two
+ * spellings disagree (review round 2, finding 3). Tracked notes were already
+ * covered, by the refusal path and by the folder record that carries their
+ * records with the directory; a note this device is MATERIALISING for the
+ * first time was the one writer left unguarded.
+ *
+ * ASKED ONLY WHERE IT CAN DIFFER, because `spelling` is a directory walk and
+ * a phone walks it through the vault adapter. A path with no directory
+ * component has nothing to ask about: a file's own LAST component is never
+ * the difference, since a name whose folded twin is already in the vault is
+ * settled by the same-name rules long before a writer sees it (`competing`).
+ * A folder RECORD at exactly this directory's spelling is a spelling the
+ * VAULT gave: `applyFolder` writes one only after creating that directory, or
+ * after re-casing it and proving the vault shows the new name, and the
+ * startup pass publishes one for every folder the vault has. So the walk
+ * falls to the first file landing in a directory nothing records yet, and a
+ * settled vault pays nothing at all. Nothing is asked either for a version
+ * that changes nothing (the `held` rule), for a rename (the host's own move
+ * answers), or for a record this device only re-stamps.
+ *
+ * THE ECHO KEY IS REGISTERED FOR BOTH SPELLINGS, because which one the vault
+ * reports back is the vault's business: Obsidian's index answers with the
+ * spelling it keeps, and a host that echoes the name it was handed answers
+ * with the other. A mark nothing consumes expires with the next scan cycle
+ * (`engine.ts`, `sweepEchoes`); an unmarked write is published back.
+ */
+async function landedAt(context: SyncContext, stat: VaultStat): Promise<VaultStat> {
+  context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+  const folder = stat.path.slice(0, Math.max(0, stat.path.lastIndexOf("/")));
+  if (folder === "" || context.state.folderByPath(folder) !== undefined) return stat;
+  const shown = await context.host.spelling(stat.path);
+  if (shown === null || shown === stat.path) return stat;
+  context.written.add(`${shown}:${stat.mtime}:${stat.size}`);
+  context.host.log("pull path_class=file decision=recorded reason=vault_spelling");
+  return { ...stat, path: shown };
 }
 
 /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
@@ -368,7 +684,7 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
   if (!context.refused.has(change.file_id)) {
     context.refused.add(change.file_id);
     context.host.notify(
-      `obsync refused a change from another device: it does not name a plain file inside this vault (${reason}). ` +
+      `obsync refused a change from another device: it does not name a file or folder this device can write inside this vault (${reason}). ` +
         `Nothing was written. File id ${change.file_id}.`,
     );
   }
@@ -414,6 +730,333 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
 }
 
 /**
+ * Apply one folder record: the whole of folder sync on the receiving side.
+ *
+ * A create makes the folder (and anything missing above it) and remembers the
+ * record. A tombstone removes the folder, but ONLY when it holds nothing — a
+ * folder still holding a note, an untracked file or another device's ignored
+ * file is kept, and the empty-parent walk that runs when its last file leaves
+ * will take it then — and forgets the record either way. Nothing here fetches,
+ * decrypts or writes a byte of content: a folder record has none.
+ */
+async function applyFolder(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: FolderManifest,
+): Promise<ApplyResult> {
+  const path = manifest.path;
+  // WHAT THIS VAULT SHOWS, ASKED ONCE, because both decisions below turn on
+  // it. A record naming one capitalisation of a selected folder reaches this
+  // function on the string rule's tolerance alone (`syncScope.ts`,
+  // `inFolderCaseScope`), and the tolerance is not an admission: unless the
+  // vault holds a folder this path IS -- one directory entry, two spellings,
+  // which only a host that folds case can answer -- the record names a folder
+  // this device does not sync, and it is refused in the words it has always
+  // been refused in. A host that keeps the two apart answers `null` here.
+  const shown = await context.host.spelling(path);
+  const folded = shown !== null && caseOnly(shown, path);
+  if (!folded) assertFolderScope(path, context.state.data.syncFolders);
+  if (manifest.deleted) {
+    // Removed FIRST, forgotten after. The record is what `pushFolderDelete`
+    // needs to publish a tombstone, so it is still there while the removal
+    // runs and the vault reports it — which is what `trashed` suppresses
+    // (`engine.ts`, ECHOES; issue #96). Forgotten either way: a folder kept
+    // because it still holds something is a folder no device manages now, and
+    // the empty-parent walk is what will take it when it empties.
+    // THE RECORD THIS TOMBSTONE RETIRES, READ BEFORE IT IS FORGOTTEN. A
+    // tombstone that retires this device's own record for a folder it SELECTS
+    // opens the one window in which a folder record one capitalisation off
+    // that folder is this device's own folder under a new name
+    // (`admitFolderRecord`; review round 4, finding 1). Its own record and
+    // its own file id: a tombstone for another folder, or one naming a record
+    // this device does not hold, opens nothing.
+    const retiring = context.state.folderByPath(path);
+    const removed = await removeFolder(context, path, shown);
+    context.state.forgetFolder(path);
+    if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
+      context.state.data.retiredRoots[path] = change.file_id;
+    }
+    await context.state.save();
+    if (removed !== "removed") {
+      // `vault_spelling` said so at the point of decision, with the reason
+      // only that walk knows; this is the one the receiver has always logged.
+      if (removed === "not_empty") {
+        context.host.log(`folder path_class=folder decision=kept reason=not_empty seq=${change.seq}`);
+      }
+      return "skipped";
+    }
+    context.host.log(`folder path_class=folder decision=removed reason=tombstone seq=${change.seq}`);
+    await pruneEmptyParents(context, path);
+    return "deleted";
+  }
+  // A FOLDER RECORD IS THE ONLY THING THAT MAY RE-CASE A DIRECTORY (#124).
+  // The directory this record names may already be here under another
+  // capitalisation -- one entry, two spellings, on every host that folds case
+  // -- and `createFolder` would find it "already a directory" and do nothing,
+  // which is how the two devices ended up spelling one folder two ways and
+  // publishing the difference back and forth forever. A note's own move
+  // cannot repair it: `rename(2)` resolves the directory components of its
+  // destination and leaves their spelling alone. This record can, because a
+  // folder record IS its path.
+  if (folded) return await recaseFolder(context, change, shown as string, path);
+  // Marked before the call, like every other write this device makes: the
+  // vault reports the new folder to this plugin's own create handler while
+  // `createFolder` is still running (`engine.ts`, ECHOES).
+  context.createdFolders.add(path);
+  try {
+    await context.host.createFolder(path);
+  } catch (error) {
+    context.createdFolders.delete(path);
+    if (error instanceof VaultPathError) {
+      // A FILE stands where another device says a folder is. Named here as a
+      // folder decision as well, because `refuse` can only say "manifest".
+      context.host.log(
+        `folder path_class=folder decision=refused reason=${error.refusal} seq=${change.seq}`,
+      );
+    }
+    throw error;
+  }
+  context.state.setFolder(path, { fileId: change.file_id, versionId: change.version_id });
+  await context.state.save();
+  context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
+  return "applied";
+}
+
+/**
+ * Move this device's folder selection with a folder rename it RECEIVED.
+ *
+ * The device that makes a rename moves its own selection with it
+ * (`engine.ts`, `followSelection`); a device that is told about one owes the
+ * same, or it is left selecting a folder its vault no longer shows. Nothing
+ * is saved here: every caller saves the records it moves in the same act, and
+ * a selection persisted without them would be the half-applied state this
+ * whole path exists to avoid.
+ */
+function followSelection(context: SyncContext, from: string, to: string): void {
+  const { state, host } = context;
+  let followed: { folders: string[]; moved: number } | null;
+  try {
+    followed = selectionAfterRename(state.data.syncFolders, from, to);
+  } catch (error) {
+    // A destination this device may not select at all: the selection stays
+    // where it is and says so, exactly as the push side says it.
+    host.log(
+      `scope decision=not_followed reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"} ` +
+        `folders=${movedSelection(state.data.syncFolders, from).length}`,
+    );
+    return;
+  }
+  if (followed === null) return;
+  state.data.syncFolders = followed.folders;
+  host.log(`scope decision=followed_recase folders=${followed.moved} selected=${followed.folders.length}`);
+}
+
+/**
+ * Apply a folder record whose path differs from this vault's own spelling of
+ * it by capitalisation alone: rename the DIRECTORY ENTRY, then move every
+ * record under it with the entry (issue #124).
+ *
+ * WHY THE ENTRY AND NOT THE FILES. On a host that folds case `Team docs` and
+ * `team docs` are one directory, and the per-file move an incoming rename
+ * used to be applied by is a POSIX no-op for it: `rename(2)` resolves the
+ * directory components of its destination and renames only the last one. The
+ * receiving device therefore ended with records spelling a folder one way and
+ * a vault spelling it the other, and the scan's `(mtime, size)` pairing
+ * published that difference as a rename BACK -- one new version per note
+ * every SCAN_MS, on both devices, until the account quota answered 507.
+ *
+ * ORDER, AND WHAT MAKES IT SAFE EITHER WAY. The sender publishes this record
+ * before the moves under it (`main.ts`), so the ordinary course is: the
+ * directory is re-cased here, the records follow it, and each move that
+ * arrives next names a path this device already holds. A move that arrives
+ * FIRST -- from a device older than this version, which publishes no folder
+ * record at all -- changes nothing here and says so (`applyVersion`); it can
+ * never create the bounce, because nothing records a spelling this vault does
+ * not show.
+ *
+ * THE SELECTION FOLLOWS THE FOLDER, exactly as it does on the device that
+ * MAKES the rename (`engine.ts`, `followSelection`). A folder record is
+ * applied at the selection root as well as inside it (`syncScope.ts`), so
+ * the folder this re-cases may BE what this device syncs -- and a selection
+ * left at the spelling the vault no longer shows would put every file under
+ * it out of scope in the same tick, which is a device that has quietly
+ * stopped syncing its own folder (review round 3, finding 1). It is moved
+ * only once the VAULT has confirmed the new spelling, and put back if
+ * anything below refuses, so the selection never names a folder this vault
+ * does not show. `parseSyncFolders` drops a selection that lives under
+ * another, so nothing selected can be strictly under the one this renames.
+ */
+async function recaseFolder(
+  context: SyncContext,
+  change: ChangeRecord,
+  from: string,
+  to: string,
+): Promise<ApplyResult> {
+  const prefix = `${from}/`;
+  const under = (path: string): string => to + path.slice(from.length);
+  const files = Object.keys(context.state.data.files).filter((path) => path.startsWith(prefix));
+  const folders = Object.keys(context.state.data.folders)
+    .filter((path) => path === from || path.startsWith(prefix));
+  // Marked BEFORE the rename, like every other write this device makes. A
+  // folder rename is reported ONCE, for the folder, and this plugin fans that
+  // one event out into a move of every file beneath it and a
+  // tombstone-and-create of every folder record beneath it (`main.ts`).
+  // Unmarked, this device publishes the peer's own rename straight back at it
+  // (`engine.ts`, ECHOES; issue #96).
+  const echoes = files.map((path) => `${path}\u0000${under(path)}`);
+  for (const echo of echoes) context.moved.add(echo);
+  for (const folder of folders) {
+    context.trashed.add(folder);
+    context.createdFolders.add(under(folder));
+  }
+  const unmark = (): void => {
+    for (const echo of echoes) context.moved.delete(echo);
+    for (const folder of folders) {
+      context.trashed.delete(folder);
+      context.createdFolders.delete(under(folder));
+    }
+  };
+  const outcome = await context.host.moveFolder(from, to).catch((error: unknown) => {
+    unmark();
+    throw error;
+  });
+  // ASKED, NEVER ASSUMED. A host that answered `moved` for a rename that left
+  // the directory spelled the way it was would have this device write records
+  // its own listing contradicts -- which is the livelock, one layer up. The
+  // vault says what it shows, and nothing is recorded until it says this.
+  if (outcome !== "moved" || (await context.host.spelling(to)) !== to) {
+    unmark();
+    context.host.log(
+      `folder path_class=folder decision=case_refused ` +
+        `reason=${outcome === "moved" ? "not_respelled" : outcome} seq=${change.seq}`,
+    );
+    return "refused";
+  }
+  // THE SELECTION FOLLOWS THE ENTRY TOO, and only now: until the vault
+  // answered, a selection moved forward would have named a folder this vault
+  // does not show. After it, a selection left behind is what would -- and
+  // every file under it would leave the scope in the same tick, on a device
+  // whose own folder just changed its capitalisation (review round 3,
+  // finding 1). Nothing else in the selection moves: `parseSyncFolders` drops
+  // a selected folder that lives under another.
+  followSelection(context, from, to);
+  // THE RECORDS FOLLOW THE ENTRY, ALL OF THEM, BEFORE ANY CHILD WORK. What
+  // moved is the directory, so every path beneath it moved with it; a record
+  // left at the old spelling is one the next scan reads as a deletion of a
+  // live note.
+  for (const path of files) {
+    const record = context.state.fileByPath(path);
+    if (record === undefined) continue;
+    context.state.setFile(under(path), record);
+    context.state.forgetPath(path);
+  }
+  for (const folder of folders) {
+    const record = context.state.folderByPath(folder);
+    if (record === undefined) continue;
+    context.state.setFolder(under(folder), record);
+    context.state.forgetFolder(folder);
+  }
+  context.state.setFolder(to, { fileId: change.file_id, versionId: change.version_id });
+  await context.state.save();
+  context.host.log(
+    `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,
+  );
+  await refetchCarried(context, files.map(under), change.seq);
+  return "applied";
+}
+
+/**
+ * The heads that were refused while the two spellings disagreed.
+ *
+ * A version naming the new spelling that arrived BEFORE this folder record --
+ * a move that lost the race on the sender's own queue, or an edit made on a
+ * device that publishes no folder record at all -- was refused
+ * (`case_move_refused reason=folder_case`), and the feed advanced past it.
+ * Nothing re-delivers it: this device holds the version it had when the
+ * disagreement began, the server holds the newer one, and only the NEXT edit
+ * of that note would bring it down. So "update that device and the two agree
+ * again" was true of the folder's spelling and not of its notes
+ * (`CHANGELOG.md`, `docs/troubleshooting.md`; review round 2, findings 2
+ * and 4).
+ *
+ * Now that the directory and the records agree, each carried record's head is
+ * asked for once and applied through the ordinary path, which fetches nothing
+ * for a version this device already holds (the `held` rule) and merges,
+ * renames or downloads exactly as the feed would have. ONE `getFile` PER
+ * CARRIED RECORD, bounded by the folder that was re-cased and not by the
+ * vault; a folder holding nothing costs nothing. A failure here is logged and
+ * dropped rather than raised: the re-case itself has already succeeded and is
+ * saved, and the feed must not be wedged by a request that can be made again
+ * at the next one.
+ *
+ * IT IS LONG-RUNNING WORK, so it says what it is about to do and what it is
+ * measured against before it starts, and sums up afterwards (requirement 12):
+ * one fetch per carried record is the budget, and the records are the folder
+ * the re-case carried.
+ */
+async function refetchCarried(context: SyncContext, paths: string[], seq: number): Promise<void> {
+  const started = context.now();
+  let applied = 0;
+  let failed = 0;
+  context.host.log(
+    `folder path_class=folder decision=start reason=heads_refetch budget_records=${paths.length} ` +
+      `budget_fetches=${paths.length} seq=${seq}`,
+  );
+  for (const path of paths) {
+    const record = context.state.fileByPath(path);
+    if (record === undefined) continue;
+    try {
+      const file = await context.transport.getFile(record.fileId);
+      for (const head of file.heads) {
+        const current = context.state.fileByPath(path)?.versionId;
+        if (head === current) continue;
+        const version = file.versions.find((candidate) => candidate.version_id === head);
+        if (version === undefined) continue;
+        // A version record names neither its file nor its domain: the server
+        // renders both on the file object (`engine.ts`, `reconcileFile`).
+        await applyChange(context, {
+          ...version,
+          file_id: record.fileId,
+          domain_id: file.domain_id,
+          seq: context.state.data.lastSeq,
+          heads: file.heads,
+          conflicted: file.heads.length > 1,
+        });
+        applied++;
+      }
+    } catch (error) {
+      failed++;
+      context.host.log(
+        `folder path_class=file decision=head_not_refetched reason=${refetchRefusal(error)} seq=${seq}`,
+      );
+    }
+  }
+  context.host.log(
+    `folder path_class=folder decision=heads_refetched records=${paths.length} applied=${applied} ` +
+      `failed=${failed} seq=${seq} duration_ms=${context.now() - started}`,
+  );
+}
+
+/**
+ * One word for why a head could not be re-fetched, from a FIXED vocabulary.
+ *
+ * A structured line carries decisions, not prose: an error's own message is
+ * written by whatever raised it -- a server's error body among them -- and
+ * pasting it into a log line puts text this device did not choose into a
+ * field readers parse (requirement 12). The class of the failure and, for a
+ * request, the status the transport itself read are what a reader needs.
+ */
+function refetchRefusal(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.code === "unreachable") return "unreachable";
+    return error.status === 0 ? "not_ready" : `http_${error.status}`;
+  }
+  if (error instanceof ManifestError) return `manifest_${error.reason}`;
+  if (error instanceof VaultPathError) return error.refusal;
+  return "failed";
+}
+
+/**
  * Why the file at `path` is not this version's to replace, or `null`.
  *
  * A pull may overwrite a local file only when it still carries the size and
@@ -444,9 +1087,50 @@ async function competing(
   return null;
 }
 
+/**
+ * A deletion this device declined to apply, said once per file. The note is
+ * still there and still the user's, and the next push carries it back to the
+ * other devices, so the message says what happened rather than what failed.
+ */
+function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string): void {
+  if (context.refused.has(change.file_id)) return;
+  context.refused.add(change.file_id);
+  context.host.notify(
+    `obsync did not delete ${path}: it holds changes this device has not uploaded yet. ` +
+      `Another device deleted that note; this copy is kept here and is uploaded as a new version.`,
+  );
+}
+
+/**
+ * A folder another device spells differently, said once per folder.
+ *
+ * Nothing here failed and nothing was written: the two devices disagree about
+ * the capitalisation of a directory, and this one will not re-case a
+ * directory on the strength of a note's version -- only a folder record does
+ * that, and a device older than 1.1.0 publishes none. The message says what
+ * the user can do, because only they can: update the other device, or rename
+ * the folder here. Keyed by the FOLDER and not by the file id `refused`
+ * otherwise holds, so a folder of two hundred notes is one notice and not two
+ * hundred; a vault path and a file id cannot collide.
+ */
+function notifyFolderCase(context: SyncContext, folder: string): void {
+  if (context.refused.has(folder)) return;
+  context.refused.add(folder);
+  context.host.notify(
+    `obsync: another device spells the folder "${folder}" with different capitalisation than this one shows. ` +
+      "Notes under it are kept where they are; nothing was written, moved or deleted here. Update every device " +
+      "to this version and let each sync once, or rename the folder here to match -- see Troubleshooting, " +
+      '"Two folders that differ only in capitalisation".',
+  );
+}
+
 async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
-  const manifest = await decryptRecordManifest(context, change);
-  const localPath = context.state.pathByFileId(change.file_id);
+  const entry = await decodeRecordManifest(context, change);
+  if (entry.v === 2) return await applyFolder(context, change, entry);
+  const manifest = entry;
+  // `let`, because a case-only move renames the entry and then continues
+  // down the ordinary path under the new spelling (issue #124).
+  let localPath = context.state.pathByFileId(change.file_id);
   // A remembered source can be outside the new scope even when the remote
   // destination is inside it. Refuse before a delete, conflict read or write.
   if (localPath !== undefined) assertSyncPath(localPath, context.state.data.syncFolders);
@@ -454,15 +1138,119 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
 
   if (manifest.deleted) {
     if (localPath !== undefined) {
+      // THE HALF THE SERVER CANNOT SEE, one branch over (issue #98). A
+      // deletion is the change that leaves nothing behind, and the file at
+      // this path may hold bytes no version holds: typed while Obsidian was
+      // closed, or while this folder was outside the selection -- which a
+      // widening replays the whole feed against, tombstones included. The
+      // server's frame says the file was deleted THERE; it says nothing
+      // about what this device has written here since. Delete-versus-edit
+      // keeps BOTH sides (`docs/architecture.md`, section 4), so the file is
+      // proved against the record before anything is removed, and the record
+      // is left in place so the push republishes those bytes as a version of
+      // their own.
+      //
+      // And the graph is asked first, exactly as it is for a version that is
+      // not this device's child: a tombstone whose parents do not include the
+      // version this device holds is one side of a FORK, not an instruction.
+      // A widening replays the feed from zero, so a deletion this device
+      // already applied -- or one another device made before this device
+      // published the edit that came after it -- arrives again, years of
+      // journal later, against a file that has moved on.
+      if (local !== undefined && local.versionId !== "" && !change.parents.includes(local.versionId)) {
+        const file = await context.transport.getFile(change.file_id);
+        if (reaches(file.versions, local.versionId, change.version_id)) {
+          context.host.log(
+            `pull path_class=tombstone decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,
+          );
+          return "skipped";
+        }
+        if (!reaches(file.versions, change.version_id, local.versionId)) {
+          context.host.log(
+            `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
+          );
+          notifyKeptDeletion(context, change, localPath);
+          return "skipped";
+        }
+      }
+      // A TOMBSTONE IS A STATEMENT ABOUT BYTES THE SERVER HAS (issue #106).
+      // Bytes this device never pushed are bytes no version holds, so moving
+      // them to the trash here is the one loss no history can undo, and the
+      // user is told nothing -- on mobile the system trash is barely
+      // reachable. `competing` is the same question the content branch asks
+      // (issue #98): does the file at this path still hold what this device
+      // put there? When it does not, the local file is kept and published as
+      // a new version of the SAME file id, which brings the note back on
+      // every device. That is delete-versus-edit keeping both, which
+      // `docs/architecture.md` 6.2 item 4 already promises.
+      //
+      // THE FORK GUARD ABOVE DOES NOT REVIVE, and that is not an oversight:
+      // it fires only while `local.versionId` is a published version, so the
+      // bytes it keeps are already on the server and a second publication
+      // would add a version that says nothing new. This branch is the one
+      // that holds bytes no version holds.
+      const held = await competing(context, localPath, change.file_id);
+      if (held !== null) {
+        const started = context.now();
+        const revived = await pushFile(context, localPath, true);
+        if (revived.status === "pushed") context.authored.add(revived.versionId);
+        context.host.log(
+          `pull path_class=tombstone decision=local_edit_kept reason=${held} published=${revived.status} ` +
+            `file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started}`,
+        );
+        if (revived.status === "pushed") {
+          context.host.notify(
+            `obsync: "${localPath}" was deleted on another device after this one changed it. ` +
+              "The copy here was kept and published again, so it is back on every device.",
+          );
+        } else {
+          // The revive did not reach the server: offline, refused, or out of
+          // budget. The bytes are still here and still unpublished, so the
+          // user is told the weaker thing that is true, and the next push is
+          // what carries them.
+          notifyKeptDeletion(context, change, localPath);
+        }
+        return "skipped";
+      }
       // Marked BEFORE the trash, not after: Obsidian reports the removal to
       // this plugin's own delete handler while `trash` is still running, and
       // an unmarked echo becomes a tombstone this device publishes for a file
       // the remote side already owns (`engine.ts`, ECHOES; issue #96).
       context.trashed.add(localPath);
-      await context.host.trash(localPath);
+      // And the removal names the bytes it removes, on a host that can bind
+      // one: the check above is a stat, and a save landing between it and
+      // the deletion is exactly what the bound removal exists for.
+      const verdict = await context.host.trash(
+        localPath,
+        context.host.bindsRemoval === true && local !== undefined
+          ? { path: localPath, mtime: local.mtime, size: local.size }
+          : undefined,
+      );
+      if (verdict === "kept") {
+        // The host found other bytes there and left them. Nothing was
+        // removed, so no delete event is owed and the record stays: the push
+        // carries what is on the disk.
+        context.trashed.delete(localPath);
+        context.host.log(
+          `pull path_class=tombstone decision=local_edit_kept reason=source_changed_in_trash file=${change.file_id} seq=${change.seq}`,
+        );
+        return "skipped";
+      }
+      if (verdict === "unheld") {
+        // The host cannot bind a removal after all -- a filesystem that
+        // refuses `link`, or refuses the atomic move. Refusing here would
+        // drop this deletion for good, because the feed advances past it, so
+        // the device falls back to the unbound removal and the stat above is
+        // what it could prove. That residual is named in the changelog.
+        context.host.log(
+          `pull path_class=tombstone decision=deleted reason=unheld file=${change.file_id} seq=${change.seq}`,
+        );
+        await context.host.trash(localPath);
+      }
       context.state.forgetPath(localPath);
       await context.state.save();
       context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}`);
+      await pruneEmptyParents(context, localPath);
       return "deleted";
     }
     delete context.state.data.remoteOnly[change.file_id];
@@ -473,10 +1261,34 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
 
   const admission = admit(context.state.data.policy, context.state.localBytes(), manifest.size);
   if (!admission.ok) {
+    const started = context.now();
+    // AN OLDER LOCAL COPY IS NOT A SECOND TRUTH (issue #100). The file's
+    // current version is one this device will not hold, so any copy still on
+    // disk is behind it with nothing on screen saying so: the file explorer
+    // lists a file that looks synced while "Show remote-only files" lists the
+    // same path as absent, and one touch of that copy publishes a version
+    // whose parent is not the latest -- which is a conflict copy of stale
+    // content on every other device. Remote-only means remote-only, and Fetch
+    // is the way back. The one copy that is NOT this decision's to remove is
+    // one holding bytes this device never pushed, because no version holds
+    // them (`competing`, issue #98); that copy stays and its queued push
+    // carries it.
+    let local = "none";
+    if (localPath !== undefined && (await context.host.stat(localPath)) !== null) {
+      const held = await competing(context, localPath, change.file_id);
+      if (held !== null) local = `kept_${held}`;
+      else {
+        context.trashed.add(localPath);
+        await context.host.trash(localPath);
+        context.state.forgetPath(localPath);
+        local = "trashed";
+      }
+    }
     context.state.data.remoteOnly[change.file_id] = { path: manifest.path, size: manifest.size };
     await context.state.save();
     context.host.log(
-      `pull path_class=file bytes=${manifest.size} decision=remote_only reason=${admission.reason} seq=${change.seq}`,
+      `pull path_class=file bytes=${manifest.size} decision=remote_only reason=${admission.reason} ` +
+        `local=${local} seq=${change.seq} duration_ms=${context.now() - started}`,
     );
     return "remote_only";
   }
@@ -502,6 +1314,95 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
     }
   }
 
+  // A MOVE THAT CHANGES ONLY CASE IS ONE RENAME, NOT A WRITE AND A REMOVAL.
+  // On a host that folds case the two spellings are ONE entry, so the write
+  // below would land in the file this device already has -- leaving the
+  // directory spelling the old way -- and the removal that follows a move
+  // would then take that very file, the note gone with it. The same host
+  // answers `competing` for the destination with the SOURCE's own file,
+  // which no record explains under the new spelling, so the move also
+  // arrives at the same-name rule as a collision and is settled at the old
+  // name for good (issue #124). Renaming the entry first is the operation
+  // both host models share: the host refuses if a DIFFERENT file wears the
+  // destination's exact name, and that refusal is the real collision, which
+  // falls through to the rule below untouched.
+  //
+  // AND A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE. Where the difference
+  // lies in a directory component, this rename is a POSIX no-op that answers
+  // `moved`: `rename(2)` resolves the destination's directories and renames
+  // only its last component, so the entry keeps the spelling it had. A device
+  // that recorded the new spelling anyway would hold a record its own listing
+  // contradicts, and the scan's `(mtime, size)` pairing publishes that
+  // difference as a rename BACK -- one version per note every SCAN_MS, on
+  // both devices, for as long as both run. The folder record is what re-cases
+  // a directory (`recaseFolder`) and the sender publishes it first
+  // (`main.ts`); this asks the vault what it shows, applies the move when the
+  // vault has already made it, and otherwise changes NOTHING and says so.
+  const folderOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  if (localPath !== undefined && caseOnly(localPath, manifest.path)) {
+    // TWO QUESTIONS, ASKED OF THE VAULT ITSELF. What does it show for the
+    // name this device holds, and what for the name the version wants? A host
+    // that keeps the two spellings apart answers `null` for a name nothing
+    // wears, and the rename below makes the move exactly as it did before.
+    const differ = folderOf(localPath) !== folderOf(manifest.path);
+    const shownSource = differ ? await context.host.spelling(localPath) : null;
+    const shownTarget = differ ? await context.host.spelling(manifest.path) : null;
+    if (shownSource === manifest.path) {
+      // ONE ENTRY, ALREADY SPELLED THE NEW WAY: the name this device holds
+      // and the name this version wants are the same directory entry, so the
+      // move has already happened -- the folder record made it -- and only
+      // the record is behind. Asked of the vault, never assumed from the
+      // folder record having run first.
+      const record = context.state.fileByPath(localPath);
+      if (record !== undefined) {
+        context.state.setFile(manifest.path, record);
+        context.state.forgetPath(localPath);
+        await context.state.save();
+      }
+      context.host.log(
+        `pull path_class=file decision=case_move_satisfied file=${change.file_id} seq=${change.seq}`,
+      );
+      localPath = manifest.path;
+    } else if (shownTarget !== null && shownTarget !== manifest.path) {
+      // The vault answers for the name this version wants with a DIFFERENT
+      // spelling of it, which is a host that folds case and a directory this
+      // record may not re-case. Nothing is moved and nothing is recorded.
+      context.host.log(
+        `pull path_class=file decision=case_move_refused reason=folder_case file=${change.file_id} seq=${change.seq}`,
+      );
+      notifyFolderCase(context, folderOf(manifest.path));
+      return "refused";
+    }
+  }
+  if (localPath !== undefined && caseOnly(localPath, manifest.path)) {
+    // Marked BEFORE the rename, not after it: the vault reports the rename
+    // to this plugin's own handler while `move` is still running, and an
+    // unmarked echo is published as a move of this device's own -- which the
+    // device that made it then applies back (`engine.ts`, ECHOES; #96).
+    const echo = `${localPath}\u0000${manifest.path}`;
+    context.moved.add(echo);
+    const outcome = await context.host.move(localPath, manifest.path).catch((error: unknown) => {
+      context.moved.delete(echo);
+      throw error;
+    });
+    context.host.log(
+      `pull path_class=file decision=case_move_${outcome} file=${change.file_id} seq=${change.seq}`,
+    );
+    if (outcome !== "moved") context.moved.delete(echo);
+    if (outcome === "moved") {
+      const record = context.state.fileByPath(localPath);
+      if (record !== undefined) {
+        context.state.setFile(manifest.path, record);
+        context.state.forgetPath(localPath);
+      }
+      // Saved before the write, not after it: a record left at the old
+      // spelling while the entry wears the new one is what the next startup
+      // scan would read as a deletion of a live note.
+      await context.state.save();
+      localPath = manifest.path;
+    }
+  }
+
   // The half the server cannot see. It flags `conflicted` only for a version
   // whose parents are not its file's heads, and a device that was closed while
   // another wrote posts nothing, so the incoming version arrives as an honest
@@ -510,37 +1411,168 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
   // and the push already queued for that path would then find the record and
   // the file agreeing and send nothing, which is how the edit left no trace
   // anywhere (issue #98). The move's trash half is the same loss one path over.
-  const held =
-    (await competing(context, manifest.path, change.file_id)) ??
-    (localPath !== undefined && localPath !== manifest.path
+  const atTarget = await competing(context, manifest.path, change.file_id);
+  const atSource =
+    localPath !== undefined && localPath !== manifest.path
       ? await competing(context, localPath, change.file_id)
-      : null);
+      : null;
+  const held = atTarget ?? atSource;
   if (held !== null) {
     context.host.log(
       `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=${held} file=${change.file_id} seq=${change.seq}`,
     );
-    return await keepBoth(context, change, manifest);
+    // Another NOTE at the destination is not an edit at all: it is two notes
+    // wearing one name, and it is settled by rule rather than kept apart
+    // forever (issue #113). Only the DESTINATION is settled that way. The
+    // source is not touched by any answer the rule gives: vacating the
+    // destination (`null` below, then the move's trash half) is reachable
+    // only when this device does not track this file id at all, and when it
+    // does, the rule hands the version to `updateSettled`, which re-checks
+    // that source before writing a byte. Trashing a source that holds an
+    // unpushed edit is the loss issue #98 is about.
+    if (atTarget === "other_file" || atTarget === "no_record") {
+      const decided = await sameNameTiebreak(context, change, manifest, atTarget);
+      if (decided !== null) return decided;
+    } else {
+      return await keepBoth(context, change, manifest);
+    }
+  }
+
+  // NOTHING MOVED AND NOTHING CHANGED, SO NOTHING IS FETCHED (issue #108).
+  // A version that names the path this device already holds, carrying the
+  // content this device already holds, is a version this device already has.
+  // A case-only rename arrives exactly like that -- the rename above has just
+  // put the entry at this very path, and a folder record that re-cased a
+  // directory brought its records with it -- and the changelog's promise for
+  // a rename is that nothing is downloaded. Without this, `materialise` below
+  // fetched a chunk and rewrote the whole note for a rename that changed no
+  // byte: a 900 MB note is 900 MB over the phone's data for a name, and the
+  // writer it goes through is the one window in which a save made here is
+  // lost. THE PROOFS ARE THE RENAME SHORTCUT'S, minus the move: `held` is
+  // null, so the file at this path still carries the `(mtime, size)` this
+  // device recorded for THIS file id, and the record's `sha256` is the digest
+  // `recordAt` wrote from the version's own sids. A version carrying any
+  // other content falls through to the download below.
+  if (
+    localPath === manifest.path &&
+    held === null &&
+    local !== undefined &&
+    local.size === manifest.size &&
+    local.sha256 === (await sidDigest(change.sids))
+  ) {
+    const landed = (await context.host.stat(manifest.path)) ??
+      { path: manifest.path, mtime: local.mtime, size: local.size };
+    await recordAt(context, change, manifest.path, landed);
+    context.host.log(
+      `pull path_class=file bytes=${manifest.size} decision=held file=${change.file_id} seq=${change.seq}`,
+    );
+    return "applied";
+  }
+
+  // A REMOTE RENAME IS A RENAME HERE TOO (issue #108, owner ruling
+  // 2026-09-22). Applying one as a write at the new name and a removal of the
+  // old left a full copy of every renamed note in the receiving device's
+  // system trash -- on mobile, somewhere the user can barely reach -- and
+  // re-downloaded bytes the device already had. When the source still holds
+  // exactly the content this version carries, the host's own atomic rename IS
+  // the whole operation: no download, nothing trashed, the file id unchanged.
+  //
+  // WHAT MAKES IT SAFE was proved above, not added here. `held` is null, so
+  // the file at the source still carries the `(mtime, size)` this device
+  // recorded for THIS file id, and nothing else wears the destination's name.
+  // The content test is the record's own `sha256`, which `recordAt` writes as
+  // the digest of the version's sids -- so this asks that same question
+  // backwards, and a version with any other content falls through to the
+  // download below.
+  //
+  // THE FALLBACK IS NOT A SECOND PATH. `occupied` and `missing` fall through
+  // to the write-and-trash below exactly as before, which is also what this
+  // code did for every rename until now; the tests in
+  // `plugin/test/rename.test.mjs` name the trash, so a mutant that forces
+  // that fallback for every rename dies there rather than passing quietly.
+  if (
+    localPath !== undefined &&
+    localPath !== manifest.path &&
+    held === null &&
+    local !== undefined &&
+    local.size === manifest.size &&
+    local.sha256 === (await sidDigest(change.sids))
+  ) {
+    // The destination is about to be handed to the host, so it is checked
+    // here for the same reason `materialise` checks it: nothing reaches a
+    // vault operation unchecked.
+    assertVaultPath(manifest.path);
+    // Marked BEFORE the rename: the vault reports it to this plugin's own
+    // handler while `move` is still running, and an unmarked echo is
+    // published as a move of this device's own (`engine.ts`, ECHOES; #96).
+    const echo = `${localPath}\u0000${manifest.path}`;
+    context.moved.add(echo);
+    const outcome = await context.host.move(localPath, manifest.path).catch((error: unknown) => {
+      context.moved.delete(echo);
+      throw error;
+    });
+    if (outcome !== "moved") context.moved.delete(echo);
+    if (outcome === "moved") {
+      // A rename preserves both dimensions, so what the source was PROVED to
+      // hold is what the destination holds; the host's own stat is preferred
+      // where it gives one, and a host that cannot stat does not lose the
+      // record.
+      const landed = (await context.host.stat(manifest.path)) ??
+        { path: manifest.path, mtime: local.mtime, size: local.size };
+      const from = localPath;
+      context.state.forgetPath(from);
+      await recordAt(context, change, manifest.path, landed);
+      // The folder the file moved OUT of may now be empty: the same rule and
+      // the same walk as the removal branch below.
+      await pruneEmptyParents(context, from);
+      context.host.log(
+        `pull path_class=file bytes=${manifest.size} decision=renamed file=${change.file_id} seq=${change.seq}`,
+      );
+      return "applied";
+    }
+    // No path in the line: a name is vault content (requirement 6), so the
+    // issue's suggested `from=`/`to=` fields are deliberately not written.
+    context.host.log(
+      `pull path_class=file decision=rename_fallback reason=${outcome} file=${change.file_id} seq=${change.seq}`,
+    );
   }
 
   const started = context.now();
-  await materialise(context, manifest);
+  const landed = await materialise(context, manifest);
   if (localPath !== undefined && localPath !== manifest.path) {
     // The move's delete half. The same echo, and the one that cost a renamed
     // note on every device before 1.0.4: here the file is not deleted at all,
-    // it is the SAME file id, alive at `manifest.path`.
+    // it is the SAME file id, alive at `manifest.path`. The source was proved
+    // against its record above, and the removal names those bytes too, so a
+    // save landing between the two is kept rather than taken.
     context.trashed.add(localPath);
-    await context.host.trash(localPath);
+    const verdict = await context.host.trash(
+      localPath,
+      context.host.bindsRemoval === true && local !== undefined
+        ? { path: localPath, mtime: local.mtime, size: local.size }
+        : undefined,
+    );
+    if (verdict === "kept") {
+      // Those bytes are in no version: they stay under the old name as local
+      // content, and the scan publishes them as a file of their own.
+      context.trashed.delete(localPath);
+      context.host.log(
+        `pull path_class=file decision=local_edit_kept reason=source_changed_in_trash file=${change.file_id} seq=${change.seq}`,
+      );
+    } else if (verdict === "unheld") {
+      // A host that cannot bind one removes the old name the way every
+      // device did before 1.0.7, rather than leaving a renamed note under
+      // two names for good.
+      await context.host.trash(localPath);
+    }
     context.state.forgetPath(localPath);
+    // The folder the file moved OUT of may now be empty. Same rule as a
+    // deletion, and the same walk.
+    await pruneEmptyParents(context, localPath);
   }
-  const stat = await context.host.stat(manifest.path);
-  context.state.setFile(manifest.path, {
-    fileId: change.file_id,
-    versionId: change.version_id,
-    mtime: stat?.mtime ?? manifest.mtime,
-    size: stat?.size ?? manifest.size,
-    sha256: await sidDigest(change.sids),
-  });
-  await context.state.save();
+  // `landed.path`, never `manifest.path`: what the vault shows for the file
+  // this write put there (`landedAt`, review round 2, finding 3).
+  await recordAt(context, change, landed.path, landed);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} chunks=${manifest.chunks.length} decision=applied seq=${change.seq} duration_ms=${context.now() - started}`,
   );
@@ -565,9 +1597,11 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
     file_id: fileId,
     domain_id: file.domain_id,
   });
-  await materialise(context, manifest);
-  const stat = await context.host.stat(manifest.path);
-  context.state.setFile(manifest.path, {
+  const written = await materialise(context, manifest);
+  const stat = await context.host.stat(written.path);
+  // The vault's own spelling of what was written, exactly as every other
+  // record this device writes for a file it materialised (`landedAt`).
+  context.state.setFile(written.path, {
     fileId,
     versionId: head.version_id,
     mtime: stat?.mtime ?? manifest.mtime,
@@ -576,7 +1610,7 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   });
   await context.state.save();
   context.host.log(`pull path_class=file bytes=${manifest.size} decision=fetched_on_demand`);
-  return manifest.path;
+  return written.path;
 }
 
 /** A version graph, as `GET /v1/files/{id}` renders it. */
@@ -851,22 +1885,34 @@ const CONFLICT_COPY_NAMES = 20;
  * this way: it takes the next name instead, which costs a duplicate copy and
  * never a missing one. Reading is bounded by the same single-chunk rule the
  * merge inputs obey, and a file that cannot be read proves nothing.
+ *
+ * IT RETURNS THE METADATA THE PROOF IS ABOUT. The answer is used to RECORD
+ * the file as this version, and a record is a statement that the file is that
+ * version and that nothing has happened to it since -- the sentence the pull
+ * path reads before it writes over a file. A save that lands between the stat
+ * and the read replaces the bytes the digest proved, so the file is stat-ed
+ * again afterwards and a stat that moved proves nothing at all (review round
+ * 2, finding 2). What comes back is the metadata of the bytes that were
+ * actually verified, and nothing else may be recorded against this version.
  */
 async function alreadyCopied(
   context: SyncContext,
   manifest: Manifest,
   path: string,
   occupant: VaultStat,
-): Promise<boolean> {
-  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return false;
-  if (occupant.size !== manifest.size) return false;
+): Promise<VaultStat | null> {
+  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return null;
+  if (occupant.size !== manifest.size) return null;
   let bytes: Bytes;
   try {
     bytes = await context.host.read(path);
   } catch {
-    return false;
+    return null;
   }
-  return hex(await sha256(bytes)) === manifest.sha256;
+  if (hex(await sha256(bytes)) !== manifest.sha256) return null;
+  const after = await context.host.stat(path);
+  if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+  return after;
 }
 
 /**
@@ -901,36 +1947,53 @@ async function alreadyCopied(
  * that fails is logged rather than turned into a failure of a copy the user
  * already has.
  */
-async function writeCopy(
+/**
+ * Write beside whatever is at `path`, under the first derived name nothing
+ * holds, without ever replacing anything.
+ *
+ * TWO CALLERS, AND THE DIFFERENCE BETWEEN THEM IS THE TIE-BREAK. The pull side
+ * writes another device's version as a copy and suppresses the vault event
+ * that causes, because that copy is not this device's to publish. The
+ * tie-break side writes this device's OWN file aside and deliberately does not
+ * suppress it, because that move is exactly what this device publishes. What
+ * they share -- the create-only publication, the next name on a collision, the
+ * cleanup on both outcomes, and the rule that only a failure with nothing at
+ * the name is a real error -- lives here once. It took two review rounds to
+ * get right and must not exist twice.
+ */
+async function writeBeside(
   context: SyncContext,
-  manifest: Manifest,
+  path: string,
   deviceName: string,
   when: Date,
-): Promise<{ path: string; attempt: number } | null> {
+  size: number,
+  mtime: number,
+  fill: (writer: VaultWriter, target: string) => Promise<void>,
+  reuse: (target: string, occupant: VaultStat) => Promise<VaultStat | null>,
+): Promise<{ path: string; attempt: number; stat: VaultStat; written: boolean } | null> {
   for (let attempt = 1; attempt <= CONFLICT_COPY_NAMES; attempt++) {
-    const path = conflictCopyPath(manifest.path, deviceName, when, attempt);
-    assertVaultPath(path);
-    const occupant = await context.host.stat(path);
+    const target = conflictCopyPath(path, deviceName, when, attempt);
+    assertVaultPath(target);
+    const occupant = await context.host.stat(target);
     if (occupant !== null) {
-      if (await alreadyCopied(context, manifest, path, occupant)) {
-        context.host.log(
-          `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${attempt}`,
-        );
-        return { path, attempt };
-      }
+      // A name already holding this version is answered with the metadata of
+      // the bytes that PROVED it, not with a fresh look at the file: what the
+      // caller records has to be true of what was verified (finding 2).
+      const reused = await reuse(target, occupant);
+      if (reused !== null) return { path: target, attempt, stat: reused, written: false };
       continue;
     }
     let writer: VaultWriter;
     try {
-      writer = await context.host.createWriter(path, manifest.size, () => undefined);
+      writer = await context.host.createWriter(target, size, () => undefined);
     } catch (error) {
-      if ((await context.host.stat(path)) === null) throw error;
+      if ((await context.host.stat(target)) === null) throw error;
       continue;
     }
     let outcome: { stat: VaultStat } | { failure: unknown };
     try {
-      await writeVerified(context, { ...manifest, path }, writer);
-      outcome = { stat: await writer.commit(manifest.mtime) };
+      await fill(writer, target);
+      outcome = { stat: await writer.commit(mtime) };
     } catch (error) {
       outcome = { failure: error };
     }
@@ -946,13 +2009,527 @@ async function writeCopy(
         `pull decision=copy_temp_not_removed published=${"stat" in outcome} name_attempt=${attempt}`,
       );
     }
-    if ("stat" in outcome) {
-      context.written.add(`${outcome.stat.path}:${outcome.stat.mtime}:${outcome.stat.size}`);
-      return { path: outcome.stat.path, attempt };
-    }
-    if ((await context.host.stat(path)) === null) throw outcome.failure;
+    if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat, written: true };
+    if ((await context.host.stat(target)) === null) throw outcome.failure;
   }
   return null;
+}
+
+/**
+ * The foreign version, written as a copy beside the local file. The write is
+ * echo-suppressed: this device did not author that content and must not
+ * publish it back as a file of its own.
+ */
+async function writeCopy(
+  context: SyncContext,
+  manifest: Manifest,
+  deviceName: string,
+  when: Date,
+): Promise<{ path: string; attempt: number; stat: VaultStat } | null> {
+  const beside = await writeBeside(
+    context, manifest.path, deviceName, when, manifest.size, manifest.mtime,
+    (writer, target) => writeVerified(context, { ...manifest, path: target }, writer),
+    (target, occupant) => alreadyCopied(context, manifest, target, occupant),
+  );
+  if (beside === null) return null;
+  if (!beside.written) {
+    context.host.log(
+      `pull decision=conflict_copy_present bytes=${manifest.size} name_attempt=${beside.attempt}`,
+    );
+    return { path: beside.path, attempt: beside.attempt, stat: beside.stat };
+  }
+  // The same rule as any other write of this device's: the copy is recorded
+  // under the name the vault shows for it, not the one it was asked for.
+  const stat = await landedAt(context, beside.stat);
+  return { path: stat.path, attempt: beside.attempt, stat };
+}
+
+/**
+ * A local file's bytes into a writer, one bounded window at a time.
+ *
+ * NEVER `host.read`, which allocates the file's whole size on desktop and is
+ * why a note larger than this device's memory could not be moved at all
+ * (review round 2, finding 4). `CHUNK_MAX` is the push path's own window, so
+ * the two paths cost the same and neither is bounded by the file.
+ *
+ * The walk advances by the window it ASKED for, not by the bytes it got, so
+ * it terminates whatever the vault hands back. A file that ends early while it
+ * is being rewritten therefore delivers fewer bytes than its declared size,
+ * and the create-only writer's byte budget refuses that copy rather than
+ * publishing a torn one; `moveAside` turns that refusal into its own.
+ */
+async function copyThrough(
+  context: SyncContext,
+  from: string,
+  size: number,
+  writer: VaultWriter,
+): Promise<void> {
+  const source = context.host.source(from, size);
+  for (let at = 0; at < size; at += CHUNK_MAX) {
+    await writer.write(await source.read(at, Math.min(CHUNK_MAX, size - at)));
+  }
+}
+
+/**
+ * This device's OWN file, moved to the conflict name because it lost the
+ * same-name tie-break, and left DIRTY so the next push publishes the move as a
+ * version of this device's file id. That published rename is the one thing
+ * either device says about the collision.
+ *
+ * THE MOVE IS A COPY AND THEN A TRASH, AND THE USER CAN TYPE BETWEEN THEM.
+ * The vault offers no atomic rename this device could use for a destination
+ * that must not be replaced, so the copy publishes first and the original is
+ * removed second -- and Obsidian saves an open note on a timer, so bytes that
+ * exist on this device and NOWHERE else can arrive in that gap. The trash
+ * would take them: not a conflict copy, not a version on the server, gone
+ * (review round 2, finding 1). So the source is stat-ed before the copy and
+ * again immediately before the trash, and a source that moved refuses the
+ * move: the note keeps its name and its new text, nothing is removed, and the
+ * caller falls back to keeping both, which is what 1.0.6 did for this pair
+ * anyway. The comparison is `(mtime, size)`, the same metadata test the whole
+ * pull path uses for "has this file moved on"; an edit that changes neither
+ * is invisible to it here exactly as it is there.
+ *
+ * AND THE LAST STAT IS NOT THE LAST MOMENT. The trash is asynchronous and
+ * does work of its own before the file goes, so a save can land after the
+ * check above and still be inside the removal -- which is the same loss one
+ * instruction later, and no check made HERE can close it (round 3, finding
+ * 1). So the content being removed is named to the host, the removal is
+ * bound to it, and a host that reports `kept` has put the file back with the
+ * later bytes in it: the note keeps its name and its new text, the copy this
+ * function already published keeps the text it had a moment ago, and the
+ * caller falls back to keeping both.
+ *
+ * AND A HOST THAT CANNOT MAKE THAT PROMISE IS NEVER ASKED TO. Mobile has no
+ * second name to give a file, and a desktop filesystem can refuse one, so on
+ * those devices the pair is settled the way 1.0.6 settled it -- both notes
+ * kept, this device's under the name it already has -- and nothing is
+ * removed at all. That is asked BEFORE the copy, not after it, so a device
+ * that will refuse does not first fill the vault with a copy it cannot use.
+ * The cost is a name: two devices can hold that pair under different names
+ * until the one that CAN move publishes the rename (issue #122's divergence,
+ * one case wider). The alternative is a window in which a note the user is
+ * typing into is removed, and there is no version of it anywhere.
+ *
+ * AND THE LOCAL NOTE CAN BE ANY SIZE. The incoming version says nothing about
+ * it: a 21-byte note from another device collides with whatever wears that
+ * name here, and the desktop host reads a whole file by allocating its whole
+ * size (`main.ts`). So the copy streams through the host's windowed source in
+ * the same 8 MiB windows the push path uses, and a multi-GiB note costs what a
+ * note costs (review round 2, finding 4).
+ *
+ * WHICH IS NO ANSWER AT ALL ON A HOST THAT CANNOT STREAM. Mobile's writer
+ * allocates the declared size in one `Uint8Array` and its source reads the
+ * whole file, so a windowed loop above them still asks for the whole note at
+ * once: a 21-byte incoming version, colliding with a 3 GiB local note, asks
+ * a 512 MiB device for a 3 GiB buffer (round 3, finding 3). Admission has
+ * already weighed the INCOMING size against this device's ceiling and says
+ * nothing about the local file, so the local file is weighed here, before
+ * anything is allocated or read, on exactly the hosts that cannot stream.
+ * Above the ceiling the move is refused and the note is left where it is:
+ * the pair is kept as 1.0.6 kept it, which costs a name and loses nothing.
+ */
+async function moveAside(
+  context: SyncContext,
+  from: string,
+  record: FileState,
+  when: Date,
+): Promise<string | null> {
+  // Asked first, because the answer decides whether this move can happen at
+  // all: a device that cannot bind a removal to what it removes settles the
+  // pair by keeping both, and nothing here is written, copied or removed.
+  if (context.host.bindsRemoval !== true) {
+    context.host.log(
+      `pull path_class=file decision=move_aside_refused reason=unheld file=${record.fileId}`,
+    );
+    return null;
+  }
+  const before = await context.host.stat(from);
+  if (before === null) return null;
+  // Before the copy asks for anything: on a host whose writer and source hold
+  // a whole file, the local note must fit this device's own ceiling, because
+  // the copy costs its size in memory however the loop above is written
+  // (round 3, finding 3).
+  if (context.host.supportsRangeReads !== true) {
+    const room = admit(context.state.data.policy, context.state.localBytes(), before.size);
+    if (!room.ok) {
+      context.host.log(
+        `pull path_class=file bytes=${before.size} decision=move_aside_refused ` +
+          `reason=${room.reason} file=${record.fileId}`,
+      );
+      context.host.notify(
+        `obsync left ${from} where it is: copying it to a name of its own would need more memory ` +
+          `than this device allows (${admissionReason(context.state.data.policy, room.reason)}). ` +
+          `Your note is untouched, and the other device's version is beside it.`,
+      );
+      return null;
+    }
+  }
+  const changed = async (): Promise<boolean> => {
+    const now = await context.host.stat(from);
+    return now === null || now.mtime !== before.mtime || now.size !== before.size;
+  };
+  const refuse = (copy: string | null, reason = "source_changed"): null => {
+    context.host.log(
+      `pull path_class=file decision=move_aside_refused reason=${reason} file=${record.fileId}`,
+    );
+    if (copy === null) return null;
+    context.host.notify(
+      reason === "unheld"
+        ? `obsync left ${from} where it is: this device cannot move a note aside without risking text ` +
+            `typed while it does, so it keeps both notes instead. Your note is untouched, and the text ` +
+            `it had a moment ago is in "${copy}".`
+        : `obsync left ${from} where it is: it changed while obsync was moving it. Your note and its ` +
+            `new text are untouched, and the text it had a moment ago is in "${copy}".`,
+    );
+    return null;
+  };
+  let landed: Awaited<ReturnType<typeof writeBeside>>;
+  try {
+    landed = await writeBeside(
+      context, from, context.deviceNameFor(context.deviceId), when, before.size, record.mtime,
+      async (writer) => { await copyThrough(context, from, before.size, writer); },
+      // Never reused: this is a MOVE of a file that must really arrive.
+      async () => null,
+    );
+  } catch (error) {
+    // A copy that failed BECAUSE the note was being written while it was
+    // copied is the same refusal, not an error: the create-only writer's byte
+    // budget is what catches a note that grew or shrank mid-copy, and it
+    // refuses rather than publishing a torn one. Anything else is a real
+    // failure and is raised.
+    if (await changed()) return refuse(null);
+    throw error;
+  }
+  if (landed === null) return null;
+  if (await changed()) return refuse(landed.stat.path);
+  // Marked BEFORE the trash: the vault reports the removal to this plugin's
+  // own delete handler while the trash is still running, and an unmarked echo
+  // publishes a tombstone for a file that is alive one name over (issue #96).
+  context.trashed.add(from);
+  // The removal names the bytes it is removing. `kept` means the host found
+  // other ones there -- a save inside the removal, or a file that replaced
+  // the one we held -- and left or put back what it found rather than take
+  // it; `unheld` means it removed nothing because it could not promise that.
+  // Either way this move did not happen and the pair is kept as 1.0.6 kept
+  // it. Only `unheld` withdraws the echo marker: nothing was removed, so no
+  // delete event is owed, while a restore really did produce one.
+  const verdict = await context.host.trash(from, before);
+  if (verdict === "unheld") {
+    context.trashed.delete(from);
+    return refuse(landed.stat.path, "unheld");
+  }
+  if (verdict === "kept") return refuse(landed.stat.path, "source_changed_in_trash");
+  // `mtime: -1` and no digest, exactly as a user's own rename records it
+  // (`engine.ts`): the bytes did not move, the PATH did, and the path lives
+  // inside the manifest, so the push must post even though the content is
+  // unchanged. The write above is deliberately not echo-suppressed for the
+  // same reason -- that event is what carries this move to the push queue.
+  context.state.setFile(landed.stat.path, { ...record, mtime: -1, sha256: "" });
+  context.state.forgetPath(from);
+  await context.state.save();
+  return landed.stat.path;
+}
+
+/**
+ * Two file ids, one path (issue #113).
+ *
+ * Two devices that each create a note at the same path while one of them is
+ * closed produce two FILES with one name. 1.0.5 and 1.0.6 kept both, which is
+ * right, and neither ever gave the pair distinct names, so every later edit of
+ * either note arrived at an occupied path and made another copy: three copies
+ * of one note inside a few minutes, on real devices, symmetrically.
+ *
+ * The names have to be settled, and settled the SAME WAY on every device
+ * without the two of them negotiating about it. So the ids decide, because
+ * both devices hold both: THE LOWER FILE ID KEEPS THE PATH.
+ *
+ * A device holding the lower id writes the incoming version as a copy and
+ * RECORDS it under the incoming id, so the next version of that id is an
+ * ordinary update of a file it tracks rather than another collision, and it
+ * publishes nothing, because that file is not its own. A device holding the
+ * higher id moves its own file to the conflict name, lets the ordinary push
+ * publish that move as a version of its own id, and then applies the incoming
+ * version at the path it has just vacated. Exactly one rename is ever
+ * published, by the device whose file actually moved.
+ *
+ * A file at the name that no record explains has no id to compare, so it is
+ * PUBLISHED first and then the same rule decides -- see `identify`. It was
+ * going to be published seconds later anyway, and without it the two devices
+ * settle on different names and stay there.
+ *
+ * Returns `null` when the path has been vacated and the caller should apply
+ * the incoming version there as it would any other.
+ */
+async function sameNameTiebreak(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  occupant: "other_file" | "no_record",
+): Promise<ApplyResult | null> {
+  // A name of its own here already. Whatever settled this pair last time
+  // settled it for good: the incoming id's versions land where this device
+  // put it, and they keep landing there until its own device publishes the
+  // rename that moves it. Asking the rule again would answer the same way,
+  // and deciding it by what occupies its ORIGINAL name would copy the file
+  // again every time it is edited, which is the defect itself (issue #113).
+  const settled = context.state.pathByFileId(change.file_id);
+  if (settled !== undefined) return await updateSettled(context, change, manifest, settled);
+  if (occupant === "no_record") {
+    const stat = await context.host.stat(manifest.path);
+    // Gone between the check and here: the name is free, so there is nothing
+    // to settle and the caller applies the version as it would any other.
+    if (stat === null) return null;
+    if (await adopt(context, change, manifest, stat)) return "applied";
+    if (!(await identify(context, manifest.path, change.file_id))) {
+      return await keepBothRecorded(context, change, manifest);
+    }
+  }
+  const when = new Date(context.now());
+  const ours = context.state.fileByPath(manifest.path);
+  if (ours === undefined) return await keepBoth(context, change, manifest);
+
+  if (ours.fileId < change.file_id) {
+    const kept = await keepBothRecorded(context, change, manifest);
+    if (kept === "conflict_copy") {
+      context.host.log(
+        `pull decision=same_name_tiebreak winner=${ours.fileId} role=keep file=${change.file_id} seq=${change.seq}`,
+      );
+    }
+    return kept;
+  }
+
+  const moved = await moveAside(context, manifest.path, ours, when);
+  if (moved !== null) return await takeVacated(context, change, manifest, ours, moved);
+  // A move that did not happen still has to SETTLE the incoming id: recorded
+  // under it, the copy is where that file's next version lands, and the pair
+  // costs one copy once. Unrecorded, every later edit of it would arrive at
+  // an occupied name with no id to compare and make another copy, which is
+  // the defect issue #113 exists to end -- and a device that cannot bind a
+  // removal (mobile) takes this path for EVERY collision it meets.
+  return await keepBothRecorded(context, change, manifest);
+}
+
+/**
+ * The incoming version, into the name this device has just vacated -- and
+ * only if it is still vacant.
+ *
+ * The move frees the name by RENAMING the old note away (`main.ts`), which is
+ * atomic and leaves nothing behind. It does not stop the user's editor from
+ * saving a moment later, and that save creates a file at a name this device
+ * tracks NOTHING at: bytes no version holds, that this device has not copied
+ * anywhere. Writing the incoming version over them would be the same loss the
+ * move exists to avoid, one instruction further on, so the write is
+ * create-only and an occupied name falls back to keeping both.
+ */
+async function takeVacated(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  ours: FileState,
+  moved: string,
+): Promise<ApplyResult> {
+  const landed = await createOnly(context, manifest);
+  if (landed === null) {
+    context.host.log(
+      `pull path_class=file decision=vacated_name_taken file=${change.file_id} seq=${change.seq}`,
+    );
+    return await keepBothRecorded(context, change, manifest);
+  }
+  await recordAt(context, change, landed.path, landed);
+  context.host.log(
+    `pull decision=same_name_tiebreak winner=${change.file_id} role=rename file=${ours.fileId} seq=${change.seq}`,
+  );
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=applied seq=${change.seq}`,
+  );
+  context.host.notify(
+    `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
+      `and the other device's keeps the name.`,
+  );
+  return "applied";
+}
+
+/**
+ * Write a manifest at its own name, WITHOUT replacing anything. `null` means
+ * the name is occupied -- by a file this device did not put there -- and the
+ * caller must not treat that as a failure; anything else is one.
+ */
+async function createOnly(context: SyncContext, manifest: Manifest): Promise<VaultStat | null> {
+  assertVaultPath(manifest.path);
+  let writer: VaultWriter;
+  try {
+    writer = await context.host.createWriter(manifest.path, manifest.size, () => undefined);
+  } catch (error) {
+    if ((await context.host.stat(manifest.path)) === null) throw error;
+    return null;
+  }
+  let stat: VaultStat;
+  try {
+    await writeVerified(context, manifest, writer);
+    stat = await writer.commit(manifest.mtime);
+  } catch (error) {
+    await writer.abort();
+    if ((await context.host.stat(manifest.path)) === null) throw error;
+    return null;
+  }
+  try {
+    // The create-only writer publishes by linking its temp name over; the
+    // temp is its to remove, and a published file is never withdrawn because
+    // that failed. The residue is named rather than silent (requirement 12).
+    await writer.abort();
+  } catch {
+    context.host.log("pull decision=copy_temp_not_removed published=true name_attempt=0");
+  }
+  return await landedAt(context, stat);
+}
+
+/**
+ * A version of a file this device has already given a name of its own.
+ *
+ * It lands THERE, not at the name its manifest carries: that name belongs to
+ * the other note of the pair on this device, and materialising over it is the
+ * loss this whole series is about -- while copying it beside again, once per
+ * edit, is the defect issue #113 exists to end.
+ *
+ * The check below is the ONLY thing standing between that write and an
+ * unpushed edit: the user can open a conflict copy and type into it, and
+ * those bytes exist on this device and nowhere else (issue #98). It is made
+ * here, against the file about to be written, rather than earlier against the
+ * same path by a caller -- the guard belongs at the write.
+ */
+async function updateSettled(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  settled: string,
+): Promise<ApplyResult> {
+  if ((await competing(context, settled, change.file_id)) !== null) {
+    return await keepBoth(context, change, manifest);
+  }
+  const beside = await materialise(context, { ...manifest, path: settled });
+  await recordAt(context, change, beside.path, beside);
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
+  );
+  return "applied";
+}
+
+/**
+ * Is the local file at the name ALREADY this version, byte for byte?
+ *
+ * A vault whose local state was lost or replaced meets every one of its own
+ * notes this way: no record explains them, and every one of them is exactly
+ * the version the server holds. Publishing each as a new file id and then
+ * renaming the losers would double the vault and scatter its names over a
+ * bookkeeping file, so a local file that IS this version is simply recorded
+ * as it, and nothing is written, published or moved. The proof is the
+ * manifest's authenticated digest, exactly as a conflict copy's reuse is
+ * proved; a version too large to carry one (`push.ts`, MANIFEST `sha256`) is
+ * not recognised this way and takes the ordinary path, which costs a
+ * duplicate and never a loss.
+ *
+ * A file id this device tracks somewhere else never reaches this: the rule
+ * hands those to `updateSettled` before asking anything about the name.
+ */
+async function adopt(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  occupant: VaultStat,
+): Promise<boolean> {
+  const verified = await alreadyCopied(context, manifest, manifest.path, occupant);
+  if (verified === null) return false;
+  await recordAt(context, change, manifest.path, verified);
+  context.host.log(
+    `pull path_class=file bytes=${manifest.size} decision=adopted reason=identical_bytes file=${change.file_id} seq=${change.seq}`,
+  );
+  return true;
+}
+
+/**
+ * Give the local file at `path` an identity, so that the rule above has two
+ * ids to compare.
+ *
+ * THE RACE THIS CLOSES. A device that was closed while another wrote pulls
+ * the incoming version before its own reconciliation has finished publishing
+ * the note it made under that name while it was shut -- the queue and the
+ * feed run side by side, and either can win. The pulling device then sees a
+ * file with no id, cannot apply the rule, and keeps both under a name it
+ * chose alone; the other device, whose file IS published, applies the rule
+ * and keeps both under a name IT chose. Neither is wrong and they never
+ * agree, which is the divergence issue #113 is about. Publishing the local
+ * file first costs one push the queue was about to make anyway and leaves
+ * both devices holding both ids, which is all the rule needs.
+ *
+ * A failure is not one: the file keeps its bytes, and the decision falls back
+ * to keeping both, exactly as every version before 1.0.7 did.
+ */
+async function identify(context: SyncContext, path: string, fileId: string): Promise<boolean> {
+  if (context.publish === undefined) return false;
+  try {
+    await context.publish(path);
+  } catch {
+    // The reason is not logged: a host or transport error names a path.
+    context.host.log(`pull path_class=file decision=not_identified file=${fileId}`);
+    return false;
+  }
+  const record = context.state.fileByPath(path);
+  return record !== undefined && record.fileId !== fileId;
+}
+
+/**
+ * Both notes kept, and the copy RECORDED under the incoming file id.
+ *
+ * Both answers that keep the incoming version beside a local file end here:
+ * the device that keeps the name by the rule, and the device that could not
+ * identify its own file at all. Both notes survive, as they did in 1.0.5 and
+ * 1.0.6, and the record is what is new: the next version of that id is an
+ * ordinary update of a file this device tracks instead of another copy, a
+ * later rename of it is a plain move, and the startup scan never publishes
+ * the copy as a THIRD file id (issue #113). A file id this device tracks
+ * somewhere else never reaches this: the rule hands those to `updateSettled`,
+ * which keeps them where they are.
+ */
+async function keepBothRecorded(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+): Promise<ApplyResult> {
+  const copy = await keepBothAt(context, change, manifest);
+  if (copy === null) return "refused";
+  await recordAt(context, change, copy.path, copy.stat);
+  return "conflict_copy";
+}
+
+/**
+ * The record a materialised version leaves behind, wherever it landed.
+ *
+ * THE STAT IS THE CALLER'S, AND IT IS NOT NEGOTIABLE. A record says the file
+ * at `path` IS this version and nothing has happened to it since, and the pull
+ * path reads exactly that sentence before it writes over a file. Looking the
+ * metadata up here would describe the file as it is NOW -- which, after a save
+ * that landed while the version was being written or verified, is a different
+ * file being declared clean under a version it does not hold, and the next
+ * version of that id then overwrote it with no copy kept (review round 2,
+ * finding 2). So every caller hands in the metadata of the bytes it actually
+ * wrote or actually verified: the writer's own commit, or the stat the digest
+ * was proved against.
+ */
+async function recordAt(
+  context: SyncContext,
+  change: ChangeRecord,
+  path: string,
+  stat: VaultStat,
+): Promise<void> {
+  context.state.setFile(path, {
+    fileId: change.file_id,
+    versionId: change.version_id,
+    mtime: stat.mtime,
+    size: stat.size,
+    sha256: await sidDigest(change.sids),
+  });
+  await context.state.save();
 }
 
 /** Write the foreign head beside ours under a named copy, and say so. */
@@ -961,6 +2538,15 @@ async function keepBoth(
   change: ChangeRecord,
   theirManifest: Manifest,
 ): Promise<ApplyResult> {
+  return (await keepBothAt(context, change, theirManifest)) === null ? "refused" : "conflict_copy";
+}
+
+/** The same, returning where the copy landed, and what it landed as. */
+async function keepBothAt(
+  context: SyncContext,
+  change: ChangeRecord,
+  theirManifest: Manifest,
+): Promise<{ path: string; stat: VaultStat } | null> {
   const copy = await writeCopy(
     context,
     theirManifest,
@@ -977,7 +2563,7 @@ async function keepBoth(
       `obsync kept your version of ${theirManifest.path} and could not place the other device's copy: ` +
         `every name it tried was already taken. Nothing here was changed, and the other version is still on the server.`,
     );
-    return "refused";
+    return null;
   }
   context.host.notify(
     `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
@@ -985,7 +2571,7 @@ async function keepBoth(
   context.host.log(
     `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
   );
-  return "conflict_copy";
+  return { path: copy.path, stat: copy.stat };
 }
 
 /** Post the merge result as one version whose parents are BOTH heads. */
@@ -1012,7 +2598,14 @@ async function postMerged(
     deleted: false,
   };
   const parents = over ?? [localVersionId, change.version_id].sort();
-  const posted = await postManifest(context, change.file_id, parents, [sid], manifest, text.length);
+  // THE CASE ISSUE #114 IS ABOUT. Two devices that resolve the same two heads
+  // to the same bytes produce the same parents, the same chunk and the same
+  // path, and two version ids, because the id covers the encrypted manifest
+  // and its nonce. The second frame says nothing the first did not and forks
+  // the file, which another merge then has to close. So this post offers the
+  // server the version it already holds at this position, and this device
+  // records the id it is answered with.
+  const posted = await postManifest(context, change.file_id, parents, [sid], manifest, text.length, true);
   context.authored.add(posted.versionId);
   context.state.setFile(path, {
     fileId: change.file_id,

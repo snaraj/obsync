@@ -1,0 +1,12 @@
+# M41: 91: a file leaving the selection is published as a deletion
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -400,7 +400,7 @@
+     // by every other device (issue #91).
+     if (!source || !target) {
+       if (target) this.changed(to);
+-      else if (source) this.leftScope(from);
++      else if (source) this.deleted(from);
+       return;
+     }
+     const context = this.need();

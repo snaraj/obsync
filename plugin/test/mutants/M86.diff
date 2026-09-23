@@ -1,0 +1,11 @@
+# M86: a folder rename this device DISCOVERS is declined as a stale record
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1554,7 +1554,6 @@
+     label: string,
+   ): Promise<boolean> {
+     if (!caseOnly(from, to) || folderOf(from) === folderOf(to)) return false;
+-    if (!recordedFolders.has(folderOf(to))) return false;
+     if ((await context.host.stat(from)) === null) return false;
+     const record = context.state.fileByPath(from);
+     if (record !== undefined) {

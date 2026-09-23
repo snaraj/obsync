@@ -1,0 +1,14 @@
+# M15: one path pushed twice at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -540,10 +540,6 @@
+    */
+   private pushOne(path: string): Promise<void> {
+     const active = this.pushing.get(path);
+-    if (active !== undefined) {
+-      this.again.add(path);
+-      return active;
+-    }
+     const work = this.pushNow(path);
+     this.pushing.set(path, work);
+     const done = (): void => {

@@ -1,0 +1,15 @@
+# M25: the joined request is dropped, as before
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -540,10 +540,7 @@
+    */
+   private pushOne(path: string): Promise<void> {
+     const active = this.pushing.get(path);
+-    if (active !== undefined) {
+-      this.again.add(path);
+-      return active;
+-    }
++    if (active !== undefined) return active;
+     const work = this.pushNow(path);
+     this.pushing.set(path, work);
+     const done = (): void => {

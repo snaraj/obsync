@@ -69,6 +69,17 @@ It has no subscription, advertising or telemetry service. Obsidian contacts
 its directory and GitHub to install and update community plugins. Optional
 network access providers are chosen by the server operator.
 
+Three more surfaces the plugin touches, each only on the reader's own action:
+
+- **Your edge, only if you configured one.** Headers you paste under **Edge
+  service-token headers** ride on every request to the Server URL, because
+  the proxy that needs them is on the path to your server.
+- **Your browser, when you ask for the dashboard.** **Open dashboard** opens a
+  sign-in link in your browser, and only when that link is on your server's
+  own origin.
+- **Obsidian's secret storage.** The vault key, the device secret and any edge
+  header values live there, never in plain plugin data.
+
 Releases from 0.1.15 also publish native GitHub Actions build provenance for
 all three installation files. The publisher and read-only audit verify it
 against the exact protected-main source. Directory acceptance is still a
@@ -88,6 +99,38 @@ service; certificate trust and network reachability are separate choices.
 Private certificate authorities remain an operator-managed deployment option
 in `deploy/compose`, with explicit per-device trust setup. Never bypass a
 certificate error in the plugin.
+
+### Listing review findings (2026-09-22)
+
+Obsidian's review scan of the 1.0.6 listing reported one network call, vault
+enumeration, clipboard access, one stylesheet warning and two extra Release
+assets. Where each one stands:
+
+- **One network call.** Obsidian's `requestUrl`, injected once into the
+  transport (`plugin/src/main.ts`), reaching the configured Server URL and
+  nothing else. Disclosed in the README under "What this plugin accesses".
+- **Vault enumeration.** `vault.getFiles()` decides which files are in scope
+  for sync. Disclosed there.
+- **Clipboard.** Two `navigator.clipboard.writeText` calls, behind the **Copy
+  code** and **Copy link** buttons of **Pair a new device**
+  (`plugin/src/ui/modals.ts`). Nothing reads the clipboard. Disclosed there.
+- **`multicolumn` at `styles.css:20`.** `column-gap` on the recovery-phrase
+  grid is also a multi-column property, which is what the scanner keys on. It
+  is now the `gap` shorthand, which lays out the same two columns of twelve.
+- **Extra Release assets.** `obsync-X.Y.Z-release-manifest.json` and
+  `obsync-plugin-X.Y.Z.zip` are not plugin files, and Obsidian does not
+  download them. They stay: the publisher's five-asset inventory requires
+  them, the read-only release audit downloads both to re-verify the image,
+  chart and bundle digests, and a deployer reads the image digest out of the
+  manifest before running it ([release path](release.md)). The scanner's line
+  is informational, not a refusal.
+- **`manifest.json`** against the submission requirements: the description is
+  one action statement of 91 characters ending with a period; `minAppVersion`
+  is 1.13.0 because the settings tab is declared to Obsidian from 1.0.2
+  (`CHANGELOG.md`); `isDesktopOnly` is `false` because the bundle imports
+  `obsidian` and nothing from Node or Electron; `fundingUrl` is absent because
+  no donations are taken; `authorUrl` and `helpUrl` are set. Nothing to
+  change.
 
 ## Maintainer submission
 

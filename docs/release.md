@@ -69,6 +69,9 @@ chart keyless (identity `refs/heads/main` of this repository), attaches
 `obsync-plugin-X.Y.Z.zip` and the individual `main.js`, `manifest.json`, and
 `styles.css` files from the same image build. The v2 evidence manifest binds
 the ZIP digest and each file's digest, size and content type.
+Obsidian's installer downloads only the three individual files and ignores
+the ZIP and the evidence manifest; both remain required by the inventory
+below and by the read-only audit.
 
 **The Release body.** From 1.0.1 the notes lead with that version's own
 `CHANGELOG.md` section, read out of the SOURCE COMMIT rather than out of a
@@ -128,14 +131,14 @@ not prove directory acceptance, installation, or device synchronization.
 
 ## Governance receipt
 
-Before the first Release under this path the owner activates: immutable
-releases, strict required checks at the exact head, no core bypass actor,
-signed commits on `main`. The read-only preflight and the standalone bypass
-check are the same commands as the sibling repositories' release governance
-document and are pinned in `scripts/ci/test_release_contract.py`.
+Before the first Release under this path the repository owner activates:
+immutable releases, strict required checks at the exact head, no core bypass
+actor, signed commits on `main`. The read-only preflight and the standalone
+bypass check are pinned in `scripts/ci/test_release_contract.py`, so the
+settings are re-read rather than remembered.
 
 ## Deployment
 
-Publication is never deployment. The promoter in the platform repository
-selects the digest; Flux deploys it; the deploy-assurance watchdog reports
-drift. See `docs/platform-onboarding.md`.
+Publication is never deployment. A deployer's own platform selects the
+digest, reconciles it, and reports drift if the promotion never lands. See
+`docs/platform-onboarding.md`.

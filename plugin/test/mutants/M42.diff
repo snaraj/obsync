@@ -1,0 +1,12 @@
+# M42: 91: both sides of the move are judged by the selection after it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -489,7 +489,7 @@
+     // else under it.
+     const pending = [...this.pending.keys(), ...this.queue];
+     for (const path of new Set([...Object.keys(this.options.state.data.files), ...pending])) {
+-      if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
++      if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length));
+     }
+   }
+ 

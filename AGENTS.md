@@ -204,7 +204,7 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 - `crates/obsyncd`: `config`, `signal` (the only unsafe), `log`,
   `storage/{blobs,journal,index,gc,scrub}`, `api/{auth,pairing,sync,
   chunks,changes,admin,plugin}`, `dashboard` (serves `OBSYNC_DASHBOARD_DIR`), `cli`
-  (`serve`, `check`, `export`, `bench`). Type declarations live in
+  (`serve`, `check`, `setup-token`, `export`, `bench`). Type declarations live in
   `types.rs` per module group; methods stay beside the logic they serve.
 - `plugin/src`: `main.ts` (plugin entry), `crypto.ts`, `chunker.ts`,
   `state.ts`, `transport.ts`, `sync/{push,pull,conflict}.ts`,
@@ -385,10 +385,14 @@ Several agents work this repository at once. Git worktrees under
    assignee, milestone, signed body with reproducible numbers. Apply
    `requires-review` once complete-from-author.
 6. **Adversarial review**; fix findings on the same branch; delta re-review.
-7. **Prove server release controls** for an automatic-release change per
+7. **Run the user journeys** for a change to `plugin/` or the sync path: the
+   affected journeys in `docs/validation.md`, on real devices, one desktop and
+   one phone, with their outcomes recorded in `docs/validation-runs/`. Nothing
+   else completes it, and the reviewer may demand that record for a verdict.
+8. **Prove server release controls** for an automatic-release change per
    `docs/release.md`.
-8. **Owner comments** are answered with reproduction, not assertion.
-9. **The owner merges.** Nothing else substitutes.
+9. **Owner comments** are answered with reproduction, not assertion.
+10. **The owner merges.** Nothing else substitutes.
 
 ## Commit identity mechanics
 
@@ -432,10 +436,13 @@ signature and nothing after it.
 
 - `docs/` holds durable design and operating documents, dated where facts
   drift. Process history stays out of product files.
-- The README leads with screenshot captures of the dashboard and the plugin.
-  A PR that changes what either renders asks the owner for a fresh capture
-  and says so in its body; captures are committed under `docs/captures/`
-  as PNG, never generated at build time.
+- The onboarding pages lead with screenshot captures of the dashboard and the
+  plugin. `docs/quickstart.md` carries the validated set -- the README is a
+  short front door and links to it -- and the image files are committed under
+  `docs/assets/` as PNG, never generated at build time.
+  `docs/captures/README.md` is the convention: what each capture must show,
+  the numbering, and the redaction rules. A PR that changes what either
+  surface renders asks the owner for a fresh capture and says so in its body.
 - Numbers in docs are reproducible: every figure names the command that
   produced it.
 

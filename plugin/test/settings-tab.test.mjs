@@ -53,6 +53,8 @@ function stubPlugin(overrides = {}) {
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
     statusText: () => "idle",
     updateLine: () => null,
+    heldDeletionLine: () => null,
+    confirmHeldDeletions: () => { calls.push("confirmHeldDeletions"); },
     deviceName: () => "macos-1a2b",
     platformName: () => "macos",
     listDevices: async () => { calls.push("listDevices"); return []; },
@@ -61,6 +63,7 @@ function stubPlugin(overrides = {}) {
     saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); },
     setUpAccount: async (token, account) => { calls.push(`setUp:${token}:${account}`); },
     openDashboard: async () => { calls.push("openDashboard"); },
+    openPluginManager: () => { calls.push("openPluginManager"); },
     ...overrides,
   };
   return { plugin, calls };
@@ -133,12 +136,47 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
 
   s.plugin.state.data.deviceId = "1122334455667788990011223344ffff";
   s.plugin.state.paired = true;
-  s.plugin.updateLine = () => "Server runs 9.9.9, you have 1.0.2.";
+  s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
   assert.equal(visible("First-time setup"), false);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), true, name);
   assert.equal(devices(), true);
   assert.equal(visible("Update available"), true);
-  assert.equal(s.row("Update available").desc, "Server runs 9.9.9, you have 1.0.2.");
+  assert.equal(s.row("Update available").desc, "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).");
+});
+
+test("the update row carries the button that opens Obsidian's Community plugins page", (t) => {
+  // The sentence alone was the whole row, and on a phone that page is several
+  // taps away; a row that says an update exists has to be able to reach it.
+  const s = open(t);
+  s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
+  const { made } = s.render("Update available");
+  const button = s.button(made, "Open Community plugins");
+
+  assert.equal(s.calls.length, 0, "drawing the row opens nothing");
+  button.click();
+
+  assert.deepEqual(s.calls, ["openPluginManager"]);
+});
+
+test("the held-deletions row is absent until a pass holds some, and its button confirms them", (t) => {
+  // The row is a question the user should never be asked idly: a settings
+  // page that always offers "Confirm deletions" teaches the click, and the
+  // click removes notes from every device (issue #123).
+  const s = open(t);
+  const shown = () => s.row("Deletions held back").visible();
+  assert.equal(shown(), false, "the row was offered with nothing to decide");
+
+  s.plugin.heldDeletionLine = () => "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.";
+  assert.equal(shown(), true, "the row is hidden while there is something to decide");
+  assert.equal(s.row("Deletions held back").desc,
+    "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.");
+  const { made } = s.render("Deletions held back");
+  const button = s.button(made, "Confirm deletions");
+  assert.equal(button.destructive, true, "confirming removes notes from every device");
+
+  assert.equal(s.calls.length, 0, "drawing the row published nothing");
+  button.click();
+  assert.deepEqual(s.calls, ["confirmHeldDeletions"]);
 });
 
 test("a bare host name becomes an https URL; an explicit scheme is kept; mobile refuses http", (t) => {
@@ -163,6 +201,22 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
   field().change("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
+});
+
+test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {
+  const s = open(t);
+  const row = () => s.rows().find((item) => item.name === "Leave this server");
+  assert.ok(row(), "the row is indexed for the settings search either way");
+  assert.equal(row().visible(), false, "there is nothing to leave before enrolment");
+  assert.equal(row().group.heading, "This device");
+
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  assert.equal(row().visible(), true);
+  const made = s.render("Leave this server").made;
+  assert.deepEqual(made.map((component) => component.text), ["Leave", "Switch server"]);
+  assert.equal(s.button(made, "Leave").destructive, true, "leaving is never a plain button");
+  assert.match(row().desc, /Every note stays in this vault/);
+  assert.deepEqual(s.calls, [], "drawing the row asks the server nothing");
 });
 
 test("Set up applies an unsaved folder selection first, in that order, and keeps the token until enrolment", async (t) => {

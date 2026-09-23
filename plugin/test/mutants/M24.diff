@@ -1,0 +1,12 @@
+# M24: the settled write records a fresh stat
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2205,7 +2205,7 @@
+     return await keepBoth(context, change, manifest);
+   }
+   const beside = await materialise(context, { ...manifest, path: settled });
+-  await recordAt(context, change, beside.path, beside);
++  await recordAt(context, change, beside.path, (await context.host.stat(beside.path)) ?? beside);
+   context.host.log(
+     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
+   );

@@ -9,6 +9,18 @@ import { Manifest } from "./push";
 
 export const HISTORY_SCAN_RECORDS = 20;
 export const HISTORY_SCAN_MS = 5000;
+/**
+ * How long ONE user action keeps stepping when a filename filter is set.
+ *
+ * Without it the dialog was a page-turner: 20 versions per click, oldest
+ * first, on a journal of a few thousand records, which is ~300 clicks to
+ * reach a note deleted yesterday (issue #102). The per-step bound is right --
+ * it bounds one click's network work and is the unit of cancellation -- it
+ * was just also the unit of USER effort. A filter says the user is looking
+ * for one note, not reading pages, so the steps run themselves until the
+ * first match, the end of the journal, a cancel, or this budget.
+ */
+export const HISTORY_SEARCH_MS = 60_000;
 
 export class HistoryCancelled extends Error {
   constructor() { super("History operation cancelled."); }
@@ -66,60 +78,184 @@ export async function historyManifest(context: SyncContext, fileId: string, doma
   return manifest;
 }
 
-export class HistoryBrowser {
-  private cursor = 0;
-  private boundary: number | null = null;
-  done = false;
-  constructor(readonly context: SyncContext, readonly operation: HistoryOperation, private readonly now = Date.now) {}
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  /** Journal positions this call consumed: the per-step bound, per call. */
+  scanned: number;
+  refused: number;
+  /** Journal positions consumed since this browser opened. */
+  checked: number;
+  /** About how many the journal holds, from the head this browser captured. */
+  about: number;
+  error?: string;
+}
 
-  /** Each click scans at most 20 records/requests, holding one full response. */
-  async next(filter = ""): Promise<{ entries: HistoryEntry[]; scanned: number; refused: number; error?: string }> {
-    const entries: HistoryEntry[] = [];
-    let scanned = 0;
-    let refused = 0;
-    const started = this.now();
-    try {
-      while (!this.done && scanned < HISTORY_SCAN_RECORDS && (scanned === 0 || this.now() - started < HISTORY_SCAN_MS)) {
-        this.operation.check();
-        const page = object(await this.context.transport.historyChanges(this.cursor, this.operation));
-        this.operation.check();
-        const seq = page["seq"], head = page["head_seq"], changes = page["changes"];
-        if (!number(seq) || !number(head) || seq < this.cursor || seq > head ||
-            !Array.isArray(changes) || changes.length > 1 ||
-            (this.boundary !== null && head < this.boundary) || (seq === this.cursor && seq < head)) throw new Error("History cursor did not progress safely.");
-        if (this.boundary === null) this.boundary = head;
-        const oldCursor = this.cursor;
-        scanned++;
-        for (const value of changes as unknown[]) {
-          const r = object(value);
-          if (!number(r["seq"]) || r["seq"] <= oldCursor || r["seq"] > seq) throw new Error("Invalid history sequence.");
-          if (r["seq"] > this.boundary) continue;
-          if (r["file_id"] === this.context.mapFileId) continue;
-          try {
-            if (!id(r["file_id"], 16) || !id(r["domain_id"], 16) || !id(r["version_id"], 32)) throw new Error("Invalid history identity.");
-            const manifest = await historyManifest(this.context, r["file_id"], r["domain_id"], r["version_id"], r);
-            this.operation.check();
-            if (!manifest.path.toLowerCase().includes(filter.toLowerCase())) continue;
-            entries.push({ fileId: r["file_id"], versionId: r["version_id"], domainId: r["domain_id"],
-              path: manifest.path, size: manifest.size, deleted: manifest.deleted, ts: r["ts"] as number });
-          } catch {
-            this.operation.check();
-            refused++;
-            this.context.host.log("history path_class=manifest decision=refused");
-          }
-        }
-        this.cursor = Math.min(seq, this.boundary);
-        this.done = seq >= this.boundary;
-      }
-      return { entries, scanned, refused };
-    } catch (error) {
-      this.operation.check();
-      if (entries.length === 0) throw error;
-      // A later read failure must not hide rows whose cursor already moved.
-      return { entries, scanned, refused, error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      this.context.host.log(`history decision=batch scanned=${scanned} refused=${refused} budget_records=${HISTORY_SCAN_RECORDS} budget_ms=${HISTORY_SCAN_MS} duration_ms=${this.now() - started}`);
+export interface HistoryOrder {
+  /** Newest first, which is where a deletion the user noticed almost always is. */
+  newestFirst?: boolean;
+  now?: () => number;
+}
+
+/**
+ * The retained journal, walked in bounded steps.
+ *
+ * NEWEST FIRST OVER A FORWARD-ONLY CURSOR. `GET /v1/changes?since=N&limit=1`
+ * is the only read there is: it answers "the first record after N", so there
+ * is no way to ask for the record BEFORE one. Newest-first is therefore a
+ * descending walk over WINDOWS: a window of `HISTORY_SCAN_RECORDS` sequence
+ * numbers can hold at most that many records, so scanning one window forward
+ * costs one step's bound and yields one step's rows, which are then shown in
+ * reverse. Each window ends where the last one began, so nothing is skipped
+ * and nothing is read twice. A sparse window costs one request and no rows,
+ * and the automatic search simply moves on to the next.
+ */
+export class HistoryBrowser {
+  /** Oldest-first: the exclusive LOWER bound already shown. */
+  private cursor = 0;
+  /** Newest-first: the exclusive UPPER bound already shown. */
+  private floor: number | null = null;
+  private boundary: number | null = null;
+  private readonly now: () => number;
+  readonly newestFirst: boolean;
+  done = false;
+  /** Journal positions consumed since this browser opened. */
+  checked = 0;
+  constructor(readonly context: SyncContext, readonly operation: HistoryOperation, order: HistoryOrder = {}) {
+    this.newestFirst = order.newestFirst ?? true;
+    this.now = order.now ?? Date.now;
+  }
+
+  /** About how many records the journal holds: the head this device knows. */
+  get about(): number {
+    return this.boundary ?? this.context.state.data.lastSeq;
+  }
+
+  /**
+   * One `limit=1` page, with every cursor claim checked before it is used.
+   * The server chooses `seq` and `head_seq`; neither may move a cursor
+   * backwards, past the head, or past the boundary this browser captured.
+   */
+  private async read(since: number): Promise<{ seq: number; change: Record<string, unknown> | null }> {
+    this.operation.check();
+    const page = object(await this.context.transport.historyChanges(since, this.operation));
+    this.operation.check();
+    this.checked++;
+    const seq = page["seq"], head = page["head_seq"], changes = page["changes"];
+    if (!number(seq) || !number(head) || seq < since || seq > head ||
+        !Array.isArray(changes) || changes.length > 1 ||
+        (this.boundary !== null && head < this.boundary) ||
+        (seq === since && seq < head)) throw new Error("History cursor did not progress safely.");
+    if (this.boundary === null) this.boundary = head;
+    const first = (changes as unknown[])[0];
+    if (first === undefined) return { seq, change: null };
+    const record = object(first);
+    if (!number(record["seq"]) || record["seq"] <= since || record["seq"] > seq) {
+      throw new Error("Invalid history sequence.");
     }
+    return { seq, change: record };
+  }
+
+  /** Decrypt one record and keep it when it matches, or count the refusal. */
+  private async take(
+    record: Record<string, unknown>,
+    filter: string,
+    out: HistoryEntry[],
+    counts: { refused: number },
+  ): Promise<void> {
+    if (record["file_id"] === this.context.mapFileId) return;
+    try {
+      if (!id(record["file_id"], 16) || !id(record["domain_id"], 16) || !id(record["version_id"], 32)) {
+        throw new Error("Invalid history identity.");
+      }
+      const manifest = await historyManifest(this.context, record["file_id"], record["domain_id"], record["version_id"], record);
+      this.operation.check();
+      if (!manifest.path.toLowerCase().includes(filter.toLowerCase())) return;
+      out.push({ fileId: record["file_id"], versionId: record["version_id"], domainId: record["domain_id"],
+        path: manifest.path, size: manifest.size, deleted: manifest.deleted, ts: record["ts"] as number });
+    } catch {
+      this.operation.check();
+      counts.refused++;
+      this.context.host.log("history path_class=manifest decision=refused");
+    }
+  }
+
+  /** Oldest first: at most 20 records/requests, for up to 5 seconds. */
+  private async stepUp(filter: string, out: HistoryEntry[], counts: { scanned: number; refused: number }): Promise<void> {
+    const started = this.now();
+    let taken = 0;
+    while (!this.done && taken < HISTORY_SCAN_RECORDS && (taken === 0 || this.now() - started < HISTORY_SCAN_MS)) {
+      const { seq, change } = await this.read(this.cursor);
+      taken++;
+      counts.scanned++;
+      const boundary = this.boundary as number;
+      if (change !== null && (change["seq"] as number) <= boundary) await this.take(change, filter, out, counts);
+      this.cursor = Math.min(seq, boundary);
+      this.done = seq >= boundary;
+    }
+  }
+
+  /** Newest first: one descending window, shown in reverse. */
+  private async stepDown(filter: string, out: HistoryEntry[], counts: { scanned: number; refused: number }): Promise<void> {
+    if (this.boundary === null) {
+      // One request to learn the head the whole walk is measured against. Its
+      // record is the OLDEST one and belongs to the last window, so it is
+      // counted and discarded rather than decrypted out of order.
+      await this.read(0);
+      counts.scanned++;
+    }
+    const boundary = this.boundary as number;
+    if (this.floor === null) this.floor = boundary + 1;
+    const from = Math.max(0, this.floor - 1 - HISTORY_SCAN_RECORDS);
+    const window: Record<string, unknown>[] = [];
+    let cursor = from;
+    while (cursor < this.floor - 1) {
+      const { seq, change } = await this.read(cursor);
+      counts.scanned++;
+      if (change !== null && (change["seq"] as number) < this.floor) window.push(change);
+      cursor = seq;
+      if (change === null) break;
+    }
+    this.floor = from + 1;
+    this.done = from === 0;
+    for (const record of window.reverse()) await this.take(record, filter, out, counts);
+  }
+
+  /**
+   * One user action.
+   *
+   * With no filter this is one bounded step. With a filter it keeps stepping
+   * until the first match, the end of the journal, a cancel, or
+   * `HISTORY_SEARCH_MS` -- the per-step bound stays the unit of cancellation,
+   * it is no longer the unit of clicking.
+   */
+  async next(filter = ""): Promise<HistoryPage> {
+    const entries: HistoryEntry[] = [];
+    const counts = { scanned: 0, refused: 0 };
+    const started = this.now();
+    const budget = filter === "" ? 0 : HISTORY_SEARCH_MS;
+    this.context.host.log(
+      `history decision=start order=${this.newestFirst ? "newest_first" : "oldest_first"} filtered=${filter !== ""} ` +
+        `checked=${this.checked} about=${this.about} budget_ms=${budget} budget_records=${HISTORY_SCAN_RECORDS}`,
+    );
+    let error: string | undefined;
+    try {
+      do {
+        if (this.newestFirst) await this.stepDown(filter, entries, counts);
+        else await this.stepUp(filter, entries, counts);
+      } while (entries.length === 0 && !this.done && budget > 0 && this.now() - started < budget);
+    } catch (failure) {
+      this.operation.check();
+      // A later read failure must not hide rows whose cursor already moved.
+      if (entries.length === 0) throw failure;
+      error = failure instanceof Error ? failure.message : String(failure);
+    } finally {
+      this.context.host.log(
+        `history decision=summary scanned=${counts.scanned} matches=${entries.length} refused=${counts.refused} ` +
+          `checked=${this.checked} about=${this.about} budget_ms=${budget} budget_records=${HISTORY_SCAN_RECORDS} ` +
+          `duration_ms=${this.now() - started}`,
+      );
+    }
+    return { entries, scanned: counts.scanned, refused: counts.refused, checked: this.checked, about: this.about, error };
   }
 }
 

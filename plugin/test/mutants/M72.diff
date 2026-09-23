@@ -1,0 +1,13 @@
+# M72: the rename shortcut stops proving the source holds this content
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -970,8 +970,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
+     localPath !== manifest.path &&
+     held === null &&
+     local !== undefined &&
+-    local.size === manifest.size &&
+-    local.sha256 === (await sidDigest(change.sids))
++    local.size === local.size
+   ) {
+     // The destination is about to be handed to the host, so it is checked
+     // here for the same reason `materialise` checks it: nothing reaches a

@@ -1,0 +1,11 @@
+# M27: the record is never saved
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1360,7 +1360,6 @@
+     size: stat.size,
+     sha256: await sidDigest(change.sids),
+   });
+-  await context.state.save();
+ }
+ 
+ /** Write the foreign head beside ours under a named copy, and say so. */

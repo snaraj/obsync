@@ -1,0 +1,15 @@
+# M70: the confirmation queues nothing, so a real deletion never publishes
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -724,10 +724,7 @@ export class SyncEngine {
+     const held = this.heldDeletions;
+     this.heldDeletions = [];
+     this.bulkNoticeShown = false;
+-    for (const path of held) {
+-      this.deletions.add(path);
+-      this.enqueue(path);
+-    }
++    void held;
+     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
+   }
+ 

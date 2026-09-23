@@ -15,7 +15,7 @@ import { createHash, createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { ApiError, Transport, parseMultipart, routeFor } = require("../build/transport.js");
+const { ApiError, HISTORY_RESPONSE_BYTES, Transport, parseMultipart, routeFor } = require("../build/transport.js");
 const c = require("../build/crypto.js");
 
 const DEVICE_ID = "aabbccddeeff00112233445566778899";
@@ -42,8 +42,12 @@ function harness(responses, options = {}) {
   const transport = new Transport({
     request: async (request) => {
       sent.push(request);
-      const next = queue.shift();
+      let next = queue.shift();
       if (next === undefined) throw new Error("the fake server ran out of responses");
+      // A response the TEST decides the timing of: a function is awaited, so
+      // a request can be left in flight for as long as the test needs the
+      // server to be busy.
+      if (typeof next === "function") next = await next();
       if (next instanceof Error) throw next;
       return {
         status: next.status,
@@ -344,7 +348,16 @@ test("a multipart response without a boundary is refused", async () => {
  * the server sees and must therefore appear in `CALLS` below, which is what
  * stops a new endpoint from arriving unclassified.
  */
-const INTERNAL = ["constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once", "readOnce"];
+const INTERNAL = [
+  "constructor", "backoffMs", "prepare", "attempt", "settle", "call", "send", "json", "once", "readOnce",
+  // The chunk uploader: `putChunk` is the only one of these that emits, and
+  // `uploadChunk` emits it. The rest schedule, measure or report.
+  "uploadChunk", "fits", "admit", "release", "landed", "uploadStats",
+  // Plus the manual-read slot accounting, which reaches no route at all: it
+  // says whether a history operation holds the one outstanding manual read,
+  // so the repair tick can yield to it instead of colliding (issue #103).
+  "manualBusy", "openManual", "closeManual",
+];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
 /** Every route-emitting method, arguments that make it emit, and its verdict. */
@@ -520,4 +533,57 @@ test("body hashing is the protocol's, including the empty body", async () => {
     await c.bodyHash(new Uint8Array(0)),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   );
+});
+
+test("a manual read refusal names its reason, and budget_bytes only for the size one", async () => {
+  // busy: the slot is already held, so nothing is sent and nothing is
+  // measured against a byte budget (issue #103).
+  //
+  // THE SLOT IS TAKEN ASYNCHRONOUSLY, so this waits for it. `readOnce` signs
+  // its request before it claims `manualRead`, and two reads issued in the
+  // same turn therefore RACE for the slot: the refusal landed on whichever
+  // one lost, so this assertion read the fake server's "ran out of responses"
+  // where it expected the collision. That is how it failed once in 25
+  // mutation runs, under a mutant it has nothing to do with, and a flake in a
+  // mutation matrix is a kill nobody can trust (review round 2, finding 7).
+  // The first read now holds the slot until this test releases it, and the
+  // second is issued only once the transport says the slot is held.
+  let release;
+  // The latch is made BEFORE the request that waits on it: the slot is
+  // claimed for a request that has not been sent yet, so a hold created
+  // inside the fake server could be released before it exists.
+  const hold = new Promise((resolve) => { release = resolve; });
+  const held = harness([async () => { await hold; return { status: 200, text: "{}" }; }]);
+  const first = held.transport.historyChanges(0, READ_CONTROL);
+  for (let turn = 0; turn < 1000 && !held.transport.manualBusy; turn++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(held.transport.manualBusy, "the first read never took the slot, so nothing could collide with it");
+  const collided = await held.transport.historyVersion(FILE_ID, "11".repeat(32), READ_CONTROL)
+    .catch((error) => error);
+  release();
+  await first.catch(() => undefined);
+  assert.equal(collided.name, "HistoryBusyError");
+  const busy = held.logged.filter((line) => line.startsWith("history_http decision=refused reason=busy"));
+  assert.equal(busy.length, 1, held.logged.join(" | "));
+  assert.equal(busy[0].includes("budget_bytes"), false, "budget_bytes belongs to the size refusal alone");
+  assert.match(busy[0], /duration_ms=\d+$/);
+
+  // too_large: a response past the budget, which IS measured against it.
+  const big = harness([{ status: 200, text: "x".repeat(HISTORY_RESPONSE_BYTES + 1) }]);
+  await big.transport.historyChanges(0, READ_CONTROL).catch(() => undefined);
+  assert.match(
+    big.logged.find((line) => line.startsWith("history_http decision=refused")),
+    new RegExp(`^history_http decision=refused reason=too_large budget_bytes=${HISTORY_RESPONSE_BYTES} duration_ms=\\d+$`),
+  );
+
+  // cancelled: the operation was stopped before the read could settle.
+  const stopped = harness([{ status: 200, text: "{}" }]);
+  const cancel = { check() { const error = new Error("stopped"); error.name = "HistoryCancelled"; throw error; }, wait: (work) => work };
+  await stopped.transport.historyChanges(0, cancel).catch(() => undefined);
+  assert.match(
+    stopped.logged.find((line) => line.startsWith("history_http decision=refused")),
+    /^history_http decision=refused reason=cancelled duration_ms=\d+$/,
+  );
+  assert.equal(stopped.sent.length, 0, "a cancelled read never reaches the network");
 });

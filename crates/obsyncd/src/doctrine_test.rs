@@ -406,15 +406,21 @@ fn typed_mode_check_flags_a_mutated_fixture() {
 }
 
 /// The two credential files are reached only through `Posture`: opened on a
-/// handle, measured on it, read or written and read back through it. The two
+/// handle, measured on it, read or written and read back through it. The
 /// files that use them therefore hold no filesystem call by name outside
 /// their tests, so a re-read by name cannot creep back in beside the measured
 /// one (`docs/storage.md`, "Volume posture", step 5).
+///
+/// `cli/setup_token.rs` is on this list because it is the third reader of a
+/// credential file and the only one whose output is the credential itself: a
+/// read by name there is a read of whatever was put under the name
+/// (issue #73).
 #[test]
 fn credentials_are_reached_only_through_a_measured_handle() {
     let root = repo_root();
     for file in [
         "crates/obsyncd/src/cli/serve.rs",
+        "crates/obsyncd/src/cli/setup_token.rs",
         "crates/obsyncd/src/storage/mod.rs",
     ] {
         let text = read(&root.join(file));

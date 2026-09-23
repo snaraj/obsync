@@ -16,7 +16,7 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.8.2-trixie-slim@sha256:14bf3eac4bf209d906d3c41256597d3ab1f926b2e93a79e9bdfe1efd32454239 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.8.2-trixie-slim@sha256:f7bb8247fdb16250dbec7fd0e24f091c6f5f0a29d256f3aef5816a7a369166b2 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by

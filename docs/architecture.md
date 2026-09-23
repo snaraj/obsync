@@ -112,8 +112,8 @@ choices, and what each is for:
 | An HTTPS reverse proxy on hardware the deployer owns | a permanent public endpoint | the deployer owns the terminator, so the deployer owns its terms |
 | A tunnel provider on a public hostname | reaching the server with no inbound port | read the provider's terms; move a bulk first sync onto the LAN |
 
-The reference deployment uses the first (section 10): private connectivity,
-no public hostname, and therefore no third party on the path at all. A tunnel
+The shape in section 10 takes the first: private connectivity, no public
+hostname, and therefore no third party on the path at all. A tunnel
 is one supported transport, never the foundation: none of the three changes
 what the server does, only who else is on the path.
 
@@ -211,6 +211,52 @@ sids[], bytes, manifest_ct, manifest_nonce, device_id, ts}`.
 recomputed by the server, so two devices producing the same version
 collide harmlessly. Paths live only inside `manifest_ct`.
 
+### 3.4.1 Folder records (1.1.0)
+
+A folder syncs as a version of its own, so an EMPTY folder can exist on every
+device and a deleted one can leave every device (issue #104). It is the same
+mechanism a file uses with nothing in it:
+
+```json
+{"v":2,"kind":"directory","path":"Notes/Ideas","domain":"<domain_id>",
+ "size":0,"chunks":[],"sha256":"","deleted":false}
+```
+
+The record it rides in has `sids: []` and `bytes: 0`, which is what the
+server already accepts for a tombstone, so the server stores, retains and
+feeds a folder exactly as it does a file and learns no more than it already
+did. **No server change.**
+
+`v: 2` is the compatibility boundary and the reason the field exists. A
+device on 1.0.x decodes every manifest through one function that refuses any
+`v` it does not know before it reads another field, so a folder record cannot
+become a FILE written at the folder's path there; it is refused, logged, shown
+to the user once per file id, and the feed moves on.
+
+Two properties make a folder record safe to publish from anywhere:
+
+- **Its file id is derived, not random:** the first 16 bytes of
+  `HMAC(K_m,d, "obsync/v1/folder" || 0x0a || path)`. A file carries its
+  identity through a rename because its CONTENT is what is tracked; a folder
+  has no content, so its path is the only thing its record can be about. Two
+  devices that create the same folder independently therefore arrive at ONE
+  record. With two, deleting the folder would tombstone one and leave the
+  other live, and the next device to read the feed would put the folder back.
+- **Its manifest carries no timestamp, and its nonce is derived** the way the
+  domain map's is (`HKDF(K_m,d, "obsync/v1/nonce", SHA-256(aad || plaintext))`).
+  The bytes two devices produce for the same folder in the same state are
+  then identical, so the `version_id` is identical and the second device's
+  post is the `200` no-op `docs/protocol.md` already promises. The key is
+  shared with the randomly-nonced file manifests and that costs nothing: a
+  nonce derived by HKDF from the message is a pseudorandom 96-bit value, so
+  the chance it meets a random one is the chance two random ones meet, and it
+  repeats only for a message identical in both AAD and plaintext — whose
+  ciphertext was already identical.
+
+What the server additionally learns is that a folder deleted and recreated at
+one path is the same opaque label, which is what a file id already tells it
+across a rename. The path itself never leaves `manifest_ct`.
+
 ### 3.5 Request authentication
 
 Every API request carries `X-Obsync-Device`, `X-Obsync-Ts` (unix seconds),
@@ -271,7 +317,13 @@ goes through pairing and pairing needs an already-paired device. The
 plugin then generates `VRK` locally. The token is consumed for setup once,
 but it is not discarded: it remains the dashboard's recovery sign-in for
 the life of the server (§4.5), so its custody equals the recovery
-phrase's. The user is shown the
+phrase's. An operator asks the server for it: `obsyncd setup-token` prints
+it on standard output and nothing else, reading the same file through the
+same measured volume pass a start uses and opening no journal, so
+`kubectl exec deploy/obsync -- obsyncd setup-token` answers from a pod that
+is serving and needs no shell in the image. Reading the file off the volume
+remains the fallback for a server that is not running (`docs/recovery.md`).
+The user is shown the
 recovery phrase (the `VRK` as 24 words from a fixed 2048-word list, with a
 checksum) once and must confirm it. Without any paired device and without
 that phrase the vault is unrecoverable by design.
@@ -298,7 +350,12 @@ that phrase the vault is unrecoverable by design.
 4. The new device fetches the envelope (a signed request), decrypts it with
    `PS`, and persists `VRK` through the native secret store before sync starts. Approval
    is what activates the device; rejection, or expiry of an unapproved
-   pairing, destroys the pending credential.
+   pairing, destroys the pending credential. Rejection reaches a PENDING
+   claimant only: once approved, the claimant is a paired device, so a
+   reject that arrived after the approval is refused
+   (`409 already_approved`) and the store refuses to delete anything but a
+   pending device. Removing a paired device is revocation, which keeps the
+   record, destroys the secret, and refuses the last active device.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
 restart between step 2 and step 3 leaves a pending device behind a pairing
@@ -362,7 +419,7 @@ restart checks remain required on supported platforms. SecretStorage is
 vault-local and shared with other trusted plugins; this does not promise
 universal OS encryption or isolation from those plugins or the local OS.
 See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
-and [API baseline](../plugin/vendor/obsidian/README.md).
+and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsidian/README.md).
 
 ### 4.3 Revocation and recovery
 
@@ -564,6 +621,17 @@ already stored changes. Replay applies whatever the journal holds: the
 ceiling is a decision taken where a version is accepted, not a rule
 re-applied to history.
 
+One thing the server does recognise: two devices that resolve the same
+conflict to the same bytes post the same parents and the same
+content-addressed chunk list under two version ids, because the id covers
+the encrypted manifest and its nonce. The second post says nothing the
+first did not, so a client that declares it will store the id it is
+answered with (`accept_existing`, `docs/protocol.md`) is answered with the
+first version's id and no frame is written. That is recognition, not
+resolution: the comparison is over what the server already stores, the
+same parents with other chunks still fork, and a client that keeps its own
+computed id -- every 1.0.x client -- is stored as posted.
+
 The **change feed** is the journal's version and tombstone frames, in
 sequence order, exposed by `GET /v1/changes?since=<seq>&wait=<s>`.
 `wait` long-polls up to 55 s (inside the edge's 100 s idle limit) and
@@ -574,7 +642,36 @@ returns immediately when a new frame lands.
 1. **Watcher.** `vault.on(create|modify|delete|rename)` plus a startup
    reconciliation that compares `(mtime, size)` per path against the local
    state and re-hashes anything that differs. Events are debounced 500 ms
-   per path; a file still growing is retried, never uploaded torn.
+   per path, and the growing-file guard then compares each stat with the one
+   the previous recheck took, 400 ms earlier: a file that has been seen
+   changing must hold still for 5 s before it is queued, and a push whose
+   file moved between the start and the end of its read is abandoned before
+   a version exists. A file still growing is retried, never uploaded torn.
+   Every 30 s the engine also compares its own listing of the vault against
+   the local state. On desktop that listing is the filesystem, read directly,
+   because Obsidian's index is never fresher than the events it emits: a
+   note moved in from a file manager is in neither until the app notices.
+   The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
+   recorded path with a new unrecorded one carrying the same `(mtime, size)`
+   as a MOVE, keeping the file id -- and it never publishes a tombstone,
+   because a listing this device took itself is the right thing to converge
+   from and the wrong thing to delete on. Deletions stay with the watcher
+   and with startup reconciliation, which read Obsidian's own index.
+
+   THE SCAN READS RECORDS BEFORE THE LISTING, and that order carries one
+   fact. A rename the plugin never heard as an event -- made while Obsidian
+   was closed, or dropped by the host's index -- is a record whose path has
+   left the listing and a listed path no record explains. Queued the other
+   way round the second is published as a NEW file id before the first is
+   recognised, which on a filesystem that FOLDS CASE is how `Team docs`
+   renamed to `team docs` became two folders on every device that does not
+   fold (issue #124). Two spellings of one name are paired as the rename
+   they are when the listing holds exactly one of them and the host still
+   answers for the spelling its own listing dropped -- an answer only a
+   folding filesystem gives, and there the two spellings ARE one directory
+   entry. A host that keeps them apart answers nothing for a file that is
+   gone, so a deletion beside a genuinely different note whose name differs
+   only in case still publishes its tombstone.
 2. **Push.** Read, chunk, encrypt, batch-check existence (`POST
    /v1/chunks/exists`), upload missing chunks with bounded concurrency
    (4 on desktop, 2 on mobile) and resume by `sid`, then post the version.
@@ -585,8 +682,33 @@ returns immediately when a new frame lands.
    `sha256`, and write atomically (temp file plus rename on desktop via the
    Node filesystem; adapter write on mobile). Echoes of the device's own
    versions are recognized by `version_id` and skipped. A version whose path
-   moved is applied as a MOVE -- the new path is written, the old one
-   trashed -- and the vault reports that removal back to this plugin like any
+   moved is applied as a MOVE, and from 1.1.0 that is the host's own atomic
+   rename whenever the source still holds exactly the content the version
+   carries (issue #108): nothing is downloaded and nothing is trashed. A
+   source holding anything else takes the older path -- the new name is
+   written and the old one trashed -- and so does a version this device holds
+   under no name at all. Two spellings that differ only in CASE are one more
+   case of the same rule, and the one place it can never be a write: that
+   is one rename of one entry on every host and must never be a write and a
+   removal, because on a folding filesystem the write lands in the file this
+   device already has and the removal then takes it, while the same host
+   answers the destination's lookup with the source's own file, which the
+   same-name rule settles as a collision at the old spelling for good
+   (issue #124). The host renames the entry instead, refusing when a
+   DIFFERENT file wears the destination's exact name -- proved by inode on
+   desktop and by the adapter's case-sensitive existence check on mobile --
+   and that refusal is the real collision, which takes the same-name rule as
+   before. A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
+   an entry rename cannot do: `rename(2)` resolves the directory components
+   of its destination, so a per-file rename whose difference lies above the
+   last component renames nothing and reports success. The FOLDER record
+   re-cases the directory entry itself and carries every record beneath it
+   with it (`pull.ts`, `recaseFolder`), the sender publishes that record
+   BEFORE the moves under it (`main.ts`), and a per-file move reaching a
+   device whose directory still wears the old spelling is REFUSED rather than
+   recorded: a record spelling a folder a way the vault does not show is what
+   the scan reads as a rename and publishes back, which cost one version per
+   note every `SCAN_MS` on both devices until the quota answered. The vault reports the ordinary move's removal back to this plugin like any
    other deletion, so the engine drops it once, by the path the pull path
    recorded before removing it. Without that gate a rename is republished as
    a tombstone and deletes the file on every device, which is what 1.0.4
@@ -598,9 +720,107 @@ returns immediately when a new frame lands.
    filesystem, not on the string: every path component from the vault root
    down is checked with a no-follow stat and must be a real directory,
    never a symlink; the temp file is opened exclusive-create and verified
-   by descriptor before writing and after the rename. Hidden folders
+   by descriptor before writing and after the rename.
+
+   A write and a removal each report on themselves, because neither is
+   atomic against the user. The metadata a writer answers with is the
+   metadata of the bytes IT committed -- the descriptor's own stat, or the
+   byte count handed to the adapter -- never a fresh look at the name, which
+   after an in-place save describes another file under the same inode.
+
+   A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
+   the content it is removing, and the desktop host first gives that file a
+   second name with `link`, so the inode outlives whatever the vault's
+   "Deleted files" preference does with the first -- including permanent
+   deletion, which is an unlink of the name it is not holding. The vault name
+   itself is then MOVED: one atomic `rename` to a hidden name in the same
+   directory, which takes whatever inode stands at that name in that instant
+   and leaves the name FREE. No check can bind a path-based destructive
+   call -- whatever a check found, the name can be replaced before the call
+   reaches it -- so the check is moved to the far side of the rename, where
+   it is about a file nothing else can reach. What MOVED is compared with
+   what the caller copied: device and inode from the hold, size and
+   modification time from the caller. A mismatch means the rename moved a
+   REPLACEMENT -- an editor that saves by renaming a temp file over the note
+   leaves a DIFFERENT file there -- so what moved is renamed back under the
+   vault name, or kept beside it under a visible name when that name has
+   been taken again, and the answer is `kept`. Only a match is handed to the
+   vault's own deletion, BY THE HIDDEN NAME, so the destructive call cannot
+   reach a file an editor has since created at the vault name. A vault that
+   does not index that hidden name deletes it outright rather than moving it
+   to the user's bin; by then its bytes are the ones this device has already
+   published beside it, so the note the "Deleted files" preference is about
+   is untouched. Afterwards the hold still has the last word, because a
+   rename does not close an editor's DESCRIPTOR: a program that still holds
+   the file open writes through it wherever its name has gone, including
+   between the proof and the removal, and including between this device's
+   last look at the hold and the unlink that releases it. So the hold is
+   OPENED before it is judged: the descriptor keeps the inode alive across
+   its own unlink, which is what makes the unlink stop being the last word.
+   A save that reached the inode before the release is put back by name; a
+   save that lands after it is read back THROUGH that descriptor and written
+   out under a name of its own. Either way nothing is released until the
+   bytes are somewhere else: a restore that lands nowhere keeps the hidden
+   name rather than dropping it.
+
+   A RESTORE NEVER REPLACES WHAT TOOK THE NAME. Looking at a destination and
+   then renaming onto it asks a question whose answer expires -- a save can
+   create that name in between, and `rename` replaces it without a word --
+   so `link` IS the check: it cannot replace anything, so a name taken in
+   that instant fails the call instead of overwriting the note that took it.
+   The alternatives are numbered (`(obsync kept)`, `(obsync kept 2)`, ...)
+   because the name being competed for can be taken more than once, and a
+   file the user cannot see is a file they have lost. One window
+   remains, and it is stated rather than claimed away: an in-place write to
+   the held inode, between the copy and the move, that leaves both the size
+   and the whole-second modification time unchanged. A host that cannot make
+   that second name at all -- every mobile device, and a filesystem that
+   refuses `link` -- or cannot make that move, removes NOTHING, and the
+   caller takes its non-destructive path instead, because a narrowed window
+   is not a closed one. That is why the same-name rule
+   settles a pair by renaming on a computer and by keeping both on a phone
+   (`plugin/src/sync/pull.ts`, `VaultHost.bindsRemoval`), and the cost is a
+   name rather than a note. The name the moved file VACATES is taken with
+   the create-only writer rather than a plain write, so a file an editor
+   recreated there while the old one was being cleared away is kept and the
+   pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in.
+
+   A DELETION IS A CHANGE LIKE ANY OTHER, and is answered with the same two
+   questions. A tombstone whose parents do not include the version this
+   device holds is one side of a fork: the graph says whether this device
+   has already incorporated it (skip), whether it descends from what this
+   device holds (apply), or neither, which is delete-versus-edit and keeps
+   BOTH sides. Then the file at the path is proved against the record, so a
+   note typed while Obsidian was closed -- or while its folder was outside
+   the selection, which a widening replays the whole feed against -- is kept
+   and republished rather than removed. The removal itself is bound like
+   every other: `expect` on a host that can bind one, and the unbound
+   removal every device made before 1.0.7 where it cannot, because refusing
+   there would drop a deletion the feed never delivers again.
+
+   WHAT A PUSH RECORDS IS A PATH IT STILL SYNCS. Everything before the
+   acknowledgement is asynchronous, so the file can leave the selection, or
+   the vault, while the upload is in flight. The version stays published --
+   other devices receive it -- but the record is written only if the path is
+   still inside the selection and a file is still standing there. Writing it
+   regardless put back a path the rename handler had deliberately forgotten,
+   and the next scan read its absence as a deletion and took the note off
+   every other device.
+
+   AND A VERSION THIS DEVICE DID NOT COMPUTE IS PROVED BEFORE IT IS ADOPTED.
+   The store answers a post that offers `accept_existing` with the version
+   it already holds at that position, and its key -- `(file_id, parent set,
+   sids, deleted)` -- cannot include the path, which lives inside a manifest
+   the store cannot read. An ordinary edit and another device's rename-and-
+   edit from the same parent to the same bytes are therefore the same key.
+   The device reads that version back and adopts it only when its
+   authenticated manifest describes the same operation (same path, same
+   size, same deleted bit); otherwise it reposts with the offer withdrawn.
+   Adopting blindly recorded the other device's path as this one's and
+   marked its rename as this device's own echo, so the rename was lost on
+   both sides.
 
    The record is the authority for what a version IS, and the manifest is
    bound to it field by field before policy, download, or a write. Decryption
@@ -688,6 +908,62 @@ returns immediately when a new frame lands.
    the mobile per-file ceiling exists. Both facts are stated in the
    settings UI.
 
+### 6.2.0 Folder semantics (1.1.0)
+
+Folders converge in both directions, and the whole of it is one record type
+(3.4.1) plus one rule about when a folder may be removed.
+
+**Publishing.** A vault `create` event for a folder publishes its record; a
+`delete` event publishes a tombstone for it and for every folder record
+beneath it; a `rename` tombstones the old path and publishes the new one, for
+the folder and every record under it, while the files inside move as ordinary
+per-file renames that keep their file ids. A folder whose record this device
+already has is never republished, which makes the folder a pull just created
+free. Startup reconciliation publishes a record for every folder that has
+none and a tombstone for every record whose folder is gone, so a vault that
+predates 1.1.0 converges once both devices update. It logs its budget as a
+START line and its counts as a SUMMARY (requirement 12).
+
+**Removal, and the rule that governs it.** A folder is removed only when it is
+EMPTY on this device, and emptiness is asked of the FILESYSTEM, not of the
+synced inventory: a hidden file, an unsynced note, another plugin's data all
+keep it, and the file is never taken to make the folder go. Beyond that:
+
+- a folder WITH a record is removed by its own tombstone and by nothing else,
+  so an empty folder a user keeps does not vanish when its last note is
+  deleted on another device;
+- a folder with NO record is removed when a file leaving empties it, walking
+  up to (never into) the sync root and stopping at the first folder it keeps.
+  Nothing will ever tombstone such a folder, and it exists only to hold the
+  file that is leaving.
+
+ANOTHER DEVICE'S SILENCE IS NEVER A DELETION. A device on 1.0.x publishes no
+folder record and no folder tombstone, ever, so a peer that emptied a folder
+there has said nothing about the folder itself. The record rule above is what
+answers that: this device gives a record to every folder it holds — startup
+reconciliation to the ones it already had, the vault's own create event to the
+ones a pull makes on its way to a file — so a folder this device holds survives
+any number of files leaving it, and only a tombstone naming it removes it.
+
+A folder tombstone that finds the folder occupied forgets the record and keeps
+the folder: it is nobody's to manage now, and the empty-parent walk is what
+will take it when it empties.
+
+**Refusals.** A folder path takes the same vault-path rule and the same
+desktop component walk a file path takes, so no folder is created through a
+symlink or outside the vault. A folder record naming a path where a FILE
+stands is refused and logged, and so is a file manifest naming a path where a
+folder stands — on both platforms, since a folder can now arrive where a file
+used to be. Every folder decision logs one line: `folder path_class=folder
+decision=published|created|removed|kept|refused reason=… seq=…`.
+
+**Per platform.** Desktop makes folders with Node's `mkdir` after the
+component walk and reads the directory with `readdir` to decide emptiness;
+mobile uses the vault adapter's `mkdir` and `list`. Both remove through
+`FileManager.trashFile` when Obsidian's cache knows the folder, so the user's
+own "Deleted files" preference decides where it goes, and through the
+adapter's `rmdir` when it does not.
+
 ### 6.2.1 Device-local folder selection
 
 Before pairing a vault that contains more than notes, select the folders
@@ -715,9 +991,68 @@ Saving waits for current transfers and manual downloads to finish, stops
 queued work, persists the selection, then rescans. Excluded files, history
 and local records stay intact; their absence from a scoped scan cannot
 create a tombstone. An unposted rename retains a dirty record for the next
-scan. A local move across the boundary is a deletion from the selected
-source or creation at the selected destination; it never transfers a
-remembered excluded file identity into the selection.
+scan. A local move INTO the selection is a creation at the destination with
+a fresh identity; a remembered excluded identity is never transferred in. A
+local move OUT of it publishes nothing: the file is alive under its new
+name, so the deletion this device would otherwise post is a tombstone every
+other device obeys, the record is dropped so no later scan can infer that
+deletion either, and the user is told once.
+
+**A FOLDER RECORD's scope is the selected folder itself and everything inside
+it**, which is where it differs from a file's: a folder record IS its path, so
+the selected folder has one of its own, and that record is what carries its
+creation, its removal and a rename of its capitalisation -- which no per-file
+move can carry, because `rename(2)` resolves a destination's directory
+components and renames only the last. File records keep the strict rule (a
+selected folder is a directory, never a file wearing that exact name), and an
+ANCESTOR of a selected folder stays a directory this device may walk and never
+one it publishes. The rule holds on both paths: `folderCreated`,
+`folderDeleted`, `folderRenamed`, `postManifest` and the start-up pass on the
+push side; `applyFolder`, `removeFolder` and `recaseFolder` on the pull side.
+One tolerance, for the receiving side: a record whose path differs from a
+selected folder by the capitalisation of its LAST component alone -- an
+ancestor spelled differently is a folder this device syncs in neither
+direction, and `rename(2)` could not apply that difference in any case. The
+tolerance exists for one thing, a rename of the selected folder made
+elsewhere, and a string cannot tell that from a SECOND folder of that name on
+a device whose filesystem keeps the two spellings apart; neither can the
+vault, which on a volume that folds case answers "one directory entry" for
+both by construction. So the record is admitted only in the state a rename
+leaves on the wire: the tombstone for that folder's own record has been
+applied, nothing has written a record for it since, and no other record has
+already used that admission (`docs/protocol.md`, "The admission rule";
+`sync/pull.ts`, `admitFolderRecord`; review round 4, finding 1). Admitted, it
+is applied by asking the VAULT as before -- a host that keeps the two apart
+holds nothing at that name and the record is refused as it always was.
+Refused, it changes nothing and the user is told once, naming both spellings.
+When a received record re-cases
+the selected folder, the selection follows it, saved with the records that
+move with it: a selection left at a spelling the vault no longer shows would
+take every file under it out of scope in the same tick. A folder renamed to a
+name this device syncs in neither direction publishes nothing and drops its
+record, exactly as a file does -- the folder is alive under its new name, and
+a tombstone for it is one every other device obeys.
+
+Two shapes are deliberately outside that: a selected folder re-capitalised
+from OUTSIDE Obsidian reaches the start-up pass as every recorded path under
+it having vanished and is held as a bulk deletion (issue #123, below), and a
+folder ABOVE a selected folder renamed on another device is outside what this
+device syncs in either direction, so its record is skipped there and the moves
+under it are refused with the folder-capitalisation notice.
+
+Renaming or moving a folder that IS a selected folder, or that holds one,
+moves the selection with it, in the parser's canonical form. Each file under
+the folder is judged against the selection in force on EACH side of the
+move — its old name against the selection before, its new name against the
+selection after — so the files are published as renames and a record the
+selection never covered is not brought in. What moves is everything the
+device owes under that folder, not only the records: a note written moments
+earlier is still in the debounce or the push queue with no record at all,
+and leaving that work pointing at a name the folder no longer has left the
+note on this device alone until something else triggered a reconciliation.
+A destination this version syncs
+in neither direction (hidden, malformed) cannot be followed: the selection
+stays where it is and the files leave the scope unpublished.
 
 Unloading the plugin invalidates pending startup and scope-change
 continuations. A cancelled folder change cannot restart sync or replace a
@@ -725,18 +1060,25 @@ newer load's engine or state. A local data write already issued may still
 finish; cancellation asks the user to check the saved selection after
 restart, without claiming either a successful change or an undone write.
 
-**No blind history replay.** Once this device has sync history, its
-selection may only narrow. Adding folders or returning to whole-vault mode
-is refused with an explanation: the skipped history has not been applied,
-and rewinding the chronological feed could overwrite newer local notes.
-To add local content within the same vault, move it into a folder already
-selected and run **Sync now**. For a staged first sync, select the final
-folder before pairing, keep personal files in an excluded staging folder
-within the vault, validate disposable files inside the selected folder,
-then move in the personal files. A different selection for an existing
-shared vault needs a fresh local vault configured before pairing; deleting
-plugin state or re-pairing over existing files is not a safe resync recipe.
-Automatic reconciliation of current heads on expansion is not implemented.
+**Widening replays the history this device skipped.** A selection that
+gains a folder, or returns to whole-vault mode, rewinds this device's feed
+cursor to 0; the restart then walks the change feed from the beginning, the
+way a device syncing for the first time does, and the startup scan publishes
+the newly covered local files. There is no "list the vault's files" call to
+ask instead: for a file this device never covered, the feed is the only place
+it exists. Narrowing keeps its cursor, because nothing new is covered.
+
+The replay is safe because the pull path answers each record against what
+this device holds NOW rather than against the order it arrives in: a version
+this device authored is its own echo, a version its head already reaches is
+`already_incorporated`, a tombstone for a file it no longer tracks is
+skipped, and local content the server never received is kept beside the
+incoming version instead of replaced (6.2 item 3). It is not free: replaying a file whose
+history this device already holds spends one `GET /v1/files/{id}` per foreign
+version older than its own head, and the decision line records the cursor it
+rewound from. No
+re-pairing, state reset or fresh vault is involved, and another device's
+selection is untouched.
 
 This limits obsync's file operations, not the Obsidian application, another
 plugin, an OS process or a paired device's access to previously uploaded
@@ -858,8 +1200,9 @@ pinned-key verifier is not part of this installation path.
 ## 7. Storage, durability, replication
 
 `docs/storage.md` is the contract. In brief: one blob volume, one journal
-volume, each bound to whatever StorageClass the operator names (the
-reference deployment uses `local-pie-ssd` for both today); every write is
+volume, each bound to whatever StorageClass the operator names -- the chart
+ships a default name that every deployer replaces with a class their own
+cluster offers; every write is
 temp-write, fsync, rename, directory fsync; chunks are verified by `sid` on
 write and by a rate-limited scrub; unreferenced chunks are collected
 automatically after a retention window; a free-space watermark refuses new
@@ -928,28 +1271,34 @@ what keeps `250G` from ever meaning 250 GiB. A size whose whole-unit product
 does not fit in 64 bits (`17179869184Gi`, exactly 2^64 bytes) is refused
 rather than wrapped.
 
-## 10. Reference deployment (the reference node)
+## 10. A reference shape, and what varies
 
-**Private and owner-only** (owner ruling 2026-09-07). A single-node cluster
-reached over private connectivity, LAN or VPN: no public hostname, no public
-access application, no public route. A tunnel provider is an option this
-deployment has not taken.
+This is the SHAPE the chart is written for, stated as guidance rather than as
+an account of any particular installation. Any deployment's own values,
+addresses, volumes and access decisions are the deployer's, and the one this
+project is developed against is private (requirement 11).
 
-Namespace `obsidian`; one Deployment (single replica, `Recreate`), one
-Service on 8080, one default-deny NetworkPolicy admitting ingress from one
-peer only; two static local PersistentVolumes on `local-pie-ssd` (blobs 250
-GiB, journal 4 GiB), growable to 500 GiB; `OBSYNC_SERVER_KEY` from a
-SOPS-managed Secret. Edge mode follows the posture: `OBSYNC_EDGE=none` while
-nothing but private connectivity reaches it, so a forwarded address is
-trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
+A single-node cluster reached over private connectivity -- a LAN, or a VPN
+back to it -- with no public hostname, no public access application and no
+public route. A tunnel provider is an option this shape does not take.
+
+One namespace of the deployer's choosing; one Deployment (single replica,
+`Recreate`, because two writers cannot share these volumes); one Service on
+8080; one default-deny NetworkPolicy admitting ingress from the one peer that
+terminates TLS; two static local PersistentVolumes sized to the disk the node
+actually has, the journal claim at or above the watermark floor
+(`docs/storage.md`); and `OBSYNC_SERVER_KEY` from a Secret whose contents
+never enter a repository. Edge mode follows the posture: `OBSYNC_EDGE=none`
+while nothing but private connectivity reaches the deployment, so a forwarded
+address is trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
 
 Publishing a hostname later is a configuration change, not a redesign: a
-per-app Cloudflare Tunnel for one hostname (`sync.example.org` standing in
-for the deployer's own) with Cloudflare Access in front -- identity policy
-for the dashboard paths, service-token policy for `/v1/*` -- and
-`OBSYNC_EDGE=cloudflare`, which makes the edge's connecting-address and
-request-id headers mandatory on every request and refuses one that lacks
-them. `docs/platform-onboarding.md` lists the platform-repository changes.
+tunnel for one hostname (`sync.example.org` standing in for the deployer's
+own) with an access policy in front -- identity policy for the dashboard
+paths, service-token policy for `/v1/*` -- and `OBSYNC_EDGE=cloudflare`, which
+makes the edge's connecting-address and request-id headers mandatory on every
+request and refuses one that lacks them. `docs/platform-onboarding.md` lists
+what a GitOps platform repository has to add.
 
 Every other deployment differs from it in the terminator and in which
 proxies, if any, may speak for a client's address; the edge mode is `none`
@@ -957,7 +1306,7 @@ wherever nothing but private connectivity reaches the server:
 
 | Deployment | `OBSYNC_EDGE` | TLS terminator | Trusts forwarded addresses from | Proven by |
 | --- | --- | --- | --- | --- |
-| Reference (pie5) | `none` | an in-cluster TLS terminator the platform trusts, in front of the pod; the deployment's own tuple lives in the platform runbook | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty at activation: no forwarded address is trusted until a reviewed change names a proxy | planned, not yet proven: `docs/validation.md` V1-V14 by hand once the deployment is live |
+| Cluster (private connectivity) | `none` | an in-cluster TLS terminator in front of the pod, as `docs/kubernetes.md` builds one | `OBSYNC_TRUSTED_PROXY_CIDRS`, empty until a reviewed change names a proxy | `.github/workflows/helm-e2e.yml`, which installs the chart and the terminator and runs a device flow through them |
 | Compose (any network, no provider) | `none` | Caddy, `deploy/compose`, reachable only on the bind address you choose | `OBSYNC_TRUSTED_PROXY_CIDRS`, the compose network only | `scripts/ci/compose-smoke.sh`, in the PR gate |
 
 The Compose row is the one a stranger can run: a private name, a certificate
@@ -968,7 +1317,7 @@ what the service is called and which devices trust it; the bind address
 settles which interface accepts connections and nothing about their source,
 since routed, VPN or forwarded traffic arriving at a LAN address is accepted
 unless a firewall or the router's forwarding rules refuse it. The compose file requires that variable and
-defaults it to nothing. `README.md`, "Any network, no provider", is its
+defaults it to nothing. `docs/server.md`, "Any network, no provider", is its
 install path.
 
 ## 11. Current and deferred scope

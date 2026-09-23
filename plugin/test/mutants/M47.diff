@@ -1,0 +1,12 @@
+# M47: the local-copy bound is applied to the streaming host instead of the one that buffers
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1109,7 +1109,7 @@
+   // a whole file, the local note must fit this device's own ceiling, because
+   // the copy costs its size in memory however the loop above is written
+   // (round 3, finding 3).
+-  if (context.host.supportsRangeReads !== true) {
++  if (context.host.supportsRangeReads === true) {
+     const room = admit(context.state.data.policy, context.state.localBytes(), before.size);
+     if (!room.ok) {
+       context.host.log(

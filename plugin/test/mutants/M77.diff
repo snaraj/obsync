@@ -1,0 +1,12 @@
+# M77: a rename that changed no byte downloads the note again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1141,7 +1141,7 @@
+   // `recordAt` wrote from the version's own sids. A version carrying any
+   // other content falls through to the download below.
+   if (
+-    localPath === manifest.path &&
++    localPath === undefined &&
+     held === null &&
+     local !== undefined &&
+     local.size === manifest.size &&

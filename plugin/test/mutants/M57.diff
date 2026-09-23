@@ -1,0 +1,12 @@
+# M57: a tombstone is applied without proving the file against its record
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -744,7 +744,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
+       // would add a version that says nothing new. This branch is the one
+       // that holds bytes no version holds.
+       const held = await competing(context, localPath, change.file_id);
+-      if (held !== null) {
++      if (held === "no_record") {
+         const started = context.now();
+         const revived = await pushFile(context, localPath, true);
+         if (revived.status === "pushed") context.authored.add(revived.versionId);

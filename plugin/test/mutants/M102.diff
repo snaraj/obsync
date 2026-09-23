@@ -1,0 +1,11 @@
+# M102: a record written for a folder leaves its retirement open
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -550,7 +550,6 @@
+     // record has been written for it since" (`sync/pull.ts`,
+     // `admitFolderRecord`), and this is every writer of one -- the feed's own
+     // create, a re-case, and this device's own publication.
+-    delete this.data.retiredRoots[path];
+   }
+ 
+   forgetFolder(path: string): void {

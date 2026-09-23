@@ -64,7 +64,7 @@ answers the same.
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
 | `POST /v1/pairing/{id}/approve` | **no** | consumes the pairing |
-| `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device |
+| `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device; refuses an approved pairing |
 | `GET /v1/pairing/{id}/envelope` | **no** | single use; then `410 envelope_consumed` |
 | `GET /v1/devices` | yes | read |
 | `PATCH /v1/devices/{id}` | **no** | write |
@@ -74,7 +74,7 @@ answers the same.
 | `POST /v1/chunks/get` | yes | a read; same reason |
 | `PUT /v1/chunks/{sid}` | yes | the sid IS the body's hash |
 | `GET /v1/chunks/{sid}` | yes | read |
-| `POST /v1/files/{id}/versions` | **no** | appends a version and moves the heads |
+| `POST /v1/files/{id}/versions` | **no** | appends a version and moves the heads; may answer with an identical version's id |
 | `GET /v1/files…`, `GET /v1/changes` | yes | reads |
 | `POST /v1/dashboard/login-link` | **no** | mints a single-use token |
 
@@ -125,7 +125,12 @@ and a test asserts every route it emits appears there.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
-  pending device and its wrapped secret are destroyed. Expiry of an
+  pending device and its wrapped secret are destroyed. Only a CLAIMED pairing
+  is rejectable: an unclaimed one is `409 not_claimed` and one the creator
+  already approved is `409 already_approved` and changes nothing, because the
+  claimant is a paired device by then and deletion carries no last-active
+  guard. A paired device is taken away with
+  `POST /v1/devices/{id}/revoke`. Expiry of an
   unapproved pairing destroys them the same way, and so does a restart:
   pairings live in memory, so a claim that does not survive one leaves a
   device nobody can approve, and the start destroys it. The claimant pairs
@@ -180,8 +185,11 @@ retain the account-wide authority described below.
 - `POST /v1/files/{file_id}/versions`
   `{"version_id":"<64hex>","parents":["<64hex>",…],"sids":["<64hex>",…],
   "bytes":<n>,"domain_id":"<32hex>","manifest_ct":"<base64>",
-  "manifest_nonce":"<24hex>","deleted":false}` → `201 {"seq":<n>,
-  "heads":["<64hex>",…],"conflicted":false}`. Rules: every sid must exist
+  "manifest_nonce":"<24hex>","deleted":false,"accept_existing":false}` →
+  `201 {"seq":<n>,"version_id":"<64hex>",
+  "heads":["<64hex>",…],"conflicted":false}`. `version_id` in the answer is
+  the version the store holds for this post: the posted id, except on the one
+  case below. Rules: every sid must exist
   (`409 missing_chunks` with the list); `version_id` must equal the server's
   recomputation (`422 version_id_mismatch`); `domain_id` is required and
   must equal the file's own (`409 domain_mismatch`), which its first version
@@ -192,6 +200,20 @@ retain the account-wide authority described below.
   version whose acceptance would leave a 65th is refused with `409
   too_many_heads` and nothing already stored changes. Posting an
   existing `version_id` is a `200` no-op.
+- **One position, one version.** Two devices that resolve the same conflict
+  to the same bytes post the same parents and the same chunks under two
+  version ids, because the id covers the encrypted manifest and its nonce;
+  the file forks and closing it costs another version. A post carrying
+  `"accept_existing":true` whose `(file_id, parents as a set, sids in order,
+  deleted)` equals a version the store already holds is answered `200` with
+  THAT version's `seq` and `version_id`, and no frame is written. The same
+  sids under other parents, or the same parents with other sids, is a new
+  version as before, and so is a tombstone over an empty file. The field is
+  the client's promise to store the `version_id` it is answered with: a
+  client that keeps the id it computed omits it (as every 1.0.x client does)
+  and is never answered with another id, because it would otherwise remember
+  a version this server never stored. The decision is logged
+  (`decision=deduplicated`).
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
@@ -203,6 +225,161 @@ retain the account-wide authority described below.
   Used for initial reconciliation; the feed is the normal path.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
+
+### Folder records (plugin 1.1.0)
+
+A folder is one more version on this same endpoint, with no chunks. The
+server has no folder concept and needs none: `sids` is empty and `bytes` is
+`0`, which it already accepts for a tombstone, and the manifest — which it
+cannot read — says the rest. **No server change; a 1.0.x server serves this.**
+
+Inside `manifest_ct`:
+
+| Field | Value |
+| --- | --- |
+| `v` | `2` — a file manifest is `1` and is unchanged |
+| `kind` | `"directory"` |
+| `path` | the folder's canonical relative vault path |
+| `domain` | the domain id, as a file manifest carries it |
+| `size` | `0` |
+| `chunks` | `[]` |
+| `sha256` | `""` |
+| `deleted` | `false` to create the folder, `true` to remove it |
+
+There is no `mtime`: a folder has no content to be newer than, and leaving it
+out is what makes the manifest two devices produce for one folder identical
+(`docs/architecture.md` 3.4.1). With the file id derived from the path and the
+nonce derived from the message, two devices publishing the same folder produce
+the same `version_id`, so the second post is the `200` no-op this document
+already specifies for a version the server holds.
+
+**Whose folders a device publishes and receives records for.** A device that
+syncs only some folders (`syncFolders`, local-only, above) publishes a folder
+record for each SELECTED folder and for every folder inside it, and receives
+the same. The selected folder itself is included because a folder record IS
+its path: nothing else can carry that folder's own creation, removal or
+rename. A folder ABOVE a selected one is never published, and a FILE record
+keeps the stricter rule -- a selected folder is a directory, never a file
+wearing that exact name.
+
+A receiver additionally admits a folder record whose path differs from a
+SELECTED folder by the capitalisation of its LAST component alone -- an
+ancestor spelled differently is a folder it syncs in neither direction, and no
+host could apply that difference anyway, because `rename(2)` resolves a
+destination's directory components. That tolerance exists for one thing: a
+rename of the folder this device selects, made elsewhere. It is admitted only
+in the state that rename creates on the wire, and refused in every other:
+
+> **The admission rule.** A folder record whose path differs from a selected
+> folder by the capitalisation of its last component alone is admitted only
+> when the tombstone for THAT folder's own record -- the record this device
+> holds for it, by its file id -- has been applied, no record has been written
+> for that folder since, and no folder record has already used that admission.
+> The first record to arrive in that state takes it; anything else is refused
+> as `decision=not_synced reason=outside_sync_scope`, with one notice naming
+> both spellings.
+
+The retirement is a STATE, not a clock. It lasts until a record is written for
+that folder -- by the feed, by the re-case itself, or by this device's own
+republication of that folder at its next start-up pass, which is what happens
+when the tombstone was a DELETION and no rename follows it -- or until a
+folder record takes it. Inside that window one record one capitalisation off
+that folder is admitted, and the vault's own answer still decides what becomes
+of it. The rule grants a sender no authority it did not have: a device that
+can publish a folder record can rename that folder in any case. What it takes
+away is a SECOND device's folder being read as this device's rename.
+
+The rule is what a string comparison cannot be: a device whose filesystem
+KEEPS the two spellings apart can hold `Team docs` and `team docs` at once, and
+its record for the second one is indistinguishable, as a string, from a rename
+of the first. Asking the vault does not settle it either -- a receiver that
+folds case holds one directory entry for both BY CONSTRUCTION, so it answers
+"one entry" for a folder it has never heard of. What settles it is that a
+rename retires the old name: both senders of a capitalisation-only rename
+publish the old spelling's tombstone before the new record (below), and a
+second folder carries no tombstone at all. Admitted, the record is applied by
+asking the vault as before: where the two spellings are one directory entry the
+record names that device's selected folder, the entry is re-cased and the
+selection follows the new spelling; where they are two, the record names a
+folder that device does not sync and is skipped in the same words.
+
+**Publication order, for a rename that changes case alone.** A folder rename
+publishes a tombstone for the old path, a record for the new one, and a move
+per file beneath it. For an ordinary rename the moves go FIRST, so the old
+folder is empty on the receiving device by the time its tombstone arrives. For
+a rename that changes only capitalisation the FOLDER RECORD goes first, and
+that order is load-bearing rather than cosmetic: on a host that folds case the
+two spellings are one directory entry, `rename(2)` resolves the directory
+components of a destination and renames only its last component, so no
+per-file move can re-case a directory. The folder record is the only record
+entitled to, and a receiver applies it by renaming the directory entry itself
+and carrying every record beneath it along.
+
+**First on the WIRE, not first in a queue.** A sender drains its queue in
+batches and posts each batch concurrently, so a record enqueued first can
+still be journaled after one enqueued behind it. For this record that is not
+good enough, and the guarantee is therefore stated as an order on the wire:
+the sender waits for the server to acknowledge the folder record before it
+sends any move under it, and a post that FAILS keeps that hold rather than
+losing it -- the publication is put back in front of the moves it orders and
+attempted up to three times in all. The hold also survives the SENDER: a
+publication that has not been acknowledged is written into the device's own
+state with the fact that it orders what follows it, so a device stopped
+mid-drain -- quit, reloaded, closed -- restores it at the head of its queue
+before it reconciles anything and before any file work, and the moves queue
+behind it again. Every other folder record the next start owes is re-derived
+by that pass from the vault's own listing, which publishes them before it
+queues any file work for the same reason. At that bound the hold expires with one
+logged decision (`push path_class=folder decision=expired reason=folder_post
+attempt=3 budget=3`) and one notice, the moves go out and are refused by a
+folding receiver in the usual words, and the sender's next start-up pass
+republishes the record. The queue never waits forever and never gives the
+hold up silently. A receiver that meets a per-file move whose only
+difference lies in a directory component -- the shape a device older than
+1.1.0 publishes, which sends no folder record at all -- REFUSES it
+(`decision=case_move_refused reason=folder_case`, one notice per folder) and
+changes nothing, because recording a spelling its own listing contradicts is
+what makes two devices trade the same rename forever.
+
+**A rename nobody reported has the same order.** A folder re-capitalised
+while Obsidian was closed is found by the start-up pass, which publishes the
+same two records in the same order -- the old record's tombstone first, the
+new record behind it as the same wire barrier, and any moves the pass
+publishes for the notes underneath behind that. The reverse order is what a
+receiver cannot survive for an EMPTY folder: it re-cases the directory from
+the record and then meets the tombstone for the spelling it has just left,
+whose removal resolves to the one directory entry that rename produced.
+Receivers therefore also refuse to remove a directory whose vault spelling
+differs from the record asking for it (`folder path_class=folder
+decision=kept reason=vault_spelling`), which holds whatever order a sender on
+an earlier build used.
+
+**A refusal is not a loss, and it is not permanent.** A version refused while
+the two devices spelled the folder differently is never re-delivered by the
+feed, which advances past it. So when the folder record does arrive and the
+directory is re-cased, the receiver asks the server for the head of every
+record that re-case carried -- one `GET /v1/files/{id}` per record, bounded by
+the folder -- and applies each one through the ordinary path. A note edited on
+the other device while the two disagreed arrives then, rather than waiting for
+whatever touches it next.
+
+**What a receiver writes for a NEW file under such a folder.** A move is
+refused; a file id the receiver has never seen is not a move, and it is
+written. It lands in the directory the vault shows, because creating a
+directory that is already there changes nothing, and it is RECORDED at the
+spelling the vault shows rather than the one the manifest carries. A record
+that disagreed with its own vault was published back as a rename the sender
+never made, which a folding device answers with a conflict copy.
+
+**`v` is the compatibility contract.** A device that does not know a `v`
+refuses the manifest before reading any other field, writes nothing, and lets
+the feed advance. Plugins 1.0.0 through 1.0.6 -- every shipped 1.0.x -- do
+exactly that with `v: 2`, so a folder record can never be written as a file at
+the folder's path there. `parseManifest` is byte-identical at all seven of
+those tags (sha256 `8aa8a2df240bcd8ffba197fc9b2e238bb9b727ef0416007eb526a3082e8aa4de`
+of the function at each), and the copy the tests run against is
+`plugin/test/fixtures/decoder-1.0.x.mjs`, which says how to re-derive both.
+Any later record type must move `v` again for the same reason.
 
 ## Change feed
 
@@ -324,7 +501,14 @@ device whose link opened it is revoked.
   a credential VERIFIES -- a device signature, a dashboard session, a login
   or setup token -- never an inference from the route or the status. Every
   route that requires a credential authenticates before it validates
-  anything, so an anonymous caller is answered `401` (or `421`) and nothing
-  else, whatever it sends.
+  anything, so a caller holding no credential is told nothing a refusal has
+  to tell it: a missing, malformed, stale, replayed or unverifiable
+  credential -- an unknown device id included -- is `401`, and a request that
+  reaches an edge-fronted deployment without the edge's headers is `421
+  edge_required`. One refusal is answered before verification, the `403
+  device_revoked` above, and it is not an exception to this: revocation
+  destroys the wrapped secret, so there is nothing left to verify the
+  signature against, the refusal repeats only the device the caller itself
+  named, and the server classes it as what it is -- answered without proof.
 - Every request logs one line: `ts method path_class device status bytes
   duration_ms decision`.

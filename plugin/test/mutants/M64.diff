@@ -1,0 +1,13 @@
+# M64: a folder rename moves the records and leaves the pending work behind
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -487,8 +487,7 @@
+     // the note stayed on this device alone until something else triggered a
+     // reconciliation. Pending work moves with the folder like everything
+     // else under it.
+-    const pending = [...this.pending.keys(), ...this.queue];
+-    for (const path of new Set([...Object.keys(this.options.state.data.files), ...pending])) {
++    for (const path of new Set(Object.keys(this.options.state.data.files))) {
+       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
+     }
+   }

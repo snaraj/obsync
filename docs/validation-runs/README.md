@@ -35,6 +35,8 @@ plus one row per scenario:
 - **Scenarios.** Every scenario in `docs/validation.md` with `pass`, `fail`,
   or `not attempted`; the measured timing wherever the pass condition names
   one; and one sentence of what was observed. Silence is not a pass.
+  The user journeys of that plan are recorded in this same file, as `J` rows
+  beside the `V` rows and to the same standard.
 - **What was not validated.** The explicit list, closing the record. It is the
   half a later reader trusts the record for.
 

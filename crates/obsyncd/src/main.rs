@@ -1,5 +1,5 @@
-//! obsyncd entry point. Subcommands: serve, check, export, version
-//! (`docs/architecture.md`).
+//! obsyncd entry point. Subcommands: serve, check, setup-token, export,
+//! version (`docs/architecture.md`).
 #![forbid(unsafe_code)]
 
 fn main() {

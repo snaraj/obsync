@@ -1,0 +1,12 @@
+# M14: a failed publish reports success
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1303,7 +1303,7 @@
+   } catch {
+     // The reason is not logged: a host or transport error names a path.
+     context.host.log(`pull path_class=file decision=not_identified file=${fileId}`);
+-    return false;
++    return true;
+   }
+   const record = context.state.fileByPath(path);
+   return record !== undefined && record.fileId !== fileId;

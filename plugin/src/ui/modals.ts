@@ -14,6 +14,7 @@
 
 import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
+import type { LeaveChoice } from "../main";
 import { formatBytes } from "../policy";
 import { remoteOnlyList } from "../sync/pull";
 import {
@@ -295,6 +296,191 @@ export class PairClaimModal extends Modal {
     } finally {
       this.waiting = false;
     }
+  }
+}
+
+/** "Leave this server", or the same thing followed by pairing. */
+export type LeaveMode = "leave" | "switch";
+
+/** How many unpushed paths the dialog names before it starts counting. */
+const UNPUSHED_SHOWN = 10;
+
+const LEAVE_KEPT =
+  "Every note in this vault stays exactly where it is. Leaving changes nothing inside the vault, and the 24 words still open the SAME vault afterwards, so pairing again is not a new vault. This device's name, its folder selection and its two ceilings are kept too.";
+const LEAVE_LOST =
+  "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any edge service-token headers, its place in the change feed and its record of every synced file. No other device is touched.";
+const LEAVE_AGAIN =
+  "Pairing again — with this server or another — is a first sync for this device. Where the server already holds a note at the same path, the local note stays and the server's copy arrives beside it as a conflict copy.";
+const LEAVE_LAST_DEVICE =
+  "An account whose last active device is revoked can never sync again: nothing in this release re-enrols one, so everything the server stores for this vault would stay there unreachable. Pair another device first and revoke this one from it. You can still leave LOCALLY: this device forgets the server and keeps every note, and the server keeps this device — so revoke it from the dashboard or from another device later.";
+
+/**
+ * Leaving a server, with the whole cost stated before the button (issue #79).
+ *
+ * The dialog counts the edits the server never received BEFORE it offers to
+ * leave, because those are the one thing leaving can lose: the notes stay,
+ * their unsynced changes have nowhere else to be. Nothing here decides
+ * anything — `ObsyncPlugin.leaveServer` owns the order and the refusals, and
+ * this draws whichever answer it gives.
+ */
+export class LeaveServerModal extends Modal {
+  private live = true;
+
+  constructor(
+    app: App,
+    private readonly plugin: ObsyncPlugin,
+    private readonly mode: LeaveMode,
+    private readonly onLeft: () => void = () => undefined,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.setTitle(this.mode === "switch" ? "Switch server" : "Leave this server");
+    void this.show();
+  }
+
+  override onClose(): void {
+    this.live = false;
+    this.contentEl.empty();
+  }
+
+  private cancel(setting: Setting, text = "Cancel"): Setting {
+    return setting.addButton((button) => button.setButtonText(text).onClick(() => this.close()));
+  }
+
+  /** Count first: what the count is decides which buttons this offers. */
+  private async show(): Promise<void> {
+    if (this.plugin.state.data.deviceId === null) {
+      this.contentEl.createEl("p", { text: "This device is not paired with a server, so there is nothing to leave." });
+      this.cancel(new Setting(this.contentEl), "Close");
+      return;
+    }
+    this.contentEl.createEl("p", { text: "Checking for changes the server has not received…" });
+    let unpushed: string[];
+    try {
+      unpushed = await this.plugin.unpushedEdits();
+    } catch (error) {
+      fail(error);
+      this.close();
+      return;
+    }
+    if (!this.live) return;
+    this.draw(unpushed);
+  }
+
+  private draw(unpushed: string[]): void {
+    this.contentEl.empty();
+    for (const text of [LEAVE_KEPT, LEAVE_LOST, LEAVE_AGAIN]) this.contentEl.createEl("p", { text });
+    if (unpushed.length > 0) {
+      this.contentEl.createEl("p", {
+        text: `${unpushed.length} file(s) on this device hold changes the server never received. Run Sync now first and they are safe; leave now and they stay in this vault and nowhere else.`,
+      });
+      const list = this.contentEl.createEl("ul");
+      for (const path of unpushed.slice(0, UNPUSHED_SHOWN)) list.createEl("li", { text: path });
+      if (unpushed.length > UNPUSHED_SHOWN) {
+        list.createEl("li", { text: `… and ${unpushed.length - UNPUSHED_SHOWN} more` });
+      }
+    }
+    const leaving = this.mode === "switch" ? "Leave and switch" : "Leave";
+    this.cancel(
+      new Setting(this.contentEl).addButton((button) =>
+        button
+          .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
+          .setDestructive()
+          .onClick(() => {
+            void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
+          }),
+      ),
+    );
+  }
+
+  private async leave(choice: LeaveChoice): Promise<void> {
+    let result;
+    try {
+      result = await this.plugin.leaveServer(choice);
+    } catch (error) {
+      fail(error);
+      return;
+    }
+    // A leave that happened is reported even if the dialog was closed while
+    // it ran: the action is done, and only the drawing needs a live dialog.
+    if (result.decision === "left") {
+      this.left(result.revoked);
+      return;
+    }
+    if (!this.live) return;
+    // The count is taken with the queue stopped, so a set that grew since the
+    // dialog drew it is the user's own editing: draw the new one and ask again.
+    if (result.reason === "unpushed_edits") {
+      new Notice("This device has changes the server never received. Leaving was not done.", 8000);
+      this.draw(result.unpushed);
+      return;
+    }
+    this.contentEl.empty();
+    this.contentEl.createEl("p", { text: `The server refused to revoke this device: ${result.detail}.` });
+    this.contentEl.createEl("p", { text: LEAVE_LAST_DEVICE });
+    this.cancel(
+      new Setting(this.contentEl).addButton((button) =>
+        button
+          .setButtonText("Leave locally anyway")
+          .setDestructive()
+          .onClick(() => {
+            void this.leave({ ...choice, localOnly: true });
+          }),
+      ),
+    );
+  }
+
+  private left(revoked: boolean): void {
+    new Notice(
+      revoked
+        ? "This device left the server. Every note is still in this vault."
+        : "This device forgot the server, which still holds this device. Every note is still in this vault.",
+      10000,
+    );
+    this.onLeft();
+    if (!this.live || this.mode !== "switch") {
+      this.close();
+      return;
+    }
+    this.contentEl.empty();
+    this.contentEl.createEl("p", {
+      text: "Enter the new server's address, then paste a pairing code from a device that already syncs this vault there. For a server with no account yet, use First-time setup in the settings tab with that server's setup token instead.",
+    });
+    let typed = "";
+    new Setting(this.contentEl).setName("Server URL").addText((text) =>
+      text.setPlaceholder("sync.example.org").onChange((value) => {
+        typed = value;
+      }),
+    );
+    this.cancel(
+      new Setting(this.contentEl).addButton((button) =>
+        button
+          .setButtonText("Continue")
+          .setCta()
+          .onClick(() => {
+            void this.adopt(typed);
+          }),
+      ),
+    );
+  }
+
+  private async adopt(typed: string): Promise<void> {
+    if (typed.trim() === "") {
+      new Notice("Enter the new server's address first.");
+      return;
+    }
+    try {
+      await this.plugin.setServerUrl(typed);
+    } catch (error) {
+      fail(error);
+      return;
+    }
+    if (!this.live) return;
+    this.onLeft();
+    this.close();
+    new PairClaimModal(this.app, this.plugin).open();
   }
 }
 

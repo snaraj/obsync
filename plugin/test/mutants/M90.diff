@@ -1,0 +1,12 @@
+# M90: an incoming folder record is judged by the file rule, as it was
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -363,7 +363,7 @@
+   // `inFolderScope`; review round 3, finding 1).
+   if (entry.v === 2) {
+     bindFolderToRecord(record, entry, context.domainId);
+-    admitFolderRecord(context, entry.path);
++    assertSyncPath(entry.path, context.state.data.syncFolders);
+   } else {
+     bindManifestToRecord(record, entry, context.domainId);
+     assertSyncPath(entry.path, context.state.data.syncFolders);

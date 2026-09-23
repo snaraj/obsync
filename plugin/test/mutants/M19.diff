@@ -1,0 +1,12 @@
+# M19: the copy window is the rest of the file
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1044,7 +1044,7 @@
+ ): Promise<void> {
+   const source = context.host.source(from, size);
+   for (let at = 0; at < size; at += CHUNK_MAX) {
+-    await writer.write(await source.read(at, Math.min(CHUNK_MAX, size - at)));
++    await writer.write(await source.read(at, size - at));
+   }
+ }
+ 

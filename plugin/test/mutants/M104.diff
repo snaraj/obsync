@@ -1,0 +1,14 @@
+# M104: a rename of a file onto its own path is taken as a rename
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -660,10 +660,6 @@
+     // `from` -- the same key -- so the note loses its record altogether and
+     // the next pass publishes it as a NEW file, leaving its old id on the
+     // server with nothing to retire it.
+-    if (from === to) {
+-      this.options.host.log("watch path_class=file decision=skipped reason=same_path event=rename");
+-      return;
+-    }
+     // Omitted, `tracked` judges `from` against the selection in force now,
+     // which is every caller but `renamedFolder`.
+     const source = this.tracked(from, "rename_from", sourceFolders);

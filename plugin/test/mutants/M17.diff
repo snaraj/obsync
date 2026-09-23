@@ -1,0 +1,12 @@
+# M17: the refusal is logged and the move reported as done
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1119,7 +1119,7 @@
+     throw error;
+   }
+   if (landed === null) return null;
+-  if (await changed()) return refuse(landed.stat.path);
++  if (await changed()) { refuse(landed.stat.path); return landed.stat.path; }
+   // Marked BEFORE the trash: the vault reports the removal to this plugin's
+   // own delete handler while the trash is still running, and an unmarked echo
+   // publishes a tombstone for a file that is alive one name over (issue #96).

@@ -23,7 +23,7 @@ use crate::api::auth::{Clock, FakeClock};
 use crate::api::{App, handler};
 use crate::config::{Config, Edge};
 use crate::dashboard::Dashboard;
-use crate::log::Log;
+use crate::log::{Log, LogLevel};
 use crate::plugin_dist::PluginDist;
 use crate::storage::{Posture, Store, load_or_create_server_key};
 
@@ -58,6 +58,11 @@ struct Setup {
     edge_mode: bool,
     dashboard: bool,
     plugin: bool,
+    /// Accumulate the structured log in memory instead of writing it to
+    /// stderr, so a test can read the decision line a refusal owes
+    /// (requirement 12). Off by default: every other test measures behavior
+    /// through the wire, and a buffer nobody reads is just memory.
+    capture_log: bool,
 }
 
 impl Harness {
@@ -121,7 +126,11 @@ impl Harness {
         .map(|(k, v)| (k.to_string(), v))
         .collect();
         let cfg = Config::from_pairs(&pairs).expect("configuration");
-        let log = Log::new(cfg.log_level);
+        let log = if setup.capture_log {
+            Log::buffered(LogLevel::Debug)
+        } else {
+            Log::new(cfg.log_level)
+        };
         let storage = cfg.storage();
         let posture = Posture::enforce(&storage, &log).expect("volume posture");
         let server_key =
@@ -175,6 +184,12 @@ impl Harness {
             addr,
             server: Some(handle),
         }
+    }
+
+    /// Everything the structured log has written, for a `capture_log`
+    /// harness. Empty otherwise.
+    fn captured(&self) -> String {
+        self.app.log.captured()
     }
 
     /// Create the account and return the first device's credential.
@@ -1458,6 +1473,78 @@ fn rejecting_a_pairing_deletes_the_claimant_device() {
     );
 }
 
+/// Issue #88: the second click on a pairing screen the creator already
+/// approved used to delete the device that approval had just paired.
+#[test]
+fn rejecting_an_approved_pairing_is_refused_and_keeps_the_device() {
+    let h = Harness::start_with(
+        "pairing-reject-approved",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    assert_eq!(device_count(&h, &creator), 2, "the approval paired it");
+    let seq = h.app.store.head_seq();
+
+    let reject = Req::post(&format!("/v1/pairing/{id}/reject"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(reject.status, 409, "{}", reject.text());
+    assert_eq!(reject.code(), "already_approved");
+    // Measured across the reject and nothing else: an authenticated read
+    // records a sign-in, which IS a frame, so the window is this one request.
+    assert_eq!(
+        h.app.store.head_seq(),
+        seq,
+        "the journal is untouched by a refusal"
+    );
+
+    // The device is still paired and still syncing.
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(
+        after.status,
+        200,
+        "the approved device still authenticates: {}",
+        after.text()
+    );
+    assert_eq!(device_count(&h, &creator), 2);
+    let rows = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let rows = rows.get("devices").and_then(Value::as_array).expect("rows");
+    let row = rows
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("the claimant is still listed");
+    assert_eq!(row.get("state").and_then(Value::as_str), Some("active"));
+
+    // The refusal says why, in the words an operator greps for: a device
+    // that is still listed after a reject is otherwise a mystery
+    // (requirement 12).
+    let logged = h.captured();
+    assert!(
+        logged.contains("pairing_reject") && logged.contains("decision=refused"),
+        "the refusal logs its decision: {logged}"
+    );
+    assert!(
+        logged.contains("reason=already_approved"),
+        "and names the state it refused for: {logged}"
+    );
+
+    // And a second reject is the same refusal: the pairing is not consumed
+    // by having refused once.
+    let twice = Req::post(&format!("/v1/pairing/{id}/reject"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(twice.status, 409, "{}", twice.text());
+    assert_eq!(twice.code(), "already_approved");
+}
+
 /// A chunk and its sid.
 fn chunk(body: &[u8]) -> (Vec<u8>, String) {
     (body.to_vec(), hex::encode(&sha256::sha256(body)))
@@ -1682,6 +1769,23 @@ fn post_version(
     sids: &[&str],
     manifest: &str,
 ) -> Res {
+    post_version_as(h, cred, file_id, parents, sids, manifest, None)
+}
+
+/// The same post, with the `accept_existing` field a 1.0.x client does not
+/// send: `None` omits it exactly as that client's body does, and `Some(true)`
+/// is a client that will store the `version_id` the answer names -- the only
+/// client the server may answer with another version's id
+/// (`docs/protocol.md`, "Files and versions").
+fn post_version_as(
+    h: &Harness,
+    cred: &Cred,
+    file_id: &str,
+    parents: &[&str],
+    sids: &[&str],
+    manifest: &str,
+    accept_existing: Option<bool>,
+) -> Res {
     let parents_json = parents
         .iter()
         .map(|p| format!("\"{p}\""))
@@ -1692,9 +1796,13 @@ fn post_version(
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(",");
+    let accept = match accept_existing {
+        Some(v) => format!(r#","accept_existing":{v}"#),
+        None => String::new(),
+    };
     let body = |version_id: &str| {
         format!(
-            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false}}"#
+            r#"{{"version_id":"{version_id}","parents":[{parents_json}],"sids":[{sids_json}],"bytes":18,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{manifest}","manifest_nonce":"0123456789abcdef01234567","deleted":false{accept}}}"#
         )
     };
     let probe = Req::post(&format!("/v1/files/{file_id}/versions"))
@@ -1910,6 +2018,134 @@ fn a_version_names_its_domain_and_a_file_never_changes_it() {
         unchanged.json().get("domain_id").and_then(Value::as_str),
         Some(TEST_DOMAIN),
         "the refusal left the file where it was"
+    );
+}
+
+/// Issue #114: the second device's identical merge is answered with the
+/// first one's version id, in the response every 1.0.x client already reads.
+#[test]
+fn an_identical_version_post_is_answered_with_the_stored_id() {
+    let h = Harness::start_with(
+        "versions-dedupe",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"version-ciphertext");
+    Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+
+    let file_id = "cd".repeat(16);
+    let first = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3Qtb25l",
+        Some(true),
+    );
+    assert_eq!(first.status, 201, "{}", first.text());
+    let stored = first
+        .json()
+        .get("version_id")
+        .and_then(Value::as_str)
+        .expect("the answer names the version it stored")
+        .to_string();
+    let heads = first.json();
+    let heads = heads.get("heads").and_then(Value::as_array).expect("heads");
+    assert_eq!(
+        heads[0].as_str(),
+        Some(stored.as_str()),
+        "and it is the head"
+    );
+    let seq = h.app.store.head_seq();
+
+    // The other device's manifest, over the same parents and the same
+    // chunks: another version id for one position in the graph.
+    let twin = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3QtdHdv",
+        Some(true),
+    );
+    assert_eq!(twin.status, 200, "{}", twin.text());
+    let answered = twin.json();
+    assert_eq!(
+        answered.get("version_id").and_then(Value::as_str),
+        Some(stored.as_str()),
+        "the answer names the version the store holds, not the one posted"
+    );
+    assert_eq!(
+        answered.get("conflicted").and_then(Value::as_bool),
+        Some(false),
+        "the file did not fork"
+    );
+    assert_eq!(
+        answered
+            .get("heads")
+            .and_then(Value::as_array)
+            .expect("heads")
+            .len(),
+        1
+    );
+    assert_eq!(
+        h.app.store.head_seq(),
+        seq,
+        "no frame was appended for the twin"
+    );
+    let logged = h.captured();
+    assert!(
+        logged.contains("decision=deduplicated"),
+        "the decision is in the log: {logged}"
+    );
+
+    // The file holds one version, and the id the twin posted is not it.
+    let file = Req::get(&format!("/v1/files/{file_id}"))
+        .sign(&cred, NOW)
+        .send(h.addr)
+        .json();
+    let versions = file
+        .get("versions")
+        .and_then(Value::as_array)
+        .expect("versions");
+    assert_eq!(versions.len(), 1, "{versions:?}");
+    assert_eq!(
+        versions[0].get("version_id").and_then(Value::as_str),
+        Some(stored.as_str())
+    );
+
+    // A 1.0.x body carries no `accept_existing` at all, and its post is
+    // stored under the id that client computed and will keep: the same fork
+    // 1.0.6 closes between the devices, and no behaviour this release
+    // changed underneath it.
+    let old_client = post_version_as(
+        &h,
+        &cred,
+        &file_id,
+        &[],
+        &[sid.as_str()],
+        "bWFuaWZlc3QtdGhyZWU=",
+        None,
+    );
+    assert_eq!(old_client.status, 201, "{}", old_client.text());
+    let answered = old_client.json();
+    assert_ne!(
+        answered.get("version_id").and_then(Value::as_str),
+        Some(stored.as_str()),
+        "a client that keeps its own id is never answered with another"
+    );
+    assert_eq!(
+        answered.get("conflicted").and_then(Value::as_bool),
+        Some(true),
+        "two ids for one position is what 1.0.x does, unchanged"
     );
 }
 

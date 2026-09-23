@@ -1,0 +1,11 @@
+# M12: adoption takes any occupant of the length
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -889,7 +889,6 @@
+   } catch {
+     return null;
+   }
+-  if (hex(await sha256(bytes)) !== manifest.sha256) return null;
+   const after = await context.host.stat(path);
+   if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+   return after;

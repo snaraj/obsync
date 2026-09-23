@@ -120,6 +120,24 @@ fn file(n: u8) -> FileId {
     FileId::new([n; 16])
 }
 
+/// A file with two heads: the fork both devices are about to merge.
+///
+/// Returns the store's setup, the chunk every version names, and the two
+/// heads in the order they landed.
+fn forked(setup: &Setup, sid: Sid) -> (VersionId, VersionId) {
+    let root = version(setup, file(1), "root", &[], &[sid], false);
+    setup.store.append_version(root.clone()).expect("root");
+    let left = version(setup, file(1), "left", &[root.version_id], &[sid], false);
+    let right = version(setup, file(1), "right", &[root.version_id], &[sid], false);
+    setup.store.append_version(left.clone()).expect("left");
+    let outcome = setup
+        .store
+        .append_version(right.clone())
+        .expect("a second child of the same parent");
+    assert!(outcome.conflicted, "two heads is the situation under test");
+    (left.version_id, right.version_id)
+}
+
 #[test]
 fn recovery_check_covers_retained_history_and_deduplicates_references_after_reopen() {
     for snapshot in [false, true] {
@@ -531,6 +549,209 @@ fn a_version_needs_its_chunks_its_id_and_a_live_device() {
     );
 }
 
+/// Issue #114: two devices resolving one conflict to the same bytes is one
+/// version, and the second device is told which.
+#[test]
+fn a_version_the_graph_already_holds_is_answered_with_its_id() {
+    let dir = TempDir::new("store-dedupe");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let (left, right) = forked(&setup, sid);
+    let merged = put(&setup, b"ciphertext-merged");
+
+    // Both devices merge the same two heads to the same bytes. Each encrypts
+    // its own manifest under its own nonce, so one position in the graph
+    // arrives under two ids -- and one of them names its parents the other
+    // way round, which is the same set.
+    let mine = version(&setup, file(1), "merge-a", &[left, right], &[merged], false);
+    let theirs = version(&setup, file(1), "merge-b", &[right, left], &[merged], false);
+    assert_ne!(
+        mine.version_id, theirs.version_id,
+        "two manifests, two ids: that is the whole problem"
+    );
+
+    let first = setup
+        .store
+        .append_version_idempotent(mine.clone())
+        .expect("the merge lands");
+    assert_eq!(first.decision, AppendDecision::Appended);
+    let seq = setup.store.head_seq();
+
+    let second = setup
+        .store
+        .append_version_idempotent(theirs.clone())
+        .expect("the twin is recognised");
+    assert_eq!(second.decision, AppendDecision::Deduplicated);
+    assert_eq!(
+        second.version_id, mine.version_id,
+        "the answer names the version the store holds"
+    );
+    assert_eq!(second.seq, first.seq, "and its journal position");
+    assert_eq!(second.heads, vec![mine.version_id]);
+    assert!(!second.conflicted, "the file did not fork again");
+    assert_eq!(setup.store.head_seq(), seq, "no frame was appended");
+    assert!(
+        setup.store.version(&file(1), &theirs.version_id).is_none(),
+        "the twin was never stored"
+    );
+
+    // And again, and from the first device: the answer is stable.
+    let third = setup
+        .store
+        .append_version_idempotent(theirs)
+        .expect("still recognised");
+    assert_eq!(third.decision, AppendDecision::Deduplicated);
+    assert_eq!(third.version_id, mine.version_id);
+    assert_eq!(setup.store.head_seq(), seq);
+}
+
+/// The same chunks at another position in the graph are another version:
+/// re-saving a file to the bytes it already had is an edit with a history.
+#[test]
+fn the_same_chunks_under_different_parents_are_a_new_version() {
+    let dir = TempDir::new("store-dedupe-parents");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let (left, right) = forked(&setup, sid);
+    let merged = put(&setup, b"ciphertext-merged");
+
+    let mine = version(&setup, file(1), "merge-a", &[left, right], &[merged], false);
+    setup
+        .store
+        .append_version_idempotent(mine.clone())
+        .expect("the merge lands");
+    let seq = setup.store.head_seq();
+
+    // Same chunk list, one parent: a different statement about history.
+    let onward = version(
+        &setup,
+        file(1),
+        "onward",
+        &[mine.version_id],
+        &[merged],
+        false,
+    );
+    let outcome = setup
+        .store
+        .append_version_idempotent(onward.clone())
+        .expect("a new position");
+    assert_eq!(outcome.decision, AppendDecision::Appended);
+    assert_eq!(outcome.version_id, onward.version_id);
+    assert_eq!(outcome.heads, vec![onward.version_id]);
+    assert!(
+        setup.store.head_seq() > seq,
+        "a version nothing else says was written"
+    );
+}
+
+/// The same position with other chunks is another version: that is an edit.
+#[test]
+fn the_same_parents_with_different_chunks_are_a_new_version() {
+    let dir = TempDir::new("store-dedupe-sids");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let (left, right) = forked(&setup, sid);
+    let merged = put(&setup, b"ciphertext-merged");
+    let other = put(&setup, b"ciphertext-merged-differently");
+
+    let mine = version(&setup, file(1), "merge-a", &[left, right], &[merged], false);
+    setup
+        .store
+        .append_version_idempotent(mine.clone())
+        .expect("the merge lands");
+    let seq = setup.store.head_seq();
+
+    let theirs = version(&setup, file(1), "merge-b", &[left, right], &[other], false);
+    let outcome = setup
+        .store
+        .append_version_idempotent(theirs.clone())
+        .expect("other bytes are another version");
+    assert_eq!(outcome.decision, AppendDecision::Appended);
+    assert_eq!(outcome.version_id, theirs.version_id);
+    assert!(
+        outcome.conflicted && outcome.heads.len() == 2,
+        "two devices merged to different bytes, which IS a conflict: {outcome:?}"
+    );
+    assert!(setup.store.head_seq() > seq, "the frame was written");
+}
+
+/// A 1.0.x client computes its own version id and keeps it whatever the
+/// answer says. Answering it with another id would leave it remembering a
+/// version this store never held, so it is never deduplicated.
+#[test]
+fn a_client_that_keeps_its_own_version_id_is_never_deduplicated() {
+    let dir = TempDir::new("store-dedupe-optout");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let (left, right) = forked(&setup, sid);
+    let merged = put(&setup, b"ciphertext-merged");
+
+    let mine = version(&setup, file(1), "merge-a", &[left, right], &[merged], false);
+    let theirs = version(&setup, file(1), "merge-b", &[left, right], &[merged], false);
+    setup
+        .store
+        .append_version(mine.clone())
+        .expect("the merge lands");
+    let seq = setup.store.head_seq();
+
+    let outcome = setup
+        .store
+        .append_version(theirs.clone())
+        .expect("stored as posted");
+    assert_eq!(outcome.decision, AppendDecision::Appended);
+    assert_eq!(outcome.version_id, theirs.version_id);
+    assert_eq!(
+        outcome.heads,
+        vec![mine.version_id, theirs.version_id],
+        "the fork the 1.0.x clients then close between themselves"
+    );
+    assert!(setup.store.head_seq() > seq);
+    assert!(
+        setup.store.version(&file(1), &theirs.version_id).is_some(),
+        "the id the client kept is the id the store holds"
+    );
+}
+
+/// A delete and an empty file both carry no chunks. They are not the same
+/// version, and the tombstone flag is part of what a twin must match.
+#[test]
+fn a_tombstone_is_never_the_twin_of_an_empty_file() {
+    let dir = TempDir::new("store-dedupe-tombstone");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let root = version(&setup, file(1), "root", &[], &[sid], false);
+    setup
+        .store
+        .append_version_idempotent(root.clone())
+        .expect("root");
+
+    let emptied = version(&setup, file(1), "emptied", &[root.version_id], &[], false);
+    setup
+        .store
+        .append_version_idempotent(emptied.clone())
+        .expect("an empty file is a version");
+    let grave = version(&setup, file(1), "gone", &[root.version_id], &[], true);
+    let outcome = setup
+        .store
+        .append_version_idempotent(grave.clone())
+        .expect("a tombstone is its own version");
+    assert_eq!(outcome.decision, AppendDecision::Appended);
+    assert_eq!(outcome.version_id, grave.version_id);
+    assert!(
+        setup
+            .store
+            .version(&file(1), &grave.version_id)
+            .expect("stored")
+            .deleted,
+        "the delete was not answered with the empty file"
+    );
+}
+
 #[test]
 fn heads_follow_the_graph_and_a_repost_is_a_no_op() {
     let dir = TempDir::new("store-heads");
@@ -542,10 +763,15 @@ fn heads_follow_the_graph_and_a_repost_is_a_no_op() {
     let root = setup.store.append_version(first.clone()).expect("first");
     assert_eq!(root.heads, vec![first.version_id]);
     assert!(!root.conflicted);
-    assert!(!root.existed);
+    assert_eq!(root.decision, AppendDecision::Appended);
+    assert_eq!(root.version_id, first.version_id, "the answer names it");
 
     let again = setup.store.append_version(first.clone()).expect("repost");
-    assert!(again.existed, "the same version id is a no-op");
+    assert_eq!(
+        again.decision,
+        AppendDecision::Existed,
+        "the same version id is a no-op"
+    );
     assert_eq!(again.seq, root.seq, "and keeps its original sequence");
     assert_eq!(
         setup.store.file(&file(1)).expect("file").versions.len(),
@@ -944,15 +1170,29 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
         "the revoked device and the spare that made revoking it legal"
     );
 
-    store.delete_device(&id).expect("delete");
-    assert!(store.device(&id).is_none());
+    // Deletion is the rejected-claim path and nothing else
+    // (`only_a_pending_device_is_deleted`), so what this test destroys to
+    // reach the refusals below is a claim nobody approved.
+    let pending = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [0x5au8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("a claim creates a pending device")
+        .device_id;
+    store.delete_device(&pending).expect("delete");
+    assert!(store.device(&pending).is_none());
     assert!(matches!(
-        store.delete_device(&id),
+        store.delete_device(&pending),
         Err(StoreError::UnknownDevice)
     ));
     assert!(matches!(
         store.record_seen(
-            &id,
+            &pending,
             SeenEvent {
                 kind: SeenKind::Edit,
                 ts: UnixMs(1),
@@ -2512,6 +2752,57 @@ fn revoking_a_device_that_is_not_active_is_never_the_last_one() {
     assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
 }
 
+/// Issue #88: a delete takes a claim nobody approved, and nothing else.
+///
+/// The pairing table refuses a reject after the approval, and this is the
+/// wall behind it: the state check sits in the function that writes the
+/// frame, so a caller that forgets the first one still cannot delete a
+/// paired device. Revocation is how a paired device is taken away, and it
+/// keeps the row, destroys the secret, and refuses the account's last active
+/// device -- none of which a delete does.
+#[test]
+fn only_a_pending_device_is_deleted() {
+    let dir = TempDir::new("store-delete-states");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let account = store.setup("sentinel").expect("setup runs once");
+    let active = spare_device(&store, account);
+    let revoked = spare_device(&store, account);
+    store
+        .revoke_device_unless_last(&revoked)
+        .expect("two active devices, so one may go");
+
+    for (id, state) in [(active, "active"), (revoked, "revoked")] {
+        let seq = store.head_seq();
+        let refused = store
+            .delete_device(&id)
+            .expect_err("only a pending device is deleted");
+        assert!(
+            matches!(refused, StoreError::DeviceNotPending),
+            "{state}: {refused}"
+        );
+        assert!(
+            store.device(&id).is_some(),
+            "{state}: the refusal left the record where it was"
+        );
+        assert_eq!(store.head_seq(), seq, "{state}: a refusal appends no frame");
+    }
+
+    let pending = store
+        .create_device(NewDevice {
+            account_id: account,
+            name: "half-paired phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [6u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("the claimant")
+        .device_id;
+    store.delete_device(&pending).expect("a claim is deletable");
+    assert!(store.device(&pending).is_none());
+}
+
 /// Two devices revoking each other at the same instant cannot leave an
 /// account with nothing active.
 ///
@@ -2528,8 +2819,12 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
     let store = open(&cfg);
     let account = store.setup("sentinel").expect("setup runs once");
 
+    // The survivor of each round is a racer in the next one, so every round
+    // starts with exactly two active devices and no reset is needed. Deleting
+    // the pair used to be that reset, and deletion is now the rejected-claim
+    // path only: it takes a PENDING device and nothing else (issue #88).
+    let mut a = spare_device(&store, account);
     for round in 0..50 {
-        let a = spare_device(&store, account);
         let b = spare_device(&store, account);
         assert_eq!(
             store.devices().iter().filter(|d| d.active()).count(),
@@ -2553,6 +2848,9 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
             ra.is_ok() != rb.is_ok(),
             "round {round}: exactly one of two mutual revocations may land"
         );
+        // Which revocation landed is also which device is left active, and
+        // the next round needs that before the results are consumed below.
+        let survivor = if ra.is_ok() { a } else { b };
         let refused = ra.err().or(rb.err()).expect("one of them was refused");
         assert!(
             matches!(refused, StoreError::LastActiveDevice),
@@ -2563,13 +2861,110 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
             1,
             "round {round}: the account still has a device that can sync"
         );
-        // Clear the board for the next round: deletion is the pairing-reject
-        // path and takes an active device, which revocation deliberately
-        // will not.
-        for id in [a, b] {
-            store.delete_device(&id).expect("delete");
-        }
+        // Whichever revocation was refused left its target active: that is
+        // the device the next round races against a fresh one.
+        a = survivor;
+        assert!(
+            store.device(&a).expect("the survivor").active(),
+            "round {round}: the refused revocation left its target active"
+        );
     }
 }
 
 mod recovery;
+
+/// THE REVIEWER'S OWN INPUT CASES for round 5's finding 7 (PR #120, comment
+/// 5778412397), carried verbatim under this header. Each one names a
+/// declared invariant of the dedupe key that the suite stated in prose and
+/// no test could tell apart from its opposite: chunk ORDER is content,
+/// parents are a SET including repeats, and the twin an old client left
+/// behind resolves to the OLDEST retained one. The matching mutants are
+/// recorded in `plugin/test/mutants/MATRIX.md`.
+
+#[test]
+fn reviewer_mutation_probe_sid_order_changes_content() {
+    let dir = TempDir::new("reviewer-sid-order");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let a = put(&setup, b"ciphertext-chunk-a");
+    let b = put(&setup, b"ciphertext-chunk-b");
+    let first = version(&setup, file(1), "first-manifest", &[], &[a, b], false);
+    let swapped = version(&setup, file(1), "swapped-manifest", &[], &[b, a], false);
+    setup.store.append_version_idempotent(first).expect("first");
+    let answer = setup
+        .store
+        .append_version_idempotent(swapped.clone())
+        .expect("swapped");
+    assert_eq!(
+        answer.decision,
+        AppendDecision::Appended,
+        "opposite chunk order is different content"
+    );
+    assert_eq!(answer.version_id, swapped.version_id);
+}
+
+#[test]
+fn reviewer_mutation_probe_repeated_parent_is_one_position() {
+    let dir = TempDir::new("reviewer-parent-set");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-chunk-a");
+    let root = version(&setup, file(1), "root", &[], &[sid], false);
+    setup.store.append_version(root.clone()).expect("root");
+    let first = version(
+        &setup,
+        file(1),
+        "first-manifest",
+        &[root.version_id],
+        &[sid],
+        false,
+    );
+    let twin = version(
+        &setup,
+        file(1),
+        "twin-manifest",
+        &[root.version_id, root.version_id],
+        &[sid],
+        false,
+    );
+    setup
+        .store
+        .append_version_idempotent(first.clone())
+        .expect("first");
+    let answer = setup.store.append_version_idempotent(twin).expect("twin");
+    assert_eq!(
+        answer.decision,
+        AppendDecision::Deduplicated,
+        "parents are a set, including duplicates"
+    );
+    assert_eq!(answer.version_id, first.version_id);
+}
+
+#[test]
+fn reviewer_mutation_probe_oldest_legacy_twin_wins() {
+    let dir = TempDir::new("reviewer-oldest-twin");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-chunk-a");
+    let first = version(&setup, file(1), "first-manifest", &[], &[sid], false);
+    let later = version(&setup, file(1), "later-manifest", &[], &[sid], false);
+    let offered = version(&setup, file(1), "offered-manifest", &[], &[sid], false);
+    let original = setup
+        .store
+        .append_version(first.clone())
+        .expect("old-client first");
+    setup
+        .store
+        .append_version(later)
+        .expect("old-client duplicate");
+    let answer = setup
+        .store
+        .append_version_idempotent(offered)
+        .expect("opt-in third");
+    assert_eq!(answer.decision, AppendDecision::Deduplicated);
+    assert_eq!(
+        answer.version_id, first.version_id,
+        "first retained twin is the documented stable answer"
+    );
+    assert_eq!(answer.seq, original.seq);
+}

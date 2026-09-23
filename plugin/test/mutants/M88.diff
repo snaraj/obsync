@@ -1,0 +1,12 @@
+# M88: an echo mark armed for an event that never comes is never expired
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1468,7 +1468,7 @@
+       );
+     }
+     // LAST, because this pass's own pairings consume marks (`renamed`).
+-    this.sweepEchoes(context, label);
++    if (label === "never") this.sweepEchoes(context, label);
+   }
+ 
+   /**

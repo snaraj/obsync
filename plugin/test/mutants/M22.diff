@@ -1,0 +1,14 @@
+# M22: the digest proof is bound to a fresh stat
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -890,9 +890,7 @@
+     return null;
+   }
+   if (hex(await sha256(bytes)) !== manifest.sha256) return null;
+-  const after = await context.host.stat(path);
+-  if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+-  return after;
++  return (await context.host.stat(path)) ?? occupant;
+ }
+ 
+ /**

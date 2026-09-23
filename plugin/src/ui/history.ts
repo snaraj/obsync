@@ -1,7 +1,7 @@
 /** Bounded native history browser; all labels are text, never remote HTML. */
 import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
-import { HistoryBrowser, HistoryCancelled, HistoryEntry } from "../sync/history";
+import { HISTORY_SCAN_RECORDS, HISTORY_SEARCH_MS, HistoryBrowser, HistoryCancelled, HistoryEntry } from "../sync/history";
 import { formatBytes } from "../policy";
 
 export class HistoryModal extends Modal {
@@ -9,8 +9,10 @@ export class HistoryModal extends Modal {
   private busy = false;
   private closed = false;
   private filter = "";
+  private newestFirst = true;
   private rows: HistoryEntry[] = [];
   private message = "";
+  private progress = "";
 
   constructor(app: App, private readonly plugin: ObsyncPlugin) { super(app); }
 
@@ -24,9 +26,12 @@ export class HistoryModal extends Modal {
     if (this.busy) return;
     if (this.browser) this.plugin.closeHistory(this.browser);
     this.rows = [];
+    this.progress = "";
     try {
-      this.browser = this.plugin.openHistory();
-      this.message = "Select Load next to browse retained versions.";
+      this.browser = this.plugin.openHistory(this.newestFirst);
+      this.message = this.filter === ""
+        ? "Select Load next to browse retained versions."
+        : "Select Search to step through retained versions until the first match.";
     } catch (error) {
       this.browser = null;
       this.message = error instanceof Error ? error.message : String(error);
@@ -39,10 +44,13 @@ export class HistoryModal extends Modal {
     const el = this.contentEl;
     el.empty();
     el.createEl("p", { text: "Restore a retained version as a new sibling file. Current files and their history stay unchanged. Deleted notes appear through their retained content versions." });
-    el.createEl("p", { text: "Oldest first, within this device's selected folders. Each step checks at most 20 versions for up to 5 seconds, plus the current request. More versions may remain even when no matches are shown." });
+    el.createEl("p", { text: `${this.newestFirst ? "Newest first" : "Oldest first"}, within this device's selected folders. Each step checks at most ${HISTORY_SCAN_RECORDS} versions for up to 5 seconds, plus the current request. With a filename filter, steps run by themselves until the first match or ${Math.round(HISTORY_SEARCH_MS / 1000)} seconds; Close stops at the end of the current step.` });
     new Setting(el).setName("Filename contains").addText((text) => text.setValue(this.filter).setDisabled(this.busy).onChange((value) => { this.filter = value.slice(0, 512); }))
       .addButton((button) => button.setButtonText("Restart search").setDisabled(this.busy).onClick(() => this.restart()));
+    new Setting(el).setName("Oldest first").setDesc("Off by default: a note you have just noticed missing is almost always recent.")
+      .addToggle((toggle) => toggle.setValue(!this.newestFirst).setDisabled(this.busy).onChange((value) => { this.newestFirst = !value; this.restart(); }));
     el.createEl("p", { text: this.message });
+    if (this.progress !== "") el.createEl("p", { text: this.progress });
     for (const entry of this.rows) {
       const date = new Date(entry.ts);
       const when = Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
@@ -51,7 +59,7 @@ export class HistoryModal extends Modal {
           .onClick(() => { void this.restore(entry); }));
     }
     new Setting(el)
-      .addButton((button) => button.setButtonText("Load next").setDisabled(this.busy || this.browser === null || this.browser.done)
+      .addButton((button) => button.setButtonText(this.filter === "" ? "Load next" : "Search").setDisabled(this.busy || this.browser === null || this.browser.done)
         .onClick(() => { void this.load(); }))
       .addButton((button) => button.setButtonText(this.busy ? "Cancel and close" : "Close").onClick(() => this.close()));
     el.createEl("p", { text: "Cancel stops later work. Obsidian cannot abort the current network request; reopening waits for it to settle. A local create already dispatched may finish and must be checked. Large files obey this device's limits." });
@@ -61,12 +69,19 @@ export class HistoryModal extends Modal {
     const browser = this.browser;
     if (!browser || this.busy) return;
     this.busy = true;
-    this.message = "Reading retained versions…";
+    this.message = this.filter === "" ? "Reading retained versions…" : "Searching retained versions…";
     this.render();
     try {
       const page = await browser.next(this.filter);
       this.rows = page.entries;
-      this.message = `Checked ${page.scanned} records; ${page.refused} outside selection or refused. ${page.error ?? (browser.done ? "Reached the captured end of retained history." : "More may remain; select Load next.")}`;
+      // The cumulative line is the one the dialog never had: six clicks used
+      // to produce six identical "Checked 20 records" lines and no total.
+      this.progress = `Checked ${page.checked} of about ${page.about} records; ${page.refused} outside selection or refused in this step.`;
+      this.message = page.error ?? (browser.done
+        ? "Reached the captured end of retained history."
+        : page.entries.length === 0
+          ? `No match yet after ${Math.round(HISTORY_SEARCH_MS / 1000)} seconds. Select ${this.filter === "" ? "Load next" : "Search"} to carry on from here.`
+          : `More may remain; select ${this.filter === "" ? "Load next" : "Search"} to carry on from here.`);
     } catch (error) {
       this.message = error instanceof Error ? error.message : String(error);
     } finally {

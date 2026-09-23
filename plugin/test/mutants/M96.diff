@@ -1,0 +1,12 @@
+# M96: the fake's folder removal compares names without folding case
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -426,7 +426,7 @@
+    */
+   async trashFolder(path) {
+     this.folderChecks.push(path);
+-    const entry = this.resolveFolder(path);
++    const entry = this.explicitFolders.has(path) ? path : undefined;
+     // Nothing here to remove, and so nothing here to keep either: the real
+     // host answers `true` for an absent folder.
+     if (entry === undefined) return true;

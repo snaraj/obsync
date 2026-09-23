@@ -1,0 +1,12 @@
+# M109: the fake reports a folder rename that landed where it started
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -1278,7 +1278,7 @@
+     // one -- the same key -- so both records vanished and the next pass
+     // published the notes as new files. A fake that reports an event no host
+     // delivers is a fake that hides the defect it invents.
+-    if (outcome === "moved" && landed !== source) this.emit("rename", this.entry(landed, true), source);
++    if (outcome === "moved") this.emit("rename", this.entry(landed, true), source);
+     return outcome;
+   }
+ 

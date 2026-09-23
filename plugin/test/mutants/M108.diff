@@ -1,0 +1,63 @@
+# M108: the reconcile pass queues the folder records it owes after the file work
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1563,33 +1563,6 @@
+     // barrier, then the moves underneath -- which queue behind that barrier
+     // precisely because they are queued after it.
+     const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
+-    // AND EVERY FOLDER RECORD THIS DEVICE STILL OWES, ALSO BEFORE THE FILE
+-    // WORK (review round 4, finding 3). Publishing a record for a folder that
+-    // has none is how a vault that predates 1.1.0 converges once both devices
+-    // update -- and it is also what re-derives a publication a stop lost, so
+-    // it must not be queued behind the moves under that folder: a receiver
+-    // that folds case can apply none of them until the record lands. The
+-    // barrier that ORDERS them is restored before this pass runs at all
+-    // (`restoreFolderBarriers`), and nothing here arms one: a folder with no
+-    // record on any device is not a rename anybody is waiting for.
+-    let folderQueued = 0;
+-    let folderSkipped = 0;
+-    const present = new Set<string>();
+-    if (tombstones) {
+-      for (const folder of folders) {
+-        if (!this.running) return;
+-        if (!this.trackedFolder(folder, "reconcile_folder") || !(await context.host.syncable(folder, "folder"))) {
+-          folderSkipped++;
+-          continue;
+-        }
+-        present.add(folder);
+-        if (casedFolders.has(folder)) continue;
+-        if (context.state.folderByPath(folder) !== undefined) continue;
+-        this.publishFolder(folder, false);
+-        this.enqueue(folder);
+-        folderQueued++;
+-      }
+-    }
+     for (const file of files) {
+       if (!this.running) return;
+       if (!this.tracked(file.path, label)) { skipped++; continue; }
+@@ -1749,6 +1722,25 @@
+       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+       this.enqueue(file.path);
+       queued++;
++    }
++    // THE FOLDER RECORDS THIS DEVICE OWES, after the file work.
++    let folderQueued = 0;
++    let folderSkipped = 0;
++    const present = new Set<string>();
++    if (tombstones) {
++      for (const folder of folders) {
++        if (!this.running) return;
++        if (!this.trackedFolder(folder, "reconcile_folder") || !(await context.host.syncable(folder, "folder"))) {
++          folderSkipped++;
++          continue;
++        }
++        present.add(folder);
++        if (casedFolders.has(folder)) continue;
++        if (context.state.folderByPath(folder) !== undefined) continue;
++        this.publishFolder(folder, false);
++        this.enqueue(folder);
++        folderQueued++;
++      }
+     }
+     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
+     // retired once the notes under it have published their own tombstones, so

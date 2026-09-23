@@ -1,0 +1,19 @@
+# M80: each half of a folder rename reads the selection for itself
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1608,11 +1608,11 @@
+           // what they SEND and not in what they judge (`sync/engine.ts`).
+           const before = this.state.data.syncFolders;
+           if (caseOnly(oldPath, file.path)) {
+-            this.engine?.folderRenamed(oldPath, file.path, before);
+-            this.engine?.renamedFolder(oldPath, file.path, before);
++            this.engine?.folderRenamed(oldPath, file.path);
++            this.engine?.renamedFolder(oldPath, file.path);
+           } else {
+-            this.engine?.renamedFolder(oldPath, file.path, before);
+-            this.engine?.folderRenamed(oldPath, file.path, before);
++            this.engine?.renamedFolder(oldPath, file.path);
++            this.engine?.folderRenamed(oldPath, file.path);
+           }
+         }
+       }),

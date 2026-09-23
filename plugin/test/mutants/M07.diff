@@ -1,0 +1,11 @@
+# M07: the moved file's delete is left unmarked
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1184,7 +1184,6 @@
+   // Marked BEFORE the trash: the vault reports the removal to this plugin's
+   // own delete handler while the trash is still running, and an unmarked echo
+   // publishes a tombstone for a file that is alive one name over (issue #96).
+-  context.trashed.add(from);
+   // The removal names the bytes it is removing. `kept` means the host found
+   // other ones there -- a save inside the removal, or a file that replaced
+   // the one we held -- and left or put back what it found rather than take
