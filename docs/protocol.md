@@ -279,6 +279,16 @@ in the state that rename creates on the wire, and refused in every other:
 > as `decision=not_synced reason=outside_sync_scope`, with one notice naming
 > both spellings.
 
+The retirement is a STATE, not a clock. It lasts until a record is written for
+that folder -- by the feed, by the re-case itself, or by this device's own
+republication of that folder at its next start-up pass, which is what happens
+when the tombstone was a DELETION and no rename follows it -- or until a
+folder record takes it. Inside that window one record one capitalisation off
+that folder is admitted, and the vault's own answer still decides what becomes
+of it. The rule grants a sender no authority it did not have: a device that
+can publish a folder record can rename that folder in any case. What it takes
+away is a SECOND device's folder being read as this device's rename.
+
 The rule is what a string comparison cannot be: a device whose filesystem
 KEEPS the two spellings apart can hold `Team docs` and `team docs` at once, and
 its record for the second one is indistinguishable, as a string, from a rename
