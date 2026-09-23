@@ -72,7 +72,7 @@ import {
 import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
-import { SyncFolders, inSyncScope, parseSyncFolders } from "../syncScope";
+import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { applyChange } from "./pull";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
@@ -156,8 +156,14 @@ export interface VaultHost {
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
    * only the host can see the filesystem (`vaultPath.ts`).
+   *
+   * THE KIND IS THE CALLER'S TO SAY, because the selection rule differs at
+   * one point: a FOLDER record is published for the selected folder itself
+   * as well as for everything inside it, and a FILE is never the selected
+   * folder (`syncScope.ts`, `inFolderScope`). Omitted means a file, which is
+   * every caller but the reconcile pass's folder loops.
    */
-  syncable(path: string): Promise<boolean>;
+  syncable(path: string, kind?: "file" | "folder"): Promise<boolean>;
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
@@ -341,6 +347,21 @@ export const BULK_DELETION_MIN = 5;
 
 /** What one pass is measured against; an overrun is logged, never truncated. */
 export const SCAN_BUDGET_MS = 5000;
+
+/**
+ * How many times one folder record's post is attempted before the barrier it
+ * holds is let go (review round 3, finding 3).
+ *
+ * The record is the only thing entitled to re-case a directory on a folding
+ * receiver, so the moves under it wait for it -- and a queue that waited
+ * forever for a post that keeps failing would stop this device publishing
+ * anything under that folder at all. Three attempts inside the one drain,
+ * and then the hold EXPIRES with a decision and a notice: the moves go, the
+ * receiver refuses them and says so, and this device's next start republishes
+ * the record from the reconcile pass, which is the recovery the protocol
+ * already documents. Never silent, and never unbounded.
+ */
+export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
 // The host's own timers. Obsidian runs the desktop app inside Electron, where
@@ -376,8 +397,18 @@ export class SyncEngine {
    * (`takeBatch`).
    */
   private readonly barriers = new Set<string>();
+  /**
+   * The barrier path the batch in flight is carrying, so a post that FAILS
+   * can put it back: `takeBatch` takes such a path alone, so there is never
+   * more than one (`pushNow`).
+   */
+  private barrierPath: string | null = null;
+  /** Failed attempts at one folder record's post, against `FOLDER_POST_TRIES`. */
+  private readonly folderRetries = new Map<string, number>();
   /** Echo marks already armed at the previous scan: what this one expires. */
   private echoSweep = new Set<string>();
+  /** The failed-folder-post notice is shown once per engine, like every other. */
+  private folderPostNoticeShown = false;
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
@@ -561,6 +592,20 @@ export class SyncEngine {
     return false;
   }
 
+  /**
+   * The same question about a FOLDER, whose scope rule differs at one point:
+   * the selected folder itself has a folder record, because a folder record
+   * IS its path and nothing else can carry that folder's own rename
+   * (`syncScope.ts`, `inFolderScope`; review round 3, finding 1).
+   */
+  private trackedFolder(path: string, event: string, folders: SyncFolders = this.options.state.data.syncFolders): boolean {
+    const refusal = vaultPathRefusal(path) ??
+      (inFolderScope(path, folders) ? null : "outside_sync_scope");
+    if (refusal === null) return true;
+    this.options.host.log(`watch path_class=folder decision=not_synced reason=${refusal} event=${event}`);
+    return false;
+  }
+
   /** A create or modify event from the vault. */
   changed(path: string): void {
     if (!this.running || !this.tracked(path, "change")) return;
@@ -697,27 +742,55 @@ export class SyncEngine {
    */
   private followSelection(from: string, to: string): void {
     const { state, host } = this.options;
-    const folders = state.data.syncFolders;
-    if (folders === undefined) return;
-    const moved = folders.filter((folder) => folder === from || folder.startsWith(`${from}/`));
-    if (moved.length === 0) return;
-    let followed: string[];
+    let followed: { folders: string[]; moved: number } | null;
     try {
-      followed = parseSyncFolders(
-        folders.map((folder) => (moved.includes(folder) ? to + folder.slice(from.length) : folder)),
-      );
+      followed = selectionAfterRename(state.data.syncFolders, from, to);
     } catch (error) {
       host.log(
-        `scope decision=not_followed reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"} folders=${moved.length}`,
+        `scope decision=not_followed reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"} ` +
+          `folders=${movedSelection(state.data.syncFolders, from).length}`,
       );
       return;
     }
-    state.data.syncFolders = followed;
-    host.log(`scope decision=followed_rename folders=${moved.length} selected=${followed.length}`);
+    if (followed === null) return;
+    state.data.syncFolders = followed.folders;
+    host.log(`scope decision=followed_rename folders=${followed.moved} selected=${followed.folders.length}`);
     void this.track(state.save()).catch(() => {
       this.stop();
       host.log("scope decision=failed reason=state_not_saved");
     });
+  }
+
+  /**
+   * The folder's new name is outside what this device syncs -- the same
+   * decision `leftScope` makes for a file, for the record a folder has.
+   *
+   * Nothing is published: the folder is ALIVE under its new name, and its
+   * tombstone would remove it from every device that still has it empty.
+   * The record is dropped as well, because a record for a folder this device
+   * can no longer see is one the next reconcile pass reads as a folder that
+   * was deleted -- the tombstone this branch exists to refuse, thirty seconds
+   * later. The user has already been told once by the files that moved with
+   * it (`leftScope`); a folder with no files in it says it here and nowhere
+   * else, which is the honest cost of a rename this device cannot follow.
+   */
+  private folderLeftScope(path: string, folders: SyncFolders): void {
+    // The source's own refusal first, unchanged: a folder that was never this
+    // device's says so in the line it has always said it in.
+    if (!this.trackedFolder(path, "folder_rename_from", folders)) return;
+    const context = this.need();
+    this.folderPublishes.delete(path);
+    this.folderRemovals.delete(path);
+    const queued = this.queue.indexOf(path);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    if (context.state.folderByPath(path) !== undefined) {
+      context.state.forgetFolder(path);
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        context.host.log("folder decision=failed reason=state_not_saved");
+      });
+    }
+    context.host.log("folder path_class=folder decision=not_published reason=moved_out_of_scope");
   }
 
   /**
@@ -805,7 +878,7 @@ export class SyncEngine {
    * head for no content difference at all.
    */
   folderCreated(path: string, barrier = false): void {
-    if (!this.running || !this.tracked(path, "folder_create")) return;
+    if (!this.running || !this.trackedFolder(path, "folder_create")) return;
     const context = this.need();
     // A folder stands here again, so a delete event still owed for the one
     // the pull path removed will never arrive (`deleted`, issue #96).
@@ -829,7 +902,7 @@ export class SyncEngine {
    * folder's, which is what removes the empty tree from every other device.
    */
   folderDeleted(path: string, folders: SyncFolders = this.options.state.data.syncFolders): void {
-    if (!this.running || !this.tracked(path, "folder_delete", folders)) return;
+    if (!this.running || !this.trackedFolder(path, "folder_delete", folders)) return;
     const context = this.need();
     context.createdFolders.delete(path);
     this.folderPublishes.delete(path);
@@ -869,8 +942,20 @@ export class SyncEngine {
     // directory entry, and the receiver carries those records along.
     const barrier = caseOnly(from, to);
     for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
+      const target = to + path.slice(from.length);
+      // A FOLDER THAT LEFT THE SCOPE IS NOT A FOLDER THAT WAS DELETED, and a
+      // selected folder can now be the one that left: its record is this
+      // device's (`trackedFolder`), and its new name may be one no device
+      // syncs -- hidden, malformed, or simply outside the selection this
+      // rename could not follow. The folder EXISTS there, so a tombstone for
+      // it is one every other device obeys, exactly as it is for a file
+      // (`leftScope`, issue #91).
+      if (vaultPathRefusal(target) !== null || !inFolderScope(target, this.options.state.data.syncFolders)) {
+        this.folderLeftScope(path, sourceFolders);
+        continue;
+      }
       this.folderDeleted(path, sourceFolders);
-      this.folderCreated(to + path.slice(from.length), barrier && path === from);
+      this.folderCreated(target, barrier && path === from);
     }
   }
 
@@ -994,6 +1079,7 @@ export class SyncEngine {
       // that never reached the queue from serialising a later push of that
       // same name.
       this.barriers.clear();
+      this.barrierPath = null;
       this.status({ kind: "idle" });
     } finally {
       this.draining = false;
@@ -1014,7 +1100,14 @@ export class SyncEngine {
    * barrier orders what follows it, it does not stop the queue.
    */
   private takeBatch(concurrency: number): string[] {
-    if (this.barriers.delete(this.queue[0] as string)) return this.queue.splice(0, 1);
+    // Cleared first, so the note of what a batch is carrying can never
+    // outlive the batch that carried it.
+    this.barrierPath = null;
+    const first = this.queue[0] as string;
+    if (this.barriers.delete(first)) {
+      this.barrierPath = first;
+      return this.queue.splice(0, 1);
+    }
     const behind = this.queue.findIndex((path) => this.barriers.has(path));
     return this.queue.splice(0, behind === -1 ? concurrency : Math.min(concurrency, behind));
   }
@@ -1069,8 +1162,20 @@ export class SyncEngine {
         return;
       }
       if (this.folderPublishes.delete(path)) {
-        const versionId = await pushFolder(context, path);
-        if (versionId !== null) context.authored.add(versionId);
+        // THE BARRIER IS THIS POST'S, NOT THIS ATTEMPT'S (review round 3,
+        // finding 3). `takeBatch` took it as it took the path, and a post
+        // that fails here is the one case where letting it go is wrong:
+        // everything queued behind it is a move the receiver can only refuse
+        // until this record lands.
+        const barrier = this.barrierPath === path;
+        this.barrierPath = null;
+        try {
+          const versionId = await pushFolder(context, path);
+          if (versionId !== null) context.authored.add(versionId);
+          this.folderRetries.delete(path);
+        } catch (error) {
+          this.retryFolder(context, path, barrier, error);
+        }
         return;
       }
       if (this.deletions.has(path)) {
@@ -1110,6 +1215,61 @@ export class SyncEngine {
       context.host.log(`push path_class=file decision=failed reason=${message}`);
       this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
     }
+  }
+
+  /**
+   * A folder record's post FAILED, and what the queue owes it.
+   *
+   * `takeBatch` deleted the barrier as it took the path and `pushNow` deleted
+   * the path from `folderPublishes` before the post, so before this the
+   * publication simply ceased to exist: the moves queued behind it went out
+   * alone, a folding receiver refused every one of them with a notice naming
+   * a cause that was not the one, and nothing re-derived the record until the
+   * next start (review round 3, finding 3). `docs/protocol.md` states the
+   * order as a promise about the WIRE, and a promise that holds only when the
+   * post succeeds is not the one it states.
+   *
+   * So the publication and its barrier are put back, in front of the moves
+   * they order -- at the FRONT of the queue, because a barrier orders what is
+   * behind it and re-queuing it at the back would leave it behind the very
+   * moves it holds. `FOLDER_POST_TRIES` attempts bound it; at the bound the
+   * hold expires with its own decision and one notice, and the next start's
+   * reconcile pass republishes the record.
+   */
+  private retryFolder(context: SyncContext, path: string, barrier: boolean, error: unknown): void {
+    const attempt = (this.folderRetries.get(path) ?? 0) + 1;
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof VaultPathError) {
+      this.folderRetries.delete(path);
+      context.host.log(`push path_class=folder decision=not_synced reason=${error.refusal}`);
+      return;
+    }
+    if (attempt >= FOLDER_POST_TRIES) {
+      this.folderRetries.delete(path);
+      context.host.log(
+        `push path_class=folder decision=expired reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
+      );
+      this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
+      if (!this.folderPostNoticeShown) {
+        this.folderPostNoticeShown = true;
+        context.host.notify(
+          "obsync could not tell your other devices about a folder this device published or renamed: the server " +
+            `refused the folder record ${FOLDER_POST_TRIES} times. Nothing was lost here and nothing was deleted ` +
+            "anywhere. Until this device syncs again, another device may still show that folder under its old " +
+            "capitalisation and refuse the notes moved inside it; this device republishes the folder the next time " +
+            "it starts.",
+        );
+      }
+      return;
+    }
+    this.folderRetries.set(path, attempt);
+    this.folderPublishes.add(path);
+    if (barrier) this.barriers.add(path);
+    // In FRONT: what this record orders is already queued behind it.
+    if (!this.queue.includes(path)) this.queue.unshift(path);
+    context.host.log(
+      `push path_class=folder decision=retry reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
+    );
   }
 
   /**
@@ -1262,6 +1422,13 @@ export class SyncEngine {
         `${label} decision=start budget_files=${files.length} budget_folders=${folders.length}`,
       );
     }
+    // FIRST, AND BEFORE ANY FILE WORK (review round 3, finding 2). A folder
+    // renamed by capitalisation alone while Obsidian was closed is this
+    // pass's to find, and the order it publishes in is the wire order the
+    // protocol states: the old record's tombstone, then the new record as a
+    // barrier, then the moves underneath -- which queue behind that barrier
+    // precisely because they are queued after it.
+    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
     for (const file of files) {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
@@ -1434,11 +1601,12 @@ export class SyncEngine {
     if (tombstones) {
       for (const folder of folders) {
         if (!this.running) return;
-        if (!this.tracked(folder, "reconcile_folder") || !(await context.host.syncable(folder))) {
+        if (!this.trackedFolder(folder, "reconcile_folder") || !(await context.host.syncable(folder, "folder"))) {
           folderSkipped++;
           continue;
         }
         present.add(folder);
+        if (casedFolders.has(folder)) continue;
         if (context.state.folderByPath(folder) !== undefined) continue;
         this.folderPublishes.add(folder);
         this.enqueue(folder);
@@ -1446,8 +1614,8 @@ export class SyncEngine {
       }
       for (const folder of Object.keys(context.state.data.folders)) {
         if (!this.running) return;
-        if (present.has(folder)) continue;
-        if (!this.tracked(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        if (present.has(folder) || casedFolders.has(folder)) continue;
+        if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
         this.folderRemovals.add(folder);
         this.enqueue(folder);
         folderQueued++;
@@ -1469,6 +1637,76 @@ export class SyncEngine {
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).
     this.sweepEchoes(context, label);
+  }
+
+  /**
+   * The folder renames this pass DISCOVERED: a folder this device records
+   * under a spelling the vault no longer shows, beside a listed folder that
+   * differs from it in capitalisation alone. Obsidian was closed when it
+   * happened, so no rename event ever arrived and only a pass that reads the
+   * vault's own inventory will ever see it.
+   *
+   * THE ORDER IS THE HANDLER'S ORDER, AND IT IS LOAD-BEARING. Published the
+   * other way round -- the record for the new spelling first and the
+   * tombstone for the old one behind it, which is what two separate loops
+   * produced -- a folding receiver re-cased the directory from the record and
+   * then took the tombstone for the spelling it had just left: `trashFolder`
+   * resolves that name to the ONE directory entry the rename produced, found
+   * an EMPTY folder there and removed it, and the receiver's own next pass
+   * tombstoned the record it had just written, so the folder was gone on both
+   * devices (review round 3, finding 2). The tombstone therefore goes first
+   * and the record follows it as a wire barrier, exactly as `folderRenamed`
+   * sends a rename this device was told about (`docs/protocol.md`).
+   *
+   * AND BEFORE THE FILE WORK, because the moves this pass publishes for the
+   * notes underneath (`caseRenamed`) are queued after whatever is queued
+   * here: behind the barrier, where the protocol says they belong, instead of
+   * overtaking the record that is the only thing entitled to re-case the
+   * directory on the receiving side.
+   */
+  private async recaseFolders(context: SyncContext, folders: string[], label: string): Promise<Set<string>> {
+    const handled = new Set<string>();
+    const listed = new Set(folders);
+    const spellings = new Map<string, string[]>();
+    for (const folder of folders) {
+      const folded = folder.toLowerCase();
+      spellings.set(folded, [...(spellings.get(folded) ?? []), folder]);
+    }
+    for (const from of Object.keys(context.state.data.folders)) {
+      if (!this.running) break;
+      // TWO FACTS, AND AMBIGUITY IS NOT EVIDENCE (`caseRenamed`, one kind
+      // over). The listing no longer spells this folder the recorded way, and
+      // it holds exactly ONE folder that differs from it in case alone. A
+      // listing holding both, or three spellings of one name, is a host
+      // saying something no filesystem can be, and nothing is renamed on it.
+      if (listed.has(from)) continue;
+      const candidates = (spellings.get(from.toLowerCase()) ?? []).filter((candidate) => caseOnly(candidate, from));
+      if (candidates.length !== 1) continue;
+      const to = candidates[0] as string;
+      // A destination this device already records is not this device's to
+      // rename -- that is the ghost `caseRenamed` describes, and dropping a
+      // record is never a tombstone.
+      if (context.state.folderByPath(to) !== undefined) continue;
+      if (!this.trackedFolder(from, "reconcile_folder_case") || !this.trackedFolder(to, "reconcile_folder_case")) continue;
+      if (!(await context.host.syncable(to, "folder"))) continue;
+      handled.add(from);
+      handled.add(to);
+      // Contradictory pending work for either name is dropped, exactly as the
+      // handlers drop it: a path is a removal or a publication, never both,
+      // and `pushNow` would otherwise answer the removal for both.
+      this.folderPublishes.delete(from);
+      this.folderRemovals.add(from);
+      this.enqueue(from);
+      this.folderRemovals.delete(to);
+      this.folderPublishes.add(to);
+      // ARMED BEFORE THE ENQUEUE, because `enqueue` drains synchronously as
+      // far as its first await (`folderCreated`).
+      this.barriers.add(to);
+      this.enqueue(to);
+      // No path in the line: a name is vault content (requirement 6).
+      context.host.log(`${label} path_class=folder decision=case_renamed`);
+    }
+    return handled;
   }
 
   /**
@@ -1502,6 +1740,14 @@ export class SyncEngine {
       ["moved", context.moved],
       ["trashed", context.trashed],
       ["created_folders", context.createdFolders],
+      // The WRITE marks too, and the reason they are here is the second key
+      // `landedAt` registers for a file that landed in a directory the vault
+      // spells another way: one of the two is consumed by the watcher and the
+      // other never is, so an unbounded set grew by one key per such file
+      // until the plugin was reloaded (review round 3, finding 4c). An
+      // expired write mark costs one re-chunk of a file whose recorded digest
+      // has not changed, which publishes nothing.
+      ["written", context.written],
     ] as [string, Set<string>][]) {
       for (const mark of marks) {
         const tagged = `${name}\u0000${mark}`;

@@ -1,0 +1,12 @@
+# M92: a discovered folder re-case goes out in the two loops' order
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1428,7 +1428,7 @@
+     // protocol states: the old record's tombstone, then the new record as a
+     // barrier, then the moves underneath -- which queue behind that barrier
+     // precisely because they are queued after it.
+-    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
++    const casedFolders = new Set<string>();
+     for (const file of files) {
+       if (!this.running) return;
+       if (!this.tracked(file.path, label)) { skipped++; continue; }

@@ -7,11 +7,12 @@ import path, { join } from "node:path";
 import { FakeTimers, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { parseSyncFolders, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
+const { parseSyncFolders, inFolderScope, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
 const { parseData } = require("../build/state.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { pushFile, pushDelete, postManifest } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, decryptRecordManifest, assembleBytes } = require("../build/sync/pull.js");
+const { folderFileId } = require("../build/crypto.js");
 const enc = (text) => new TextEncoder().encode(text);
 const record = (fileId) => ({ fileId, versionId: "12".repeat(32), mtime: 100, size: 8, sha256: "" });
 
@@ -53,7 +54,11 @@ function guardHost(host, folders) {
     const original = host[method].bind(host);
     host[method] = (value, ...rest) => {
       touched.push([method, value]);
-      assert.ok(inSyncScope(value, folders), `${method} accessed an excluded path: ${value}`);
+      // A question about a FOLDER carries the folder rule, which admits the
+      // selected folder itself: it has a record of its own (`syncScope.ts`,
+      // review round 3, finding 1). Everything else is a file.
+      const rule = method === "syncable" && rest[0] === "folder" ? inFolderScope : inSyncScope;
+      assert.ok(rule(value, folders), `${method} accessed an excluded path: ${value}`);
       return original(value, ...rest);
     };
   }
@@ -61,7 +66,7 @@ function guardHost(host, folders) {
 }
 
 test("scoped startup and events never inspect excluded files or infer their deletion", async () => {
-  const { host, state, server, transport } = await rig();
+  const { host, state, server, transport, keys } = await rig();
   state.data.syncFolders = ["Notes"];
   host.seed("Notes/yes.md", "SENTINEL");
   host.seed("Admin/deploy.sh", "SENTINEL");
@@ -74,8 +79,17 @@ test("scoped startup and events never inspect excluded files or infer their dele
   engine.changed("Admin/deploy.sh");
   engine.deleted("Admin/absent.sh");
   engine.renamed("Admin/from.sh", "Admin/to.sh");
-  await timers.run(1000, () => Boolean(state.fileByPath("Notes/yes.md")) && server.feedWaiters.length !== 0);
-  assert.equal(server.vaultFiles().length, 1);
+  // WAITED FOR WHAT IT ASSERTS: the note's push and the selected folder's own
+  // record are two posts, and a feed waiter appears before either lands.
+  await timers.run(1000, () =>
+    Boolean(state.fileByPath("Notes/yes.md")) && server.vaultFiles().length === 2 && server.feedWaiters.length !== 0);
+  // One NOTE, and the selected folder's own record beside it: the selected
+  // folder has a record like any other folder inside the selection, and it is
+  // the only thing that carries its creation, removal or rename to another
+  // device (review round 3, finding 1). Nothing excluded is published either
+  // way, which is what this test is about.
+  assert.deepEqual(await server.noteFiles(keys.manifestKey), [state.fileByPath("Notes/yes.md").fileId]);
+  assert.equal(server.vaultFiles().length, 2, "something outside the selection was published");
   assert.ok(state.fileByPath("Admin/absent.sh"), "excluded state is retained, never tombstoned");
   assert.ok(touched.some(([method]) => method === "read"), "the allowed control actually synced");
   const beat = JSON.parse(server.requests.find((item) => item.target.endsWith("/heartbeat")).json);
@@ -553,8 +567,18 @@ test("a rename above a selected folder moves the selection with it, persists it,
   const timers = new FakeTimers();
   const engine = new SyncEngine({ ...r, timers });
   await engine.start();
-  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
-  assert.equal(r.server.journal.length, 0, "the vault starts settled");
+  // WAITED FOR, NOT ASSUMED: the folder record's own post is what startup
+  // has to do here, and a feed waiter appears before it lands.
+  await timers.run(1000, () => r.server.journal.length !== 0 && r.server.feedWaiters.length !== 0);
+  // The selected folder's own record is the one thing startup publishes here:
+  // the notes are settled, and a folder record is what carries that folder
+  // itself to the other devices (review round 3, finding 1).
+  assert.deepEqual(
+    r.server.journal.map((frame) => frame.file_id),
+    [await folderFileId(r.keys.manifestKey, "Notes/Journal")],
+    "the vault starts settled but for the selected folder's record",
+  );
+  const settledAt = r.server.journal.length;
 
   for (const path of ["Notes/Journal/entry.md", "Notes/Private/secret.md"]) {
     r.host.files.set(`Archive${path.slice("Notes".length)}`, r.host.files.get(path));
@@ -569,7 +593,14 @@ test("a rename above a selected folder moves the selection with it, persists it,
   assert.equal(r.state.fileByPath("Archive/Journal/entry.md").fileId, selected, "the note kept its identity");
   assert.equal(r.state.fileByPath("Notes/Journal/entry.md"), undefined);
   assert.deepEqual(r.server.journal.filter((frame) => frame.deleted), [], "a followed rename publishes no tombstone");
-  assert.deepEqual(r.server.journal.map((frame) => frame.file_id), [selected], "and republishes only the selected note");
+  // The folder half of a rename is the handler's other call (`main.ts`); this
+  // one is `renamedFolder` alone, so what the rename adds is the selected
+  // note and nothing else.
+  assert.deepEqual(
+    r.server.journal.slice(settledAt).map((frame) => frame.file_id),
+    [selected],
+    "and republishes only the selected note",
+  );
   assert.ok(r.state.fileByPath("Notes/Private/secret.md"), "the excluded record stayed where it was");
   assert.equal(r.state.fileByPath("Archive/Private/secret.md"), undefined, "the move did not adopt it");
   const stopped = engine.stopAndWait();

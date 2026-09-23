@@ -57,7 +57,16 @@ import type { App } from "obsidian";
 import { Bytes, hex, randomBytes, unhex } from "./crypto";
 import { ByteSource } from "./chunker";
 import { State, isPushed } from "./state";
-import { assertSyncPath, expandsSyncScope, inSyncScope, inSyncTree, parseSyncFolders } from "./syncScope";
+import {
+  assertFolderCaseScope,
+  assertFolderScope,
+  assertSyncPath,
+  expandsSyncScope,
+  inFolderScope,
+  inSyncScope,
+  inSyncTree,
+  parseSyncFolders,
+} from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
 import { fetchRemoteOnly } from "./sync/pull";
@@ -339,8 +348,11 @@ export class ObsidianHost implements VaultHost {
    * through Obsidian's adapter, which the host app confines, so there is
    * nothing here to walk.
    */
-  async syncable(path: string): Promise<boolean> {
-    if (!inSyncScope(path, this.plugin.state.data.syncFolders)) return false;
+  async syncable(path: string, kind: "file" | "folder" = "file"): Promise<boolean> {
+    const folders = this.plugin.state.data.syncFolders;
+    // The folder rule at the one point it differs: the selected folder itself
+    // is a folder this device publishes a record for (`syncScope.ts`).
+    if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
     const desktop = this.desktop;
     if (desktop === null) return isVaultPath(path);
     try {
@@ -972,8 +984,12 @@ export class ObsidianHost implements VaultHost {
    * version does not make.
    */
   async moveFolder(from: string, to: string): Promise<MoveResult> {
-    assertSyncPath(from, this.plugin.state.data.syncFolders);
-    assertSyncPath(to, this.plugin.state.data.syncFolders);
+    // BOTH NAMES BY THE FOLDER RULE, and its case tolerance is what makes a
+    // rename of the SELECTED folder expressible at all: one of the two names
+    // is the selection and the other is the same directory under the
+    // capitalisation this rename gives it or takes from it (`syncScope.ts`).
+    assertFolderCaseScope(from, this.plugin.state.data.syncFolders);
+    assertFolderCaseScope(to, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       const adapter = this.plugin.app.vault.adapter;
@@ -1325,9 +1341,11 @@ export class ObsidianHost implements VaultHost {
     const folders = this.plugin.state.data.syncFolders;
     const out: string[] = [];
     for (const entry of this.plugin.app.vault.getAllFolders(false)) {
-      // `inSyncScope` carries the vault-path rule, so a hidden folder and a
-      // folder outside the selection are both out, in one check.
-      if (!inSyncScope(entry.path, folders)) continue;
+      // `inFolderScope` carries the vault-path rule, so a hidden folder and a
+      // folder outside the selection are both out, in one check -- and the
+      // SELECTED folder itself is in, because a folder record is what carries
+      // its creation, its removal and its own rename (`syncScope.ts`).
+      if (!inFolderScope(entry.path, folders)) continue;
       if (this.desktop !== null) {
         try {
           await this.confine(this.desktop, entry.path, ["directory"]);
@@ -1351,7 +1369,7 @@ export class ObsidianHost implements VaultHost {
    * through a link either; on mobile the adapter is asked what is there.
    */
   async createFolder(path: string): Promise<void> {
-    assertSyncPath(path, this.plugin.state.data.syncFolders);
+    assertFolderScope(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) {
       const found = await this.confine(desktop, path, ["absent", "directory"]);
@@ -1381,7 +1399,7 @@ export class ObsidianHost implements VaultHost {
    * directory; mobile asks the adapter, which is all it has.
    */
   async trashFolder(path: string): Promise<boolean> {
-    assertSyncPath(path, this.plugin.state.data.syncFolders);
+    assertFolderScope(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {

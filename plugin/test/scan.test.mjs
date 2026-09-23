@@ -627,21 +627,15 @@ test("a removal mark outlives no scan cycle, so a later deletion of that path is
     domainKey: k.domainKey,
     manifestKey: k.manifestKey,
   });
-  console.log("MARK before applyChange");
   assert.equal(await applyChange(context, renamed), "applied");
-  console.log("MARK after applyChange");
   assert.ok(context.trashed.has("Notes/One.md"), "nothing was armed, so this test proves nothing");
 
   // The name is taken again by something Obsidian never reported, and the
   // scan is what finds it: one file, published as the new note it is.
   host.seed("Notes/One.md", "third\n", 3000);
-  console.log("MARK before scan1");
   await timers.run(SCAN_MS);
-  console.log("MARK after scan1");
   await timers.run(SCAN_MS);
-  console.log("MARK before syncNow1");
   await engine.syncNow();
-  console.log("MARK after syncNow1");
 
   assert.equal(context.trashed.has("Notes/One.md"), false, "the mark outlived two scan cycles");
   const back = state.fileByPath("Notes/One.md");

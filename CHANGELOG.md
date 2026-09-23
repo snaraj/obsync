@@ -72,6 +72,34 @@ traded one rename every thirty seconds, re-downloading every note under the
 folder each time, for as long as both ran. If you saw a folder's notes gaining
 versions endlessly, that was this.
 
+**This works when the folder you renamed is the only one that device syncs.**
+If you chose folders under "Sync folders on this device", the folder you
+selected is published in its own right, so re-capitalising it reaches your
+other devices as the one rename it is. That one shape -- the renamed folder IS
+the selected folder, which is the usual shape on a phone -- was the one this
+release nearly shipped broken: the rename went out as note moves with no
+folder record behind them, every device that folds case refused them and told
+you to update a device that was already up to date, and every later edit you
+made in that folder was refused there too. A device RECEIVING such a rename
+for the folder it syncs follows it: the folder keeps syncing under its new
+capitalisation, and you do not have to select it again.
+
+**An empty folder re-capitalised while Obsidian was closed no longer
+disappears.** obsync finds that rename when it next starts, and it used to
+announce the new folder before announcing that the old one was gone -- so a
+device that folds case renamed the folder and then obeyed the removal, which
+on such a device names the very folder it had just renamed. Nothing was inside
+it to keep it, so it was deleted there, and then here. The two records now go
+out in the order the rename happened in, and no device removes a folder its
+own vault spells differently from the record asking for it.
+
+**If the server refuses the folder record, obsync says so.** The notes under a
+folder being re-capitalised wait for that record, because no device can apply
+them without it. obsync attempts the record three times; if all three fail it
+tells you once, sends the notes anyway -- where the other device refuses them
+and says why -- and publishes the folder again the next time it starts.
+Nothing is lost and nothing is deleted while that is true.
+
 **If the rename comes from a device still on 1.0.x**, there is no folder
 record to send, so the notes arrive asking for a folder spelled a way this
 device does not show. obsync refuses those moves rather than guessing: the

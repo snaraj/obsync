@@ -515,12 +515,22 @@ test("a selected folder the user really deletes still tombstones every note it h
     b.host.text(`Notes/${name}`) === null && !settled(a, `Notes/${name}`) && !settled(b, `Notes/${name}`)));
   await timers.run(STEP_MS);
 
-  assert.equal(tombstones(server).length, 3, `a real deletion was swallowed: ${story(server, a, b)}`);
+  assert.equal(
+    tombstonesFor(server, Object.values(ids)).length,
+    3,
+    `a real deletion was swallowed: ${story(server, a, b)}`,
+  );
   assert.deepEqual(
-    tombstones(server).map((frame) => frame.file_id).sort(),
+    tombstonesFor(server, Object.values(ids)).map((frame) => frame.file_id).sort(),
     Object.values(ids).sort(),
     "each deleted note was published under its own file id",
   );
+  // THE SELECTED FOLDER HAS A RECORD OF ITS OWN (review round 3, finding 1),
+  // so deleting it retires that record as well and the phone is left with no
+  // empty folder standing where the notes were. Four deleted frames: three
+  // notes and the folder.
+  assert.equal(tombstones(server).length, 4, `the selected folder's record was not retired: ${story(server, a, b)}`);
+  assert.deepEqual(b.host.trashed.slice(-1), ["Notes"], `the phone kept the emptied folder: ${story(server, a, b)}`);
   assert.deepEqual([...b.host.files.keys()], [], "the phone obeyed every one of them");
   assert.deepEqual(a.state.data.syncFolders, ["Notes"], "and the selection did not follow a deletion");
 });
@@ -555,6 +565,16 @@ test("a selected folder renamed where no device may sync publishes nothing and s
     3,
     a.host.logs.filter((line) => line.startsWith("rename")).join(" | "),
   );
+  // The selected folder's own record says it in the same words: the folder is
+  // ALIVE under its hidden name, so its tombstone is one every other device
+  // would obey (review round 3, finding 1).
+  assert.equal(
+    a.host.logs.filter((line) =>
+      line.includes("folder path_class=folder decision=not_published reason=moved_out_of_scope")).length,
+    1,
+    a.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  assert.equal(a.state.data.folders["Notes"], undefined, "a record for a folder this device cannot see was kept");
   // Once, not once per note: three refusals are one decision to the user.
   assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
   assert.match(a.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);

@@ -19,12 +19,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { STEP_MS, pair, published, rig, settled } from "./fake.mjs";
+import { FakeTimers, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
-const { SCAN_MS } = require("../build/sync/engine.js");
+const { SCAN_MS, SyncEngine } = require("../build/sync/engine.js");
 const { caseOnly } = require("../build/vaultPath.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -75,6 +75,18 @@ const quietRenameFolder = (host, from, to) => {
     .map((path) => [to + path.slice(from.length), host.files.get(path), path]);
   for (const [, , path] of moved) host.files.delete(path);
   for (const [path, file] of moved) host.files.set(path, file);
+};
+
+/**
+ * The same rename, for a folder with NOTHING in it: no file moves, so the
+ * folder's own two records are the whole of what the other device will ever
+ * hear about it.
+ */
+const quietRenameEmptyFolder = (host, from, to) => {
+  for (const folder of [...host.explicitFolders].filter((path) => path === from || path.startsWith(`${from}/`))) {
+    host.explicitFolders.delete(folder);
+    host.explicitFolders.add(to + folder.slice(from.length));
+  }
 };
 
 /** Two notes in one folder, on both devices, with their file ids. */
@@ -448,6 +460,23 @@ test("the two host models answer a second spelling differently, or these tests p
   assert.deepEqual([...folding.host.files.keys()], ["team docs/ONE.md"]);
   assert.equal(await folding.host.spelling("TEAM DOCS/one.md"), "team docs/ONE.md");
   assert.equal(await apart.host.spelling("TEAM DOCS/one.md"), null);
+
+  // AND A REMOVAL RESOLVES ITS NAME THE WAY THE FILESYSTEM DOES (review
+  // round 3, finding 2). `trashFolder` is handed a path, and the walk that
+  // resolves it finds the one directory entry whatever capitalisation was
+  // asked for -- which is how a tombstone for `Team docs` took the folder a
+  // re-case had just produced. A fake that compared names exactly answered
+  // `removed` while leaving that folder standing, so a pair test passed
+  // where the real host deleted the user's folder.
+  for (const r of [folding, apart]) {
+    r.host.files.clear();
+    r.host.explicitFolders.clear();
+    await r.host.createFolder("Team docs");
+  }
+  assert.equal(await folding.host.trashFolder("team docs"), true, "the folding host refused a name it answers for");
+  assert.deepEqual([...folding.host.explicitFolders], [], "the folding host removed nothing at the folded name");
+  assert.equal(await apart.host.trashFolder("team docs"), true, "a folder nothing holds is already gone");
+  assert.deepEqual([...apart.host.explicitFolders], ["Team docs"], "a host that keeps them apart removed the other entry");
 });
 
 test("a rename refuses a destination a DIFFERENT file already wears", async (t) => {
@@ -818,18 +847,179 @@ test("a case-only rename of a SELECTED folder publishes moves, not new notes", a
     `records left at the old spelling: ${story(server, a, b)}`,
   );
   assert.deepEqual(b.state.data.syncFolders, ["team docs"], "the selection did not follow the folder");
-  // The line the defect printed every SCAN_MS: each note's OLD name judged
-  // against the selection the rename left behind. (The folder record for the
-  // selected folder itself is out of scope on both sides by the scope rule --
-  // `inSyncScope` never places a folder inside itself -- and says so here as
-  // it did before.)
-  assert.equal(
-    b.host.logs.filter((line) =>
-      line.includes("reason=outside_sync_scope") &&
-      (line.includes("event=rename_from") || line.includes("_state"))).length,
-    0,
-    b.host.logs.filter((line) => line.includes("outside_sync_scope")).slice(0, 4).join(" | "),
+  // NOTHING ABOUT THIS RENAME IS OUT OF SCOPE ANY MORE, which is both halves
+  // of it: each note's OLD name judged against the selection the rename left
+  // behind (round 2, finding 1), and the folder record for the selected
+  // folder ITSELF, which `inSyncScope` refused because it never places a
+  // folder inside itself -- so the rename went out as moves with no record,
+  // and every folding receiver refused them (round 3, finding 1).
+  assert.deepEqual(
+    b.host.logs.filter((line) => line.includes("reason=outside_sync_scope")),
+    [],
+    b.host.logs.filter((line) => line.startsWith("watch")).join(" | "),
   );
+  assert.equal(
+    b.state.data.folders["team docs"] === undefined,
+    false,
+    `the selected folder has no record of its own: ${story(server, a, b)}`,
+  );
+});
+
+/**
+ * THE RECEIVER, WHICH THE TEST ABOVE NEVER LOOKED AT (review round 3,
+ * finding 1).
+ *
+ * The sender's half was right and the wire was still wrong: `inSyncScope`
+ * never places a folder inside itself, so for a device whose selection IS
+ * `Team docs` the folder was out of scope on BOTH sides of its own rename.
+ * `folderDeleted` and `folderCreated` both returned at `tracked`, no
+ * tombstone, no record and no barrier existed, and the moves went out alone
+ * -- which is exactly the shape the receiver refuses, because only a folder
+ * record may re-case a directory. A folding peer logged `case_move_refused`
+ * twice, kept the notes at their pre-move versions, and told the user to
+ * "update every device to this version" on a 1.1.0/1.1.0 pair; the selecting
+ * device's later edits under its own folder were refused too.
+ */
+test("a case-only rename of a SELECTED folder reaches a folding receiver as one folder", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  b.state.data.syncFolders = ["Team docs"];
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+
+  b.host.renameFolder("Team docs", "team docs");
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(
+    a.host.logs.filter((line) => line.includes("case_move_refused")).length,
+    0,
+    a.host.notices.join(" | ") || story(server, a, b),
+  );
+  assert.deepEqual(
+    [...a.host.files.keys()].sort(),
+    ["team docs/One.md", "team docs/Two.md"],
+    `the receiver kept the old spelling: ${story(server, a, b)}`,
+  );
+  for (const path of ["team docs/One.md", "team docs/Two.md"]) {
+    assert.equal(
+      a.state.fileByPath(path)?.versionId,
+      b.state.fileByPath(path)?.versionId,
+      `the receiver holds the version BEFORE the move: ${story(server, a, b)}`,
+    );
+  }
+  assert.ok(
+    a.host.logs.some((line) => line.includes("path_class=folder") && line.includes("decision=case_renamed")),
+    a.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
+
+  // AND THE EDITS THAT FOLLOW IT. The third refusal was the one that made
+  // this a P2: with the folder refused, every later edit the selecting device
+  // made under its own selection was refused on the other one too.
+  b.host.write("team docs/One.md", "edited after the rename\n", 7000);
+  await timers.run(STEP_MS, () => a.host.text("team docs/One.md") === "edited after the rename\n");
+  assert.equal(
+    a.host.logs.filter((line) => line.includes("case_move_refused")).length,
+    0,
+    a.host.notices.join(" | ") || story(server, a, b),
+  );
+});
+
+/**
+ * THE OTHER DIRECTION: the whole-vault device renames the folder that IS the
+ * phone's selection, and the phone must follow it.
+ *
+ * A record naming `team docs` is admitted against a selection that spells it
+ * `Team docs` only so far as the string goes; the VAULT decides the rest
+ * (`syncScope.ts`, `inFolderCaseScope`). Here it folds case, so the two
+ * spellings are one directory -- this device's own selected folder -- and the
+ * re-case applies and takes the selection with it. Left behind, the selection
+ * would name a folder this vault no longer shows and every file under it
+ * would leave the scope in the same tick.
+ */
+test("a case-only rename of the folder a device SELECTS is applied there, and the selection follows", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  b.state.data.syncFolders = ["Team docs"];
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+  const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
+
+  a.host.renameFolder("Team docs", "team docs");
+  await timers.run(STEP_MS, () =>
+    b.host.logs.some((line) => line.includes("decision=case_renamed")) &&
+    settled(b, "team docs/One.md") && settled(b, "team docs/Two.md"));
+  await timers.run(SCAN_MS);
+
+  assert.deepEqual(b.state.data.syncFolders, ["team docs"], `the selection did not follow: ${story(server, a, b)}`);
+  assert.deepEqual(
+    [...b.host.files.keys()].sort(),
+    ["team docs/One.md", "team docs/Two.md"],
+    `the selecting device kept the old spelling: ${story(server, a, b)}`,
+  );
+  assert.deepEqual(
+    ["team docs/One.md", "team docs/Two.md"].map((path) => b.state.fileByPath(path)?.fileId),
+    ids,
+    `the notes lost their identity: ${story(server, a, b)}`,
+  );
+  // Followed by whichever half got there first, and idempotent by
+  // construction: the vault reports the re-case to this plugin's own rename
+  // handler, whose `followSelection` is the same one, and the pull path's
+  // call then finds no selected folder left to move. A host that reports
+  // nothing -- which is every host, for the per-file moves a folder re-case
+  // fans out into -- leaves the pull path as the only one that can.
+  assert.ok(
+    b.host.logs.some((line) => line.includes("scope decision=followed_re") && line.includes("folders=1 selected=1")),
+    b.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+  );
+  assert.equal(
+    b.host.logs.some((line) => line.includes("reason=moved_out_of_scope")),
+    false,
+    `the selecting device dropped its own notes: ${b.host.logs.filter((line) => line.includes("scope")).join(" | ")}`,
+  );
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
+});
+
+/**
+ * THE CONTROL, one level down: a SUBFOLDER of the selected folder, which was
+ * never out of scope and must stay exactly as it was.
+ */
+test("a case-only rename of a subfolder of the selected folder still carries its record", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  b.state.data.syncFolders = ["Team docs"];
+  a.host.write("Team docs/Sub/One.md", BODY, 1000);
+  a.host.write("Team docs/Sub/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/Sub/One.md") && settled(b, "Team docs/Sub/Two.md"));
+
+  b.host.renameFolder("Team docs/Sub", "Team docs/sub");
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.deepEqual(b.state.data.syncFolders, ["Team docs"], "the selection moved for a folder inside it");
+  assert.equal(
+    a.host.logs.filter((line) => line.includes("case_move_refused")).length,
+    0,
+    a.host.notices.join(" | ") || story(server, a, b),
+  );
+  assert.deepEqual(
+    [...a.host.files.keys()].sort(),
+    ["Team docs/sub/One.md", "Team docs/sub/Two.md"],
+    `the receiver kept the old spelling: ${story(server, a, b)}`,
+  );
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
 });
 
 /**
@@ -915,6 +1105,277 @@ test("the folder record reaches the server before the moves under it, whatever t
 });
 
 /**
+ * AN EMPTY FOLDER RENAMED BY CASE WHILE OBSIDIAN WAS CLOSED (review round 3,
+ * finding 2).
+ *
+ * The start-up pass published the record for the folder it now sees BEFORE
+ * the tombstone for the record it no longer does -- two loops, the first
+ * enqueue starting the drain -- so the wire order was the opposite of the
+ * handler's. A folding receiver applied the record as a re-case and then took
+ * the tombstone for the spelling it had just left: the removal's walk
+ * resolves to the ONE directory entry the re-case produced, which is empty,
+ * so it was deleted there; the receiver's own next pass tombstoned the record
+ * it had just written, and the renaming device obeyed that. The folder was
+ * gone on both devices, for renaming it in Finder.
+ *
+ * The pass now emits the tombstone first and the record behind it as a wire
+ * barrier, which is exactly what the handler sends for a rename this device
+ * was told about (`docs/protocol.md`).
+ */
+test("an EMPTY folder renamed by case while Obsidian was closed survives on both devices", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  a.host.makeFolder("Team docs");
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => b.state.data.folders["Team docs"] !== undefined);
+  assert.ok(b.host.explicitFolders.has("Team docs"), "the empty folder never reached the other device");
+
+  quietRenameEmptyFolder(a.host, "Team docs", "team docs");
+  await a.engine.syncNow();
+  await timers.run(STEP_MS, () => b.state.data.folders["team docs"] !== undefined);
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  // THE FOLDER IS STILL THERE, on both devices, spelled the new way.
+  assert.deepEqual([...b.host.explicitFolders], ["team docs"], `the receiver deleted the folder: ${story(server, a, b)}`);
+  assert.deepEqual([...a.host.explicitFolders], ["team docs"], `the renaming device lost it too: ${story(server, a, b)}`);
+  assert.equal(b.state.data.folders["Team docs"], undefined, "the old record outlived the rename");
+  assert.equal(a.state.data.folders["team docs"] === undefined, false, "the new record was never written");
+  // IN THE HANDLER'S ORDER the receiver removes the empty folder it was told
+  // to remove and then creates the one it was told about -- in that order,
+  // which is why it ends with a folder at all. The order this repair
+  // replaced had it re-case first and take the tombstone for the name it had
+  // just left, against the one entry the re-case produced.
+  assert.deepEqual(
+    b.host.logs
+      .filter((line) => line.startsWith("folder path_class=folder"))
+      .map((line) => (/decision=([a-z_]+)/.exec(line) ?? [])[1]),
+    ["created", "removed", "created"],
+    b.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+
+  // AND THE ORDER IT WENT IN, which is what makes the above true: the
+  // tombstone for the old record, then the record for the new spelling.
+  const oldId = await c.folderFileId(keys.manifestKey, "Team docs");
+  const newId = await c.folderFileId(keys.manifestKey, "team docs");
+  const tombstone = server.journal.findIndex((frame) => frame.file_id === oldId && frame.deleted);
+  const record = server.journal.findIndex((frame) => frame.file_id === newId && !frame.deleted);
+  assert.notEqual(tombstone, -1, `no tombstone was published: ${story(server, a, b)}`);
+  assert.notEqual(record, -1, `no record was published: ${story(server, a, b)}`);
+  assert.ok(tombstone < record, `the record was published before the tombstone it replaces: ${story(server, a, b)}`);
+});
+
+/**
+ * THE PULL PATH'S OWN FOLLOW, with no vault events behind it at all.
+ *
+ * The rig has no watcher: nothing reports the re-case back to this plugin's
+ * rename handler, which is also the truth on a real host for the per-file
+ * moves a folder re-case fans out into and on any host whose report is late
+ * or dropped. So the selection has exactly one thing that can move it, and
+ * this is it -- left behind, it names a folder this vault no longer shows and
+ * every file under it leaves the scope in the same tick (review round 3,
+ * finding 1). The admission is the other half: a folder record naming
+ * `team docs` reaches this code at all only because the string rule tolerates
+ * one capitalisation of a selection root, and the VAULT decides the rest.
+ */
+test("a folder record that re-cases the folder this device selects moves the selection with it", async (t) => {
+  const r = await rig({ caseSensitive: false });
+  r.state.data.syncFolders = ["Team docs"];
+  r.host.seed("Team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  const one = r.state.fileByPath("Team docs/One.md");
+
+  assert.equal(await applyChange(r.context, await folderRecord(r, "team docs")), "applied");
+
+  assert.deepEqual(r.state.data.syncFolders, ["team docs"], "the selection did not follow the folder record");
+  assert.deepEqual([...r.host.files.keys()], ["team docs/One.md"], "the directory entry was not re-cased");
+  assert.equal(r.state.fileByPath("team docs/One.md").fileId, one.fileId, "the note lost its identity");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("scope decision=followed_recase folders=1 selected=1")),
+    r.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
+  );
+  assert.deepEqual(r.host.trashed, [], "a re-case trashed something");
+  // And the note under it is still this device's to sync: a selection left at
+  // the old spelling is what would take it out of scope.
+  await pushFile(r.context, "team docs/One.md");
+});
+
+/**
+ * A DEVICE THAT KEEPS THE TWO SPELLINGS APART REFUSES IT, and that is the
+ * same rule rather than a second one: there, `team docs` is a different
+ * directory that this device does not sync, the vault says so by holding
+ * nothing at that name, and the record is skipped exactly as it was before.
+ */
+test("a folder record one capitalisation off the selection is refused where the two are two folders", async (t) => {
+  const r = await rig({ caseSensitive: true });
+  r.state.data.syncFolders = ["Team docs"];
+  r.host.seed("Team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+
+  assert.equal(await applyChange(r.context, await folderRecord(r, "team docs")), "skipped");
+
+  assert.deepEqual(r.state.data.syncFolders, ["Team docs"], "the selection followed a folder this vault does not have");
+  assert.deepEqual([...r.host.files.keys()], ["Team docs/One.md"], "the vault was touched");
+  assert.equal(r.state.data.folders["team docs"], undefined, "a record was kept for a folder outside the selection");
+  assert.ok(
+    r.host.logs.some((line) => line.includes("decision=not_synced") && line.includes("reason=outside_sync_scope")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+/**
+ * A FOLDER RECORD'S POST CAN FAIL, AND THE BARRIER IS ITS, NOT THE ATTEMPT'S
+ * (review round 3, finding 3).
+ *
+ * `takeBatch` deleted the barrier as it took the path and `pushNow` deleted
+ * the path from `folderPublishes` before the post, so a failed post simply
+ * ceased to exist: the moves queued behind it went out alone, a folding
+ * receiver refused every one of them with a notice naming a cause that was
+ * not the one, and nothing re-derived the record until the next start.
+ * `docs/protocol.md` states the order as a promise about the WIRE, which a
+ * promise that holds only when the post succeeds is not.
+ *
+ * Two hostile transports, the reviewer's: one that rejects the record's post
+ * once, and one that holds it for a generous number of event-loop turns and
+ * then rejects it. Both must end with the record on the wire BEFORE the
+ * moves, and the receiver holding its notes at the versions the moves carry.
+ */
+for (const [what, hostile] of [
+  ["rejects it once", async () => { throw new Error("fixture: the folder record's post was refused"); }],
+  ["holds it and then rejects it", async (turns) => {
+    await turns(300);
+    throw new Error("fixture: the folder record's post was refused after a hold");
+  }],
+]) {
+  test(`a folder record whose post fails is retried, and the moves stay behind it (${what})`, async (t) => {
+    const { server, timers, a, b, keys } = await pair(t, "immediate", {
+      isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+    });
+    a.host.write("Team docs/One.md", BODY, 1000);
+    a.host.write("Team docs/Two.md", OTHER, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+    const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
+    const folderId = await c.folderFileId(keys.manifestKey, "team docs");
+
+    const turns = async (count) => {
+      for (let turn = 0; turn < count; turn++) await new Promise((resolve) => setImmediate(resolve));
+    };
+    const post = b.transport.postVersion.bind(b.transport);
+    let refused = 0;
+    b.transport.postVersion = async (fileId, body) => {
+      if (fileId !== folderId) return post(fileId, body);
+      if (refused === 0) {
+        refused++;
+        return await hostile(turns);
+      }
+      // THE RETRY IS SLOW TOO, which is what makes this test about the
+      // BARRIER and not about who happened to answer first: a record put
+      // back without its barrier is posted alongside the moves, and the
+      // moves win.
+      await turns(50);
+      return post(fileId, body);
+    };
+
+    const before = server.journal.length;
+    const at = (id) => server.journal.findIndex(
+      (frame, index) => index >= before && frame.file_id === id && !frame.deleted);
+    b.host.renameFolder("Team docs", "team docs");
+    await timers.run(STEP_MS, () =>
+      a.host.logs.some((line) => line.includes("decision=case_renamed")) &&
+      [folderId, ...ids].every((id) => at(id) !== -1));
+
+    assert.equal(refused, 1, "the hostile transport never ran");
+    assert.ok(
+      b.host.logs.some((line) =>
+        line.includes("push path_class=folder decision=retry reason=folder_post attempt=1 budget=3")),
+      b.host.logs.filter((line) => line.startsWith("push")).join(" | "),
+    );
+    for (const id of ids) {
+      assert.ok(at(folderId) < at(id), `a move was journaled before the retried record: ${story(server, a, b)}`);
+    }
+    await timers.run(STEP_MS, () => a.state.data.lastSeq >= server.journal[server.journal.length - 1].seq);
+    assert.equal(
+      a.host.logs.some((line) => line.includes("case_move_refused")),
+      false,
+      a.host.notices.join(" | ") || story(server, a, b),
+    );
+    for (const path of ["team docs/One.md", "team docs/Two.md"]) {
+      assert.equal(
+        a.state.fileByPath(path)?.versionId,
+        b.state.fileByPath(path)?.versionId,
+        `the receiver holds the version BEFORE the move: ${story(server, a, b)}`,
+      );
+    }
+  });
+}
+
+/**
+ * AND THE QUEUE NEVER STALLS FOREVER. A retry that could be taken again for
+ * ever would stop this device publishing anything under that folder, so the
+ * hold is bounded: `FOLDER_POST_TRIES` attempts, then one decision, one
+ * notice, and the moves go -- which the receiver refuses and SAYS it
+ * refuses, while this device's next start republishes the record from the
+ * reconcile pass. Expiring silently is the one outcome that is not allowed.
+ */
+test("a folder record whose post keeps failing expires with a decision, and the queue drains", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+  const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
+  const folderId = await c.folderFileId(keys.manifestKey, "team docs");
+
+  const post = b.transport.postVersion.bind(b.transport);
+  let attempts = 0;
+  b.transport.postVersion = async (fileId, body) => {
+    if (fileId === folderId) {
+      attempts++;
+      throw new Error("fixture: the folder record's post was refused");
+    }
+    return post(fileId, body);
+  };
+
+  const before = server.journal.length;
+  const at = (id) => server.journal.findIndex(
+    (frame, index) => index >= before && frame.file_id === id && !frame.deleted);
+  b.host.renameFolder("Team docs", "team docs");
+  await timers.run(STEP_MS, () => ids.every((id) => at(id) !== -1));
+
+  assert.equal(attempts, 3, `the bound is not the one the constant states: ${b.host.logs.slice(-6).join(" | ")}`);
+  assert.equal(at(folderId), -1, `the record reached the server after all: ${story(server, a, b)}`);
+  assert.ok(
+    b.host.logs.some((line) =>
+      line.includes("push path_class=folder decision=expired reason=folder_post attempt=3 budget=3")),
+    b.host.logs.filter((line) => line.startsWith("push")).join(" | "),
+  );
+  assert.equal(b.host.notices.filter((message) => message.includes("folder record")).length, 1, b.host.notices.join(" | "));
+  // NO STALL: the queue drained, and the moves this device owed are on the
+  // wire -- refused there, and said so, which is the honest outcome.
+  await timers.run(STEP_MS, () =>
+    a.host.logs.some((line) => line.includes("case_move_refused reason=folder_case")));
+  // AND IT RECOVERS AT THE NEXT RECONCILE, once the server answers again,
+  // with the record published in the order the protocol states.
+  b.transport.postVersion = post;
+  await b.engine.syncNow();
+  await timers.run(STEP_MS, () => at(folderId) !== -1 &&
+    a.host.logs.some((line) => line.includes("path_class=folder") && line.includes("decision=case_renamed")));
+  assert.deepEqual(
+    [...a.host.files.keys()].sort(),
+    ["team docs/One.md", "team docs/Two.md"],
+    `the receiver never caught up: ${story(server, a, b)}`,
+  );
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, `files were duplicated: ${story(server, a, b)}`);
+});
+
+/**
  * "UPDATE THAT DEVICE AND THE TWO AGREE AGAIN" IS ABOUT THE NOTES, NOT ONLY
  * ABOUT THE SPELLING (review round 2, findings 2 and 4).
  *
@@ -958,6 +1419,16 @@ test("a folder record re-cased here brings down the versions refused while the s
   assert.equal(r.host.text("team docs/Two.md"), OTHER, "a note nothing happened to was rewritten");
   assert.ok(
     r.host.logs.some((line) => line.includes("decision=heads_refetched") && line.includes("records=2") && line.includes("applied=1")),
+    r.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  // START, with the budget it is measured against, before the work rather
+  // than only after it: one fetch per carried record, and the records are
+  // the folder this re-case carried (requirement 12; review round 3,
+  // finding 4b).
+  assert.ok(
+    r.host.logs.some((line) =>
+      line.includes("decision=start reason=heads_refetch") &&
+      line.includes("budget_records=2") && line.includes("budget_fetches=2")),
     r.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
   );
   assert.deepEqual(r.host.trashed, [], "converging trashed something");

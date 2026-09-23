@@ -998,6 +998,38 @@ name, so the deletion this device would otherwise post is a tombstone every
 other device obeys, the record is dropped so no later scan can infer that
 deletion either, and the user is told once.
 
+**A FOLDER RECORD's scope is the selected folder itself and everything inside
+it**, which is where it differs from a file's: a folder record IS its path, so
+the selected folder has one of its own, and that record is what carries its
+creation, its removal and a rename of its capitalisation -- which no per-file
+move can carry, because `rename(2)` resolves a destination's directory
+components and renames only the last. File records keep the strict rule (a
+selected folder is a directory, never a file wearing that exact name), and an
+ANCESTOR of a selected folder stays a directory this device may walk and never
+one it publishes. The rule holds on both paths: `folderCreated`,
+`folderDeleted`, `folderRenamed`, `postManifest` and the start-up pass on the
+push side; `applyFolder`, `removeFolder` and `recaseFolder` on the pull side.
+One tolerance, for the receiving side: a record whose path differs from a
+selected folder by capitalisation alone is admitted as far as the code that
+asks the VAULT, because on a volume that folds case those two spellings are
+ONE directory -- this device's own selected folder, under the name another
+device now gives it. Whether they really are one entry is not a question a
+string can answer, so a host that keeps them apart holds nothing at that name
+and the record is refused as it always was. When a received record re-cases
+the selected folder, the selection follows it, saved with the records that
+move with it: a selection left at a spelling the vault no longer shows would
+take every file under it out of scope in the same tick. A folder renamed to a
+name this device syncs in neither direction publishes nothing and drops its
+record, exactly as a file does -- the folder is alive under its new name, and
+a tombstone for it is one every other device obeys.
+
+Two shapes are deliberately outside that: a selected folder re-capitalised
+from OUTSIDE Obsidian reaches the start-up pass as every recorded path under
+it having vanished and is held as a bulk deletion (issue #123, below), and a
+folder ABOVE a selected folder renamed on another device is outside what this
+device syncs in either direction, so its record is skipped there and the moves
+under it are refused with the folder-capitalisation notice.
+
 Renaming or moving a folder that IS a selected folder, or that holds one,
 moves the selection with it, in the parser's canonical form. Each file under
 the folder is judged against the selection in force on EACH side of the

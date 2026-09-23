@@ -709,10 +709,14 @@ test("the host lists only folders this device may sync", async (t) => {
   // `.obsidian/**` out of sync in both directions.
   assert.deepEqual((await host.listFolders()).sort(), ["Archive", "Notes", "Notes/Deep"], "a hidden folder was listed");
 
-  // With a selection, only folders INSIDE it: the selected root is the
-  // boundary, not a folder record of its own.
+  // With a selection: the folders inside it AND the selected folder itself,
+  // which has a record like any other -- it is the only thing that can carry
+  // that folder's own creation, removal or rename to another device (review
+  // round 3, finding 1). Never a folder ABOVE it, and never a sibling.
   plugin.state.data.syncFolders = ["Notes"];
-  assert.deepEqual(await host.listFolders(), ["Notes/Deep"], "the selection was not honoured");
+  assert.deepEqual(await host.listFolders(), ["Notes", "Notes/Deep"], "the selection was not honoured");
+  plugin.state.data.syncFolders = ["Notes/Deep"];
+  assert.deepEqual(await host.listFolders(), ["Notes/Deep"], "a folder above the selection was listed");
 });
 
 test("the mobile host keeps a folder that holds anything and removes an empty one", async (t) => {

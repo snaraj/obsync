@@ -53,7 +53,7 @@ import { FakeTimers, KEYS, STEP_MS, published, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
-const { pushFile } = require("../build/sync/push.js");
+const { pushFile, pushFolder } = require("../build/sync/push.js");
 const { SyncEngine, SCAN_MS } = require("../build/sync/engine.js");
 const c = require("../build/crypto.js");
 
@@ -560,4 +560,150 @@ test("real filesystem: a file written into a folder this vault spells another wa
   );
   assert.equal(readFileSync(join(r.root, "Team docs/New.md"), "utf8"), TWO, story(r));
   assert.deepEqual(walk(r.root).folders, ["Team docs"], `a second directory was created: ${story(r)}`);
+});
+
+/**
+ * AN EMPTY FOLDER, AND THE TWO ORDERS ITS RECORDS CAN ARRIVE IN (review
+ * round 3, finding 2).
+ *
+ * A folder with nothing in it is the one case where a tombstone for the old
+ * spelling can reach a folding receiver with the new spelling already on
+ * disk -- there are no files to keep it non-empty and no moves to order it
+ * against. `trashFolder` resolves the name it is given to the ONE directory
+ * entry this filesystem holds, so the tombstone for `Team docs` was aimed at
+ * the folder the re-case had just produced: real APFS, real `ObsidianHost`,
+ * and `readdir` empty afterwards while the record for the new spelling
+ * survived -- which this device's next pass then tombstoned, so the folder
+ * was gone on every device.
+ *
+ * Both orders are proved here because both occur: the handler's order for a
+ * rename Obsidian reported, and -- until this repair -- the reverse for one
+ * the start-up pass discovered. The sender now emits the handler's order in
+ * both cases (`engine.ts`, `recaseFolders`); the receiver must hold either
+ * way, because a device on any earlier 1.1.0 build sends the other one.
+ */
+for (const [order, reversed] of [["tombstone then record", false], ["record then tombstone", true]]) {
+  test(`real filesystem: an EMPTY folder re-cased by a peer survives, whatever the order (${order})`, async (t) => {
+    const r = await vault(t, "Team docs");
+    if (!r.folds) {
+      assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+      assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+      t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+      t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+      return;
+    }
+    // This device holds the folder and its record, exactly as a device that
+    // has run 1.1.0 once does; nothing is inside it.
+    await pushFolder(r.context, "Team docs");
+    const created = r.state.data.folders["Team docs"];
+    assert.ok(created !== undefined, "the folder record was never published");
+    const published = r.server.journal.length;
+
+    const tombstone = async () => folderRecord(r, "Team docs", { deleted: true, parents: [created.versionId] });
+    const record = async () => folderRecord(r, "team docs");
+    if (reversed) { await record(); await tombstone(); } else { await tombstone(); await record(); }
+
+    const timers = new FakeTimers();
+    const engine = new SyncEngine({
+      state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+    });
+    t.after(async () => {
+      engine.stop();
+      r.server.releaseFeed();
+      await engine.stopAndWait();
+    });
+    await engine.start();
+    // WAITED FOR THE WHOLE FEED, not for the first of the two frames: the
+    // one that deleted the folder was the SECOND, and a test that stopped at
+    // the first would assert before the damage.
+    const last = r.server.journal[r.server.journal.length - 1].seq;
+    await timers.run(STEP_MS, () => r.state.data.lastSeq >= last);
+
+    // THE DIRECTORY ITSELF, from `readdir`: the folder is still here, under
+    // the name the peer gave it.
+    assert.deepEqual(r.names(), ["team docs"], `the folder was deleted: ${story(r)}`);
+    assert.equal(r.state.data.folders["Team docs"], undefined, `the old record outlived the rename: ${story(r)}`);
+    if (reversed) {
+      assert.ok(
+        r.logs.some((line) => line.includes("decision=kept") && line.includes("reason=vault_spelling")),
+        r.logs.filter((line) => line.startsWith("folder")).join(" | "),
+      );
+    }
+
+    // AND THIS DEVICE NEVER TELLS THE OTHERS THE FOLDER IS GONE. Two whole
+    // scan cycles: the pass that reads Obsidian's own index is the one that
+    // tombstoned the record it had just written.
+    const settled = r.server.journal.length;
+    await timers.run(SCAN_MS);
+    await timers.run(SCAN_MS);
+    assert.deepEqual(r.names(), ["team docs"], `a later pass removed the folder: ${story(r)}`);
+    assert.equal(
+      r.server.journal.length,
+      settled,
+      `this device published something about the folder: ${r.server.journal.slice(published).map((frame) => `${frame.seq}${frame.deleted ? ":tombstone" : ""}`).join(",")}`,
+    );
+    assert.equal(r.counts.fetched, 0, `a folder rename downloaded something: ${story(r)}`);
+  });
+}
+
+/**
+ * THE WRITE MARKS A PULL LEAVES BEHIND, and the one that is never consumed
+ * (review round 3, finding 4c).
+ *
+ * `landedAt` registers the echo key under BOTH spellings of a file that
+ * landed in a directory this vault spells another way, because which of them
+ * the vault reports back is the vault's business. One is consumed by the
+ * watcher event; the other never is, and it stayed in the set until the
+ * plugin was reloaded -- harmless, because only an identical `mtime:size` at
+ * that exact path could ever consume it, and unbounded, which is the part
+ * that is not allowed. The sweep that bounds every other mark now bounds
+ * these too. It takes a real filesystem to produce the pair at all: the
+ * folding of a DIRECTORY component on the way to a write is the thing the
+ * hand-written vault does not have.
+ */
+test("real filesystem: the write marks a pull leaves behind expire with the next scan cycles", async (t) => {
+  const r = await vault(t, "Team docs");
+  if (!r.folds) {
+    assert.equal(typeof r.folds, "boolean", "the case-folding detection did not run");
+    assert.equal(foldsCase(r.root), false, "the detection disagrees with itself");
+    t.diagnostic(`skipped: this filesystem keeps two spellings apart, so ${SUBJECT} cannot occur here`);
+    t.skip(`case-sensitive filesystem; untested here: ${SUBJECT}`);
+    return;
+  }
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+  });
+  t.after(async () => {
+    engine.stop();
+    r.server.releaseFeed();
+    await engine.stopAndWait();
+  });
+  await engine.start();
+  const context = engine.context;
+
+  // A NEW note from a device that spells the folder the other way, applied by
+  // the ENGINE'S OWN FEED: this engine is running, and a second writer racing
+  // its feed for one path is a fixture defect rather than a test.
+  const newId = "1234567890abcdef1234567890abcdef";
+  await r.server.publish({
+    fileId: newId, path: "team docs/New.md", bytes: enc(TWO), mtime: 1500, parents: [],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  await timers.run(STEP_MS, () => r.state.pathByFileId(newId) !== undefined);
+  assert.equal(r.state.pathByFileId(newId), "Team docs/New.md", `the record took the manifest's spelling: ${story(r)}`);
+  assert.equal(context.written.size, 2, `only one spelling was armed, so this test proves nothing: ${story(r)}`);
+
+  const settled = r.server.journal.length;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.equal(context.written.size, 0, `a write mark outlived two scan cycles: ${story(r)}`);
+  assert.ok(
+    r.logs.some((line) => line.includes("decision=echo_expired")),
+    r.logs.filter((line) => line.startsWith("scan")).join(" | "),
+  );
+  // The cost of expiring one, measured: nothing on the wire, because a push
+  // of a file whose recorded digest has not changed posts nothing.
+  assert.equal(r.server.journal.length, settled, `expiring a write mark published a version: ${story(r)}`);
 });

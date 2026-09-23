@@ -61,7 +61,7 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
-import { assertSyncPath, inSyncScope } from "../syncScope";
+import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
 import { assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
@@ -355,7 +355,7 @@ function folderManifest(context: SyncContext, path: string, deleted: boolean): F
  * echo of a pull-created folder free (`engine.ts`).
  */
 export async function pushFolder(context: SyncContext, path: string): Promise<string | null> {
-  assertSyncPath(path, context.state.data.syncFolders);
+  assertFolderScope(path, context.state.data.syncFolders);
   if (context.state.folderByPath(path) !== undefined) return null;
   const fileId = await folderFileId(context.manifestKey, path);
   const ack = await postManifest(context, fileId, [], [], folderManifest(context, path, false), 0, false);
@@ -395,7 +395,18 @@ export async function postManifest(
   bytes: number,
   acceptExisting: boolean,
 ): Promise<{ versionId: string; ack: VersionAck }> {
-  assertSyncPath(manifest.path, context.state.data.syncFolders);
+  // The folder rule for a folder record, the file rule for a file: the
+  // selected folder itself has a record and is never a file (`syncScope.ts`).
+  //
+  // AND ITS CASE TOLERANCE, because the two halves of a rename that changes
+  // capitalisation alone cannot both be in the selection: the selection moved
+  // with the folder when the rename was handled, and the TOMBSTONE for the
+  // name it left is posted afterwards, under the new one. Refused here, a
+  // device renaming its own selected folder published the record and never
+  // the tombstone, so every other device kept a folder record for a spelling
+  // that no longer exists (review round 3, finding 1).
+  if (manifest.v === 2) assertFolderCaseScope(manifest.path, context.state.data.syncFolders);
+  else assertSyncPath(manifest.path, context.state.data.syncFolders);
   const binder = await contentVersionId(fileId, parents, sids);
   const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
   const { nonce, ciphertext } = await seal(

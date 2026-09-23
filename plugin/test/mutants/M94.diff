@@ -1,0 +1,12 @@
+# M94: a failed folder post is logged and dropped, as it was
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1174,7 +1174,7 @@
+           if (versionId !== null) context.authored.add(versionId);
+           this.folderRetries.delete(path);
+         } catch (error) {
+-          this.retryFolder(context, path, barrier, error);
++          context.host.log(`push path_class=folder decision=failed reason=${error instanceof Error ? error.message : String(error)}`);
+         }
+         return;
+       }

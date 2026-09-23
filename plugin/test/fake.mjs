@@ -412,15 +412,30 @@ export class FakeHost {
     this.explicitFolders.add(path);
   }
 
-  /** Empty means empty: a file or a folder anywhere under it keeps it. */
+  /**
+   * Empty means empty: a file or a folder anywhere under it keeps it.
+   *
+   * AND THE NAME IS RESOLVED THE WAY THE FILESYSTEM RESOLVES IT (review round
+   * 3, finding 2). A removal names a path and the walk finds the one
+   * DIRECTORY ENTRY that answers to it, whatever capitalisation the caller
+   * asked with -- so a tombstone for `Team docs` arriving after this vault
+   * has been re-cased to `team docs` is aimed at the folder the re-case just
+   * produced. A fake that compared names exactly reported `removed` while
+   * leaving that folder standing, so a pair test passed where the real host
+   * deleted the user's folder.
+   */
   async trashFolder(path) {
     this.folderChecks.push(path);
-    const prefix = `${path}/`;
+    const entry = this.resolveFolder(path);
+    // Nothing here to remove, and so nothing here to keep either: the real
+    // host answers `true` for an absent folder.
+    if (entry === undefined) return true;
+    const prefix = `${entry}/`;
     const holds = [...this.files.keys(), ...this.explicitFolders]
       .some((candidate) => candidate.startsWith(prefix));
     if (holds) return false;
-    this.explicitFolders.delete(path);
-    this.trashed.push(path);
+    this.explicitFolders.delete(entry);
+    this.trashed.push(entry);
     return true;
   }
 

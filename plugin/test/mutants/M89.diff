@@ -1,0 +1,12 @@
+# M89: a folder record is judged by the file rule, as it was
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -600,7 +600,7 @@
+    */
+   private trackedFolder(path: string, event: string, folders: SyncFolders = this.options.state.data.syncFolders): boolean {
+     const refusal = vaultPathRefusal(path) ??
+-      (inFolderScope(path, folders) ? null : "outside_sync_scope");
++      (inSyncScope(path, folders) ? null : "outside_sync_scope");
+     if (refusal === null) return true;
+     this.options.host.log(`watch path_class=folder decision=not_synced reason=${refusal} event=${event}`);
+     return false;

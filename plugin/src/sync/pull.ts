@@ -98,13 +98,20 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ChangeRecord, FileRecord, ReadControl } from "../transport";
+import { ApiError, ChangeRecord, FileRecord, ReadControl } from "../transport";
 // The per-path record this device keeps, named apart from the SERVER's file
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
-import { assertSyncPath, inSyncScope } from "../syncScope";
+import {
+  assertFolderCaseScope,
+  assertFolderScope,
+  assertSyncPath,
+  inSyncScope,
+  movedSelection,
+  selectionAfterRename,
+} from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
 import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
 
@@ -349,9 +356,17 @@ export async function decodeRecordManifest(
     unbase64(record.manifest_ct),
   );
   const entry = parseEntry(json);
-  if (entry.v === 2) bindFolderToRecord(record, entry, context.domainId);
-  else bindManifestToRecord(record, entry, context.domainId);
-  assertSyncPath(entry.path, context.state.data.syncFolders);
+  // A FOLDER RECORD IS JUDGED BY THE FOLDER RULE, which differs from a file's
+  // at the selection root: the selected folder itself has a record, and that
+  // record is the only thing that can carry its own rename (`syncScope.ts`,
+  // `inFolderScope`; review round 3, finding 1).
+  if (entry.v === 2) {
+    bindFolderToRecord(record, entry, context.domainId);
+    assertFolderCaseScope(entry.path, context.state.data.syncFolders);
+  } else {
+    bindManifestToRecord(record, entry, context.domainId);
+    assertSyncPath(entry.path, context.state.data.syncFolders);
+  }
   return entry;
 }
 
@@ -435,15 +450,34 @@ export function ancestors(path: string): string[] {
  * running, and an unmarked echo becomes a folder tombstone this device
  * publishes for a folder the remote side already owns.
  *
- * `false` means the host found something still in it and did nothing, so the
- * mark is taken back: a suppression owed to an event that will never arrive
- * would swallow the user's own next deletion of that folder.
+ * `not_empty` means the host found something still in it and did nothing, so
+ * the mark is taken back: a suppression owed to an event that will never
+ * arrive would swallow the user's own next deletion of that folder.
+ *
+ * AND NOTHING IS REMOVED BY A NAME THE VAULT SPELLS ANOTHER WAY (review round
+ * 3, finding 2). A removal names a path; the walk that resolves it on a host
+ * that folds case finds the one directory entry, whatever capitalisation the
+ * caller asked with. So a tombstone for `Team docs` arriving after this
+ * device has already re-cased that directory to `team docs` -- the order a
+ * rename discovered at start-up used to publish in -- resolved to the folder
+ * the re-case had just produced, found it empty and deleted it, and the next
+ * pass here tombstoned the record too, so an empty folder renamed by
+ * capitalisation alone was gone on every device. The vault is asked what it
+ * shows, and a name it shows differently is not this removal's to take.
  */
-async function removeFolder(context: SyncContext, path: string): Promise<boolean> {
+async function removeFolder(
+  context: SyncContext,
+  path: string,
+  shown: string | null,
+): Promise<"removed" | "not_empty" | "vault_spelling"> {
+  if (shown !== null && shown !== path) {
+    context.host.log("folder path_class=folder decision=kept reason=vault_spelling");
+    return "vault_spelling";
+  }
   context.trashed.add(path);
   const removed = await context.host.trashFolder(path);
   if (!removed) context.trashed.delete(path);
-  return removed;
+  return removed ? "removed" : "not_empty";
 }
 
 /**
@@ -470,7 +504,7 @@ export async function pruneEmptyParents(context: SyncContext, path: string): Pro
   for (const folder of ancestors(path)) {
     if (!inSyncScope(folder, context.state.data.syncFolders)) return;
     if (context.state.folderByPath(folder) !== undefined) return;
-    if (!(await removeFolder(context, folder))) return;
+    if ((await removeFolder(context, folder, await context.host.spelling(folder))) !== "removed") return;
     context.host.log(`folder path_class=folder decision=removed reason=empty_parent`);
   }
 }
@@ -638,6 +672,17 @@ async function applyFolder(
   manifest: FolderManifest,
 ): Promise<ApplyResult> {
   const path = manifest.path;
+  // WHAT THIS VAULT SHOWS, ASKED ONCE, because both decisions below turn on
+  // it. A record naming one capitalisation of a selected folder reaches this
+  // function on the string rule's tolerance alone (`syncScope.ts`,
+  // `inFolderCaseScope`), and the tolerance is not an admission: unless the
+  // vault holds a folder this path IS -- one directory entry, two spellings,
+  // which only a host that folds case can answer -- the record names a folder
+  // this device does not sync, and it is refused in the words it has always
+  // been refused in. A host that keeps the two apart answers `null` here.
+  const shown = await context.host.spelling(path);
+  const folded = shown !== null && caseOnly(shown, path);
+  if (!folded) assertFolderScope(path, context.state.data.syncFolders);
   if (manifest.deleted) {
     // Removed FIRST, forgotten after. The record is what `pushFolderDelete`
     // needs to publish a tombstone, so it is still there while the removal
@@ -645,11 +690,15 @@ async function applyFolder(
     // (`engine.ts`, ECHOES; issue #96). Forgotten either way: a folder kept
     // because it still holds something is a folder no device manages now, and
     // the empty-parent walk is what will take it when it empties.
-    const removed = await removeFolder(context, path);
+    const removed = await removeFolder(context, path, shown);
     context.state.forgetFolder(path);
     await context.state.save();
-    if (!removed) {
-      context.host.log(`folder path_class=folder decision=kept reason=not_empty seq=${change.seq}`);
+    if (removed !== "removed") {
+      // `vault_spelling` said so at the point of decision, with the reason
+      // only that walk knows; this is the one the receiver has always logged.
+      if (removed === "not_empty") {
+        context.host.log(`folder path_class=folder decision=kept reason=not_empty seq=${change.seq}`);
+      }
       return "skipped";
     }
     context.host.log(`folder path_class=folder decision=removed reason=tombstone seq=${change.seq}`);
@@ -665,8 +714,7 @@ async function applyFolder(
   // cannot repair it: `rename(2)` resolves the directory components of its
   // destination and leaves their spelling alone. This record can, because a
   // folder record IS its path.
-  const shown = await context.host.spelling(path);
-  if (shown !== null && caseOnly(shown, path)) return await recaseFolder(context, change, shown, path);
+  if (folded) return await recaseFolder(context, change, shown as string, path);
   // Marked before the call, like every other write this device makes: the
   // vault reports the new folder to this plugin's own create handler while
   // `createFolder` is still running (`engine.ts`, ECHOES).
@@ -688,6 +736,35 @@ async function applyFolder(
   await context.state.save();
   context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
   return "applied";
+}
+
+/**
+ * Move this device's folder selection with a folder rename it RECEIVED.
+ *
+ * The device that makes a rename moves its own selection with it
+ * (`engine.ts`, `followSelection`); a device that is told about one owes the
+ * same, or it is left selecting a folder its vault no longer shows. Nothing
+ * is saved here: every caller saves the records it moves in the same act, and
+ * a selection persisted without them would be the half-applied state this
+ * whole path exists to avoid.
+ */
+function followSelection(context: SyncContext, from: string, to: string): void {
+  const { state, host } = context;
+  let followed: { folders: string[]; moved: number } | null;
+  try {
+    followed = selectionAfterRename(state.data.syncFolders, from, to);
+  } catch (error) {
+    // A destination this device may not select at all: the selection stays
+    // where it is and says so, exactly as the push side says it.
+    host.log(
+      `scope decision=not_followed reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"} ` +
+        `folders=${movedSelection(state.data.syncFolders, from).length}`,
+    );
+    return;
+  }
+  if (followed === null) return;
+  state.data.syncFolders = followed.folders;
+  host.log(`scope decision=followed_recase folders=${followed.moved} selected=${followed.folders.length}`);
 }
 
 /**
@@ -713,11 +790,17 @@ async function applyFolder(
  * never create the bounce, because nothing records a spelling this vault does
  * not show.
  *
- * THE SELECTION IS NOT AN ISSUE HERE, and that is the scope rule rather than
- * luck: a folder record is applied only when its path is strictly inside a
- * selected folder (`inSyncScope`), and `parseSyncFolders` drops any selection
- * that lives under another, so no selected folder can be at or under the one
- * this renames.
+ * THE SELECTION FOLLOWS THE FOLDER, exactly as it does on the device that
+ * MAKES the rename (`engine.ts`, `followSelection`). A folder record is
+ * applied at the selection root as well as inside it (`syncScope.ts`), so
+ * the folder this re-cases may BE what this device syncs -- and a selection
+ * left at the spelling the vault no longer shows would put every file under
+ * it out of scope in the same tick, which is a device that has quietly
+ * stopped syncing its own folder (review round 3, finding 1). It is moved
+ * only once the VAULT has confirmed the new spelling, and put back if
+ * anything below refuses, so the selection never names a folder this vault
+ * does not show. `parseSyncFolders` drops a selection that lives under
+ * another, so nothing selected can be strictly under the one this renames.
  */
 async function recaseFolder(
   context: SyncContext,
@@ -737,6 +820,11 @@ async function recaseFolder(
   // Unmarked, this device publishes the peer's own rename straight back at it
   // (`engine.ts`, ECHOES; issue #96).
   const echoes = files.map((path) => `${path}\u0000${under(path)}`);
+  for (const echo of echoes) context.moved.add(echo);
+  for (const folder of folders) {
+    context.trashed.add(folder);
+    context.createdFolders.add(under(folder));
+  }
   const unmark = (): void => {
     for (const echo of echoes) context.moved.delete(echo);
     for (const folder of folders) {
@@ -744,11 +832,6 @@ async function recaseFolder(
       context.createdFolders.delete(under(folder));
     }
   };
-  for (const echo of echoes) context.moved.add(echo);
-  for (const folder of folders) {
-    context.trashed.add(folder);
-    context.createdFolders.add(under(folder));
-  }
   const outcome = await context.host.moveFolder(from, to).catch((error: unknown) => {
     unmark();
     throw error;
@@ -765,6 +848,14 @@ async function recaseFolder(
     );
     return "refused";
   }
+  // THE SELECTION FOLLOWS THE ENTRY TOO, and only now: until the vault
+  // answered, a selection moved forward would have named a folder this vault
+  // does not show. After it, a selection left behind is what would -- and
+  // every file under it would leave the scope in the same tick, on a device
+  // whose own folder just changed its capitalisation (review round 3,
+  // finding 1). Nothing else in the selection moves: `parseSyncFolders` drops
+  // a selected folder that lives under another.
+  followSelection(context, from, to);
   // THE RECORDS FOLLOW THE ENTRY, ALL OF THEM, BEFORE ANY CHILD WORK. What
   // moved is the directory, so every path beneath it moved with it; a record
   // left at the old spelling is one the next scan reads as a deletion of a
@@ -813,11 +904,20 @@ async function recaseFolder(
  * dropped rather than raised: the re-case itself has already succeeded and is
  * saved, and the feed must not be wedged by a request that can be made again
  * at the next one.
+ *
+ * IT IS LONG-RUNNING WORK, so it says what it is about to do and what it is
+ * measured against before it starts, and sums up afterwards (requirement 12):
+ * one fetch per carried record is the budget, and the records are the folder
+ * the re-case carried.
  */
 async function refetchCarried(context: SyncContext, paths: string[], seq: number): Promise<void> {
   const started = context.now();
   let applied = 0;
   let failed = 0;
+  context.host.log(
+    `folder path_class=folder decision=start reason=heads_refetch budget_records=${paths.length} ` +
+      `budget_fetches=${paths.length} seq=${seq}`,
+  );
   for (const path of paths) {
     const record = context.state.fileByPath(path);
     if (record === undefined) continue;
@@ -843,7 +943,7 @@ async function refetchCarried(context: SyncContext, paths: string[], seq: number
     } catch (error) {
       failed++;
       context.host.log(
-        `folder path_class=file decision=head_not_refetched reason=${error instanceof Error ? error.message : String(error)} seq=${seq}`,
+        `folder path_class=file decision=head_not_refetched reason=${refetchRefusal(error)} seq=${seq}`,
       );
     }
   }
@@ -851,6 +951,25 @@ async function refetchCarried(context: SyncContext, paths: string[], seq: number
     `folder path_class=folder decision=heads_refetched records=${paths.length} applied=${applied} ` +
       `failed=${failed} seq=${seq} duration_ms=${context.now() - started}`,
   );
+}
+
+/**
+ * One word for why a head could not be re-fetched, from a FIXED vocabulary.
+ *
+ * A structured line carries decisions, not prose: an error's own message is
+ * written by whatever raised it -- a server's error body among them -- and
+ * pasting it into a log line puts text this device did not choose into a
+ * field readers parse (requirement 12). The class of the failure and, for a
+ * request, the status the transport itself read are what a reader needs.
+ */
+function refetchRefusal(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.code === "unreachable") return "unreachable";
+    return error.status === 0 ? "not_ready" : `http_${error.status}`;
+  }
+  if (error instanceof ManifestError) return `manifest_${error.reason}`;
+  if (error instanceof VaultPathError) return error.refusal;
+  return "failed";
 }
 
 /**

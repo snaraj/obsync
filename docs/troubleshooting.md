@@ -373,6 +373,15 @@ spelling is not published back. Update that device, or rename the folder here
 to match, and the two agree again, including the notes edited there while they
 disagreed: settling the spelling brings their current versions down with it.
 
+**If a device syncs only some folders**, the folder it selects is published in
+its own right from 1.1.0, so re-capitalising that selected folder is carried
+as the one rename it is, and a device receiving such a rename for the folder
+IT selects keeps syncing it under the new spelling without being re-selected.
+A folder ABOVE a selected one is outside what that device syncs in either
+direction: re-capitalising one elsewhere is not carried to it, and the notes
+under it are refused with the notice above until the folder is renamed to
+match on one of the two devices.
+
 **Two devices renaming the same folder to two different capitalisations at
 once** end with copies of its notes on both, the way two devices renaming one
 folder to two different names at once already did. Nothing is lost: rename the

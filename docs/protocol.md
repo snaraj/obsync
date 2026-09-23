@@ -253,6 +253,21 @@ nonce derived from the message, two devices publishing the same folder produce
 the same `version_id`, so the second post is the `200` no-op this document
 already specifies for a version the server holds.
 
+**Whose folders a device publishes and receives records for.** A device that
+syncs only some folders (`syncFolders`, local-only, above) publishes a folder
+record for each SELECTED folder and for every folder inside it, and receives
+the same. The selected folder itself is included because a folder record IS
+its path: nothing else can carry that folder's own creation, removal or
+rename. A folder ABOVE a selected one is never published, and a FILE record
+keeps the stricter rule -- a selected folder is a directory, never a file
+wearing that exact name. A receiver additionally admits a folder record whose
+path differs from a selected folder by capitalisation alone, and then asks its
+own vault: where the two spellings are one directory entry the record names
+that device's selected folder and is applied, and the device's selection
+follows the new spelling; where they are two, the record names a folder that
+device does not sync and is skipped (`decision=not_synced
+reason=outside_sync_scope`).
+
 **Publication order, for a rename that changes case alone.** A folder rename
 publishes a tombstone for the old path, a record for the new one, and a move
 per file beneath it. For an ordinary rename the moves go FIRST, so the old
@@ -270,12 +285,32 @@ batches and posts each batch concurrently, so a record enqueued first can
 still be journaled after one enqueued behind it. For this record that is not
 good enough, and the guarantee is therefore stated as an order on the wire:
 the sender waits for the server to acknowledge the folder record before it
-sends any move under it. A receiver that meets a per-file move whose only
+sends any move under it, and a post that FAILS keeps that hold rather than
+losing it -- the publication is put back in front of the moves it orders and
+attempted up to three times in all. At that bound the hold expires with one
+logged decision (`push path_class=folder decision=expired reason=folder_post
+attempt=3 budget=3`) and one notice, the moves go out and are refused by a
+folding receiver in the usual words, and the sender's next start-up pass
+republishes the record. The queue never waits forever and never gives the
+hold up silently. A receiver that meets a per-file move whose only
 difference lies in a directory component -- the shape a device older than
 1.1.0 publishes, which sends no folder record at all -- REFUSES it
 (`decision=case_move_refused reason=folder_case`, one notice per folder) and
 changes nothing, because recording a spelling its own listing contradicts is
 what makes two devices trade the same rename forever.
+
+**A rename nobody reported has the same order.** A folder re-capitalised
+while Obsidian was closed is found by the start-up pass, which publishes the
+same two records in the same order -- the old record's tombstone first, the
+new record behind it as the same wire barrier, and any moves the pass
+publishes for the notes underneath behind that. The reverse order is what a
+receiver cannot survive for an EMPTY folder: it re-cases the directory from
+the record and then meets the tombstone for the spelling it has just left,
+whose removal resolves to the one directory entry that rename produced.
+Receivers therefore also refuse to remove a directory whose vault spelling
+differs from the record asking for it (`folder path_class=folder
+decision=kept reason=vault_spelling`), which holds whatever order a sender on
+an earlier build used.
 
 **A refusal is not a loss, and it is not permanent.** A version refused while
 the two devices spelled the folder differently is never re-delivered by the

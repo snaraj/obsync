@@ -299,9 +299,20 @@ async function assertRecordedPath(r, path) {
   const binder = await c.contentVersionId(local.fileId, version.parents, version.sids);
   const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, local.fileId, binder,
     c.unhex(version.manifest_nonce), c.unbase64(version.manifest_ct)));
-  console.log(JSON.stringify({localPath: path, recordedVersion: local.versionId, serverManifestPath: manifest.path,
-    deduplicated: r.server.deduplicated.length, serverVersions: r.server.files.get(local.fileId).versions.length}));
-  assert.equal(manifest.path, path, "a clean local record must not claim a version whose authenticated manifest names another path");
+  // The numbers a failure needs ride the assertion, not the gate's stdout: a
+  // print in a passing test is noise in every run that will ever pass.
+  assert.equal(
+    manifest.path,
+    path,
+    "a clean local record must not claim a version whose authenticated manifest names another path: " +
+      JSON.stringify({
+        localPath: path,
+        recordedVersion: local.versionId,
+        serverManifestPath: manifest.path,
+        deduplicated: r.server.deduplicated.length,
+        serverVersions: r.server.files.get(local.fileId).versions.length,
+      }),
+  );
 }
 
 test("ordinary concurrent edit must not adopt another device's rename-and-edit manifest", async () => {
@@ -314,8 +325,10 @@ test("ordinary concurrent edit must not adopt another device's rename-and-edit m
   r.host.seed("Original.md", "edited\n", 2000);
   await pushFile(r.context, "Original.md");
   await assertRecordedPath(r, "Original.md");
-  const applied = await applyChange(r.context, renamed);
-  console.log("later_rename_frame=" + applied);
+  // The frame that follows is the one the defect adopted: this device holds
+  // the same bytes at its own name, and the foreign rename is not its to
+  // apply. Asserted rather than printed.
+  assert.equal(await applyChange(r.context, renamed), "skipped", "the foreign rename-and-edit frame was acted on");
 });
 
 test("a persisted unposted rename must retain the dedupe opt-out after state reload", async () => {
@@ -357,8 +370,7 @@ test("startup engine does not label a foreign renamed manifest as its own echo",
     await engine.syncNow();
     r.context = engine.context;
     const foreignEcho = r.context.authored.has(renamed.version_id);
-    const applied = await applyChange(r.context, renamed);
-    console.log("engine_later_rename_frame=" + applied);
+    assert.equal(await applyChange(r.context, renamed), "skipped", "the foreign rename-and-edit frame was acted on");
     assert.equal(foreignEcho, false, "a foreign rename must not be marked as this engine own already-applied version");
   } finally {
     engine.stop();

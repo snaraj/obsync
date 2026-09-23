@@ -1,0 +1,12 @@
+# M95: a retried folder record is put back without its barrier
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1264,7 +1264,7 @@
+     }
+     this.folderRetries.set(path, attempt);
+     this.folderPublishes.add(path);
+-    if (barrier) this.barriers.add(path);
++    if (barrier && false) this.barriers.add(path);
+     // In FRONT: what this record orders is already queued behind it.
+     if (!this.queue.includes(path)) this.queue.unshift(path);
+     context.host.log(
