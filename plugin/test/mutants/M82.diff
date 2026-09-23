@@ -1,11 +1,15 @@
 # M82: a batch takes its paths without looking for a barrier
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1014,9 +1014,7 @@
-    * barrier orders what follows it, it does not stop the queue.
-    */
-   private takeBatch(concurrency: number): string[] {
--    if (this.barriers.delete(this.queue[0] as string)) return this.queue.splice(0, 1);
+@@ -1103,13 +1103,7 @@
+     // Cleared first, so the note of what a batch is carrying can never
+     // outlive the batch that carried it.
+     this.barrierPath = null;
+-    const first = this.queue[0] as string;
+-    if (this.barriers.delete(first)) {
+-      this.barrierPath = first;
+-      return this.queue.splice(0, 1);
+-    }
 -    const behind = this.queue.findIndex((path) => this.barriers.has(path));
 -    return this.queue.splice(0, behind === -1 ? concurrency : Math.min(concurrency, behind));
 +    return this.queue.splice(0, concurrency);

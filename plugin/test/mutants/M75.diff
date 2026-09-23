@@ -1,12 +1,12 @@
 # M75: a folder record stops re-casing the directory it names
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -620,7 +620,7 @@
+@@ -714,7 +714,7 @@
+   // cannot repair it: `rename(2)` resolves the directory components of its
    // destination and leaves their spelling alone. This record can, because a
    // folder record IS its path.
-   const shown = await context.host.spelling(path);
--  if (shown !== null && caseOnly(shown, path)) return await recaseFolder(context, change, shown, path);
-+  if (shown !== null && caseOnly(shown, shown)) return await recaseFolder(context, change, shown, path);
+-  if (folded) return await recaseFolder(context, change, shown as string, path);
++  if (folded && false) return await recaseFolder(context, change, shown as string, path);
    // Marked before the call, like every other write this device makes: the
    // vault reports the new folder to this plugin's own create handler while
    // `createFolder` is still running (`engine.ts`, ECHOES).
