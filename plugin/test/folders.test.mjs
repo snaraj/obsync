@@ -437,14 +437,34 @@ for (const { name, from, to } of directions) {
 // --- startup reconciliation ---------------------------------------------
 
 test("startup reconciliation publishes a record for every folder that has none, once", async (t) => {
-  const { server, timers, a, b } = await pair(t);
+  const { server, timers, a, b, keys: k } = await pair(t);
   // A vault from before 1.1.0: folders exist, no folder record does.
   a.host.write("Old/note.md", "written before folders synced\n", 1000);
   a.host.explicitFolders.add("Old/Empty");
   await a.engine.start();
+  // THE NOTE TOO, AND NOT ONLY THE FOLDERS. The reconcile pass publishes
+  // every folder record it owes BEFORE any file work (`survey`; review round
+  // 4, finding 3), so a milestone naming the folder records alone is reached
+  // with the note still in the queue -- and the second pass below would then
+  // be measured against a journal that had not finished growing.
   await timers.run(STEP_MS, () =>
-    a.state.folderByPath("Old") !== undefined && a.state.folderByPath("Old/Empty") !== undefined);
+    a.state.folderByPath("Old") !== undefined && a.state.folderByPath("Old/Empty") !== undefined &&
+    settled(a, "Old/note.md"));
   const published = server.journal.length;
+  // AND THE FOLDERS WENT FIRST. The pass publishes every folder record it
+  // owes before any file work, so a receiver never meets a note under a
+  // folder whose record is still queued behind it -- which is the order a
+  // rename by capitalisation alone depends on, and the order a restart used
+  // to lose (review round 4, finding 3).
+  const at = (id) => server.journal.findIndex((frame) => frame.file_id === id);
+  assert.ok(
+    at(await folderId(k, "Old")) < at(a.state.fileByPath("Old/note.md").fileId),
+    `the note was journaled before its folder's record: ${story(a, b)}`,
+  );
+  assert.ok(
+    at(await folderId(k, "Old/Empty")) < at(a.state.fileByPath("Old/note.md").fileId),
+    `the note was journaled before the empty folder's record: ${story(a, b)}`,
+  );
 
   // A second pass publishes nothing: the records exist now.
   await a.engine.syncNow();

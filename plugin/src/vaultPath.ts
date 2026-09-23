@@ -156,6 +156,27 @@ export function caseOnly(a: string, b: string): boolean {
   return a !== b && a.length === b.length && a.toLowerCase() === b.toLowerCase();
 }
 
+/**
+ * The same question asked of the LAST COMPONENT ALONE: do these two paths
+ * differ in the capitalisation of their final name, with every directory
+ * above it spelled identically (review round 4, finding 2)?
+ *
+ * A DIFFERENCE IN AN ANCESTOR IS NOT ONE ANY HOST CAN APPLY FROM HERE.
+ * `rename(2)` resolves the directory components of its destination and
+ * renames only the last, so asking a host to move `Docs/Team docs` to
+ * `docs/Team docs` renames the entry onto itself: the call succeeds, the
+ * vault still shows the old spelling, and the spelling check refuses it --
+ * after this device has already marked echoes and moved records for a rename
+ * nothing made. An ancestor of a selected folder is also a folder this device
+ * neither publishes nor receives (`syncScope.ts`, `docs/architecture.md`), so
+ * the folder rule's case tolerance stops at the last component, which is the
+ * only component a re-case of a folder can change.
+ */
+export function caseOnlyLastComponent(a: string, b: string): boolean {
+  const cut = a.lastIndexOf("/");
+  return caseOnly(a, b) && a.slice(0, cut + 1) === b.slice(0, cut + 1);
+}
+
 export function isVaultPath(value: unknown): value is string {
   return vaultPathRefusal(value) === null;
 }

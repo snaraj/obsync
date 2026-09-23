@@ -1,0 +1,11 @@
+# M101: the retirement is not spent by the folder record that takes it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -414,7 +414,6 @@
+     // SPENT HERE. The record the retirement was waiting for has arrived, so a
+     // second record one capitalisation off that folder is a twin again --
+     // including the twin a case-sensitive sender publishes moments later.
+-    delete context.state.data.retiredRoots[selected];
+     return;
+   }
+   if (selected !== null) notifyFolderTwin(context, selected, path);

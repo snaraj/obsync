@@ -1,5 +1,5 @@
 /** Device-local folder selection. Never part of pairing, the domain map or device policy. */
-import { VaultPathError, assertVaultPath, caseOnly, isVaultPath } from "./vaultPath";
+import { VaultPathError, assertVaultPath, caseOnlyLastComponent, isVaultPath } from "./vaultPath";
 
 /** Missing means the existing whole-vault mode; an explicit empty list syncs no files. */
 export type SyncFolders = readonly string[] | undefined;
@@ -64,25 +64,50 @@ export function assertFolderScope(path: unknown, folders: SyncFolders): string {
  * The folder rule, plus the ONE spelling a host that folds case cannot tell
  * apart from a selection root.
  *
- * THE OTHER DEVICE RENAMED THIS DEVICE'S SELECTED FOLDER. Its record names
- * `team docs`, this device selects `Team docs`, and on a volume that folds
- * case those are one directory -- the selected folder itself, under the name
- * the other device now gives it. Refused by the string rule, the receiving
- * device could never apply that rename at all: the entry kept the old
- * spelling, every move under it was refused, and the two devices disagreed
- * about the folder for good.
+ * THIS DEVICE'S OWN RENAME, which is what this rule is for on the PUSH side:
+ * a device that re-cases the folder it selects moves its selection with the
+ * rename, so the tombstone it then publishes for the old spelling names a
+ * folder its selection no longer holds (`sync/push.ts`, `main.ts`). Refused
+ * by the string rule, that device could not publish its own rename at all:
+ * the entry would be re-cased here and nowhere else.
  *
- * WHETHER THEY REALLY ARE ONE ENTRY IS NOT A QUESTION A STRING CAN ANSWER.
- * This rule only lets the record reach the code that asks the VAULT
- * (`sync/pull.ts`, `applyFolder`): a host that keeps the two apart finds
- * nothing at the record's spelling, and the record is then refused exactly as
- * it is today -- it names a folder that device does not sync. The tolerance
- * is for the ROOT alone, and for a difference of case alone: a record one
- * component deeper, or differing by anything else, is another folder.
+ * WHETHER TWO SPELLINGS REALLY ARE ONE ENTRY IS NOT A QUESTION A STRING CAN
+ * ANSWER, so this rule is a string tolerance and never an admission. The
+ * tolerance is for a SELECTED ROOT alone and for the capitalisation of its
+ * LAST COMPONENT alone (`caseTwinRoot`): a record one component deeper, an
+ * ancestor spelled differently, or a difference of anything but case, is
+ * another folder.
+ *
+ * AND THE RECEIVING SIDE NEEDS MORE THAN A STRING. A record one
+ * capitalisation off a selected folder is this device's own folder under a
+ * new name ONLY when its own record for that folder has just been retired by
+ * that folder's tombstone; anything else is a SECOND folder on a device that
+ * keeps the two spellings apart, and applying it would move this device's
+ * selection onto a folder it never selected (review round 4, finding 1). The
+ * feed therefore goes through `sync/pull.ts`, `admitFolderRecord`, which adds
+ * that condition to this rule.
  */
 export function inFolderCaseScope(path: unknown, folders: SyncFolders): path is string {
-  return inFolderScope(path, folders) ||
-    (isVaultPath(path) && folders !== undefined && folders.some((folder) => caseOnly(folder, path)));
+  return inFolderScope(path, folders) || caseTwinRoot(path, folders) !== null;
+}
+
+/**
+ * The selected folder this path is ONE CAPITALISATION OF, or `null`.
+ *
+ * The last component alone may differ (`vaultPath.ts`,
+ * `caseOnlyLastComponent`): an ancestor spelled differently is a rename no
+ * host can make from here -- `rename(2)` resolves a destination's directory
+ * components -- and an ancestor of a selected folder is a folder this device
+ * never publishes and never receives (review round 4, finding 2).
+ *
+ * The answer is the SELECTED spelling, because that is what the receiving
+ * side has to reason about: whether the record names this device's own folder
+ * under a new name, or a SECOND folder on a device that keeps the two
+ * spellings apart (`sync/pull.ts`, `admitFolderRecord`).
+ */
+export function caseTwinRoot(path: unknown, folders: SyncFolders): string | null {
+  if (!isVaultPath(path) || folders === undefined) return null;
+  return folders.find((folder) => caseOnlyLastComponent(folder, path)) ?? null;
 }
 
 export function assertFolderCaseScope(path: unknown, folders: SyncFolders): string {

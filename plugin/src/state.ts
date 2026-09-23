@@ -101,6 +101,27 @@ export interface ObsyncData {
   folders: Record<string, FolderRecord>;
   /** File id to the file this device declined to materialise. */
   remoteOnly: Record<string, RemoteOnlyRecord>;
+  /**
+   * Selected folders whose OWN record a tombstone has just retired, to the
+   * file id it retired -- the one state in which a folder record that differs
+   * from a selected folder by capitalisation alone is this device's own
+   * folder under a new name rather than a second folder on a device that
+   * keeps the two spellings apart (`sync/pull.ts`, `admitFolderRecord`;
+   * review round 4, finding 1). Persisted because the tombstone and the
+   * record that follows it are two feed entries, and a restart between them
+   * must not turn a rename into a stranger.
+   */
+  retiredRoots: Record<string, string>;
+  /**
+   * Folder records this device owes the server that ORDER the moves queued
+   * behind them: a rename by capitalisation alone, whose record is the only
+   * thing entitled to re-case a directory on a folding receiver
+   * (`sync/engine.ts`, `takeBatch`; `docs/protocol.md`). Persisted because a
+   * stop between the publication and its acknowledgement would otherwise
+   * leave the next start's pass to re-derive the record with no barrier, and
+   * the moves went out in front of it (review round 4, finding 3).
+   */
+  folderBarriers: string[];
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
@@ -118,6 +139,8 @@ export function defaultData(isMobile: boolean): ObsyncData {
     files: {},
     folders: {},
     remoteOnly: {},
+    retiredRoots: {},
+    folderBarriers: [],
     policy: defaultPolicy(isMobile),
   };
 }
@@ -237,6 +260,24 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       if (!isVaultPath(path) || !isRecord(record)) continue;
       if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
       data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
+    }
+  }
+  // Both of these are the device's own bookkeeping about work in flight, and
+  // the data file is editable by anything that can reach the vault, so every
+  // entry is judged as input: a path that is not a vault path, or a value of
+  // the wrong shape, is dropped rather than handed to the engine.
+  const retired = loaded["retiredRoots"];
+  if (isRecord(retired)) {
+    for (const [path, fileId] of Object.entries(retired)) {
+      if (!isVaultPath(path) || typeof fileId !== "string") continue;
+      data.retiredRoots[path] = fileId;
+    }
+  }
+  const barriers = loaded["folderBarriers"];
+  if (Array.isArray(barriers)) {
+    for (const path of barriers as unknown[]) {
+      if (!isVaultPath(path) || data.folderBarriers.includes(path)) continue;
+      data.folderBarriers.push(path);
     }
   }
   const remoteOnly = loaded["remoteOnly"];
@@ -425,6 +466,14 @@ export class State {
     // device that every folder it has is already published, and the new
     // server would never receive one (#79 meeting #104).
     this.data.folders = {};
+    // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT WITH THEM. A retirement names
+    // a folder record this device no longer has, and a barrier is a record
+    // owed to a server this device has left: carried across a leave, the
+    // first would admit a stranger's folder record at a selected folder and
+    // the second would post a record for a vault the new server knows nothing
+    // about.
+    this.data.retiredRoots = {};
+    this.data.folderBarriers = [];
     this.data.remoteOnly = {};
   }
 
@@ -496,6 +545,12 @@ export class State {
 
   setFolder(path: string, record: FolderRecord): void {
     this.data.folders[path] = record;
+    // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
+    // rule is "the tombstone for this folder's record has been applied and no
+    // record has been written for it since" (`sync/pull.ts`,
+    // `admitFolderRecord`), and this is every writer of one -- the feed's own
+    // create, a re-case, and this device's own publication.
+    delete this.data.retiredRoots[path];
   }
 
   forgetFolder(path: string): void {

@@ -72,17 +72,36 @@ traded one rename every thirty seconds, re-downloading every note under the
 folder each time, for as long as both ran. If you saw a folder's notes gaining
 versions endlessly, that was this.
 
-**This works when the folder you renamed is the only one that device syncs.**
-If you chose folders under "Sync folders on this device", the folder you
-selected is published in its own right, so re-capitalising it reaches your
-other devices as the one rename it is. That one shape -- the renamed folder IS
-the selected folder, which is the usual shape on a phone -- was the one this
-release nearly shipped broken: the rename went out as note moves with no
-folder record behind them, every device that folds case refused them and told
-you to update a device that was already up to date, and every later edit you
-made in that folder was refused there too. A device RECEIVING such a rename
-for the folder it syncs follows it: the folder keeps syncing under its new
-capitalisation, and you do not have to select it again.
+**This works when the folder you renamed is the only one that device syncs,
+and on the devices whose filesystem folds capitalisation.** If you chose
+folders under "Sync folders on this device", the folder you selected is
+published in its own right, so re-capitalising it reaches your other devices
+as the one rename it is. That one shape -- the renamed folder IS the selected
+folder, which is the usual shape on a phone -- was the one this release nearly
+shipped broken: the rename went out as note moves with no folder record behind
+them, every device that folds case refused them and told you to update a
+device that was already up to date, and every later edit you made in that
+folder was refused there too. A device RECEIVING such a rename for the folder
+it syncs follows it -- on a Mac, on Windows, on an iPhone, where the two
+spellings are one folder on the disk: it keeps syncing under the new
+capitalisation and you do not have to select it again. On Linux and on
+Android they are TWO folders, so that device does not follow the rename: it
+keeps your folder under the old spelling and quietly stops receiving what you
+put in it elsewhere, until you rename it there to match. Nothing is lost
+either way, and Troubleshooting says how to settle it.
+
+**And a folder that only LOOKS like that rename is left alone, with a
+notice.** A device that keeps `Team docs` and `team docs` apart can hold both
+-- which is exactly what a capitalisation-only rename made before this release
+leaves behind -- and by the name alone, a device syncing just one of them
+cannot tell that second folder from a rename of the one it syncs. obsync
+follows such a folder only where it really is that rename, which is where the
+other device retired the old name first; otherwise it leaves your folder and
+your selection where they are, keeps syncing what you chose, and tells you
+once, naming both spellings. Following it would have moved that device onto
+the folder you did not choose: what the other device put in yours would have
+stopped arriving, and your own edits would have come back there as conflict
+copies.
 
 **An empty folder re-capitalised while Obsidian was closed no longer
 disappears.** obsync finds that rename when it next starts, and it used to

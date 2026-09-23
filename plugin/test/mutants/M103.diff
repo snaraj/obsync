@@ -1,0 +1,13 @@
+# M103: the folder rule's case tolerance compares whole paths again
+--- a/plugin/src/vaultPath.ts
++++ b/plugin/src/vaultPath.ts
+@@ -173,8 +173,7 @@
+  * only component a re-case of a folder can change.
+  */
+ export function caseOnlyLastComponent(a: string, b: string): boolean {
+-  const cut = a.lastIndexOf("/");
+-  return caseOnly(a, b) && a.slice(0, cut + 1) === b.slice(0, cut + 1);
++  return caseOnly(a, b);
+ }
+ 
+ export function isVaultPath(value: unknown): value is string {

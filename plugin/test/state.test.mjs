@@ -130,6 +130,11 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // server and must go with the identity, exactly as `files` does.
     folders: { "Notes": { fileId: "f3", versionId: "v3" } },
     remoteOnly: { f2: { path: "Notes/big.bin", size: 3 } },
+    // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT, which names records on the
+    // server this device is leaving: a retirement admits a folder record one
+    // capitalisation off a selected folder, and a barrier is a record still
+    // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
+    retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
   });
 
@@ -140,6 +145,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
+      retiredRoots: {}, folderBarriers: [],
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

@@ -1265,7 +1265,20 @@ export class EventVault extends FakeHost {
     // ONE event, for the folder, exactly as Obsidian reports a folder rename
     // the user made -- the fan-out to the files beneath it is the plugin's
     // (`main.ts`).
-    if (outcome === "moved") this.emit("rename", this.entry(landed, true), source);
+    //
+    // AND NO EVENT AT ALL FOR A RENAME THAT LANDED WHERE IT STARTED (review
+    // round 4, finding 2). `rename(2)` resolves the destination's directory
+    // components, so `Docs/Team docs` -> `docs/Team docs` renames the entry
+    // onto itself: the syscall succeeds -- a real APFS directory answers
+    // `moved`, and the product's own spelling check is what refuses it
+    // (`recaseFolder`, `decision=case_refused reason=not_respelled`) -- and
+    // the watcher delivers NOTHING, because nothing changed. This fake
+    // reported a rename from a path to ITSELF, and the plugin's handler then
+    // wrote each note's record under the new key and forgot it under the old
+    // one -- the same key -- so both records vanished and the next pass
+    // published the notes as new files. A fake that reports an event no host
+    // delivers is a fake that hides the defect it invents.
+    if (outcome === "moved" && landed !== source) this.emit("rename", this.entry(landed, true), source);
     return outcome;
   }
 

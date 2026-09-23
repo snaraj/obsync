@@ -1,0 +1,17 @@
+# M106: a folder rename onto its own path still publishes a tombstone and a record
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -945,13 +945,6 @@
+    */
+   folderRenamed(from: string, to: string, sourceFolders: SyncFolders = this.options.state.data.syncFolders): void {
+     if (!this.running) return;
+-    // Nothing moved (`renamed`, review round 4, finding 2), and publishing a
+-    // tombstone and a record for one path is two versions about a folder that
+-    // did not change.
+-    if (from === to) {
+-      this.options.host.log("watch path_class=folder decision=skipped reason=same_path event=rename");
+-      return;
+-    }
+     // The selection follows the folder whichever half runs first; the
+     // selection each old name is judged against is the caller's, captured
+     // before either half ran (`renamedFolder`, `main.ts`). Idempotent by

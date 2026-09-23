@@ -105,9 +105,10 @@ import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit } from "../policy";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import {
-  assertFolderCaseScope,
   assertFolderScope,
   assertSyncPath,
+  caseTwinRoot,
+  inFolderScope,
   inSyncScope,
   movedSelection,
   selectionAfterRename,
@@ -362,12 +363,84 @@ export async function decodeRecordManifest(
   // `inFolderScope`; review round 3, finding 1).
   if (entry.v === 2) {
     bindFolderToRecord(record, entry, context.domainId);
-    assertFolderCaseScope(entry.path, context.state.data.syncFolders);
+    admitFolderRecord(context, entry.path);
   } else {
     bindManifestToRecord(record, entry, context.domainId);
     assertSyncPath(entry.path, context.state.data.syncFolders);
   }
   return entry;
+}
+
+/**
+ * Admit one RECEIVED folder record, and tell a re-case of the folder this
+ * device syncs from a SECOND folder that only looks like one (review round 4,
+ * finding 1).
+ *
+ * THE STRING RULE CANNOT TELL THEM APART AND NEITHER CAN THE VAULT. A record
+ * naming `team docs` where this device selects `Team docs` is, on a host that
+ * folds case, one directory entry either way: the vault answers "one entry"
+ * BY CONSTRUCTION, so `applyFolder` would re-case the directory and move the
+ * selection onto it. But the sender may be a device that keeps the two apart
+ * and holds BOTH -- the twin a 1.0.x rename leaves behind
+ * (`docs/troubleshooting.md`) -- and there the record names a folder this
+ * device never selected. Followed, this device's selection lands on the twin:
+ * every later change under the folder it DID select is skipped as out of
+ * scope, a note written there never arrives, and its own edits come back to
+ * the other device as conflict copies inside the twin. Silently.
+ *
+ * WHAT TELLS THEM APART IS THE TOMBSTONE, because a re-case is a RENAME and a
+ * rename retires the old name. Both senders of one -- `folderRenamed` for a
+ * rename this device is told about, and the start-up pass `recaseFolders` for
+ * one it discovers -- publish the old spelling's tombstone BEFORE the new
+ * record, behind the wire barrier the protocol states (`docs/protocol.md`). A
+ * twin carries no tombstone: the receiver's own record for the folder it
+ * selects is still live when it arrives.
+ *
+ * SO THE ADMISSION RULE IS: the tombstone for the selected folder's own
+ * folder file id has been applied, no record has been written for that folder
+ * since (`state.ts`, `setFolder`), and no folder record has used that
+ * admission since -- the retirement is spent by the first record that takes
+ * it. Anything else is refused exactly as it was before the tolerance existed
+ * (`decision=not_synced reason=outside_sync_scope`), with one notice naming
+ * both spellings. A whole-vault device has no selection and no tolerance to
+ * narrow: every folder record is in its scope by the folder rule itself.
+ */
+function admitFolderRecord(context: SyncContext, entryPath: string): void {
+  const path = assertVaultPath(entryPath);
+  const folders = context.state.data.syncFolders;
+  if (inFolderScope(path, folders)) return;
+  const selected = caseTwinRoot(path, folders);
+  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) {
+    // SPENT HERE. The record the retirement was waiting for has arrived, so a
+    // second record one capitalisation off that folder is a twin again --
+    // including the twin a case-sensitive sender publishes moments later.
+    delete context.state.data.retiredRoots[selected];
+    return;
+  }
+  if (selected !== null) notifyFolderTwin(context, selected, path);
+  throw new VaultPathError("outside_sync_scope");
+}
+
+/**
+ * ONE NOTICE FOR A TWIN, per folder and per engine, because SILENCE is what
+ * made this dangerous: the device that holds two folders is the only one that
+ * can see them both, and the user of this one is owed the reason its folder
+ * stopped agreeing with the other device. The text claims only what is true
+ * on both sides of the wire -- two names differing in capitalisation alone,
+ * nothing renamed, moved or deleted here -- and names the remedy the
+ * troubleshooting page carries.
+ */
+function notifyFolderTwin(context: SyncContext, selected: string, twin: string): void {
+  const key = `twin\u0000${selected}`;
+  if (context.refused.has(key)) return;
+  context.refused.add(key);
+  context.host.notify(
+    `obsync: another device published a folder called "${twin}", and this device syncs "${selected}" -- ` +
+      "two names that differ only in capitalisation. On a device that keeps those two apart they are two " +
+      `folders, so nothing here was renamed, moved or deleted and this device keeps syncing "${selected}". ` +
+      "If that device instead renamed the folder you sync here, rename it here to match -- see " +
+      'Troubleshooting, "Two folders that differ only in capitalisation".',
+  );
 }
 
 export async function decryptRecordManifest(
@@ -690,8 +763,19 @@ async function applyFolder(
     // (`engine.ts`, ECHOES; issue #96). Forgotten either way: a folder kept
     // because it still holds something is a folder no device manages now, and
     // the empty-parent walk is what will take it when it empties.
+    // THE RECORD THIS TOMBSTONE RETIRES, READ BEFORE IT IS FORGOTTEN. A
+    // tombstone that retires this device's own record for a folder it SELECTS
+    // opens the one window in which a folder record one capitalisation off
+    // that folder is this device's own folder under a new name
+    // (`admitFolderRecord`; review round 4, finding 1). Its own record and
+    // its own file id: a tombstone for another folder, or one naming a record
+    // this device does not hold, opens nothing.
+    const retiring = context.state.folderByPath(path);
     const removed = await removeFolder(context, path, shown);
     context.state.forgetFolder(path);
+    if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
+      context.state.data.retiredRoots[path] = change.file_id;
+    }
     await context.state.save();
     if (removed !== "removed") {
       // `vault_spelling` said so at the point of decision, with the reason

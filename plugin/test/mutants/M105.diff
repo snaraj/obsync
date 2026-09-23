@@ -1,0 +1,17 @@
+# M105: a folder rename onto its own path still fans out into per-file moves
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -719,13 +719,6 @@
+    */
+   renamedFolder(from: string, to: string, sourceFolders: SyncFolders = this.options.state.data.syncFolders): void {
+     if (!this.running) return;
+-    // Nothing moved, one kind up (`renamed`, review round 4, finding 2): this
+-    // would move the selection onto itself and hand every file under the
+-    // folder a rename from its own path.
+-    if (from === to) {
+-      this.options.host.log("watch path_class=folder decision=skipped reason=same_path event=rename");
+-      return;
+-    }
+     // Each file is judged by the selection in force on EACH side of the move:
+     // its old name against the selection before the follow, its new one
+     // against the selection after. A record under the renamed folder that the

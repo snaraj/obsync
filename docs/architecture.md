@@ -1010,12 +1010,22 @@ one it publishes. The rule holds on both paths: `folderCreated`,
 `folderDeleted`, `folderRenamed`, `postManifest` and the start-up pass on the
 push side; `applyFolder`, `removeFolder` and `recaseFolder` on the pull side.
 One tolerance, for the receiving side: a record whose path differs from a
-selected folder by capitalisation alone is admitted as far as the code that
-asks the VAULT, because on a volume that folds case those two spellings are
-ONE directory -- this device's own selected folder, under the name another
-device now gives it. Whether they really are one entry is not a question a
-string can answer, so a host that keeps them apart holds nothing at that name
-and the record is refused as it always was. When a received record re-cases
+selected folder by the capitalisation of its LAST component alone -- an
+ancestor spelled differently is a folder this device syncs in neither
+direction, and `rename(2)` could not apply that difference in any case. The
+tolerance exists for one thing, a rename of the selected folder made
+elsewhere, and a string cannot tell that from a SECOND folder of that name on
+a device whose filesystem keeps the two spellings apart; neither can the
+vault, which on a volume that folds case answers "one directory entry" for
+both by construction. So the record is admitted only in the state a rename
+leaves on the wire: the tombstone for that folder's own record has been
+applied, nothing has written a record for it since, and no other record has
+already used that admission (`docs/protocol.md`, "The admission rule";
+`sync/pull.ts`, `admitFolderRecord`; review round 4, finding 1). Admitted, it
+is applied by asking the VAULT as before -- a host that keeps the two apart
+holds nothing at that name and the record is refused as it always was.
+Refused, it changes nothing and the user is told once, naming both spellings.
+When a received record re-cases
 the selected folder, the selection follows it, saved with the records that
 move with it: a selection left at a spelling the vault no longer shows would
 take every file under it out of scope in the same tick. A folder renamed to a

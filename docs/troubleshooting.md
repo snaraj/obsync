@@ -375,12 +375,36 @@ disagreed: settling the spelling brings their current versions down with it.
 
 **If a device syncs only some folders**, the folder it selects is published in
 its own right from 1.1.0, so re-capitalising that selected folder is carried
-as the one rename it is, and a device receiving such a rename for the folder
-IT selects keeps syncing it under the new spelling without being re-selected.
-A folder ABOVE a selected one is outside what that device syncs in either
-direction: re-capitalising one elsewhere is not carried to it, and the notes
-under it are refused with the notice above until the folder is renamed to
-match on one of the two devices.
+as the one rename it is. A device receiving such a rename for the folder IT
+selects keeps syncing it under the new spelling without being re-selected --
+IF that device's filesystem folds case, which is every Mac and Windows device
+and most iPhones. **A device that keeps the two spellings apart does not
+follow it.** On Linux, and on Android, `Team docs` and `team docs` are two
+folders, so a record naming the second one names a folder that device does not
+have: it keeps its own folder under the old spelling, says nothing, and from
+then on receives nothing you put in that folder on the other devices -- your
+notes there are safe, and so is everything on the device that renamed it, but
+the two have stopped meeting. Rename the folder on that device to the new
+spelling (or select it again under the new name in "Sync folders on this
+device"), let it sync once, and the two agree again, including everything
+added in the meantime. The same is true in reverse: a folder ABOVE a selected
+one is outside what that device syncs in either direction, so re-capitalising
+one elsewhere is not carried to it, and the notes under it are refused with
+the notice above until the folder is renamed to match on one of the two
+devices.
+
+**"Another device published a folder called ... and this device syncs ..."**
+This is the notice for a folder on ANOTHER device that differs from the one
+this device syncs by capitalisation alone -- and is not a rename of it. The
+device that sent it keeps the two spellings apart and has both folders, which
+is what a capitalisation-only rename made before 1.1.0 leaves behind. Nothing
+here was renamed, moved or deleted, and this device keeps syncing the folder
+you selected: obsync will not move your selection onto a folder you never
+chose, because everything you then wrote in it would stop reaching the other
+device. Open the device that holds both folders, move the notes out of the one
+you do not want and delete it -- taking "Do not delete the stale folder
+first", below, seriously if the two devices still disagree about the spelling
+-- and let each device sync once.
 
 **Two devices renaming the same folder to two different capitalisations at
 once** end with copies of its notes on both, the way two devices renaming one

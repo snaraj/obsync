@@ -1,0 +1,12 @@
+# M97: the receiver admits a case-twin of a selected folder with no tombstone behind it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -410,7 +410,7 @@
+   const folders = context.state.data.syncFolders;
+   if (inFolderScope(path, folders)) return;
+   const selected = caseTwinRoot(path, folders);
+-  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) {
++  if (selected !== null) {
+     // SPENT HERE. The record the retirement was waiting for has arrived, so a
+     // second record one capitalisation off that folder is a twin again --
+     // including the twin a case-sensitive sender publishes moments later.

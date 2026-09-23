@@ -260,13 +260,38 @@ the same. The selected folder itself is included because a folder record IS
 its path: nothing else can carry that folder's own creation, removal or
 rename. A folder ABOVE a selected one is never published, and a FILE record
 keeps the stricter rule -- a selected folder is a directory, never a file
-wearing that exact name. A receiver additionally admits a folder record whose
-path differs from a selected folder by capitalisation alone, and then asks its
-own vault: where the two spellings are one directory entry the record names
-that device's selected folder and is applied, and the device's selection
-follows the new spelling; where they are two, the record names a folder that
-device does not sync and is skipped (`decision=not_synced
-reason=outside_sync_scope`).
+wearing that exact name.
+
+A receiver additionally admits a folder record whose path differs from a
+SELECTED folder by the capitalisation of its LAST component alone -- an
+ancestor spelled differently is a folder it syncs in neither direction, and no
+host could apply that difference anyway, because `rename(2)` resolves a
+destination's directory components. That tolerance exists for one thing: a
+rename of the folder this device selects, made elsewhere. It is admitted only
+in the state that rename creates on the wire, and refused in every other:
+
+> **The admission rule.** A folder record whose path differs from a selected
+> folder by the capitalisation of its last component alone is admitted only
+> when the tombstone for THAT folder's own record -- the record this device
+> holds for it, by its file id -- has been applied, no record has been written
+> for that folder since, and no folder record has already used that admission.
+> The first record to arrive in that state takes it; anything else is refused
+> as `decision=not_synced reason=outside_sync_scope`, with one notice naming
+> both spellings.
+
+The rule is what a string comparison cannot be: a device whose filesystem
+KEEPS the two spellings apart can hold `Team docs` and `team docs` at once, and
+its record for the second one is indistinguishable, as a string, from a rename
+of the first. Asking the vault does not settle it either -- a receiver that
+folds case holds one directory entry for both BY CONSTRUCTION, so it answers
+"one entry" for a folder it has never heard of. What settles it is that a
+rename retires the old name: both senders of a capitalisation-only rename
+publish the old spelling's tombstone before the new record (below), and a
+second folder carries no tombstone at all. Admitted, the record is applied by
+asking the vault as before: where the two spellings are one directory entry the
+record names that device's selected folder, the entry is re-cased and the
+selection follows the new spelling; where they are two, the record names a
+folder that device does not sync and is skipped in the same words.
 
 **Publication order, for a rename that changes case alone.** A folder rename
 publishes a tombstone for the old path, a record for the new one, and a move
@@ -287,7 +312,14 @@ good enough, and the guarantee is therefore stated as an order on the wire:
 the sender waits for the server to acknowledge the folder record before it
 sends any move under it, and a post that FAILS keeps that hold rather than
 losing it -- the publication is put back in front of the moves it orders and
-attempted up to three times in all. At that bound the hold expires with one
+attempted up to three times in all. The hold also survives the SENDER: a
+publication that has not been acknowledged is written into the device's own
+state with the fact that it orders what follows it, so a device stopped
+mid-drain -- quit, reloaded, closed -- restores it at the head of its queue
+before it reconciles anything and before any file work, and the moves queue
+behind it again. Every other folder record the next start owes is re-derived
+by that pass from the vault's own listing, which publishes them before it
+queues any file work for the same reason. At that bound the hold expires with one
 logged decision (`push path_class=folder decision=expired reason=folder_post
 attempt=3 budget=3`) and one notice, the moves go out and are refused by a
 folding receiver in the usual words, and the sender's next start-up pass
