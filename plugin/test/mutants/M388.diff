@@ -1,0 +1,12 @@
+# M388: this device's own changes never learn their server time and are never re-sent
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1944,7 +1944,7 @@
+    */
+   private processed(context: SyncContext, change: ChangeRecord, result: ApplyResult | null): void {
+     const { state } = context;
+-    if (result === "echo") {
++    if (result === "applied") {
+       const path = state.pathByFileId(change.file_id);
+       const record = path === undefined ? undefined : state.fileByPath(path);
+       if (record?.versionId === change.version_id) record.ts = change.ts;

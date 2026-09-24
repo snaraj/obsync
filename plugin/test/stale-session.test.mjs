@@ -219,7 +219,11 @@ test("a synced file whose record was lost is adopted at startup, never published
   await timers.run(1000);
   assert.equal(r.server.journal.length, posts, `a synced file was published again: ${lines(r.host)}`);
   assert.equal((await r.server.noteFiles(r.keys.manifestKey)).length, 1, "a second file id was minted for one file");
-  assert.deepEqual(r.state.fileByPath(path), original, "the record is not the version this device already published");
+  // The server's time for the version (#145) is stamped whenever its echo is
+  // read, on either record or both; it is a field of the same version, so the
+  // comparison leaves it out.
+  const bare = ({ ts, ...rest }) => rest;
+  assert.deepEqual(bare(r.state.fileByPath(path)), bare(original), "the record is not the version this device already published");
   assert.ok(r.host.logs.some((line) => line.startsWith(`reconcile path_class=file decision=adopted reason=own_version file=${original.fileId}`)),
     lines(r.host));
   assert.ok(r.host.logs.some((line) => /^reconcile decision=held since=\d+ untracked=1 adopted=1 budget_ms=\d+ duration_ms=\d+$/.test(line)),

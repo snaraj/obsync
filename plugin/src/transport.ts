@@ -192,6 +192,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", path: /^\/v1\/account$/, idempotent: true },
   { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
   { method: "GET", path: /^\/v1\/changes$/, idempotent: true },
+  { method: "GET", path: /^\/v1\/files$/, idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/files/${ID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/files/${ID}/versions/${SID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
@@ -273,6 +274,12 @@ export interface FileRecord {
   heads: string[];
   conflicted: boolean;
   versions: VersionRecord[];
+}
+
+/** One page of `GET /v1/files`: every file's heads, in file-id order. */
+export interface FilesPage {
+  files: { file_id: string; heads: string[] }[];
+  next: string | null;
 }
 
 export interface ChangesPage {
@@ -908,6 +915,16 @@ export class Transport {
 
   getFile(fileId: string): Promise<FileRecord> {
     return this.json("GET", `/v1/files/${fileId}`, { auth: "device" });
+  }
+
+  /** One version, or `404 unknown_version` when the server does not hold it. */
+  getVersion(fileId: string, versionId: string): Promise<VersionRecord> {
+    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device" });
+  }
+
+  /** The file listing (`docs/protocol.md`), at most 1000 per page. */
+  listFiles(after: string | null): Promise<FilesPage> {
+    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device" });
   }
 
   // --- change feed -------------------------------------------------------

@@ -53,6 +53,15 @@ export interface FileRecord {
    * (`sync/pull.ts`, `settleBeside`).
    */
   name?: string;
+  /**
+   * The SERVER's time for `versionId`, from the feed entry or version record
+   * it arrived in -- this device's own posts learn theirs from their echo.
+   * Absent until then, and on every record written before 1.1.3. It places
+   * the version against the feed mark when a restored server has lost it
+   * (`sync/restore.ts`, issue #145); a record without one is never re-sent
+   * from its version's position.
+   */
+  ts?: number;
 }
 
 /**
@@ -75,6 +84,43 @@ export interface FolderRecord {
 export function isPushed(record: FileRecord | undefined, mtime: number, size: number): boolean {
   return record !== undefined && record.mtime === mtime && record.size === size;
 }
+
+/**
+ * The last change-feed entry this device processed (issue #145). The journal
+ * never reuses a seq on a server that has not been rebuilt from a backup, so
+ * this entry, asked for again, is how a device learns its server went back in
+ * time; `ts` is the server's own clock at that entry, the line between what
+ * this device has already seen and what was written after the rebuild.
+ * `replay` is set while the feed is re-read from zero after a rebuild: every
+ * entry before this one is skipped, and the first entry after it replaces it.
+ */
+export interface FeedMark {
+  seq: number;
+  fileId: string;
+  versionId: string;
+  ts: number;
+  replay: boolean;
+}
+
+/**
+ * A tombstone this device published or applied (issue #145): the one
+ * positive evidence a deletion may be re-sent from after a restored server
+ * lost it. Keyed by file id, dropped when that file id is recorded again.
+ */
+export interface Grave {
+  versionId: string;
+  path: string;
+  folder: boolean;
+  /** The tombstone's server time, as `FileRecord.ts`. */
+  ts?: number;
+}
+
+/**
+ * How many graves are kept, oldest dropped first (logged). A deletion older
+ * than the newest thousand is not re-sent after a restore: the note comes back
+ * on a device paired afterwards, and nothing is deleted anywhere.
+ */
+export const GRAVES_MAX = 1000;
 
 export interface RemoteOnlyRecord {
   path: string;
@@ -144,6 +190,10 @@ export interface ObsyncData {
    * skipped it: forgetting it would lose that change on this device for good.
    */
   parked: Record<string, ParkedRecord>;
+  /** The last feed entry processed, `null` until the first (issue #145). */
+  feedMark: FeedMark | null;
+  /** File id to the tombstone this device published or applied for it. */
+  graves: Record<string, Grave>;
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
@@ -164,6 +214,8 @@ export function defaultData(isMobile: boolean): ObsyncData {
     retiredRoots: {},
     folderBarriers: [],
     parked: {},
+    feedMark: null,
+    graves: {},
     policy: defaultPolicy(isMobile),
   };
 }
@@ -275,6 +327,7 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       };
       const name = record["name"];
       if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
+      if (typeof record["ts"] === "number" && Number.isFinite(record["ts"])) data.files[path].ts = record["ts"];
     }
   }
   const folders = loaded["folders"];
@@ -312,6 +365,25 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // the reason only chooses words, so a damaged one keeps the record.
       if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
       data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+    }
+  }
+  // The mark names a request path and the graves a request path and a
+  // publication, so a malformed field is dropped rather than trusted: no mark
+  // is a device that has not read the feed yet, never a restored server.
+  const mark = loaded["feedMark"];
+  if (isRecord(mark) && Number.isSafeInteger(mark["seq"]) && (mark["seq"] as number) >= 1 &&
+    typeof mark["fileId"] === "string" && isHex(mark["fileId"], 16) &&
+    typeof mark["versionId"] === "string" && isHex(mark["versionId"], 32) &&
+    typeof mark["ts"] === "number" && Number.isFinite(mark["ts"]) && typeof mark["replay"] === "boolean") {
+    data.feedMark = { seq: mark["seq"] as number, fileId: mark["fileId"], versionId: mark["versionId"], ts: mark["ts"], replay: mark["replay"] };
+  }
+  const graves = loaded["graves"];
+  if (isRecord(graves)) {
+    for (const [fileId, grave] of Object.entries(graves).slice(-GRAVES_MAX)) {
+      if (!isHex(fileId, 16) || !isRecord(grave) || typeof grave["versionId"] !== "string" ||
+        !isHex(grave["versionId"], 32) || !isVaultPath(grave["path"]) || typeof grave["folder"] !== "boolean") continue;
+      data.graves[fileId] = { versionId: grave["versionId"], path: grave["path"], folder: grave["folder"] };
+      if (typeof grave["ts"] === "number" && Number.isFinite(grave["ts"])) data.graves[fileId].ts = grave["ts"];
     }
   }
   const remoteOnly = loaded["remoteOnly"];
@@ -556,8 +628,13 @@ export class State {
     // about.
     this.data.retiredRoots = {};
     this.data.folderBarriers = [];
-    // And a parked record, which names a version on the server being left.
+    // And a parked record, which names a version on the server being left,
+    // and the feed mark and the graves, which name entries and versions there
+    // too: a mark carried to the next server would read its journal as a
+    // restored one.
     this.data.parked = {};
+    this.data.feedMark = null;
+    this.data.graves = {};
     this.data.remoteOnly = {};
   }
 
@@ -618,6 +695,9 @@ export class State {
   setFile(path: string, record: FileRecord): void {
     this.data.files[path] = record;
     delete this.data.remoteOnly[record.fileId];
+    // A file id recorded again is alive here: its old tombstone is no
+    // deletion to re-send.
+    delete this.data.graves[record.fileId];
   }
 
   forgetPath(path: string): void {
@@ -630,6 +710,7 @@ export class State {
 
   setFolder(path: string, record: FolderRecord): void {
     this.data.folders[path] = record;
+    delete this.data.graves[record.fileId];
     // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
     // rule is "the tombstone for this folder's record has been applied and no
     // record has been written for it since" (`sync/pull.ts`,
@@ -640,6 +721,18 @@ export class State {
 
   forgetFolder(path: string): void {
     delete this.data.folders[path];
+  }
+
+  /**
+   * Remember a tombstone (issue #145), newest last, and return how many of
+   * the oldest `GRAVES_MAX` pushed out; the caller logs a drop.
+   */
+  bury(fileId: string, grave: Grave): number {
+    delete this.data.graves[fileId];
+    this.data.graves[fileId] = grave;
+    const over = Object.keys(this.data.graves).slice(0, -GRAVES_MAX);
+    for (const id of over) delete this.data.graves[id];
+    return over.length;
   }
 
   /** Bytes held locally, the input to the total-budget ceiling. */

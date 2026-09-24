@@ -1,0 +1,12 @@
+# M370: a journal restored behind this device's cursor is read as a live one
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -89,7 +89,7 @@
+   try {
+     const page = await transport.changes(mark.seq - 1, 0, 2);
+     const [first, next] = page.changes;
+-    if (page.head_seq < cursor) reason = "head_behind";
++    if (page.head_seq < 0) reason = "head_behind";
+     else if (first?.seq === mark.seq && first.version_id !== mark.versionId) reason = "mark_replaced";
+     else if (first?.seq === mark.seq) reason = next !== undefined && next.seq <= cursor ? "unseen_entry" : null;
+     else if (first !== undefined && first.seq <= cursor) reason = "unseen_entry";

@@ -685,6 +685,46 @@ test("a read that loses the slot mid-step is deferred, never a could-not-verify 
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
 });
 
+test("a recorded version a restored server no longer holds is re-sent, never a could-not-verify error (#145)", async () => {
+  // S75: the server was rebuilt from a backup older than this note. The
+  // repair pass is the first thing to ask for the version this device
+  // recorded, and `404 unknown_version` is not a read or write failure: it is
+  // the server saying it lost a note this device still holds.
+  const r = await rig(), timers = new FakeTimers(), statuses = [];
+  const path = "Notes/restored-away.md", fileId = "5a".repeat(16);
+  const before = r.server.seq;
+  // Pulled from another device minutes ago: its server time says it is far
+  // too young for retention to have collected it.
+  const frame = await r.server.publish({ fileId, path, bytes: new TextEncoder().encode("REPAIR PLAINTEXT SENTINEL"),
+    mtime: r.host.clock, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  await applyChange(r.context, frame);
+  assert.equal(r.state.fileByPath(path).ts, frame.ts, "a pulled record knows its version's server time");
+  r.server.restoreTo(before);
+  assert.equal(r.server.files.has(fileId), false, "the restore took the note");
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const started = statuses.length;
+  await engine.syncNow();
+  assert.ok(r.host.logs.some((entry) => /^repair decision=lost reason=unknown_version verdict=restored /.test(entry)), r.host.logs.join(" | "));
+  // The feed loop answers it before it applies anything else.
+  await drainingFeed(r.server, timers.run(REPAIR_TICK_MS, () => r.server.files.has(fileId)), "the re-send");
+
+  assert.equal(r.host.logs.some((entry) => entry.includes("read_or_write_failed")), false, r.host.logs.join(" | "));
+  assert.equal(statuses.slice(started).some((status) => status.kind === "error"), false, "a lost version is not a connectivity problem");
+  const file = r.server.files.get(fileId);
+  assert.equal(file.heads.length, 1);
+  const head = file.versions.find((version) => version.version_id === file.heads[0]);
+  const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, fileId,
+    await c.contentVersionId(fileId, head.parents, head.sids), c.unhex(head.manifest_nonce), c.unbase64(head.manifest_ct)));
+  assert.equal(manifest.path, path);
+  assert.equal(manifest.deleted, false);
+  assert.equal(new TextDecoder().decode(await c.decryptChunk(r.keys.domainKey, c.unhex(manifest.chunks[0].cid),
+    r.server.chunks.get(manifest.chunks[0].sid))), "REPAIR PLAINTEXT SENTINEL");
+  assert.equal(r.host.notices.filter((notice) => /The server was restored to an earlier state; this device re-sent 1 change\./.test(notice)).length, 1);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});
+
 test("a server that is not there is absence during repair, never a could-not-verify error", async () => {
   // Seen on a real device offline (the 2026-09-23 run): the repair tick's
   // request ran out of attempts, and the status bar sent an offline person to

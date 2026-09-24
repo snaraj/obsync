@@ -510,6 +510,12 @@ export class FakeServer {
     this.files = new Map();
     this.journal = [];
     this.seq = 0;
+    /**
+     * The server's clock for the versions it stamps: obsyncd stamps each one
+     * with its own time, so later posts carry later times (issue #145 reads
+     * them against the device's feed mark). A restore does not turn it back.
+     */
+    this.clock = 1757200000000;
     /** Posts this server answered with a version it already held (#114). */
     this.deduplicated = [];
     /** Set to model a server before 1.0.7: no `version_id` in the answer. */
@@ -532,6 +538,8 @@ export class FakeServer {
     }
     this.requests = [];
     this.unsigned = [];
+    /** Devices whose requests never arrive: a network gone, not a refusal. */
+    this.unreachable = new Set();
     this.feedWaiters = [];
     this.heartbeats = 0;
     /** Set by `seedDomainMap`: the reserved file the map occupies. */
@@ -620,6 +628,7 @@ export class FakeServer {
   }
 
   async request(request) {
+    if (this.unreachable.has(request.headers["X-Obsync-Device"])) throw new Error("fake server: no route to host");
     const target = request.url.replace(/^https?:\/\/[^/]+/, "");
     const [path, query] = target.split("?");
     this.requests.push({
@@ -786,7 +795,7 @@ export class FakeServer {
       const version = {
         ...posted,
         device_id: request.headers["X-Obsync-Device"],
-        ts: 1757200000000,
+        ts: (this.clock += 1000),
         seq: ++this.seq,
       };
       file.versions.unshift(version);
@@ -799,6 +808,18 @@ export class FakeServer {
     if (versionGet) {
       const version = this.files.get(versionGet[1])?.versions.find((v) => v.version_id === versionGet[2]);
       return version ? this.json(200, version) : this.error(404, "unknown_version");
+    }
+    // The reconciliation listing (`api/files.rs`, `page`): file-id order, an
+    // exclusive cursor, at most 1000, `next` the last id included.
+    if (path === "/v1/files" && request.method === "GET") {
+      const params = new URLSearchParams(query);
+      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), 1000);
+      const ids = [...this.files.keys()].sort().filter((id) => id > (params.get("after") ?? ""));
+      const page = ids.slice(0, limit);
+      return this.json(200, {
+        files: page.map((id) => ({ file_id: id, heads: this.files.get(id).heads })),
+        next: ids.length > limit ? page[page.length - 1] : null,
+      });
     }
     const fileGet = /^\/v1\/files\/([0-9a-f]{32})$/.exec(path);
     if (fileGet) {
@@ -817,6 +838,11 @@ export class FakeServer {
     if (path === "/v1/changes") {
       const since = Number(new URLSearchParams(query).get("since") ?? 0);
       const params = new URLSearchParams(query);
+      // obsyncd's own refusal (`storage/index.rs`, `changes`): a cursor past
+      // the journal head is a journal that went BACKWARDS -- a restored volume
+      // (issue #145) -- and a stub that answered it with an empty page would
+      // hide the one signal a device gets that its server was restored.
+      if (since > this.seq) return this.error(416, "seq_ahead", `since ${since} is beyond head ${this.seq}`);
       const limit = Number(params.get("limit") ?? 1000);
       const remaining = this.journal.filter((frame) => frame.seq > since);
       const changes = remaining.slice(0, limit);
@@ -891,6 +917,33 @@ export class FakeServer {
       ],
     });
     return versionId;
+  }
+
+  /**
+   * The server as a volume backup taken at `seq` left it (issue #145,
+   * `docs/recovery.md`): every version journaled after `seq` is gone, each
+   * file's heads are what the journal up to `seq` made them -- obsyncd's own
+   * rule, a version replacing the heads it names -- a file with no version
+   * left is gone, the chunks no surviving version names are gone with the
+   * blob volume, and the NEXT frame takes `seq + 1` again: a seq the devices
+   * already used on the timeline the restore erased.
+   */
+  restoreTo(seq) {
+    const named = new Set();
+    for (const [fileId, file] of [...this.files]) {
+      const kept = file.versions.filter((version) => version.seq <= seq);
+      if (kept.length === 0) { this.files.delete(fileId); continue; }
+      let heads = [];
+      for (const version of [...kept].sort((x, y) => x.seq - y.seq)) {
+        heads = [...heads.filter((head) => !version.parents.includes(head)), version.version_id];
+      }
+      file.versions = kept;
+      file.heads = heads;
+      for (const version of kept) for (const sid of version.sids) named.add(sid);
+    }
+    for (const sid of [...this.chunks.keys()]) if (!named.has(sid)) this.chunks.delete(sid);
+    this.journal = this.journal.filter((frame) => frame.seq <= seq);
+    this.seq = seq;
   }
 
   releaseFeed() {

@@ -381,6 +381,8 @@ const CALLS = [
   ["getChunks", [[SID]], true],
   ["postVersion", [FILE_ID, VERSION_POST], false],
   ["getFile", [FILE_ID], true],
+  ["getVersion", [FILE_ID, SID], true],
+  ["listFiles", [FILE_ID], true],
   ["changes", [7, 0], true],
   ["historyChanges", [7, READ_CONTROL], true, true],
   ["historyVersion", [FILE_ID, SID, READ_CONTROL], true, true],

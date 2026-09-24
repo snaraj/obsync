@@ -1,10 +1,10 @@
 # M369: a folder Save no longer waits for the change being downloaded, and the new selection races it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1669,7 +1669,7 @@
-       try {
-         const page = await context.transport.changes(context.state.data.lastSeq, 55);
-         if (!live()) return;
+@@ -1744,7 +1744,7 @@
+         // A restore the repair pass noticed while this read waited is answered
+         // before anything the read brought is applied.
+         if (this.restoreDue !== null) continue;
 -        await this.track(this.applyPage(context, page));
 +        await this.applyPage(context, page);
        } catch (error) {

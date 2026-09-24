@@ -1,0 +1,12 @@
+# M380: a note retention buried long ago is resurrected on a mere suspicion
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -201,7 +201,7 @@
+   if (!heads.has(entry.fileId)) {
+     if (!listed) return "unlisted";
+     if (entry.kind === "tombstone") return "absent";
+-    if (!proved && !young(context.now(), entry.ts)) return "absent_unproven";
++    if (proved && !young(context.now(), entry.ts)) return "absent_unproven";
+   } else {
+     // THE PROOF: the server says it does not hold this exact version. A
+     // version it holds under a newer head is ordinary history.

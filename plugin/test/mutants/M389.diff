@@ -1,0 +1,12 @@
+# M389: a record keeps a version the server lost over the identical head it holds
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1917,7 +1917,7 @@
+   ) {
+     // A local version the server no longer holds as a head -- one a restored
+     // server lost (issue #145) -- is no side of this pair: the one it holds is.
+-    const head = localVersionId < change.version_id && file.heads.includes(localVersionId) ? localVersionId : change.version_id;
++    const head = localVersionId < change.version_id ? localVersionId : change.version_id;
+     const held = context.state.fileByPath(localPath);
+     if (held) context.state.setFile(localPath, { ...held, versionId: head, ts: head === localVersionId ? held.ts : change.ts });
+     await context.state.save();

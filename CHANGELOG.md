@@ -253,6 +253,20 @@ are; to sync them from the outer vault again, uninstall obsync in the inner
 one. On a phone the outer vault's side works the same, while the inner vault's
 check looks outside its own folder, which only a computer can do. (#180)
 
+**A server restored from a backup gets back what your devices did after it.**
+When the server was rebuilt from a volume backup, the changes made after that
+backup stayed on the devices that made or received them. A new or reinstalled
+device got the old vault. The others read `idle`, then showed "Server repair
+could not verify a retained file ... check connectivity" for good. Each device
+now notices that the server went back in time, when it reconnects or when its
+repair pass finds a version gone. It re-sends the notes, renames and deletions
+the server lost, and says once: "The server was restored to an earlier state;
+this device re-sent N changes." A note another device changed on the restored
+server is merged or kept beside the re-sent one, never replaced. A deletion is
+re-sent only by a device that made or received it; each remembers its last
+1000. A change made before a device updated to 1.1.3 is re-sent only when the
+server lost the whole note. Same on desktop and mobile. (#145)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

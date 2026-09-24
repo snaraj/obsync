@@ -73,9 +73,10 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, settleBeside, unwritableText } from "./pull";
+import { ApplyResult, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, settleBeside, unwritableText } from "./pull";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
+import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
 export interface VaultStat {
   path: string;
@@ -522,6 +523,13 @@ export class SyncEngine {
   /** When the repair tick began yielding to a manual history operation. */
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
+  /**
+   * A restored server this engine has to answer before it applies another
+   * feed entry (issue #145), and the file ids a check has already decided,
+   * so the repair pass meeting one again does not start another.
+   */
+  private restoreDue: Suspicion | null = null;
+  private readonly judged = new Set<string>();
   private readonly inFlight = new Set<Promise<unknown>>();
   /** The next pass over the parked records, and the wait it was armed with. */
   private parkHandle: unknown = null;
@@ -1745,19 +1753,36 @@ export class SyncEngine {
   private async feedLoop(): Promise<void> {
     const context = this.need();
     const live = (): boolean => this.running && this.contextValue === context;
+    // THE JOURNAL IS ASKED WHETHER IT WENT BACK, at start and after every
+    // failed read -- the moments a server can have been rebuilt from a backup
+    // underneath this device (issue #145, `restore.ts`). A read, like the
+    // poll: untracked, and its answer after a stop is dropped unread.
+    let verify = true;
     while (live()) {
       try {
+        if (verify) {
+          const found = await probeFeed(context);
+          if (!live()) return;
+          this.restoreDue ??= found;
+          verify = false;
+        }
+        // Answered before the next page, one pull at a time (`recover`).
+        if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
+        if (!live()) return;
         const page = await context.transport.changes(context.state.data.lastSeq, 55);
         if (!live()) return;
+        // A restore the repair pass noticed while this read waited is answered
+        // before anything the read brought is applied.
+        if (this.restoreDue !== null) continue;
         await this.track(this.applyPage(context, page));
       } catch (error) {
         if (!live()) return;
         if (error instanceof ApiError && error.code === "seq_ahead") {
           context.host.log("feed decision=resync reason=seq_ahead");
-          context.state.data.lastSeq = 0;
-          await context.state.save();
+          this.restoreDue = { verdict: "restored", reason: "seq_ahead" };
           continue;
         }
+        verify = true;
         const message = error instanceof Error ? error.message : String(error);
         context.host.log(`feed decision=retry reason=${message}`);
         this.status({ kind: "offline" });
@@ -1794,15 +1819,20 @@ export class SyncEngine {
    * file is NOW -- a newer version this device already has, or a deletion --
    * so a deleted attachment stops being retried the moment its tombstone
    * arrives, and a fork keeps both sides as it would have in order.
+   *
+   * What the pull decided, or `null` for a record parked: either way the feed
+   * has consumed it, and the mark moves past it (`processed`, issue #145).
    */
-  private async receive(context: SyncContext, change: ChangeRecord): Promise<void> {
+  private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+    let result: ApplyResult;
     try {
-      await applyChange(context, change);
+      result = await applyChange(context, change);
     } catch (error) {
       this.park(context, change.file_id, error);
-      return;
+      return null;
     }
     if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
+    return result;
   }
 
   /**
@@ -1930,13 +1960,20 @@ export class SyncEngine {
    * (`exclusive`), and a record this device cannot write is parked (`receive`).
    */
   private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+    let replayed = 0;
     await this.exclusive(async () => {
       for (const change of page.changes) {
         if (!this.running) break;
-        await this.receive(context, change);
+        // Re-reading a rebuilt journal from zero (issue #145): what this
+        // device already processed is not news, and applied again it is
+        // yesterday's note over today's, a deletion undone, a rename reverted.
+        const mark = context.state.data.feedMark;
+        if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+        else this.processed(context, change, await this.receive(context, change));
         context.state.data.lastSeq = change.seq;
       }
     });
+    if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
     if (!this.running) {
       await context.state.save();
       return;
@@ -1944,6 +1981,57 @@ export class SyncEngine {
     context.state.data.lastSeq = page.seq;
     await context.state.save();
     if (page.changes.length > 0) this.status(this.resting());
+  }
+
+  /**
+   * One feed entry consumed -- applied, skipped, echoed or parked -- is the
+   * new mark: a mark left behind a parked entry would find that entry in
+   * `(mark, cursor]` at the next start and read the journal as a rebuilt one.
+   * An echo of this device's own version also tells the record (or grave)
+   * that version's server time, which places it against the mark after a
+   * restore.
+   */
+  private processed(context: SyncContext, change: ChangeRecord, result: ApplyResult | null): void {
+    const { state } = context;
+    if (result === "echo") {
+      const path = state.pathByFileId(change.file_id);
+      const record = path === undefined ? undefined : state.fileByPath(path);
+      if (record?.versionId === change.version_id) record.ts = change.ts;
+      const grave = state.data.graves[change.file_id];
+      if (grave?.versionId === change.version_id) grave.ts = change.ts;
+    }
+    state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
+  }
+
+  /**
+   * Answer a restored server (issue #145): re-send what it lost, then --
+   * when the restore is proved, or something had to be re-sent -- read the
+   * journal again from zero, skipping what this device had already seen, so
+   * what other devices wrote on the rebuilt server arrives even where it
+   * reused seqs this device had read past. One notice per run that re-sent.
+   */
+  private recover(context: SyncContext, due: Suspicion): Promise<void> {
+    // ONE PULL AT A TIME: the check re-sends and the rewind moves the cursor,
+    // and neither may run beside a page or a parked record's retry.
+    return this.exclusive(async () => {
+      const live = (): boolean => this.running && this.contextValue === context;
+      if (!live()) return;
+      const resent = await recoverLost(context, due, this.judged, live);
+      // Stopped part way, nothing is decided: the next start asks again.
+      if (!live()) return;
+      this.restoreDue = null;
+      if (due.verdict === "restored" || resent > 0) {
+        const mark = context.state.data.feedMark;
+        if (mark !== null) context.state.data.feedMark = { ...mark, replay: true };
+        context.state.data.lastSeq = 0;
+      }
+      await context.state.save();
+      if (resent > 0) {
+        context.host.notify(
+          `obsync: The server was restored to an earlier state; this device re-sent ${resent} change${resent === 1 ? "" : "s"}.`,
+        );
+      }
+    });
   }
 
   // --- reconciliation, the periodic scan and the heartbeat ---------------
@@ -2681,7 +2769,15 @@ export class SyncEngine {
       if (!this.running || this.repair !== repair) return;
       if (result.kind === "idle") delay = REPAIR_SCAN_MS;
       if (result.kind === "repaired") host.log(`repair decision=verified bytes=${result.bytes} ${budget()}`);
-      else if (result.kind !== "unresolved") host.log(`repair decision=${result.kind} ${budget()}`);
+      else if (result.kind === "lost") {
+        // NOT A READ OR WRITE FAILURE (issue #145): the server does not hold
+        // the version this device recorded. The feed loop decides what that
+        // is -- a version too young to have been collected is a restore --
+        // before it applies anything else.
+        const verdict = young(this.nowFn(), result.ts) ? "restored" : "suspected";
+        host.log(`repair decision=lost reason=unknown_version verdict=${verdict} file=${result.fileId} ${budget()}`);
+        if (!this.judged.has(result.fileId)) this.restoreDue ??= { verdict, reason: "repair" };
+      } else if (result.kind !== "unresolved") host.log(`repair decision=${result.kind} ${budget()}`);
       if (result.kind === "unresolved") {
         host.log(`repair decision=unresolved reason=${result.reason} ${budget()}`);
         const message = result.reason === "range_read_unavailable"

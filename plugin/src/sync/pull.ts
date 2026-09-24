@@ -115,7 +115,7 @@ import {
   selectionAfterRename,
 } from "../syncScope";
 import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, retire, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, bury, postManifest, pushFile, retire, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -938,6 +938,7 @@ async function applyFolder(
     const retiring = context.state.folderByPath(path);
     const removed = await removeFolder(context, path, shown);
     context.state.forgetFolder(path);
+    if (retiring?.fileId === change.file_id) bury(context, change.file_id, change.version_id, path, true, change.ts);
     if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
       context.state.data.retiredRoots[path] = change.file_id;
     }
@@ -1468,6 +1469,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
         await context.host.trash(localPath);
       }
       context.state.forgetPath(localPath);
+      bury(context, change.file_id, change.version_id, localPath, false, change.ts);
       await context.state.save();
       context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}${open}`);
       await pruneEmptyParents(context, localPath);
@@ -1836,6 +1838,7 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
     mtime: stat?.mtime ?? manifest.mtime,
     size: stat?.size ?? manifest.size,
     sha256: await sidDigest(head.sids),
+    ts: head.ts,
   });
   await context.state.save();
   context.host.log(`pull path_class=file bytes=${manifest.size} decision=fetched_on_demand`);
@@ -2026,9 +2029,11 @@ async function resolve(
     theirManifest.size === mine.length &&
     hex(await sha256(mine)) === theirManifest.sha256
   ) {
-    const head = localVersionId < change.version_id ? localVersionId : change.version_id;
+    // A local version the server no longer holds as a head -- one a restored
+    // server lost (issue #145) -- is no side of this pair: the one it holds is.
+    const head = localVersionId < change.version_id && file.heads.includes(localVersionId) ? localVersionId : change.version_id;
     const held = context.state.fileByPath(localPath);
-    if (held) context.state.setFile(localPath, { ...held, versionId: head });
+    if (held) context.state.setFile(localPath, { ...held, versionId: head, ts: head === localVersionId ? held.ts : change.ts });
     await context.state.save();
     context.host.log(
       `pull decision=converged reason=identical_bytes head=${head} file=${change.file_id} seq=${change.seq}`,
@@ -2124,6 +2129,7 @@ async function resolve(
             mtime: stat.mtime,
             size: stat.size,
             sha256: await sidDigest(change.sids),
+            ts: change.ts,
           });
           await context.state.save();
           context.host.log(
@@ -3457,7 +3463,7 @@ async function keepBothRecorded(
  */
 async function recordAt(
   context: SyncContext,
-  change: Pick<ChangeRecord, "file_id" | "version_id" | "sids">,
+  change: Pick<ChangeRecord, "file_id" | "version_id" | "sids" | "ts">,
   path: string,
   stat: VaultStat,
   wants?: string,
@@ -3471,6 +3477,7 @@ async function recordAt(
     // Landed BESIDE the name it carries: remembered, so it moves there once
     // that name is free (`settleBeside`, issue #149).
     ...(wants === undefined ? {} : { name: wants }),
+    ts: change.ts,
   });
   await context.state.save();
 }

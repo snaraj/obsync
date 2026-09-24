@@ -2,6 +2,7 @@
 import { CHUNK_MAX, readFully } from "../chunker";
 import { encryptChunk, hex, isHex, sha256 } from "../crypto";
 import { FileRecord } from "../state";
+import { ApiError } from "../transport";
 import { assertSyncPath, inSyncScope } from "../syncScope";
 import { SyncContext } from "./engine";
 import { HistoryCancelled, HistoryOperation, historyManifest } from "./history";
@@ -14,6 +15,8 @@ export const REPAIR_SCAN_MS = 5 * 60 * 1000;
 export type RepairResult =
   | { kind: "idle" | "checked" | "skipped" }
   | { kind: "repaired"; bytes: number }
+  /** The server holds no such version: a restored server, or retention (#145). */
+  | { kind: "lost"; fileId: string; ts?: number }
   | { kind: "unresolved"; reason: "missing_source" | "source_changed" | "range_read_unavailable" };
 
 interface Candidate {
@@ -90,7 +93,12 @@ export class ChunkRepair {
         }
         const record = { ...saved };
         this.check(path, record);
-        const version = await this.context.transport.historyVersion(record.fileId, record.versionId, this.operation);
+        const version = await this.context.transport.historyVersion(record.fileId, record.versionId, this.operation)
+          .catch((error: unknown) => {
+            if (error instanceof ApiError && error.code === "unknown_version") return null;
+            throw error;
+          });
+        if (version === null) return { kind: "lost", fileId: record.fileId, ...(record.ts === undefined ? {} : { ts: record.ts }) };
         this.check(path, record);
         const manifest = await historyManifest(this.context, record.fileId, this.context.domainId, record.versionId, version);
         this.check(path, record);

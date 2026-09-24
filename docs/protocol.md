@@ -226,7 +226,9 @@ retain the account-wide authority described below.
 - `GET /v1/files/{file_id}/versions/{version_id}` → one version record.
 - `GET /v1/files?after=<file_id>&limit=<n>` → `{"files":[{"file_id",
   "domain_id","heads","conflicted","latest_ts"}],"next":"<file_id>|null"}`.
-  Used for initial reconciliation; the feed is the normal path.
+  Used for initial reconciliation, and by a device checking which of its
+  versions a server rebuilt from a backup still holds (plugin 1.1.3,
+  `docs/architecture.md` 6.2.4); the feed is the normal path.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
 

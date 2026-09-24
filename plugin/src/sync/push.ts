@@ -42,7 +42,7 @@
  */
 
 import type { SyncContext } from "./engine";
-import type { FileRecord as FileState } from "../state";
+import { GRAVES_MAX, type FileRecord as FileState } from "../state";
 import { CHUNK_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
@@ -124,6 +124,16 @@ export interface PushOutcome {
   fileId: string;
   versionId: string;
   ack?: VersionAck;
+}
+
+/**
+ * Remember a tombstone this device published or applied, for the one case
+ * that needs it again: a server restored from a backup that predates it
+ * (`restore.ts`, issue #145). The cap's drop is logged, never silent.
+ */
+export function bury(context: SyncContext, fileId: string, versionId: string, path: string, folder: boolean, ts?: number): void {
+  const dropped = context.state.bury(fileId, { versionId, path, folder, ...(ts === undefined ? {} : { ts }) });
+  if (dropped > 0) context.host.log(`grave decision=dropped reason=cap dropped=${dropped} budget=${GRAVES_MAX}`);
 }
 
 /** SHA-256 over the concatenated sids: a size-independent content identity. */
@@ -211,8 +221,13 @@ async function uploadMissing(
  * exactly that case: the bytes did not move, the PATH did, and the path lives
  * inside the manifest — without this a renamed file would keep its old name
  * on every other device.
+ *
+ * `over` re-sends the file onto the parents a RESTORED server still holds,
+ * in place of the recorded version it lost (`restore.ts`, issue #145): always
+ * posted, and offered for deduplication, so two devices re-sending one lost
+ * version publish one.
  */
-export async function pushFile(context: SyncContext, path: string, force = false): Promise<PushOutcome> {
+export async function pushFile(context: SyncContext, path: string, force = false, over?: string[]): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
   if (!stat) throw new Error(`push: ${path} disappeared`);
@@ -308,7 +323,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
     sha256: plaintextHash,
     deleted: false,
   };
-  const parents = record && record.versionId !== "" ? [record.versionId] : [];
+  const parents = over ?? (record && record.versionId !== "" ? [record.versionId] : []);
   // A RENAME IS NEVER OFFERED FOR DEDUPLICATION. The server's identity for a
   // position is `(file_id, parent set, sids, deleted)` and does not cover the
   // encrypted manifest (`docs/protocol.md`, "One position, one version"), and
@@ -318,7 +333,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // their own echo -- `authored` -- and keep two different paths for one file
   // id with no version left that could settle it. Every other post offers it:
   // same parents, same chunks, same path is the same version (issue #114).
-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
+  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, over !== undefined || !force);
   // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
   // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so
   // it settles the pair here, by the rule every other device applies to it.
@@ -450,6 +465,7 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
     });
   if (ack === null) return null;
   context.state.forgetPath(path);
+  bury(context, record.fileId, ack.versionId, path, false);
   await context.state.save();
   context.host.log(`push path_class=tombstone decision=deleted version=${ack.versionId}`);
   return { status: "pushed", fileId: record.fileId, versionId: ack.versionId, ack: ack.ack };
@@ -489,7 +505,7 @@ async function stillGone(context: SyncContext, path: string, record: FileState, 
 }
 
 /** The manifest every folder record carries; `deleted` is the only choice. */
-function folderManifest(context: SyncContext, path: string, deleted: boolean): FolderManifest {
+export function folderManifest(context: SyncContext, path: string, deleted: boolean): FolderManifest {
   return { v: 2, kind: "directory", path, domain: context.domainId, size: 0, chunks: [], sha256: "", deleted };
 }
 
@@ -521,6 +537,7 @@ export async function pushFolderDelete(context: SyncContext, path: string): Prom
   const parents = record.versionId !== "" ? [record.versionId] : [];
   const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false);
   context.state.forgetFolder(path);
+  bury(context, record.fileId, ack.versionId, path, true);
   await context.state.save();
   context.host.log(`folder path_class=folder decision=published reason=deleted version=${ack.versionId}`);
   return ack.versionId;

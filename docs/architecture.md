@@ -1282,6 +1282,88 @@ versions remembered by this device; it is not a global retained-history loss
 audit. Server scrub/mirror results and actual native multi-device restoration
 remain separate acceptance evidence.
 
+### 6.2.4 A server restored from a backup (1.1.3)
+
+A volume restore takes from the server every frame journaled after the
+backup, and not from the devices: their records name versions the server no
+longer holds, and the journal's next frames reuse seqs they have already read
+past (issue #145). Two pieces of device state answer it, both in the plugin
+data file, validated on load and dropped with a pairing.
+
+**The feed mark** is the last change-feed entry the device consumed --
+applied, skipped, echoed, or parked because this device could not write it
+(6.2 item 3) -- with its seq, file and version ids and the server's `ts`. A
+parked entry moves it like any other: left behind one, the mark would find
+that entry in `(mark, cursor]` at the next start and read the journal as a
+rebuilt one. A live journal never
+reuses a seq, so the device asks for the mark again -- one
+`GET /v1/changes?since=<mark-1>&limit=2&wait=0` at every start and after every
+failed feed read. `416`, a head behind the cursor, another version at the
+mark's seq, or a version where the device read none (`(mark, cursor]` held
+none when it was read) prove a rebuild. When the mark's own entry is simply
+gone, one `GET /v1/files/{id}/versions/{id}` decides: a version still held
+elsewhere is a rebuild; a missing version younger than 24 h less the 300 s
+signature window is one too; an older one is only suspected, since retention
+may have pruned it. The age rule rests on three server facts: garbage
+collection is the only thing that removes a version (`storage/index.rs`,
+`prune_version`, reached only from a `Gc` frame); it keeps any version younger
+than `OBSYNC_RETENTION_DAYS` whatever `OBSYNC_RETENTION_VERSIONS` says, and
+buries a whole file only behind a sole tombstone older than that
+(`storage/gc.rs`, `plan`); and `OBSYNC_RETENTION_DAYS` is at least 1
+(`config.rs`). A device whose request verified is within 300 s of the
+server's clock (`api/auth.rs`, `CLOCK_SKEW_SECS`). A server whose clock ran
+more than a day ahead while its collector ran breaks the rule: a mark it
+pruned then would read as a proved restore. A repair pass that gets
+`404 unknown_version` for a recorded version raises the same question,
+proved or suspected by the same age rule, and never the read-or-write error.
+A device with no mark yet -- one updated from 1.1.2 -- sends no probe; its
+first processed entry writes one.
+
+**The graves** are the tombstones the device published or applied: file id,
+tombstone version, path, folder flag, and the server `ts` once seen. They are
+the only evidence a deletion is ever re-sent from; a record missing from the
+state never deletes anything. At most 1000 are kept, oldest dropped first with
+a logged `grave decision=dropped`, and recording the file id again drops its
+grave.
+
+**The check** (`sync/restore.ts`) lists `GET /v1/files` for every head, then
+looks only at records and graves whose version is not a head. Each re-send
+needs its own proof: `404 unknown_version` for the exact version recorded,
+and versions the server still holds with `ts` at or before the mark's to name
+as parents -- the processed heads -- none of them newer than the lost version.
+A newer one means retention pruned a version under a record this device kept
+behind on purpose (a refused move, an unselected destination), and it is left
+alone. A file the server lacks entirely is re-sent with no parents, only on a
+proved rebuild or for a version too young to have been collected. A record
+with no `ts` -- written before 1.1.3, or a post of this device's whose echo it
+never read -- is re-sent only in that case. A re-send
+offers deduplication, so two devices re-sending one version publish one, and
+a head written on the restored server stays: the re-send forks beside it and
+the ordinary merge and keep-both rules decide. The check is bounded by 1000
+reads and 10 minutes, logs `restore decision=start` with both budgets, one
+line per candidate, and one `restore decision=summary` with the counts, the
+skip reasons and `cut_short`. Every file id it decides is not re-raised by the
+repair pass for the rest of the engine's life.
+
+The probe is a read, like the long poll: it is not waited for by a stop, and
+its answer after one is dropped. The check and the rewind that follows it are
+writes, and run in the one pull slot a feed page and a parked record's retry
+pass share, never beside either.
+
+After a proved rebuild, or a check that re-sent anything, the device re-reads
+the feed from zero with the mark flagged `replay`: an entry at or before the
+mark by server `ts` (and by seq within one millisecond) is skipped, so
+yesterday is not re-applied over today, and the first entry after it replaces
+the mark and ends the replay. A version this device still records but the
+server no longer holds as a head is never kept over an identical head the
+server does hold (`pull.ts`, identical bytes). One notice per run that
+re-sent: "The server was restored to an earlier state; this device re-sent N
+changes."
+
+The same code runs on desktop and mobile: reads through the ordinary
+transport and re-sends through `pushFile`, so a file above the mobile ceiling
+is sent the way it was first sent.
+
 ### 6.3 Updates
 
 The plugin never installs code it fetched from the server: a server or a

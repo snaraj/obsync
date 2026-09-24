@@ -1,0 +1,12 @@
+# M463: the mark's version held at another seq is taken for a journal that agrees
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -95,7 +95,7 @@
+     else if (first !== undefined && first.seq <= cursor) reason = "unseen_entry";
+     else {
+       requests++;
+-      reason = await transport.getVersion(mark.fileId, mark.versionId).then(() => "mark_moved", (error: unknown) => {
++      reason = await transport.getVersion(mark.fileId, mark.versionId).then(() => null, (error: unknown) => {
+         if (error instanceof ApiError && error.code === "unknown_version") return young(context.now(), mark.ts) ? "mark_lost" : "mark_gone";
+         throw error;
+       });

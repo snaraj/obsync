@@ -97,6 +97,38 @@ the journal volume), then both volumes, then start the server and read
 `/readyz`. It answers `{"ready":true,"seq":<n>}` only once the volumes are writable and
 the journal has replayed.
 
+**Changes made after the backup.** The restore takes from the server
+everything written after the backup: new notes, edits, renames, deletions and
+folders. The devices still hold them. Each device on plugin 1.1.3 or later
+notices the restore, re-sends what it holds, and shows one notice: "The server
+was restored to an earlier state; this device re-sent N changes."
+
+- **When a device notices.** When it starts or reconnects, it asks the server
+  for the last change-feed entry it read. A journal that no longer holds that
+  entry where it was, or holds entries where the device read none, was
+  rebuilt. The repair pass also notices when the server does not hold a
+  version the device recorded less than a day ago.
+- **What it re-sends.** Each note, rename and folder the server lost, onto
+  the versions the server still holds. Each deletion the device made or
+  received, from the last 1000 it remembers. Then it reads the rebuilt feed
+  from the start, skipping what it had already seen, so what other devices
+  wrote on the restored server arrives too.
+- **What it never does.** It never replaces a change another device made on
+  the restored server: the two are merged, or both are kept, by the ordinary
+  conflict rules. It never deletes a note because the server lacks it. A
+  version the server pruned by retention is not a lost one, and is not
+  re-sent.
+- **What it cannot re-send.** A deletion older than the last 1000 the device
+  remembers comes back on a device paired after the restore. A change made
+  before the device updated to 1.1.3 is re-sent only if the server lost the
+  whole note. A device paired after the backup is unknown to the restored
+  server (below), so it re-sends nothing until it is paired again.
+
+So after a restore, start every device that was syncing, let each reach
+`idle`, and only then pair a new device or reinstall one: the new device gets
+what the others re-sent. Each device logs one `restore decision=start` and one
+`restore decision=summary` line, with its budget of 1000 reads and 10 minutes.
+
 **Two ways this bites:**
 
 - **A journal older than a pairing.** Devices paired after that backup do not
