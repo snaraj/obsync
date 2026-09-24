@@ -249,6 +249,8 @@ function vaultKeyDialog(t, { strands, answer = null }) {
     this.close = () => this.onClose();
     this.onOpen();
     const buttons = made.slice(first);
+    // What Obsidian does once `onOpen` returns: the focus goes to the first button.
+    buttons[0].buttonEl.focus();
     asked.push({ title: this.title, text: this.contentEl.drawn.join("\n"), buttons });
     if (answer === null) assert.fail(`no question was expected, and "${this.title}" was asked`);
     buttons.find((button) => button.text === answer).click();
@@ -281,7 +283,7 @@ test("Create a new vault key on a server that holds a vault asks first, and Canc
   assert.equal(question.title, "Create a new vault key?");
   assert.match(question.text, /a new key cannot open it/);
   assert.match(question.text, /Every device syncing that vault would stop receiving this device's changes/);
-  const [create, cancel] = question.buttons;
+  const [cancel, create] = question.buttons;
   assert.equal(create.text, "Create a new key");
   assert.equal(create.destructive, true);
   assert.equal(create.focused, undefined);

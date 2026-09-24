@@ -54,6 +54,11 @@ function value<T>(sent: Sent<T>, what: string): T {
  * drops the device's wrapped secret — so it is never one stray tap away.
  * Cancel holds the focus, so Enter is never the destructive answer, and a
  * dialog closed any other way is a no (`declined`).
+ *
+ * CANCEL IS DRAWN FIRST, because that is what gives it the focus: once
+ * `onOpen` returns, Obsidian moves the focus to the dialog's first button
+ * (measured on 1.13.4 and 1.13.7), over any focus given inside `onOpen`. With
+ * the action drawn first, Enter revoked a device or replaced the vault key.
  */
 export class ConfirmModal extends Modal {
   private answered = false;
@@ -73,6 +78,7 @@ export class ConfirmModal extends Modal {
     this.setTitle(this.heading);
     this.contentEl.createEl("p", { text: this.detail });
     new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((button) =>
         button
           .setButtonText(this.action)
@@ -82,11 +88,7 @@ export class ConfirmModal extends Modal {
             this.close();
             this.confirmed();
           }),
-      )
-      .addButton((button) => {
-        button.setButtonText("Cancel").onClick(() => this.close());
-        button.buttonEl.focus();
-      });
+      );
   }
 
   override onClose(): void {

@@ -502,6 +502,8 @@ function questions(s, answer) {
     s.made.length = 0;
     this.onOpen();
     const buttons = [...s.made];
+    // What Obsidian does once `onOpen` returns: the focus goes to the first button.
+    buttons[0].buttonEl.focus();
     asked.push({ title: this.title, text: drawn.join("\n"), buttons });
     if (answer === null) assert.fail(`no question was expected, and "${this.title}" was asked`);
     buttons.find((button) => button.text === answer).click();
@@ -527,7 +529,7 @@ test("a folder the vault does not have is asked about first, Cancel holds the fo
 
   assert.equal(asked.length, 1, "the save never asked");
   assert.equal(asked[0].title, '"Nopes" is not a folder in this vault. Save anyway?');
-  const [anyway, cancel] = asked[0].buttons;
+  const [cancel, anyway] = asked[0].buttons;
   assert.equal(anyway.text, "Save anyway");
   assert.equal(cancel.text, "Cancel");
   assert.equal(cancel.focused, true, "Enter is never the answer that saves");

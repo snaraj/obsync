@@ -182,6 +182,14 @@ such a copy stays as it is: delete the note that kept the old text and rename
 the copy to its name. Same on desktop and mobile; each settlement writes one
 `decision=converged reason=edited_twin` line (#147).
 
+**Pressing Enter in a confirmation no longer does the thing it asks about.**
+In obsync's confirmation dialogs -- revoking a device, and new in this release,
+creating a new vault key, pairing a vault that holds notes the server's vault
+lacks, and saving a folder the vault does not have -- the action was the button
+Obsidian gave the focus to, so pressing Enter revoked the device or replaced
+the key instead of cancelling. Cancel is now the first button and holds the
+focus; the action takes a click or a tap. Same on desktop and mobile.
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

@@ -35,6 +35,8 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
     this.setTitle = (title) => { this.title = title; };
     this.close = () => this.onClose();
     this.onOpen();
+    // What Obsidian does once `onOpen` returns: the focus goes to the first button.
+    this.contentEl.buttons[0].buttonEl.focus();
     asked.push({ title: this.title, text: drawn.join("\n"), buttons: this.contentEl.buttons });
     if (answer === null) assert.fail(`no question was expected, and "${this.title}" was asked`);
     this.contentEl.buttons.find((button) => button.text === answer).click();
@@ -228,7 +230,7 @@ test("a vault holding notes the server's vault does not know is asked before its
   assert.match(question.text, /uploads them to every device syncing that vault/);
   assert.match(question.text, /One server holds one vault/);
   // Cancel is the default: it holds the focus, and the upload is not the call to action.
-  const [upload, cancel] = question.buttons;
+  const [cancel, upload] = question.buttons;
   assert.equal(upload.text, "Pair and upload");
   assert.equal(upload.destructive, true);
   assert.equal(upload.cta, undefined);

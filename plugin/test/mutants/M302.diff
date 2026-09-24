@@ -1,0 +1,21 @@
+# M302: Enter in a confirmation dialog revokes the device or replaces the vault key, because the action is the first button Obsidian focuses
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -78,7 +78,6 @@
+     this.setTitle(this.heading);
+     this.contentEl.createEl("p", { text: this.detail });
+     new Setting(this.contentEl)
+-      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
+       .addButton((button) =>
+         button
+           .setButtonText(this.action)
+@@ -88,7 +87,8 @@
+             this.close();
+             this.confirmed();
+           }),
+-      );
++      )
++      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+   }
+ 
+   override onClose(): void {
