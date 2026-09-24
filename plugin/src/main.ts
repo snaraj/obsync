@@ -1614,10 +1614,17 @@ export default class ObsyncPlugin extends Plugin {
     // an iPhone and on desktops, 2026-09-24). The start reports its own
     // outcome -- offline, a retry, an error -- through the status bar, and
     // the update probe still follows it, only for a load that is still current.
-    this.firstStart = (async () => {
+    //
+    // AND NOT BEFORE OBSIDIAN HAS LISTED THE VAULT. `onload` can run while
+    // the vault is still being indexed, and a start then reconciles against
+    // an empty listing: every tracked note looked deleted (held back, with a
+    // Confirm that would have published them) and every empty folder WAS
+    // published as deleted, on every restart, on 1.1.1 too (2026-09-24
+    // battery, X1: `reconcile decision=start budget_files=0`).
+    this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => listed())).then(async () => {
       if (this.state.paired) await this.startEngine();
       if (this.isCurrent(generation)) void this.checkForUpdate();
-    })();
+    });
   }
 
   override onunload(): void {

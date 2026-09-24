@@ -76,7 +76,7 @@ async function fixture(t, { devices = 1, isMobile = false } = {}) {
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: secrets, vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: secrets, vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
   instance.manifest = { id: "obsync-private-sync", version: "1.0.6" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };

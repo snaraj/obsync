@@ -38,16 +38,28 @@ highlighted way out. The plugin no longer makes Obsidian wait for the server:
 the app opens, the status bar reads `offline — retrying`, and sync starts when
 the server answers.
 
+**Restarting Obsidian no longer deletes empty folders on your other devices.**
+The plugin could start its first sync while Obsidian was still listing the
+vault, compare against that empty listing, and conclude that everything was
+gone: every empty folder was then deleted on your other devices (into their
+trash), and every note was listed under **Deletions held back** with a
+**Confirm** that would have deleted it everywhere. Notes were only saved by the
+checks that hold back a mass deletion. This happened on 1.1.1 too, on some
+restarts and not others, more often in bigger vaults. The first sync now waits
+until Obsidian has finished listing the vault.
+
 **The sync status window reads on a phone.** A long **State** line, such as an
 error, squeezed the labels beside it to one letter per line; labels now break
 only between words.
 
-**A refusal is still a stop.** A revoked or unapproved device, a signature the
-server rejects, a clock too far off, a server that has run out of space, or a
-vault key that does not open the vault's records still show
-`obsync: error — <reason>` and are never retried by a timer: those need you, and
-knocking again would not change the answer. The plugin tells the two apart by
-what the server said, not by the wording of a message.
+**A refusal at start is still a stop.** When Obsidian starts, a revoked or
+unapproved device, a signature the server rejects, a clock too far off, a server
+that has run out of space, or a vault key that does not open the vault's records
+still show `obsync: error — <reason>` and are never retried by a timer: those
+need you, and knocking again would not change the answer. The plugin tells the
+two apart by what the server said, not by the wording of a message. A device
+that is already running when one of these refusals arrives still reads
+`offline — retrying` in this release; that is #155.
 
 **Same on every platform.** Desktop and mobile use the same timer and the same
 `online` event. On a phone, a pause that runs out while Obsidian is in the

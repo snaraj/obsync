@@ -43,7 +43,7 @@ function reloadHarness(r) {
   instance.saveData = async (value) => { persisted = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.11" };
   instance.checkForUpdate = async () => {};
   // Use actual plugin onload/startEngine admission. The engine port keeps
@@ -322,6 +322,7 @@ for (const older of ["engine", "manual_fetch"]) test(`reload reads state only af
   release.resolve();
   assert.match((await outcome).message, /cancelled/);
   await loading;
+  await r.instance.firstStart; // Obsidian does not wait for the first start; this test does.
   assert.equal(h.loads(), 1);
   assert.equal(h.starts(), 1);
   assert.equal(r.instance.state.data.deviceName, "AFTER PERSISTENCE SENTINEL");

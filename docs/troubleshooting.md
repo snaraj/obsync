@@ -308,6 +308,12 @@ resolved.
 **Cause.** The plugin stops rather than guessing. The reason names it, and
 **Show sync status** repeats it.
 
+A device that was already running when the server began refusing (a full
+volume, a revoked device, a clock too far off) currently reads
+`obsync: offline — retrying` instead of the reason (issue #155). When the
+refusal is about the device itself -- revoked, or its clock too far off --
+restarting Obsidian on it shows the reason below.
+
 **Fix,** by what the reason says:
 
 | Reason | What it means | What to do |

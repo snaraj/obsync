@@ -100,7 +100,7 @@ async function fixture(t) {
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "1.1.1" };
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);
@@ -259,6 +259,21 @@ test("Obsidian finishes loading while the first start still waits for the server
   await r.instance.firstStart;
   assert.deepEqual(r.running(), [r.engines[0]], "and it completes on its own when the server answers");
   await loading;
+});
+
+test("the first start waits until Obsidian has listed the vault", async (t) => {
+  // A start that reconciles against a vault Obsidian has not listed yet sees
+  // every tracked note as deleted and every empty folder as gone (X1).
+  const r = await fixture(t);
+  let listed = null;
+  r.instance.app.workspace = { onLayoutReady: (callback) => { listed = callback; } };
+  await Object.getPrototypeOf(r.instance).onload.call(r.instance);
+  for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
+  assert.equal(r.engines.length, 0, "no start while the vault is still being listed");
+  assert.equal(typeof listed, "function", "the start is waiting on Obsidian's layout-ready signal");
+  listed();
+  await r.instance.firstStart;
+  assert.deepEqual(r.running(), [r.engines[0]], "and it starts as soon as the vault is listed");
 });
 
 test("unloading the plugin cancels the pending retry", async (t) => {
