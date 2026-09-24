@@ -2423,7 +2423,7 @@ export default class ObsyncPlugin extends Plugin {
       return { decision: "left", revoked };
     } finally {
       this.log(
-        `unpair decision=${revoked ? "revoked" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+        `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
       );
       // However this ended, a device that is still paired goes on syncing:

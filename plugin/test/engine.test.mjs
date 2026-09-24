@@ -824,6 +824,26 @@ test("a lost deletion is not sent again once another device's change brought the
   assert.match(host.notices[0], /changed on another device/);
 });
 
+test("a lost deletion withdrawn for another device's edit at the same name says the note is back, not back under its own name", async () => {
+  const { host, created, outcome } = await lostDeletion("Notes/Same.md", async ({ server, context, keys: k }, created) => {
+    const edited = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/Same.md",
+      bytes: enc("one line\nedited elsewhere\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, edited);
+  });
+
+  assert.equal(outcome, null);
+  assert.equal(host.text("Notes/Same.md"), "one line\nedited elsewhere\n");
+  assert.equal(host.notices.length, 1, host.notices.join(" | "));
+  assert.match(host.notices[0], /changed on another device before this deletion reached the server, so the note is back here\.$/);
+});
+
 test("a lost deletion is not sent again once the note has moved past the version it was decided from", async () => {
   // Another device's edit is pulled in while the loss is settled, and the
   // note is deleted here again at once: the path is empty again, but the

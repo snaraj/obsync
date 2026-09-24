@@ -467,7 +467,7 @@ async function stillGone(context: SyncContext, path: string, record: FileState, 
   if (now !== undefined && (await context.host.stat(now)) !== null) {
     context.host.notify(
       `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
-        `deletion reached the server, so the note is back here as "${now}".`,
+        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
     );
   }
   return gone;

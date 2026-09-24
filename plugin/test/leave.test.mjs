@@ -246,7 +246,9 @@ test("the last active device may still leave locally, and is told the server kep
   assert.equal(r.state().serverUrl, "");
   assert.equal(r.state().vrk, KEYS.vrk);
   assert.deepEqual(vault(r.host), [`${NOTE}=${SENTINEL}`]);
-  assert.match(r.unpair()[0], /decision=refused reason=last_device unpushed=0 local_cleared=true/);
+  // The server kept the device and this one forgot it: that is a local leave,
+  // not a refusal (2026-09-24 verification, V14).
+  assert.match(r.unpair()[0], /decision=left_locally reason=last_device unpushed=0 local_cleared=true/);
 });
 
 test("leaving is refused while this device holds edits the server never received", async (t) => {
@@ -415,5 +417,5 @@ test("a server that does not know this device is offered a local leave, never ta
   assert.equal(r.state().deviceId, null);
   assert.equal(r.state().vrk, KEYS.vrk);
   assert.equal(r.instance.state.paired, false, "so pairing is open again");
-  assert.match(r.unpair()[1], /decision=refused reason=bad_signature unpushed=0 local_cleared=true/);
+  assert.match(r.unpair()[1], /decision=left_locally reason=bad_signature unpushed=0 local_cleared=true/);
 });
