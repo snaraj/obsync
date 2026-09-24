@@ -422,6 +422,7 @@ test("invalid saved scope refuses plugin startup with a visible state decision",
   const logs = [];
   instance.log = (line) => logs.push(line);
   instance.app = { secretStorage: memorySecrets() };
+  instance.manifest = { id: "obsync-private-sync" };
   instance.loadData = async () => ({ syncFolders: null });
   await assert.rejects(instance.onload(), /sync folders must be a list/);
   assert.deepEqual(logs, ["state decision=stopped reason=invalid_sync_folders"]);

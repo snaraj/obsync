@@ -230,6 +230,13 @@ retain the account-wide authority described below.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
 
+A **retirement** (plugin 1.1.3) is a tombstone for a file id that duplicates
+another id holding the same note at the same name. Its manifest adds
+`"keeper":"<32hex>"`, the id that keeps the name. A receiver that still records
+the retired id there, over a file whose bytes the keeper's live head holds,
+records the name under the keeper and deletes nothing. A plugin before 1.1.3
+ignores the field and applies an ordinary deletion. **No server change.**
+
 ### Folder records (plugin 1.1.0)
 
 A folder is one more version on this same endpoint, with no chunks. The

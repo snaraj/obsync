@@ -73,8 +73,8 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { EDITING_WINDOW_MS, Unwritable, applyChange, settleBeside, unwritableText } from "./pull";
-import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
+import { EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, settleBeside, unwritableText } from "./pull";
+import { pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
 export interface VaultStat {
@@ -510,6 +510,8 @@ export class SyncEngine {
   /** Tombstones one pass refused to publish, awaiting the user's word. */
   private heldDeletions: string[] = [];
   private bulkNoticeShown = false;
+  /** Whether this engine has read the feed for its own notes (`ownNotes`); one start per engine. */
+  private ownRead = false;
   /** When the repair tick began yielding to a manual history operation. */
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
@@ -2247,13 +2249,42 @@ export class SyncEngine {
       }
     }
 
+    // A FILE THIS DEVICE ALREADY PUBLISHED IS NOT A NEW FILE (issue #181).
+    // A record can be lost with its version live -- a session's late save
+    // over its successor's, a force-quit between the post and the save -- and
+    // published again it took a NEW file id, whose twin the identical-name
+    // rule then retired with a deletion. So the name is asked of this
+    // device's own newest live version first, and a file that is still
+    // exactly what this device published is recorded as that version again.
+    // "Exactly" is `isPushed`, the one definition this pass already trusts
+    // for every tracked file, against the stat this device's own manifest
+    // carries.
+    const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
+    const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
     let queued = 0;
+    let adopted = 0;
     for (const file of fresh) {
       if (!this.running) return;
       if (settled.has(file.path)) continue;
       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+      const note = own?.notes.get(file.path);
+      if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
+        const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
+        if (isPushed(record, file.mtime, file.size)) {
+          context.state.setFile(file.path, record);
+          context.host.log(`${label} path_class=file decision=adopted reason=own_version file=${note.file_id}`);
+          adopted++;
+          continue;
+        }
+      }
       this.enqueue(file.path);
       queued++;
+    }
+    if (own !== null) {
+      context.host.log(
+        `${label} decision=held since=${own.since} untracked=${untracked.length} adopted=${adopted} ` +
+          `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - own.started}`,
+      );
     }
     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
     // retired once the notes under it have published their own tombstones, so
@@ -2287,6 +2318,35 @@ export class SyncEngine {
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).
     this.sweepEchoes(context, label);
+  }
+
+  /**
+   * This device's own newest live notes, by name (issue #181): ONE walk of
+   * the feed per start, from this device's cursor -- a version whose record
+   * was lost was posted after the cursor that was saved with it -- and only
+   * when some name has no record. The reader is pairing's (`heldNotes`). A
+   * walk that fails leaves those files to be published as they always were,
+   * which costs a duplicate id, never a note: a retirement never deletes what
+   * its keeper holds (`pull.ts`, `retiredInto`).
+   */
+  private async ownNotes(
+    context: SyncContext,
+    untracked: number,
+  ): Promise<{ notes: Map<string, HeldNote>; since: number; started: number } | null> {
+    if (untracked === 0 || this.ownRead) return null;
+    this.ownRead = true;
+    const started = context.now();
+    const since = context.state.data.lastSeq;
+    try {
+      const held = await heldNotes(context.transport, context.manifestKey, since);
+      return { notes: new Map([...held].filter(([, note]) => note.device_id === context.deviceId)), since, started };
+    } catch (error) {
+      context.host.log(
+        `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
+          `untracked=${untracked} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+      return null;
+    }
   }
 
   /**

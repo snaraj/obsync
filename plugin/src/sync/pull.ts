@@ -283,6 +283,9 @@ function fileManifest(value: Record<string, unknown>): Manifest {
   if (typeof value["deleted"] !== "boolean") throw new ManifestError("deleted");
   const digest = value["sha256"];
   if (digest !== "" && !digest32(digest)) throw new ManifestError("sha256");
+  // A retirement's keeper is a file id, and it goes into a request path (#181).
+  const keeper = value["keeper"];
+  if (keeper !== undefined && (typeof keeper !== "string" || !isHex(keeper, 16))) throw new ManifestError("keeper");
   const chunks = value["chunks"];
   if (!Array.isArray(chunks)) throw new ManifestError("chunks");
   for (const chunk of chunks as unknown[]) {
@@ -420,20 +423,25 @@ async function openManifest(
   }
 }
 
+/** A live note as the feed states it: the manifest, and the record it rode in. */
+export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | "sids" | "device_id">;
+
 /**
  * What the server's vault holds under this manifest key: the newest version
  * of every live note, by path (issue #141). Read-only -- it posts nothing --
  * so a claimant can compare its own notes with a vault before its first sync
  * publishes any of them. A record this key cannot open is not one it holds.
+ * From a cursor, it is what changed since then (issue #181).
  */
-export async function heldNotes(transport: Transport, manifestKey: Bytes): Promise<Map<string, Manifest>> {
-  const newest = new Map<string, Manifest | null>();
-  for (let since = 0; ;) {
+export async function heldNotes(transport: Transport, manifestKey: Bytes, from = 0): Promise<Map<string, HeldNote>> {
+  const newest = new Map<string, HeldNote | null>();
+  for (let since = from; ;) {
     const page = await transport.changes(since, 0);
     for (const change of page.changes) {
       try {
         const entry = parseEntry(await openManifest(manifestKey, change));
-        newest.set(change.file_id, entry.v === 1 && !entry.deleted ? entry : null);
+        const { file_id, version_id, sids, device_id } = change;
+        newest.set(file_id, entry.v === 1 && !entry.deleted ? { ...entry, file_id, version_id, sids, device_id } : null);
       } catch (error) {
         if (!(error instanceof ManifestError)) throw error;
       }
@@ -441,7 +449,7 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes): Promi
     if (page.changes.length === 0 || page.seq <= since) break;
     since = page.seq;
   }
-  const held = new Map<string, Manifest>();
+  const held = new Map<string, HeldNote>();
   for (const manifest of newest.values()) if (manifest !== null) held.set(manifest.path, manifest);
   return held;
 }
@@ -1361,6 +1369,9 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
           return "skipped";
         }
       }
+      // A RETIREMENT NEVER DELETES WHAT ITS KEEPER HOLDS (issue #181).
+      if (manifest.keeper !== undefined && local !== undefined &&
+        (await retiredInto(context, change, manifest.keeper, localPath, local))) return "skipped";
       // A TOMBSTONE IS A STATEMENT ABOUT BYTES THE SERVER HAS (issue #106).
       // Bytes this device never pushed are bytes no version holds, so moving
       // them to the trash here is the one loss no history can undo, and the
@@ -2982,11 +2993,51 @@ async function convergeIdentical(
     return "skipped";
   }
   await recordAt(context, change, manifest.path, stat);
-  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
   context.host.log(
     `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,
   );
   return "applied";
+}
+
+/**
+ * A retirement, met by a device that still records the retired id at the name
+ * (issue #181): when the keeper's live head holds exactly the bytes recorded
+ * here, and the file is still those bytes, the name is recorded under the
+ * keeper, the retired id is forgotten, and nothing on disk is touched -- the
+ * answer `convergeIdentical` gives, reached from the other end.
+ *
+ * S98: a device whose records had been rolled back applied a retirement as a
+ * deletion and removed a 1 GiB file that the keeper held too, on every device.
+ * The proof is `identicalAtName`'s. A keeper that has moved on (the edit
+ * `takeEditedTwin` retires for), a file edited here, a keeper this device
+ * tracks elsewhere or the server does not know: not this case, and the
+ * deletion takes the ordinary path with every guard it already has.
+ */
+async function retiredInto(
+  context: SyncContext,
+  change: ChangeRecord,
+  keeper: string,
+  path: string,
+  ours: FileState,
+): Promise<boolean> {
+  if (context.state.pathByFileId(keeper) !== undefined) return false;
+  const started = context.now();
+  const file = await context.transport.getFile(keeper).catch((error: unknown) => {
+    if (error instanceof ApiError && error.code === "unknown_file") return null;
+    throw error;
+  });
+  for (const version of file?.versions.filter((candidate) => file.heads.includes(candidate.version_id)) ?? []) {
+    const stat = await identicalAtName(context, version, path, ours);
+    if (stat === null) continue;
+    await recordAt(context, { ...version, file_id: keeper }, path, stat);
+    context.host.log(
+      `pull path_class=tombstone decision=kept reason=retired_identical keeper=${keeper} retired=${change.file_id} ` +
+        `seq=${change.seq} duration_ms=${context.now() - started}`,
+    );
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -3023,7 +3074,7 @@ async function takeEditedTwin(
   if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
   const landed = await materialise(context, manifest);
   await recordAt(context, change, landed.path, landed);
-  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
   context.host.log(
     `pull decision=converged reason=edited_twin keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} ` +
       `seq=${change.seq} duration_ms=${context.now() - started}`,
@@ -3396,7 +3447,7 @@ async function keepBothRecorded(
  */
 async function recordAt(
   context: SyncContext,
-  change: ChangeRecord,
+  change: Pick<ChangeRecord, "file_id" | "version_id" | "sids">,
   path: string,
   stat: VaultStat,
   wants?: string,

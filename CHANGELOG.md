@@ -222,6 +222,21 @@ while another device's version is arriving is never written over, and the
 status bar no longer reads `idle` while a note is still being settled. Same on
 desktop and mobile. (#135)
 
+**Turning obsync off and on during an upload no longer loses track of your
+files, or deletes one.** When you turned obsync off and on again in Community
+plugins while a big file was uploading, the session you turned off went on
+waiting for its upload and, a minute or two later, saved its older records
+over the new session's. obsync then uploaded files that were already synced as
+if they were new, and a 1 GiB file vanished from the computer that made it,
+while the other computer kept it. Now only the newest session writes obsync's
+records; one that was turned off stops and writes nothing more. A file whose
+record was lost anyway -- a phone force-quit in the middle of saving it -- is
+recognised at the next start as the one this device already uploaded, with no
+new copy on the server. And when another device settles two copies of one
+file, a device still tracking the retired copy keeps the file if the kept
+copy holds the same bytes. Devices before 1.1.3 still apply that settling as
+an ordinary deletion. Same on desktop and mobile (#181).
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

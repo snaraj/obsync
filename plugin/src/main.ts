@@ -57,7 +57,7 @@ import type { App } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource } from "./chunker";
-import { State, isPushed } from "./state";
+import { State, StateStorageError, dataLease, isPushed } from "./state";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -1664,13 +1664,19 @@ export default class ObsyncPlugin extends Plugin {
       if (!this.isCurrent(generation)) return;
     }
     const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
+      // A newer session of this plugin owns the data file (issue #181). This
+      // one stops and says so in the log only: nothing failed here that the
+      // user could fix, and the newer session is the one syncing.
+      const superseded = error.reason === "superseded";
+      if (superseded) this.log("state decision=refused reason=superseded");
       if (!this.isCurrent(generation)) return;
       this.teardownEngine();
       this.cancelHistories();
+      if (superseded) return;
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
       new Notice(error.message, 15000);
-    }, () => this.isCurrent(generation)).catch((error: unknown) => {
+    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id)).catch((error: unknown) => {
       if (!this.isCurrent(generation)) return null;
       throw error;
     });
@@ -1883,7 +1889,8 @@ export default class ObsyncPlugin extends Plugin {
     engine.stop();
     // stopAndWait drains in-flight work before its final State save. That save
     // may reject after a storage failure; retain the drain until it settles.
-    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch(() => {
+    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch((error: unknown) => {
+      if (error instanceof StateStorageError && error.reason === "superseded") return;
       this.log("engine decision=stopped reason=teardown_save_failed");
     });
     this.engineTeardowns.add(teardown);

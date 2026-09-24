@@ -81,6 +81,11 @@ export interface Manifest {
   chunks: ManifestChunk[];
   sha256: string;
   deleted: boolean;
+  /**
+   * On a RETIREMENT only (`retire`): the file id that keeps the name. A device
+   * before 1.1.3 ignores it and applies an ordinary deletion.
+   */
+  keeper?: string;
 }
 
 /**
@@ -127,8 +132,13 @@ export async function sidDigest(sids: string[]): Promise<string> {
 }
 
 /**
- * Retire a file id that duplicates the note recorded at `path` under another
- * id (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
+ * Retire a file id that duplicates the note recorded at `path` under `keeper`
+ * (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
+ *
+ * IT NAMES ITS KEEPER (issue #181), inside the manifest, so a device that
+ * still maps the name to the retired id -- a record rolled back, S98 -- asks
+ * the keeper before it deletes anything, and forgets only the retired id when
+ * the keeper holds exactly the bytes it has (`pull.ts`, `retiredInto`).
  *
  * Only ever the HIGHER of two ids holding the same bytes at one name, or an id
  * whose twin another device has EDITED since (`takeEditedTwin`, issue #147).
@@ -145,6 +155,7 @@ export async function retire(
   fileId: string,
   parent: string,
   path: string,
+  keeper: string,
 ): Promise<"posted" | "failed"> {
   const manifest: Manifest = {
     v: 1,
@@ -155,6 +166,7 @@ export async function retire(
     chunks: [],
     sha256: "",
     deleted: true,
+    keeper,
   };
   try {
     await postManifest(context, fileId, [parent], [], manifest, 0, true);
@@ -373,7 +385,7 @@ async function settleDuplicate(
   ack: VersionAck,
 ): Promise<PushOutcome> {
   if (adopted.fileId < posted.fileId) {
-    const retired = await retire(context, posted.fileId, posted.versionId, path);
+    const retired = await retire(context, posted.fileId, posted.versionId, path, adopted.fileId);
     context.host.log(
       `push path_class=file decision=converged reason=recorded_during_post role=keep keeper=${adopted.fileId} retired=${posted.fileId} tombstone=${retired}`,
     );
@@ -381,7 +393,7 @@ async function settleDuplicate(
   }
   context.state.setFile(path, posted);
   await context.state.save();
-  const retired = await retire(context, adopted.fileId, adopted.versionId, path);
+  const retired = await retire(context, adopted.fileId, adopted.versionId, path, posted.fileId);
   context.host.log(
     `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,
   );

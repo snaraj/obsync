@@ -332,6 +332,36 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
 }
 
 /**
+ * Who may write the data file NOW: the newest session, and the write it has
+ * in flight (issue #181).
+ *
+ * ONE PER WINDOW AND PLUGIN, NOT PER PLUGIN OBJECT. Turning the plugin off
+ * and on builds a new object from a fresh evaluation of the bundle while the
+ * old one is still draining the upload it was stopped in, and that drain ends
+ * with a save of the OLD State -- minutes later, because every request of an
+ * inactive session is refused and retried as a network error. Landing after
+ * the new object read the file, it put back the cursor and records of the
+ * session before (S98). Nothing in this module outlives the object, so the
+ * lease hangs off the window's global, keyed by the `app` both objects share.
+ * A renderer reload or a force-quit ends the old window, and its writers
+ * with it.
+ */
+export interface Lease {
+  holder: object | null;
+  writing: Promise<unknown>;
+}
+
+export function dataLease(app: object, pluginId: string): Lease {
+  const scope = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
+  const windows = scope[Symbol.for("obsync.dataLease")] ??= new WeakMap();
+  const leases = windows.get(app) ?? new Map<string, Lease>();
+  windows.set(app, leases);
+  const lease = leases.get(pluginId) ?? { holder: null, writing: Promise.resolve() };
+  leases.set(pluginId, lease);
+  return lease;
+}
+
+/**
  * The device's state with a coalescing, serialised writer.
  *
  * `save()` never runs two writes at once and never drops the newest state:
@@ -339,6 +369,11 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
  * whatever the number of requests. Each write uses a detached snapshot, with
  * a matching credential revision. Any persistence failure blocks this state
  * until reload; callers must not keep syncing from uncertain credentials.
+ *
+ * AND ONLY THE NEWEST SESSION WRITES (`Lease`). Opening claims the lease
+ * before reading, then waits for a write already dispatched; from the claim
+ * on, an older State refuses every write, `superseded`, before it touches
+ * either store.
  */
 export class State {
   private pending = false;
@@ -354,19 +389,24 @@ export class State {
     private envelope: SecretEnvelope | null,
     private serializedSecret: string | null,
     private readonly onFailure: (error: StateStorageError) => void,
+    private readonly lease: Lease,
+    private readonly claim: object,
   ) {}
 
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
     isCurrent: () => boolean = () => true,
+    lease: Lease = { holder: null, writing: Promise.resolve() },
   ): Promise<State> {
     let state: State;
     let migrate = false;
+    const claim = lease.holder = {};
     try {
       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
         throw new StateStorageError("unavailable");
       }
+      await Promise.allSettled([lease.writing]);
       const loaded = await store.loadData();
       if (!isCurrent()) throw new StateStorageError("inactive_load");
       if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");
@@ -396,12 +436,12 @@ export class State {
           throw new StateStorageError("identity_mismatch");
         }
         Object.assign(data, credentials({ ...selected }));
-        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure);
+        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
       } else {
         Object.assign(data, credentials(metadata));
         const id = hex(randomBytes(16));
         if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
-        state = new State(store, data, secrets, id, null, null, null, onFailure);
+        state = new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
         migrate = true;
       }
     } catch (error) {
@@ -420,7 +460,15 @@ export class State {
   /** Let a replacement plugin load wait for an already-dispatched metadata write. */
   settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
 
+  /** Refuse every write once a newer session has claimed the data file (`Lease`). */
+  private assertHolder(): void {
+    if (this.lease.holder !== this.claim) {
+      throw new StateStorageError("superseded", "A newer obsync session took over this vault's sync; this one stopped.");
+    }
+  }
+
   private async persist(snapshot: ObsyncData): Promise<void> {
+    this.assertHolder();
     if (typeof snapshot.serverUrl !== "string") throw new StateStorageError("invalid_server");
     const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
     const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });
@@ -444,8 +492,8 @@ export class State {
       this.serializedSecret = serialized;
     }
     try {
-      await this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
-        credentialRef: ref, credentialRevision: selected.revision });
+      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
+        credentialRef: ref, credentialRevision: selected.revision }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
     this.record = selected;
   }
@@ -533,6 +581,7 @@ export class State {
     // decides on is the revision metadata actually names.
     await this.settled();
     this.assertAvailable();
+    this.assertHolder();
     const envelope = this.envelope;
     if (envelope === null || envelope.previous === null) return;
     if (this.record === null || this.record.revision !== envelope.current.revision ||
