@@ -73,7 +73,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { EDITING_WINDOW_MS, Unwritable, applyChange, unwritableText } from "./pull";
+import { EDITING_WINDOW_MS, Unwritable, applyChange, settleBeside, unwritableText } from "./pull";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
@@ -1936,6 +1936,10 @@ export class SyncEngine {
   private async scanLocal(): Promise<void> {
     const context = this.need();
     try {
+      // FIRST, so the listing below sees where they went: a note waiting
+      // beside its name for one this device's own user has since freed
+      // (issue #149).
+      await settleBeside(context, context.state.data.lastSeq, "scan");
       const own = context.host.scan === undefined ? null : await context.host.scan();
       await this.survey(own ?? await context.host.list(), false, "scan");
     } catch (error) {

@@ -45,6 +45,14 @@ export interface FileRecord {
   mtime: number;
   size: number;
   sha256: string;
+  /**
+   * The name this version's manifest carries, when the pull path landed it
+   * BESIDE that name because another file held it here (issue #149). Absent
+   * when the file sits at its own name. It is what makes beside temporary:
+   * the note is moved to this name as soon as the name is free
+   * (`sync/pull.ts`, `settleBeside`).
+   */
+  name?: string;
 }
 
 /**
@@ -265,6 +273,8 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
         size: num(record["size"], 0),
         sha256: str(record["sha256"], ""),
       };
+      const name = record["name"];
+      if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
     }
   }
   const folders = loaded["folders"];

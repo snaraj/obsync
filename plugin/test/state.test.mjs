@@ -72,6 +72,24 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
   assert.deepEqual(mixed.policy, { perFileMaxBytes: 100, totalBudgetBytes: 0 });
 });
 
+/**
+ * The name a note waits for beside its own (issue #149) is read back like
+ * every other path in the data file: as input, and a name that is not a vault
+ * path is dropped rather than handed to a move.
+ */
+test("a remembered waiting name survives a load only when it is a vault path", () => {
+  const data = parseData({
+    files: {
+      "Notes/Copy.md": { fileId: "f", versionId: "v", mtime: 1, size: 2, sha256: "s", name: "Notes/Name.md" },
+      "Notes/Other.md": { fileId: "g", versionId: "v", mtime: 1, size: 2, sha256: "s", name: "../outside.md" },
+      "Notes/Plain.md": { fileId: "h", versionId: "v", mtime: 1, size: 2, sha256: "s" },
+    },
+  }, false);
+  assert.equal(data.files["Notes/Copy.md"].name, "Notes/Name.md");
+  assert.equal(data.files["Notes/Other.md"].name, undefined, "a name outside the vault was kept");
+  assert.equal("name" in data.files["Notes/Plain.md"], false);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);

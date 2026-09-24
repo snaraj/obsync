@@ -228,7 +228,10 @@ export async function pushFile(context: SyncContext, path: string, force = false
   const sids = plan.map((chunk) => chunk.sid);
   const digest = await sidDigest(sids);
   if (!force && record && record.sha256 === digest && record.versionId !== "") {
-    context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
+    // Only over the record it read: the pull may have given this name to
+    // another note while this push read it (issue #149), and writing the old
+    // one back would put that note under the wrong file id.
+    if (context.state.fileByPath(path) === record) context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
     return { status: "unchanged", fileId, versionId: record.versionId };
   }
 

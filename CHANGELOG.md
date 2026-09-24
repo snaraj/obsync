@@ -190,6 +190,23 @@ Obsidian gave the focus to, so pressing Enter revoked the device or replaced
 the key instead of cancelling. Cancel is now the first button and holds the
 focus; the action takes a click or a tap. Same on desktop and mobile.
 
+**Two notes that trade names show the same names on every device.** Swapping
+two notes' names in one go (Draft becomes Final and Final becomes Draft), or
+renaming a note to a name another computer had just used while it was closed,
+left that other computer showing the notes under the opposite names for good:
+"Draft" on one was "Final" on the other, its next edit could undo the rename,
+and both status bars showed "Server repair could not verify a retained file …
+check connectivity". Now a note that arrives while its name is still taken
+waits beside it and moves to its name as soon as the name is free: when the
+other note's own rename arrives, and otherwise at the next scan, within 30
+seconds -- when you free the name yourself, or when the swap also changed a
+note's text. The move is a rename, never a write over anything, and a note
+holding changes not sent yet is not moved. Two different notes that
+want one name are settled the same way on both computers: one keeps the name
+and the other takes the same conflict name on both. A phone, which cannot move
+its own note aside, still keeps the two under different names until one of
+them is renamed or deleted, and then they agree. (#149)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

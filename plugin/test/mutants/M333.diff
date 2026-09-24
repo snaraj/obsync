@@ -1,0 +1,11 @@
+# M333: a note that owns its name is moved to a conflict name whenever another note waits for it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2682,7 +2682,6 @@
+       const want = record.name;
+       if (want === undefined) continue;
+       const holder = files[want];
+-      if (holder !== undefined && holder.name === undefined) continue;
+       let outcome: string;
+       try {
+         if (!(await movable(context, path, record))) continue;

@@ -793,7 +793,10 @@ returns immediately when a new frame lands.
    is not a closed one. That is why the same-name rule
    settles a pair by renaming on a computer and by keeping both on a phone
    (`plugin/src/sync/pull.ts`, `VaultHost.bindsRemoval`), and the cost is a
-   name rather than a note. The name the moved file VACATES is taken with
+   name rather than a note -- for as long as the name is held: a version
+   kept beside its name records the name it carries and is moved there, by
+   the same refusing rename, as soon as nothing holds it (`settleBeside`,
+   issue #149). The name the moved file VACATES is taken with
    the create-only writer rather than a plain write, so a file an editor
    recreated there while the old one was being cleared away is kept and the
    pair is settled by keeping both instead. Hidden folders

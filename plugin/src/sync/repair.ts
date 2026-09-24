@@ -94,7 +94,9 @@ export class ChunkRepair {
         this.check(path, record);
         const manifest = await historyManifest(this.context, record.fileId, this.context.domainId, record.versionId, version);
         this.check(path, record);
-        if (manifest.deleted || manifest.path !== path || manifest.size !== record.size) {
+        // A note beside its name holds the version that names the name it
+        // waits for (`pull.ts`, `settleBeside`; issue #149).
+        if (manifest.deleted || manifest.path !== (record.name ?? path) || manifest.size !== record.size) {
           throw new Error("Repair version does not match the remembered local file.");
         }
         this.candidate = { path, record, manifest, index: 0, offset: 0 };

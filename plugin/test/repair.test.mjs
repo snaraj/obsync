@@ -145,6 +145,31 @@ test("unchanged remembered file repairs the post-quarantine inventory gap; peer 
   assert.equal(peer.host.text(r.path), r.host.text(r.path));
 });
 
+/**
+ * A NOTE BESIDE ITS NAME IS NOT A MISMATCH (issue #149). Its record names a
+ * version whose manifest carries the name it waits for, which the record
+ * remembers; the repair used to find `manifest.path !== path` there and set
+ * "Server repair could not verify a retained file ... check connectivity"
+ * on both devices until the next drain, for as long as the names differed.
+ */
+test("a note waiting beside its name is repaired like any other, never reported as a mismatch", async () => {
+  const r = await rig();
+  r.path = "Notes/Same.md";
+  r.host.seed(r.path, "the note that keeps the name\n", 2000);
+  r.state.setFile(r.path, { fileId: "00".repeat(16), versionId: "", mtime: -1, size: 0, sha256: "" });
+  await pushFile(r.context, r.path);
+  const theirs = new TextEncoder().encode("REPAIR PLAINTEXT SENTINEL beside its name");
+  const frame = await r.server.publish({ fileId: "33".repeat(16), path: r.path, bytes: theirs, mtime: 4000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = r.state.pathByFileId("33".repeat(16));
+  assert.equal(r.state.fileByPath(copy).name, r.path);
+  r.server.chunks.delete(frame.sids[0]);
+  const repair = new ChunkRepair(r.context);
+  assert.deepEqual(await repair.step(), { kind: "checked" }, "the note at the name");
+  assert.deepEqual(await repair.step(), { kind: "repaired", bytes: theirs.length }, "the note beside it");
+});
+
 test("healthy remembered chunks are audited without reading or stat-ing local plaintext", async () => {
   const r = await note();
   r.host.read = r.host.stat = r.host.source = () => assert.fail("healthy inventory read local content");

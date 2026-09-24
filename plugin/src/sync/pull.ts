@@ -84,7 +84,7 @@
  * a stale file and a remote-only entry for the same path (issue #100).
  */
 
-import type { SyncContext, VaultStat, VaultWriter } from "./engine";
+import type { MoveResult, SyncContext, VaultStat, VaultWriter } from "./engine";
 import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
 import {
   Bytes,
@@ -821,13 +821,17 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   if (change.device_id === context.deviceId) return "echo";
   try {
     const entry = await decodeRecordManifest(context, change);
-    return await applyVersion(context, change, entry).catch((error: unknown) => {
+    const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
       // A write THIS device's disk refused, or a chunk the server does not
       // hold: a fact about this one record, named with the path it was for,
       // so the feed can park it and keep the rest arriving (issue #144).
       const reason = unwritable(error);
       throw reason === null ? error : new Unwritable(entry.path, reason);
     });
+    // A version that moved a file off a name, or landed one beside its own,
+    // is when a waiting name is most likely free (issue #149).
+    await settleBeside(context, change.seq);
+    return applied;
   } catch (error) {
     // Both refusals are the same decision to the user: this version does not
     // name a file this device may write, by its text (`ManifestError`) or by
@@ -2435,14 +2439,12 @@ async function sameNameTiebreak(
   manifest: Manifest,
   occupant: "other_file" | "no_record",
 ): Promise<ApplyResult | null> {
-  // A name of its own here already. Whatever settled this pair last time
-  // settled it for good: the incoming id's versions land where this device
-  // put it, and they keep landing there until its own device publishes the
-  // rename that moves it. Asking the rule again would answer the same way,
-  // and deciding it by what occupies its ORIGINAL name would copy the file
-  // again every time it is edited, which is the defect itself (issue #113).
+  // A name of its own here already: the incoming id's versions land where
+  // this device has it, never as another copy -- a copy per edit is the
+  // defect itself (issue #113) -- and wait there for their name to free
+  // (`renameOnto`).
   const settled = context.state.pathByFileId(change.file_id);
-  if (settled !== undefined) return await updateSettled(context, change, manifest, settled);
+  if (settled !== undefined) return await renameOnto(context, change, manifest, occupant, settled);
   if (occupant === "no_record") {
     const stat = await context.host.stat(manifest.path);
     // Gone between the check and here: the name is free, so there is nothing
@@ -2688,12 +2690,56 @@ async function createOnly(context: SyncContext, manifest: Manifest): Promise<Vau
 }
 
 /**
+ * A file this device tracks, whose version names a path another file holds
+ * here (issue #149): the next version of a copy the same-name rule settled,
+ * or a RENAME onto a name this device still gives to something else.
+ *
+ * WHAT HOLDS THE NAME DECIDES WHETHER TO WAIT. A note this device received is
+ * a note the renaming device knew, so it is leaving the name -- a swap
+ * reaches here as two versions, and the second is on its way -- and the
+ * version lands beside its name until that happens (`settleBeside`). A note
+ * this device made and published AFTER this version, which is what a version
+ * this device authored and the feed has not handed back yet means, is one
+ * the renaming device never saw: two notes that want one name, which the
+ * same-name rule settles here exactly as the other device settles it --
+ * the lower file id keeps the name. A note at the name with no record at all
+ * is published first, as `identify` does for an untracked version, and then
+ * it is exactly that.
+ */
+async function renameOnto(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  occupant: "other_file" | "no_record",
+  settled: string,
+): Promise<ApplyResult> {
+  if (occupant === "no_record") await identify(context, manifest.path, change.file_id);
+  const ours = context.state.fileByPath(manifest.path);
+  if (ours !== undefined && context.authored.has(ours.versionId)) {
+    const keep = ours.fileId < change.file_id;
+    const moved = keep ? null : await moveAside(context, manifest.path, ours, new Date(context.now()));
+    context.host.log(
+      `pull decision=same_name_tiebreak winner=${keep ? ours.fileId : change.file_id} ` +
+        `role=${keep ? "keep" : moved === null ? "kept_both" : "rename"} file=${keep ? change.file_id : ours.fileId} seq=${change.seq}`,
+    );
+    if (moved !== null) {
+      context.host.notify(
+        `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
+          `and the other device's keeps the name.`,
+      );
+    }
+  }
+  return await updateSettled(context, change, manifest, settled);
+}
+
+/**
  * A version of a file this device has already given a name of its own.
  *
  * It lands THERE, not at the name its manifest carries: that name belongs to
- * the other note of the pair on this device, and materialising over it is the
- * loss this whole series is about -- while copying it beside again, once per
- * edit, is the defect issue #113 exists to end.
+ * another note on this device, and materialising over it is the loss this
+ * whole series is about -- while copying it beside again, once per edit, is
+ * the defect issue #113 exists to end. The record remembers the name it
+ * wants, and the note moves there once nothing holds it (`settleBeside`).
  *
  * The check below is the ONLY thing standing between that write and an
  * unpushed edit: the user can open a conflict copy and type into it, and
@@ -2710,12 +2756,122 @@ async function updateSettled(
   if ((await competing(context, settled, change.file_id)) !== null) {
     return await keepBoth(context, change, manifest);
   }
-  const beside = await materialise(context, { ...manifest, path: settled });
-  await recordAt(context, change, beside.path, beside);
+  // A version that changes nothing but the name is not written again: the
+  // file there already holds it, by the proof the rename shortcut makes
+  // (issue #108), and a write the vault has not reported yet is a note that
+  // cannot move (`settleBeside`).
+  const local = context.state.fileByPath(settled) as FileState;
+  const beside = local.sha256 === (await sidDigest(change.sids))
+    ? (await context.host.stat(settled)) ?? { path: settled, mtime: local.mtime, size: local.size }
+    : await materialise(context, { ...manifest, path: settled });
+  await recordAt(context, change, beside.path, beside, manifest.path);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
   );
   return "applied";
+}
+
+/**
+ * Move a tracked note to another name through the host's guarded rename,
+ * which refuses an occupied destination rather than replacing it (`main.ts`).
+ * The echo is marked BEFORE the rename, as every move the pull path makes
+ * (`engine.ts`, ECHOES; #96); the record follows the note and forgets the
+ * name it waited for once it is there. A rename keeps both dimensions, so the
+ * record keeps the ones that were proved, and a save that raced it stays
+ * visible to the scan as the edit it is.
+ */
+async function relocate(context: SyncContext, from: string, to: string): Promise<MoveResult> {
+  const echo = `${from}\u0000${to}`;
+  context.moved.add(echo);
+  const outcome = await context.host.move(from, to).catch((error: unknown) => {
+    context.moved.delete(echo);
+    throw error;
+  });
+  if (outcome !== "moved") {
+    context.moved.delete(echo);
+    return outcome;
+  }
+  const record = context.state.fileByPath(from) as FileState;
+  const { name, ...arrived } = record;
+  context.state.forgetPath(from);
+  context.state.setFile(to, name === to ? arrived : record);
+  await context.state.save();
+  await pruneEmptyParents(context, from);
+  return outcome;
+}
+
+/**
+ * May the pull move this note now? Only when it still holds what this device
+ * recorded -- a note holding bytes not pushed yet stays where it is, because
+ * its push is what says where it belongs -- and when the vault has reported
+ * this device's own last write to it. That report can arrive after the move,
+ * and a move whose echo it clears is read as the USER renaming whichever
+ * note the pull has put at that name since (issue #149): its record moves
+ * onto the other note's bytes. Such a note waits for its echo, then moves.
+ */
+async function movable(context: SyncContext, path: string, record: FileState): Promise<boolean> {
+  for (const mark of context.written) if (mark.startsWith(`${path}:`)) return false;
+  return (await competing(context, path, record.fileId)) === null;
+}
+
+/**
+ * BESIDE IS TEMPORARY (issue #149). Every note that landed beside its name
+ * moves to that name as soon as nothing holds it: after each version this
+ * device applies, and at each scan, which is when a name this device's own
+ * user freed is found. Without this a note that landed beside a name stayed
+ * there for good, the two devices showed it under different names, and this
+ * device's next edit published its old name back as a rename.
+ *
+ * A NOTE THAT ONLY WAITS AT A NAME HAS NO CLAIM TO IT. A swap arrives as two
+ * versions, each landed beside the other's name, and neither name is ever
+ * free; so a waiting note steps aside to a conflict name, still waiting for
+ * its own, and the note that wants its place takes it -- after which the name
+ * the second one left is usually the first one's. A note at its OWN name is
+ * waited for, never moved.
+ *
+ * Every move is the host's guarded rename and never a write, so nothing is
+ * replaced; a name another record holds is taken only once that note has
+ * stepped aside, so a deletion still to be published keeps its record. Each
+ * pass that moves a note looks again, since the place that note left may be
+ * the one another waits for; the work is bounded by the waiting notes and
+ * costs nothing when none waits. A failure is logged and never raised: the
+ * version that ran this has been applied, and the feed must not be wedged by
+ * a rename it can make next time. Each line names the pass that decided it.
+ */
+export async function settleBeside(context: SyncContext, seq: number, pass = "pull"): Promise<void> {
+  const files = context.state.data.files;
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const path in files) {
+      const record = files[path] as FileState;
+      const want = record.name;
+      if (want === undefined) continue;
+      const holder = files[want];
+      if (holder !== undefined && holder.name === undefined) continue;
+      let outcome: string;
+      try {
+        if (!(await movable(context, path, record))) continue;
+        if (holder !== undefined) {
+          if (!(await movable(context, want, holder))) continue;
+          const when = new Date(context.now());
+          outcome = "occupied";
+          for (let attempt = 1; outcome === "occupied" && attempt <= CONFLICT_COPY_NAMES; attempt++) {
+            outcome = await relocate(context, want, conflictCopyPath(want, context.deviceNameFor(context.deviceId), when, attempt));
+          }
+          context.host.log(`${pass} path_class=file decision=parked_beside outcome=${outcome} file=${holder.fileId} seq=${seq}`);
+          if (outcome !== "moved") continue;
+        }
+        outcome = await relocate(context, path, want);
+      } catch (error) {
+        outcome = error instanceof VaultPathError ? error.refusal : "failed";
+      }
+      context.host.log(
+        `${pass} path_class=file decision=${outcome === "moved" ? "renamed_from_beside" : `beside_kept reason=${outcome}`} ` +
+          `file=${record.fileId} seq=${seq}`,
+      );
+      moved ||= outcome === "moved";
+    }
+  }
 }
 
 /**
@@ -2801,7 +2957,7 @@ async function keepBothRecorded(
 ): Promise<ApplyResult> {
   const copy = await keepBothAt(context, change, manifest);
   if (copy === null) return "refused";
-  await recordAt(context, change, copy.path, copy.stat);
+  await recordAt(context, change, copy.path, copy.stat, manifest.path);
   return "conflict_copy";
 }
 
@@ -2824,6 +2980,7 @@ async function recordAt(
   change: ChangeRecord,
   path: string,
   stat: VaultStat,
+  wants?: string,
 ): Promise<void> {
   context.state.setFile(path, {
     fileId: change.file_id,
@@ -2831,6 +2988,9 @@ async function recordAt(
     mtime: stat.mtime,
     size: stat.size,
     sha256: await sidDigest(change.sids),
+    // Landed BESIDE the name it carries: remembered, so it moves there once
+    // that name is free (`settleBeside`, issue #149).
+    ...(wants === undefined ? {} : { name: wants }),
   });
   await context.state.save();
 }

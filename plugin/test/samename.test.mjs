@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, KEYS, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { applyChange } = require("../build/sync/pull.js");
+const { applyChange, settleBeside } = require("../build/sync/pull.js");
 const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
 const { QUIET_MS } = require("../build/sync/engine.js");
@@ -1575,4 +1575,182 @@ test("an edit that is not provably of this very note keeps both, and retires not
     assert.equal((await published(r.server, LOWER, r.keys.manifestKey)).at(-1).deleted, false, `${name}: this device's id was retired`);
     assert.ok(!pullLog(r).includes("edited_twin"), `${name}: ${pullLog(r)}`);
   }
+});
+
+// --- beside is temporary (issue #149) ----------------------------------------
+
+/**
+ * The vault has reported the copy this device wrote. The engine consumes
+ * that echo when the vault's own event for the write arrives; this rig has
+ * no engine, so the test says when it happened.
+ */
+const reported = (r) => r.context.written.clear();
+
+/** The other device renames this device's own note at the name to another. */
+const renameAway = (r) => r.server.publish({
+  fileId: LOWER, path: OTHER, bytes: enc(MINE), mtime: 7000, parents: [r.state.fileByPath(NOTE).versionId],
+  domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+});
+
+test("a copy beside its name takes it as soon as the note holding the name is renamed away", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  assert.equal(r.state.fileByPath(copy).name, NOTE, "the copy does not remember the name it waits for");
+  assert.equal((await r.reload()).fileByPath(copy).name, NOTE, "and a restart forgets it");
+  reported(r);
+  // Waiting is not a refusal: while the name is held, nothing is tried or said.
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.logs.filter((line) => line.includes("beside")).length, 0, pullLog(r));
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(OTHER), MINE, "the rename did not land");
+  assert.equal(r.host.text(NOTE), THEIRS, `the copy did not take its name: ${pullLog(r)}`);
+  assert.equal(r.host.text(copy), null, "and left a duplicate behind");
+  assert.equal(r.state.pathByFileId(HIGHER), NOTE);
+  assert.equal(r.state.fileByPath(NOTE).name, undefined, "it still waits for the name it has");
+  assert.deepEqual(r.host.trashed, [], "a move trashed something");
+  assert.ok(r.host.logs.some((line) => line === `pull path_class=file decision=renamed_from_beside file=${HIGHER} seq=${r.server.seq}`),
+    pullLog(r));
+});
+
+test("a name another record still holds is not taken, even once its file is gone", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  // Deleted here, and its deletion not published yet: its record still
+  // stands, and it is what that tombstone is posted from.
+  r.host.files.delete(NOTE);
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.text(copy), THEIRS);
+  assert.equal(r.state.fileByPath(NOTE)?.fileId, LOWER, "the record of a deletion still to be published was replaced");
+});
+
+test("a copy beside its name that holds an unpushed edit stays where it is", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  r.host.seed(copy, "the user's own words\n", 9000);
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(copy), "the user's own words\n", "an unpushed edit was moved to another name");
+  assert.equal(r.host.text(NOTE), null);
+  assert.equal(r.state.pathByFileId(HIGHER), copy);
+});
+
+test("a move to the freed name that fails is logged, and the version that freed it stays applied", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  const move = r.host.move.bind(r.host);
+  r.host.move = async (from, to) => {
+    if (from === copy) throw new Error("the disk refused");
+    return move(from, to);
+  };
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(OTHER), MINE);
+  assert.equal(r.host.text(copy), THEIRS);
+  assert.ok(r.host.logs.includes(`pull path_class=file decision=beside_kept reason=failed file=${HIGHER} seq=${r.server.seq}`),
+    pullLog(r));
+});
+
+/**
+ * NOT BEFORE THE VAULT HAS REPORTED ITS OWN WRITE. That report can come after
+ * a move, and a move whose echo it clears is read as the user renaming
+ * whichever note the pull has put at that name since. So a copy whose write
+ * is still unreported waits, and moves at the next pass after the report.
+ */
+test("a copy beside its name waits for the vault to report its write before it moves", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+  assert.equal(r.host.text(copy), THEIRS, "a copy moved before its write was reported");
+  assert.equal(r.host.text(NOTE), null);
+
+  reported(r);
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.text(NOTE), THEIRS, pullLog(r));
+  assert.equal(r.state.pathByFileId(HIGHER), NOTE);
+});
+
+const DRAFT_TEXT = "the draft\n";
+const FINAL_TEXT = "the final text, longer\n";
+
+/**
+ * A swap as the other device publishes it: this device's two notes, Draft and
+ * Final, and the two versions that trade their names. The note that was Final
+ * holds the LOWER id and arrives first, so the same-name rule, were it asked,
+ * would move the note it waits on.
+ */
+async function swapped() {
+  const r = await rig();
+  r.host.seed("Notes/Draft.md", DRAFT_TEXT, 1000);
+  r.host.seed("Notes/Final.md", FINAL_TEXT, 1000);
+  r.state.setFile("Notes/Draft.md", { fileId: HIGHER, versionId: "", mtime: -1, size: 0, sha256: "" });
+  r.state.setFile("Notes/Final.md", { fileId: LOWER, versionId: "", mtime: -1, size: 0, sha256: "" });
+  await pushFile(r.context, "Notes/Draft.md");
+  await pushFile(r.context, "Notes/Final.md");
+  const version = (fileId, path, text, from) => r.server.publish({
+    fileId, path, bytes: enc(text), mtime: 1000, parents: [r.state.fileByPath(from).versionId],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const first = await version(LOWER, "Notes/Draft.md", FINAL_TEXT, "Notes/Final.md");
+  const second = await version(HIGHER, "Notes/Final.md", DRAFT_TEXT, "Notes/Draft.md");
+  r.server.requests.length = 0;
+  assert.equal(await applyChange(r.context, first), "applied");
+  assert.equal(r.state.fileByPath("Notes/Final.md").name, "Notes/Draft.md", "the first version did not wait beside its name");
+  return { r, second };
+}
+
+/** Both notes under the names the other device gave them, and nothing else. */
+function swappedNames(r) {
+  assert.equal(r.host.text("Notes/Draft.md"), FINAL_TEXT, pullLog(r));
+  assert.equal(r.host.text("Notes/Final.md"), DRAFT_TEXT, pullLog(r));
+  assert.equal(r.state.fileByPath("Notes/Draft.md").fileId, LOWER);
+  assert.equal(r.state.fileByPath("Notes/Final.md").fileId, HIGHER);
+  assert.equal(Object.values(r.state.data.files).filter((record) => record.name !== undefined).length, 0);
+  assert.deepEqual(r.host.trashed, [], "a swap trashed a note");
+}
+
+test("a swap that arrives as two versions ends with each note under its new name", async () => {
+  const { r, second } = await swapped();
+  assert.equal(await applyChange(r.context, second), "applied");
+  swappedNames(r);
+  // Names only: nothing was downloaded or written for either (issue #108).
+  assert.deepEqual(r.server.requests.filter((request) => request.method === "GET" && request.target.startsWith("/v1/chunks")),
+    [], pullLog(r));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.includes(`pull path_class=file decision=parked_beside outcome=moved file=${LOWER} seq=${second.seq}`),
+    pullLog(r));
+});
+
+test("the note waiting at a name steps aside to the next free name when the first is taken", async () => {
+  const { r, second } = await swapped();
+  // Either note of the pair may be the one that steps aside: the first name
+  // each would take is taken.
+  const taken = ["Notes/Draft.md", "Notes/Final.md"].map((path) => conflictCopyPath(path, "this device", new Date(r.host.clock), 1));
+  for (const path of taken) r.host.seed(path, "a note the user keeps under that name\n", 500);
+  assert.equal(await applyChange(r.context, second), "applied");
+  swappedNames(r);
+  for (const path of taken) assert.equal(r.host.text(path), "a note the user keeps under that name\n");
+  assert.deepEqual(copies(r.host).sort(), [...taken].sort());
+});
+
+test("a note waiting at a name that holds an unpushed edit is not moved for the version that wants the name", async () => {
+  const { r, second } = await swapped();
+  r.host.seed("Notes/Final.md", `${FINAL_TEXT}typed here\n`, 9000);
+  await applyChange(r.context, second);
+  assert.equal(r.host.text("Notes/Final.md"), `${FINAL_TEXT}typed here\n`, "the edit was moved or replaced");
+  assert.equal(r.state.fileByPath("Notes/Final.md").fileId, LOWER);
+  assert.equal(r.state.pathByFileId(HIGHER), "Notes/Draft.md");
+  assert.equal(r.state.fileByPath("Notes/Draft.md").name, "Notes/Final.md", pullLog(r));
 });
