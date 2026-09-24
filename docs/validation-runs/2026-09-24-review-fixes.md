@@ -2,8 +2,9 @@
 
 This record covers the replacement code after the review of `48b7fe7`.
 It records automated checks, not new desktop or phone observations.
-The earlier native runs remain in the dated records; the current phone
-journeys are still outstanding.
+The later [native phone record](2026-09-24-phone-candidate.md) exercises this
+exact plugin bundle for identical first sync, two-way edits, offline restart
+and automatic recovery. Its screenshots and limits are recorded separately.
 
 The pull path now checks the incoming identity's current server heads before
 retiring an independent identical note. Historical live-plus-delete replay,

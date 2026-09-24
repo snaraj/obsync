@@ -47,3 +47,5 @@ identifier, serial, account name, pairing code, setup token, or recovery
 phrase -- not in the prose, not in pasted command output, not in a capture
 referenced from here. Redact by role. A record that needs a private fact to be
 legible is naming the wrong fact: name the class instead.
+
+- [2026-09-24 native iPhone acceptance](2026-09-24-phone-candidate.md): current 1.1.2 installation, identical first sync, two-way edits, offline restart and automatic recovery.
