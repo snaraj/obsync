@@ -1,11 +1,11 @@
 # M395: the healed pair leaves this device's duplicate id live on the server
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2486,7 +2486,7 @@
+@@ -3078,7 +3078,7 @@
    if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
    const landed = await materialise(context, manifest);
    await recordAt(context, change, landed.path, landed);
--  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+-  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
 +  const retired = "posted";
    context.host.log(
      `pull decision=converged reason=edited_twin keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} ` +

@@ -1,7 +1,7 @@
 # M108: the reconcile pass queues the folder records it owes after the file work
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1563,33 +1563,6 @@
+@@ -2131,33 +2131,6 @@
      // barrier, then the moves underneath -- which queue behind that barrier
      // precisely because they are queued after it.
      const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
@@ -35,8 +35,8 @@
      for (const file of files) {
        if (!this.running) return;
        if (!this.tracked(file.path, label)) { skipped++; continue; }
-@@ -1749,6 +1722,25 @@
-       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+@@ -2374,6 +2347,25 @@
+       }
        this.enqueue(file.path);
        queued++;
 +    }
@@ -59,5 +59,5 @@
 +        folderQueued++;
 +      }
      }
-     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
-     // retired once the notes under it have published their own tombstones, so
+     if (own !== null) {
+       context.host.log(

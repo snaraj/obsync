@@ -1,7 +1,7 @@
 # M391: an edit whose parent sat at another name is taken for this note, and this note's id is retired
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2483,7 +2483,7 @@
+@@ -3075,7 +3075,7 @@
    if (parent === undefined) return null;
    const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
      .catch(() => null);
@@ -9,4 +9,4 @@
 +  if ((await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
    const landed = await materialise(context, manifest);
    await recordAt(context, change, landed.path, landed);
-   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);

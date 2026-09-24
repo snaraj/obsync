@@ -1,11 +1,11 @@
 # M31: a rename offers itself for deduplication
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -299,7 +299,7 @@
+@@ -333,7 +333,7 @@
    // their own echo -- `authored` -- and keep two different paths for one file
    // id with no version left that could settle it. Every other post offers it:
    // same parents, same chunks, same path is the same version (issue #114).
--  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
+-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, over !== undefined || !force);
 +  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, true);
    // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
    // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so

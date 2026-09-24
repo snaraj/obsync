@@ -1,11 +1,11 @@
 # M129: the yielding device does not retire its own id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2380,7 +2380,7 @@
+@@ -2997,7 +2997,7 @@
      return "skipped";
    }
    await recordAt(context, change, manifest.path, stat);
--  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+-  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
 +  const retired = "posted";
    context.host.log(
      `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

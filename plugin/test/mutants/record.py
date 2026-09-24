@@ -16,29 +16,19 @@ total = int(sys.argv[3])
 # test can distinguish it and none is expected to. A mutant named here that the
 # run kills ends this program rather than being written down either way, because
 # one of the two is then wrong and only a person can say which.
-EQUIVALENT = {"M28"}
+EQUIVALENT: set[str] = set()
 
 # Prose kept beside a generated row. Counts are measured; only reasoning is
 # written by hand.
 NOTES = {
     "M28": (
-        "- EQUIVALENT, and kept as the proof of that. The branch it removes sends\n"
-        "  only an answer about the DESTINATION into the rule; the mutant sends the\n"
-        "  source's answer there too, behind a cast that asserts a type the value\n"
-        "  does not have. No outcome moves. For a file id this device already\n"
-        "  tracks, `sameNameTiebreak` hands the version straight to\n"
-        "  `updateSettled`, whose first act is to ask `competing` about that same\n"
-        "  path -- the very answer that put the call there -- so it returns\n"
-        "  `keepBoth`, which is what the `else` calls directly. The rename branch\n"
-        "  below is not reachable either: it requires `held === null`, and `held`\n"
-        "  is what got us here. What the mutant does change is the number of\n"
-        "  `stat` calls on the way to the same answer, and until this range two\n"
-        "  tests could tell the difference -- not because the outcome differed,\n"
-        "  but because each waited on a proxy for what it went on to assert, so an\n"
-        "  apply that took more turns was asserted on half-finished. Both now wait\n"
-        "  on their own condition, and the mutant is indistinguishable across five\n"
-        "  consecutive runs. It is kept rather than deleted because its shape is\n"
-        "  the argument: the cast is the cost of merging the two paths."
+        "- NO LONGER EQUIVALENT, and kept as the record of why. Through 1.1.2 the\n"
+        "  branch it removes and the rule it sends the answer into ended the same\n"
+        "  way -- `keepBoth` -- so no outcome moved and the mutant survived by\n"
+        "  construction. 1.1.3 (#135) replaced that keep-both with the lower-id\n"
+        "  settlement (`converge`): an answer about the SOURCE that now enters the\n"
+        "  rule settles a fork the unmutated code leaves to the push, and the\n"
+        "  co-typing tests see the difference. Its subject line is unchanged."
     ),
     "M26": (
         "- WHY IT SURVIVES NOW AND DID NOT BEFORE, which is the reason this file\n"
@@ -105,7 +95,7 @@ if contradicted:
     )
 
 out = [
-    "# Mutation kill matrix - the 1.1.2 train",
+    "# Mutation kill matrix - the 1.1.3 train",
     "",
     "Every guard this range adds or carries, mutated against the whole plugin",
     "suite. Each mutant is an exact unified diff beside this file with its subject",

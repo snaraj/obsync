@@ -1,12 +1,12 @@
 # M220: a locked note, a read-only folder, a full disk or a missing chunk stops every later change from arriving again
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -760,7 +760,7 @@
+@@ -869,7 +869,7 @@
        // hold: a fact about this one record, named with the path it was for,
        // so the feed can park it and keep the rest arriving (issue #144).
        const reason = unwritable(error);
 -      throw reason === null ? error : new Unwritable(entry.path, reason);
 +      throw error;
      });
-   } catch (error) {
-     // Both refusals are the same decision to the user: this version does not
+     // A version that moved a file off a name, or landed one beside its own,
+     // is when a waiting name is most likely free (issue #149).

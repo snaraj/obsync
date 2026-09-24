@@ -1,11 +1,11 @@
 # M213: Settings keeps offering to delete notes that are back in the vault under another name
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1898,7 +1898,6 @@
-         context.host.log(
-           `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
-         );
--        this.heldDeletions = kept;
-       }
-     } else if (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked) {
+@@ -2317,7 +2317,6 @@
+       context.host.log(
+         `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+       );
+-      this.heldDeletions = kept;
+     }
+     if (tombstones && (kept.length > 0 || (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
        this.heldDeletions = missing;

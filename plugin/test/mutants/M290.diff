@@ -1,12 +1,12 @@
 # M290: the start-up clean-up removes a link that wears a temp's name
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -580,7 +580,7 @@
+@@ -705,7 +705,7 @@
        // every component of each one before the engine acts on it.
        const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
        if (stat === null) continue;
 -      if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
 +      if (temps !== undefined && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
        if (stat.isDirectory()) {
-         if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1, temps);
-         continue;
+         // A vault of its own is neither listed nor swept (`inNestedVault`);
+         // the start's reconcile pass names it, asking of every folder.

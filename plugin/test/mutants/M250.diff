@@ -1,13 +1,13 @@
 # M250: the device that deleted a note says nothing when another device's change brings it back
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -461,10 +461,6 @@
+@@ -496,10 +496,6 @@
      `age_ms=${context.now() - decided}`);
    const now = same ? undefined : context.state.pathByFileId(record.fileId);
    if (now !== undefined && (await context.host.stat(now)) !== null) {
 -    context.host.notify(
 -      `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
--        `deletion reached the server, so the note is back here as "${now}".`,
+-        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
 -    );
    }
    return gone;

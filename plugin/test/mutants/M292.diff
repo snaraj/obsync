@@ -1,12 +1,12 @@
 # M292: the start-up clean-up deletes a hold, which may be the last name of a save
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -106,7 +106,7 @@
+@@ -108,7 +108,7 @@
   * (`desktopWriter`) and a restored copy's (`createWriter`). Not a hold's --
   * a hold may be the last name of a save (`hold`).
   */
 -const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
 +const WRITE_TEMP = /^\.obsync-(?:write|restore|hold)-[0-9a-f]+\.tmp$/;
  
- // The Node filesystem, reached through Electron's `require`. Typed narrowly
- // rather than as `any`: only these calls are used, and only on desktop.
+ /**
+  * What makes a folder a vault that syncs with this plugin (issue #180):

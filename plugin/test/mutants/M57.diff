@@ -1,12 +1,12 @@
 # M57: a tombstone is applied without proving the file against its record
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -744,7 +744,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
-       // would add a version that says nothing new. This branch is the one
-       // that holds bytes no version holds.
-       const held = await competing(context, localPath, change.file_id);
--      if (held !== null) {
-+      if (held === "no_record") {
-         const started = context.now();
-         const revived = await pushFile(context, localPath, true);
-         if (revived.status === "pushed") context.authored.add(revived.versionId);
+@@ -1403,7 +1403,7 @@
+       // AND THE EDITOR IS ONE PLACE THOSE BYTES LIVE (issue #146): a note
+       // open and being typed in holds its newest keystrokes there until the
+       // next save, so it is kept and published again the same way.
+-      let held: string | null = await competing(context, localPath, change.file_id);
++      let held: string | null = (await competing(context, localPath, change.file_id)) === "no_record" ? "no_record" : null;
+       const editing = held === null && local !== undefined ? await openEditing(context, localPath, local, change) : null;
+       if (editing?.held === true) held = "open_editing";
+       const open = editing?.fields ?? "";

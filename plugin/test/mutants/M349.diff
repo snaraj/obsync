@@ -1,12 +1,12 @@
 # M349: an edited data file can name a path outside the vault as the name a note is moved to
 --- a/plugin/src/state.ts
 +++ b/plugin/src/state.ts
-@@ -259,7 +259,7 @@
+@@ -326,7 +326,7 @@
          sha256: str(record["sha256"], ""),
        };
        const name = record["name"];
 -      if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
 +      if (typeof name === "string") (data.files[path] as FileRecord).name = name;
+       if (typeof record["ts"] === "number" && Number.isFinite(record["ts"])) data.files[path].ts = record["ts"];
      }
    }
-   const folders = loaded["folders"];

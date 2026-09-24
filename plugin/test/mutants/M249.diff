@@ -1,7 +1,7 @@
 # M249: the deleting device says a note is back when it is not on this device
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -460,7 +460,7 @@
+@@ -495,7 +495,7 @@
    context.host.log(`push path_class=tombstone decision=${gone ? "resent" : "withdrawn"} reason=${reason} file=${record.fileId} ` +
      `age_ms=${context.now() - decided}`);
    const now = same ? undefined : context.state.pathByFileId(record.fileId);
@@ -9,4 +9,4 @@
 +  if (now !== undefined) {
      context.host.notify(
        `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
-         `deletion reached the server, so the note is back here as "${now}".`,
+         `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
