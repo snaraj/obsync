@@ -14,7 +14,12 @@ import { sandbox } from "./fake.mjs";
 const tick = () => new Promise(setImmediate);
 
 class Component {
-  constructor(kind) { this.kind = kind; this.disabled = false; }
+  constructor(kind) {
+    this.kind = kind; this.disabled = false;
+    this.inputEl = { listeners: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); } };
+  }
+  /** Type a value, then leave the field: the input's `change` event. */
+  commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
   setDisabled(value) { this.disabled = value; return this; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
@@ -212,47 +217,67 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   ]) assert.equal(normalizeServerUrl(typed), stored, typed);
 
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
-  field().change("sync.example.org");
+  field().commit("sync.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
   assert.deepEqual(s.calls, ["state.save"]);
 
   s.plugin.isMobile = true;
-  field().change("http://lan.example.test");
+  field().commit("http://lan.example.test");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org", "refused, not stored");
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
-  field().change("phone.example.org");
+  field().commit("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
 });
 
-test("plain http is refused on every platform, loopback on a desktop excepted, and each refusal is said once", (t) => {
+test("plain http is refused on every platform, loopback on a desktop excepted", (t) => {
   const s = open(t);
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
   const { serverUrlRefusal } = s.settings;
-  // A desktop: plain http crosses the network in the clear, so it is refused (#136) ...
-  field().change("http://lan.example.test:8080");
+  // A desktop: plain http crosses the network in the clear, so it is refused (#136).
+  field().commit("http://lan.example.test:8080");
   assert.equal(s.plugin.state.data.serverUrl, "", "refused, not stored");
-  assert.equal(s.obsidian.notices.length, 1);
+  assert.deepEqual(s.obsidian.notices.length, 1);
   assert.match(s.obsidian.notices[0], /^Use your server's https address\. Plain HTTP would send the setup token/);
-  // ... and said ONCE while the person keeps typing into a refused address.
-  field().change("http://lan.example.test:80800");
-  field().change("http://lan.example.test:8080/x");
-  assert.equal(s.obsidian.notices.length, 1, "one notice per refusal, not one per keystroke");
   // Only this computer itself may be reached in plain http: the README's one-computer trial.
   for (const url of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://127.1.2.3"]) {
-    field().change(url);
+    field().commit(url);
     assert.equal(s.plugin.state.data.serverUrl, url, `${url} is loopback`);
   }
   for (const url of ["http://127.0.0.1.example.test", "http://localhost.example.test:8080", "http://10.0.0.1:8080", "ftp://sync.example.org"]) {
     assert.notEqual(serverUrlRefusal(url, false), null, `${url} is not loopback`);
   }
-  // An accepted value ends the refusal, so the next one is said again.
-  field().change("http://lan.example.test:9090");
-  assert.equal(s.obsidian.notices.length, 2);
   // A phone refuses even loopback, and takes the scheme a keyboard capitalised.
   s.plugin.isMobile = true;
   assert.equal(serverUrlRefusal("http://127.0.0.1:8080", true), "Mobile Obsidian only reaches HTTPS servers.");
-  field().change("Https://phone.example.org");
+  field().commit("Https://phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org");
+});
+
+test("an address typed one key at a time is adopted once, when the field is left or Settings closes", (t) => {
+  const s = open(t);
+  s.plugin.state.data.serverUrl = "https://before.example.org";
+  const field = s.render("Server URL").made.find((c) => c.kind === "text");
+  const type = (text) => { for (let i = 1; i <= text.length; i++) field.change(text.slice(0, i)); };
+  type("http://lan.example.test:8080");
+  assert.equal(s.plugin.state.data.serverUrl, "https://before.example.org", "no prefix is stored while typing");
+  assert.deepEqual(s.obsidian.notices, [], "and nothing is said while typing");
+  for (const fn of field.inputEl.listeners.change) fn();
+  assert.equal(s.plugin.state.data.serverUrl, "https://before.example.org", "a refused address leaves the one before it");
+  assert.equal(s.obsidian.notices.length, 1, "one notice, when the person is done");
+  // A loopback address typed key by key raises nothing on the way.
+  type("http://127.0.0.1:8080");
+  for (const fn of field.inputEl.listeners.change) fn();
+  assert.equal(s.plugin.state.data.serverUrl, "http://127.0.0.1:8080");
+  assert.equal(s.obsidian.notices.length, 1);
+  // Closing Settings is leaving the field: a draft is adopted, not lost.
+  const again = s.render("Server URL").made.find((c) => c.kind === "text");
+  again.change("sync.example.org");
+  s.tab.hide();
+  assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
+  // And a field nobody typed into adopts nothing.
+  const saves = s.calls.filter((c) => c === "state.save").length;
+  s.tab.hide();
+  assert.equal(s.calls.filter((c) => c === "state.save").length, saves);
 });
 
 test("Check asks the server without a credential before setup, and says to type an address first", async (t) => {

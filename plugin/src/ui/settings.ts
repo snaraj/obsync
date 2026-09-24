@@ -131,7 +131,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
   private readingDevices = false;
-  private shownRefusal: string | null = null;
+  private draftUrl: string | null = null;
 
   constructor(
     app: App,
@@ -155,6 +155,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   override hide(): void {
+    // Closing Settings is leaving the field: what was typed is adopted, not lost.
+    this.adoptServerUrl();
     super.hide();
     this.draftScope = null;
     this.draftToken = "";
@@ -195,26 +197,36 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Server URL",
       desc: "Where this device reaches your own server, port included when it is not 443. HTTPS is assumed when you type a host name alone, and required on mobile.",
       render: (setting) => {
-        setting.addText((field) => field
-          .setPlaceholder("sync.example.org")
-          .setValue(this.plugin.state.data.serverUrl)
-          .onChange((value) => {
-            const url = normalizeServerUrl(value);
-            const refusal = serverUrlRefusal(url, this.plugin.isMobile);
-            // Once per refusal: this runs on every keystroke, and a notice a
-            // character is a storm the person has to wait out.
-            if (refusal !== null) {
-              if (refusal !== this.shownRefusal) new Notice(refusal);
-              this.shownRefusal = refusal;
-              return;
-            }
-            this.shownRefusal = null;
-            this.plugin.state.data.serverUrl = url;
-            // State reports persistence failure and stops sync through its host hook.
-            void this.plugin.state.save().catch(() => {});
-          }));
+        setting.addText((field) => {
+          field
+            .setPlaceholder("sync.example.org")
+            .setValue(this.draftUrl ?? this.plugin.state.data.serverUrl)
+            .onChange((value) => { this.draftUrl = value; });
+          // Adopted when the field is left (or Settings closes), never per
+          // keystroke: every prefix used to be normalised and SAVED, so typing
+          // a plain HTTP address one key at a time left a half-typed prefix of
+          // it stored once the address itself was refused, a loopback address
+          // raised a refusal halfway through, and a paired device's requests
+          // went to whatever prefix was current (2026-09-24, verifying #136).
+          field.inputEl.addEventListener("change", () => { this.adoptServerUrl(); });
+        });
       },
     };
+  }
+
+  /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */
+  private adoptServerUrl(): void {
+    if (this.draftUrl === null) return;
+    const url = normalizeServerUrl(this.draftUrl);
+    this.draftUrl = null;
+    const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    if (refusal !== null) {
+      new Notice(refusal);
+      return;
+    }
+    this.plugin.state.data.serverUrl = url;
+    // State reports persistence failure and stops sync through its host hook.
+    void this.plugin.state.save().catch(() => {});
   }
 
   private edgeHeaders(): Row {

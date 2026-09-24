@@ -1,12 +1,12 @@
-# M175: a refused address raises a notice on every keystroke
+# M175: every keystroke of the server address is adopted again
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -204,7 +204,7 @@
-             // Once per refusal: this runs on every keystroke, and a notice a
-             // character is a storm the person has to wait out.
-             if (refusal !== null) {
--              if (refusal !== this.shownRefusal) new Notice(refusal);
-+              new Notice(refusal);
-               this.shownRefusal = refusal;
-               return;
-             }
+@@ -201,7 +201,7 @@
+           field
+             .setPlaceholder("sync.example.org")
+             .setValue(this.draftUrl ?? this.plugin.state.data.serverUrl)
+-            .onChange((value) => { this.draftUrl = value; });
++            .onChange((value) => { this.draftUrl = value; this.adoptServerUrl(); });
+           // Adopted when the field is left (or Settings closes), never per
+           // keystroke: every prefix used to be normalised and SAVED, so typing
+           // a plain HTTP address one key at a time left a half-typed prefix of

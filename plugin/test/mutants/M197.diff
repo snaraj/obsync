@@ -1,0 +1,13 @@
+# M197: a field nobody typed into is adopted and saved again
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -216,8 +216,7 @@
+ 
+   /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */
+   private adoptServerUrl(): void {
+-    if (this.draftUrl === null) return;
+-    const url = normalizeServerUrl(this.draftUrl);
++    const url = normalizeServerUrl(this.draftUrl ?? this.plugin.state.data.serverUrl);
+     this.draftUrl = null;
+     const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+     if (refusal !== null) {
