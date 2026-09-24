@@ -1,0 +1,11 @@
+# M139: the transport never says whether the server answered
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -523,7 +523,6 @@
+         reason: `network=${error instanceof Error ? error.message : String(error)}`,
+       };
+     }
+-    this.options.reachable?.(outcome.kind === "settled");
+     return outcome;
+   }
+ 

@@ -1,0 +1,15 @@
+# M144: an answer clears any offline, the reconnect cycle's included
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2440,9 +2440,9 @@
+     }
+     const raised = this.unanswered;
+     this.unanswered = null;
+-    if (raised === null || this.statusValue !== raised.shown) return;
++    if (this.statusValue.kind !== "offline") return;
+     this.log("engine decision=online reason=answered");
+-    this.setStatus(raised.covered);
++    this.setStatus(raised?.covered ?? { kind: "idle" });
+   }
+ 
+   statusText(): string {

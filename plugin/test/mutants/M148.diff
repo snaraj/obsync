@@ -1,0 +1,11 @@
+# M148: onload waits for the first start, holding Obsidian's loading screen until the server answers
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1618,6 +1618,7 @@
+       if (this.state.paired) await this.startEngine();
+       if (this.isCurrent(generation)) void this.checkForUpdate();
+     })();
++    await this.firstStart;
+   }
+ 
+   override onunload(): void {

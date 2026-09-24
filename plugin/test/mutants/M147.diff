@@ -1,0 +1,13 @@
+# M147: a server that is not there is reported as a repair failure
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2118,8 +2118,7 @@
+         // server's scrub report is a false alarm (the 2026-09-23 run).
+         const absent = error instanceof ApiError && error.code === "unreachable";
+         host.log(`repair decision=deferred reason=${busy ? "busy" : absent ? "unreachable" : "read_or_write_failed"} ${budget()}`);
+-        if (absent) delay = REPAIR_SCAN_MS;
+-        else if (!busy) {
++        if (!busy) {
+           this.status({
+             kind: "error",
+             message: "Server repair could not verify a retained file: this device could not read it or the server would not take it. " +

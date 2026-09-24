@@ -91,6 +91,9 @@ async function fixture(t) {
     async syncNow() { this.manual = (this.manual ?? 0) + 1; }
   };
   const instance = new Plugin();
+  // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
+  const load = instance.onload.bind(instance);
+  instance.onload = async () => { await load(); await instance.firstStart; };
   let metadata = identity();
   const logs = [], bar = [];
   instance.loadData = async () => structuredClone(metadata);
@@ -241,6 +244,23 @@ for (const [name, refusal, code] of REFUSALS) {
   });
 }
 
+test("Obsidian finishes loading while the first start still waits for the server", async (t) => {
+  const r = await fixture(t);
+  const server = deferred();
+  r.plan(() => server.promise);
+  // The plugin's own onload, not the fixture's, which waits for the start on purpose.
+  let returned = false;
+  const loading = Object.getPrototypeOf(r.instance).onload.call(r.instance).then(() => { returned = true; });
+  for (let turn = 0; turn < 50 && !returned; turn++) await new Promise(setImmediate);
+  assert.ok(returned, "onload returned while the server had not answered: Obsidian's loading screen is not held");
+  assert.equal(r.engines.length, 1, "the first start is running, not skipped");
+  assert.deepEqual(r.running(), []);
+  server.resolve();
+  await r.instance.firstStart;
+  assert.deepEqual(r.running(), [r.engines[0]], "and it completes on its own when the server answers");
+  await loading;
+});
+
 test("unloading the plugin cancels the pending retry", async (t) => {
   const r = await fixture(t);
   r.plan((n) => { if (n === 1) throw r.unreachable(); });
@@ -354,4 +374,87 @@ test("the real engine surfaces the transport's own classification, unwrapped", a
   answer.request = real;
   await engine.start();
   assert.ok(engine.started);
+});
+
+/*
+ * THE STATUS BAR NEVER SAYS `idle` WHILE NOTHING CAN SYNC (the 2026-09-23 run).
+ * The transport retries an unanswered request for about a minute and a half
+ * before it throws, and until then a device opened away from its server read
+ * `idle`. Every attempt now reports whether the server answered, and the bar
+ * follows it at once.
+ */
+
+/** The report the plugin's own transport makes after one attempt. */
+const report = (r, answered) => r.instance.transport.options.reachable(answered);
+
+test("a start still inside the transport's retries already reads offline, and the answer puts idle back", async (t) => {
+  const r = await fixture(t);
+  const gate = deferred();
+  r.plan(async (n) => { if (n === 1) await gate.promise; });
+  const loading = r.instance.onload();
+  await settle();
+  assert.equal(r.instance.statusText(), "idle", "nothing has been attempted yet");
+  report(r, false);
+  assert.equal(r.instance.statusText(), "offline — retrying", "the first unanswered attempt is shown at once");
+  assert.equal(r.bar.at(-1), "obsync: offline — retrying");
+  assert.ok(r.logs.includes("engine decision=offline reason=unanswered"));
+  report(r, false);
+  assert.equal(r.logs.filter((line) => line === "engine decision=offline reason=unanswered").length, 1, "said once, not per attempt");
+  report(r, true);
+  assert.equal(r.instance.statusText(), "idle");
+  assert.ok(r.logs.includes("engine decision=online reason=answered"));
+  gate.resolve();
+  await loading;
+  await settle();
+  assert.equal(r.instance.statusText(), "idle");
+  assert.deepEqual(r.win.armed(), [], "an outage the transport rode out arms no reconnect");
+});
+
+test("an answer puts back the syncing it covered, and never a status raised since", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "syncing", pending: 3 });
+  report(r, false);
+  assert.equal(r.instance.statusText(), "offline — retrying");
+  report(r, true);
+  assert.equal(r.instance.statusText(), "syncing 3", "the work still pending is not called idle");
+
+  report(r, false);
+  r.instance.setStatus({ kind: "syncing", pending: 1 });
+  report(r, true);
+  assert.equal(r.instance.statusText(), "syncing 1", "the engine's newer word stands");
+});
+
+test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "error", message: "SENTINEL" });
+  report(r, false);
+  assert.equal(r.instance.statusText(), "error — SENTINEL");
+  report(r, true);
+  assert.equal(r.instance.statusText(), "error — SENTINEL");
+
+  r.plan(() => { throw r.unreachable(); });
+  await r.instance.restartEngine();
+  assert.deepEqual(r.win.armed(), [5000]);
+  report(r, true);
+  assert.equal(r.instance.statusText(), "offline — retrying", "only the start that gets through ends the cycle");
+});
+
+test("an unpaired device stays not paired, and a transport from an earlier session is not heard", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const earlier = r.instance.transport.options.reachable;
+  r.instance.transport = { options: {} };
+  earlier(false);
+  assert.equal(r.instance.statusText(), "idle", "a replaced transport speaks for nothing");
+
+  const s = await fixture(t);
+  s.plan((n) => { if (n === 1) throw s.unreachable(); });
+  await s.instance.onload();
+  s.instance.unpushedEdits = async () => [];
+  s.instance.revokeDevice = async () => undefined;
+  await s.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  report(s, false);
+  assert.equal(s.instance.statusText(), "not paired");
 });

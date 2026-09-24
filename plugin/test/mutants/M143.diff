@@ -1,0 +1,12 @@
+# M143: an unpaired device is shown offline
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2431,7 +2431,7 @@
+   private reachability(answered: boolean): void {
+     if (!answered) {
+       const kind = this.statusValue.kind;
+-      if (!this.state.paired || (kind !== "idle" && kind !== "syncing")) return;
++      if (kind !== "idle" && kind !== "syncing") return;
+       const shown: EngineStatus = { kind: "offline" };
+       this.unanswered = { shown, covered: this.statusValue };
+       this.log("engine decision=offline reason=unanswered");

@@ -1472,6 +1472,8 @@ export default class ObsyncPlugin extends Plugin {
   transport!: Transport;
   host!: ObsidianHost;
   engine: SyncEngine | null = null;
+  /** The start and update probe `onload` began and deliberately did not wait for. */
+  firstStart: Promise<void> = Promise.resolve();
   /** The newer version the server reports, for the settings tab to name. */
   updateAvailable: string | null = null;
   /** Whether this session has already raised the update notice. */
@@ -1530,7 +1532,7 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.isCurrent(generation) || state === null) return;
     this.state = state;
     this.host = new ObsidianHost(this);
-    this.transport = new Transport({
+    const transport: Transport = new Transport({
       request: (request) => {
         state.assertAvailable();
         if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
@@ -1543,7 +1545,12 @@ export default class ObsyncPlugin extends Plugin {
       },
       edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
+      // Only this session's transport speaks for the status bar.
+      reachable: (answered) => {
+        if (this.transport === transport) this.reachability(answered);
+      },
     });
+    this.transport = transport;
     this.statusEl = this.addStatusBarItem();
     this.setStatus({ kind: "idle" });
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
@@ -1598,8 +1605,19 @@ export default class ObsyncPlugin extends Plugin {
     // it runs the pending retry now instead of at the timer, and is nothing
     // otherwise. Identical on desktop and mobile: both renderers raise it.
     this.registerDomEvent(window, "online", () => this.retryNow("online"));
-    if (this.state.paired) await this.startEngine();
-    if (this.isCurrent(generation)) void this.checkForUpdate();
+    // NEVER AWAITED HERE. Obsidian holds its "Loading plugins…" screen until
+    // `onload` returns, and a first start talks to the server: with the
+    // server out of reach -- a phone away from a LAN-only setup, a laptop
+    // waking before Wi-Fi -- awaiting it kept the whole app on that screen for
+    // the transport's retry budget, minutes, with "Reload app in Restricted
+    // Mode" as the highlighted way out, which turns every plugin off (seen on
+    // an iPhone and on desktops, 2026-09-24). The start reports its own
+    // outcome -- offline, a retry, an error -- through the status bar, and
+    // the update probe still follows it, only for a load that is still current.
+    this.firstStart = (async () => {
+      if (this.state.paired) await this.startEngine();
+      if (this.isCurrent(generation)) void this.checkForUpdate();
+    })();
   }
 
   override onunload(): void {
@@ -2399,6 +2417,45 @@ export default class ObsyncPlugin extends Plugin {
   setStatus(status: EngineStatus): void {
     this.statusValue = status;
     this.statusEl?.setText(`obsync: ${this.statusText()}`);
+  }
+
+  /**
+   * The `offline` this session's transport raised, and the status it covered.
+   * Held by identity, so an answer takes back only the `offline` it caused.
+   */
+  private unanswered: { shown: EngineStatus; covered: EngineStatus } | null = null;
+
+  /**
+   * What the transport learned on its last attempt, shown at once.
+   *
+   * THE STATUS BAR MUST NOT SAY `idle` WHILE NOTHING CAN SYNC. The transport
+   * retries a request it gets no answer to for its whole budget -- about a
+   * minute and a half -- before anything is thrown, and until then the engine
+   * said nothing, so a device opened away from its server read `idle` for that
+   * long before `offline — retrying` appeared (measured in the 2026-09-23 run).
+   * An unanswered attempt now shows `offline — retrying` at once, which is what
+   * the transport is doing, and the next answer puts back what it covered.
+   *
+   * Only `idle` and `syncing` are covered: an `error` needs the person and is
+   * never hidden, and an unpaired device has no sync to be offline from. An
+   * answer takes back only the `offline` this raised, never the engine's own
+   * or the reconnect cycle's, whose start clears it when it succeeds.
+   */
+  private reachability(answered: boolean): void {
+    if (!answered) {
+      const kind = this.statusValue.kind;
+      if (!this.state.paired || (kind !== "idle" && kind !== "syncing")) return;
+      const shown: EngineStatus = { kind: "offline" };
+      this.unanswered = { shown, covered: this.statusValue };
+      this.log("engine decision=offline reason=unanswered");
+      this.setStatus(shown);
+      return;
+    }
+    const raised = this.unanswered;
+    this.unanswered = null;
+    if (raised === null || this.statusValue !== raised.shown) return;
+    this.log("engine decision=online reason=answered");
+    this.setStatus(raised.covered);
   }
 
   statusText(): string {

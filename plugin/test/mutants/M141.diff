@@ -1,0 +1,12 @@
+# M141: an unanswered attempt is not shown
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2431,7 +2431,7 @@
+   private reachability(answered: boolean): void {
+     if (!answered) {
+       const kind = this.statusValue.kind;
+-      if (!this.state.paired || (kind !== "idle" && kind !== "syncing")) return;
++      if (!this.state.paired || (kind !== "idle" && kind !== "syncing") || kind !== undefined) return;
+       const shown: EngineStatus = { kind: "offline" };
+       this.unanswered = { shown, covered: this.statusValue };
+       this.log("engine decision=offline reason=unanswered");

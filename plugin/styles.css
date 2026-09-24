@@ -47,3 +47,14 @@
   border-bottom: 1px solid var(--background-modifier-border);
   overflow-wrap: anywhere;
 }
+
+/*
+ * Labels break between words only. `anywhere` lets a cell shrink to one
+ * character, so on a phone a long value -- an error sentence in "State" --
+ * took the whole width and stood every label on end, one letter a line
+ * (2026-09-24 device run). Values keep `anywhere`: a URL or a device id must
+ * still wrap.
+ */
+.obsync-table td:first-child {
+  overflow-wrap: normal;
+}

@@ -2112,8 +2112,14 @@ export class SyncEngine {
         // down: the dialog took the slot between the check above and this
         // step's own read. It is never an error status (issue #103).
         const busy = error instanceof Error && error.name === "HistoryBusyError";
-        host.log(`repair decision=deferred reason=${busy ? "busy" : "read_or_write_failed"} ${budget()}`);
-        if (!busy) {
+        // A server that is simply not there is absence, not a repair problem:
+        // the status bar already reads `offline — retrying` from the first
+        // unanswered attempt, and an error sending an offline person to the
+        // server's scrub report is a false alarm (the 2026-09-23 run).
+        const absent = error instanceof ApiError && error.code === "unreachable";
+        host.log(`repair decision=deferred reason=${busy ? "busy" : absent ? "unreachable" : "read_or_write_failed"} ${budget()}`);
+        if (absent) delay = REPAIR_SCAN_MS;
+        else if (!busy) {
           this.status({
             kind: "error",
             message: "Server repair could not verify a retained file: this device could not read it or the server would not take it. " +

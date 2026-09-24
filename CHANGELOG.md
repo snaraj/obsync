@@ -18,6 +18,30 @@ its network back. The status bar and the settings **Connection** row say
 start gets through. Nothing needs pressing when you return; **Sync now** only
 makes the next attempt happen now.
 
+**The status bar says so from the first request that gets no answer.** A
+device that could not reach its server used to read `obsync: idle` for about a
+minute and a half, the time the plugin spends retrying one request, before
+`offline — retrying` appeared; measured on real devices in the 2026-09-23 run.
+It now switches at the first unanswered request and goes back to what it said
+before at the next answered one. An error that needs you is never covered, and
+a device that is not paired still reads `not paired`. The background repair
+check no longer mistakes a missing server for damage either: while offline it
+used to flash `error — Server repair could not verify…`, sending people to look
+for a problem that was only the network; it now waits for the next check.
+
+**Obsidian opens at once when the server cannot be reached.** Opening Obsidian
+away from a server it could not reach held the whole app on "Loading plugins…"
+for as long as the plugin kept trying to connect -- over three minutes on an
+iPhone and 88 to 119 seconds on desktops in the 2026-09-24 run -- with
+"Reload app in Restricted Mode", which turns every community plugin off, as the
+highlighted way out. The plugin no longer makes Obsidian wait for the server:
+the app opens, the status bar reads `offline — retrying`, and sync starts when
+the server answers.
+
+**The sync status window reads on a phone.** A long **State** line, such as an
+error, squeezed the labels beside it to one letter per line; labels now break
+only between words.
+
 **A refusal is still a stop.** A revoked or unapproved device, a signature the
 server rejects, a clock too far off, a server that has run out of space, or a
 vault key that does not open the vault's records still show

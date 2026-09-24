@@ -218,6 +218,12 @@ export interface TransportOptions {
   random?: () => number;
   log?: (line: string) => void;
   maxAttempts?: number;
+  /**
+   * Told after every attempt whether the server answered it (any status
+   * below 500). It reports and decides nothing: the retries, and what a
+   * request finally returns or throws, are the same with or without it.
+   */
+  reachable?: (answered: boolean) => void;
 }
 
 export interface ChangeRecord {
@@ -494,6 +500,7 @@ export class Transport {
       headers["X-Obsync-Sig"] = await signRequest(sending.device.secret, method, target, ts, nonce, sending.digest);
     }
     check();
+    let outcome: Attempt;
     try {
       const response = await this.options.request({
         url: sending.url,
@@ -506,16 +513,18 @@ export class Transport {
             : {}),
         throw: false,
       });
-      return response.status < 500
+      outcome = response.status < 500
         ? { kind: "settled", response }
         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
     } catch (error) {
-      return {
+      outcome = {
         kind: "unsettled",
         status: 0,
         reason: `network=${error instanceof Error ? error.message : String(error)}`,
       };
     }
+    this.options.reachable?.(outcome.kind === "settled");
+    return outcome;
   }
 
   /** A settled response: 2xx is returned, 4xx is thrown as the decision it is. */
