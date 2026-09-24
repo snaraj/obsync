@@ -1,0 +1,13 @@
+# M114: teardown leaves the reconnect armed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1701,9 +1701,6 @@
+   }
+ 
+   private teardownEngine(): void {
+-    // Unload, reload and a failed state write all come through here, and a
+-    // retry that outlived any of them would start an engine nobody asked for.
+-    this.cancelReconnect();
+     const engine = this.engine;
+     if (engine === null) return;
+     this.engine = null;

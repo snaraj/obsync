@@ -1,0 +1,12 @@
+# M112: the reconnect pause is never capped
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1786,7 +1786,7 @@
+    * reconnect, not a failure budget: it never gives up on its own.
+    */
+   private scheduleReconnect(attempt: number, status: number): void {
+-    const delay = Math.min(RECONNECT_CAP_MS, RECONNECT_START_MS * 2 ** (attempt - 1));
++    const delay = RECONNECT_START_MS * 2 ** (attempt - 1);
+     this.reconnect = { attempt, handle: window.setTimeout(() => this.retryNow("timer"), delay) };
+     this.log(`engine decision=retry_scheduled attempt=${attempt} delay_ms=${delay} status=${status}`);
+   }

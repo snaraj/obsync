@@ -163,7 +163,7 @@ prompt): [Reaching it from outside your LAN](docs/server.md#reaching-it-from-out
 
 | Symptom | Likely cause | First thing to try |
 | --- | --- | --- |
-| `obsync: offline` | The device cannot reach the Server URL | Open the URL in a browser there; check port, HTTPS, route |
+| `obsync: offline — retrying` | The device cannot reach the Server URL; it keeps trying and resumes by itself | Nothing, if the device is just away from the server's network; otherwise open the URL in a browser there; check port, HTTPS, route |
 | A phone will not connect while a computer syncs | The phone distrusts the private certificate | Install the root certificate; on iOS also enable it under Certificate Trust Settings |
 | `401 stale_timestamp` | A clock is off by more than 300 seconds | Turn on automatic time on the device or the server |
 | `403 device_pending` | Nobody has approved it yet | Approve it by name on the device you paired from |

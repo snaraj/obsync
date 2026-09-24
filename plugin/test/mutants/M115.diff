@@ -1,0 +1,11 @@
+# M115: the network coming back is not listened for
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1597,7 +1597,6 @@
+     // there is, and the one a laptop lid or a phone leaving a tunnel produces;
+     // it runs the pending retry now instead of at the timer, and is nothing
+     // otherwise. Identical on desktop and mobile: both renderers raise it.
+-    this.registerDomEvent(window, "online", () => this.retryNow("online"));
+     if (this.state.paired) await this.startEngine();
+     if (this.isCurrent(generation)) void this.checkForUpdate();
+   }

@@ -40,7 +40,10 @@ export function sandbox({ dist = false } = {}) {
   // The smallest stub that satisfies module-scope evaluation.
   writeFileSync(
     join(home, "node_modules", "obsidian", "index.js"),
-    `class Component {}
+    `// The one Component method the plugin calls. The real one detaches the
+// listener on unload as well; the stub attaches only, so a fake window a test
+// installs holds exactly what the plugin registered.
+class Component { registerDomEvent(el, type, handler) { el.addEventListener(type, handler); } }
 class Plugin extends Component {}
 class Modal { constructor(app) { this.app = app; } }
 // Like the real one, the constructor names the tab after the plugin. The API
@@ -92,6 +95,18 @@ module.exports = {
   );
   cpSync(join(PLUGIN_DIR, "build"), join(home, "build"), { recursive: true });
   if (dist) cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
+  // The renderer's `window`, for the two things the bundle reads from it:
+  // timers (`window.setTimeout`, the guideline rule `guidelines.test.mjs`
+  // pins) and the `online` event. Real timers that never hold the process
+  // open, and listeners that go nowhere: a test that must see either installs
+  // its own `globalThis.window` before `onload` and restores it after, as
+  // `reconnect.test.mjs` does.
+  globalThis.window ??= {
+    setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
+    clearTimeout: (handle) => clearTimeout(handle),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
   return { home, require: createRequire(join(home, "x.js")) };
 }
 

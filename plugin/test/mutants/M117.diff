@@ -1,0 +1,11 @@
+# M117: a resume leaves the status bar saying offline
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1760,7 +1760,6 @@
+         // when there is work -- so the `offline` this cycle set is cleared
+         // here, and only that: a `syncing` the new engine already raised is
+         // its own to keep.
+-        if (this.statusValue.kind === "offline") this.setStatus({ kind: "idle" });
+       }
+     } catch (error) {
+       if (this.engine !== engine) { engine.stop(); return; }

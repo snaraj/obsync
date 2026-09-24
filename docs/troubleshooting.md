@@ -6,15 +6,21 @@ says how to collect a report worth sending.
 
 The status bar is the first thing to read: `obsync: not paired` before setup,
 `obsync: idle` when there is nothing to do, `obsync: syncing <n>` while `n`
-files are in flight, `obsync: offline` when the server cannot be reached, and
-`obsync: error — <reason>` when sync has stopped on purpose.
+files are in flight, `obsync: offline — retrying` when the server cannot be
+reached, and `obsync: error — <reason>` when sync has stopped on purpose.
 
-## The status bar says `offline`
+## The status bar says `offline — retrying`
 
-**Symptom.** `obsync: offline`, and nothing syncs in either direction.
+**Symptom.** `obsync: offline — retrying`, and nothing syncs in either
+direction.
 
 **Cause.** The device cannot reach the server at the **Server URL** in
-settings, or reaches something that is not it.
+settings, or reaches something that is not it. The plugin keeps trying by
+itself -- 5 s apart at first, doubling to every 5 minutes -- and again the
+moment the device reports its network back, so a device that is simply away
+from a LAN-only or VPN-only server resumes on its own when it returns, with
+nothing pressed. The steps below are for when it stays there on a network the
+server IS on. **Sync now** makes the next attempt happen now.
 
 **Fix,** in the order that finds it fastest:
 
@@ -67,8 +73,8 @@ asks a resolver that does not filter private answers.
 
 ## The certificate is not trusted on this device
 
-**Symptom.** `obsync: offline` on one device while another syncs, or a browser
-on that device warning about the certificate.
+**Symptom.** `obsync: offline — retrying` on one device while another syncs,
+or a browser on that device warning about the certificate.
 
 **Cause.** The deployment uses a private certificate authority and this device
 has never been told to trust it. Trust is per device, and on iOS it is two

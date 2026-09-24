@@ -185,6 +185,36 @@ function soleSpelling(names: string[], segment: string): string | null {
 /** The decisions that mean the plugin did NOT do what was asked. */
 const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
 
+/**
+ * How long a device waits to start again after the server could not be
+ * reached: 5 s, doubling to a 5-minute cap, for as long as the plugin is
+ * loaded and paired (issue #129). The transport has already spent its own
+ * eight attempts (1 s doubling to 60 s) inside the start that failed, so the
+ * first pause separates two probes without a second one on the heels of the
+ * first, and the cap keeps a device away from a LAN-only server to one cheap
+ * start every five minutes -- close enough that coming home syncs within
+ * minutes even when no `online` event announces it, because the network was
+ * up the whole time and only the server was not.
+ */
+const RECONNECT_START_MS = 5000;
+const RECONNECT_CAP_MS = 5 * 60 * 1000;
+
+/**
+ * Whether a failed start is the server's ABSENCE rather than its DECISION.
+ * The transport says `unreachable` after its own retries when nothing
+ * answered or a 5xx said the server reached no conclusion; every other
+ * `ApiError` is a refusal (`401 bad_signature`, `403 device_revoked`, ...)
+ * and every other error is local (a domain map this version cannot read, a
+ * key that does not decrypt). `507` is the one 5xx that IS a decision -- the
+ * volume or the account is full (requirement 8) -- so it is excluded by
+ * status. Only absence is retried: a refusal retried is the same refusal,
+ * louder, and a device knocking every five minutes with a revoked credential
+ * is exactly the noise a server log should not have to hold.
+ */
+function unreachable(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "unreachable" && error.status !== 507;
+}
+
 /** What Obsidian's plugin manager calls this plugin, as `manifest.json` names it. */
 const PLUGIN_NAME = "Self Hosted Private Sync";
 
@@ -1458,6 +1488,13 @@ export default class ObsyncPlugin extends Plugin {
   private readonly histories = new Set<HistoryBrowser>();
   private restoring: HistoryOperation | null = null;
   private manualRestore: Promise<{ path: string; syncRequested: boolean }> | null = null;
+  /**
+   * The reconnect a start that could not reach the server left behind: how
+   * many starts in a row have failed that way, and the timer for the next
+   * one (`null` while that start is running). Absent whenever the engine
+   * runs, and whenever it stopped for a reason a later start cannot fix.
+   */
+  private reconnect: { attempt: number; handle: number | null } | null = null;
 
   get isMobile(): boolean {
     return Platform.isMobile;
@@ -1556,6 +1593,11 @@ export default class ObsyncPlugin extends Plugin {
     this.registerObsidianProtocolHandler(`${PAIRING_ACTION}/pair`, pair);
 
     this.registerVaultEvents();
+    // The device's own word that its network is back is the cheapest signal
+    // there is, and the one a laptop lid or a phone leaving a tunnel produces;
+    // it runs the pending retry now instead of at the timer, and is nothing
+    // otherwise. Identical on desktop and mobile: both renderers raise it.
+    this.registerDomEvent(window, "online", () => this.retryNow("online"));
     if (this.state.paired) await this.startEngine();
     if (this.isCurrent(generation)) void this.checkForUpdate();
   }
@@ -1659,6 +1701,9 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private teardownEngine(): void {
+    // Unload, reload and a failed state write all come through here, and a
+    // retry that outlived any of them would start an engine nobody asked for.
+    this.cancelReconnect();
     const engine = this.engine;
     if (engine === null) return;
     this.engine = null;
@@ -1689,6 +1734,10 @@ export default class ObsyncPlugin extends Plugin {
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
     if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+    // Whoever asked for this start owns it: a reconnect still pending would
+    // be a second engine, so its timer is taken here and its count carried,
+    // and the start below either closes the cycle or continues it.
+    this.takeReconnectTimer();
     this.cancelHistories();
     const previous = this.engine;
     await previous?.stopAndWait();
@@ -1704,11 +1753,64 @@ export default class ObsyncPlugin extends Plugin {
     this.engine = engine;
     try {
       await engine.start();
+      if (this.engine === engine && this.reconnect !== null) {
+        this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
+        this.reconnect = null;
+        // A quiet start emits no status of its own -- the drain speaks only
+        // when there is work -- so the `offline` this cycle set is cleared
+        // here, and only that: a `syncing` the new engine already raised is
+        // its own to keep.
+        if (this.statusValue.kind === "offline") this.setStatus({ kind: "idle" });
+      }
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
+      const attempt = (this.reconnect?.attempt ?? 0) + 1;
       this.teardownEngine();
-      this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      if (!unreachable(error)) {
+        // A refusal, or a local fault: visible until the person acts, and
+        // never knocked on again by a timer (issue #129).
+        const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
+        this.log(`engine decision=stopped reason=start_failed code=${code}`);
+        this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      this.scheduleReconnect(attempt, error.status);
+      this.setStatus({ kind: "offline" });
     }
+  }
+
+  /**
+   * Arm the next start after one the server could not be reached for: the
+   * `attempt`-th in a row, so the pause doubles from `RECONNECT_START_MS` and
+   * holds at `RECONNECT_CAP_MS` for as long as the outage lasts. A background
+   * reconnect, not a failure budget: it never gives up on its own.
+   */
+  private scheduleReconnect(attempt: number, status: number): void {
+    const delay = Math.min(RECONNECT_CAP_MS, RECONNECT_START_MS * 2 ** (attempt - 1));
+    this.reconnect = { attempt, handle: window.setTimeout(() => this.retryNow("timer"), delay) };
+    this.log(`engine decision=retry_scheduled attempt=${attempt} delay_ms=${delay} status=${status}`);
+  }
+
+  /** Disarm the pending reconnect timer, keeping the count. Whether one was armed. */
+  private takeReconnectTimer(): boolean {
+    const pending = this.reconnect;
+    if (pending === null || pending.handle === null) return false;
+    window.clearTimeout(pending.handle);
+    pending.handle = null;
+    return true;
+  }
+
+  /** Run the pending reconnect now -- the timer's own turn, or the device saying its network is back. */
+  private retryNow(reason: string): void {
+    if (!this.takeReconnectTimer()) return;
+    this.log(`engine decision=retrying attempt=${this.reconnect?.attempt ?? 0} reason=${reason}`);
+    void this.startEngine();
+  }
+
+  /** Drop the pending reconnect, timer and count: the next failure opens a new cycle. */
+  private cancelReconnect(): void {
+    this.takeReconnectTimer();
+    this.reconnect = null;
   }
 
   async restartEngine(): Promise<void> {
@@ -1858,6 +1960,9 @@ export default class ObsyncPlugin extends Plugin {
       await this.engine?.stopAndWait();
       assertActive();
       this.engine = null;
+      // A retry that fired into a failed save would restart sync under a
+      // status that says it is stopped; the start at the end owns resumption.
+      this.cancelReconnect();
       await Promise.allSettled(this.manualFetches);
       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
       assertActive();
@@ -2059,6 +2164,8 @@ export default class ObsyncPlugin extends Plugin {
       await this.engine?.stopAndWait();
       assertCurrent();
       this.engine = null;
+      // No timer may start an engine while the credential is being given up.
+      this.cancelReconnect();
       this.cancelHistories();
       await Promise.allSettled(this.manualFetches);
       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
@@ -2301,7 +2408,9 @@ export default class ObsyncPlugin extends Plugin {
       case "syncing":
         return `syncing ${this.statusValue.pending}`;
       case "offline":
-        return "offline";
+        // True of both places that set it: the running engine polls again
+        // in seconds, and a stopped one is on the reconnect timer.
+        return "offline — retrying";
       case "error":
         return `error — ${this.statusValue.message}`;
     }
