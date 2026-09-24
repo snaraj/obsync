@@ -13,6 +13,8 @@ Hãy cài nó từ Cài đặt → Phần mở rộng của bên thứ ba → Du
 **Self Hosted Private Sync** (id plugin `obsync-private-sync`), trên Obsidian
 1.13.0 trở lên.
 
+**Mới dùng? Hãy bắt đầu với [hướng dẫn thiết lập](https://snaraj.github.io/obsync/setup/) (bằng tiếng Anh).** Hướng dẫn giúp bạn chọn cách các thiết bị kết nối tới máy chủ và đi qua từng cách theo từng bước. Trong Obsidian: Cài đặt → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Nó đồng bộ tới một máy chủ do **bạn** vận hành: không có dịch vụ lưu trữ
 >   sẵn, không có tài khoản ở nơi nào khác.

@@ -13,6 +13,8 @@ Installeer hem via Instellingen → Externe plug-in → Doorbladeren als
 **Self Hosted Private Sync** (plugin-id `obsync-private-sync`), op Obsidian
 1.13.0 of nieuwer.
 
+**Nieuw hier? Begin met de [installatiegids](https://snaraj.github.io/obsync/setup/) (in het Engels).** Die helpt je kiezen hoe je apparaten je server bereiken en loopt elke optie stap voor stap door. In Obsidian: Instellingen → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Hij synchroniseert met een server die **jij** draait: geen gehoste dienst,
 >   nergens anders een account.

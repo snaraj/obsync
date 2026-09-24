@@ -13,6 +13,8 @@ Ayarlar → Topluluk Eklentileri → Göz at yolundan **Self Hosted Private Sync
 adıyla kurun (eklenti kimliği `obsync-private-sync`); Obsidian 1.13.0 veya
 daha yenisi gerekir.
 
+**Yeni misiniz? [Kurulum kılavuzuyla](https://snaraj.github.io/obsync/setup/) (İngilizce) başlayın.** Cihazlarınızın sunucunuza nasıl ulaşacağını seçmenize yardım eder ve her yolu adım adım anlatır. Obsidian'da: Ayarlar → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - **Sizin** çalıştırdığınız bir sunucuyla eşitlenir: barındırılan bir hizmet
 >   yok, başka hiçbir yerde hesap yok.

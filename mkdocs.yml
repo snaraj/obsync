@@ -115,6 +115,7 @@ validation:
 nav:
   - Home: index.md
   - Start here:
+      - Choose your setup: setup.md
       - Quickstart: quickstart.md
       - Install the plugin: community-plugin.md
       - Run the server (Docker and Compose): server.md

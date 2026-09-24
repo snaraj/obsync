@@ -8,6 +8,8 @@
 
 在 Obsidian 1.13.0 或更新的版本上，從「設定 → 第三方外掛程式 → 瀏覽」中搜尋 **Self Hosted Private Sync**（外掛程式 ID `obsync-private-sync`）即可安裝。
 
+**初次使用？請從[設定指南](https://snaraj.github.io/obsync/setup/)（英文）開始。** 它幫助你選擇裝置連線到伺服器的方式，並逐步說明每一種方式。在 Obsidian 中：設定 → Self Hosted Private Sync → Setup guide。
+
 > [!IMPORTANT]
 > - 它同步的對象，是由**你**自己執行的伺服器：沒有託管服務，也不必在別處開帳號。
 > - 請先備份你的儲存庫；24 個單字的復原詞組，別留在產生它的那台裝置上。

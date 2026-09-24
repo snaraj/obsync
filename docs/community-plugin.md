@@ -69,7 +69,7 @@ It has no subscription, advertising or telemetry service. Obsidian contacts
 its directory and GitHub to install and update community plugins. Optional
 network access providers are chosen by the server operator.
 
-Three more surfaces the plugin touches, each only on the reader's own action:
+Four more surfaces the plugin touches, each only on the reader's own action:
 
 - **Your edge, only if you configured one.** Headers you paste under **Edge
   service-token headers** ride on every request to the Server URL, because
@@ -77,6 +77,9 @@ Three more surfaces the plugin touches, each only on the reader's own action:
 - **Your browser, when you ask for the dashboard.** **Open dashboard** opens a
   sign-in link in your browser, and only when that link is on your server's
   own origin.
+- **Your browser, when you ask for the setup guide.** **Setup guide** in the
+  settings and the command **Open the setup guide** open the project's guide,
+  a fixed address shipped with the plugin. The plugin itself sends nothing there.
 - **Obsidian's secret storage.** The vault key, the device secret and any edge
   header values live there, never in plain plugin data.
 

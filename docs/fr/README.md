@@ -14,6 +14,8 @@ Installez-le depuis Paramètres → Modules complémentaires → Parcourir sous 
 nom **Self Hosted Private Sync** (identifiant du module
 `obsync-private-sync`), sur Obsidian 1.13.0 ou plus récent.
 
+**Nouveau ici ? Commencez par le [guide d’installation](https://snaraj.github.io/obsync/setup/) (en anglais).** Il vous aide à choisir comment vos appareils joignent votre serveur et détaille chaque option pas à pas. Dans Obsidian : Paramètres → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Il se synchronise avec un serveur que **vous** faites tourner : aucun
 >   service hébergé, aucun compte ailleurs.

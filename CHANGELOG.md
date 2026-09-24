@@ -5,6 +5,23 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.1 - 2026-09-23
+
+**The setup guide is one press away, and it says which setups are proven.**
+
+### Added
+
+- **Setup guide**, the first row of the plugin's settings on every platform, and the
+  command **Open the setup guide** open the project's guide in your browser. The
+  address ships with the plugin and the plugin itself sends nothing there;
+  Obsidian's help link for the plugin now opens the same page.
+- [Choose your setup](docs/setup.md): every way to run and reach the server, what
+  each needs, and whether CI or a recorded validation run proves it.
+
+### Changed
+
+- The README opens with the setup guide.
+
 ## 1.1.0 - 2026-09-22
 
 **Folders sync now -- an empty one reaches your other devices, and a deleted

@@ -18,6 +18,7 @@ Every command is under **Self Hosted Private Sync** in the command palette
 | Restore from history | Browses retained versions and restores one as a copy |
 | Show remote-only files | Lists files above this device's ceilings, to fetch on demand |
 | Open dashboard | Mints a one-time dashboard sign-in link |
+| Open the setup guide | Opens the setup guide in your browser |
 
 The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
 `obsync: syncing <n>` while `n` files are in flight, `obsync: offline` when the

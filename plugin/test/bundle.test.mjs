@@ -84,10 +84,38 @@ test("the bundle carries the whole plugin and nothing from the build machine", (
   assert.deepEqual(leaked, null, `an absolute build path leaked into the artifact: ${leaked}`);
   // Obsidian owns plugin distribution. Shipped client code names no external
   // service; only syntax and documentation examples are literal URLs here.
-  for (const url of bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? []) {
-    const allowed =
-      url === "https://" || url.includes("example.");
-    assert.ok(allowed, `the bundle reaches for ${url}`);
+  // The one exception is the setup guide: the manifest's own help link,
+  // opened in the browser on a press and never requested by the plugin
+  // (setup-guide.test.mjs). It is admitted only as exactly that address,
+  // exactly once, so a second link or a drifted copy still fails here.
+  const guide = setupGuide();
+  const urls = bundle.match(/https?:\/\/[^\s"'`)]*/g) ?? [];
+  for (const url of urls) {
+    assert.ok(shippable(url, guide), `the bundle reaches for ${url}`);
+  }
+  assert.equal(urls.filter((url) => url === guide).length, 1, "the setup guide is named once, by its constant");
+});
+
+/** The manifest's help link: the one address the bundle may carry by name. */
+function setupGuide() {
+  return JSON.parse(readFileSync(join(plugin, "..", "manifest.json"), "utf8")).helpUrl;
+}
+
+/** What the shipped bundle may name: URL syntax, documentation examples, and the setup guide exactly. */
+function shippable(url, guide) {
+  return url === "https://" || url.includes("example.") || url === guide;
+}
+
+test("the bundle's address rule admits the setup guide exactly and nothing near it", () => {
+  const guide = setupGuide();
+  assert.equal(shippable(guide, guide), true);
+  for (const url of [
+    "https://snaraj.github.io/obsync/",
+    `${guide}x`,
+    guide.replace("https://", "http://"),
+    "https://api.github.com/repos/snaraj/obsync/releases",
+  ]) {
+    assert.equal(shippable(url, guide), false, url);
   }
 });
 

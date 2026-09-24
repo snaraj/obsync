@@ -43,7 +43,7 @@ class TheCleanCaseIsAccepted(unittest.TestCase):
     def test_every_roster_signature_is_accepted(self):
         # Specify the documented lanes independently: iterating the validator's
         # own tuple cannot detect an omitted lane.
-        for signature in ("- Fable5.1", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6"):
+        for signature in ("- Fable5.1", "- Opus5.5", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6"):
             with self.subTest(signature=signature):
                 self.assertEqual(
                     contract.refusals([commit(body=f"Subject\n\nBody.\n\n{signature}")]), []
