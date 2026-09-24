@@ -131,7 +131,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { workspace: { onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };

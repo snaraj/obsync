@@ -48,6 +48,7 @@ const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
 function vaultWindow(t) {
   const secrets = new Map();
   const app = {
+    workspace: { onLayoutReady: (done) => done() },
     secretStorage: { getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
     vault: { adapter: {}, on: () => ({}) },
   };
