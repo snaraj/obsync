@@ -63,6 +63,7 @@ function stubPlugin(overrides = {}) {
     saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); },
     setUpAccount: async (token, account) => { calls.push(`setUp:${token}:${account}`); },
     openDashboard: async () => { calls.push("openDashboard"); },
+    openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
     ...overrides,
   };
@@ -114,14 +115,29 @@ test("definitions are pure groups of named rows, and drawing a row returns nothi
   const groups = s.tab.getSettingDefinitions();
   s.tab.getSettingDefinitions();
   assert.deepEqual(s.calls, [], "listing the rows reads nothing and saves nothing");
-  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group"]);
-  assert.deepEqual(groups.map((group) => group.heading), ["Server", "Sync folders on this device", "This device", "Devices", "Vault key"]);
+  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group", "group"]);
+  assert.deepEqual(groups.map((group) => group.heading), ["Get started", "Server", "Sync folders on this device", "This device", "Devices", "Vault key"]);
   for (const item of s.rows()) {
     assert.ok(typeof item.name === "string" && item.name !== "", "every row has a name for search");
     if (item.render === undefined) continue;
     // Obsidian's Setting is thenable; a render that returned it would be
     // awaited by whoever holds the definitions.
     assert.equal(s.render(item.name).result, undefined, `${item.name} returns nothing`);
+  }
+});
+
+test("the setup guide is the first row on every platform, paired or not, and a press asks the plugin to open it", (t) => {
+  for (const isMobile of [false, true]) {
+    const s = open(t, { isMobile });
+    for (const paired of [false, true]) {
+      s.plugin.state.paired = paired;
+      const first = s.tab.getSettingDefinitions()[0];
+      assert.equal(first.heading, "Get started");
+      assert.equal(first.visible, undefined, "the group never hides");
+      assert.deepEqual(first.items.map((item) => [item.name, item.visible]), [["Setup guide", undefined]]);
+    }
+    s.button(s.render("Setup guide").made, "Open the guide").click();
+    assert.deepEqual(s.calls, ["openSetupGuide"], isMobile ? "mobile" : "desktop");
   }
 });
 

@@ -14,6 +14,8 @@ Zainstaluj ją przez Ustawienia → Wtyczki społeczności → Przeglądaj jako
 **Self Hosted Private Sync** (identyfikator wtyczki `obsync-private-sync`), w
 Obsidianie 1.13.0 lub nowszym.
 
+**Jesteś tu pierwszy raz? Zacznij od [przewodnika konfiguracji](https://snaraj.github.io/obsync/setup/) (po angielsku).** Pomaga wybrać, jak urządzenia łączą się z serwerem, i prowadzi krok po kroku przez każdą opcję. W Obsidianie: Ustawienia → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Synchronizuje się z serwerem, który prowadzisz **Ty**: bez usługi hostowanej, bez konta gdziekolwiek indziej.
 > - Najpierw zrób kopię zapasową sejfu; 24-wyrazową frazę odzyskiwania trzymaj poza urządzeniem, które ją wygenerowało.

@@ -42,6 +42,13 @@ import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, Recove
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
 
+/**
+ * The project's setup guide. A fixed address in the source, never one a server
+ * supplies, and opened only when the person presses for it: the plugin itself
+ * sends nothing there.
+ */
+export const SETUP_GUIDE_URL = "https://snaraj.github.io/obsync/setup/";
+
 /** One row: a name, a description, when it shows, and what it draws. */
 interface Row {
   name: string;
@@ -131,12 +138,26 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private groups(): Group[] {
     const enrolled = (): boolean => this.plugin.state.data.deviceId !== null;
     return [
+      { heading: "Get started", rows: [this.setupGuide()] },
       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
     ];
+  }
+
+  // ---- Get started ---------------------------------------------------------
+
+  /** First on every platform, because a stranger opens this tab before anything else works. */
+  private setupGuide(): Row {
+    return {
+      name: "Setup guide",
+      desc: "How to run your own server, choose how your devices reach it, and pair each device, step by step. Opens in your browser; the plugin sends nothing.",
+      render: (setting) => {
+        setting.addButton((button) => button.setButtonText("Open the guide").onClick(() => { this.plugin.openSetupGuide(); }));
+      },
+    };
   }
 
   // ---- Server --------------------------------------------------------------

@@ -13,6 +13,8 @@ Installiere es unter Einstellungen → Externe Erweiterungen → Durchsuchen als
 **Self Hosted Private Sync** (Plugin-ID `obsync-private-sync`), ab Obsidian
 1.13.0.
 
+**Neu hier? Beginne mit der [Einrichtungsanleitung](https://snaraj.github.io/obsync/setup/) (auf Englisch).** Sie hilft dir bei der Wahl, wie deine Geräte deinen Server erreichen, und führt Schritt für Schritt durch jede Variante. In Obsidian: Einstellungen → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Es synchronisiert mit einem Server, den **du** betreibst: kein gehosteter
 >   Dienst, kein Konto anderswo.

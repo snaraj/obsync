@@ -72,7 +72,7 @@ import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHo
 import { fetchRemoteOnly } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
-import { ObsyncSettingTab, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import {
@@ -1524,6 +1524,7 @@ export default class ObsyncPlugin extends Plugin {
       callback: () => new RecoveryPhraseModal(this.app, this, false).open(),
     });
     this.addCommand({ id: "open-dashboard", name: "Open dashboard", callback: () => void this.openDashboard() });
+    this.addCommand({ id: "open-setup-guide", name: "Open the setup guide", callback: () => this.openSetupGuide() });
     this.addCommand({
       id: "remote-only",
       name: "Show remote-only files",
@@ -2176,6 +2177,12 @@ export default class ObsyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
     }
+  }
+
+  /** The setup guide, in the browser: a fixed address in the source, never data from a server. */
+  openSetupGuide(): void {
+    this.log("guide decision=opened");
+    window.open(SETUP_GUIDE_URL, "_blank");
   }
 
   async openDashboard(): Promise<void> {

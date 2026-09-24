@@ -14,6 +14,13 @@ desktop can ([`docs/troubleshooting.md`](docs/troubleshooting.md)).
 Install it from Settings → Community plugins → Browse as **Self Hosted Private
 Sync** (plugin id `obsync-private-sync`), on Obsidian 1.13.0 or newer.
 
+**New here? Start with the [setup guide](https://snaraj.github.io/obsync/setup/).** It helps you choose how your
+devices reach your server, says which setups have been proven on real devices, and
+walks through each one. In Obsidian it is one press away: **Settings → Self Hosted
+Private Sync → Setup guide**, or the command **Open the setup guide**.
+
+![The plugin's settings opening with Get started: the Setup guide row and its Open the guide button, above the Server URL field](docs/assets/settings-get-started.png)
+
 **Versions.** The LATEST release is the newest tag on the
 [Releases page](https://github.com/snaraj/obsync/releases/latest), and that is
 what Obsidian installs and updates to. `main` is the EDGE: merged but
@@ -33,6 +40,7 @@ no pre-release tag; the changelog's Unreleased section is the edge's record.
 - **GitHub Releases, through Obsidian**, for install and update; Obsidian ignores the extra release assets.
 - **Your vault's file list**, to decide what to sync; hidden (`.obsidian`, `.git`) and symlinked folders skipped.
 - **The clipboard, written only** by **Copy code** and **Copy link** in **Pair a new device**, never read.
+- **Your browser, when you ask for the setup guide.** It opens the project's guide there; the plugin itself sends nothing.
 
 What the server can and cannot see: [`SECURITY.md`](SECURITY.md) and the [threat model](docs/threat-model.md).
 
@@ -145,6 +153,9 @@ trusts; the server stays on plain HTTP behind that terminator.
 - **A reverse proxy with automatic TLS**, such as Caddy on a public name: reachable from the internet, yours to patch.
 - **Cloudflare Tunnel.** Above. No inbound port; a provider on the path, on its terms.
 
+Which of these have been proven on real devices, and each one's guide:
+[Choose your setup](docs/setup.md).
+
 What a roaming device needs (route, name, certificate, firewall, iOS local-network
 prompt): [Reaching it from outside your LAN](docs/server.md#reaching-it-from-outside-your-lan).
 
@@ -162,7 +173,7 @@ Every other symptom and error code, and how to report one: [Troubleshooting](doc
 
 ## Documentation
 
-[Quickstart](docs/quickstart.md) · [Run the server](docs/server.md) ·
+[Choose your setup](docs/setup.md) · [Quickstart](docs/quickstart.md) · [Run the server](docs/server.md) ·
 [Cloudflare](docs/cloudflare.md) · [Daily use](docs/daily-use.md) ·
 [Settings](docs/settings.md) · [Troubleshooting](docs/troubleshooting.md) ·
 [Recovery](docs/recovery.md) · [Changelog](CHANGELOG.md)

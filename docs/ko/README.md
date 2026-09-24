@@ -8,6 +8,8 @@
 
 설정 → 커뮤니티 플러그인 → 탐색에서 **Self Hosted Private Sync**(플러그인 ID `obsync-private-sync`)로 설치하며, Obsidian 1.13.0 이상이 필요합니다.
 
+**처음이신가요? [설정 가이드](https://snaraj.github.io/obsync/setup/)(영어)부터 시작하세요.** 기기가 서버에 연결되는 방식을 고르도록 돕고, 각 방식을 단계별로 안내합니다. Obsidian에서는 설정 → Self Hosted Private Sync → Setup guide에서 열 수 있습니다.
+
 > [!IMPORTANT]
 > - **당신이** 직접 운영하는 서버와 동기화합니다. 호스팅 서비스도, 다른 어딘가의 계정도 없습니다.
 > - 먼저 보관함을 백업하고, 24단어 복구 문구는 그것을 만든 기기가 아닌 곳에 보관하세요.

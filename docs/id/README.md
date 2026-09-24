@@ -14,6 +14,8 @@ Pasang lewat Pengaturan → Plugin komunitas → Telusuri sebagai **Self Hosted
 Private Sync** (id plugin `obsync-private-sync`), pada Obsidian 1.13.0 atau
 yang lebih baru.
 
+**Baru di sini? Mulailah dari [panduan penyiapan](https://snaraj.github.io/obsync/setup/) (berbahasa Inggris).** Panduan ini membantu Anda memilih cara perangkat menjangkau server Anda dan menjelaskan setiap cara langkah demi langkah. Di Obsidian: Pengaturan → Self Hosted Private Sync → Setup guide.
+
 > [!IMPORTANT]
 > - Plugin ini menyinkronkan ke server yang **Anda** jalankan: tidak ada layanan yang dihosting pihak lain, tidak ada akun di tempat lain.
 > - Cadangkan vault Anda lebih dahulu; simpan frasa pemulihan 24 kata di luar perangkat yang membuatnya.

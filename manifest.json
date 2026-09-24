@@ -1,11 +1,11 @@
 {
   "id": "obsync-private-sync",
   "name": "Self Hosted Private Sync",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minAppVersion": "1.13.0",
   "description": "Sync your vault across devices, end-to-end encrypted, through a server you run yourself.",
   "author": "Samuel Naranjo",
   "authorUrl": "https://github.com/snaraj",
-  "helpUrl": "https://github.com/snaraj/obsync#documentation",
+  "helpUrl": "https://snaraj.github.io/obsync/setup/",
   "isDesktopOnly": false
 }

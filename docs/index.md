@@ -18,6 +18,7 @@ second copy here.
 
 | You want to | Go to |
 | --- | --- |
+| Choose how your devices reach your server | [Choose your setup](setup.md) |
 | Get two devices syncing | [Quickstart](quickstart.md) |
 | Put the server somewhere | [Run the server](server.md) with Docker, or [on Kubernetes](kubernetes.md) |
 | Install or update the plugin | [Install the plugin](community-plugin.md) |

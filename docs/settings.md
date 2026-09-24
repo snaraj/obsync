@@ -10,6 +10,12 @@ row for its settings search, so typing a row's name in the search box finds it.
 Everything here is **per device**. Nothing in this tab is synced, and no other
 device can change it for you.
 
+## Get started
+
+| Setting | Default | What it does | When to change it |
+| --- | --- | --- | --- |
+| **Setup guide** → **Open the guide** | — | Opens this project's setup guide in your browser. The address ships with the plugin; the plugin itself sends nothing there. | When you set up a server or add a device |
+
 ## Server
 
 | Setting | Default | What it does | When to change it |

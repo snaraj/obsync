@@ -171,6 +171,12 @@ server: set the plugin's **Server URL** to `https://name:PORT`, and the
 deployment's own generated links and its HTTP-to-HTTPS redirect carry the same
 port without being told twice.
 
+On a Mac with Docker Desktop, publishing ports 80 and 443 fails with "Ports are not
+available ... not allowed as current user" unless **Enable privileged port
+mapping** is on in Docker Desktop's Advanced settings. Either turn it on, or set
+`OBSYNC_HTTP_PORT=8080` and `OBSYNC_HTTPS_PORT=8443` and give the plugin
+`https://name:8443`.
+
 That holds while devices arrive at THIS host's port. If another reverse proxy
 sits in front — holding 443 on this machine, which is the usual reason to move
 these ports at all — then devices still arrive at `https://name`, and the

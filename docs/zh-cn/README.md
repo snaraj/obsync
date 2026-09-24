@@ -8,6 +8,8 @@
 
 在 Obsidian 1.13.0 或更新的版本中，从设置 → 第三方插件 → 浏览里搜索 **Self Hosted Private Sync**（插件 ID `obsync-private-sync`）来安装。
 
+**初次使用？请从[设置指南](https://snaraj.github.io/obsync/setup/)（英文）开始。** 它帮助你选择设备连接服务器的方式，并逐步讲解每一种方式。在 Obsidian 中：设置 → Self Hosted Private Sync → Setup guide。
+
 > [!IMPORTANT]
 > - 它同步到的是**你自己**运行的服务器：没有托管服务，也不需要在别处开账号。
 > - 请先备份你的仓库；24 个单词的恢复短语要保存在生成它的那台设备之外的地方。
