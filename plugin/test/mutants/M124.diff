@@ -1,0 +1,11 @@
+# M124: identical names are settled without comparing chunk digests
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2342,7 +2342,6 @@
+   ours: FileState,
+ ): Promise<VaultStat | null> {
+   if (ours.versionId === "") return null;
+-  if (ours.sha256 !== (await sidDigest(change.sids))) return null;
+   const stat = await context.host.stat(path);
+   if (stat === null || stat.mtime !== ours.mtime || stat.size !== ours.size) return null;
+   return stat;

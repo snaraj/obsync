@@ -42,6 +42,7 @@
  */
 
 import type { SyncContext } from "./engine";
+import type { FileRecord as FileState } from "../state";
 import { CHUNK_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
@@ -123,6 +124,41 @@ export interface PushOutcome {
 /** SHA-256 over the concatenated sids: a size-independent content identity. */
 export async function sidDigest(sids: string[]): Promise<string> {
   return hex(await sha256(concat(...sids.map(unhex))));
+}
+
+/**
+ * Retire a file id that duplicates the note recorded at `path` under another
+ * id (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
+ *
+ * Only ever the HIGHER of two ids holding the same bytes at one name. Every
+ * device that settles such a pair settles it on the lower id, so two devices
+ * can never retire both halves -- which would take the note off every device.
+ * A failure is reported, never raised: the note is already recorded under the
+ * id that keeps it, so the cost is a duplicate id on the server.
+ */
+export async function retire(
+  context: SyncContext,
+  fileId: string,
+  parent: string,
+  path: string,
+): Promise<"posted" | "failed"> {
+  const manifest: Manifest = {
+    v: 1,
+    path,
+    size: 0,
+    mtime: context.now(),
+    domain: context.domainId,
+    chunks: [],
+    sha256: "",
+    deleted: true,
+  };
+  try {
+    await postManifest(context, fileId, [parent], [], manifest, 0, true);
+    return "posted";
+  } catch {
+    // The reason is not logged: a transport error names a path.
+    return "failed";
+  }
 }
 
 async function uploadMissing(
@@ -226,6 +262,23 @@ export async function pushFile(context: SyncContext, path: string, force = false
     return { status: "growing", fileId, versionId: "" };
   }
 
+  // A RECORD THAT APPEARED WHILE THIS PUSH READ (issue #131). A note this
+  // device never published has no record, and the pull runs beside the queue:
+  // meeting another device's version of the same bytes, it ADOPTS it --
+  // records the name under the incoming id and publishes nothing. A new id
+  // posted now would publish the note twice, and recording it would replace
+  // the adoption, leaving two devices tracking two ids for one note: the
+  // conflict copy of issue #131, one edit later. So an unpublished note's
+  // record is read again at the last moment before a version exists, and one
+  // that holds these same bytes IS this push.
+  if (record === undefined) {
+    const adopted = context.state.fileByPath(path);
+    if (adopted !== undefined && adopted.sha256 === digest) {
+      context.host.log(`push path_class=file decision=unchanged reason=recorded_during_read file=${adopted.fileId}`);
+      return { status: "unchanged", fileId: adopted.fileId, versionId: adopted.versionId };
+    }
+  }
+
   const manifest: Manifest = {
     v: 1,
     path,
@@ -247,6 +300,15 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // id with no version left that could settle it. Every other post offers it:
   // same parents, same chunks, same path is the same version (issue #114).
   const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
+  // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
+  // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so
+  // it settles the pair here, by the rule every other device applies to it.
+  if (record === undefined) {
+    const adopted = context.state.fileByPath(path);
+    if (adopted !== undefined && adopted.sha256 === digest) {
+      return await settleDuplicate(context, path, adopted, { fileId, versionId: ack.versionId, mtime: stat.mtime, size: stat.size, sha256: digest }, ack.ack);
+    }
+  }
   // A PUSH THAT OUTLIVES ITS PATH RECORDS NOTHING. Everything above is
   // asynchronous -- chunk uploads especially -- and the file can leave this
   // device's selection while they are in flight: the rename handler forgets
@@ -288,6 +350,35 @@ export async function pushFile(context: SyncContext, path: string, force = false
     `push path_class=file bytes=${stat.size} chunks=${plan.length} uploaded=${uploads} decision=pushed duration_ms=${context.now() - started}`,
   );
   return { status: "pushed", fileId, versionId: ack.versionId, ack: ack.ack };
+}
+
+/**
+ * One note, published under two ids at one name (issue #131): the version
+ * this push just posted, and the one the pull adopted while it posted. The
+ * lower id keeps the name, exactly as `pull.ts` decides for a pair it meets on
+ * the feed, and the higher one is retired. The note on disk is not touched.
+ */
+async function settleDuplicate(
+  context: SyncContext,
+  path: string,
+  adopted: FileState,
+  posted: FileState,
+  ack: VersionAck,
+): Promise<PushOutcome> {
+  if (adopted.fileId < posted.fileId) {
+    const retired = await retire(context, posted.fileId, posted.versionId, path);
+    context.host.log(
+      `push path_class=file decision=converged reason=recorded_during_post role=keep keeper=${adopted.fileId} retired=${posted.fileId} tombstone=${retired}`,
+    );
+    return { status: "unchanged", fileId: adopted.fileId, versionId: adopted.versionId };
+  }
+  context.state.setFile(path, posted);
+  await context.state.save();
+  const retired = await retire(context, adopted.fileId, adopted.versionId, path);
+  context.host.log(
+    `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,
+  );
+  return { status: "pushed", fileId: posted.fileId, versionId: posted.versionId, ack };
 }
 
 /**

@@ -134,6 +134,13 @@ isolation boundary. Native restart persistence is a separate validation step.
 
    ![The second device showing the note written on the first device, with the status bar reading obsync idle](assets/first-sync.png)
 
+The second vault does not have to be empty. If it already holds the same notes
+-- copied over by hand, or kept in step by another sync tool until now -- each
+note that is byte-identical on both devices stays one note, with no copy. A note
+whose text differs between the two is kept twice, the second as a conflict copy
+you review ([Conflicts](conflicts.md)). Turn the other sync tool off before
+pairing: two tools syncing one vault undo each other's work.
+
 The whole exchange in one loop, both devices being computers:
 
 ![Animated: the pairing code shown on the first device, pasted on the second, approved on the first, and the first note arriving on the second](assets/pairing.gif)

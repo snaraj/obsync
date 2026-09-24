@@ -1,0 +1,15 @@
+# M138: a tombstone that cannot be posted is raised
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -155,9 +155,9 @@
+   try {
+     await postManifest(context, fileId, [parent], [], manifest, 0, true);
+     return "posted";
+-  } catch {
++  } catch (error) {
+     // The reason is not logged: a transport error names a path.
+-    return "failed";
++    throw error;
+   }
+ }
+ 

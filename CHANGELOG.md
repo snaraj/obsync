@@ -34,6 +34,20 @@ to the developer console (`engine decision=retry_scheduled ...`,
 `decision=retrying`, `decision=resumed`, `decision=stopped reason=start_failed`),
 so a device that is not syncing says why.
 
+**Two devices that start with the same notes keep one of each.** A vault copied
+to a second device by hand, or moved over from another sync tool, no longer
+turns every note into a conflict copy of identical content at first sync. A note
+whose bytes are the same on both devices, at the same name, settles on one file
+with no copy, whatever order the two devices publish and pull in; a note that
+differs by even one character is still kept twice, as a conflict copy
+([Conflicts](docs/conflicts.md)). The comparison reads nothing and downloads
+nothing: identical notes already share chunk ids. The files on disk are never
+written, moved or deleted to settle the pair -- the duplicate is retired on the
+server. A device older than 1.1.2 still copies identical content, so update
+every device; the copy it makes can simply be deleted. Each settlement writes
+one `decision=converged` line naming the id that kept the name and the id
+retired (#131).
+
 ## 1.1.1 - 2026-09-23
 
 **The setup guide is one press away, and it says which setups are proven.**

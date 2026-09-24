@@ -43,7 +43,7 @@ Nothing is lost while a device cannot reach the server:
 - Edits stay on the device.
 - The server keeps everything the other devices sent.
 
-When the device can reach the server again, run **Sync now** from the command palette, or reopen Obsidian. The plugin compares the vault with the server, sends what changed while you were away, and brings down what changed elsewhere.
+When the device can reach the server again, sync resumes by itself: while it waits the status bar reads `obsync: offline — retrying`, and it tries again at once when the device reports its network back, otherwise within five minutes. **Sync now** from the command palette makes the next attempt happen now. The plugin then compares the vault with the server, sends what changed while you were away, and brings down what changed elsewhere.
 
 The server keeps each deletion for 30 days by default. A device away for longer than that may still hold a note deleted elsewhere; delete it again there. Letting every device reach the server at least once a month avoids this.
 

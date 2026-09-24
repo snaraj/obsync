@@ -1,0 +1,12 @@
+# M131: a record of other bytes found before posting is taken for the push
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -273,7 +273,7 @@
+   // that holds these same bytes IS this push.
+   if (record === undefined) {
+     const adopted = context.state.fileByPath(path);
+-    if (adopted !== undefined && adopted.sha256 === digest) {
++    if (adopted !== undefined) {
+       context.host.log(`push path_class=file decision=unchanged reason=recorded_during_read file=${adopted.fileId}`);
+       return { status: "unchanged", fileId: adopted.fileId, versionId: adopted.versionId };
+     }

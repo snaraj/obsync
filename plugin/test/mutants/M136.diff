@@ -1,0 +1,12 @@
+# M136: the post-window yield does not record the lower id
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -372,8 +372,6 @@
+     );
+     return { status: "unchanged", fileId: adopted.fileId, versionId: adopted.versionId };
+   }
+-  context.state.setFile(path, posted);
+-  await context.state.save();
+   const retired = await retire(context, adopted.fileId, adopted.versionId, path);
+   context.host.log(
+     `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,
