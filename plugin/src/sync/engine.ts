@@ -178,6 +178,13 @@ export interface VaultHost {
    * every caller but the reconcile pass's folder loops.
    */
   syncable(path: string, kind?: "file" | "folder"): Promise<boolean>;
+  /**
+   * Is `path` in a folder of this vault that is a vault OF ITS OWN syncing
+   * with this plugin, or that folder itself (issue #180)? Whatever lands
+   * there, that vault publishes again one level deeper, so nothing there is
+   * published or applied here. Only the host can see the folder that says so.
+   */
+  inNestedVault(path: string): Promise<boolean>;
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;

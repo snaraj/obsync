@@ -1,0 +1,15 @@
+# M421: first-time setup inside a synced vault spends the setup token and enrols the device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2635,11 +2635,6 @@
+       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
+         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
+       }
+-      const nested = await this.nestedRefusal("setup");
+-      if (nested !== null) {
+-        new Notice(`obsync: ${nested}`, 12000);
+-        return;
+-      }
+       const enrolled = await transport.setup(setupToken, accountName, {
+         name: this.deviceName(),
+         platform: this.platformName(),

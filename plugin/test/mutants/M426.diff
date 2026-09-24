@@ -1,0 +1,11 @@
+# M426: a rename, a deletion or a folder removal inside the nested vault is published to every device
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -545,7 +545,6 @@
+   // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
+   // the post: a rename, a tombstone and a folder record reach here without
+   // the host's `syncable`, and any of them publishes that vault's changes.
+-  if (await context.host.inNestedVault(manifest.path)) throw new VaultPathError("nested_vault");
+   const binder = await contentVersionId(fileId, parents, sids);
+   const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
+   const { nonce, ciphertext } = await seal(

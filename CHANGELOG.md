@@ -237,6 +237,22 @@ file, a device still tracking the retired copy keeps the file if the kept
 copy holds the same bytes. Devices before 1.1.3 still apply that settling as
 an ordinary deletion. Same on desktop and mobile (#181).
 
+**A folder of a synced vault, opened as a vault of its own, no longer copies
+the vault into itself.** Opening a folder such as `Sub` as its own vault and
+pairing it with the same server filled every device, within seconds, with
+`Sub/Sub/Sub/…` 98 levels deep, and nothing said a word. Now a vault that sits
+inside a vault with obsync installed refuses to be set up, paired (by code or
+by link) or started, before anything is sent: "This folder is inside the synced
+vault … Open the outer vault instead, or use Selected folders there." A vault
+paired before this release stops the same way, with one notice. The outer
+vault, for its part, sends nothing from a folder that holds its own
+`.obsidian/plugins/obsync-private-sync`, and writes, moves or removes nothing
+in it; one notice names the folder. That stops the loop whichever vault was
+paired first, on whichever computer. The notes in that folder stay as they
+are; to sync them from the outer vault again, uninstall obsync in the inner
+one. On a phone the outer vault's side works the same, while the inner vault's
+check looks outside its own folder, which only a computer can do. (#180)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

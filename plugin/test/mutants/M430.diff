@@ -1,0 +1,12 @@
+# M430: every periodic scan lists the nested vault's notes and asks about each one again
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -709,7 +709,7 @@
+       if (stat.isDirectory()) {
+         // A vault of its own is neither listed nor swept (`inNestedVault`);
+         // the start's reconcile pass names it, asking of every folder.
+-        if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
++        if (inSyncTree(path, folders)) {
+           await this.walk(desktop, path, out, depth + 1, temps);
+         }
+         continue;

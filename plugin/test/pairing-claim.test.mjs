@@ -1,8 +1,9 @@
 /** Exercise the actual claimant dialog method with a non-rendering Obsidian stub. */
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import nodePath, { join } from "node:path";
 import { KEYS, sandbox } from "./fake.mjs";
 
 /** A recording `Setting` button: what it says, how it is styled, whether it holds the focus. */
@@ -15,7 +16,7 @@ class Button {
 }
 
 async function claimant(t, response, onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {},
-  { unknown = 0, answer = null, data = {} } = {}) {
+  { unknown = 0, answer = null, data = {}, root = null } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   // Every question the claimant asks is a real `ConfirmModal`, drawn into a
@@ -90,6 +91,9 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
       },
     },
   });
+  // The real host: over no filesystem unless a test names the vault root on disk.
+  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  plugin.host = new ObsidianHost(plugin, root === null ? null : { fs: { promises: fsPromises }, path: nodePath, base: root });
   const modal = new PairClaimModal({}, plugin, pairing.encodePairingCode(id, token, secret));
   modal.contentEl = { createEl: () => ({}), empty: () => {} };
   modal.close = () => modal.onClose();
@@ -103,6 +107,26 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
   await modal.claim();
   return { calls, saves, logs, notices, restarted, asked, state: state.data, current: plugin.state.data };
 }
+
+test("a vault inside a vault that syncs with obsync refuses to pair before any request (#180)", async (t) => {
+  // S96: the folder `Sub` of a synced vault, opened as a vault of its own and
+  // paired with the same server, filled every device with `Sub/Sub/Sub/…`.
+  const outer = mkdtempSync(join(tmpdir(), "obsync-outer-"));
+  t.after(() => rmSync(outer, { recursive: true, force: true }));
+  mkdirSync(join(outer, ".obsidian", "plugins", "obsync-private-sync"), { recursive: true });
+  const root = join(outer, "Sub");
+  mkdirSync(join(root, ".obsidian", "plugins", "obsync-private-sync"), { recursive: true });
+  const result = await claimant(t, () => assert.fail("an envelope was asked for"), undefined, undefined, undefined, { root });
+  assert.deepEqual(result.calls, [], "nothing reached the server: no claim, no envelope, no survey");
+  assert.deepEqual(result.saves, [], "no credential was kept");
+  assert.equal(result.restarted, 0);
+  assert.deepEqual(result.notices, [
+    `This folder is inside the synced vault "${nodePath.basename(outer)}". Syncing it too would copy that vault into ` +
+      "itself. Open the outer vault instead, or use Selected folders there.",
+  ]);
+  assert.ok(result.logs.some((line) => /^pairing role=claimant decision=refused reason=nested_vault duration_ms=\d+$/.test(line)),
+    result.logs.join(" | "));
+});
 
 test("a claimant waits on its envelope, then saves the approved key before restarting sync", async (t) => {
   const result = await claimant(t, ({ ApiError, sealed, attempt }) => {

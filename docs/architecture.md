@@ -821,7 +821,12 @@ returns immediately when a new frame lands.
    recreated there while the old one was being cleared away is kept and the
    pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
-   both directions in v0.1; syncing them is a later opt-in.
+   both directions in v0.1; syncing them is a later opt-in. So is a folder
+   holding its own `.obsidian/plugins/obsync-private-sync/`, a vault of its
+   own that syncs with obsync, named once by a notice; and a desktop vault
+   that sits inside such a vault refuses to be set up, paired or started.
+   Synced from both sides, each pass copied the outer vault into the inner
+   one a level deeper, on every device (issue #180).
 
    A DELETION IS A CHANGE LIKE ANY OTHER, and is answered with the same two
    questions. A tombstone whose parents do not include the version this

@@ -1,0 +1,12 @@
+# M428: another device's move carries a note out of the nested vault on this computer
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -826,7 +826,7 @@
+     // where the record puts the file and of where this device keeps it,
+     // before either is touched.
+     const kept = context.state.pathByFileId(change.file_id);
+-    if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
++    if (await context.host.inNestedVault(entry.path)) {
+       throw new VaultPathError("nested_vault");
+     }
+     return await applyVersion(context, change, entry).catch((error: unknown) => {

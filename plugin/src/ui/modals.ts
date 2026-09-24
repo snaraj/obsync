@@ -275,6 +275,14 @@ export class PairClaimModal extends Modal {
     }
     try {
       this.waiting = true;
+      // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
+      // pairs with it copies that vault into itself, one level per sync.
+      const nested = await this.plugin.nestedRefusal("pairing role=claimant");
+      if (nested !== null) {
+        fail(new Error(nested));
+        this.close();
+        return;
+      }
       const { state, transport, assertCurrent } = this.plugin.captureSession();
       const parsed = decodePairingCode(this.code);
       const credential = value(

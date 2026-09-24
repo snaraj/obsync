@@ -77,6 +77,7 @@ import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal
 import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import {
+  ChainLink,
   FinalComponent,
   PathResolver,
   PathStat,
@@ -108,6 +109,21 @@ const SCAN_MAX_DEPTH = 32;
  * a hold may be the last name of a save (`hold`).
  */
 const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
+
+/**
+ * What makes a folder a vault that syncs with this plugin (issue #180):
+ * Obsidian's config folder holding this plugin's own folder, which the
+ * community installer names after the directory identity. Only the names are
+ * looked at, never what is in them.
+ */
+const PLUGIN_FOLDER = [".obsidian", "plugins", PAIRING_ACTION];
+
+/**
+ * How many folders above the vault root the nested-vault check looks at. A
+ * bound on an absurd path rather than a defence: the walk ends at the
+ * filesystem root long before this on any real disk.
+ */
+const NESTING_LEVELS = 32;
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these calls are used, and only on desktop.
@@ -339,6 +355,8 @@ export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
   private readonly temps = new Set<string>();
+  /** The nested vaults this host has already told the user about, once each. */
+  private readonly nested = new Set<string>();
 
   /**
    * `desktop` is the filesystem seam. It is discovered from Electron in the
@@ -386,23 +404,118 @@ export class ObsidianHost implements VaultHost {
    * symlink component — a symlinked folder is out of sync in v0.1, in both
    * directions — and says so once per event. Mobile reaches the vault only
    * through Obsidian's adapter, which the host app confines, so there is
-   * nothing here to walk.
+   * nothing here to walk. Both refuse a path in a nested vault
+   * (`inNestedVault`), before a byte of it is read or uploaded.
    */
   async syncable(path: string, kind: "file" | "folder" = "file"): Promise<boolean> {
     const folders = this.plugin.state.data.syncFolders;
     // The folder rule at the one point it differs: the selected folder itself
-    // is a folder this device publishes a record for (`syncScope.ts`).
+    // is a folder this device publishes a record for (`syncScope.ts`). It
+    // carries the string rule, so what is left to ask is the filesystem's.
     if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
     const desktop = this.desktop;
-    if (desktop === null) return isVaultPath(path);
     try {
-      await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+      if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+      if (await this.inNestedVault(path)) throw new VaultPathError("nested_vault");
       return true;
     } catch (error) {
       if (!(error instanceof VaultPathError)) throw error;
       this.plugin.log(`host path_class=file decision=not_synced reason=${error.refusal}`);
       return false;
     }
+  }
+
+  /**
+   * Is `path` in a folder of this vault that is a vault of its own syncing
+   * with this plugin, or is it that folder (issue #180)?
+   *
+   * THE LOOP THIS CLOSES. Opened as a vault of its own and paired with the
+   * same server, `Sub` downloaded the whole vault into itself; this vault saw
+   * those downloads as new notes under `Sub/` and published them, and `Sub`
+   * downloaded them again one level deeper: `Sub/Sub/Sub/…`, 98 levels deep
+   * on every device within seconds (S96). So a folder holding
+   * `PLUGIN_FOLDER` is out of sync in both directions, as `.obsidian` is:
+   * nothing in it is published from here, and the feed writes, moves and
+   * removes nothing in it -- whichever vault was paired first, on whichever
+   * computer. It is never excluded silently, and never loudly once per note:
+   * one notice and one log line per folder (`named`).
+   *
+   * PLATFORM. Desktop walks the path first without following a link, then
+   * asks each directory on the way down with no-follow `lstat`s, so no
+   * question is carried out of the vault by a link; a path the walk refuses
+   * is the operation's to refuse in its own words, and is not nested. Mobile
+   * asks the adapter, which the host app confines to the vault. Names only,
+   * never content, on both.
+   */
+  async inNestedVault(path: string): Promise<boolean> {
+    const segments = path.split("/");
+    const desktop = this.desktop;
+    if (desktop === null) {
+      for (let depth = 1; depth <= segments.length; depth++) {
+        const folder = segments.slice(0, depth).join("/");
+        if (await this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`)) return this.named(folder);
+      }
+      return false;
+    }
+    let chain: ChainLink[];
+    try {
+      chain = (await this.confine(desktop, path, ["absent", "file", "directory", "other"])).chain;
+    } catch (error) {
+      if (error instanceof VaultPathError) return false;
+      throw error;
+    }
+    // `chain[depth]` is the directory the first `depth` segments name.
+    for (let depth = 1; depth < chain.length; depth++) {
+      if (await this.holdsPlugin(desktop, (chain[depth] as ChainLink).path)) return this.named(segments.slice(0, depth).join("/"));
+    }
+    return false;
+  }
+
+  /** Tell the user about one nested vault, once: a notice naming it, and a log line that does not. */
+  private named(folder: string): true {
+    if (this.nested.has(folder)) return true;
+    this.nested.add(folder);
+    this.log("host path_class=folder decision=excluded reason=nested_vault");
+    this.notify(
+      `obsync does not sync "${folder}": that folder is a vault of its own with obsync installed, and syncing it ` +
+        "from this vault too would copy this vault into itself. Nothing in it was changed. To sync it from this " +
+        "vault again, uninstall obsync in that folder's own vault.",
+    );
+    return true;
+  }
+
+  /** Does the directory `dir` hold `PLUGIN_FOLDER`, each step a real directory? No-follow, names only. */
+  private async holdsPlugin(desktop: DesktopVault, dir: string): Promise<boolean> {
+    let at = dir;
+    for (const name of PLUGIN_FOLDER) {
+      at = desktop.path.resolve(at, name);
+      if ((await walker(desktop.fs).lstat(at))?.isDirectory() !== true) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The name of the vault this one sits INSIDE, when that vault has this
+   * plugin (issue #180), or `null`: the other half of `inNestedVault`, asked
+   * before this vault is set up, pairs or starts. The folders above the vault
+   * root, nearest first and at most `NESTING_LEVELS` of them, one
+   * `holdsPlugin` each; nothing else is read. A link on the way up is the
+   * one this vault itself was reached through.
+   *
+   * PLATFORM. Desktop only. Mobile can see nothing outside its vault and
+   * answers `null`; there the outer vault's exclusion is the whole defence.
+   */
+  async enclosingVault(): Promise<string | null> {
+    const desktop = this.desktop;
+    if (desktop === null) return null;
+    let at = desktop.path.resolve(desktop.base);
+    for (let level = 0; level < NESTING_LEVELS; level++) {
+      const up = desktop.path.resolve(at, "..");
+      if (up === at) return null;
+      at = up;
+      if (await this.holdsPlugin(desktop, at)) return at.slice(at.lastIndexOf(desktop.path.sep) + 1) || at;
+    }
+    return null;
   }
 
   get isMobile(): boolean {
@@ -594,7 +707,11 @@ export class ObsidianHost implements VaultHost {
       if (stat === null) continue;
       if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
       if (stat.isDirectory()) {
-        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1, temps);
+        // A vault of its own is neither listed nor swept (`inNestedVault`);
+        // the start's reconcile pass names it, asking of every folder.
+        if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
+          await this.walk(desktop, path, out, depth + 1, temps);
+        }
         continue;
       }
       if (!stat.isFile() || !inSyncScope(path, folders)) continue;
@@ -1911,6 +2028,24 @@ export default class ObsyncPlugin extends Plugin {
     return { state, transport, assertCurrent };
   }
 
+  /**
+   * Why this vault may not sync at all, or `null`: it sits inside another
+   * vault that has this plugin (issue #180, `ObsidianHost.enclosingVault`).
+   * Syncing both copies the outer vault into this one, and this one back into
+   * the outer, one level deeper each time. Asked before first-time setup,
+   * before a pairing claim (typed or from a link), and before every engine
+   * start, so a vault paired before this check existed stops too. Desktop
+   * only; `role` names the asker in the one line a refusal logs.
+   */
+  async nestedRefusal(role: string): Promise<string | null> {
+    const started = Date.now();
+    const outer = await this.host.enclosingVault();
+    if (outer === null) return null;
+    this.log(`${role} decision=refused reason=nested_vault duration_ms=${Date.now() - started}`);
+    return `This folder is inside the synced vault "${outer}". Syncing it too would copy that vault into itself. ` +
+      "Open the outer vault instead, or use Selected folders there.";
+  }
+
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
     if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
@@ -1932,6 +2067,14 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.engine = engine;
     try {
+      // Before anything is sent, and a refusal like any other below: the
+      // status says why until the person acts, and no timer retries it. The
+      // notice comes once, as the status turns to it.
+      const nested = await this.nestedRefusal("engine");
+      if (nested !== null) {
+        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+        throw new Error(nested);
+      }
       await engine.start();
       if (this.engine === engine && this.reconnect !== null) {
         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
@@ -2505,6 +2648,11 @@ export default class ObsyncPlugin extends Plugin {
       const { state, transport, assertCurrent } = this.captureSession();
       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
+      }
+      const nested = await this.nestedRefusal("setup");
+      if (nested !== null) {
+        new Notice(`obsync: ${nested}`, 12000);
+        return;
       }
       const enrolled = await transport.setup(setupToken, accountName, {
         name: this.deviceName(),

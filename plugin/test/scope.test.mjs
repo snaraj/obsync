@@ -765,7 +765,7 @@ async function lifecyclePlugin(t) {
   const logs = [], statuses = [], mounts = [];
   instance.state = r.state;
   instance.log = (line) => logs.push(line);
-  instance.host = { log: (line) => logs.push(line) };
+  instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };

@@ -856,6 +856,14 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   if (change.device_id === context.deviceId) return "echo";
   try {
     const entry = await decodeRecordManifest(context, change);
+    // NOTHING INTO A VAULT OF ITS OWN, AND NOTHING OUT OF ONE (issue #180):
+    // that vault would publish the write again one level deeper. Asked of
+    // where the record puts the file and of where this device keeps it,
+    // before either is touched.
+    const kept = context.state.pathByFileId(change.file_id);
+    if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
+      throw new VaultPathError("nested_vault");
+    }
     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
       // A write THIS device's disk refused, or a chunk the server does not
       // hold: a fact about this one record, named with the path it was for,
@@ -874,8 +882,10 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     // folder, a raced temp file). Skip the version, keep the feed moving.
     if (error instanceof ManifestError) return refuse(context, change, error.reason);
     if (error instanceof VaultPathError) {
-      if (error.refusal === "outside_sync_scope") {
-        context.host.log(`pull path_class=manifest decision=not_synced reason=outside_sync_scope file=${change.file_id} seq=${change.seq}`);
+      // Not this device's to write, and not a hostile record: skipped. A
+      // nested vault was named to the user once, by the host.
+      if (error.refusal === "outside_sync_scope" || error.refusal === "nested_vault") {
+        context.host.log(`pull path_class=manifest decision=not_synced reason=${error.refusal} file=${change.file_id} seq=${change.seq}`);
         return "skipped";
       }
       return refuse(context, change, error.refusal);

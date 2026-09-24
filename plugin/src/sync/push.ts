@@ -63,7 +63,7 @@ import {
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { assertVaultPath } from "../vaultPath";
+import { VaultPathError, assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
   sid: string;
@@ -557,6 +557,10 @@ export async function postManifest(
   // that no longer exists (review round 3, finding 1).
   if (manifest.v === 2) assertFolderCaseScope(manifest.path, context.state.data.syncFolders);
   else assertSyncPath(manifest.path, context.state.data.syncFolders);
+  // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
+  // the post: a rename, a tombstone and a folder record reach here without
+  // the host's `syncable`, and any of them publishes that vault's changes.
+  if (await context.host.inNestedVault(manifest.path)) throw new VaultPathError("nested_vault");
   const binder = await contentVersionId(fileId, parents, sids);
   const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
   const { nonce, ciphertext } = await seal(

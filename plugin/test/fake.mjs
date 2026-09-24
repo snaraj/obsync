@@ -271,6 +271,16 @@ export class FakeHost {
     return !this.unsyncable.has(path);
   }
 
+  /** No folder of this vault is a vault of its own (`nested-vault.test.mjs` uses a real one). */
+  async inNestedVault() {
+    return false;
+  }
+
+  /** Nor does this vault sit inside another one, when a test hands it to the plugin as its host. */
+  async enclosingVault() {
+    return null;
+  }
+
   async stat(path) {
     const file = this.files.get(this.resolve(path) ?? "");
     return file ? { path, mtime: file.mtime, size: file.bytes.length } : null;
