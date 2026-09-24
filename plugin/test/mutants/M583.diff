@@ -1,0 +1,12 @@
+# M583: map forgotten feed credentials to offline retry
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1778,7 +1778,7 @@
+         await this.track(this.applyPage(context, page));
+       } catch (error) {
+         if (!live()) return;
+-        if (forgottenCredential(error)) {
++        if (false) {
+           context.host.log("feed decision=stopped reason=forgotten_device");
+           this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+           this.stop();

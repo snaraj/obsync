@@ -203,6 +203,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
   { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
+  { method: "POST", path: /^\/v1\/account\/recovery$/, idempotent: false },
   { method: "POST", path: /^\/v1\/pairing$/, idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/claim$`), idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/approve$`), idempotent: false },
@@ -680,11 +681,17 @@ export class Transport {
     setupToken: string,
     accountName: string,
     device: { name: string; platform: string; app_version: string },
-  ): Promise<Sent<PairingCredential & { account_id: string }>> {
+    recovery?: { verifier: string; proof: string },
+  ): Promise<Sent<PairingCredential & { account_id: string; recovered?: boolean }>> {
     return this.once("POST", "/v1/setup", {
       auth: "none",
-      json: { setup_token: setupToken, account_name: accountName, device },
+      json: { setup_token: setupToken, account_name: accountName, device,
+        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.proof }) },
     });
+  }
+
+  registerRecovery(verifier: string): Promise<Sent<void>> {
+    return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: verifier } });
   }
 
   account(): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {

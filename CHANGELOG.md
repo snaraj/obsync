@@ -15,6 +15,18 @@ the kept edit wait for each other, so their race cannot leave two versions of
 the same edit. Another device's unseen edit is still preserved for the ordinary
 conflict rule. Same on desktop and mobile. (#178)
 
+**Recover an account without a syncing device.** Setup now registers a
+vault-key verifier; existing paired devices register it when both server and
+plugin are updated. The server's setup token plus this vault's retained key or
+24-word phrase can then enroll a replacement, even after the last device
+leaves. Wrong words or a token alone cannot enroll. A device forgotten by a
+rebuilt server now says so, stops retrying authentication, and exposes
+**Setup or recover** without an uninstall. Local notes and the vault key stay.
+Switching offers setup for an empty server or pairing with an existing vault;
+the last device can leave normally once recovery is registered. Legacy
+accounts that lost every credential before registration still cannot use this
+route; the error and recovery guide say why.
+
 **A note deleted on another device goes where your "Deleted files" setting
 says.** Since 1.1.0, on a computer, a note deleted on another device was
 removed for good: it was in neither Obsidian's `.trash` folder nor the system

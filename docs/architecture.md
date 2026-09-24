@@ -332,10 +332,10 @@ explicitly pairs once; ordinary sync then runs automatically.
 `obsyncd` mints a setup token at first boot and writes it, mode 0600 and
 never logged, to `v1/setup-token` on the journal volume. The first plugin
 instance presents it: `POST /v1/setup` creates the account AND enrols that
-device, returning its device credential, because every later enrolment
-goes through pairing and pairing needs an already-paired device. The
-plugin then generates `VRK` locally. The token is consumed for setup once,
-but it is not discarded: it remains the dashboard's recovery sign-in for
+device, returning its device credential. The plugin generates and durably
+saves `VRK` before sending setup, then includes its account-recovery verifier.
+Later enrollment uses pairing or the setup-token plus vault-proof recovery
+route (§4.3). The token is not discarded: it remains the dashboard's recovery sign-in for
 the life of the server (§4.5), so its custody equals the recovery
 phrase's. An operator asks the server for it: `obsyncd setup-token` prints
 it on standard output and nothing else, reading the same file through the
@@ -379,7 +379,8 @@ that phrase the vault is unrecoverable by design.
    reject that arrived after the approval is refused
    (`409 already_approved`) and the store refuses to delete anything but a
    pending device. Removing a paired device is revocation, which keeps the
-   record, destroys the secret, and refuses the last active device.
+   record, destroys the secret, and refuses the last active device only while
+   account recovery is unregistered.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
 restart between step 2 and step 3 leaves a pending device behind a pairing
@@ -454,9 +455,28 @@ device compromise is a phase-2 operation (re-encrypt manifests and
 re-derive domain keys; chunks under a domain whose key is rotated are
 re-uploaded lazily).
 
+Account recovery uses a domain-separated 32-byte HKDF output from VRK,
+`obsync/v1/account-recovery` as salt and empty info, solely as an authentication
+proof. The server stores only its SHA-256 verifier in the account journal frame
+and snapshot. An authenticated client registers it after a successful engine
+start; initial setup writes it atomically with the account. Registration is
+immutable: a different verifier is refused. Re-enrollment requires both the
+standing setup token and the proof, creates a new credential, and retains the
+same account and ciphertext. Accounts upgraded after losing every credential
+have no verifier and cannot use this route. The server still refuses their
+last active device's revocation while a credential remains.
+
+A forgotten or revoked device stops its feed rather than retrying authentication.
+The recovery action drains old work and clears its rejected identity, cursor
+and sync records, retaining its vault key, address, access headers and all
+local files. Setup responses are bound to the issuing session and key; the
+setup action is single-flight. A lost response requires an explicit new action.
+
 ### 4.4 Credential transport trade-off
 
-The device secret crosses the TLS terminator at setup or pairing, so the
+The device secret crosses the TLS terminator at setup or pairing; account
+recovery also exposes its authentication proof and setup token there. The
+proof cannot derive content keys, but with the token it authorizes enrollment. Thus the
 terminator is trusted for credentials. A key-agreement enrollment protocol
 is deferred and requires its own protocol and cryptographic review; it is
 not part of the current authentication path.

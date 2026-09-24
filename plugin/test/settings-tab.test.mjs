@@ -57,6 +57,7 @@ function stubPlugin(overrides = {}) {
       localBytes: () => 0,
     },
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
+    forgottenDevice: false,
     statusText: () => "idle",
     updateLine: () => null,
     heldDeletionLine: () => null,
@@ -113,7 +114,7 @@ test("the tab keeps the id and name Obsidian gives it, before and after every dr
   s.plugin.state.data.deviceId = "11".repeat(16);
   s.plugin.state.paired = true;
   s.render("Name").made[0].change("Kitchen");
-  s.render("First-time setup");
+  s.render("Setup or recover");
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes");
   s.render("Device list");
@@ -159,7 +160,7 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
   const s = open(t);
   const visible = (name) => { const item = s.row(name); return item.visible === undefined ? true : item.visible(); };
   const devices = () => s.tab.getSettingDefinitions().find((group) => group.heading === "Devices").visible();
-  assert.equal(visible("First-time setup"), true);
+  assert.equal(visible("Setup or recover"), true);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), false, name);
   assert.equal(devices(), false);
   assert.equal(visible("Update available"), false);
@@ -167,7 +168,7 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
   s.plugin.state.data.deviceId = "1122334455667788990011223344ffff";
   s.plugin.state.paired = true;
   s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
-  assert.equal(visible("First-time setup"), false);
+  assert.equal(visible("Setup or recover"), false);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), true, name);
   assert.equal(devices(), true);
   assert.equal(visible("Update available"), true);
@@ -305,7 +306,7 @@ test("Check asks the server without a credential before setup, and says to type 
   s.plugin.state.data.serverUrl = "https://sync.example.org";
   await check();
   assert.deepEqual(asked, ["manifest"], "before setup the signed read would only say 'not paired'");
-  assert.match(s.obsidian.notices.at(-1), /^Reached your obsync server\. Next: First-time setup/);
+  assert.match(s.obsidian.notices.at(-1), /^Reached your obsync server\. Next: Setup or recover/);
 
   s.plugin.state.paired = true;
   await check();
@@ -333,23 +334,23 @@ test("Set up applies an unsaved folder selection first, in that order, and keeps
   const s = open(t);
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes\n\nAttachments");
-  let setup = s.render("First-time setup");
+  let setup = s.render("Setup or recover");
   setup.made.find((c) => c.kind === "text").change("  TOKEN SENTINEL  ");
-  s.button(setup.made, "Set up").click();
+  s.button(setup.made, "Set up or recover").click();
   await tick();
   // The selection is checked against the vault first (#150), so what the save
   // receives is its canonical form.
   assert.deepEqual(s.calls, ['saveSyncFolders:["Attachments","Notes"]', "setUp:TOKEN SENTINEL:obsync"]);
   assert.equal(s.updates(), 1);
   // Enrolment did not happen (the stub leaves deviceId null), so the pasted token is still there.
-  setup = s.render("First-time setup");
+  setup = s.render("Setup or recover");
   assert.equal(setup.made.find((c) => c.kind === "text").value, "TOKEN SENTINEL");
 
   // The same selection, once saved, is not saved again.
   s.plugin.state.data.syncFolders = ["Attachments", "Notes"];
   s.calls.length = 0;
   s.plugin.setUpAccount = async () => { s.calls.push("setUp"); s.plugin.state.data.deviceId = "11".repeat(16); };
-  s.button(s.render("First-time setup").made, "Set up").click();
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
   await tick();
   assert.deepEqual(s.calls, ["setUp"]);
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the enrolled rows draw");
@@ -361,7 +362,7 @@ test("a folder selection the device refuses stops Set up and Pair this device be
   s.box.require(join(s.box.home, "build/ui/modals.js")).PairClaimModal.prototype.open = () => { opened++; };
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes");
-  s.button(s.render("First-time setup").made, "Set up").click();
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
   s.button(s.render("Pairing").made, "Pair this device").click();
   await tick();
   assert.deepEqual(s.calls, []);

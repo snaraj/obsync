@@ -57,6 +57,7 @@
  * whole files through the vault adapter. Both use the same loops.
  */
 
+import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
 import {
@@ -343,7 +344,7 @@ export type EngineStatus =
   | { kind: "idle" }
   | { kind: "syncing"; pending: number }
   | { kind: "offline" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; code?: string };
 
 export interface Timers {
   set(fn: () => void, ms: number): unknown;
@@ -1777,6 +1778,12 @@ export class SyncEngine {
         await this.track(this.applyPage(context, page));
       } catch (error) {
         if (!live()) return;
+        if (forgottenCredential(error)) {
+          context.host.log("feed decision=stopped reason=forgotten_device");
+          this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+          this.stop();
+          return;
+        }
         if (error instanceof ApiError && error.code === "seq_ahead") {
           context.host.log("feed decision=resync reason=seq_ahead");
           this.restoreDue = { verdict: "restored", reason: "seq_ahead" };

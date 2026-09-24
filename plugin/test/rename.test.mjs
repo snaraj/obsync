@@ -482,8 +482,8 @@ test("the fixture server verifies each request against the device that claims it
   assert.equal((await claim(server, DEVICE_B, SECRET_B)).devices.length, 2);
 
   // An identity the server never enrolled is refused, whatever it signs with.
-  await assert.rejects(claim(server, UNENROLLED, SECRET_C), /unenrolled device/);
-  await assert.rejects(claim(server, UNENROLLED, KEYS.deviceSecret), /unenrolled device/);
+  await assert.rejects(claim(server, UNENROLLED, SECRET_C), /bad_signature/);
+  await assert.rejects(claim(server, UNENROLLED, KEYS.deviceSecret), /bad_signature/);
 
   // Each enrolled device signing with the OTHER one's secret is refused: one
   // device cannot post as the other, which is what makes a per-device

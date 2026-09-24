@@ -59,7 +59,8 @@ answers the same.
 | --- | --- | --- |
 | `GET /livez`, `GET /readyz` | yes | reads |
 | `GET /v1/account` | yes | read |
-| `POST /v1/setup` | **no** | creates the account and mints a credential |
+| `POST /v1/setup` | **no** | creates or recovers the account and mints a credential |
+| `POST /v1/account/recovery` | **no** | explicit registration acknowledgement; a lost response is surfaced |
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
@@ -100,11 +101,29 @@ and a test asserts every route it emits appears there.
   `{"setup_token":"…","account_name":"…","device":{"name":"…","platform":
   "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
   "device_secret":"<64hex>"}`: creates the account and enrols the first
-  device in one step, since pairing requires a paired device. Valid once;
-  `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
+  device in one step, since pairing requires a paired device. Without recovery
+  proof, `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
   token is compared FIRST, so both refusals are reachable only in that
   order: a caller holding the token learns the account exists, and a caller
   without it learns nothing about whether the server is claimed.
+- First setup may include `recovery_verifier:<64hex>`, committed in the same
+  durable account frame. Existing accounts may be re-entered through the same
+  `POST /v1/setup` with the setup token and `recovery_proof:<64hex>`; the response
+  also has `recovered:true`. The proof is 32 bytes from
+  `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.
+  The verifier is lowercase hex `SHA-256(proof)`. The server compares hashes
+  in constant time, never receives VRK or a content decryption key, and returns
+  `403 bad_recovery_proof` for a wrong proof. `409 recovery_unavailable` means
+  no verifier was registered before credentials were lost. A valid recovery
+  enrolls a new active device on the same account, without renaming it,
+  replacing content or reviving revoked credentials. It is never auto-retried.
+- `POST /v1/account/recovery` (device auth)
+  `{"recovery_verifier":"<64hex>"}` → `204`. Register once after the client has
+  successfully opened its vault. Repeating the same verifier is harmless;
+  `409 recovery_mismatch` refuses replacement. Invalid shape is `400` before
+  storage changes. The verifier survives journal replay and snapshots but is
+  omitted from account responses. Old accounts without the field remain
+  readable and retain their last-device safeguard.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
   "quota_bytes","used_bytes","device_count"}`.
 
@@ -171,7 +190,7 @@ retain the account-wide authority described below.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself
-  while it is the only device.
+  while it is the only active device unless account recovery is registered.
 - `POST /v1/devices/heartbeat` `{"app_version","policy"}` → `204`; updates
   `last_seen` and the reported policy. Sent on start and hourly.
 
@@ -495,7 +514,7 @@ device whose link opened it is revoked.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
-  target is the only ACTIVE device. Revocation also closes the dashboard
+  target is the only ACTIVE device and account recovery is unregistered. Revocation also closes the dashboard
   sessions that device's links opened and drops the links it minted.
 - `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
   "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",

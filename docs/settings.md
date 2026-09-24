@@ -32,7 +32,7 @@ device can change it for you.
 | --- | --- | --- | --- |
 | **Folder selection** | Whole vault | `Whole vault`, or `Selected folders only`. Its description reads back what this device is syncing NOW, which is the saved selection. Hidden folders (`.obsidian`, `.git`) and symlinked folders are excluded either way. | Before the first sync, if the vault also holds code or private files |
 | **Selected folders** | empty | One relative folder per line. An empty list with `Selected folders only` syncs nothing, and saving one says so. A folder the vault does not have is asked about before it is saved, with Cancel as the default; a folder typed in another case (`notes` for `Notes`) is saved the way the vault spells it, and a notice says so. | With the setting above |
-| **Save on this device** → **Save** | — | Waits for transfers actually running, never for an idle connection to the server, then rescans. **Set up** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
+| **Save on this device** → **Save** | — | Waits for transfers actually running, never for an idle connection to the server, then rescans. **Set up or recover** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
 
 The selection can only NARROW once a device has synced. To sync more of this
 vault, move the files into a folder that is already selected and run **Sync
@@ -44,7 +44,7 @@ now**. Removed folders keep their local files and their history on the server.
 | --- | --- | --- | --- |
 | **Pairing** → **Pair this device** | — | Applies an unsaved folder selection, then opens the dialog that takes a pairing code from a device that already syncs. On a device that syncs already it claims nothing and says to leave the server first. Before the first sync it asks when this vault holds notes the server's vault does not. | On every device after the first |
 | **Pairing** → **Pair a new device** | — | Mints a code, valid ten minutes, for another device to claim. | When adding a device |
-| **First-time setup** → **Set up** | — | Takes the setup token the server wrote at first boot, applies an unsaved folder selection, creates the account and enrolls this device. The token is not spent: it stays the dashboard's recovery sign-in. The dashboard calls the account `obsync`. | Once, on the first device |
+| **Setup or recover** → **Set up or recover** | — | With the server's setup token, creates an empty account or re-enrolls in an existing account using this vault's retained or restored key. Existing accounts must have recovery registered. Applies an unsaved folder selection first. | First device, or recovery after credentials are lost |
 | **Name** | the platform and a short device id, e.g. `macos-1a2b` | How this device appears in the dashboard's device list and in another device's conflict copies. | Give each device a name you will recognise months later |
 | **Largest file to download** | `0` (unlimited) on desktop, `512 MiB` on mobile | Files above it stay on the server and appear under **Show remote-only files**, to fetch on demand. | On a phone with room to spare, or one with none. `0` means unlimited. Sizes read as `1 MB`, `2 GB` (decimal) or `1 MiB`, `2 GiB` (binary); anything else is refused with a notice when you leave the field |
 | **Total to keep on this device** | `0` (unlimited) on desktop, `50 GiB` on mobile | Above this total, new files stay remote-only. | Same |
@@ -62,10 +62,10 @@ key (so pairing again is the SAME vault, never a new one), this device's name,
 its folder selection and both ceilings. **Lost:** this device's sync identity.
 It is refused while this device holds changes the server never received — the
 dialog names them, and either **Sync now** first or discard them on purpose.
-It is also refused for the only ACTIVE device (`409 last_device`), because an
-account with no active device can never sync again; that dialog offers to
-leave locally instead, which forgets the server and leaves the device enrolled
-on it. Pairing again is a first sync for this device, so where the server
+The last ACTIVE device may leave once account recovery is registered. Keep
+the setup token and recovery phrase first. An older server or unregistered
+account still refuses with `409 last_device`; local leave keeps that credential
+active remotely and the dialog explains the upgrade requirement. Pairing again is a first sync for this device, so where the server
 already holds a note at the same path the local note stays and the server's
 copy arrives beside it as a conflict copy
 ([`conflicts.md`](conflicts.md)).

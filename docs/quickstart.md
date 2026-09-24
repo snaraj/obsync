@@ -24,7 +24,7 @@ sync. All five assume your own server is already running.
 
 2. **Point it at your server and set it up.** Open the plugin's settings tab,
    set **Server URL** to your own server, choose which folders this device
-   syncs, then paste your setup token under **First-time setup**.
+   syncs, then paste your setup token under **Setup or recover**.
 
    ![The plugin settings tab scrolled to the folder selection, Pairing, and the First-time setup token field](captures/02-first-time-setup.png)
 
@@ -71,14 +71,14 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 
 4. Under **Sync folders on this device**, choose **Selected folders only**
    if the vault also contains code or files you do not want shared, and
-   enter relative folders such as `Notes`, one per line. **Set up** and
+   enter relative folders such as `Notes`, one per line. **Set up or recover** and
    **Pair this device** apply what you typed; **Save** applies it on its own.
    An empty selected list syncs no files; **Whole vault** is the default.
    Select the final folders now: after sync has history, the selection may
    only narrow. To stage a first sync within one vault, keep personal files
    in an excluded folder, test disposable notes inside the selected folder,
    then move the personal files in and run **Sync now**.
-5. Under **First-time setup**, paste the setup token and select **Set up**:
+5. Under **Setup or recover**, paste the setup token and select **Set up or recover**:
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](assets/settings-setup.png)
 

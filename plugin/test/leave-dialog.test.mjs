@@ -138,8 +138,8 @@ test("a last-device refusal offers leaving locally, and says what that leaves be
 
   const text = d.drawn.join("\n");
   assert.match(text, /The server refused to revoke this device: the only active device cannot be revoked; pair another first\./);
-  assert.match(text, /can never sync again/);
-  assert.match(text, /would stay there unreachable/);
+  assert.match(text, /no registered vault recovery yet/);
+  assert.match(text, /setup token and 24-word recovery phrase/);
   assert.equal(d.button("Leave locally anyway").destructive, true);
 
   d.button("Leave locally anyway").click();
@@ -181,13 +181,13 @@ test("switch mode takes the new address and opens pairing against it", async (t)
 
   assert.match(d.drawn.join("\n"), /Enter the new server's address/);
   assert.equal(d.closed(), 0, "leaving is half of switching");
-  d.button("Continue").click();
+  d.button("Pair with existing vault").click();
   await tick();
   assert.ok(d.notices.some((notice) => notice.includes("Enter the new server's address first")));
   assert.deepEqual(d.choices, [{ discardUnpushed: false, localOnly: false }], "an empty address saves nothing");
 
   d.made.find((component) => component.change !== undefined).change("other.example.invalid");
-  d.button("Continue").click();
+  d.button("Pair with existing vault").click();
   await tick();
 
   assert.deepEqual(d.choices.at(-1), "setServerUrl:other.example.invalid");
@@ -242,4 +242,18 @@ test("a server that does not recognise this device is named as such before the l
 
   assert.deepEqual(d.choices.at(-1), { discardUnpushed: false, localOnly: true });
   assert.ok(d.notices.some((notice) => notice.includes("which did not recognise it")));
+});
+
+
+test("switching offers setup for an empty server without forcing a pairing code", async (t) => {
+  const d = dialog(t, { mode: "switch", answers: [{ decision: "left", revoked: true }] });
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave and switch").click();
+  await tick();
+  d.made.find((component) => component.placeholder === "sync.example.org").change("new.example.org");
+  d.button("Set up or recover").click();
+  await tick();
+  assert.ok(d.choices.includes("setServerUrl:new.example.org"));
+  assert.deepEqual(d.opened, ["AccountSetupModal"]);
 });

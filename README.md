@@ -105,7 +105,7 @@ shows; on iOS, trusting it is a second switch after installing.
 
    ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](docs/assets/settings-server.png)
 
-3. Paste the setup token under **First-time setup**, select **Set up**, and
+3. Paste the setup token under **Setup or recover**, select **Set up or recover**, and
    write down the 24-word recovery phrase.
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](docs/assets/settings-setup.png)

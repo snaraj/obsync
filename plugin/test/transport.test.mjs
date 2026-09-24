@@ -365,6 +365,7 @@ const READ_CONTROL = { check() {}, wait: (work) => work };
 const CALLS = [
   ["setup", ["token", "account", INFO], false],
   ["account", [], true],
+  ["registerRecovery", ["11".repeat(32)], false],
   ["pairingCreate", [], false],
   ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
   ["pairingStatus", [PAIRING_ID], true],

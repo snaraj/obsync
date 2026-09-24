@@ -532,6 +532,8 @@ export class FakeServer {
       },
     ];
     this.claimed = claimed;
+    this.recoveryVerifier = null;
+    this.recoveries = 0;
     if (!claimed) {
       this.devices = [];
       this.secrets = new Map();
@@ -647,17 +649,32 @@ export class FakeServer {
     if (path === "/v1/setup" && request.method === "POST") {
       const body = json();
       if (body.setup_token !== SETUP_TOKEN) return this.error(401, "bad_setup_token", "that is not this server's setup token");
-      if (this.claimed) return this.error(409, "already_set_up", "this server already holds an account");
+      if (body.recovery_verifier !== undefined && !/^[0-9a-f]{64}$/.test(body.recovery_verifier)) return this.error(400, "bad_request");
+      const recovered = this.claimed;
+      if (recovered) {
+        if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
+        if (this.recoveryVerifier === null) return this.error(409, "recovery_unavailable", "a paired device must register recovery first");
+        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof) || createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex") !== this.recoveryVerifier) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+      } else this.recoveryVerifier = body.recovery_verifier ?? null;
       this.claimed = true;
-      this.addDevice(SETUP_DEVICE, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
-      return this.json(201, { account_id: "aa".repeat(16), device_id: SETUP_DEVICE, device_secret: SETUP_SECRET });
+      const id = recovered ? (++this.recoveries).toString(16).padStart(32, "0") : SETUP_DEVICE;
+      this.addDevice(id, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
+      return this.json(201, { account_id: "aa".repeat(16), device_id: id, device_secret: SETUP_SECRET, recovered });
     }
     // obsyncd refuses a revoked device before the signature, on every route
     // (`api/auth.rs`): revoking destroyed the secret it would verify against.
     if (this.devices.some((device) => device.revoked && device.device_id === request.headers["X-Obsync-Device"])) {
       return this.error(403, "device_revoked", "device is revoked");
     }
+    if (!this.secrets.has(request.headers["X-Obsync-Device"])) return this.error(401, "bad_signature", "signature does not match");
     this.verify(request, target);
+    if (path === "/v1/account/recovery" && request.method === "POST") {
+      const verifier = json().recovery_verifier;
+      if (!/^[0-9a-f]{64}$/.test(verifier)) return this.error(400, "bad_request");
+      if (this.recoveryVerifier !== null && this.recoveryVerifier !== verifier) return this.error(409, "recovery_mismatch");
+      this.recoveryVerifier = verifier;
+      return this.json(204, {});
+    }
 
     // Match the Rust device parser before acknowledging a heartbeat or PATCH.
     if (path === "/v1/devices/heartbeat" || (request.method === "PATCH" && path.startsWith("/v1/devices/"))) {
@@ -690,7 +707,7 @@ export class FakeServer {
       // not about who asked. A stub whose refusal differs from the server's
       // is a stub that lets a client ship a branch no server can reach.
       const live = this.devices.filter((candidate) => !candidate.revoked);
-      if (!device.revoked && live.length <= 1) {
+      if (!device.revoked && live.length <= 1 && this.recoveryVerifier === null) {
         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
       }
       device.revoked = true;

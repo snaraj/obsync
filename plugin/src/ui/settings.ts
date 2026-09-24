@@ -32,6 +32,7 @@
  * mobile reads whole files through the vault adapter.
  */
 
+import { FORGOTTEN_DEVICE } from "../accountRecovery";
 import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
@@ -279,7 +280,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             // route that needs no credential.
             const check = this.plugin.state.paired
               ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
-              : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: First-time setup on your first device, or Pair this device.");
+              : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
             void check
               .then((text) => { new Notice(text); })
               .catch((error: unknown) => { new Notice(message(error), 8000); });
@@ -489,6 +490,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Pairing",
       desc: () => {
         const data = this.plugin.state.data;
+        if (this.plugin.forgottenDevice) return FORGOTTEN_DEVICE;
         if (data.deviceId === null) return "Not paired yet. Pair from a device that already syncs this vault, or set up a new server below.";
         if (this.plugin.state.paired) return `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`;
         return "Enrolled, but the vault key has not arrived. Finish approval on the existing device, then restore the recovery phrase if needed. A pending dialog does not resume after a restart; do not repeat server setup.";
@@ -506,13 +508,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   private setup(): Row {
     return {
-      name: "First-time setup",
-      desc: "Paste the setup token your server wrote at first boot. It creates the account and enrolls this device, and it is not spent by that: it remains the dashboard's recovery sign-in, so keep it as carefully as the recovery phrase.",
-      visible: () => this.plugin.state.data.deviceId === null,
+      name: "Setup or recover",
+      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. Recovery must have been registered by an updated device before its last credential was lost. Keep both the token and phrase private.",
+      visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
         setting
           .addText((field) => field.setPlaceholder("Setup token").setValue(this.draftToken).onChange((value) => { this.draftToken = value.trim(); }))
-          .addButton((button) => button.setButtonText("Set up").setCta().onClick(() => { void this.setUp(); }));
+          .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => { void this.setUp(); }));
       },
     };
   }
@@ -723,7 +725,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             this.app,
             `Revoke ${device.name}?`,
             self
-              ? "This device will stop syncing immediately and will need a new pairing code to come back. The vault key stays in this vault's plugin data."
+              ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
               : `${device.name} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
             () => { void this.revoke(device); },
           ).open();

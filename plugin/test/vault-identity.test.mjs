@@ -371,6 +371,6 @@ test("First-time setup on a server that already holds a vault says one server ho
     notice.includes("This server already holds a vault, and one server holds one vault") &&
     notice.includes("Pair this device") && notice.includes("a different vault needs a server of its own")));
   assert.equal(p.notices.some((notice) => notice.includes("already_set_up")), false, "not the raw server code");
-  assert.ok(p.logs.includes("setup decision=failed reason=already_set_up"));
+  assert.ok(p.logs.includes("setup decision=failed reason=recovery_unavailable"));
   assert.equal(p.instance.state.data.deviceId, null);
 });

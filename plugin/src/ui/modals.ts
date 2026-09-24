@@ -272,7 +272,7 @@ export class PairClaimModal extends Modal {
     // sync against another server's records doubled the vault. Leaving first
     // clears all three; a pairing link opened here, even one this device
     // made, claims nothing.
-    if (this.plugin.state.paired) {
+    if (this.plugin.state.paired && !this.plugin.forgottenDevice) {
       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
       fail(new Error(
         `This device already syncs with ${this.plugin.state.data.serverUrl} as "${this.plugin.deviceName()}", ` +
@@ -283,6 +283,8 @@ export class PairClaimModal extends Modal {
     }
     try {
       this.waiting = true;
+      if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+      if (!this.waiting) return;
       // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
       // pairs with it copies that vault into itself, one level per sync.
       const nested = await this.plugin.nestedRefusal("pairing role=claimant");
@@ -391,7 +393,7 @@ const LEAVE_AGAIN =
 const LEAVE_UNKNOWN_DEVICE =
   "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave LOCALLY: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
 const LEAVE_LAST_DEVICE =
-  "An account whose last active device is revoked can never sync again: nothing in this release re-enrols one, so everything the server stores for this vault would stay there unreachable. Pair another device first and revoke this one from it. You can still leave LOCALLY: this device forgets the server and keeps every note, and the server keeps this device — so revoke it from the dashboard or from another device later.";
+  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving locally keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
 
 /**
  * Leaving a server, with the whole cost stated before the button (issue #79).
@@ -530,7 +532,7 @@ export class LeaveServerModal extends Modal {
     }
     this.contentEl.empty();
     this.contentEl.createEl("p", {
-      text: "Enter the new server's address, then paste a pairing code from a device that already syncs this vault there. For a server with no account yet, use First-time setup in the settings tab with that server's setup token instead.",
+      text: "Enter the new server's address. Set up an empty server with its setup token, recover an existing account with that token and this vault’s key, or pair from a device already syncing there.",
     });
     let typed = "";
     new Setting(this.contentEl).setName("Server URL").addText((text) =>
@@ -541,16 +543,15 @@ export class LeaveServerModal extends Modal {
     this.cancel(
       new Setting(this.contentEl).addButton((button) =>
         button
-          .setButtonText("Continue")
-          .setCta()
-          .onClick(() => {
-            void this.adopt(typed);
-          }),
+          .setButtonText("Pair with existing vault")
+          .onClick(() => { void this.adopt(typed, "pair"); }),
+      ).addButton((button) => button.setButtonText("Set up or recover").setCta()
+        .onClick(() => { void this.adopt(typed, "setup"); })
       ),
     );
   }
 
-  private async adopt(typed: string): Promise<void> {
+  private async adopt(typed: string, mode: "pair" | "setup"): Promise<void> {
     if (typed.trim() === "") {
       new Notice("Enter the new server's address first.");
       return;
@@ -564,8 +565,27 @@ export class LeaveServerModal extends Modal {
     if (!this.live) return;
     this.onLeft();
     this.close();
-    new PairClaimModal(this.app, this.plugin).open();
+    if (mode === "pair") new PairClaimModal(this.app, this.plugin).open();
+    else new AccountSetupModal(this.app, this.plugin).open();
   }
+}
+
+export class AccountSetupModal extends Modal {
+  constructor(app: App, private readonly plugin: ObsyncPlugin) { super(app); }
+  override onOpen(): void {
+    this.setTitle("Set up or recover this account");
+    this.contentEl.createEl("p", { text: "Enter this server’s setup token. An existing account also requires the vault key retained on this device, or its restored 24-word recovery phrase. An empty server uses this vault’s key." });
+    let token = "";
+    new Setting(this.contentEl).setName("Setup token").addText((field) => field.onChange((value) => { token = value.trim(); }));
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => {
+        void this.plugin.setUpAccount(token, "obsync").then(() => {
+          if (this.plugin.state.data.deviceId !== null) this.close();
+        });
+      }));
+  }
+  override onClose(): void { this.contentEl.empty(); }
 }
 
 /**

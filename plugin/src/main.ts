@@ -55,6 +55,7 @@
 import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource } from "./chunker";
 import { State, StateStorageError, dataLease, isPushed } from "./state";
@@ -1744,6 +1745,8 @@ export default class ObsyncPlugin extends Plugin {
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
+  forgottenDevice = false;
+  private enrolling = false;
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
   private stateLoad: Promise<State | null> | null = null;
@@ -2048,7 +2051,7 @@ export default class ObsyncPlugin extends Plugin {
 
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
     // and the start below either closes the cycle or continues it.
@@ -2085,6 +2088,7 @@ export default class ObsyncPlugin extends Plugin {
         // its own to keep.
         if (this.statusValue.kind === "offline") this.setStatus({ kind: "idle" });
       }
+      if (this.engine === engine) await this.registerAccountRecovery();
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
       const attempt = (this.reconnect?.attempt ?? 0) + 1;
@@ -2094,7 +2098,9 @@ export default class ObsyncPlugin extends Plugin {
         // never knocked on again by a timer (issue #129).
         const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
         this.log(`engine decision=stopped reason=start_failed code=${code}`);
-        this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        this.setStatus(forgottenCredential(error)
+          ? { kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE }
+          : { kind: "error", message: error instanceof Error ? error.message : String(error) });
         return;
       }
       this.scheduleReconnect(attempt, error.status);
@@ -2407,7 +2413,7 @@ export default class ObsyncPlugin extends Plugin {
     if (deviceId === this.state.data.deviceId) {
       await this.engine?.stopAndWait();
       this.engine = null;
-      this.setStatus({ kind: "error", message: "this device was revoked" });
+      this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
     }
   }
 
@@ -2487,8 +2493,7 @@ export default class ObsyncPlugin extends Plugin {
    * two happened.
    *
    * The server refuses to revoke the only ACTIVE device (`409 last_device`),
-   * because an account with no active device can never sync again and nothing
-   * in this release re-enrols one. That refusal is surfaced verbatim and the
+   * until vault recovery is registered. That refusal is surfaced and the
    * user may still leave LOCALLY, which is `localOnly`: this device forgets
    * the server, the server keeps the device. A server that does not know this
    * device at all (`401 bad_signature`: rebuilt, restored, or another server)
@@ -2568,6 +2573,7 @@ export default class ObsyncPlugin extends Plugin {
         );
       }
       this.updateAvailable = null;
+      this.forgottenDevice = false;
       this.setStatus({ kind: "idle" });
       if (reason === "unfinished") reason = "ok";
       return { decision: "left", revoked };
@@ -2621,7 +2627,7 @@ export default class ObsyncPlugin extends Plugin {
    */
   async vaultKeyStrands(vrk: string): Promise<boolean> {
     const { state, transport } = this.captureSession();
-    if (state.data.deviceId === null) return false;
+    if (state.data.deviceId === null || this.forgottenDevice) return false;
     if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
     // Versions, not the journal head: account and device frames move the
     // head of a server that holds no vault yet.
@@ -2644,7 +2650,10 @@ export default class ObsyncPlugin extends Plugin {
    * creates the account and enrols this device.
    */
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
+    if (this.enrolling) return;
+    this.enrolling = true;
     try {
+      if (this.forgottenDevice) await this.resetForgottenEnrollment();
       const { state, transport, assertCurrent } = this.captureSession();
       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
@@ -2654,26 +2663,38 @@ export default class ObsyncPlugin extends Plugin {
         new Notice(`obsync: ${nested}`, 12000);
         return;
       }
+      // Persist the key BEFORE a one-time request can create its account. A
+      // lost answer then leaves the proof needed for an explicit recovery.
+      const freshKey = state.data.vrk === null;
+      if (freshKey) {
+        state.data.vrk = hex(newVaultKey());
+        await state.save();
+      }
+      const vrk = state.data.vrk as string;
+      const recovery = await accountRecovery(vrk);
+      assertCurrent();
+      if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
       const enrolled = await transport.setup(setupToken, accountName, {
         name: this.deviceName(),
         platform: this.platformName(),
         app_version: this.manifest.version,
-      });
+      }, recovery);
       assertCurrent();
+      if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
       // Setup is not repeatable and the credential it mints exists nowhere
       // else: a lost answer means this device may have been enrolled with a
       // secret it never received. There is nothing to read back without a
-      // credential, so say exactly that. Setup cannot be repeated; the token
-      // remains the dashboard's recovery sign-in, not a second enrollment.
+      // credential, so say exactly that. An explicit new attempt can recover
+      // with the persisted key and token; no request is automatically retried.
       if (enrolled.outcome === "lost") throw new Error(lostMessage("creating the account", enrolled));
       const result = enrolled.value;
       state.data.deviceId = result.device_id;
       state.data.deviceSecret = result.device_secret;
       await state.save();
       assertCurrent();
-      new Notice("Account created and this device enrolled.");
-      if (state.data.vrk === null) {
-        await this.adoptVaultKey(hex(newVaultKey()));
+      new Notice(result.recovered ? "Account recovered and this device re-enrolled." : "Account created and this device enrolled.");
+      if (freshKey) {
+        await this.startEngine();
         assertCurrent();
         new RecoveryPhraseModal(this.app, this, true).open();
       } else {
@@ -2685,10 +2706,60 @@ export default class ObsyncPlugin extends Plugin {
       // One server holds one vault (#141): the one route left after this
       // refusal, pairing, would merge a second vault into the first.
       const text = code === "already_set_up"
-        ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device with a code from a device that syncs it; a different vault needs a server of its own."
-        : error instanceof Error ? error.message : String(error);
+        ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device from a device that syncs it, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own."
+        : code === "recovery_unavailable"
+          ? "This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost. Use Pair this device from a device that still syncs it, then update that device and server to register recovery; a different vault needs a server of its own."
+          : code === "bad_recovery_proof"
+            ? "These recovery words do not open this server’s vault. Restore its correct 24-word phrase, or pair from a syncing device. No device was enrolled; a different vault needs a server of its own."
+            : error instanceof Error ? error.message : String(error);
       new Notice(`obsync: ${text}`, 12000);
+    } finally {
+      this.enrolling = false;
     }
+  }
+
+  /** Register once a successful engine start has opened this vault's map. */
+  async registerAccountRecovery(): Promise<void> {
+    try {
+      const { state, transport, assertCurrent } = this.captureSession();
+      const vrk = state.data.vrk;
+      if (vrk === null || this.forgottenDevice) return;
+      const { verifier } = await accountRecovery(vrk);
+      assertCurrent();
+      if (state.data.vrk !== vrk) return;
+      const registered = await transport.registerRecovery(verifier);
+      assertCurrent();
+      this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+    } catch (error) {
+      if (forgottenCredential(error)) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      // Old servers do not implement this route. Sync can continue, and their
+      // last-device refusal remains in force until server and client upgrade.
+      this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);
+    }
+  }
+
+  /** Forget only a rejected enrollment; keep local content, key and address. */
+  async resetForgottenEnrollment(): Promise<void> {
+    if (!this.forgottenDevice) return;
+    if (this.changingScope || this.restoring !== null) throw new Error("Finish the current restore or folder change first.");
+    const { state, assertCurrent } = this.captureSession();
+    this.cancelReconnect();
+    this.cancelHistories();
+    await this.engine?.stopAndWait();
+    await Promise.allSettled(this.engineTeardowns);
+    await Promise.allSettled(this.manualFetches);
+    await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+    assertCurrent();
+    this.engine = null;
+    const { serverUrl, edgeHeaders } = state.data;
+    state.forgetPairing();
+    state.data.serverUrl = serverUrl;
+    state.data.edgeHeaders = edgeHeaders;
+    await state.save();
+    assertCurrent();
+    await state.forgetPreviousCredential();
+    this.forgottenDevice = false;
+    this.setStatus({ kind: "idle" });
   }
 
   /** The setup guide, in the browser: a fixed address in the source, never data from a server. */
@@ -2802,6 +2873,10 @@ export default class ObsyncPlugin extends Plugin {
   // --- status ------------------------------------------------------------
 
   setStatus(status: EngineStatus): void {
+    if (status.kind === "error" && status.code === "forgotten_device") {
+      this.forgottenDevice = true;
+      this.teardownEngine();
+    } else if (this.forgottenDevice) return;
     this.statusValue = status;
     this.statusEl?.setText(`obsync: ${this.statusText()}`);
   }
