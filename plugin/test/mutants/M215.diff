@@ -1,0 +1,12 @@
+# M215: moving a folder out of the selection raises one notice per note instead of one naming the count
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -993,7 +993,7 @@
+       });
+     }
+     context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
+-    if (this.exited++ > 0) return;
++    this.exited++;
+     void Promise.resolve().then(() => {
+       const count = this.exited;
+       this.exited = 0;

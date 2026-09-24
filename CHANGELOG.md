@@ -21,6 +21,26 @@ new name. Phones and tablets were never affected. A note removed this way on
 1.1.2 or earlier can be brought back with **Restore from history**: search for
 its name and select **Restore a copy** on its last version.
 
+**Moving or renaming a folder outside Obsidian no longer deletes its notes on
+your other devices.** A folder renamed in Finder or another file manager while
+Obsidian was open reached the other devices as deletions: its notes vanished
+there and, when the new folder was still synced, came back a second later as
+new files with their history left behind; when it was outside **Sync folders on
+this device**, they stayed deleted, with no word on either device. A deletion
+now waits half a second for the rest of what Obsidian reports. A note whose
+bytes are in the vault under a new name inside the selection is published as
+the move it is, history and all; one outside the selection stops syncing from
+this device but stays on the others, and one notice says how many notes left.
+The same holds for a folder moved while Obsidian was closed, which could delete
+a small folder on the other devices or leave a "Deletions held back" warning
+whose Confirm button would have deleted notes that were right there: that
+warning no longer counts a note found in the vault under another name, lets go
+of one that turns up again within 30 seconds, and Confirm never deletes one
+found under another name. A note you really delete is still deleted everywhere, half
+a second later. Same on desktop and mobile: the check compares the names,
+sizes and times Obsidian already holds in memory, and never opens a file
+outside your selection (#139).
+
 **A plain `http` server address is refused on desktops too.** A desktop used to
 accept an address starting `http://` and, in front of a server that redirects to
 HTTPS, it even worked -- after sending the setup token and every request across

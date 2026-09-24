@@ -252,6 +252,15 @@ export class FakeHost {
     }));
   }
 
+  /**
+   * Obsidian's whole index, whatever the selection (`main.ts`): hidden paths
+   * are not in it -- the vault's own `.trash` among them, which is where a
+   * note deleted in Obsidian goes and must never count as moved.
+   */
+  async inventory() {
+    return (await this.list()).filter((file) => vp.isVaultPath(file.path));
+  }
+
   /** The real host refuses a path with a symlink component; this one is told. */
   async syncable(path) {
     return !this.unsyncable.has(path);

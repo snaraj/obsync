@@ -1470,22 +1470,27 @@ test("sync now drains again for work queued after the drain it joined took its l
   const timers = new FakeTimers();
   // The window a join cannot cover: the drain's loop has ended, so an
   // enqueue landing in it joins a drain that will never look at the queue
-  // again. In the field that enqueue is a debounce timer or a vault deletion
-  // firing in the turn between the drain finishing and "Sync now" resuming;
-  // here it is the idle status the drain posts from inside that same turn.
+  // again. In the field that enqueue is a debounce timer, a settled vault
+  // deletion or a rename firing in the turn between the drain finishing and
+  // "Sync now" resuming; here it is a rename -- the one of the three a vault
+  // event queues in the same turn, since a deletion now waits for the other
+  // half of a move (#139) -- made from the idle status the drain posts
+  // inside that same turn.
   let armed = false;
   parkedFeed(server);
   const engine = engineOf(rigged, timers, {
     onStatus: (status) => {
       if (status.kind !== "idle" || !armed) return;
       armed = false;
+      host.files.set("Moved.md", host.files.get("Gone.md"));
       host.files.delete("Gone.md");
-      engine.deleted("Gone.md");
+      engine.renamed("Gone.md", "Moved.md");
     },
   });
-  host.seed("Gone.md", "deleted while the drain ran\n", 1000);
+  host.seed("Gone.md", "renamed while the drain ran\n", 1000);
   await engine.start();
   await timers.run(1000, () => state.fileByPath("Gone.md") !== undefined);
+  const goneId = state.fileByPath("Gone.md").fileId;
 
   const held = heldReads(host);
   host.seed("One.md", "the first note\n", 2000);
@@ -1495,17 +1500,17 @@ test("sync now drains again for work queued after the drain it joined took its l
   await timers.run(1000, () => held.reads.length === 1);
   armed = true;
 
-  let tombstoneAtReturn = null;
+  let movedAtReturn = null;
   const now = engine.syncNow().then(() => {
-    tombstoneAtReturn = server.journal.some((frame) => frame.deleted === true);
+    movedAtReturn = server.journal.filter((frame) => frame.file_id === goneId).length === 2;
   });
   held.release();
-  await timers.run(1000, () => tombstoneAtReturn !== null);
+  await timers.run(1000, () => movedAtReturn !== null);
   await now;
 
-  assert.equal(armed, false, "the deletion really was queued inside that window");
-  assert.equal(tombstoneAtReturn, true, "sync now returned before the path queued mid-drain was pushed");
-  assert.equal(state.fileByPath("Gone.md"), undefined, "and the tombstone was recorded");
+  assert.equal(armed, false, "the rename really was queued inside that window");
+  assert.equal(movedAtReturn, true, "sync now returned before the path queued mid-drain was pushed");
+  assert.equal(state.fileByPath("Moved.md").fileId, goneId, "and the move was recorded");
   assert.equal(state.fileByPath("One.md") !== undefined, true);
   assert.equal(state.fileByPath("Two.md") !== undefined, true);
   assert.ok(

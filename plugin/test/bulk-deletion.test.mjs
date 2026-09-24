@@ -1,15 +1,15 @@
 /**
  * The bulk-deletion guard (issue #123).
  *
- * A folder that IS a selected sync folder, renamed or moved from outside
- * Obsidian while the app is closed, reaches the next startup as every
- * recorded path under it having vanished: no rename event ever arrived, the
- * new paths sit outside the selection and are never queued, and the old ones
- * are simply gone. Published, those tombstones delete the notes on every
- * other device, while the notes themselves sit on this one under the new
- * name, untracked. Nothing was lost locally and nothing asked for a deletion;
- * the only thing that happened is that this device stopped being able to see
- * its own files.
+ * A selected folder moved OUT OF THE VAULT while the app is closed -- or a
+ * volume that mounted empty, or an index not yet built -- reaches the next
+ * startup as every recorded path under it having vanished, with its bytes
+ * nowhere this device can see. Published, those tombstones delete the notes
+ * on every other device. Nothing asked for a deletion; the only thing that
+ * happened is that this device stopped being able to see its own files. (A
+ * folder merely RENAMED while the app was closed is no longer this case: its
+ * notes are still in the vault, and `external-move.test.mjs` proves they are
+ * followed there and never held or deleted, issue #139.)
  *
  * So the pass holds the tombstones, says what it found, and publishes nothing
  * until the user says which it was. What is proven here is the whole of that:
@@ -61,23 +61,20 @@ const tombstones = (server) => server.journal.filter((frame) => frame.deleted);
 /** The notes a selected folder holds, enough of them to be a bulk deletion. */
 const NOTES = Array.from({ length: BULK_DELETION_MIN + 2 }, (_, index) => `Notes/note-${index}.md`);
 
-test("a selected folder renamed while Obsidian was closed publishes nothing and says so once", async (t) => {
+test("a selected folder that left the vault while Obsidian was closed publishes nothing and says so once", async (t) => {
   const { host, server, state, timers, engine } = await device(t, NOTES, ["Notes"]);
   assert.deepEqual(tombstones(server), [], "the seeding published a tombstone");
 
-  // The rename, as a file manager makes it while the app is closed: the files
-  // move, no vault event is ever fired, and the new folder is outside the
-  // selection this device still holds.
-  for (const path of NOTES) {
-    host.files.set(path.replace("Notes/", "Journal/"), host.files.get(path));
-    host.files.delete(path);
-  }
+  // The folder moved out of the vault, as a file manager does it while the
+  // app is closed: the files go, no vault event is ever fired, and their
+  // bytes are nowhere in this vault.
+  for (const path of NOTES) host.files.delete(path);
 
   await engine.reconcile();
   await timers.run(1000);
 
   assert.deepEqual(tombstones(server), [],
-    `a rename nobody saw was published as ${tombstones(server).length} deletions`);
+    `a folder nobody deleted was published as ${tombstones(server).length} deletions`);
   assert.equal(engine.heldDeletionCount, NOTES.length, "the pass did not hold what it refused to publish");
   assert.ok(
     host.logs.some((line) =>

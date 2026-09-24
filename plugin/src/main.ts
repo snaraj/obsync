@@ -454,12 +454,22 @@ export class ObsidianHost implements VaultHost {
       }
       return files;
     }
-    const files = this.plugin.app.vault.getFiles();
-    const synced = files.filter((file) => isVaultPath(file.path));
-    if (synced.length !== files.length) {
-      this.plugin.log(`list decision=skipped_unsyncable files=${files.length - synced.length}`);
-    }
-    return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+    const synced = await this.inventory();
+    const skipped = this.plugin.app.vault.getFiles().length - synced.length;
+    if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
+    return synced;
+  }
+
+  /**
+   * The whole index, whatever the selection (`VaultHost.inventory`): the
+   * names, sizes and mtimes Obsidian already holds in memory, on desktop and
+   * mobile alike. No directory is walked and no file is opened, so a folder
+   * outside the selection is compared, never touched.
+   */
+  async inventory(): Promise<VaultStat[]> {
+    return this.plugin.app.vault.getFiles()
+      .filter((file) => isVaultPath(file.path))
+      .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
   }
 
   /**
@@ -1685,8 +1695,9 @@ export default class ObsyncPlugin extends Plugin {
           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);
           // The folder's own record, and every record beneath it: the files
           // going is what empties the tree, the records going is what removes
-          // it from the other devices (issue #104).
-          for (const path of this.foldersUnder(file.path)) this.engine?.folderDeleted(path);
+          // it from the other devices (issue #104). They wait with the notes,
+          // which may yet turn out to have moved (issue #139).
+          for (const path of this.foldersUnder(file.path)) this.engine?.folderVanished(path);
         }
       }),
     );

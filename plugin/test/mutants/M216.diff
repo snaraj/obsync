@@ -1,0 +1,12 @@
+# M216: a folder moved out of the selection in Finder is published as deleted: the watcher no longer holds it with its notes
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1658,7 +1658,7 @@
+           // going is what empties the tree, the records going is what removes
+           // it from the other devices (issue #104). They wait with the notes,
+           // which may yet turn out to have moved (issue #139).
+-          for (const path of this.foldersUnder(file.path)) this.engine?.folderVanished(path);
++          for (const path of this.foldersUnder(file.path)) this.engine?.folderDeleted(path);
+         }
+       }),
+     );

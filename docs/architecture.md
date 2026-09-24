@@ -985,7 +985,12 @@ device cannot change another device's selection. In selected mode the host
 starts at the named cached folders rather than enumerating the vault. Both
 the engine and host check scope before file operations; the desktop walk
 may inspect selected directories and their ancestors, but no unrelated
-subtree. Remote manifests, remembered sources for rename/delete/conflict,
+subtree. One question alone is asked of the whole vault: before a note is
+called deleted, whether a file carrying its size and modification time is in
+the vault under another name (issue #139). It is answered from the names,
+sizes and times Obsidian's own index already holds in memory -- no
+filesystem access, no content, nothing logged or sent -- and it can only
+withhold a deletion, never publish anything. Remote manifests, remembered sources for rename/delete/conflict,
 on-demand downloads and merge ancestors must all be in scope. Excluded
 remote changes are logged and skipped without fetching content, touching
 the filesystem or adding a remote-only entry; the feed continues.
@@ -999,7 +1004,14 @@ a fresh identity; a remembered excluded identity is never transferred in. A
 local move OUT of it publishes nothing: the file is alive under its new
 name, so the deletion this device would otherwise post is a tombstone every
 other device obeys, the record is dropped so no later scan can infer that
-deletion either, and the user is told once.
+deletion either, and the user is told once per move, with the count. That
+holds however the move arrives: as Obsidian's rename, as the delete and
+create a move made in a file manager is reported as, or as paths the
+start-up pass finds gone with their bytes elsewhere in the vault (issue
+#139). A delete event therefore waits 500 ms, with the rest of its burst,
+before it is decided: the note's bytes found once inside the selection are
+the MOVE of the same file id, found outside it are a note that left, and
+found nowhere are the deletion it always was.
 
 **A FOLDER RECORD's scope is the selected folder itself and everything inside
 it**, which is where it differs from a file's: a folder record IS its path, so
@@ -1037,8 +1049,10 @@ record, exactly as a file does -- the folder is alive under its new name, and
 a tombstone for it is one every other device obeys.
 
 Two shapes are deliberately outside that: a selected folder re-capitalised
-from OUTSIDE Obsidian reaches the start-up pass as every recorded path under
-it having vanished and is held as a bulk deletion (issue #123, below), and a
+or renamed from OUTSIDE Obsidian is not followed -- its notes are found
+under the new name and leave the selection, told once, never deleted and
+never held (issue #139); a bulk deletion is held (issue #123) only when the
+bytes are nowhere in the vault -- and a
 folder ABOVE a selected folder renamed on another device is outside what this
 device syncs in either direction, so its record is skipped there and the moves
 under it are refused with the folder-capitalisation notice.

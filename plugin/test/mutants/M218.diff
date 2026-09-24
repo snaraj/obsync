@@ -1,0 +1,13 @@
+# M218: a moved note can take over the identity of another note that is already synced
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -792,8 +792,7 @@
+ 
+   /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */
+   private carriers(record: { mtime: number; size: number }, files: Map<string, VaultStat[]>, taken: Set<string>): VaultStat[] {
+-    return (files.get(`${record.mtime}:${record.size}`) ?? []).filter((file) => !taken.has(file.path) &&
+-      this.options.state.fileByPath(file.path) === undefined);
++    return (files.get(`${record.mtime}:${record.size}`) ?? []).filter((file) => !taken.has(file.path));
+   }
+ 
+   /**

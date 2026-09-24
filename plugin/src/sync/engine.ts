@@ -140,6 +140,14 @@ export interface VaultHost {
   readonly deviceName: string;
   list(): Promise<VaultStat[]>;
   /**
+   * Every file in Obsidian's index, INSIDE THE SELECTION OR NOT, with the
+   * size and mtime the index cached: no filesystem walk, no content. It
+   * answers one question, asked before a note is called deleted -- are its
+   * bytes still in this vault under another name (issue #139)? -- and is never
+   * read, queued or published from.
+   */
+  inventory(): Promise<VaultStat[]>;
+  /**
    * The vault as the FILESYSTEM has it, or `null` when this host has no view
    * of its own.
    *
@@ -374,6 +382,19 @@ const QUIET_RECHECKS = Math.ceil(QUIET_MS / RECHECK_MS);
 /** The directory a path lives in; `""` for a path at the vault root. */
 const folderOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
+/**
+ * A listing by `(mtime, size)`, built once, so that asking where N vanished
+ * records went costs N lookups and not N walks of the whole vault.
+ */
+const byStat = (files: VaultStat[]): Map<string, VaultStat[]> => {
+  const out = new Map<string, VaultStat[]>();
+  for (const file of files) {
+    const key = `${file.mtime}:${file.size}`;
+    out.set(key, [...(out.get(key) ?? []), file]);
+  }
+  return out;
+};
+
 const defaultTimers: Timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
   clear: (handle) => window.clearTimeout(handle as number),
@@ -426,7 +447,15 @@ export class SyncEngine {
   private repair: ChunkRepair | null = null;
   private repairWork: Promise<void> | null = null;
   private repairNoticeShown = false;
-  private scopeExitNoticeShown = false;
+  /** Notes that left the selection since the user was last told, counted for one notice. */
+  private exited = 0;
+  /**
+   * Watcher deletions waiting `DEBOUNCE_MS` for the other half of a move, and
+   * the folder deletions reported with them (issue #139, `settleVanished`).
+   */
+  private readonly vanished = new Set<string>();
+  private readonly vanishedFolders = new Set<string>();
+  private vanishHandle: unknown = null;
   private caseGhostNoticeShown = false;
   /** Tombstones one pass refused to publish, awaiting the user's word. */
   private heldDeletions: string[] = [];
@@ -631,6 +660,12 @@ export class SyncEngine {
    * tombstone for a file id the vault still holds under another name, so the
    * echo is dropped once, by the path the pull path recorded before trashing
    * it (issue #96).
+   *
+   * AND A DELETE IS NOT YET A DELETION (issue #139). A folder moved in a file
+   * manager reaches here as a delete for every note in it, beside a create
+   * for each at its new name: Obsidian never sees a rename. So the delete
+   * waits `DEBOUNCE_MS` for the other half and is decided then, in
+   * `settleVanished`.
    */
   deleted(path: string): void {
     if (!this.running || !this.tracked(path, "delete")) return;
@@ -639,8 +674,126 @@ export class SyncEngine {
       return;
     }
     this.unschedule(path);
-    this.deletions.add(path);
-    this.enqueue(path);
+    // A push still queued for it would only find the file gone: the batch
+    // decides for this path now, as the queued deletion used to.
+    const queued = this.queue.indexOf(path);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    this.vanish([path]);
+  }
+
+  /**
+   * A folder delete from the vault's watcher. Deleted with the notes inside
+   * it, it waits with them, so that a folder whose notes turn out to have
+   * LEFT the selection is not the one thing published as deleted. With
+   * nothing waiting it is the ordinary folder deletion, at once.
+   */
+  folderVanished(path: string): void {
+    if (this.vanished.size === 0) this.folderDeleted(path);
+    else this.vanishedFolders.add(path);
+  }
+
+  /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */
+  private vanish(paths: string[]): void {
+    for (const path of paths) this.vanished.add(path);
+    if (this.vanishHandle === null) {
+      this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+    }
+  }
+
+  /**
+   * Decide what the deletes of one burst were (issue #139).
+   *
+   * A path that is back is the change it is. Otherwise the vault is asked
+   * where its bytes went, by the rule the periodic scan pairs moves with
+   * (`follow`): a move keeps the file id, a note that left the selection is
+   * never a deletion, and only a note whose bytes are nowhere in the vault
+   * is published as deleted -- through the same queue as ever, so the
+   * "file is present" refusal still has the last word. The folders deleted
+   * with them go LAST, after the moves that empty them; in a burst where
+   * notes left the selection, the folders left with them. A burst that
+   * settles after a stop decides nothing: its records stay for the next
+   * start's reconcile pass.
+   */
+  private async settleVanished(): Promise<void> {
+    this.vanishHandle = null;
+    const paths = [...this.vanished];
+    const folders = [...this.vanishedFolders];
+    this.vanished.clear();
+    this.vanishedFolders.clear();
+    if (!this.running) return;
+    const context = this.need();
+    const started = context.now();
+    const left: string[] = [];
+    let moved = 0;
+    let removed = 0;
+    try {
+      const index = byStat(await context.host.inventory());
+      for (const path of paths) {
+        if (!this.running) return;
+        const outcome = await this.follow(context, path, index, new Set());
+        if (outcome === "moved") moved++;
+        else if (outcome === "left") left.push(path);
+        else {
+          this.deletions.add(path);
+          this.enqueue(path);
+          removed++;
+        }
+      }
+    } catch (error) {
+      // Nothing is published on a question the vault could not answer: the
+      // records stay, and the next reconcile pass asks it again.
+      context.host.log(
+        `watch decision=failed reason=vanished_unsettled files=${paths.length} budget_ms=${DEBOUNCE_MS} ` +
+          `duration_ms=${context.now() - started} error=${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    for (const path of left) this.leftScope(path);
+    for (const folder of folders) {
+      if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
+      else this.folderDeleted(folder);
+    }
+    context.host.log(
+      `watch decision=settled reason=vanished files=${paths.length} moved=${moved} left=${left.length} ` +
+        `removed=${removed} folders=${folders.length} budget_ms=${DEBOUNCE_MS} duration_ms=${context.now() - started}`,
+    );
+  }
+
+  /**
+   * Where did a vanished record's bytes go? `null` when nowhere in this vault
+   * -- the one answer after which a tombstone may follow.
+   *
+   * THE PERIODIC SCAN'S OWN RULE (`survey`, MOVES), asked of the whole index:
+   * the unrecorded files carrying the record's `(mtime, size)`. Exactly one,
+   * in the selection, is the MOVE, and keeps the file id. Any outside it --
+   * one or several, because there is nothing to guess about a note this
+   * device will not publish -- means the note LEFT the selection: alive here,
+   * so never a deletion (`leftScope`). An ambiguous pair inside the selection
+   * stays unpaired, exactly as the scan leaves it.
+   */
+  private async follow(
+    context: SyncContext,
+    from: string,
+    index: Map<string, VaultStat[]>,
+    taken: Set<string>,
+  ): Promise<"moved" | "left" | null> {
+    const record = context.state.fileByPath(from);
+    const found = record === undefined ? [] : this.carriers(record, index, taken);
+    // A file that is still there is not gone, whatever else carries its bytes.
+    if (found.length === 0 || (await context.host.stat(from)) !== null) return null;
+    const only = found.length === 1 ? (found[0] as VaultStat) : null;
+    const folders = context.state.data.syncFolders;
+    if (only !== null && inSyncScope(only.path, folders) && (await context.host.syncable(only.path))) {
+      this.renamed(from, only.path);
+      return "moved";
+    }
+    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
+  }
+
+  /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */
+  private carriers(record: { mtime: number; size: number }, files: Map<string, VaultStat[]>, taken: Set<string>): VaultStat[] {
+    return (files.get(`${record.mtime}:${record.size}`) ?? []).filter((file) => !taken.has(file.path) &&
+      this.options.state.fileByPath(file.path) === undefined);
   }
 
   /**
@@ -822,7 +975,9 @@ export class SyncEngine {
    * live note, and every other device obeys it (issue #91). Nothing is
    * published: dropping the record also disarms the tombstone the next
    * startup scan would infer from the old path's absence, the debounce and
-   * queued push it may still be owed are cancelled, and the user is told once.
+   * queued push it may still be owed are cancelled, and the user is told once
+   * per move, with the count: every caller makes its exits in one synchronous
+   * run, so the notice waits for the end of it (issue #139).
    */
   private leftScope(from: string): void {
     const context = this.need();
@@ -838,14 +993,18 @@ export class SyncEngine {
       });
     }
     context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
-    if (this.scopeExitNoticeShown) return;
-    this.scopeExitNoticeShown = true;
-    context.host.notify(
-      "obsync: a file was moved out of the folders this device syncs, so this device stopped syncing it. " +
-        "Nothing was deleted: the file is still in this vault, your other devices keep their copy, and the " +
-        "server keeps its history. Move it back into a selected folder, or add its new folder under " +
-        "Sync folders on this device.",
-    );
+    if (this.exited++ > 0) return;
+    void Promise.resolve().then(() => {
+      const count = this.exited;
+      this.exited = 0;
+      context.host.log(`scope decision=left_selection files=${count}`);
+      context.host.notify(
+        `obsync: ${count} note(s) moved out of the folders this device syncs; they stay on your other devices. ` +
+          "Nothing was deleted: they are still in this vault and the server keeps their history. This device " +
+          "no longer syncs them -- move them back into a selected folder, or add their new folder under " +
+          "Sync folders on this device.",
+      );
+    });
   }
 
   /**
@@ -860,21 +1019,20 @@ export class SyncEngine {
    * The user says the deletions were real. THE HELD SET IS PUBLISHED AS IT
    * WAS FOUND, not re-derived: re-scanning here would ask the vault a second
    * question the user has not answered, and a file that came back in the
-   * meantime is not in the set the user was shown. Each path is queued
-   * exactly as the pass would have queued it, so everything downstream --
-   * the "file is present" refusal, the scope check, the echo marks -- still
-   * applies, and a note restored between the notice and the click is still
-   * refused by the push that finds it on the disk.
+   * meantime is not in the set the user was shown. Each path is decided
+   * exactly as a watcher deletion is (`settleVanished`), so everything
+   * downstream -- the "file is present" refusal, the scope check, the echo
+   * marks -- still applies, a note restored between the notice and the click
+   * is still refused by the push that finds it on the disk, and one whose
+   * bytes are back under another name is a move or a note that left the
+   * selection, never a deletion (issue #139).
    */
   confirmHeldDeletions(): void {
     if (!this.running || this.heldDeletions.length === 0) return;
     const held = this.heldDeletions;
     this.heldDeletions = [];
     this.bulkNoticeShown = false;
-    for (const path of held) {
-      this.deletions.add(path);
-      this.enqueue(path);
-    }
+    this.vanish(held);
     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
   }
 
@@ -1643,13 +1801,12 @@ export class SyncEngine {
     // normalisation check settled is handled in exactly the same way.
     let moves = 0;
     let declined = 0;
+    const freshByStat = byStat(fresh);
     for (const from of gone) {
       if (!this.running) return;
       const record = context.state.fileByPath(from);
       if (record === undefined || settled.has(from)) continue;
-      const candidates = fresh.filter((file) => !settled.has(file.path) &&
-        file.mtime === record.mtime && file.size === record.size &&
-        context.state.fileByPath(file.path) === undefined);
+      const candidates = this.carriers(record, freshByStat, settled);
       if (candidates.length !== 1) continue;
       const to = (candidates[0] as VaultStat).path;
       if (await this.recordsOnly(context, from, to, recordedFolders, label)) {
@@ -1686,47 +1843,73 @@ export class SyncEngine {
         cased++;
         continue;
       }
-      if (!tombstones) continue;
       candidates.push(from);
     }
 
-    // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). A
-    // selected folder renamed from outside Obsidian while the app was closed
-    // reaches this pass as EVERY recorded path under it having vanished: no
-    // rename event ever arrived, the new paths sit outside the selection, and
-    // the old ones are gone. Published, those tombstones delete the notes on
-    // every other device, while the notes themselves sit untracked on this
-    // one under the new name. The vault is not empty and nothing asked for a
-    // deletion; the only thing that happened is that this device stopped
-    // being able to see its own files.
+    // BYTES STILL IN THE VAULT ARE NOT A DELETION (issue #139), in both
+    // passes. A selected folder renamed while the app was closed leaves its
+    // notes under a name the selection does not cover, which no listing of
+    // the selection can show: the whole index is asked instead, and a note
+    // found there LEFT the selection -- never a deletion, never a hold.
+    // Asked only when something is gone, which is almost never.
+    const missing: string[] = [];
+    const left: string[] = [];
+    if (candidates.length > 0) {
+      const index = byStat(await context.host.inventory());
+      for (const from of candidates) {
+        if (!this.running) return;
+        // The moves are the pairing above's, which saw every file of the
+        // selection; what is left to find here is outside it.
+        const outcome = await this.follow(context, from, index, settled);
+        if (outcome === "left") left.push(from);
+        else if (outcome === null) missing.push(from);
+      }
+      for (const from of left) this.leftScope(from);
+    }
+
+    // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). What
+    // is still missing here has no bytes anywhere in the index -- a folder
+    // moved out of the vault, a volume that mounted empty, an index not yet
+    // built -- and when that is most of what this device tracks, nothing
+    // asked for a deletion: this device has stopped being able to see its
+    // own files. Published, those tombstones delete the notes on every other
+    // device.
     //
     // So the pass holds them, says what it found, and publishes nothing until
     // the user says which it was. `confirmHeldDeletions` is the other half:
     // a folder the user really did delete still reaches every device, one
     // click later. The rule is deliberately about SHARE and not about
-    // folders -- a rename of the one selected folder, a move of the vault
-    // root, and a volume that mounted empty all arrive here identically, and
-    // the share is what they have in common.
+    // folders -- a move of the vault root and a volume that mounted empty
+    // arrive here identically, and the share is what they have in common.
     //
-    // ONLY THIS PASS MAY TOUCH THE HOLD. The periodic scan reaches here with
-    // no candidates at all -- it never tombstones -- so letting it fall into
-    // the publishing branch below would clear a hold the startup pass took,
-    // thirty seconds later and with nobody asked. The whole decision is
-    // therefore inside `tombstones`.
+    // ONLY THIS PASS MAY TAKE OR PUBLISH THE HOLD. The periodic scan never
+    // tombstones, so letting it fall into the publishing branch below would
+    // clear a hold the startup pass took, thirty seconds later and with
+    // nobody asked. What it may do is stop OFFERING a note that is no longer
+    // missing -- back, moved, or out of the selection -- which publishes
+    // nothing and takes nothing from the user's decision but a note that
+    // was never gone (issue #139).
     let removed = 0;
     const tracked = Object.keys(context.state.data.files).length;
     if (!tombstones) {
-      // Nothing to publish and nothing to decide.
-    } else if (candidates.length >= BULK_DELETION_MIN && candidates.length * 2 > tracked) {
-      this.heldDeletions = candidates;
+      const still = new Set(missing);
+      const kept = this.heldDeletions.filter((path) => still.has(path));
+      if (kept.length < this.heldDeletions.length) {
+        context.host.log(
+          `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+        );
+        this.heldDeletions = kept;
+      }
+    } else if (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked) {
+      this.heldDeletions = missing;
       context.host.log(
-        `${label} decision=refused reason=bulk_deletion candidates=${candidates.length} tracked=${tracked}`,
+        `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked}`,
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
         context.host.notify(
-          `obsync stopped ${candidates.length} deletions it was about to send to your other devices: ` +
-            `it can no longer see ${candidates.length} of the ${tracked} notes it syncs here, and nothing ` +
+          `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
+            `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
             "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
             "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
             "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
@@ -1735,7 +1918,7 @@ export class SyncEngine {
     } else {
       this.heldDeletions = [];
       this.bulkNoticeShown = false;
-      for (const from of candidates) {
+      for (const from of missing) {
         this.deletions.add(from);
         this.enqueue(from);
         removed++;
@@ -1752,12 +1935,15 @@ export class SyncEngine {
     }
     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
     // retired once the notes under it have published their own tombstones, so
-    // the receiver's folder is empty by the time it is asked to remove it.
+    // the receiver's folder is empty by the time it is asked to remove it. In
+    // a pass where notes LEFT the selection, the folders that went left with
+    // them (`settleVanished`).
     if (tombstones) {
       for (const folder of Object.keys(context.state.data.folders)) {
         if (!this.running) return;
         if (present.has(folder) || casedFolders.has(folder)) continue;
         if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
         this.folderRemovals.add(folder);
         this.enqueue(folder);
         folderQueued++;
@@ -1774,7 +1960,7 @@ export class SyncEngine {
         `${label} decision=queued files=${seen.size} queued=${queued} moved=${moves} removed=${removed} ` +
           `folders=${present.size} folders_queued=${folderQueued} folders_skipped=${folderSkipped} ` +
           `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased} ` +
-          `not_paired=${declined}`,
+          `not_paired=${declined} left=${left.length}`,
       );
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).

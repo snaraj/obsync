@@ -1,0 +1,12 @@
+# M210: deleting a note whose edit is still waiting to upload shows an error in the status bar
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -676,8 +676,6 @@
+     this.unschedule(path);
+     // A push still queued for it would only find the file gone: the batch
+     // decides for this path now, as the queued deletion used to.
+-    const queued = this.queue.indexOf(path);
+-    if (queued !== -1) this.queue.splice(queued, 1);
+     this.vanish([path]);
+   }
+ 

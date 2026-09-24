@@ -1,0 +1,14 @@
+# M219: one Finder move is decided several times over, one decision line per deleted note
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -695,9 +695,7 @@
+   /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */
+   private vanish(paths: string[]): void {
+     for (const path of paths) this.vanished.add(path);
+-    if (this.vanishHandle === null) {
+-      this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+-    }
++    this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+   }
+ 
+   /**
