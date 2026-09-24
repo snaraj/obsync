@@ -1,0 +1,12 @@
+# M366: a folder Save shows "Waiting for transfers..." for up to 55 s with nothing transferring
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -621,7 +621,7 @@
+       // cause (issue #144).
+       void this.track(this.retryParked("start"));
+       // Not tracked: only the pages it applies are (`feedLoop`).
+-      void this.feedLoop().catch((error: unknown) => {
++      void this.track(this.feedLoop()).catch((error: unknown) => {
+         host.log(`feed decision=failed reason=${error instanceof Error ? error.name : "unknown"}`);
+       });
+     }

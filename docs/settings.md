@@ -31,8 +31,8 @@ device can change it for you.
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
 | **Folder selection** | Whole vault | `Whole vault`, or `Selected folders only`. Its description reads back what this device is syncing NOW, which is the saved selection. Hidden folders (`.obsidian`, `.git`) and symlinked folders are excluded either way. | Before the first sync, if the vault also holds code or private files |
-| **Selected folders** | empty | One relative folder per line. An empty list with `Selected folders only` syncs nothing. | With the setting above |
-| **Save on this device** → **Save** | — | Waits for active transfers, then rescans. **Set up** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
+| **Selected folders** | empty | One relative folder per line. An empty list with `Selected folders only` syncs nothing, and saving one says so. A folder the vault does not have is asked about before it is saved, with Cancel as the default; a folder typed in another case (`notes` for `Notes`) is saved the way the vault spells it, and a notice says so. | With the setting above |
+| **Save on this device** → **Save** | — | Waits for transfers actually running, never for an idle connection to the server, then rescans. **Set up** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
 
 The selection can only NARROW once a device has synced. To sync more of this
 vault, move the files into a folder that is already selected and run **Sync
@@ -46,7 +46,7 @@ now**. Removed folders keep their local files and their history on the server.
 | **Pairing** → **Pair a new device** | — | Mints a code, valid ten minutes, for another device to claim. | When adding a device |
 | **First-time setup** → **Set up** | — | Takes the setup token the server wrote at first boot, applies an unsaved folder selection, creates the account and enrolls this device. The token is not spent: it stays the dashboard's recovery sign-in. The dashboard calls the account `obsync`. | Once, on the first device |
 | **Name** | the platform and a short device id, e.g. `macos-1a2b` | How this device appears in the dashboard's device list and in another device's conflict copies. | Give each device a name you will recognise months later |
-| **Largest file to download** | `0` (unlimited) on desktop, `512 MiB` on mobile | Files above it stay on the server and appear under **Show remote-only files**, to fetch on demand. | On a phone with room to spare, or one with none. `0` means unlimited |
+| **Largest file to download** | `0` (unlimited) on desktop, `512 MiB` on mobile | Files above it stay on the server and appear under **Show remote-only files**, to fetch on demand. | On a phone with room to spare, or one with none. `0` means unlimited. Sizes read as `1 MB`, `2 GB` (decimal) or `1 MiB`, `2 GiB` (binary); anything else is refused with a notice when you leave the field |
 | **Total to keep on this device** | `0` (unlimited) on desktop, `50 GiB` on mobile | Above this total, new files stay remote-only. | Same |
 | **Save to server** → **Save** | — | Sends the name and both ceilings together, so the dashboard shows what this device will actually hold. | After changing any of the three above |
 | **Leave this server** → **Leave** | — | Revokes THIS device on the server, then forgets the server address, the edge headers, the sync cursor and every file record. Every note stays in the vault. | Retiring this device, or handing the computer on |

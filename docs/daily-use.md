@@ -20,7 +20,8 @@ Every command is under **Self Hosted Private Sync** in the command palette
 | Open dashboard | Mints a one-time dashboard sign-in link |
 | Open the setup guide | Opens the setup guide in your browser |
 
-The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
+The status bar reads `obsync: not paired` before pairing, then `obsync: idle`
+(`obsync: idle — syncing no folders` when **Selected folders** is empty),
 `obsync: syncing <n>` while `n` files are in flight, `obsync: offline —
 retrying` when the server cannot be reached, and `obsync: error — <reason>`
 when sync has stopped and needs you.

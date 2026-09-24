@@ -392,6 +392,19 @@ test("a failed save of a widening restores the cursor the device had", async (t)
   assert.equal(restarts(), 0);
 });
 
+test("a device that syncs no folders says so in the status bar, not a bare idle (#150)", async (t) => {
+  // S30d: `[]` was stored and the status bar read `obsync: idle`.
+  const { instance } = await plugin(t);
+  const bar = { setText(text) { this.text = text; } };
+  instance.statusEl = bar;
+  instance.engine = { stopAndWait: async () => undefined };
+  await instance.saveSyncFolders([]);
+  assert.equal(bar.text, "obsync: idle — syncing no folders", "the bar still shows what it said before the save");
+  assert.equal(instance.statusText(), "idle — syncing no folders");
+  await instance.saveSyncFolders(["Notes"]);
+  assert.equal(bar.text, "obsync: idle");
+});
+
 test("an unused device can select folders or an explicit empty scope before pairing", async (t) => {
   const { instance, state, saved } = await plugin(t);
   state.data.deviceId = null;
@@ -645,6 +658,56 @@ test("stopping during a feed wait does not acknowledge unapplied metadata", asyn
   await stopped;
   assert.equal(r.state.data.lastSeq, seq);
   assert.equal(r.host.text("Notes/later.md"), null);
+});
+
+/**
+ * SAVE WAITS FOR TRANSFERS, NOT FOR THE LONG POLL (issue #150). A feed parked
+ * in its long poll moves nothing: its answer, once the engine has stopped, is
+ * dropped unread. Waiting it out held every folder Save at "Waiting for
+ * transfers..." for 38-54 s with nothing transferring (S30).
+ */
+test("stopping for a folder change never waits out a long poll that moves nothing, and its late answer writes nothing", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  await engine.start();
+  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
+  let settled = false;
+  const stopping = engine.stopAndWait().then(() => { settled = true; });
+  for (let turn = 0; turn < 20 && !settled; turn++) await new Promise(setImmediate);
+  assert.equal(settled, true, "the stop waited for a long poll with nothing to transfer");
+  await stopping;
+
+  // The server answers after all, as a real one does when its window ends.
+  // A reload may already hold the state this engine would write over.
+  const seq = r.state.data.lastSeq;
+  let saves = 0;
+  const save = r.state.save.bind(r.state);
+  r.state.save = async () => { saves++; return save(); };
+  r.server.releaseFeed();
+  for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
+  assert.equal(saves, 0, "a poll answered after the stop saved the state");
+  assert.equal(r.state.data.lastSeq, seq);
+  assert.equal(r.server.feedWaiters.length, 0, "the stopped feed polled again");
+});
+
+test("an engine started again after a stop runs one feed, never the stopped poll's as well", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  await engine.start();
+  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
+  await engine.stopAndWait();
+  await engine.start();
+  await timers.run(1000, () => r.server.feedWaiters.length === 2);
+  // Both polls answered: the stopped one must end, and only the new one poll again.
+  r.server.releaseFeed();
+  await timers.run(1000, () => r.server.feedWaiters.length !== 0);
+  for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
+  assert.equal(r.server.feedWaiters.length, 1, "two feeds are polling one cursor");
+  const finished = engine.stopAndWait();
+  r.server.releaseFeed();
+  await finished;
 });
 
 test("a queued rename survives a scope-change stop and is published on the next scan", async () => {

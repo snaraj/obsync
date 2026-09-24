@@ -1,0 +1,11 @@
+# M367: a long poll answered after a stop saves the state, over what a reloaded plugin already holds
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1668,7 +1668,6 @@
+     while (live()) {
+       try {
+         const page = await context.transport.changes(context.state.data.lastSeq, 55);
+-        if (!live()) return;
+         await this.track(this.applyPage(context, page));
+       } catch (error) {
+         if (!live()) return;

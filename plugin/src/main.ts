@@ -509,9 +509,20 @@ export class ObsidianHost implements VaultHost {
   async scan(): Promise<VaultStat[] | null> {
     const desktop = this.desktop;
     if (desktop === null) return null;
-    const folders = this.plugin.state.data.syncFolders;
     const files: VaultStat[] = [];
-    for (const root of folders ?? [""]) await this.walk(desktop, root, files, 0);
+    for (const root of this.plugin.state.data.syncFolders ?? [""]) {
+      // ONLY A FOLDER THE VAULT HOLDS UNDER EXACTLY THE SELECTED NAME -- the
+      // question `list()` asks of the same index (issue #150). A walk from the
+      // selection's own spelling reached `Notes/` for a selected `notes` on a
+      // volume that folds case, and reported every note in it under a name no
+      // record held: the device published the folder again as new files
+      // carrying older text, over the other device's newer edits (S30a).
+      if (root !== "" && !(this.plugin.app.vault.getAbstractFileByPath(root) instanceof TFolder)) {
+        this.log("scan decision=skipped reason=not_a_vault_folder");
+        continue;
+      }
+      await this.walk(desktop, root, files, 0);
+    }
     return files;
   }
 
@@ -2147,6 +2158,8 @@ export default class ObsyncPlugin extends Plugin {
         `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
           `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
       );
+      // Redrawn now: whether the status line names an empty selection is this save's to change.
+      this.setStatus(this.statusValue);
     } catch (error) {
       if (this.isCurrent(generation)) {
         this.log("scope decision=failed reason=not_saved");
@@ -2680,7 +2693,9 @@ export default class ObsyncPlugin extends Plugin {
   statusText(): string {
     switch (this.statusValue.kind) {
       case "idle":
-        return this.state.paired ? "idle" : "not paired";
+        // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
+        if (!this.state.paired) return "not paired";
+        return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
       case "syncing":
         return `syncing ${this.statusValue.pending}`;
       case "offline":

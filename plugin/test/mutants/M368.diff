@@ -1,0 +1,12 @@
+# M368: an engine started again runs its stopped feed beside the new one, two polls on one cursor
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1664,7 +1664,7 @@
+    */
+   private async feedLoop(): Promise<void> {
+     const context = this.need();
+-    const live = (): boolean => this.running && this.contextValue === context;
++    const live = (): boolean => this.running;
+     while (live()) {
+       try {
+         const page = await context.transport.changes(context.state.data.lastSeq, 55);

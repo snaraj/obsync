@@ -1,0 +1,14 @@
+# M363: the desktop scan walks a selection typed `notes` into the real `Notes` and republishes its notes with older text
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -517,10 +517,6 @@
+       // volume that folds case, and reported every note in it under a name no
+       // record held: the device published the folder again as new files
+       // carrying older text, over the other device's newer edits (S30a).
+-      if (root !== "" && !(this.plugin.app.vault.getAbstractFileByPath(root) instanceof TFolder)) {
+-        this.log("scan decision=skipped reason=not_a_vault_folder");
+-        continue;
+-      }
+       await this.walk(desktop, root, files, 0);
+     }
+     return files;

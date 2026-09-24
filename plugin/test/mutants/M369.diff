@@ -1,0 +1,12 @@
+# M369: a folder Save no longer waits for the change being downloaded, and the new selection races it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1669,7 +1669,7 @@
+       try {
+         const page = await context.transport.changes(context.state.data.lastSeq, 55);
+         if (!live()) return;
+-        await this.track(this.applyPage(context, page));
++        await this.applyPage(context, page);
+       } catch (error) {
+         if (!live()) return;
+         if (error instanceof ApiError && error.code === "seq_ahead") {

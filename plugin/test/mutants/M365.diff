@@ -1,0 +1,11 @@
+# M365: the status bar keeps saying `idle` after an empty selection is saved, until something else redraws it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2127,7 +2127,6 @@
+           `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
+       );
+       // Redrawn now: whether the status line names an empty selection is this save's to change.
+-      this.setStatus(this.statusValue);
+     } catch (error) {
+       if (this.isCurrent(generation)) {
+         this.log("scope decision=failed reason=not_saved");

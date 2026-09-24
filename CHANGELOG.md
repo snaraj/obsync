@@ -145,6 +145,27 @@ this way, or kept because it held changes this device had not uploaded yet,
 is now announced once rather than again at your next save. Same on desktop
 and mobile. (#146)
 
+**Folder selection and download limits check what you type.** Under
+**Selected folders**, a folder the vault does not have, or an empty list, was
+saved with a plain "saved" while the status bar read `idle` and nothing synced.
+On a Mac, a folder typed in the wrong case (`notes` for `Notes`) stopped sync
+for that folder. A minute later that computer sent the folder's notes out again
+as new files carrying its older text, so the other computer's newer edit ended
+up in a conflict copy, followed by a lasting repair error. Now a folder the
+vault does not have is asked about first, with Cancel as the default. A folder
+typed in the wrong case is saved the way the vault spells it, and a notice says
+so. An empty selection says that nothing will sync, and the status bar reads
+`idle — syncing no folders`. A hidden folder is refused in plain words. A
+computer never sends out a folder under a spelling the vault does not use. A
+selection that 1.1.2 already saved in the wrong case syncs nothing from that
+folder until you save it again. **Largest file to download** and **Total to
+keep on this device** now accept `1 MB` and `2 GB` as well as `1 MiB`. A value
+they cannot read is refused with a notice that lists the accepted forms.
+Before, it stayed on screen unsaved and read "unlimited" after a restart.
+Saving a folder selection no longer shows "Waiting for transfers…" for up to a
+minute when nothing is transferring. Same on desktop and mobile, except that
+only a computer ever sent a folder out under the wrong spelling. (#150)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

@@ -70,7 +70,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, Transport } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { EDITING_WINDOW_MS, Unwritable, applyChange, unwritableText } from "./pull";
@@ -482,7 +482,6 @@ export class SyncEngine {
   private readonly again = new Set<string>();
   private running = false;
   private cancelled = false;
-  private feed: Promise<void> | null = null;
   private heartbeatHandle: unknown = null;
   private repairHandle: unknown = null;
   private scanHandle: unknown = null;
@@ -621,7 +620,10 @@ export class SyncEngine {
       // anything: a start is when the user has most likely just fixed the
       // cause (issue #144).
       void this.track(this.retryParked("start"));
-      this.feed = this.track(this.feedLoop());
+      // Not tracked: only the pages it applies are (`feedLoop`).
+      void this.feedLoop().catch((error: unknown) => {
+        host.log(`feed decision=failed reason=${error instanceof Error ? error.name : "unknown"}`);
+      });
     }
   }
 
@@ -1698,27 +1700,28 @@ export class SyncEngine {
 
   // --- feed --------------------------------------------------------------
 
+  /**
+   * The change feed, one long poll after another.
+   *
+   * A STOP WAITS FOR THE PAGE BEING APPLIED, NEVER FOR THE POLL (issue #150).
+   * A poll parked on the server moves nothing, and its answer after a stop is
+   * dropped unread -- no change applied, no cursor moved, nothing saved, so a
+   * reload that already holds the state is never written over. Tracked whole,
+   * the loop held every folder Save at "Waiting for transfers..." for the
+   * rest of the server's 55 s window with nothing transferring (S30). The
+   * loop belongs to the start that made it: one that outlives a stop never
+   * runs beside the next start's.
+   */
   private async feedLoop(): Promise<void> {
     const context = this.need();
-    while (this.running) {
+    const live = (): boolean => this.running && this.contextValue === context;
+    while (live()) {
       try {
         const page = await context.transport.changes(context.state.data.lastSeq, 55);
-        await this.exclusive(async () => {
-          for (const change of page.changes) {
-            if (!this.running) break;
-            await this.receive(context, change);
-            context.state.data.lastSeq = change.seq;
-          }
-        });
-        if (!this.running) {
-          await context.state.save();
-          return;
-        }
-        context.state.data.lastSeq = page.seq;
-        await context.state.save();
-        if (page.changes.length > 0) this.status(this.resting());
+        if (!live()) return;
+        await this.track(this.applyPage(context, page));
       } catch (error) {
-        if (!this.running) return;
+        if (!live()) return;
         if (error instanceof ApiError && error.code === "seq_ahead") {
           context.host.log("feed decision=resync reason=seq_ahead");
           context.state.data.lastSeq = 0;
@@ -1870,6 +1873,28 @@ export class SyncEngine {
     this.armParkRetry();
     context.host.log(`feed decision=released file=${fileId} parked=${Object.keys(context.state.data.parked).length}`);
     return true;
+  }
+
+  /**
+   * One page of the feed, in order; a stop ends it after the change in hand.
+   * Its records are applied one pull at a time beside a retry pass
+   * (`exclusive`), and a record this device cannot write is parked (`receive`).
+   */
+  private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+    await this.exclusive(async () => {
+      for (const change of page.changes) {
+        if (!this.running) break;
+        await this.receive(context, change);
+        context.state.data.lastSeq = change.seq;
+      }
+    });
+    if (!this.running) {
+      await context.state.save();
+      return;
+    }
+    context.state.data.lastSeq = page.seq;
+    await context.state.save();
+    if (page.changes.length > 0) this.status(this.resting());
   }
 
   // --- reconciliation, the periodic scan and the heartbeat ---------------
