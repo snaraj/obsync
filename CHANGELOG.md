@@ -5,6 +5,35 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.1 - 2026-09-23
+
+**Sync resumes by itself when the server becomes reachable again.** Until now a
+device that opened Obsidian while its server could not be reached -- a laptop
+waking before Wi-Fi, a phone away from the home network, a server restarting --
+stopped with `obsync: error` and stayed stopped until someone ran **Sync now**.
+It now keeps trying on its own: 5 s after the failed start, doubling to every
+5 minutes, for as long as Obsidian is open, and at once when the device reports
+its network back. The status bar and the settings **Connection** row say
+`obsync: offline — retrying` while it waits, and go back to `idle` the moment a
+start gets through. Nothing needs pressing when you return; **Sync now** only
+makes the next attempt happen now.
+
+**A refusal is still a stop.** A revoked or unapproved device, a signature the
+server rejects, a clock too far off, a server that has run out of space, or a
+vault key that does not open the vault's records still show
+`obsync: error — <reason>` and are never retried by a timer: those need you, and
+knocking again would not change the answer. The plugin tells the two apart by
+what the server said, not by the wording of a message.
+
+**Same on every platform.** Desktop and mobile use the same timer and the same
+`online` event. On a phone, a pause that runs out while Obsidian is in the
+background fires when the app returns to the foreground.
+
+Each scheduled retry, each retry run, each resume and each stop writes one line
+to the developer console (`engine decision=retry_scheduled ...`,
+`decision=retrying`, `decision=resumed`, `decision=stopped reason=start_failed`),
+so a device that is not syncing says why.
+
 ## 1.1.0 - 2026-09-22
 
 **Folders sync now -- an empty one reaches your other devices, and a deleted

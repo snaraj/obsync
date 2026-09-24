@@ -1,0 +1,12 @@
+# M118: leaving the server leaves the reconnect armed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2163,8 +2163,6 @@
+       await this.engine?.stopAndWait();
+       assertCurrent();
+       this.engine = null;
+-      // No timer may start an engine while the credential is being given up.
+-      this.cancelReconnect();
+       this.cancelHistories();
+       await Promise.allSettled(this.manualFetches);
+       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);

@@ -1,0 +1,13 @@
+# M119: a folder-selection change carries the old reconnect cycle on
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1959,9 +1959,6 @@
+       await this.engine?.stopAndWait();
+       assertActive();
+       this.engine = null;
+-      // A retry that fired into a failed save would restart sync under a
+-      // status that says it is stopped; the start at the end owns resumption.
+-      this.cancelReconnect();
+       await Promise.allSettled(this.manualFetches);
+       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+       assertActive();

@@ -20,8 +20,18 @@ Every command is under **Self Hosted Private Sync** in the command palette
 | Open dashboard | Mints a one-time dashboard sign-in link |
 
 The status bar reads `obsync: not paired` before pairing, then `obsync: idle`,
-`obsync: syncing <n>` while `n` files are in flight, `obsync: offline` when the
-server is unreachable, and `obsync: error — <reason>` when sync has stopped.
+`obsync: syncing <n>` while `n` files are in flight, `obsync: offline —
+retrying` when the server cannot be reached, and `obsync: error — <reason>`
+when sync has stopped and needs you.
+
+`offline — retrying` clears itself. A device that opens Obsidian away from its
+server -- a laptop waking before Wi-Fi, a phone off the home network, a server
+restarting -- keeps trying on its own, 5 s apart at first and every 5 minutes
+at most, and starts the moment the device reports its network back. Nothing
+needs pressing when you return; **Sync now** only makes the next attempt
+happen now. `error` is different: it names a refusal the plugin will not retry
+by itself, such as a revoked device or a clock too far off, and the reason
+says what to do.
 
 ## What syncs and what does not
 

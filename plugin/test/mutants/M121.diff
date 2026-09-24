@@ -1,0 +1,12 @@
+# M121: online starts an engine whether or not a retry is pending
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1801,7 +1801,7 @@
+ 
+   /** Run the pending reconnect now -- the timer's own turn, or the device saying its network is back. */
+   private retryNow(reason: string): void {
+-    if (!this.takeReconnectTimer()) return;
++    this.takeReconnectTimer();
+     this.log(`engine decision=retrying attempt=${this.reconnect?.attempt ?? 0} reason=${reason}`);
+     void this.startEngine();
+   }

@@ -1,0 +1,11 @@
+# M116: a start leaves the pending reconnect timer armed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1736,7 +1736,6 @@
+     // Whoever asked for this start owns it: a reconnect still pending would
+     // be a second engine, so its timer is taken here and its count carried,
+     // and the start below either closes the cycle or continues it.
+-    this.takeReconnectTimer();
+     this.cancelHistories();
+     const previous = this.engine;
+     await previous?.stopAndWait();

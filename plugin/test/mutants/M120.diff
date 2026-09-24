@@ -1,0 +1,11 @@
+# M120: a start that succeeded does not close the reconnect cycle
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1754,7 +1754,6 @@
+       await engine.start();
+       if (this.engine === engine && this.reconnect !== null) {
+         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
+-        this.reconnect = null;
+         // A quiet start emits no status of its own -- the drain speaks only
+         // when there is work -- so the `offline` this cycle set is cleared
+         // here, and only that: a `syncing` the new engine already raised is
