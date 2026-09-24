@@ -1,8 +1,8 @@
 # M244: a Sync now that finds a bulk deletion shows two notices about the one hold it just took
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2230,7 +2230,7 @@
-     await this.reconcile();
+@@ -2849,7 +2849,7 @@
+     await this.reconcile(true);
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).
 -    if (pending && this.heldDeletions.length > 0) {

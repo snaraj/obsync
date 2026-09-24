@@ -20,7 +20,7 @@ async function fixture(t, initial = null) {
   instance.saveData = async (value) => { if (hooks.save) await hooks.save(); metadata = structuredClone(value); writes.push(metadata); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.18" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };

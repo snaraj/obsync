@@ -535,13 +535,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private async setUp(): Promise<void> {
     if (!(await this.applyScopeDraft())) return;
     await this.plugin.setUpAccount(this.draftToken, ACCOUNT_NAME);
-    if (this.plugin.state.data.deviceId !== null) this.draftToken = "";
-    this.update();
+    if (this.plugin.state.data.deviceId !== null) {
+      this.draftToken = "";
+      this.left(); // Re-enrollment replaces the identity behind the device list.
+    } else this.update();
   }
 
   private async pairThisDevice(): Promise<void> {
     if (!(await this.applyScopeDraft())) return;
-    new PairClaimModal(this.app, this.plugin).open();
+    new PairClaimModal(this.app, this.plugin, undefined, () => { this.left(); }).open();
   }
 
   private deviceName(visible: () => boolean): Row {
@@ -703,8 +705,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private readDevices(): void {
     if (this.readingDevices) return;
     this.readingDevices = true;
+    const { deviceId, serverUrl } = this.plugin.state.data;
+    const current = (): boolean => deviceId === this.plugin.state.data.deviceId && serverUrl === this.plugin.state.data.serverUrl;
     void this.plugin.listDevices()
-      .then((devices) => { this.deviceList = devices; }, (error: unknown) => { this.deviceListError = `The device list is unavailable: ${message(error)}`; })
+      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => { if (current()) this.deviceListError = `The device list is unavailable: ${message(error)}`; })
       .finally(() => {
         this.readingDevices = false;
         this.update();

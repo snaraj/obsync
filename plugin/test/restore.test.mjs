@@ -30,6 +30,7 @@ const c = require("../build/crypto.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { probeFeed, recoverLost, seenBefore } = require("../build/sync/restore.js");
 const { applyChange } = require("../build/sync/pull.js");
+const { sidDigest } = require("../build/sync/push.js");
 const { Transport } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -413,7 +414,11 @@ test("a normal restart over history retention pruned sends one probe and publish
   // folder was outside the selection).
   delete r.state.fileByPath(`Notes/${M}.md`).ts;
   r.host.seed("Notes/H.md", "H SENTINEL", 1000);
-  r.state.setFile("Notes/H.md", { fileId: H, versionId: "9f".repeat(32), mtime: 1000, size: 10, sha256: "", ts: OLD });
+  // A real pushed record holds the digest of these bytes. Sync now verifies
+  // it even when its metadata matches (#179), so an empty digest would now
+  // model an unpushed local edit rather than a retention-pruned old version.
+  const hDigest = await sidDigest([(await c.encryptChunk(r.keys.domainKey, enc("H SENTINEL"))).sid]);
+  r.state.setFile("Notes/H.md", { fileId: H, versionId: "9f".repeat(32), mtime: 1000, size: 10, sha256: hDigest, ts: OLD });
 
   // Retention: each moved note keeps its ten newest versions.
   for (const id of [S, M]) {

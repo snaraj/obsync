@@ -31,6 +31,27 @@ connectivity, with no public hostname -- is described in
 [platform onboarding](platform-onboarding.md) and
 [architecture](architecture.md) section 10.
 
+## Bring your own network and hosting
+
+A homelab needs no provider-specific integration. Use the Compose example below
+for a new host, or put the bare server behind the HTTPS reverse proxy you
+already operate. A VPN supplies a route to that endpoint; it does not remove
+the plugin's HTTPS requirement. With your own proxy, use `OBSYNC_EDGE=none`
+and trust forwarded addresses only from that proxy's actual network. Leave
+**Edge service-token headers** empty unless your chosen front end requires them.
+
+The server does not provision your DNS, VPN, router, certificate or firewall.
+Choose those independently. Keep its plain-HTTP port private to the trusted
+TLS terminator, preserve request methods, paths, bodies and authentication
+headers, and allow the long-polling and upload budgets described below.
+A third-party TLS terminator sees authentication traffic; put the terminator
+on hardware you control when that trust boundary matters to you.
+
+For upstream network details, see [Docker port publishing](https://docs.docker.com/engine/network/port-publishing/)
+and the [WireGuard quick start](https://www.wireguard.com/quickstart/).
+A published bind address selects the receiving interface; routing and firewall
+policy still decide which clients can reach it.
+
 ## Already have a TLS terminator: Docker
 
 Deploy by digest, never by tag. The image and chart are signed keyless by

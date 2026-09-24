@@ -5,8 +5,8 @@
      if (!this.live) return;
      this.onLeft();
      this.close();
--    if (mode === "pair") new PairClaimModal(this.app, this.plugin).open();
-+    if (true) new PairClaimModal(this.app, this.plugin).open();
+-    if (mode === "pair") new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
++    if (true) new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
      else new AccountSetupModal(this.app, this.plugin).open();
    }
  }

@@ -1,0 +1,11 @@
+# M554: every held local rewrite sends another control lookup
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -15,7 +15,6 @@
+ export async function publishPause(context: SyncContext, target: string, path: string, paused: boolean): Promise<void> {
+   const started = context.now();
+   const held = context.state.data.paused[target];
+-  if (paused && held !== undefined && announced.has(held)) return;
+   const fileId = await pauseId(context, target);
+   let parents: string[];
+   try {

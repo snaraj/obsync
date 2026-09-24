@@ -23,5 +23,36 @@ The delete-versus-edit regression includes two independently syncing clients,
 a startup upload racing settlement, preserved deletion history, replay, and a
 later edit. See [the research and decision record](2026-09-24-delete-edit-research.md).
 
-These are automated results. Current native desktop and phone acceptance and
-setup screenshots remain outstanding and are not claimed here.
+## Native pairing
+
+Two isolated profiles of unmodified desktop Obsidian 1.13.7 paired through
+the native interface. The approving device named the claimant's disposable
+vault and its **215 notes** before approval. The candidate bundle SHA-256 was
+`301a1d13f38cc799254d5f6871cac8e65d6d5462bf3c37f408dfe0571d6dc544`.
+After approval both vaults held the same 217 files with identical contents.
+
+![The approving device names the new device's vault and note count](../assets/pairing-approve-vault.png)
+
+The screenshot crops the actual approval dialog after the pairing-code
+display was closed; it contains no code or credential. The quickstart uses
+this capture to explain what the approving person should check. The later
+settings refresh fix is covered by modal-close callback regressions.
+
+## Native delete-versus-edit
+
+On candidate bundle
+`7557e642f146659c8dfe3cf0e974f405d8ca904d6364898102ddaf5a92d3efed`, the
+second desktop's sync was disabled through Community plugins. Its native
+editor appended a sentence while the first desktop deleted the same
+disposable note through **Delete current file**. The first desktop had
+published a tombstone before the second reconnected.
+
+Re-enabling sync restored the edited note on both devices, with the same
+SHA-256 and no conflict copy. Eleven observations over 300.1 seconds found
+unchanged file records, unchanged contents and no new copy. A separate
+same-line offline conflict ended with one copy and both sentences preserved;
+[its real screenshot](../conflicts.md) illustrates the user-facing outcome.
+No repeating notice was observed. The automated server test, rather than a
+native screenshot, proves the single current head and retained tombstone.
+
+Current-candidate phone acceptance remains separate from these desktop checks.

@@ -66,7 +66,7 @@ test("the command palette offers the guide before the device is paired", async (
   plugin.registerEvent = () => {};
   plugin.registerObsidianProtocolHandler = () => {};
   plugin.log = () => {};
-  plugin.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  plugin.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   plugin.manifest = { version: "1.1.1" };
   await plugin.onload();
   t.after(() => plugin.onunload());

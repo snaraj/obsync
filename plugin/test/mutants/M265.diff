@@ -1,11 +1,12 @@
 # M265: a device with no credential cannot restore its phrase before setup: the check asks a server it cannot sign for
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2358,7 +2358,6 @@
+@@ -2632,7 +2632,7 @@
     */
    async vaultKeyStrands(vrk: string): Promise<boolean> {
      const { state, transport } = this.captureSession();
--    if (state.data.deviceId === null) return false;
+-    if (state.data.deviceId === null || this.forgottenDevice) return false;
++    if (this.forgottenDevice) return false;
      if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
      // Versions, not the journal head: account and device frames move the
      // head of a server that holds no vault yet.

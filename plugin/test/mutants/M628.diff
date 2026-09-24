@@ -1,0 +1,12 @@
+# M628: Resume replaces an independent remote copy edit
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2362,7 +2362,7 @@
+     const head = file.versions.find((entry) => entry.version_id === file.heads[0]);
+     if (head === undefined) return fail("missing_head");
+     const current = await decryptRecordManifest(context, { ...head, file_id: id, domain_id: file.domain_id });
+-    if (current.deleted || current.path !== path || !known(await sidDigest(current.chunks.map((chunk) => chunk.sid)))) return fail("remote_edit");
++    if (current.deleted || current.path !== path) return fail("remote_edit");
+     const writer = await context.host.writer(path);
+     try {
+       await writer.write(mine);

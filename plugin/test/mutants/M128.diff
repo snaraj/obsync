@@ -1,8 +1,8 @@
 # M128: the yielding device does not record the lower id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2996,7 +2996,6 @@
-     );
+@@ -3168,7 +3168,6 @@
+     context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
      return "skipped";
    }
 -  await recordAt(context, change, manifest.path, stat);

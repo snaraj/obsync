@@ -43,6 +43,11 @@ The lost device keeps whatever plaintext was already in its vault folder. That
 is a device-security problem (disk encryption, remote wipe), not something a
 sync server can undo.
 
+The confirmation explains how to return before you revoke the device. This
+capture uses a disposable desktop device named by its role:
+
+![Revocation confirmation explains pairing and recovery and offers Cancel first](assets/account-recovery/142-revoke-warning.png)
+
 ## A device's plugin data is gone, but other devices still sync
 
 A reinstall, a cleared secret storage, or a vault copied without its
@@ -60,6 +65,10 @@ of them is recovery:
   button only when you are deliberately starting over.
 
 ## Every device is gone
+
+If you still have the server's setup token and this vault's recovery phrase,
+you can get back in without a second working device once recovery has been
+registered. You do not need to delete your vault or create a different key.
 
 With server and plugin 1.1.3 or later, use the **setup token and the vault's
 24-word recovery phrase** together. The token alone cannot re-enrol a device.
@@ -99,6 +108,18 @@ device ID, feed cursor and sync records while keeping local notes, the vault
 key, server address and access headers. It sets up an empty rebuilt server or
 re-enters a recoverable existing account. No uninstall is needed. **Pair this
 device** can instead obtain a new credential from a device that still syncs.
+
+The updated settings show the action directly when a device is forgotten:
+
+![Forgotten-device explanation and Set up or recover action, with the token field empty](assets/account-recovery/142-forgotten-device-recovery.png)
+
+After recovery, the new active device appears beside the old revoked one:
+
+![One replacement device and its revoked predecessor](assets/account-recovery/142-recovered-device.png)
+
+These desktop captures use a disposable vault. The
+[native recovery record](validation-runs/2026-09-24-account-recovery.md)
+names the tested build and confirms that all 217 local files were unchanged.
 
 ## The server is rebuilt from a volume backup
 
@@ -216,6 +237,11 @@ server, a second one you are migrating to, or a laptop's test server you are
 done with. The device credential is bound to the server that minted it, so
 changing **Server URL** alone yields the forgotten-device message.
 
+The confirmation explains what stays on this device and what it forgets.
+Choose **Cancel** to keep using the current server.
+
+![The Switch server confirmation keeps notes and the vault key, and explains which sync settings are forgotten](assets/account-recovery/142-switch-warning.png)
+
 1. On the device, **This device** → **Leave this server** → **Switch server**.
    It revokes this device on the old server, forgets the server address, the
    edge headers, the feed cursor and every file record, and then asks for the
@@ -233,10 +259,10 @@ changing **Server URL** alone yields the forgotten-device message.
    leaves. Keep the old server's setup token and vault phrase if you need to
    return to its history later.
 
-Pairing again is a first sync for this device, so anything the new server
-already holds at the same path arrives beside the local note as a conflict
-copy ([`conflicts.md`](conflicts.md)). Nothing in the vault is deleted at any
-point.
+Pairing again is a first sync for this device. Identical notes stay one note.
+If the local and server versions differ at the same path, both are kept for
+you to compare ([Conflicts](conflicts.md)). Leaving the old server does not
+delete your local notes.
 
 ## Moving the server to a new address
 

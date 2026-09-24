@@ -1,12 +1,12 @@
 # M279: First-time setup on a server that holds a vault shows the raw server code instead of 'one server holds one vault'
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2416,7 +2416,7 @@
+@@ -2710,7 +2710,7 @@
        this.log(`setup decision=failed reason=${code}`);
        // One server holds one vault (#141): the one route left after this
        // refusal, pairing, would merge a second vault into the first.
 -      const text = code === "already_set_up"
 +      const text = code === "already_set_up_"
-         ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device with a code from a device that syncs it; a different vault needs a server of its own."
-         : error instanceof Error ? error.message : String(error);
-       new Notice(`obsync: ${text}`, 12000);
+         ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device from a device that syncs it, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own."
+         : code === "recovery_unavailable"
+           ? "This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost. Use Pair this device from a device that still syncs it, then update that device and server to register recovery; a different vault needs a server of its own."

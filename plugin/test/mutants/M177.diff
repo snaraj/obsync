@@ -1,12 +1,12 @@
 # M177: Check before setup asks the signed read, which only says not paired
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -267,7 +267,7 @@
+@@ -278,7 +278,7 @@
              // the one moment a person most needs to know whether the address
              // works (2026-09-24 battery, S08; #137). The plugin manifest is the
              // route that needs no credential.
 -            const check = this.plugin.state.paired
 +            const check = true
                ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
-               : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: First-time setup on your first device, or Pair this device.");
+               : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
              void check

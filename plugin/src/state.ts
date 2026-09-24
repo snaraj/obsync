@@ -190,6 +190,15 @@ export interface ObsyncData {
    * skipped it: forgetting it would lose that change on this device for good.
    */
   parked: Record<string, ParkedRecord>;
+  /**
+   * File id to a note this device stopped syncing because something here
+   * rewrote it right after another device's version arrived, on the lines
+   * that device changed too -- two plugins stamping it, as a rule
+   * (`sync/pull.ts`, `rewriteStorm`; issue #179). Nothing about it is
+   * published or applied until the user resumes it, so it is persisted: a
+   * restart must not start the bounce again unasked.
+   */
+  paused: Record<string, { path: string; remote?: true }>;
   /** The last feed entry processed, `null` until the first (issue #145). */
   feedMark: FeedMark | null;
   /** File id to the tombstone this device published or applied for it. */
@@ -214,6 +223,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     retiredRoots: {},
     folderBarriers: [],
     parked: {},
+    paused: {},
     feedMark: null,
     graves: {},
     policy: defaultPolicy(isMobile),
@@ -365,6 +375,12 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // the reason only chooses words, so a damaged one keeps the record.
       if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
       data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+    }
+  }
+  const paused = loaded["paused"];
+  if (isRecord(paused)) {
+    for (const [fileId, record] of Object.entries(paused)) {
+      if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"], ...(record["remote"] === true ? { remote: true } : {}) };
     }
   }
   // The mark names a request path and the graves a request path and a
@@ -633,6 +649,7 @@ export class State {
     // too: a mark carried to the next server would read its journal as a
     // restored one.
     this.data.parked = {};
+    this.data.paused = {};
     this.data.feedMark = null;
     this.data.graves = {};
     this.data.remoteOnly = {};

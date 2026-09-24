@@ -1,0 +1,11 @@
+# M494: a failed Resume drops the hold
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1995,7 +1995,6 @@
+           }
+           await publishPause(context, id, entry.path, false);
+         } catch (error) {
+-          paused[id] = entry;
+           outcome = `failed_${error instanceof ApiError ? `http_${error.status}` : "error"}`;
+         }
+         await context.state.save();

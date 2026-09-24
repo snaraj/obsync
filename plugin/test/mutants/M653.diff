@@ -1,12 +1,12 @@
 # M653: startup push bypasses the publication queue
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -241,7 +241,7 @@
- }
+@@ -258,7 +258,7 @@
  
- export function pushFile(context: SyncContext, path: string, force = false, over?: string[]): Promise<PushOutcome> {
--  return serialPublication(context, path, () => publishFile(context, path, force, over));
-+  return publishFile(context, path, force, over);
+ export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+   // Resume selects and preserves heads only after an earlier upload is acknowledged.
+-  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
++  return (async () => publishFile(context, path, force, typeof over === "function" ? await over() : over))();
  }
  
  /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */

@@ -31,23 +31,10 @@ NOTES = {
         "  co-typing tests see the difference. Its subject line is unchanged."
     ),
     "M26": (
-        "- WHY IT SURVIVES NOW AND DID NOT BEFORE, which is the reason this file\n"
-        "  is generated rather than typed. Every earlier run recorded one kill for\n"
-        "  it, always from the same test: `a remote rename that also edits the\n"
-        "  note downloads it rather than renaming`. That test waited for the\n"
-        "  note's TEXT and then asserted on its RECORD, so under any mutation that\n"
-        "  added a step it read a record not yet written and died of\n"
-        "  `undefined.fileId` -- which is not a fact about this mutant. The wait\n"
-        "  is correct now, the phantom is gone with it, and the true state of the\n"
-        "  guard is visible: nothing here tells `pushOne` queueing the follow-up\n"
-        "  it remembered from `pushOne` forgetting it. Reaching that needs a\n"
-        "  second request for a path WHILE it is being pushed, which the drain\n"
-        "  does not produce -- it is awaiting the batch that holds the push, so\n"
-        "  the second request waits in the queue and is served as an ordinary\n"
-        "  push afterwards. The route that does produce it is the pull path\n"
-        "  asking out of turn. The guard is kept: it is review round 2, finding 3,\n"
-        "  where the consequence was an engine reporting idle with an edit that\n"
-        "  had gone nowhere."
+        "- The previous coverage gap is closed. A pull publication now joins an\n"
+        "  older blocked upload, with no watcher or periodic scan to rescue it;\n"
+        "  dropping the remembered follow-up leaves the latest edit unposted.\n"
+        "  Both M25 and M26 are killed by that behavioral regression."
     ),
 }
 

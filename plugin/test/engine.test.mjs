@@ -1723,10 +1723,11 @@ test("sync now waits for the drain already running, and says which decision it t
   );
 
   // The other decision, so the line distinguishes two states rather than
-  // always naming one: nothing queued, no drain running.
+  // always naming one: no drain running; Sync now verifies the two records
+  // even when their metadata has not changed (#179).
   await engine.syncNow();
   assert.ok(
-    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=0 follow_up=0")),
+    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=1 in_flight=1 follow_up=0")),
     host.logs.join(" | "),
   );
   engine.stop();
@@ -1783,8 +1784,39 @@ test("sync now drains again for work queued after the drain it joined took its l
   assert.equal(state.fileByPath("Two.md") !== undefined, true);
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=1 follow_up=1")),
+      line.startsWith("sync_now decision=joined_running_drain queued=3 in_flight=1 follow_up=1")),
     host.logs.join(" | "),
   );
   engine.stop();
+});
+
+
+test("a pull publication joining an older upload still sends the edit made while it waited", async (t) => {
+  const r = await rig(), timers = new FakeTimers();
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers });
+  t.after(() => engine.stop());
+  await engine.start();
+  r.host.seed("joined.md", "older upload\n", 1000);
+  const post = r.transport.postVersion.bind(r.transport);
+  const started = deferred(), release = deferred();
+  let first = true;
+  r.transport.postVersion = async (...args) => {
+    if (first) { first = false; started.resolve(); await release.promise; }
+    return post(...args);
+  };
+  const older = engine.context.publish("joined.md");
+  await started.promise;
+  r.host.seed("joined.md", "latest edit made while upload waited\n", 2000);
+  // This is the out-of-turn pull caller. No watcher event or periodic scan
+  // supplies the second publication for it.
+  const joined = engine.context.publish("joined.md");
+  release.resolve();
+  await Promise.all([older, joined]);
+  for (let i = 0; i < 1000 && r.state.fileByPath("joined.md")?.mtime !== 2000; i++) await new Promise(setImmediate);
+  const record = r.state.fileByPath("joined.md");
+  assert.equal(record.mtime, 2000, "the joined request was dropped after the older acknowledgment");
+  assert.equal(record.size, new TextEncoder().encode("latest edit made while upload waited\n").length);
+  const file = r.server.files.get(record.fileId);
+  assert.equal(file.versions.length, 2);
+  assert.deepEqual(file.heads, [record.versionId]);
 });

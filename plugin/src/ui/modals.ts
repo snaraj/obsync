@@ -233,6 +233,7 @@ export class PairClaimModal extends Modal {
     app: App,
     private readonly plugin: ObsyncPlugin,
     code?: string,
+    private readonly afterClose: () => void = () => undefined,
   ) {
     super(app);
     this.code = code ?? "";
@@ -262,6 +263,7 @@ export class PairClaimModal extends Modal {
   override onClose(): void {
     this.waiting = false;
     this.contentEl.empty();
+    this.afterClose();
   }
 
   private async claim(): Promise<void> {
@@ -389,7 +391,7 @@ const LEAVE_KEPT =
 const LEAVE_LOST =
   "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any edge service-token headers, its place in the change feed and its record of every synced file. No other device is touched.";
 const LEAVE_AGAIN =
-  "Pairing again — with this server or another — is a first sync for this device. Where the server already holds a note at the same path, the local note stays and the server's copy arrives beside it as a conflict copy.";
+  "Pairing again — with this server or another — is a first sync for this device. Identical notes stay one note. If a local note differs from the server's note at the same path, both versions are kept for you to review.";
 const LEAVE_UNKNOWN_DEVICE =
   "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave LOCALLY: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
 const LEAVE_LAST_DEVICE =
@@ -466,15 +468,13 @@ export class LeaveServerModal extends Modal {
       }
     }
     const leaving = this.mode === "switch" ? "Leave and switch" : "Leave";
-    this.cancel(
-      new Setting(this.contentEl).addButton((button) =>
-        button
-          .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
-          .setDestructive()
-          .onClick(() => {
-            void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
-          }),
-      ),
+    this.cancel(new Setting(this.contentEl)).addButton((button) =>
+      button
+        .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
+        .setDestructive()
+        .onClick(() => {
+          void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
+        }),
     );
   }
 
@@ -504,15 +504,13 @@ export class LeaveServerModal extends Modal {
     this.refusal = result.reason;
     this.contentEl.createEl("p", { text: `The server refused to revoke this device: ${result.detail}.` });
     this.contentEl.createEl("p", { text: result.reason === "last_device" ? LEAVE_LAST_DEVICE : LEAVE_UNKNOWN_DEVICE });
-    this.cancel(
-      new Setting(this.contentEl).addButton((button) =>
-        button
-          .setButtonText("Leave locally anyway")
-          .setDestructive()
-          .onClick(() => {
-            void this.leave({ ...choice, localOnly: true });
-          }),
-      ),
+    this.cancel(new Setting(this.contentEl)).addButton((button) =>
+      button
+        .setButtonText("Leave locally anyway")
+        .setDestructive()
+        .onClick(() => {
+          void this.leave({ ...choice, localOnly: true });
+        }),
     );
   }
 
@@ -565,7 +563,7 @@ export class LeaveServerModal extends Modal {
     if (!this.live) return;
     this.onLeft();
     this.close();
-    if (mode === "pair") new PairClaimModal(this.app, this.plugin).open();
+    if (mode === "pair") new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
     else new AccountSetupModal(this.app, this.plugin).open();
   }
 }
@@ -763,6 +761,18 @@ export class StatusModal extends Modal {
       const row = table.createEl("tr");
       row.createEl("td", { text: name });
       row.createEl("td", { text: value });
+    }
+    // Every note paused because something here rewrites it after every sync,
+    // each with its own way back (issue #179).
+    for (const [fileId, entry] of Object.entries(data.paused)) {
+      new Setting(this.contentEl)
+        .setName(entry.path)
+        .setDesc("Paused: repeated rewrites after sync were detected on a paired device. Stop the plugin rewriting synced notes, then resume.")
+        .addButton((button) =>
+          button.setButtonText("Resume").onClick(() => {
+            void this.plugin.resumeNote(fileId).then(() => this.close(), fail);
+          }),
+        );
     }
   }
 

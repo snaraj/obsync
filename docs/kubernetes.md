@@ -14,6 +14,19 @@ page is what that reference deliberately leaves to the operator — the volumes,
 the certificate, and the route your phone takes — written from the refusals a
 first activation of this chart actually meets.
 
+## Your cluster, your route
+
+A Kubernetes homelab is a supported deployment shape. Cloudflare is optional:
+your own ingress or reverse proxy can terminate HTTPS, and your LAN or VPN can
+carry the private address. Set the chart's ingress peer selectors to the
+terminator you actually run, and choose storage and certificates from your
+own cluster. Keep the server's plain-HTTP Service private to that terminator.
+
+Your network plugin must enforce Kubernetes NetworkPolicy for the chart's
+network restrictions to take effect. Creating the policy object alone does not
+prove enforcement; see the [Kubernetes network-policy requirements](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+The installation checks below still apply whichever networking product you use.
+
 ## 1. Verify what you are about to install
 
 Two artifacts, both signed keyless by this repository's publisher, both

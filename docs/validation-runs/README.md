@@ -1,5 +1,12 @@
 # Validation runs
 
+The 2026-09-24 candidate work has separate records for
+[native desktop checks](2026-09-24-native-1.1.3.md),
+[account recovery](2026-09-24-account-recovery.md),
+[pairing and delete-versus-edit](2026-09-24-pairing-and-deletion.md), and
+[repeated-rewrite recovery](2026-09-24-rewrite-storm.md). Each identifies its
+build and distinguishes observed results from checks still outstanding.
+
 One file per device campaign, named `<date>.md` with the ISO date the run
 STARTED: `2026-09-14.md`. A run record is the evidence behind a readiness
 claim -- what was exercised, on which real devices, against which server, and
@@ -47,3 +54,5 @@ identifier, serial, account name, pairing code, setup token, or recovery
 phrase -- not in the prose, not in pasted command output, not in a capture
 referenced from here. Redact by role. A record that needs a private fact to be
 legible is naming the wrong fact: name the class instead.
+
+- [2026-09-24 native iPhone candidate installation](2026-09-24-phone-candidate.md): manual current-head 1.1.2 installation and its explicit pairing boundary.

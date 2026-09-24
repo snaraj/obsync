@@ -349,7 +349,7 @@ async function loaded(t, root, metadata) {
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
-  instance.app = { workspace: { onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: { getBasePath: () => root }, on: () => ({}) } };
+  instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: { getBasePath: () => root }, on: () => ({}) } };
   instance.manifest = { version: "1.1.3" };
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);

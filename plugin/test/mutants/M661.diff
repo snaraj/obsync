@@ -1,0 +1,12 @@
+# M661: input begun after a background judgment still pauses the typist
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2230,7 +2230,7 @@
+   const judged = context.answering.get(change.file_id);
+   const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+   const arrived = judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
+-  if (arrived === null || context.host.typing(localPath)) return false;
++  if (arrived === null) return false;
+   if (context.state.data.paused[change.file_id] !== undefined) return true;
+   context.state.data.paused[change.file_id] = { path: localPath };
+   await context.state.save();

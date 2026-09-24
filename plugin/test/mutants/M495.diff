@@ -1,0 +1,11 @@
+# M495: Sync now leaves every held note paused
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2836,7 +2836,6 @@
+     const joined = this.draining;
+     const pending = this.heldDeletions.length > 0;
+     // A paused note first, so what it holds is in the pass below (issue #179).
+-    await this.resume();
+     // An explicit repair command verifies content even when a fixed-width
+     // plugin rewrite retained both recorded metadata fields (#179).
+     await this.reconcile(true);

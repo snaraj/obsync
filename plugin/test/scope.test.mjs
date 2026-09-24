@@ -768,7 +768,7 @@ async function lifecyclePlugin(t) {
   instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);

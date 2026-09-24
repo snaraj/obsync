@@ -695,7 +695,17 @@ returns immediately when a new frame lands.
    it to the even second) can give a second save of the same size the same
    `(mtime, size)` as the first, so a push made less than one 2 s step from
    such a time pushes once more when the step has closed; the digest
-   decides, and unchanged bytes post nothing (issue #175).
+   decides, and unchanged bytes post nothing (issue #175). For the same
+   reason a change of a note of at most one chunk is read even when the record
+   already describes its `(mtime, size)`, while another device's version of
+   that note has just arrived -- remembered until the first pass after it is
+   five seconds old: a plugin answering a sync can keep both numbers, a
+   fixed-width stamp the size and a kept modified time the other (issue #179).
+   Startup and periodic scans retain their metadata shortcut. Explicit
+   **Sync now** re-chunks every admitted local file; unchanged digests publish
+   nothing, and a silent same-metadata rewrite is uploaded even long after
+   the arrival window expired. It uses the ordinary bounded streaming push
+   and device budget policy rather than buffering the whole vault.
    Every 30 s the engine also compares its own listing of the vault against
    the local state. On desktop that listing is the filesystem, read directly,
    because Obsidian's index is never fresher than the events it emits: a
@@ -993,6 +1003,54 @@ returns immediately when a new frame lands.
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to
    at most three levels, each one single-chunk text.
+
+   A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
+   five seconds of a received version, without recent trusted Markdown editor
+   input, is marked inside its encrypted manifest as a background answer.
+   Merely showing a note is not input: a passive view can lag a file rewrite
+   and appear unsaved. Captured keyboard and before-input events protect the
+   note for ten seconds (including Obsidian's save debounce); an active IME
+   composition stays protected until composition-end or focus-out. Input is
+   bound to the view and file, including existing and newly opened popouts.
+   Synthetic events cannot claim human input. The current input is checked
+   again before holding a previously judged background answer.
+   A collision involving such an answer, or two successive background
+   answers, persists a hold before making a conflict copy. One encrypted v3
+   control record per note propagates that hold to every updated device,
+   including a device with the note open. Held notes neither publish nor
+   apply; local text stays untouched, one notice describes the hold, and
+   status remains paused after restart. Ordinary typing in two editors does
+   not originate a hold. External editors, custom views and programmatic editor
+   commands without trusted input are not observable as human typing and can
+   trigger a conservative hold if they answer a
+   sync on conflicting lines; the notice says another plugin *may* be involved.
+
+   The device receiving an authenticated background answer can detect the
+   overlap first while its own editor is being typed in. After trying a clean
+   merge, it holds before conflict resolution could replace that editor's
+   saved text. Otherwise the remaining keystrokes would extend an older
+   branch and split one typed line between the note and a copy. The automatic
+   answer's author recognises its own current answer when the control arrives;
+   a same-name local file with a different identity cannot claim that role.
+
+   Resume is explicit on each held device. The background author preserves its local
+   background rewrite beside the note and takes the current note. A peer
+   publishes the text its editor held while paused; foreign live heads are
+   preserved before they are consumed, and a save during the upload leaves
+   the hold in place. The control is cleared only after successful resume.
+   After durably preserving its latest held text, the background author can
+   adopt the sole peer head directly. This keeps a pre-hold fork from making
+   another copy of the editor's branch when the background author resumes
+   first. Multiple heads, missing versions and local-author heads do not
+   qualify; a moved, deleted or multi-chunk peer is refused. A save while
+   fetching the peer leaves the note and hold intact.
+   Current heads, not historical feed frames, determine whether a received
+   pause still applies. Identical controls do not add versions, even after
+   restart; concurrent opposite controls retain both heads with pause winning
+   until the next explicit Resume consumes them. See the wire contract's
+   **Rewrite pause controls** for compatibility: v3 controls live under an
+   opaque id of their own and an older decoder skips them without writing a
+   file. All devices need 1.1.3 for the shared hold to stop a storm.
 
    A conflict copy is published with the create-only writer at the first
    derived name nothing holds, and an occupied name is reused only when its

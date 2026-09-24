@@ -114,8 +114,9 @@ import {
   movedSelection,
   selectionAfterRename,
 } from "../syncScope";
+import { pauseId, publishPause } from "./pause";
 import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, bury, postManifest, pushFile, reviveFile, retire, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, postManifest, pushFile, reviveFile, retire, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -137,6 +138,29 @@ const BATCH_SIDS = Math.max(1, Math.floor(BATCH_BYTES / CHUNK_CIPHERTEXT_MAX));
  * ago". Unsaved text in the editor is kept whatever this says (`openEditing`).
  */
 export const EDITING_WINDOW_MS = 10_000;
+
+/**
+ * THE REWRITE STORM (issue #179). A change here within this long of another
+ * device's version of the note arriving, without recent trusted input, is
+ * not typing: it ANSWERS the sync -- a plugin that stamps `updated:` into
+ * every note that changes, as a rule (`engine.ts`, `answered`). The device
+ * run's stamper answered after one second. A constant, not configuration, as
+ * the merge breaker's are.
+ */
+export const ANSWER_MS = 5000;
+
+/**
+ * The arrival an edit made here at `mtime` ANSWERS, or `null`: made in the
+ * `ANSWER_MS` after another device's version of the note arrived -- timed by
+ * the edit itself, so one made before the version arrived answers nothing --
+ * without recent trusted editor input. An idle open
+ * editor does not exempt a plugin rewrite.
+ */
+export async function answerOf(context: SyncContext, path: string, mtime: number): Promise<number | null> {
+  const arrived = context.arrivals.get(path);
+  if (arrived === undefined || mtime < arrived || mtime - arrived >= ANSWER_MS) return null;
+  return context.host.typing(path) ? null : arrived;
+}
 
 export type ApplyResult =
   | "echo"
@@ -250,8 +274,13 @@ export function parseManifest(json: string): Manifest {
  * record exactly the same refusal — `fileManifest` gives it, because anything
  * that is not 2 has to be 1.
  */
-export function parseEntry(json: string): Manifest | FolderManifest {
+export function parseEntry(json: string): Manifest | FolderManifest | PauseManifest {
   const value = manifestObject(json);
+  if (value["v"] === 3) {
+    if (value["kind"] !== "pause" || typeof value["target"] !== "string" || !isHex(value["target"], 16) || typeof value["paused"] !== "boolean" || value["deleted"] !== false) throw new ManifestError("pause");
+    folderManifest({ ...value, kind: "directory" });
+    return value as unknown as PauseManifest;
+  }
   return value["v"] === 2 ? folderManifest(value) : fileManifest(value);
 }
 
@@ -284,6 +313,7 @@ function fileManifest(value: Record<string, unknown>): Manifest {
   const digest = value["sha256"];
   if (digest !== "" && !digest32(digest)) throw new ManifestError("sha256");
   // A retirement's keeper is a file id, and it goes into a request path (#181).
+  if (value["answer"] !== undefined && value["answer"] !== true) throw new ManifestError("answer");
   const keeper = value["keeper"];
   if (keeper !== undefined && (typeof keeper !== "string" || !isHex(keeper, 16))) throw new ManifestError("keeper");
   const chunks = value["chunks"];
@@ -388,7 +418,7 @@ export function bindManifestToRecord(
  */
 export function bindFolderToRecord(
   record: BoundRecord,
-  manifest: FolderManifest,
+  manifest: FolderManifest | PauseManifest,
   engineDomain: string,
 ): void {
   if (record.domain_id !== engineDomain) throw new ManifestError("record_domain");
@@ -462,13 +492,17 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, from =
 export async function decodeRecordManifest(
   context: SyncContext,
   record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
-): Promise<Manifest | FolderManifest> {
+): Promise<Manifest | FolderManifest | PauseManifest> {
   const entry = parseEntry(await openManifest(context.manifestKey, record));
   // A FOLDER RECORD IS JUDGED BY THE FOLDER RULE, which differs from a file's
   // at the selection root: the selected folder itself has a record, and that
   // record is the only thing that can carry its own rename (`syncScope.ts`,
   // `inFolderScope`; review round 3, finding 1).
-  if (entry.v === 2) {
+  if (entry.v === 3) {
+    bindFolderToRecord(record, entry, context.domainId);
+    assertSyncPath(entry.path, context.state.data.syncFolders);
+    if (await pauseId(context, entry.target) !== record.file_id) throw new ManifestError("pause_id");
+  } else if (entry.v === 2) {
     bindFolderToRecord(record, entry, context.domainId);
     admitFolderRecord(context, entry.path);
   } else {
@@ -854,6 +888,14 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     return "echo";
   }
   if (change.device_id === context.deviceId) return "echo";
+  // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
+  // a push that was in flight when it paused and came back conflicted. Its
+  // versions are asked of the server again, as the file stands then, when it
+  // is resumed (`engine.ts`, `resume`).
+  if (context.state.data.paused[change.file_id] !== undefined) {
+    context.host.log(`pull path_class=file decision=skipped reason=paused file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
   try {
     const entry = await decodeRecordManifest(context, change);
     // NOTHING INTO A VAULT OF ITS OWN, AND NOTHING OUT OF ONE (issue #180):
@@ -892,6 +934,28 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     }
     throw error;
   }
+}
+
+/** A current encrypted pause holds the target on every updated device. */
+async function applyPause(context: SyncContext, change: ChangeRecord, manifest: PauseManifest): Promise<ApplyResult> {
+  const started = context.now();
+  if (!manifest.paused || context.state.data.paused[manifest.target] !== undefined) return "skipped";
+  const file = await context.transport.getFile(change.file_id);
+  // Replaying a pause that a later Resume cleared must not pause it again.
+  if (!file.heads.includes(change.version_id)) return "skipped";
+  const path = context.state.pathByFileId(manifest.target) ?? manifest.path;
+  assertSyncPath(path, context.state.data.syncFolders);
+  // The editor can detect the collision first. The author of the automatic
+  // answer still resumes as that author: preserve its held bytes beside the
+  // editor's note, rather than publishing them over the editor on Resume.
+  if (context.state.fileByPath(path)?.fileId === manifest.target &&
+    await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
+  if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+  context.state.data.paused[manifest.target] = { path, remote: true };
+  await context.state.save();
+  context.host.log(`pull decision=paused reason=peer_rewrite_storm file=${manifest.target} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+  context.host.notify(`obsync paused syncing ${path}: another device detected repeated rewrites after sync. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+  return "skipped";
 }
 
 /**
@@ -1332,9 +1396,11 @@ function notifyFolderCase(context: SyncContext, folder: string): void {
   );
 }
 
-async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest): Promise<ApplyResult> {
+async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest): Promise<ApplyResult> {
+  if (entry.v === 3) return await applyPause(context, change, entry);
   if (entry.v === 2) return await applyFolder(context, change, entry);
   const manifest = entry;
+  if (manifest.answer === true && await rewriteStorm(context, change, manifest.path)) return "skipped";
   // `let`, because a case-only move renames the entry and then continues
   // down the ordinary path under the new spelling (issue #124).
   let localPath = context.state.pathByFileId(change.file_id);
@@ -1957,10 +2023,12 @@ async function reconcile(
     );
     if (!context.refused.has(change.file_id)) {
       context.refused.add(change.file_id);
+      // What was seen, and nothing it cannot know: this device cannot tell
+      // what the others run, so it blames none of them (issue #179).
       context.host.notify(
         `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a row ` +
           `in under a minute without the note changing here. Every device keeps the same version as the note and ` +
-          `the other beside it as a copy. Check that every device syncing this vault is up to date.`,
+          `the other beside it as a copy.`,
       );
     }
   }
@@ -2138,10 +2206,67 @@ async function resolve(
     }
   }
 
+  // Two sides that do not merge, and this one a plugin's answer to a sync:
+  // the storm, held here before it makes a copy (issue #179).
+  if (await rewriteStorm(context, change, localPath)) return "skipped";
+  // The other device's authenticated answer can arrive before it sees our
+  // competing save. Do not first replace an active editor with that older
+  // answer: the next keystrokes would then extend the wrong text, splitting
+  // one typed line between the note and a copy (native S89). Clean merges
+  // above still work, and two people typing carry no background-answer flag.
+  if (theirManifest.answer === true && context.host.typing(localPath)) {
+    if (context.state.data.paused[change.file_id] === undefined) {
+      const started = context.now();
+      context.state.data.paused[change.file_id] = { path: localPath, remote: true };
+      await context.state.save();
+      context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+      context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+    }
+    await publishPause(context, change.file_id, localPath, true);
+    return "skipped";
+  }
   // Not a fork yet: the push of the edit made here makes it one, and the
   // pair is settled then, from the version that edit was made on.
   if (ahead) return await deferToPush(context, change, localPath);
   return await converge(context, file, change, theirManifest, localPath, localVersionId, before, mine, tally);
+}
+
+/**
+ * A background answer colliding with another edit starts a shared hold; two
+ * explicitly marked background answers also stop before a sequential bounce
+ * can make a fork. The encrypted control is separate from the note, so it
+ * never replaces note content or its history. Every updated peer holds its
+ * local bytes, including a peer whose editor is open, until explicit Resume.
+ */
+async function rewriteStorm(context: SyncContext, change: ChangeRecord, localPath: string): Promise<boolean> {
+  // The watcher's verdict on this very edit (`engine.ts`, `answered`) -- or,
+  // for one still unpushed that it has not settled yet, as a plugin's answer
+  // is for the second the watcher waits, the same verdict reached here, so the
+  // note pauses before that answer is ever pushed. A file its record describes
+  // is no edit here at all: a version this device pulled carries the time of
+  // the device that wrote it, which is no answer to anything.
+  const stat = await context.host.stat(localPath);
+  const record = context.state.fileByPath(localPath);
+  if (stat === null || record === undefined) return false;
+  const judged = context.answering.get(change.file_id);
+  const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+  const arrived = judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
+  if (arrived === null || context.host.typing(localPath)) return false;
+  if (context.state.data.paused[change.file_id] !== undefined) return true;
+  context.state.data.paused[change.file_id] = { path: localPath };
+  await context.state.save();
+  context.host.log(
+    `pull decision=paused reason=rewrite_storm file=${change.file_id} seq=${change.seq} ` +
+      `answer_ms=${stat.mtime - arrived} duration_ms=${context.now() - arrived} budget_ms=${ANSWER_MS}`,
+  );
+  context.host.notify(
+    `${localPath} was rewritten on this device right after a sync, on the same lines another device changed. ` +
+      "Another plugin may be rewriting it (for example one that stamps \"updated:\"), and left alone the note " +
+      "would bounce between your devices. obsync paused syncing it here; nothing was deleted. Stop that plugin " +
+      "changing synced notes, then run Sync now, or press Resume in Show sync status.",
+  );
+  await publishPause(context, change.file_id, localPath, true);
+  return true;
 }
 
 /**
@@ -2159,6 +2284,134 @@ async function deferToPush(context: SyncContext, change: ChangeRecord, localPath
   if (held) context.state.setFile(localPath, { ...held, sha256: "" });
   await context.state.save();
   return deferred(context, change, "unpushed_edit");
+}
+
+/** Publish a peer-held editor without silently consuming another live head. */
+export async function publishHeld(context: SyncContext, fileId: string, path: string): Promise<string> {
+  const pushed = await pushFile(context, path, true, async () => {
+    const file = await context.transport.getFile(fileId);
+    const record = context.state.fileByPath(path);
+    for (const head of file.heads) {
+      if (record !== undefined && reaches(file.versions, record.versionId, head)) continue;
+      const version = file.versions.find((entry) => entry.version_id === head);
+      if (version === undefined) throw new Error("missing_head");
+      const manifest = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+      if (!manifest.deleted && await keepLost(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, manifest, null) === null) throw new Error("no_free_name");
+    }
+    return file.heads;
+  });
+  if (pushed.status === "growing") throw new Error("note_changing");
+  context.authored.add(pushed.versionId);
+  return "published_held";
+}
+
+/**
+ * A PAUSED NOTE COMES BACK AS THE OTHER DEVICES HAVE IT (issue #179), and what
+ * this device made of it meanwhile is kept beside it.
+ *
+ * A note is paused because something here kept rewriting it right after every
+ * sync without recent editor input here (`engine.ts`, `answered`), so what it
+ * holds now is that plugin's work on the version this device last had, and the
+ * other devices hold the note someone was typing in. Pushed as it is, the two
+ * would fork on the very line the plugin stamps and the rule would pick a side
+ * by version id. So the bytes this device holds advance the deterministic
+ * copy of its recorded version, retaining the older bytes in history; an
+ * independently edited copy leaves the pause intact. With just one peer head
+ * besides this recorded version, that peer branch becomes the note: this side
+ * is already preserved in the copy and must not make a second copy of the
+ * editor's branch just because this device resumed first. Otherwise the note
+ * is put back to the version this device recorded, over the stat read -- a save landing
+ * meanwhile keeps the note and is settled as any other edit -- and the pull
+ * that follows every resume takes it from there to what the others have, by
+ * the same fast-forward or the same rule every other device applies.
+ *
+ * Anything this cannot do the same way -- a note deleted here, one above one
+ * chunk, a recorded version the server no longer holds or that names another
+ * path -- is left to that ordinary pull and push.
+ */
+export async function resumePaused(context: SyncContext, fileId: string): Promise<string> {
+  const started = context.now();
+  const path = context.state.pathByFileId(fileId);
+  const record = path === undefined ? undefined : context.state.fileByPath(path);
+  if (path === undefined || record === undefined) return "untracked";
+  const before = await context.host.stat(path);
+  if (before === null) return "deleted_here";
+  if (before.size > CHUNK_MAX) return "ordinary";
+  const mine = await context.host.read(path);
+  if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";
+  const file = await context.transport.getFile(fileId);
+  const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
+  if (version === undefined) return "ordinary";
+  const recorded = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+  if (recorded.deleted || recorded.path !== path || recorded.chunks.length !== 1) return "ordinary";
+  const kept = await keepResumed(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, recorded, mine, before.mtime);
+  if (kept === null) return "no_free_name";
+  const other = file.heads.filter((id) => id !== record.versionId);
+  const peer = other.length === 1
+    ? file.versions.find((candidate) => candidate.version_id === other[0] && candidate.device_id !== context.deviceId)
+    : undefined;
+  const restored = peer === undefined ? version : peer;
+  const restore = peer === undefined ? recorded : await decryptRecordManifest(context, { ...peer, file_id: fileId, domain_id: file.domain_id });
+  // A deleted manifest has no chunks, so the one-chunk check also excludes it.
+  if (restore.path !== path || restore.chunks.length !== 1) {
+    context.host.log(`pull decision=refused reason=resume_peer_shape file=${fileId} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+    throw new ManifestError("resume_peer_shape");
+  }
+  const landed = await materialise(context, restore, { ...record, mtime: before.mtime, size: before.size });
+  if (landed === null) return "saved_meanwhile";
+  await recordAt(context, { ...restored, file_id: fileId }, path, landed);
+  context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
+  return "kept_beside";
+}
+
+/**
+ * Resume advances the same copy a peer made of this recorded version. Its
+ * original bytes stay in history; newer held bytes become its next version.
+ * Only the known baseline or this exact held snapshot may occupy that copy:
+ * an independent local edit, remote edit, or fork leaves the note paused.
+ */
+async function keepResumed(
+  context: SyncContext, change: ChangeRecord, version: FileRecord["versions"][number],
+  baseline: Manifest, mine: Bytes, mtime: number,
+): Promise<string | null> {
+  const started = context.now();
+  const fail = (reason: string): never => {
+    context.host.log(`pull decision=refused reason=resume_copy_${reason} file=${change.file_id} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+    throw new Error(`resume_copy_${reason}`);
+  };
+  const path = await keepLost(context, change, version, baseline, null);
+  if (path === null) return null;
+  const id = await conflictFileId(context.manifestKey, change.file_id, version.version_id);
+  const baseDigest = await sidDigest(baseline.chunks.map((chunk) => chunk.sid));
+  const mineDigest = await sidDigest([(await encryptChunk(context.domainKey, mine)).sid]);
+  const known = (digest: string): boolean => digest === baseDigest || digest === mineDigest;
+  const pushed = await pushFile(context, path, false, async () => {
+    // This lookup and write share the copy's publication queue, so an older
+    // upload cannot acknowledge between the parent proof and this publication.
+    const record = context.state.fileByPath(path);
+    if (record?.fileId !== id) return fail("identity");
+    const before = await context.host.stat(path);
+    if (before === null || before.size > CHUNK_MAX) return fail("local_budget");
+    const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);
+    if (!known(localDigest)) return fail("local_edit");
+    const file = await context.transport.getFile(id);
+    if (file.heads.length !== 1) return fail("heads");
+    const head = file.versions.find((entry) => entry.version_id === file.heads[0]);
+    if (head === undefined) return fail("missing_head");
+    const current = await decryptRecordManifest(context, { ...head, file_id: id, domain_id: file.domain_id });
+    if (current.deleted || current.path !== path || !known(await sidDigest(current.chunks.map((chunk) => chunk.sid)))) return fail("remote_edit");
+    const writer = await context.host.writer(path);
+    try {
+      await writer.write(mine);
+      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
+      await landedAt(context, await writer.commit(mtime));
+    } finally { await writer.abort(); }
+    return file.heads;
+  });
+  if (pushed.status === "growing" || pushed.ack?.conflicted === true || context.state.fileByPath(path)?.sha256 !== mineDigest) return fail("publication");
+  context.authored.add(pushed.versionId);
+  context.host.log(`pull decision=resume_copy_advanced file=${change.file_id} copy=${id} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+  return path;
 }
 
 /**

@@ -210,6 +210,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // And a parked record, which names a version on the server being left
     // (`sync/engine.ts`, `park`; issue #144).
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
+    // And a paused note (#179), which names a file id on that server too.
+    paused: { f6: { path: "Notes/stamped.md" } },
     // And the feed mark and the graves (#145), which name entries and
     // versions on the server being left: a mark kept for the next server
     // would read its journal as a restored one.
@@ -225,7 +227,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, feedMark: null, graves: {},
+      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, feedMark: null, graves: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

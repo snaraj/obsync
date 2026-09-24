@@ -1,10 +1,10 @@
 # M263: Restore accepts another vault's phrase and refuses this vault's own
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2359,7 +2359,7 @@
+@@ -2633,7 +2633,7 @@
    async vaultKeyStrands(vrk: string): Promise<boolean> {
      const { state, transport } = this.captureSession();
-     if (state.data.deviceId === null) return false;
+     if (state.data.deviceId === null || this.forgottenDevice) return false;
 -    if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
 +    if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) === null) return false;
      // Versions, not the journal head: account and device frames move the

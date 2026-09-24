@@ -71,7 +71,7 @@ import {
 } from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
-import { fetchRemoteOnly, heldNotes } from "./sync/pull";
+import { EDITING_WINDOW_MS, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
@@ -358,6 +358,9 @@ export class ObsidianHost implements VaultHost {
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
   private readonly nested = new Set<string>();
+  private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
+  private readonly composing = new WeakMap<MarkdownView, string>();
+  private readonly inputWindows = new WeakSet<Window>();
 
   /**
    * `desktop` is the filesystem seam. It is discovered from Electron in the
@@ -1723,6 +1726,34 @@ export class ObsidianHost implements VaultHost {
     return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
   }
 
+  /** A passive editor does not make plugin writes into human typing (#179). */
+  typing(path: string): boolean {
+    return this.plugin.app.workspace.getLeavesOfType("markdown").some(({ view }) => {
+      if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
+      const input = this.inputAt.get(view);
+      return this.composing.get(view) === path ||
+        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
+    });
+  }
+
+  /** Trusted DOM input covers physical keys, paste, touch keyboards and IME. */
+  trackInput(target: Window): void {
+    if (this.inputWindows.has(target)) return;
+    this.inputWindows.add(target);
+    const input = (event: Event): void => {
+      if (!event.isTrusted || event.target === null || !("nodeType" in event.target)) return;
+      for (const { view } of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+        if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
+        if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
+        if (event.type === "compositionstart") this.composing.set(view, view.file.path);
+        if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
+      }
+    };
+    for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {
+      this.plugin.registerDomEvent(target, kind, input, true);
+    }
+  }
+
   notify(message: string): void {
     new Notice(message, 10000);
   }
@@ -1873,6 +1904,8 @@ export default class ObsyncPlugin extends Plugin {
     this.registerObsidianProtocolHandler(`${PAIRING_ACTION}/pair`, pair);
 
     this.registerVaultEvents();
+    this.host.trackInput(window);
+    this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
     // The device's own word that its network is back is the cheapest signal
     // there is, and the one a laptop lid or a phone leaving a tunnel produces;
     // it runs the pending retry now instead of at the timer, and is nothing
@@ -1894,7 +1927,13 @@ export default class ObsyncPlugin extends Plugin {
     // Confirm that would have published them) and every empty folder WAS
     // published as deleted, on every restart, on 1.1.1 too (2026-09-24
     // battery, X1: `reconcile decision=start budget_files=0`).
-    this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => listed())).then(async () => {
+    this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => {
+      for (const { view } of this.app.workspace.getLeavesOfType("markdown")) {
+        const opened = view.containerEl.ownerDocument.defaultView;
+        if (opened !== null) this.host.trackInput(opened);
+      }
+      listed();
+    })).then(async () => {
       if (this.state.paired) await this.startEngine();
       if (this.isCurrent(generation)) void this.checkForUpdate();
     });
@@ -2153,6 +2192,11 @@ export default class ObsyncPlugin extends Plugin {
       return;
     }
     await this.engine.syncNow();
+  }
+
+  /** Resume in Show sync status: sync one paused note again (issue #179). */
+  async resumeNote(fileId: string): Promise<void> {
+    await this.engine?.resume(fileId, "status");
   }
 
   syncContext(): SyncContext | null {
@@ -2934,6 +2978,8 @@ export default class ObsyncPlugin extends Plugin {
         return "offline — retrying";
       case "error":
         return `error — ${this.statusValue.message}`;
+      case "paused":
+        return `paused — ${this.statusValue.message}`;
     }
   }
 

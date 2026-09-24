@@ -688,3 +688,58 @@ test("a download ceiling takes decimal and binary units, and an unreadable one i
     s.obsidian.notices.length = 0;
   }
 });
+
+
+test("re-enrollment replaces a cached revoked-device error with the recovered account list", async (t) => {
+  const s = open(t, { listDevices: async () => { throw new Error("device_revoked"); } });
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.match(s.row("Device list").desc, /device_revoked/);
+  s.plugin.setUpAccount = async () => { s.plugin.state.data.deviceId = "22".repeat(16); };
+  s.plugin.listDevices = async () => [{ device_id: "22".repeat(16), name: "Recovered", platform: "macos", app_version: "1.1.3", last_seen: 0, revoked: false }];
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
+  await tick();
+  s.render("Device list");
+  await tick();
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+  assert.ok(s.row("Recovered (this device)"));
+});
+
+for (const changed of ["deviceId", "serverUrl"]) for (const failed of [false, true]) {
+  test(`a previous ${changed} device-list ${failed ? "error" : "response"} cannot replace the recovered account`, async (t) => {
+    let finish, refuse;
+    const s = open(t, { listDevices: () => new Promise((resolve, reject) => { finish = resolve; refuse = reject; }) });
+    s.plugin.state.data.deviceId = "11".repeat(16);
+    s.plugin.state.data.serverUrl = "https://old.example.org";
+    s.plugin.state.paired = true;
+    s.render("Device list");
+    s.plugin.state.data[changed] = changed === "deviceId" ? "22".repeat(16) : "https://new.example.org";
+    if (failed) refuse(new Error("old identity refusal"));
+    else finish([{ device_id: "11".repeat(16), name: "Old identity", platform: "macos", app_version: "1.1.3", last_seen: 0, revoked: false }]);
+    await tick();
+    assert.equal(s.row("Device list").desc, "Reading the device list…");
+    assert.ok(!s.rows().some((row) => row.name.startsWith("Old identity")));
+    s.plugin.listDevices = async () => [];
+    s.render("Device list");
+    await tick();
+    assert.equal(s.row("Device list").desc, "0 devices on this account.");
+  });
+}
+
+
+test("closing a completed pairing redraws settings for the new identity", async (t) => {
+  const s = open(t, { listDevices: async () => { throw new Error("old refused identity"); } });
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.render("Device list"); await tick();
+  let modal;
+  const { PairClaimModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  PairClaimModal.prototype.open = function () { modal = this; };
+  s.button(s.render("Pairing").made, "Pair this device").click(); await tick();
+  assert.ok(modal);
+  s.plugin.state.data.deviceId = "22".repeat(16);
+  modal.contentEl = { empty() {} };
+  modal.onClose();
+  assert.equal(s.row("Device list").desc, "Reading the device list…");
+});

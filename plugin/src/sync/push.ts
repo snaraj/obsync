@@ -86,6 +86,22 @@ export interface Manifest {
    * before 1.1.3 ignores it and applies an ordinary deletion.
    */
   keeper?: string;
+  /** This edit answered a sync while no editor showed the note (#179). */
+  answer?: true;
+}
+
+/** Encrypted coordination only; old plugins refuse v3 without touching a note. */
+export interface PauseManifest {
+  v: 3;
+  kind: "pause";
+  path: string;
+  target: string;
+  paused: boolean;
+  domain: string;
+  size: 0;
+  chunks: never[];
+  sha256: "";
+  deleted: false;
 }
 
 /**
@@ -240,8 +256,9 @@ async function serialPublication(context: SyncContext, path: string, publish: ()
   finally { if (paths.get(path) === current) paths.delete(path); }
 }
 
-export function pushFile(context: SyncContext, path: string, force = false, over?: string[]): Promise<PushOutcome> {
-  return serialPublication(context, path, () => publishFile(context, path, force, over));
+export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+  // Resume selects and preserves heads only after an earlier upload is acknowledged.
+  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
 }
 
 /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
@@ -344,6 +361,7 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     chunks: plan,
     sha256: plaintextHash,
     deleted: false,
+    ...(context.answering.get(fileId)?.mtime === stat.mtime && context.answering.get(fileId)?.arrived != null ? { answer: true as const } : {}),
   };
   const parents = tombstone === undefined
     ? over ?? (record && record.versionId !== "" ? [record.versionId] : [])
@@ -581,7 +599,7 @@ export async function postManifest(
   fileId: string,
   parents: string[],
   sids: string[],
-  manifest: Manifest | FolderManifest,
+  manifest: Manifest | FolderManifest | PauseManifest,
   bytes: number,
   acceptExisting: boolean,
   stillWanted: () => Promise<boolean> = async () => true,
@@ -687,7 +705,7 @@ async function sameOperation(
   // lost its record for would stop being republished at all. `path`, `size`
   // and `deleted` are the three fields both shapes carry, so if a caller
   // ever does offer it, the guard holds rather than being typed out of reach.
-  manifest: Manifest | FolderManifest,
+  manifest: Manifest | FolderManifest | PauseManifest,
 ): Promise<boolean> {
   try {
     const file = await context.transport.getFile(fileId);
@@ -702,11 +720,12 @@ async function sameOperation(
         unhex(version.manifest_nonce),
         unbase64(version.manifest_ct),
       ),
-    ) as Partial<Manifest>;
+    ) as Partial<Manifest | PauseManifest>;
     return (
       theirs.path === manifest.path &&
       theirs.size === manifest.size &&
-      theirs.deleted === manifest.deleted
+      theirs.deleted === manifest.deleted &&
+      (manifest.v !== 3 || (theirs.v === 3 && theirs.kind === "pause" && theirs.target === manifest.target && theirs.paused === manifest.paused))
     );
   } catch {
     return false;

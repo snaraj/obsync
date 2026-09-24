@@ -167,13 +167,14 @@ test("a locked note is parked: every later change arrives, and the status names 
 
   // `chflags nouchg`: the next slow retry applies the newest version.
   lock.lift();
-  // The pass's summary line is written after its save and right before the
-  // status: waiting on the file alone would read both a step too early.
-  const retried = (trigger) => () => r.host.logs.some((line) => line.startsWith(`feed decision=retried trigger=${trigger} released=1 `));
+  // A manual verification push can still be draining when retry releases the
+  // parked note. Wait for that work too, then assert the exact idle status.
+  const retried = (trigger) => () => !d.engine.draining && d.engine.queue.length === 0 && d.engine.active === 0 && r.host.logs.some((line) => line.startsWith(`feed decision=retried trigger=${trigger} released=1 `));
   await d.timers.run(10000, retried("timer"));
   assert.equal(r.host.text("Notes/n17.md"), "n17 edited again on the other device\n");
   assert.deepEqual(r.state.data.parked, {}, "applied, so released");
   assert.deepEqual(d.last(), { kind: "idle" }, "and the status clears by itself");
+  assert.equal(d.engine.pushing.size, 0, "every verification publication completed");
   assert.deepEqual(
     r.host.logs.filter((line) => line.startsWith("feed decision=released")),
     [`feed decision=released file=${N17} parked=0`],

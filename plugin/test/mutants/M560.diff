@@ -1,0 +1,11 @@
+# M560: two concurrent deliveries issue the same hold notice twice
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -950,7 +950,6 @@
+   // editor's note, rather than publishing them over the editor on Resume.
+   if (context.state.fileByPath(path)?.fileId === manifest.target &&
+     await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
+-  if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   context.state.data.paused[manifest.target] = { path, remote: true };
+   await context.state.save();
+   context.host.log(`pull decision=paused reason=peer_rewrite_storm file=${manifest.target} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);

@@ -58,7 +58,7 @@
  */
 
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
-import { ByteSource } from "../chunker";
+import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
 import {
   DomainMap,
@@ -74,7 +74,8 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ApplyResult, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, settleBeside, unwritableText } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
+import { publishPause } from "./pause";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
@@ -277,6 +278,8 @@ export interface VaultHost {
    * version is merged into it.
    */
   editing(path: string): Promise<"unsaved" | "saved" | null>;
+  /** Recent trusted editor input, including a composition still in progress. */
+  typing(path: string): boolean;
   notify(message: string): void;
   log(line: string): void;
 }
@@ -324,6 +327,15 @@ export interface SyncContext {
    */
   readonly pushedAt: Map<string, number>;
   /**
+   * The watcher's verdict on the latest change here to each file id: the time
+   * of that change, and the arrival of another device's version it ANSWERED,
+   * or `null` (`answered`, `pull.ts` `answerOf`, issue #179). What the pull
+   * path asks before it settles a collision on that note.
+   */
+  readonly answering: Map<string, { mtime: number; arrived: number | null }>;
+  /** When another device's version of each path last arrived here (`receive`). */
+  readonly arrivals: Map<string, number>;
+  /**
    * Publish a local file NOW, out of the queue's turn, and wait for it.
    *
    * The pull path uses it for one thing: a file at a name an incoming version
@@ -344,7 +356,8 @@ export type EngineStatus =
   | { kind: "idle" }
   | { kind: "syncing"; pending: number }
   | { kind: "offline" }
-  | { kind: "error"; message: string; code?: string };
+  | { kind: "error"; message: string; code?: string }
+  | { kind: "paused"; message: string };
 
 export interface Timers {
   set(fn: () => void, ms: number): unknown;
@@ -619,6 +632,8 @@ export class SyncEngine {
       refused: new Set<string>(),
       merges: new Map<string, { since: number; count: number; left: string }>(),
       pushedAt: new Map<string, number>(),
+      answering: new Map<string, { mtime: number; arrived: number | null }>(),
+      arrivals: new Map<string, number>(),
       forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
       deviceNames,
@@ -648,6 +663,9 @@ export class SyncEngine {
       // anything: a start is when the user has most likely just fixed the
       // cause (issue #144).
       void this.track(this.retryParked("start"));
+      // A paused note stays paused across a restart, and says so: the plugin
+      // that rewrote it is most likely still there (issue #179).
+      if (Object.keys(state.data.paused).length > 0) this.status(this.resting());
       // Not tracked: only the pages it applies are (`feedLoop`).
       void this.feedLoop().catch((error: unknown) => {
         host.log(`feed decision=failed reason=${error instanceof Error ? error.name : "unknown"}`);
@@ -1398,8 +1416,20 @@ export class SyncEngine {
       context.host.log(`watch path_class=file decision=echo_suppressed`);
       return;
     }
+    // A CHANGE RIGHT AFTER ANOTHER DEVICE'S VERSION ARRIVED IS READ, even when
+    // the record's `(mtime, size)` already describes it (issue #179). Something
+    // wrote the file -- that is what the event says -- and a plugin answering
+    // a sync can leave both numbers as they were: a fixed-width stamp keeps the
+    // size, and a plugin that keeps a note's modified time keeps the other.
+    // Trusted, those bytes were never sent, and two devices said `idle` over
+    // two different notes. The push compares the DIGEST and posts nothing for
+    // the recorded bytes, so this costs one read of a note per such event
+    // while its arrival is remembered (`sweepEchoes`), and is bounded by what
+    // arrives; anywhere else, and above one chunk, the metadata is taken at its
+    // word, as it always was.
     const record = context.state.fileByPath(path);
-    if (record && record.mtime === stat.mtime && record.size === stat.size) return;
+    const described = record !== undefined && record.mtime === stat.mtime && record.size === stat.size;
+    if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
     // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
     // ago: comparing against it is what puts real time between the two
     // observations. The first settle has nothing to compare with, so it
@@ -1421,7 +1451,27 @@ export class SyncEngine {
     // `debounce`, and clearing it before them would drop the timer this
     // settle just decided to take again.
     this.unschedule(path);
+    if (!described) await this.answered(context, stat);
     this.enqueue(path);
+  }
+
+  /**
+   * Does this change ANSWER another device's version (issue #179)? It does
+   * when it lands within `ANSWER_MS` of that version's arrival, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
+   * versions too -- are #135's to settle. The answer is published like any
+   * other edit; what it decides is what the pull path does when it next finds
+   * this note COLLIDING with another device's change on the same lines
+   * (`pull.ts`, `rewriteStorm`). A plugin on one device answering a person
+   * typing on the other merges cleanly and is never paused; two plugins
+   * rewriting one line after each other's syncs never merge, and that is the
+   * storm. Echo suppression is untouched: the pull path's own write never
+   * gets here (`settleTracked`).
+   */
+  private async answered(context: SyncContext, stat: VaultStat): Promise<void> {
+    const record = context.state.fileByPath(stat.path);
+    if (record !== undefined) {
+      context.answering.set(record.fileId, { mtime: stat.mtime, arrived: await answerOf(context, stat.path, stat.mtime) });
+    }
   }
 
   private enqueue(path: string): void {
@@ -1566,6 +1616,12 @@ export class SyncEngine {
         } catch (error) {
           this.retryFolder(context, path, barrier, error);
         }
+        return;
+      }
+      const held = context.state.fileByPath(path);
+      if ((held !== undefined && context.state.data.paused[held.fileId] !== undefined) || Object.values(context.state.data.paused).some((entry) => entry.path === path)) {
+        if (held !== undefined && context.state.data.paused[held.fileId]?.remote !== true) await publishPause(context, held.fileId, path, true);
+        context.host.log(`push path_class=file decision=skipped reason=paused file=${held?.fileId ?? "untracked"}`);
         return;
       }
       if (this.deletions.has(path)) {
@@ -1831,12 +1887,20 @@ export class SyncEngine {
    * has consumed it, and the mark moves past it (`processed`, issue #145).
    */
   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+    // Another device's version arrives as the apply STARTS: a plugin can
+    // answer the write the apply makes before the apply returns (issue #179).
+    const arrived = context.now();
     let result: ApplyResult;
     try {
       result = await applyChange(context, change);
     } catch (error) {
       this.park(context, change.file_id, error);
       return null;
+    }
+    const path = result === "echo" ? undefined : context.state.pathByFileId(change.file_id);
+    if (path !== undefined) {
+      context.arrivals.delete(path);
+      context.arrivals.set(path, arrived);
     }
     if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
@@ -1892,8 +1956,69 @@ export class SyncEngine {
       const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
       return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
     }
+    const paused = Object.values(this.options.state.data.paused);
+    const last = paused[paused.length - 1];
+    if (last !== undefined) {
+      const more = paused.length > 1 ? ` and ${paused.length - 1} more` : "";
+      return { kind: "paused", message: `${last.path}${more} (Show sync status)` };
+    }
     if (waiting > 0) return { kind: "syncing", pending: waiting };
     return { kind: "idle" };
+  }
+
+  /**
+   * Sync a paused note again (issue #179): one, from Resume in Show sync
+   * status, or every one, from Sync now -- the moments the user has just
+   * turned off whatever kept rewriting it. The note is first brought to what
+   * the other devices have (`resumePaused`), then asked of the server as any
+   * parked record is, then settled by the watcher as if it had just changed,
+   * which publishes what this device holds, or its deletion. A resume that
+   * fails leaves the note paused, to be resumed again.
+   */
+  resume(fileId?: string, trigger = "sync_now"): Promise<void> {
+    // Nothing paused waits for nothing: Sync now joins the pull queue only
+    // when it has a note to bring back.
+    if (Object.keys(this.options.state.data.paused).length === 0) return Promise.resolve();
+    return this.exclusive(async () => {
+      if (!this.running) return;
+      const context = this.need();
+      const paused = context.state.data.paused;
+      for (const id of fileId === undefined ? Object.keys(paused) : [fileId]) {
+        const entry = paused[id];
+        if (entry === undefined) continue;
+        const started = context.now();
+        delete paused[id];
+        let outcome: string;
+        try {
+          if (entry.remote === true && context.state.pathByFileId(id) !== undefined && await context.host.stat(entry.path) !== null) {
+            // The peer held our note before applying anything. Preserve the
+            // local editor's newest text as the next head, even if its last
+            // keystrokes were saved after the pause arrived.
+            outcome = await publishHeld(context, id, entry.path);
+          } else {
+            outcome = await resumePaused(context, id);
+            if (outcome === "no_free_name" || outcome === "saved_meanwhile") throw new Error(outcome);
+            if (outcome !== "deleted_here") await this.reconcileFile(id);
+          }
+          await publishPause(context, id, entry.path, false);
+        } catch (error) {
+          paused[id] = entry;
+          outcome = `failed_${error instanceof ApiError ? `http_${error.status}` : "error"}`;
+        }
+        await context.state.save();
+        const path = context.state.pathByFileId(id);
+        if (path !== undefined && paused[id] === undefined) {
+          context.answering.delete(id);
+          context.arrivals.delete(path);
+          this.changed(path);
+        }
+        context.host.log(
+          `pull decision=resumed outcome=${outcome} file=${id} trigger=${trigger} ` +
+            `paused=${Object.keys(paused).length} duration_ms=${context.now() - started}`,
+        );
+      }
+      this.status(this.resting());
+    });
   }
 
   /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */
@@ -2049,12 +2174,12 @@ export class SyncEngine {
    * recorded path the vault no longer has. This is what makes an edit made
    * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
-  reconcile(): Promise<void> {
-    return this.track(this.reconcileLocal());
+  reconcile(verifyContent = false): Promise<void> {
+    return this.track(this.reconcileLocal(verifyContent));
   }
 
-  private async reconcileLocal(): Promise<void> {
-    await this.survey(await this.need().host.list(), true, "reconcile");
+  private async reconcileLocal(verifyContent: boolean): Promise<void> {
+    await this.survey(await this.need().host.list(), true, "reconcile", verifyContent);
   }
 
   /**
@@ -2112,11 +2237,12 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyContent = false): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
+    const verify: VaultStat[] = [];
     let skipped = 0;
     // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
     // The scan is additive and never publishes a tombstone, and a folder
@@ -2169,7 +2295,10 @@ export class SyncEngine {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
       seen.add(file.path);
-      if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) continue;
+      if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) {
+        if (verifyContent) verify.push(file);
+        continue;
+      }
       fresh.push(file);
     }
     // The listing by folded name, built once: a vault of ten thousand files
@@ -2364,6 +2493,11 @@ export class SyncEngine {
     const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
     const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
     let queued = 0;
+    for (const file of verify) {
+      if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+      this.enqueue(file.path);
+      queued++;
+    }
     let adopted = 0;
     for (const file of fresh) {
       if (!this.running) return;
@@ -2571,6 +2705,12 @@ export class SyncEngine {
       }
     }
     this.echoSweep = armed;
+    // And what the rewrite storm is judged by (issue #179): an arrival once
+    // nothing can answer it any more, and a verdict one pass after its edit,
+    // so neither grows with the vault for as long as the plugin runs.
+    const now = context.now();
+    for (const [path, at] of context.arrivals) if (now - at >= ANSWER_MS) context.arrivals.delete(path);
+    for (const [fileId, verdict] of context.answering) if (now - verdict.mtime >= SCAN_MS) context.answering.delete(fileId);
     // No path in the line: a name is vault content (requirement 6).
     if (expired > 0) context.host.log(`${label} decision=echo_expired marks=${expired} armed=${armed.size}`);
   }
@@ -2702,7 +2842,11 @@ export class SyncEngine {
     const started = this.nowFn();
     const joined = this.draining;
     const pending = this.heldDeletions.length > 0;
-    await this.reconcile();
+    // A paused note first, so what it holds is in the pass below (issue #179).
+    await this.resume();
+    // An explicit repair command verifies content even when a fixed-width
+    // plugin rewrite retained both recorded metadata fields (#179).
+    await this.reconcile(true);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
     if (pending && this.heldDeletions.length > 0) {

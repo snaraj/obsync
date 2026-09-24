@@ -29,7 +29,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { workspace: { onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}), getName: () => "Recovery QA", getMarkdownFiles: () => [...host.files.keys()].filter((path) => path.endsWith(".md")) } };
+  instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}), getName: () => "Recovery QA", getMarkdownFiles: () => [...host.files.keys()].filter((path) => path.endsWith(".md")) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };
@@ -174,9 +174,11 @@ test("double clicking setup does not mint two devices", async (t) => {
   assert.equal(r.server.requests.filter((request) => request.target.endsWith("/v1/setup")).length, 1);
 });
 
-test("the feed stops on a forgotten credential and never reports a reachable server as offline", async () => {
+test("the feed stops on a forgotten credential and never reports a reachable server as offline", { timeout: 5000 }, async (t) => {
   const r = await rig();
   const timers = new FakeTimers(), statuses = [];
+  let observed;
+  const forgotten = new Promise((resolve) => { observed = resolve; });
   let refusals = 0;
   const transport = new Transport({
     request: (request) => {
@@ -185,9 +187,15 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
     },
     serverUrl: () => "https://sync.example.invalid", device: () => ({ id: KEYS.deviceId, secret: Buffer.from(KEYS.deviceSecret, "hex") }), edgeHeaders: () => [], maxAttempts: 2,
   });
-  const engine = new SyncEngine({ state: r.state, host: r.host, timers, transport, onStatus: (status) => statuses.push(status) });
+  const engine = new SyncEngine({ state: r.state, host: r.host, timers, transport, onStatus: (status) => {
+    statuses.push(status);
+    if (status.code === "forgotten_device") observed();
+  } });
+  t.after(() => engine.stop());
   await engine.start();
-  for (let turn = 0; turn < 50 && !statuses.some((s) => s.code === "forgotten_device"); turn++) await tick();
+  // HMAC signing runs on WebCrypto's worker pool. A fixed count of immediate
+  // turns can finish before that pool answers on a loaded Linux CI host.
+  await forgotten;
   assert.equal(refusals, 1);
   assert.ok(statuses.some((s) => s.code === "forgotten_device"));
   assert.equal(statuses.some((s) => s.kind === "offline"), false);

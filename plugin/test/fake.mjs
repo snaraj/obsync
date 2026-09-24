@@ -478,6 +478,9 @@ export class FakeHost {
     return true;
   }
 
+  inputAt = new Map();
+  typing(path) { return this.clock - (this.inputAt.get(path) ?? -Infinity) < 10_000; }
+
   /** An open editor against its file, compared the way the real host compares them (`main.ts`). */
   async editing(path) {
     if (!this.editors.has(path)) return null;
@@ -1226,6 +1229,8 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     refused: new Set(),
     merges: new Map(),
     pushedAt: new Map(),
+    answering: new Map(),
+    arrivals: new Map(),
     forked: new Set(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,

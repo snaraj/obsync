@@ -1,0 +1,11 @@
+# M549: the plugin Resume method never reaches the engine
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2144,7 +2144,6 @@
+ 
+   /** Resume in Show sync status: sync one paused note again (issue #179). */
+   async resumeNote(fileId: string): Promise<void> {
+-    await this.engine?.resume(fileId, "status");
+   }
+ 
+   syncContext(): SyncContext | null {

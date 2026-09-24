@@ -1,7 +1,7 @@
 # M325: typing in one of two panes open on the same note is lost when another device deletes it
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1591,7 +1591,7 @@
+@@ -1723,7 +1723,7 @@
      if (!file) return null;
      const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
      const disk = lines(await this.plugin.app.vault.read(file));
@@ -9,4 +9,4 @@
 +    return views.every((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
    }
  
-   notify(message: string): void {
+   /** A passive editor does not make plugin writes into human typing (#179). */

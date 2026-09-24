@@ -1,0 +1,12 @@
+# M667: completed IME composition exempts rewrites forever
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1746,7 +1746,7 @@
+         if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
+         if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
+         if (event.type === "compositionstart") this.composing.set(view, view.file.path);
+-        if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
++        if (event.type === "focusout") this.composing.delete(view);
+       }
+     };
+     for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {

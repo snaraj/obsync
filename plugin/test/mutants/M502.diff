@@ -1,11 +1,11 @@
 # M502: keeper metadata is not persisted before retirement
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -373,7 +373,6 @@
-     return { status: "unchanged", fileId: adopted.fileId, versionId: adopted.versionId };
-   }
-   context.state.setFile(path, posted);
+@@ -407,7 +407,6 @@
+     size: stat.size,
+     sha256: digest,
+   });
 -  await context.state.save();
-   const retired = await retire(context, adopted.fileId, adopted.versionId, path);
-   context.host.log(
-     `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,
+   // The upload's own receipt: what crossed the wire while this run was in
+   // flight and the budget it is measured against (requirement 12). The
+   // counters are the TRANSPORT's, so a second push running beside this one is

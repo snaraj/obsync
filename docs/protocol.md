@@ -442,6 +442,47 @@ of the function at each), and the copy the tests run against is
 `plugin/test/fixtures/decoder-1.0.x.mjs`, which says how to re-derive both.
 Any later record type must move `v` again for the same reason.
 
+### Rewrite pause controls (plugin 1.1.3)
+
+A hold is a separate encrypted manifest with `v: 3`, `kind: "pause"`, a
+canonical file `path`, its 16-byte lowercase-hex `target` file id, boolean
+`paused`, the engine's `domain`, and the constant fields `size: 0`,
+`chunks: []`, `sha256: ""`, `deleted: false`. Its opaque file id is the first
+16 bytes of `HMAC-SHA256(manifest_key, UTF8("obsync/v1/pause/" + target))`.
+The receiver checks that binding and the ordinary domain/size/chunk/deletion
+bindings before acting. Nothing about a hold travels in clear text.
+
+A note manifest can additionally carry `answer: true`: its author observed a
+background write within five seconds of a received version without recent
+trusted Markdown editor input (including an active IME composition). Merely
+showing the note in a passive editor does not exempt the write. This advisory signal permits detection of sequential
+rewrites as well as overlapping ones. It grants no additional authority.
+An overlapping answer can be detected first by the device whose editor has
+recent trusted input. It uses the same control, holding before the ordinary
+conflict-copy rule can replace its saved text. A recipient with current
+background-answer proof for that exact target retains its background Resume
+role. These are local decisions; they add no manifest field or server API.
+
+A pause control holds the target only if the control version is still a head;
+an old pause replayed after Resume is ignored. Local pause state survives a
+restart. Clearing the control does not resume another device automatically:
+each held device explicitly resumes after its user stops the rewriting
+plugin. Each publication parents every observed control head. Identical
+controls are reused without another post. Opposite controls at one position
+must never be deduplicated as the same operation: their `v`, `kind`, `target`
+and `paused` fields participate in the client's adoption check. Concurrent
+opposite posts can leave two heads; the current pause holds, and the next
+explicit Resume parents both, leaving one cleared head. No polling loop
+publishes new control versions. The existing server API needs no change.
+
+Plugins before 1.1.3 reject `v: 3` as an unknown manifest version and advance
+the feed. Because the control has its own file id, rejection cannot overwrite,
+delete or replace the actual note or its history. Mixed versions keep syncing
+ordinary notes, but all devices must update for a shared hold to stop the
+rewrite storm. The unchanged 1.1.1 client is exercised by
+`plugin/test/legacy-pause-check.mjs` against a control followed by a normal
+note; the receipt records refusal, application and an advanced feed cursor.
+
 ## Change feed
 
 - `GET /v1/changes?since=<seq>&wait=<seconds ≤ 55>&limit=<n ≤ 1000>` →

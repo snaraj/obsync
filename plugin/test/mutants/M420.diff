@@ -1,8 +1,8 @@
 # M420: a folder inside a synced vault pairs with the same server anyway
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -277,12 +277,6 @@
-       this.waiting = true;
+@@ -287,12 +287,6 @@
+       if (!this.waiting) return;
        // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
        // pairs with it copies that vault into itself, one level per sync.
 -      const nested = await this.plugin.nestedRefusal("pairing role=claimant");
@@ -13,4 +13,4 @@
 -      }
        const { state, transport, assertCurrent } = this.plugin.captureSession();
        const parsed = decodePairingCode(this.code);
-       const credential = value(
+       const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {

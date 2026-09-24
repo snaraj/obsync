@@ -461,6 +461,8 @@ test("repair only reports success after exact ciphertext readback", async () => 
 });
 
 test("engine automatically repairs unchanged files, idles between complete walks, and reports source loss without paths", async () => {
+  // Exercise the repair worker directly: explicit Sync now now also publishes
+  // silent local rewrites, which would replace the missing source under test.
   const r = await note(), timers = new FakeTimers(), statuses = [];
   r.state.data.lastSeq = r.server.seq;
   const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
@@ -469,17 +471,17 @@ test("engine automatically repairs unchanged files, idles between complete walks
   r.server.chunks.delete(r.sid);
   await timers.run(REPAIR_TICK_MS, () => r.host.logs.some((line) => line.startsWith("repair decision=verified")));
   assert.equal(puts(r).length, 1);
-  await engine.syncNow(); // Finish the walk, then schedule the idle interval.
+  await engine.repairTick(); // Finish the walk, then schedule the idle interval.
   assert.ok(r.host.logs.some((line) => /^repair decision=verified bytes=25 budget_sids=64 budget_chunks=1 duration_ms=\d+$/.test(line)));
   assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS));
   r.server.chunks.delete(r.sid);
   r.host.seed(r.path, "X".repeat(25), 1000);
-  await engine.syncNow();
+  await engine.repairTick();
   assert.ok(statuses.some((status) => status.kind === "error" && status.message.includes("missing chunk")));
   assert.ok(r.host.notices.some((message) => message.includes("missing chunk")));
   for (let repeat = 0; repeat < 2; repeat++) {
-    await engine.syncNow(); // Complete this walk.
-    await engine.syncNow(); // The same unavailable source is still unresolved.
+    await engine.repairTick(); // Complete this walk.
+    await engine.repairTick(); // The same unavailable source is still unresolved.
   }
   assert.equal(statuses.filter((status) => status.kind === "error" && status.message.includes("missing chunk")).length, 3);
   assert.equal(r.host.notices.filter((message) => message.includes("missing chunk")).length, 1);
@@ -517,8 +519,8 @@ test("overlapping engine requests retain a single next repair timer after both c
   await engine.start(); r.server.chunks.delete(r.sid);
   const entered = deferred(), release = deferred(), put = r.transport.putChunk.bind(r.transport);
   r.transport.putChunk = async (...args) => { entered.resolve(); await release.promise; await put(...args); };
-  const first = engine.syncNow(); await entered.promise;
-  const second = engine.syncNow(); await turn();
+  const first = engine.repairTick(); await entered.promise;
+  const second = engine.repairTick(); await turn();
   release.resolve(); await Promise.all([first, second]);
   assert.equal(timers.entries.filter((entry) => entry.due - timers.now === REPAIR_TICK_MS).length, 1);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();

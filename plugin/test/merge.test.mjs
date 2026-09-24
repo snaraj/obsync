@@ -141,10 +141,13 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   const storms = r.host.logs.filter((line) => line.includes("reason=merge_storm"));
   assert.equal(storms.length, 1, r.host.logs.filter((l) => l.startsWith("pull")).join(" | "));
   assert.match(storms[0], /decision=refused reason=merge_storm file=[0-9a-f]{32} count=6 window_ms=60000/);
-  assert.equal(
-    r.host.notices.filter((notice) => notice.includes("stopped merging")).length, 1,
-    "the user is told once, not once per version",
-  );
+  const told = r.host.notices.filter((notice) => notice.includes("stopped merging"));
+  assert.equal(told.length, 1, "the user is told once, not once per version");
+  // What was seen, and no cause this device cannot see: every device here is
+  // current, and a notice that blamed an out-of-date one sent S89 looking for
+  // one (issue #179).
+  assert.match(told[0], /resolved it more than 5 times in a row in under a minute without the note changing here\./);
+  assert.doesNotMatch(told[0], /up to date/);
   // And the breaker never drops content. Tripped, it merges nothing more, and
   // the pair is still settled by the rule every device shares (issue #135):
   // one version is the note, the other a copy, the fork closed.

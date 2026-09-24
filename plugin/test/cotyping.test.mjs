@@ -63,13 +63,25 @@ class OpenEditor {
     this.loaded = this.host.text(NOTE);
     this.unsaved = "";
     this.merged = 0;
+    this.show();
     this.host.on("modify", (file) => {
       if (file.path === NOTE) timers.set(() => this.external(), REACT_MS);
     });
   }
 
+  /**
+   * What the editor shows, which the host reports through `editing`: a note
+   * open in an editor is one someone can be typing in, and a change to it is
+   * never taken for another plugin's rewrite (issue #179).
+   */
+  show() {
+    this.host.editors.set(NOTE, this.unsaved === "" ? this.loaded : this.place(this.loaded, this.unsaved));
+  }
+
   type(text) {
+    if (text !== "") this.host.inputAt.set(NOTE, this.host.clock);
     this.unsaved += text;
+    this.show();
   }
 
   save() {
@@ -81,6 +93,7 @@ class OpenEditor {
     const text = this.place(this.loaded, this.unsaved);
     this.loaded = text;
     this.unsaved = "";
+    this.show();
     this.host.write(NOTE, text, this.host.clock);
   }
 
@@ -88,6 +101,7 @@ class OpenEditor {
     const disk = this.host.text(NOTE);
     if (disk === null || disk === this.loaded) return;
     this.loaded = disk;
+    this.show();
     if (this.unsaved === "") return;
     this.merged++;
     this.save();

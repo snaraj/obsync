@@ -1,0 +1,12 @@
+# M577: Resume silently consumes a head whose encrypted version it could not inspect
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2272,7 +2272,7 @@
+     for (const head of file.heads) {
+       if (record !== undefined && reaches(file.versions, record.versionId, head)) continue;
+       const version = file.versions.find((entry) => entry.version_id === head);
+-      if (version === undefined) throw new Error("missing_head");
++      if (version === undefined) continue;
+       const manifest = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+       if (!manifest.deleted && await keepLost(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, manifest, null) === null) throw new Error("no_free_name");
+     }
