@@ -1,0 +1,11 @@
+# M284: a conflict copy or restored copy that stops on a volume that renumbers files leaves its temp behind
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -798,7 +798,6 @@
+       this.temps.delete(temp);
+       try {
+         if (open) {
+-          opened = await handle.stat();
+           await handle.close();
+         }
+         open = false;

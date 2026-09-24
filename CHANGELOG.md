@@ -80,6 +80,20 @@ hold "changes this device has not uploaded yet" when a note was deleted
 elsewhere from an older version: they say the version they have is already on
 the server and kept. Same on desktop and mobile. (#172, #173)
 
+**A vault on a USB stick or memory card receives changes again, and a stopped
+download leaves nothing behind.** On a drive formatted FAT32 or exFAT, a
+computer refused every note another device sent, each time with a notice naming
+`temp_identity`, left a file named like `note.md.obsync-1a2b3c4d5e6f.tmp`
+beside the note, and then sent that file to your other devices. Quitting
+Obsidian in the middle of a large download left the same kind of half-file,
+which also reached every device. Now those drives receive notes like any other,
+a download is written under a hidden name that is never synced, and a leftover
+from a quit is removed the next time Obsidian starts. On such a drive a second
+save of the same length made within two seconds of the first is also sent now;
+before, it stayed on that computer until the next edit. Files like these that
+1.1.2 already left or sent are ordinary synced files now, on every device, and
+can be deleted by hand. Phones and tablets never wrote them. (#175, #159)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

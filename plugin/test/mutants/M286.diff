@@ -1,0 +1,11 @@
+# M286: a start while a download is under way deletes that download's temp, and the download fails
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -898,7 +898,6 @@
+     const parent = target.slice(0, target.lastIndexOf(desktop.path.sep));
+     const temp = `${parent}${desktop.path.sep}.obsync-write-${hex(randomBytes(8))}.tmp`;
+     const handle = await fs.promises.open(temp, "wx");
+-    this.temps.add(temp);
+     let open = true;
+     let opened = await handle.stat();
+ 

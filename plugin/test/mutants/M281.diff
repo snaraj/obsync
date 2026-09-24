@@ -1,0 +1,11 @@
+# M281: a download that stops on a FAT32 or exFAT vault leaves its temp file behind
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -905,7 +905,6 @@
+     /** Close, and remove the temp ONLY while its name still means our file. */
+     const discard = async (): Promise<void> => {
+       if (open) {
+-        opened = await handle.stat();
+         await handle.close();
+       }
+       open = false;

@@ -161,6 +161,12 @@ export interface VaultHost {
    */
   scan?(): Promise<VaultStat[] | null>;
   /**
+   * Remove the temp files this host's writes left when the device stopped in
+   * the middle of them (issue #159). Called at each start, before anything
+   * lists the vault; a host whose writes leave nothing behind has none.
+   */
+  sweep?(): Promise<void>;
+  /**
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
    * only the host can see the filesystem (`vaultPath.ts`).
@@ -343,6 +349,14 @@ export const HEARTBEAT_MS = 60 * 60 * 1000;
  * to converge from and the wrong thing to delete on.
  */
 export const SCAN_MS = 30 * 1000;
+
+/**
+ * The coarsest step a vault volume keeps a modification time to: FAT32's two
+ * seconds. A whole-second time read within one step of now can still be the
+ * time of a later save of the same size (issue #175), so such a push looks
+ * again when the step has closed (`recheck`).
+ */
+export const MTIME_STEP_MS = 2000;
 
 /**
  * THE BULK-DELETION FLOOR (issue #123). Below this many candidates a pass
@@ -559,6 +573,9 @@ export class SyncEngine {
     // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
     // finding 3).
     this.restoreFolderBarriers();
+    // Cleaning up is never a reason not to sync.
+    await host.sweep?.().catch((error: unknown) =>
+      host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
     await this.reconcile();
     if (this.running) {
       const context = this.need();
@@ -1483,7 +1500,9 @@ export class SyncEngine {
         if ((await context.host.stat(path)) === null) return;
       }
       const forced = this.renames.delete(path);
+      const asked = context.now();
       const outcome = await pushFile(context, path, forced);
+      if (outcome.status !== "growing") this.recheck(context, path, asked);
       if (outcome.status === "unchanged") return;
       if (outcome.status === "growing") {
         // The file moved while it was read: nothing was published, so this is
@@ -1506,6 +1525,29 @@ export class SyncEngine {
       context.host.log(`push path_class=file decision=failed reason=${message}`);
       this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
     }
+  }
+
+  /**
+   * A SAVE THE MODIFICATION TIME CANNOT SEE (issue #175).
+   *
+   * Every later look at a pushed file -- the watcher's settle, the scan, the
+   * next start -- trusts an unchanged `(mtime, size)` to mean unchanged
+   * bytes. On FAT32 the time is kept to the even second (HFS+ and ext3 to the
+   * second), so a save of the same size inside the step the push read in
+   * keeps both numbers and is never sent. So a push that read a whole-second
+   * time within one step of `asked` pushes once more when the step has
+   * closed: `pushFile` compares the digest and posts nothing if the bytes did
+   * not change. A fine-grained time, or one a step away, cannot hide a save,
+   * and is never read twice.
+   */
+  private recheck(context: SyncContext, path: string, asked: number): void {
+    const record = context.state.fileByPath(path);
+    if (record === undefined || record.mtime % 1000 !== 0) return;
+    const age = asked - record.mtime;
+    if (Math.abs(age) >= MTIME_STEP_MS) return;
+    const delay = MTIME_STEP_MS - age;
+    context.host.log(`push path_class=file decision=recheck reason=coarse_mtime delay_ms=${delay}`);
+    this.timers.set(() => this.enqueue(path), delay);
   }
 
   /**

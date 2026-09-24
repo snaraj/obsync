@@ -41,6 +41,7 @@ import { FakeServer, KEYS, fakeState, keys, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
+const { vaultPathRefusal } = require("../build/vaultPath.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 
@@ -151,7 +152,10 @@ async function vault({ fs: injected } = {}) {
       manifestKey: k.manifestKey,
       bytes: 0,
     });
-  return { host, root, outside, logs, notices: obsidian.notices, context, server, state, publish, publishFolder, applyChange, keys: k };
+  // The next start: a new host over the same vault, the way a relaunched
+  // Obsidian builds one, holding nothing the previous one had open.
+  const rehost = () => new ObsidianHost(plugin, desktop);
+  return { host, rehost, root, outside, logs, notices: obsidian.notices, context, server, state, publish, publishFolder, applyChange, keys: k };
 }
 
 const refusals = (logs) => logs.filter((line) => line.includes("decision=refused"));
@@ -473,6 +477,209 @@ test("a temp file swapped for a symlink between the open and the write is refuse
   assert.equal(left.length, 1, `nothing landed; only the plant remains: ${left.join(", ")}`);
   assert.equal(lstatSync(join(root, left[0])).isSymbolicLink(), true, "and it is the plant, not our file");
   assert.equal(logs.length, 0, "the writer refuses before it logs a write");
+});
+
+/**
+ * THE TEMP FILE ON A VOLUME THAT NUMBERS A FILE BY ITS FIRST CLUSTER (issue
+ * #175), AND AFTER A WRITE THAT NEVER FINISHED (issue #159).
+ *
+ * FAT32 and exFAT on macOS, measured on disk images with Node 26
+ * (2026-09-24): an EMPTY file reports a placeholder inode derived from its
+ * directory entry, 2^64 - n, which a JavaScript number rounds to one value
+ * for every empty file; the first byte written allocates a cluster and the
+ * inode becomes that cluster's number, stable from then on through close,
+ * `utimes` and `rename`. The writer compared the name with the identity the
+ * descriptor had while the temp was EMPTY, so every incoming write on such a
+ * volume was refused as `temp_identity` and left its temp behind -- a
+ * visible name the next scan then published to every device.
+ *
+ * `renumbering` models exactly that over the real filesystem: a regular file
+ * with no bytes reports the placeholder, a file with bytes its real inode.
+ */
+const PLACEHOLDER_INO = 18446744073709552000;
+
+function renumbering() {
+  const renumber = (stat) =>
+    stat.isFile() && stat.size === 0
+      ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ino: PLACEHOLDER_INO })
+      : stat;
+  return {
+    ...realFsPromises,
+    lstat: async (path) => renumber(await realFsPromises.lstat(path)),
+    open: async (path, flags, mode) => {
+      const handle = await realFsPromises.open(path, flags, mode);
+      return new Proxy(handle, {
+        get: (target, key) => {
+          if (key === "stat") return async () => renumber(await target.stat());
+          const value = target[key];
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+}
+
+test("a vault on a volume that renumbers a file after its first write receives notes, and keeps no temp", async () => {
+  const { root, logs, notices, context, publish, applyChange } = await vault({ fs: { promises: renumbering() } });
+  mkdirSync(join(root, "Notes"));
+  // What the fake rests on, said once: the temp's inode really changes
+  // between the open and the commit, so the old comparison cannot pass.
+  const probe = await renumbering().open(join(root, "Notes", "probe"), "wx");
+  const empty = (await probe.stat()).ino;
+  await probe.write(enc("x"));
+  assert.notEqual((await probe.stat()).ino, empty, "the fake renumbers after the first write");
+  await probe.close();
+  unlinkSync(join(root, "Notes", "probe"));
+
+  const body = "LINE 1\nLINE 2\nLINE 3\nline 4\n";
+  assert.equal(await applyChange(context, await publish("Notes/n05.md", body)), "applied");
+  assert.equal(await applyChange(context, await publish("Notes/empty.md", "")), "applied");
+
+  assert.equal(readFileSync(join(root, "Notes", "n05.md"), "utf8"), body);
+  assert.equal(readFileSync(join(root, "Notes", "empty.md"), "utf8"), "");
+  assert.deepEqual(readdirSync(join(root, "Notes")).sort(), ["empty.md", "n05.md"], "and no temp beside them");
+  assert.deepEqual(refusals(logs), [], logs.join(" | "));
+  assert.equal(notices.length, 0, "nothing to tell the user");
+});
+
+test("on such a volume a temp swapped after the write is still refused, and nothing lands", async () => {
+  // The identity is read from the descriptor at the moment of each proof, so
+  // a name that another process pointed at a different file still fails it.
+  const base = renumbering();
+  const hostile = {
+    ...base,
+    open: async (path, flags, mode) => {
+      const handle = await base.open(path, flags, mode);
+      if (flags !== "wx") return handle;
+      return new Proxy(handle, {
+        get: (target, key) => {
+          if (key !== "write") return target[key];
+          return async (bytes) => {
+            const wrote = await target.write(bytes);
+            renameSync(path, `${path}.aside`);
+            writeFileSync(path, "not ours\n");
+            return wrote;
+          };
+        },
+      });
+    },
+  };
+  const { host, root } = await vault({ fs: { promises: hostile } });
+  mkdirSync(join(root, "Notes"));
+
+  const writer = await host.writer("Notes/n.md");
+  await writer.write(enc("ours\n"));
+  await assert.rejects(
+    () => writer.commit(1757200001000),
+    (error) => {
+      assert.equal(error.refusal, "temp_identity", "the descriptor comparison is what refused");
+      return true;
+    },
+  );
+  assert.equal(existsSync(join(root, "Notes", "n.md")), false, "the other file was never renamed into place");
+  const planted = readdirSync(join(root, "Notes")).filter((name) => !name.endsWith(".aside"));
+  assert.equal(planted.length, 1, planted.join(", "));
+  assert.equal(readFileSync(join(root, "Notes", planted[0]), "utf8"), "not ours\n", "and it was left as it was");
+});
+
+test("a write that stops on such a volume takes its temp with it", async () => {
+  // The disk filled, the network dropped: the caller aborts. The temp is
+  // ours, it is at its name, and it goes -- on this volume too.
+  const { host, root } = await vault({ fs: { promises: renumbering() } });
+  mkdirSync(join(root, "Notes"));
+
+  const writer = await host.writer("Notes/big.bin");
+  await writer.write(enc("the part that arrived\n"));
+  await writer.abort();
+
+  assert.deepEqual(readdirSync(join(root, "Notes")), [], "nothing is left in the vault");
+});
+
+test("the create-only writer proves its temp the same way on such a volume", async () => {
+  // Conflict copies and restored copies. FAT32 and exFAT also refuse `link`
+  // (ENOTSUP, measured), so there such a copy still fails at publication;
+  // the renumbering is modelled here over a volume that links, which is what
+  // shows the proof itself is right and the temp is gone either way.
+  const { host, root } = await vault({ fs: { promises: renumbering() } });
+  mkdirSync(join(root, "Notes"));
+
+  const copy = await host.createWriter("Notes/copy.md", 12, () => undefined);
+  await copy.write(enc("first \n"));
+  await copy.write(enc("then\n"));
+  await copy.commit(1757200001000);
+  await copy.abort();
+  const stopped = await host.createWriter("Notes/stopped.md", 12, () => undefined);
+  await stopped.write(enc("half\n"));
+  await stopped.abort();
+
+  assert.equal(readFileSync(join(root, "Notes", "copy.md"), "utf8"), "first \nthen\n");
+  assert.deepEqual(readdirSync(join(root, "Notes")), ["copy.md"], "and no temp is left for either");
+});
+
+test("a download's temp is a hidden name: never listed, never a path any device syncs", async () => {
+  const { host, root } = await vault();
+  mkdirSync(join(root, "Attachments"));
+
+  const writer = await host.writer("Attachments/big.bin");
+  await writer.write(enc("the first 40 percent\n"));
+  // Obsidian quits here: the writer is neither committed nor aborted.
+
+  const names = readdirSync(join(root, "Attachments"));
+  assert.equal(names.length, 1, names.join(", "));
+  assert.equal(vaultPathRefusal(`Attachments/${names[0]}`), "hidden_segment", `a syncable name: ${names[0]}`);
+  assert.deepEqual(await host.scan(), [], "the filesystem listing does not offer it for publication");
+  await writer.abort();
+});
+
+test("the next start removes the temps an interrupted write left, and nothing else", async () => {
+  const { host, rehost, root, outside, logs } = await vault();
+  mkdirSync(join(root, "Attachments"));
+  const at = (name) => join(root, "Attachments", name);
+
+  // The run that was interrupted: a download and a restored copy, each part
+  // way through, never committed or aborted.
+  const download = await host.writer("Attachments/big.bin");
+  await download.write(enc("the part before the quit\n"));
+  const copy = await host.createWriter("Attachments/restored.bin", 64, () => undefined);
+  await copy.write(enc("half a copy\n"));
+  // What is NOT a write's temp: a hold may be the last name of a save
+  // (`main.ts`, `hold`), a dotfile is the user's, a note is a note, and a
+  // link wearing a temp's name is left where it is, as the writer leaves it.
+  const hold = `.obsync-hold-${"ab".repeat(8)}.tmp`;
+  writeFileSync(at(hold), "held bytes\n");
+  writeFileSync(at(".hidden.md"), "a dotfile\n");
+  writeFileSync(at("keep.md"), "a note\n");
+  writeFileSync(join(outside, "secret.md"), "outside\n");
+  const plant = `.obsync-write-${"cd".repeat(8)}.tmp`;
+  symlinkSync(join(outside, "secret.md"), at(plant));
+  const leftovers = readdirSync(join(root, "Attachments")).filter((name) => /^\.obsync-(write|restore)-/.test(name) && name !== plant);
+  assert.equal(leftovers.length, 2, leftovers.join(", "));
+
+  // The next start, with a download of its own already under way.
+  const next = rehost();
+  const live = await next.writer("Attachments/live.bin");
+  await live.write(enc("arriving now\n"));
+  logs.length = 0;
+  await next.sweep();
+
+  const left = readdirSync(join(root, "Attachments"));
+  for (const name of leftovers) assert.equal(left.includes(name), false, `${name} outlived the start`);
+  for (const name of [hold, ".hidden.md", "keep.md", plant]) assert.equal(left.includes(name), true, `${name} was removed`);
+  assert.equal(readFileSync(join(outside, "secret.md"), "utf8"), "outside\n");
+  const removed = logs.filter((line) => line.startsWith("host path_class=temp decision=removed"));
+  assert.equal(removed.length, 1, logs.join(" | "));
+  assert.match(removed[0], /reason=interrupted_write files=2 kept=0 duration_ms=\d+$/);
+
+  // A start with nothing left to clear says nothing.
+  await next.sweep();
+  assert.equal(logs.filter((line) => line.startsWith("host path_class=temp")).length, 1, logs.join(" | "));
+
+  // The live download was not a leftover, and it lands.
+  await live.commit(1757200001000);
+  assert.equal(readFileSync(at("live.bin"), "utf8"), "arriving now\n");
+  // The dead run's descriptors, which only this test's process still holds.
+  await download.abort();
+  await copy.abort();
 });
 
 /**

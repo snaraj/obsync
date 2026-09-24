@@ -101,6 +101,13 @@ import {
  */
 const SCAN_MAX_DEPTH = 32;
 
+/**
+ * The names this plugin's writers give their temp files: a download's
+ * (`desktopWriter`) and a restored copy's (`createWriter`). Not a hold's --
+ * a hold may be the last name of a save (`hold`).
+ */
+const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
+
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these calls are used, and only on desktop.
 interface NodeFileHandle {
@@ -329,6 +336,8 @@ function parseUrl(value: string, base?: URL): URL | null {
 
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
+  /** The temps this host's writers hold open now, which `sweep` never takes. */
+  private readonly temps = new Set<string>();
 
   /**
    * `desktop` is the filesystem seam. It is discovered from Electron in the
@@ -505,8 +514,37 @@ export class ObsidianHost implements VaultHost {
     return files;
   }
 
-  /** One directory, then its subdirectories, to a bounded depth. */
-  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number): Promise<void> {
+  /**
+   * Remove the temp files writes left when this device stopped in the middle
+   * of them (issue #159), at each engine start (`VaultHost.sweep`).
+   *
+   * Only the names a writer makes (`WRITE_TEMP`), and only as regular files:
+   * a link wearing one of those names is left where it is, as the writer
+   * leaves it. What they held came from the server and is fetched again. A
+   * temp a writer of this host holds open is not a leftover. The walk is the
+   * scan's, over the selected folders, which is where every write lands.
+   */
+  async sweep(): Promise<void> {
+    const desktop = this.desktop;
+    if (desktop === null) return;
+    const started = Date.now();
+    const found: string[] = [];
+    for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found);
+    let removed = 0;
+    let kept = 0;
+    for (const temp of found) {
+      if (this.temps.has(temp)) continue;
+      await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+    }
+    if (removed + kept === 0) return;
+    this.log(
+      `host path_class=temp decision=removed reason=interrupted_write files=${removed} kept=${kept} ` +
+        `duration_ms=${Date.now() - started}`,
+    );
+  }
+
+  /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[]): Promise<void> {
     if (depth > SCAN_MAX_DEPTH) {
       this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
       return;
@@ -542,8 +580,9 @@ export class ObsidianHost implements VaultHost {
       // every component of each one before the engine acts on it.
       const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
       if (stat === null) continue;
+      if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
       if (stat.isDirectory()) {
-        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1);
+        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1, temps);
         continue;
       }
       if (!stat.isFile() || !inSyncScope(path, folders)) continue;
@@ -750,11 +789,18 @@ export class ObsidianHost implements VaultHost {
     const handle = await fs.promises.open(temp, "wx", 0o600);
     let opened: PathStat;
     try { opened = await handle.stat(); } catch (error) { await handle.close(); throw error; }
+    this.temps.add(temp);
     let open = true;
     let at = 0;
+    // The descriptor's identity is read at each proof, as `desktopWriter`
+    // says why: a FAT32 or exFAT volume renumbers the temp at its first byte.
     const discard = async (): Promise<void> => {
+      this.temps.delete(temp);
       try {
-        if (open) await handle.close();
+        if (open) {
+          opened = await handle.stat();
+          await handle.close();
+        }
         open = false;
         if (sameFile(opened, await walker(fs).lstat(temp))) await fs.promises.unlink(temp);
       } catch { this.log("history decision=temp_cleanup_failed"); }
@@ -762,6 +808,7 @@ export class ObsidianHost implements VaultHost {
     const bind = async (): Promise<void> => {
       guard();
       const refusal = await chainRefusal(found.chain, walker(fs));
+      opened = await handle.stat();
       if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
       guard();
     };
@@ -821,10 +868,23 @@ export class ObsidianHost implements VaultHost {
    * hold). The temp file is opened EXCLUSIVE-CREATE, which cannot follow a
    * symlink and cannot open something that already exists, and its
    * descriptor is then compared with a no-follow stat of the name: the
-   * descriptor is the identity nothing can change, so if the name no longer
+   * descriptor is the file nothing can change, so if the name no longer
    * means the same file, someone raced us and the write is refused. The same
    * comparison runs after the rename, because the rename is the moment the
    * file becomes visible under its real name.
+   *
+   * THE DESCRIPTOR'S IDENTITY IS READ AT EACH PROOF, NOT KEPT FROM THE OPEN
+   * (issue #175). FAT32 and exFAT number a file by its first cluster, and an
+   * empty file has none: the temp's inode changes when its first byte is
+   * written, so an identity kept from the open refused every write on such a
+   * volume. Both sides of each comparison are now taken at the same moment.
+   * Where inode numbers are stable, that is the identity kept from the open
+   * exactly, so nothing is weaker there; where they move, it is the only
+   * identity that describes the file the descriptor holds.
+   *
+   * THE TEMP IS A HIDDEN NAME (issue #159), so the vault-path rule keeps it
+   * out of every listing, publication and index even when a quit leaves it
+   * behind; `sweep` removes it at the next start.
    */
   private async desktopWriter(desktop: DesktopVault, path: string): Promise<VaultWriter> {
     const fs = desktop.fs;
@@ -835,15 +895,21 @@ export class ObsidianHost implements VaultHost {
       await this.confine(desktop, folder, ["directory"]);
     }
     const { target, chain } = await this.confine(desktop, path, ["absent", "file"]);
-    const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
+    const parent = target.slice(0, target.lastIndexOf(desktop.path.sep));
+    const temp = `${parent}${desktop.path.sep}.obsync-write-${hex(randomBytes(8))}.tmp`;
     const handle = await fs.promises.open(temp, "wx");
+    this.temps.add(temp);
     let open = true;
-    const opened = await handle.stat();
+    let opened = await handle.stat();
 
     /** Close, and remove the temp ONLY while its name still means our file. */
     const discard = async (): Promise<void> => {
-      if (open) await handle.close();
+      if (open) {
+        opened = await handle.stat();
+        await handle.close();
+      }
       open = false;
+      this.temps.delete(temp);
       if (sameFile(opened, await walker(fs).lstat(temp))) {
         await fs.promises.unlink(temp).catch(() => undefined);
       }
@@ -856,6 +922,7 @@ export class ObsidianHost implements VaultHost {
      */
     const bind = async (): Promise<void> => {
       const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
+      opened = await handle.stat();
       const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
       if (!swapped) return;
       await discard();
@@ -879,6 +946,7 @@ export class ObsidianHost implements VaultHost {
         const wrote = await walker(fs).lstat(temp);
         if (wrote === null) throw new VaultPathError("temp_identity");
         await fs.promises.rename(temp, target);
+        this.temps.delete(temp);
         // The rename is the moment the file takes its real name, so the
         // chain is checked again here: a parent swapped after the last
         // binding would otherwise leave our own inode sitting outside the

@@ -647,6 +647,11 @@ returns immediately when a new frame lands.
    changing must hold still for 5 s before it is queued, and a push whose
    file moved between the start and the end of its read is abandoned before
    a version exists. A file still growing is retried, never uploaded torn.
+   A volume that keeps a modification time to the whole second (FAT32 keeps
+   it to the even second) can give a second save of the same size the same
+   `(mtime, size)` as the first, so a push made less than one 2 s step from
+   such a time pushes once more when the step has closed; the digest
+   decides, and unchanged bytes post nothing (issue #175).
    Every 30 s the engine also compares its own listing of the vault against
    the local state. On desktop that listing is the filesystem, read directly,
    because Obsidian's index is never fresher than the events it emits: a
@@ -719,8 +724,13 @@ returns immediately when a new frame lands.
    vault operation, and the desktop writer proves the boundary on the
    filesystem, not on the string: every path component from the vault root
    down is checked with a no-follow stat and must be a real directory,
-   never a symlink; the temp file is opened exclusive-create and verified
-   by descriptor before writing and after the rename.
+   never a symlink; the temp file is a hidden name beside the target,
+   opened exclusive-create and verified by descriptor before writing,
+   before the rename and after it. The descriptor's identity is read at each
+   check, because FAT32 and exFAT renumber a file when its first byte is
+   written (issue #175). A hidden name is outside every listing and every
+   publication, so a temp a quit leaves behind is never synced, and the next
+   start removes it (issue #159).
 
    A write and a removal each report on themselves, because neither is
    atomic against the user. The metadata a writer answers with is the

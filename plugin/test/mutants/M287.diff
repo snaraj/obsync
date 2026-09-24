@@ -1,0 +1,11 @@
+# M287: the start-up clean-up deletes temps that downloads in progress still hold
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -533,7 +533,6 @@
+     let removed = 0;
+     let kept = 0;
+     for (const temp of found) {
+-      if (this.temps.has(temp)) continue;
+       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+     }
+     if (removed + kept === 0) return;

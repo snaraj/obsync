@@ -1001,6 +1001,106 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   engine.stop();
 });
 
+/**
+ * A SAVE THE MODIFICATION TIME CANNOT SEE (issue #175). FAT32 keeps a file's
+ * modification time to the even second, so a second save of the same size
+ * inside one step leaves `(mtime, size)` exactly as the first push recorded
+ * it, and nothing that compares those two numbers can tell it happened. The
+ * engine's clock here is the timers' own, so "later" means the same thing to
+ * the push that measures an age and to the timer that fires on it.
+ */
+const STEP = 1790244622000;
+
+function coarseRig(rigged, timers, start = STEP + 300) {
+  Object.defineProperty(rigged.host, "clock", { get: () => start + timers.now, configurable: true });
+  const reads = [];
+  const read = rigged.host.read.bind(rigged.host);
+  rigged.host.read = async (path) => {
+    reads.push(path);
+    return await read(path);
+  };
+  return reads;
+}
+
+const rechecks = (host) => host.logs.filter((line) => line.startsWith("push path_class=file decision=recheck"));
+
+test("a second save of the same size inside one coarse mtime step is still sent", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const reads = coarseRig(rigged, timers);
+  const engine = engineOf(rigged, timers);
+
+  host.seed("Notes/n05.md", "LINE 3\nline 4\n", STEP);
+  await engine.start();
+  await timers.run(100, () => state.fileByPath("Notes/n05.md") !== undefined);
+  const first = state.fileByPath("Notes/n05.md");
+
+  // 0.6 s later, the same number of bytes, and the volume stamps it with the
+  // same even second.
+  host.seed("Notes/n05.md", "LINE 3\nLINE 4\n", STEP);
+  engine.changed("Notes/n05.md");
+  await timers.run(100, () => state.fileByPath("Notes/n05.md").versionId !== first.versionId);
+
+  const now = state.fileByPath("Notes/n05.md");
+  assert.equal(now.mtime, first.mtime, "the time never moved");
+  assert.notEqual(now.sha256, first.sha256, "and the bytes that were sent are the second save's");
+  assert.deepEqual(reads, ["Notes/n05.md", "Notes/n05.md"], "one read to publish, one when the step closed");
+  assert.equal(rechecks(host).length, 1, host.logs.join(" | "));
+  assert.match(rechecks(host)[0], /reason=coarse_mtime delay_ms=1[0-9]{3}$/);
+  engine.stop();
+});
+
+test("a file whose modification time can still move is never read twice", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const reads = coarseRig(rigged, timers);
+  const engine = engineOf(rigged, timers);
+
+  // A fine-grained stamp (APFS, NTFS, ext4), a whole second long past, and a
+  // whole second far ahead of this clock: none of them can hide a save.
+  host.seed("Notes/fine.md", "a fine stamp\n", STEP + 123);
+  host.seed("Notes/old.md", "an old stamp\n", STEP - 60_000);
+  host.seed("Notes/ahead.md", "a stamp ahead\n", STEP + 86_400_000);
+  await engine.start();
+  await timers.run(100, () => ["fine", "old", "ahead"].every((name) => state.fileByPath(`Notes/${name}.md`) !== undefined));
+  await timers.run(1000);
+
+  assert.equal(reads.length, 3, reads.join(", "));
+  assert.deepEqual(rechecks(host), []);
+  engine.stop();
+});
+
+test("each start clears an interrupted write's leftovers before it lists the vault, and a failed clean-up stops nothing", async () => {
+  const rigged = await rig();
+  const { host } = rigged;
+  const order = [];
+  host.sweep = async () => { order.push("sweep"); };
+  const list = host.list.bind(host);
+  host.list = async () => {
+    order.push("list");
+    return await list();
+  };
+  const engine = engineOf(rigged, new FakeTimers());
+  await engine.start();
+  engine.stop();
+  assert.deepEqual(order, ["sweep", "list"]);
+
+  // A walk that stops part way -- a file this user cannot stat -- is logged,
+  // and the start goes on.
+  host.sweep = async () => {
+    order.push("sweep");
+    throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  };
+  order.length = 0;
+  const again = engineOf(rigged, new FakeTimers());
+  await again.start();
+  again.stop();
+  assert.deepEqual(order, ["sweep", "list"]);
+  assert.ok(host.logs.includes("host path_class=temp decision=failed reason=sweep code=EACCES"), host.logs.join(" | "));
+});
+
 /** The engine, wired to one rig. The domain comes from the vault's map. */
 function engineOf({ host, server, state }, timers, extra = {}) {
   return new SyncEngine({
