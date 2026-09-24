@@ -166,6 +166,22 @@ Saving a folder selection no longer shows "Waiting for transfers…" for up to a
 minute when nothing is transferring. Same on desktop and mobile, except that
 only a computer ever sent a folder out under the wrong spelling. (#150)
 
+**A note that split in two while one device still ran 1.1.1 becomes one note
+again.** When two devices started with the same notes and one still ran 1.1.1,
+a few of them stayed tracked twice, once per device. Every edit made on the
+1.1.1 device then reached the other one as a `(conflict from another device,
+…)` copy while its own note kept the old text, and updating the older device
+did not stop it. Now the first edit of such a note settles it: the device whose
+note still holds the text that edit started from takes the edit into that note
+and retires its own duplicate on the server, with no copy and nothing lost.
+Edits made on a 1.1.1 device settle this way as soon as the other device runs
+1.1.3, and edits from either side once both do; an edit made first on the newer
+device while the other still runs 1.1.1 meets 1.1.1's own rule, which keeps
+the older device's previous text beside the note once. A note that already has
+such a copy stays as it is: delete the note that kept the old text and rename
+the copy to its name. Same on desktop and mobile; each settlement writes one
+`decision=converged reason=edited_twin` line (#147).
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

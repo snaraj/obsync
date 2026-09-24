@@ -21,7 +21,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
+import { DEVICE_B, KEYS, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -1396,4 +1396,183 @@ test("a record of other bytes landing while the push reads is not taken for this
   const outcome = await pushFile(r.context, NOTE);
   assert.notEqual(outcome.status, "unchanged", "a push was dropped for a record of other bytes");
   assert.ok(!r.host.logs.some((line) => line.includes("recorded_during_read")), r.host.logs.join(" | "));
+});
+
+/*
+ * ONE NOTE, TWO IDS, ACROSS VERSIONS (issue #147).
+ *
+ * The rule above leaves the pair's HIGHER id to its own device to retire, and
+ * a device on 1.1.1 has no such rule: it goes on editing the note under its
+ * own id. The holder of the lower id waited for a retirement that never came,
+ * and every later edit met the name as a collision -- a conflict copy each
+ * time, which updating the older device did not stop, because both feeds were
+ * past the pair. An EDIT of the twin is what settles it: its parent held these
+ * very bytes at this very name, so the device that made it holds that id and
+ * is not retiring it.
+ */
+
+const SHARED = "Shared.md";
+
+/**
+ * S13 after its first step. Both vaults hold the note: the desktop (a) under
+ * the LOWER id, which it keeps as the #131 rule says, retiring nothing; the
+ * laptop (b) under the HIGHER id, which it never retires. b stands for 1.1.1:
+ * its feed is past a's version and it tracks its own, which is where 1.1.1
+ * left the real laptop, and what it does from here -- publish its edits under
+ * that id, pass over a tombstone for an id it does not track, apply a version
+ * of the id it tracks -- is what 1.1.1 does too.
+ */
+async function skewed(t) {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", { isMobileB: false });
+  const bytes = enc(SAME_TEXT);
+  const versions = {};
+  for (const [device, fileId, deviceId, mtime] of [[a, LOWER, KEYS.deviceId, 1000], [b, HIGHER, DEVICE_B, 1500]]) {
+    device.host.write(SHARED, SAME_TEXT, mtime);
+    const version = await server.publish({
+      fileId, path: SHARED, bytes, mtime, deviceId, domainKey: keys.domainKey, manifestKey: keys.manifestKey,
+    });
+    device.state.setFile(SHARED, {
+      fileId, versionId: version.version_id, mtime, size: bytes.length, sha256: await sidDigest(version.sids),
+    });
+    versions[fileId] = version;
+  }
+  a.state.data.lastSeq = versions[LOWER].seq;
+  b.state.data.lastSeq = server.seq;
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("identical_same_name role=keep")));
+  const story = () => `desktop=${JSON.stringify([...a.host.files.keys()])} laptop=${JSON.stringify([...b.host.files.keys()])} ` +
+    `| desktop: ${pullLog(a)} | laptop: ${pullLog(b)}`;
+  return { server, timers, a, b, keys, versions, story };
+}
+
+/** One edit on `from`, waited for on `to` until it lands at the name or beside it. */
+async function edit(timers, from, to, text, mtime) {
+  from.host.write(SHARED, text, mtime);
+  await timers.run(STEP_MS, () => to.host.text(SHARED) === text || copies(to.host).length > 0);
+  await timers.run(STEP_MS);
+}
+
+/** One id for the note on both devices, the same text, and no copy anywhere. */
+function one(a, b, text, story) {
+  for (const device of [a, b]) {
+    assert.deepEqual(copies(device.host), [], `a copy was made: ${story()}`);
+    assert.equal(device.host.text(SHARED), text, `the edit did not reach the note: ${story()}`);
+  }
+  assert.equal(a.state.fileByPath(SHARED).fileId, b.state.fileByPath(SHARED).fileId, `the devices track different ids: ${story()}`);
+  return a.state.fileByPath(SHARED).fileId;
+}
+
+test("mixed versions: the older device's edit settles the pair on its id, with no copy", async (t) => {
+  const { server, timers, a, b, keys, versions, story } = await skewed(t);
+  const FROM_B = `${SAME_TEXT}typed on the laptop\n`;
+
+  await edit(timers, b, a, FROM_B, 3000);
+
+  assert.equal(one(a, b, FROM_B, story), HIGHER, `the pair did not settle on the id the laptop edits: ${story()}`);
+  // The desktop retired its own id once, on the version it recorded; the
+  // laptop's id carries every version it had.
+  const lower = await published(server, LOWER, keys.manifestKey);
+  assert.equal(lower.filter((manifest) => manifest.deleted).length, 1, `the desktop's id was not retired once: ${story()}`);
+  assert.deepEqual(server.files.get(LOWER).versions[0].parents, [versions[LOWER].version_id]);
+  assert.equal((await published(server, HIGHER, keys.manifestKey)).at(-1).deleted, false);
+  assert.ok(pullLog(a).includes(`decision=converged reason=edited_twin keeper=${HIGHER} retired=${LOWER} tombstone=posted`), story());
+
+  // And every later edit, from either side, is an ordinary update.
+  const FROM_A = `${FROM_B}and on the desktop\n`;
+  await edit(timers, a, b, FROM_A, 4000);
+  one(a, b, FROM_A, story);
+  const AGAIN = `${FROM_A}and the laptop again\n`;
+  await edit(timers, b, a, AGAIN, 5000);
+  assert.equal(one(a, b, AGAIN, story), HIGHER);
+});
+
+test("an update in place: once the older device runs this version, the newer device's edit settles the pair too", async (t) => {
+  const { server, timers, a, b, keys, versions, story } = await skewed(t);
+  // The laptop is updated where it stands: same device, same state, a new
+  // engine. Nothing re-meets the pair -- both feeds are past it -- so the two
+  // ids are still two after the restart, exactly as on the real laptop.
+  b.engine.stop();
+  await b.engine.start();
+  await timers.run(STEP_MS);
+  assert.notEqual(a.state.fileByPath(SHARED).fileId, b.state.fileByPath(SHARED).fileId, "precondition: the pair is split");
+  const FROM_A = `${SAME_TEXT}typed on the desktop\n`;
+
+  await edit(timers, a, b, FROM_A, 3000);
+
+  assert.equal(one(a, b, FROM_A, story), LOWER, `the pair did not settle on the id the desktop edits: ${story()}`);
+  const higher = await published(server, HIGHER, keys.manifestKey);
+  assert.equal(higher.filter((manifest) => manifest.deleted).length, 1, `the laptop's id was not retired once: ${story()}`);
+  assert.deepEqual(server.files.get(HIGHER).versions[0].parents, [versions[HIGHER].version_id]);
+  assert.ok(pullLog(b).includes(`decision=converged reason=edited_twin keeper=${LOWER} retired=${HIGHER} tombstone=posted`), story());
+
+  const FROM_B = `${FROM_A}and on the laptop\n`;
+  await edit(timers, b, a, FROM_B, 4000);
+  assert.equal(one(a, b, FROM_B, story), LOWER);
+});
+
+const EDIT = `${SAME_TEXT}and a line typed on the other device\n`;
+
+/**
+ * This device holding `ours` at NOTE, clean; the other device's `theirs` made
+ * as a twin of it and then edited, unseen here until the edit arrives.
+ */
+async function editedTwin(ours, theirs, { parentText = SAME_TEXT, parentPath = NOTE, parentKey } = {}) {
+  const r = await rig();
+  const bytes = r.host.seed(NOTE, SAME_TEXT, 2000);
+  const own = await r.server.publish({
+    fileId: ours, path: NOTE, bytes, mtime: 2000, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  r.state.setFile(NOTE, {
+    fileId: ours, versionId: own.version_id, mtime: 2000, size: bytes.length, sha256: await sidDigest(own.sids),
+  });
+  const parent = await r.server.publish({
+    fileId: theirs, path: parentPath, bytes: enc(parentText), mtime: 3000,
+    domainKey: r.keys.domainKey, manifestKey: parentKey ?? r.keys.manifestKey,
+  });
+  const frame = await r.server.publish({
+    fileId: theirs, path: NOTE, bytes: enc(EDIT), mtime: 5000, parents: [parent.version_id],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  return { r, own, frame };
+}
+
+test("an edit of the twin is taken as an update, from either side, and only this device's id is retired", async () => {
+  for (const [ours, theirs] of [[LOWER, HIGHER], [HIGHER, LOWER]]) {
+    const { r, own, frame } = await editedTwin(ours, theirs);
+
+    assert.equal(await applyChange(r.context, frame), "applied", pullLog(r));
+
+    assert.deepEqual(copies(r.host), [], `the twin's edit was copied: ${pullLog(r)}`);
+    assert.equal(r.host.text(NOTE), EDIT, "the edit did not reach the note");
+    const record = r.state.fileByPath(NOTE);
+    assert.equal(record.fileId, theirs, "the name is not recorded under the id that was edited");
+    assert.equal(record.versionId, frame.version_id);
+    assert.equal(r.state.pathByFileId(ours), undefined, "the retired id is still recorded");
+    const walk = await published(r.server, ours, r.keys.manifestKey);
+    assert.equal(walk.length, 2, "this device's id was not retired exactly once");
+    assert.equal(walk.at(-1).deleted, true);
+    assert.deepEqual(r.server.files.get(ours).versions[0].parents, [own.version_id]);
+    assert.equal((await published(r.server, theirs, r.keys.manifestKey)).at(-1).deleted, false, "the edited id was retired");
+  }
+});
+
+test("an edit that is not provably of this very note keeps both, and retires nothing", async () => {
+  const cases = {
+    "a different note": { parentText: THEIRS },
+    "a twin somewhere else": { parentPath: "Notes/Elsewhere.md" },
+    "a parent this vault cannot read": { parentKey: new Uint8Array(32).fill(7) },
+    "an unpushed edit here": { local: "the same note on both devices, and typed on here\n" },
+  };
+  for (const [name, { local, ...options }] of Object.entries(cases)) {
+    const { r, frame } = await editedTwin(LOWER, HIGHER, options);
+    if (local !== undefined) r.host.seed(NOTE, local, 2500);
+
+    await applyChange(r.context, frame);
+
+    const texts = [...r.host.files.keys()].map((path) => r.host.text(path)).sort();
+    assert.deepEqual(texts, [EDIT, local ?? SAME_TEXT].sort(), `${name}: a note was lost or merged: ${pullLog(r)}`);
+    assert.equal((await published(r.server, LOWER, r.keys.manifestKey)).at(-1).deleted, false, `${name}: this device's id was retired`);
+    assert.ok(!pullLog(r).includes("edited_twin"), `${name}: ${pullLog(r)}`);
+  }
 });

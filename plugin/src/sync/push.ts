@@ -130,9 +130,13 @@ export async function sidDigest(sids: string[]): Promise<string> {
  * Retire a file id that duplicates the note recorded at `path` under another
  * id (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
  *
- * Only ever the HIGHER of two ids holding the same bytes at one name. Every
- * device that settles such a pair settles it on the lower id, so two devices
- * can never retire both halves -- which would take the note off every device.
+ * Only ever the HIGHER of two ids holding the same bytes at one name, or an id
+ * whose twin another device has EDITED since (`takeEditedTwin`, issue #147).
+ * Every device that settles an unedited pair settles it on the lower id, and a
+ * device whose note has moved on from the shared bytes never takes the other
+ * half for its twin, so two devices do not retire both halves -- which would
+ * take the note off every device. The one exception is a device that edits the
+ * note and restores the shared bytes exactly before it first pulls the twin.
  * A failure is reported, never raised: the note is already recorded under the
  * id that keeps it, so the cost is a duplicate id on the server.
  */

@@ -2458,6 +2458,8 @@ async function sameNameTiebreak(
   if (ours === undefined) return await keepBoth(context, change, manifest);
   const same = await identicalAtName(context, change, manifest.path, ours);
   if (same !== null) return await convergeIdentical(context, change, manifest, ours, same);
+  const healed = await takeEditedTwin(context, change, manifest, ours);
+  if (healed !== null) return healed;
 
   if (ours.fileId < change.file_id) {
     const kept = await keepBothRecorded(context, change, manifest);
@@ -2505,7 +2507,7 @@ async function sameNameTiebreak(
  */
 async function identicalAtName(
   context: SyncContext,
-  change: ChangeRecord,
+  change: Pick<ChangeRecord, "sids">,
   path: string,
   ours: FileState,
 ): Promise<VaultStat | null> {
@@ -2521,7 +2523,9 @@ async function identicalAtName(
  *
  * The lower id keeps the name, exactly as it does for two different notes, so
  * both devices reach one answer without negotiating. The device holding it
- * writes and records nothing; the other id is its own device's to retire. The
+ * writes and records nothing; the other id is its own device's to retire --
+ * and a device older than this rule never does, which `takeEditedTwin`
+ * settles at that device's first edit (issue #147). The
  * device holding the higher id records the name under the lower one -- its
  * bytes ARE that version -- and publishes one tombstone for its own id, so no
  * device, including one paired later, is handed the duplicate again. The
@@ -2563,6 +2567,48 @@ async function convergeIdentical(
   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
   context.host.log(
     `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,
+  );
+  return "applied";
+}
+
+/**
+ * An edit of THIS note, made under its twin's id (issue #147).
+ *
+ * A device older than the rule above (1.1.1) never retires its twin: it goes
+ * on editing the note under its own id, and each edit arrived here at a name
+ * this device holds under the other id -- a conflict copy every time, which
+ * updating that device did not stop, because nothing re-meets a pair the feed
+ * is past. The same holds the other way round once it runs this version.
+ *
+ * THE EDIT IS THE PROOF, not the app version a device reports, which is only
+ * its own word. A version whose parent held exactly the bytes of the clean
+ * note here, at this same name, was made by a device that holds that id and is
+ * not retiring it. So this device takes the edit as the update it is, records
+ * the name under that id and retires its own, on the version it recorded: an
+ * id that moved on elsewhere forks rather than deletes. The bytes replaced are
+ * the edit's own parent, so nothing is lost. Anything less than that proof --
+ * other bytes, another name, a parent this vault cannot read, an unpushed edit
+ * here -- is `null`, and the rule below decides as it always has.
+ */
+async function takeEditedTwin(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  ours: FileState,
+): Promise<ApplyResult | null> {
+  const started = context.now();
+  const file = await context.transport.getFile(change.file_id);
+  const parent = file.versions.find((version) => version.version_id === change.parents[0]);
+  if (parent === undefined) return null;
+  const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
+    .catch(() => null);
+  if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
+  const landed = await materialise(context, manifest);
+  await recordAt(context, change, landed.path, landed);
+  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+  context.host.log(
+    `pull decision=converged reason=edited_twin keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} ` +
+      `seq=${change.seq} duration_ms=${context.now() - started}`,
   );
   return "applied";
 }
