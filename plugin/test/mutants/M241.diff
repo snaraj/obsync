@@ -1,0 +1,12 @@
+# M241: a Sync now after some held notes come back re-derives the hold and publishes the rest without the user's word
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1909,7 +1909,7 @@
+       );
+       this.heldDeletions = kept;
+     }
+-    if (tombstones && (kept.length > 0 || (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
++    if (tombstones && ((missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
+       this.heldDeletions = missing;
+       context.host.log(
+         `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked} pending=${kept.length}`,

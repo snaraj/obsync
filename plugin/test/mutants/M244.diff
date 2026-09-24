@@ -1,0 +1,12 @@
+# M244: a Sync now that finds a bulk deletion shows two notices about the one hold it just took
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2230,7 +2230,7 @@
+     await this.reconcile();
+     // The command that "syncs everything" did not send the deletions the user
+     // is still being asked about, and says so rather than nothing (#172).
+-    if (pending && this.heldDeletions.length > 0) {
++    if (this.heldDeletions.length > 0) {
+       this.options.host.notify(
+         `obsync is still holding back ${this.heldDeletions.length} deletions: Sync now does not send them. Put ` +
+           "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",

@@ -424,11 +424,49 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
   // manifest blind spot applies in principle -- a tombstone's manifest names
   // a path -- and matters less, because a deleted file has no later path for
   // the two devices to disagree about.
-  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true);
+  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true, () => stillGone(context, path, record, manifest.mtime))
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === "withdrawn") return null;
+      throw error;
+    });
+  if (ack === null) return null;
   context.state.forgetPath(path);
   await context.state.save();
   context.host.log(`push path_class=tombstone decision=deleted version=${ack.versionId}`);
   return { status: "pushed", fileId: record.fileId, versionId: ack.versionId, ack: ack.ack };
+}
+
+/**
+ * Is a deletion whose first send was LOST still true, now that it is about to
+ * be sent again (issue #173)? Settling the loss reads the file back with
+ * retries -- 45 seconds of them in the battery -- and the answer `pushDelete`
+ * checked before the first send is that old by now. The note may be back on
+ * the disk, or the pull may have applied another device's change to it,
+ * which replaces the record this deletion was decided from or moves it to
+ * the note's new name. Sent anyway, the stale tombstone deletes a note that
+ * is back and forks its file on the server for good.
+ *
+ * The device that deleted the note is the one that knows what happened, so
+ * it is the one that says so -- when another device's change is why the note
+ * is here, which the user did not do and would otherwise see as a note that
+ * came back by itself. A note the user put back is theirs to know about.
+ * `decided` is when the first send was decided -- the tombstone's own time --
+ * so the line says how stale that decision had become.
+ */
+async function stillGone(context: SyncContext, path: string, record: FileState, decided: number): Promise<boolean> {
+  const same = context.state.fileByPath(path) === record;
+  const gone = same && (await context.host.stat(path)) === null;
+  const reason = gone ? "still_gone" : same ? "file_present" : "record_changed";
+  context.host.log(`push path_class=tombstone decision=${gone ? "resent" : "withdrawn"} reason=${reason} file=${record.fileId} ` +
+    `age_ms=${context.now() - decided}`);
+  const now = same ? undefined : context.state.pathByFileId(record.fileId);
+  if (now !== undefined && (await context.host.stat(now)) !== null) {
+    context.host.notify(
+      `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
+        `deletion reached the server, so the note is back here as "${now}".`,
+    );
+  }
+  return gone;
 }
 
 /** The manifest every folder record carries; `deleted` is the only choice. */
@@ -475,7 +513,8 @@ export async function pushFolderDelete(context: SyncContext, path: string): Prom
  * chunk between the exists check and now: ASK which sids it is missing and
  * re-upload exactly those, then retry once. The refusal names one sid, and
  * re-sending the plan on its word would re-send a 20 GiB archive to replace
- * one 4 MiB chunk (issue #56).
+ * one 4 MiB chunk (issue #56). `stillWanted` is asked immediately before a
+ * LOST post is sent again (`postOnce`), and `false` withdraws it.
  */
 export async function postManifest(
   context: SyncContext,
@@ -485,6 +524,7 @@ export async function postManifest(
   manifest: Manifest | FolderManifest,
   bytes: number,
   acceptExisting: boolean,
+  stillWanted: () => Promise<boolean> = async () => true,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   // The folder rule for a folder record, the file rule for a file: the
   // selected folder itself has a record and is never a file (`syncScope.ts`).
@@ -545,10 +585,10 @@ export async function postManifest(
     context.host.log(
       `push path_class=file decision=not_adopted reason=other_manifest file=${fileId}`,
     );
-    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }), false);
+    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }, stillWanted), false);
   };
   try {
-    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+    return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
     const missing = new Set(await context.transport.missingChunks(sids));
@@ -556,7 +596,7 @@ export async function postManifest(
       `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
     );
     await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
-    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+    return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   }
 }
 
@@ -621,13 +661,16 @@ async function sameOperation(
  * still buys a second write, a second nonce, and a `409 missing_chunks` if
  * the server collected a chunk in between. Reading the file record answers
  * the question that was actually asked, and reading IS repeatable, so it can
- * be retried freely. The re-post is what the read's "absent" earns.
+ * be retried freely. The re-post is what the read's "absent" earns -- and
+ * only while the caller still wants it: the read can take long enough for
+ * the reason to post to have gone (`stillGone`, issue #173).
  */
 async function postOnce(
   context: SyncContext,
   fileId: string,
   id: string,
   post: VersionPost,
+  stillWanted: () => Promise<boolean>,
 ): Promise<VersionAck> {
   const sent = await context.transport.postVersion(fileId, post);
   if (sent.outcome === "ok") return sent.value;
@@ -636,6 +679,7 @@ async function postOnce(
     `push decision=reconciled reason=lost_answer file=${fileId} committed=${committed !== null}`,
   );
   if (committed) return committed;
+  if (!(await stillWanted())) throw new ApiError(0, "withdrawn", fileId);
   // Absent: a fresh signature over the same body is a first post, not a repeat.
   const again = await context.transport.postVersion(fileId, post);
   if (again.outcome === "ok") return again.value;

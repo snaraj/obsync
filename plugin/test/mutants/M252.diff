@@ -1,0 +1,12 @@
+# M252: a device keeping a note another device deleted from an older version says it holds changes not uploaded yet, which is false
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1175,7 +1175,7 @@
+           context.host.log(
+             `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
+           );
+-          notifyKeptDeletion(context, change, localPath, true);
++          notifyKeptDeletion(context, change, localPath, false);
+           return "skipped";
+         }
+       }

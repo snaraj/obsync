@@ -1089,15 +1089,21 @@ async function competing(
 
 /**
  * A deletion this device declined to apply, said once per file. The note is
- * still there and still the user's, and the next push carries it back to the
- * other devices, so the message says what happened rather than what failed.
+ * still there and still the user's, so the message says what happened rather
+ * than what failed -- and WHY, in the words that are true here (issue #173):
+ * the fork guard keeps a version that is already on the server, where saying
+ * it holds changes not uploaded yet sent the user looking for an upload that
+ * never happens.
  */
-function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string): void {
+function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string, onServer: boolean): void {
   if (context.refused.has(change.file_id)) return;
   context.refused.add(change.file_id);
   context.host.notify(
-    `obsync did not delete ${path}: it holds changes this device has not uploaded yet. ` +
-      `Another device deleted that note; this copy is kept here and is uploaded as a new version.`,
+    `obsync did not delete ${path}: ` + (onServer
+      ? "another device deleted it without having seen the version here, which is already on the server, so the " +
+        "note is kept."
+      : "it holds changes this device has not uploaded yet. Another device deleted that note; this copy is kept " +
+        "here and is uploaded as a new version."),
   );
 }
 
@@ -1169,7 +1175,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
           context.host.log(
             `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
           );
-          notifyKeptDeletion(context, change, localPath);
+          notifyKeptDeletion(context, change, localPath, true);
           return "skipped";
         }
       }
@@ -1208,7 +1214,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord): Promise
           // budget. The bytes are still here and still unpublished, so the
           // user is told the weaker thing that is true, and the next push is
           // what carries them.
-          notifyKeptDeletion(context, change, localPath);
+          notifyKeptDeletion(context, change, localPath, false);
         }
         return "skipped";
       }

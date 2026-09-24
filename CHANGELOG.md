@@ -62,6 +62,24 @@ and that nothing was sent, instead of "cannot say whether it happened".
 instead of saying "not paired". A refused address is announced once, not once
 per keystroke. (#137)
 
+**Held-back deletions wait for you, and a deletion is checked again before it is
+re-sent.** On a device set to sync selected folders only, the "Deletions held
+back" check counted every note the device had ever recorded, including notes
+outside those folders, so 12 of 20 selected notes gone while Obsidian was closed
+were deleted on your other devices without a question. It now counts only the
+notes in the folders this device syncs, and the notice gives that number. Once
+deletions are held back, **Sync now** no longer sends them when some of the notes
+come back: notes that return are let go of, the rest wait for **Confirm
+deletions**, and Sync now says they are still waiting. And a deletion whose first
+send got no answer was sent again tens of seconds later without looking again, so
+a note restored in the meantime, or brought back by another device's edit or
+rename, was deleted anyway and left split in two on the server. It is now checked
+against the vault first and dropped when the note is back, and the device that
+deleted it says why the note came back. Your other devices no longer claim to
+hold "changes this device has not uploaded yet" when a note was deleted
+elsewhere from an older version: they say the version they have is already on
+the server and kept. Same on desktop and mobile. (#172, #173)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

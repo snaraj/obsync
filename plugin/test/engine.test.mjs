@@ -424,7 +424,7 @@ test("a tombstone whose revive cannot publish keeps the file and says only that"
     host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=growing")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
-  assert.match(host.notices.join(" "), /did not delete/);
+  assert.match(host.notices.join(" "), /did not delete Notes\/Doomed\.md: it holds changes this device has not uploaded yet/);
   assert.doesNotMatch(
     host.notices.join(" "),
     /published again/,
@@ -455,6 +455,11 @@ test("a tombstone that forks from the version this device holds is one side of a
     host.logs.some((line) => line.includes("path_class=tombstone decision=local_edit_kept reason=delete_vs_edit")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
+  // And the notice says what happened (issue #173): the version here is
+  // already on the server, so there is nothing "not uploaded yet" to upload.
+  assert.equal(host.notices.length, 1);
+  assert.match(host.notices[0], /did not delete Notes\/Doomed\.md: another device deleted it without having seen/);
+  assert.doesNotMatch(host.notices[0], /not uploaded|uploaded as a new version/);
 });
 
 test("a save landing between the tombstone's check and its removal is kept", async () => {
@@ -653,12 +658,19 @@ test("a binary conflict is never merged", async () => {
  * The fake server, wrapped so it spends nonces exactly as obsyncd does and
  * loses one answer. `before` loses the request instead, so the server never
  * saw it: the two together are the whole ambiguity a lost answer creates.
+ * `meanwhile` is what happens on this device while the loss is being settled
+ * -- it runs once, before the first request after the loss.
  */
-function lossy(server, host, state, { target, before = false }) {
+function lossy(server, host, state, { target, before = false, meanwhile = null }) {
   const spent = new Set();
   let lost = false;
   return new Transport({
     request: async (request) => {
+      if (lost && meanwhile !== null) {
+        const run = meanwhile;
+        meanwhile = null;
+        await run();
+      }
       const nonce = request.headers["X-Obsync-Nonce"];
       if (nonce !== undefined) {
         if (spent.has(nonce)) {
@@ -736,6 +748,107 @@ test("a version post that never arrived is posted again under a fresh signature"
   assert.equal(posts(server, outcome.fileId), 1, "the server saw the post exactly once: the re-post");
   assert.ok(host.logs.some((line) => line.includes("decision=reconciled") && line.includes("committed=false")));
   assert.equal(host.logs.some((line) => line.includes("status=401")), false);
+});
+
+/**
+ * A DELETION WHOSE FIRST SEND WAS LOST IS DECIDED AGAIN BEFORE IT IS SENT
+ * AGAIN (issue #173). Settling a lost answer reads the file back with retries
+ * -- 45 seconds of them in the battery -- and the note can come back in that
+ * time: restored here, or rewritten by another device's change pulled in the
+ * meantime. The re-send used to go out on the first send's word, deleting a
+ * note that was back and forking its file on the server for good.
+ */
+async function lostDeletion(path, meanwhile) {
+  const r = await rig();
+  r.host.seed(path, "one line\n", 1000);
+  const created = await pushFile(r.context, path);
+  r.host.files.delete(path);
+  const transport = lossy(r.server, r.host, r.state, { target: "/versions", before: true, meanwhile: () => meanwhile(r, created) });
+  const outcome = await pushDelete({ ...r.context, transport }, path);
+  return { ...r, created, outcome };
+}
+
+test("a lost deletion is sent again only while the note is still gone", async () => {
+  const { host, server, state, created, outcome } = await lostDeletion("Notes/Gone.md", async () => undefined);
+
+  assert.ok(outcome, "a deletion that is still true was dropped");
+  assert.equal(posts(server, created.fileId), 2, "the create and the one re-send");
+  assert.equal(server.journal.at(-1).deleted, true);
+  assert.equal(state.fileByPath("Notes/Gone.md"), undefined);
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=resent reason=still_gone file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+});
+
+test("a lost deletion is not sent again once the note is back on the disk", async () => {
+  const { host, server, state, created, outcome } = await lostDeletion("Notes/Back.md", async ({ host }) => {
+    host.seed("Notes/Back.md", "one line\n", 1000);
+  });
+
+  assert.equal(outcome, null, "a stale deletion was sent for a note that is back");
+  assert.equal(posts(server, created.fileId), 1, "the deletion was re-sent");
+  assert.deepEqual(server.files.get(created.fileId).heads, [created.versionId]);
+  assert.equal(host.text("Notes/Back.md"), "one line\n");
+  assert.ok(state.fileByPath("Notes/Back.md"), "the record of a note that is here was dropped");
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=file_present file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+  // The user put it back: nothing happened that they do not already know.
+  assert.deepEqual(host.notices, []);
+});
+
+test("a lost deletion is not sent again once another device's change brought the note back", async () => {
+  // The battery's shape (S79): deleted here while offline, edited and renamed
+  // on the other devices, and pulled back under its new name while this
+  // device was still settling its lost deletion.
+  const { host, server, created, outcome } = await lostDeletion("Notes/n13.md", async ({ server, context, host, keys: k }, created) => {
+    host.clock += 45000;
+    const renamed = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/n13-final.md",
+      bytes: enc("one line\nA-line\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, renamed);
+  });
+
+  assert.equal(outcome, null, "a stale deletion was sent for a note another device changed");
+  const file = server.files.get(created.fileId);
+  assert.equal(file.heads.length, 1, "the file forked on the server");
+  assert.equal(server.journal.some((frame) => frame.deleted), false);
+  assert.equal(host.text("Notes/n13-final.md"), "one line\nA-line\n");
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=record_changed file=${created.fileId} age_ms=45000`), host.logs.join(" | "));
+  // Said on the device where it happened: the note it deleted is back.
+  assert.equal(host.notices.length, 1, host.notices.join(" | "));
+  assert.match(host.notices[0], /Notes\/n13\.md/);
+  assert.match(host.notices[0], /Notes\/n13-final\.md/);
+  assert.match(host.notices[0], /changed on another device/);
+});
+
+test("a lost deletion is not sent again once the note has moved past the version it was decided from", async () => {
+  // Another device's edit is pulled in while the loss is settled, and the
+  // note is deleted here again at once: the path is empty again, but the
+  // first send's tombstone names a version the note has moved past, and sent
+  // it would fork the file -- the second deletion is the one to publish.
+  const { host, server, created, outcome } = await lostDeletion("Notes/Twice.md", async ({ server, context, host, keys: k }, created) => {
+    const edited = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/Twice.md",
+      bytes: enc("one line\nB-line\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, edited);
+    host.files.delete("Notes/Twice.md");
+  });
+
+  assert.equal(outcome, null, "a tombstone for a version the note has moved past was sent");
+  assert.equal(server.files.get(created.fileId).heads.length, 1, "the file forked on the server");
+  assert.equal(server.journal.some((frame) => frame.deleted), false);
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=record_changed file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+  // Nothing came back here, so there is nothing to tell.
+  assert.deepEqual(host.notices, []);
 });
 
 test("the common ancestor walk finds the shared base, or nothing", () => {

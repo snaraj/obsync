@@ -1882,28 +1882,37 @@ export class SyncEngine {
     // folders -- a move of the vault root and a volume that mounted empty
     // arrive here identically, and the share is what they have in common.
     //
-    // ONLY THIS PASS MAY TAKE OR PUBLISH THE HOLD. The periodic scan never
-    // tombstones, so letting it fall into the publishing branch below would
-    // clear a hold the startup pass took, thirty seconds later and with
-    // nobody asked. What it may do is stop OFFERING a note that is no longer
-    // missing -- back, moved, or out of the selection -- which publishes
-    // nothing and takes nothing from the user's decision but a note that
-    // was never gone (issue #139).
+    // WHAT THIS DEVICE TRACKS IS WHAT ITS SELECTION COVERS (issue #172).
+    // Narrowing the selection keeps the records outside it, and counted,
+    // they diluted the share: twelve of twenty selected notes gone was
+    // measured as twelve of twenty-nine, and published.
+    //
+    // ONLY THE USER MAY PUBLISH THE HOLD, and only this pass may take one.
+    // The periodic scan never tombstones, so letting it fall into the
+    // publishing branch below would clear a hold the startup pass took,
+    // thirty seconds later and with nobody asked. And a hold still pending is
+    // the user's question, not this pass's: re-derived from scratch, a Sync
+    // now after a partial fix fell under half and published what the user
+    // was still being asked about (issue #172). So a pass holds what is still
+    // missing, and all either pass may do is stop OFFERING a note that is no
+    // longer missing -- back, moved, or out of the selection -- which
+    // publishes nothing and takes nothing from the user's decision but a note
+    // that was never gone (issue #139).
     let removed = 0;
-    const tracked = Object.keys(context.state.data.files).length;
-    if (!tombstones) {
-      const still = new Set(missing);
-      const kept = this.heldDeletions.filter((path) => still.has(path));
-      if (kept.length < this.heldDeletions.length) {
-        context.host.log(
-          `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
-        );
-        this.heldDeletions = kept;
-      }
-    } else if (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked) {
+    const scope = context.state.data.syncFolders;
+    const tracked = Object.keys(context.state.data.files).filter((path) => inSyncScope(path, scope)).length;
+    const still = new Set(missing);
+    const kept = this.heldDeletions.filter((path) => still.has(path));
+    if (kept.length < this.heldDeletions.length) {
+      context.host.log(
+        `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+      );
+      this.heldDeletions = kept;
+    }
+    if (tombstones && (kept.length > 0 || (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
       this.heldDeletions = missing;
       context.host.log(
-        `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked}`,
+        `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked} pending=${kept.length}`,
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
@@ -1915,7 +1924,7 @@ export class SyncEngine {
             "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
         );
       }
-    } else {
+    } else if (tombstones) {
       this.heldDeletions = [];
       this.bulkNoticeShown = false;
       for (const from of missing) {
@@ -2217,7 +2226,16 @@ export class SyncEngine {
   async syncNow(): Promise<void> {
     const started = this.nowFn();
     const joined = this.draining;
+    const pending = this.heldDeletions.length > 0;
     await this.reconcile();
+    // The command that "syncs everything" did not send the deletions the user
+    // is still being asked about, and says so rather than nothing (#172).
+    if (pending && this.heldDeletions.length > 0) {
+      this.options.host.notify(
+        `obsync is still holding back ${this.heldDeletions.length} deletions: Sync now does not send them. Put ` +
+          "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
+      );
+    }
     const queued = this.queue.length;
     const inFlight = this.active;
     await this.drain();
