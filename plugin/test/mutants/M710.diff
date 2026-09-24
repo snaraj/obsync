@@ -1,7 +1,7 @@
-# M128: the yielding device does not record the lower id
+# M710: twin adoption awaits another digest after checking the replacement boundary
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2390,16 +2390,6 @@
+@@ -2390,16 +2390,7 @@
      context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
      return "skipped";
    }
@@ -15,6 +15,7 @@
 -    sha256: ours.sha256,
 -  });
 -  await context.state.save();
++  await recordAt(context, change, manifest.path, checked);
    const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
    context.host.log(
      `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

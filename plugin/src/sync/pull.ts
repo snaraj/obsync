@@ -2289,7 +2289,7 @@ async function sameNameTiebreak(
   const ours = context.state.fileByPath(manifest.path);
   if (ours === undefined) return await keepBoth(context, change, manifest);
   const same = await identicalAtName(context, change, manifest.path, ours);
-  if (same !== null) return await convergeIdentical(context, change, manifest, ours, same);
+  if (same !== null) return await convergeIdentical(context, change, manifest, ours);
 
   if (ours.fileId < change.file_id) {
     const kept = await keepBothRecorded(context, change, manifest);
@@ -2371,7 +2371,6 @@ async function convergeIdentical(
   change: ChangeRecord,
   manifest: Manifest,
   ours: FileState,
-  stat: VaultStat,
 ): Promise<ApplyResult> {
   if (ours.fileId < change.file_id) {
     context.host.log(
@@ -2386,12 +2385,21 @@ async function convergeIdentical(
     context.host.log(`pull decision=skipped reason=historical_twin file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }
-  if (context.state.fileByPath(manifest.path) !== ours ||
-      await identicalAtName(context, change, manifest.path, ours) === null) {
+  const checked = await identicalAtName(context, change, manifest.path, ours);
+  if (checked === null || context.state.fileByPath(manifest.path) !== ours) {
     context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }
-  await recordAt(context, change, manifest.path, stat);
+  // The digest was already proved equal. Check and replace the identity in
+  // one synchronous turn: recordAt would await another digest after the check.
+  context.state.setFile(manifest.path, {
+    fileId: change.file_id,
+    versionId: change.version_id,
+    mtime: checked.mtime,
+    size: checked.size,
+    sha256: ours.sha256,
+  });
+  await context.state.save();
   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
   context.host.log(
     `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

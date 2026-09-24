@@ -1,10 +1,10 @@
 # M129: the yielding device does not retire its own id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2380,7 +2380,7 @@
-     return "skipped";
-   }
-   await recordAt(context, change, manifest.path, stat);
+@@ -2400,7 +2400,7 @@
+     sha256: ours.sha256,
+   });
+   await context.state.save();
 -  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
 +  const retired = "posted";
    context.host.log(

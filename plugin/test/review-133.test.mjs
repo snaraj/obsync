@@ -131,3 +131,63 @@ test("a twin with a concurrent deletion cannot replace an independent live note 
   assert.equal(r.state.fileByPath(PATH).fileId, HIGH);
   assert.equal(r.server.files.get(HIGH).versions[0].deleted, false);
 });
+
+for (const window of ["second stat", "record boundary"]) {
+  test(`a replacement at the ${window} survives later twin deletion (#133)`, async () => {
+    const r = await rig(), newerId = "01".repeat(16);
+    const bytes = r.host.seed(PATH, TEXT, 3000);
+    const publish = fileId => r.server.publish({ fileId, path: PATH, bytes, mtime: 3000,
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+      ...(fileId === newerId ? { deviceId: r.context.deviceId } : {}) });
+    const live = await publish(HIGH), twin = await publish(LOW), newer = await publish(newerId);
+    const original = { fileId: HIGH, versionId: live.version_id, mtime: 3000,
+      size: bytes.length, sha256: await sidDigest(live.sids) };
+    r.state.setFile(PATH, original);
+    await r.state.save();
+    let lookedUp = false, rechecked = false, replaced = false, replacementSave;
+    const replace = () => {
+      replaced = true;
+      r.state.setFile(PATH, { ...original, fileId: newerId, versionId: newer.version_id });
+      replacementSave = r.state.save();
+    };
+    const get = r.transport.getFile.bind(r.transport);
+    r.transport.getFile = async id => {
+      const result = await get(id);
+      if (id === LOW) lookedUp = true;
+      return result;
+    };
+    const stat = r.host.stat.bind(r.host);
+    r.host.stat = async path => {
+      const result = await stat(path);
+      if (path === PATH && lookedUp && !rechecked) {
+        rechecked = true;
+        if (window === "second stat") replace();
+      }
+      return result;
+    };
+    const byPath = r.state.fileByPath.bind(r.state);
+    let queued = false;
+    r.state.fileByPath = path => {
+      const record = byPath(path);
+      if (path === PATH && lookedUp && !queued && window === "record boundary") {
+        queued = true;
+        // The next async turn may publish a replacement. A check followed by
+        // another awaited digest must not overwrite that replacement.
+        queueMicrotask(replace);
+      }
+      return record;
+    };
+    await applyChange(r.context, twin);
+    await replacementSave;
+    assert.ok(replaced && rechecked, "the replacement must land in the named window");
+    await applyChange(r.context, newer);
+    const deleted = await r.server.publishTombstone({ fileId: LOW, path: PATH,
+      parents: [twin.version_id], manifestKey: r.keys.manifestKey });
+    await applyChange(r.context, deleted);
+    assert.equal(r.host.text(PATH), TEXT, "a different identity's tombstone deleted the live note");
+    assert.equal(r.state.fileByPath(PATH).fileId, newerId);
+    assert.equal((await r.reload()).fileByPath(PATH).fileId, newerId);
+    assert.equal(r.server.files.get(newerId).versions[0].deleted, false);
+    if (window === "second stat") assert.equal(r.server.files.get(HIGH).versions[0].deleted, false);
+  });
+}

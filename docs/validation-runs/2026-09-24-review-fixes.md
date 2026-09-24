@@ -1,10 +1,11 @@
 # 2026-09-24: PR #133 review regressions
 
-This record covers the replacement code after the review of `48b7fe7`.
-It records automated checks, not new desktop or phone observations.
-The later [native phone record](2026-09-24-phone-candidate.md) exercises this
-exact plugin bundle for identical first sync, two-way edits, offline restart
-and automatic recovery. Its screenshots and limits are recorded separately.
+This record distinguishes the first repair after `48b7fe7` from the later
+asynchronous replacement race found at `6efe0a4`. It records automated checks.
+The [native phone record](2026-09-24-phone-candidate.md) exercises the first
+repair's `922744e3…` plugin bundle for identical first sync, two-way edits,
+offline restart and automatic recovery. It predates the later race repair;
+its screenshots do not prove that replacement bundle on a phone.
 
 The pull path now checks the incoming identity's current server heads before
 retiring an independent identical note. Historical live-plus-delete replay,
@@ -30,3 +31,55 @@ Its M25/M26 survivors remain inherited coverage gaps; M28 is equivalent on
 1.1.2. The six new patches carry the independent review-fix measurements above.
 No native setup action was performed in this review-fix pass, so there are no
 new setup screenshots in this record.
+
+## Later asynchronous replacement race
+
+The delta review reproduced another window: the local record could change
+inside the awaited second file check, after the identity comparison. Moving
+only that comparison was insufficient because `recordAt` awaited a digest
+before replacing the record too. A later tombstone of the wrongly adopted
+identity could then delete the newer note.
+
+The repair finishes the content recheck first, then compares and replaces the
+expected identity in one synchronous turn. It uses the digest that was already
+proved equal instead of calculating it again after the comparison. The record
+is still saved before the old identity is retired. Two regressions install a
+newer, independently published local identity at these separate boundaries,
+replay its own frame, then replay the other identity's deletion. Both require
+the live note, its identity, its durable record and its live server version
+to survive. Both fail against the previous source and pass with the repair.
+
+The pinned `make check` passes with **783 plugin tests**, 144 core tests,
+367 server tests, two CLI tests, 70 dashboard tests and 767 contract tests.
+Rust line coverage is **94.65%**; both secret scans are clear. The core suite
+retains its one ignored benchmark. Focused controls M710 (restore the extra
+awaited digest) and M711 (compare before the second check) compile and fail
+one and two of the eight focused tests respectively. M503 and M504 are re-cut
+without changing the behavior they remove. The complete 783-test suite also kills all 15 new or re-cut controls below.
+All 157 current patches pass a strict `-F0` application preflight; the other
+historical kill counts have not been remeasured.
+
+| Control | Failing tests out of 783 |
+| --- | ---: |
+| M01 | 39 |
+| M02 | 23 |
+| M03 | 17 |
+| M127 | 7 |
+| M128 | 2 |
+| M129 | 2 |
+| M147 | 1 |
+| M500 | 2 |
+| M501 | 1 |
+| M502 | 1 |
+| M503 | 3 |
+| M504 | 3 |
+| M505 | 1 |
+| M710 | 1 |
+| M711 | 2 |
+
+One initial M501 run also failed an unrelated deletion-publication test: it
+waited for the server frame, then asserted the local record before that record
+had necessarily been written. The barrier now waits for both, with every
+assertion retained. The original log is preserved; the final M501 run has
+only its intended HTTP 507 witness. The final full gate includes this test
+repair and passes. No kill is attributed to that unrelated timing failure.

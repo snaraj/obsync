@@ -3,7 +3,7 @@
 +++ b/plugin/src/sync/pull.ts
 @@ -2291,7 +2291,7 @@
    const same = await identicalAtName(context, change, manifest.path, ours);
-   if (same !== null) return await convergeIdentical(context, change, manifest, ours, same);
+   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
  
 -  if (ours.fileId < change.file_id) {
 +  if (ours.fileId > change.file_id) {

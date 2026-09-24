@@ -10,7 +10,9 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 **An old deleted twin cannot erase a newer note.** When catching up on history,
 obsync checks that an identical note is still the server's current version
 before retiring this device's independent copy. An edit arriving during that
-check stays on its own identity. The keeper's identity is saved before the
+check stays on its own identity. If a newer local identity arrives while that
+check is waiting, it is kept too: the final identity check and replacement
+now happen together, with no wait between them. The keeper's identity is saved before the
 old identity is retired, so restarting preserves that decision. A full server
 encountered during automatic chunk repair remains a visible error instead of
 being reported as offline. (#131, #129)
