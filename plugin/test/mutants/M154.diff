@@ -1,0 +1,12 @@
+# M154: a criss-cross ancestor above one chunk is assembled whole, so another device's version graph decides this device's memory
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2339,7 +2339,7 @@
+   const texts: string[] = [];
+   for (const id of [root, other]) {
+     const manifest = id === null ? null : await manifestOf(context, file, change, id);
+-    if (manifest === null || manifest.chunks.length !== 1) return null;
++    if (manifest === null) return null;
+     texts.push(new TextDecoder().decode(await assembleBytes(context, manifest)));
+   }
+   const [rootText, otherText] = texts as [string, string];

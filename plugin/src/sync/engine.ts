@@ -296,8 +296,17 @@ export interface SyncContext {
   readonly createdFolders: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
-  /** Resolutions of one file inside the current window, for the merge breaker. */
-  readonly merges: Map<string, { since: number; count: number }>;
+  /**
+   * Resolutions of one file inside the current window, for the merge breaker,
+   * and the `(mtime, size)` the last one left the note at (`pull.ts`).
+   */
+  readonly merges: Map<string, { since: number; count: number; left: string }>;
+  /**
+   * File ids whose note here waits on this device's own push to settle a fork
+   * (`pull.ts`, `deferred`): the status is not `idle` while one is in flight
+   * (`resting`, issue #135).
+   */
+  readonly forked: Set<string>;
   /**
    * When the push queue last published an edit of each path, oldest first and
    * none older than `EDITING_WINDOW_MS`: what says a note open in an editor
@@ -590,8 +599,9 @@ export class SyncEngine {
       moved: new Set<string>(),
       createdFolders: new Set<string>(),
       refused: new Set<string>(),
-      merges: new Map<string, { since: number; count: number }>(),
+      merges: new Map<string, { since: number; count: number; left: string }>(),
       pushedAt: new Map<string, number>(),
+      forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
       deviceNames,
       now: () => this.nowFn(),
@@ -1338,7 +1348,18 @@ export class SyncEngine {
       context.host.log(
         `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      // A note waiting on its push was counted while this debounce was in
+      // flight (`resting`). One that ends with no push -- an echo, bytes the
+      // record already describes -- leaves nothing else that would decide the
+      // status again, and it would read `syncing` for good (issue #135).
+      if (this.running && context.forked.size > 0 && !this.draining && !this.acting(path)) this.status(this.resting());
     }
+  }
+
+  /** Something here will still act on this note: its debounce, the queue, or a push. */
+  private acting(path: string): boolean {
+    return this.pending.has(path) || this.queue.includes(path) || this.pushing.has(path);
   }
 
   private async settleTracked(
@@ -1801,13 +1822,32 @@ export class SyncEngine {
     this.status(this.resting());
   }
 
-  /** `idle` -- unless a parked file is waiting, and then that file by name, until it lands. */
+  /**
+   * What the status says when nothing is being pushed or pulled, decided in
+   * ONE place and in this order: a parked file by name, until it lands; then
+   * notes still waiting on this device's own push to settle a fork (issue
+   * #135), as the work they are; then `idle`.
+   *
+   * A note counts only while something is in flight for it -- its debounce,
+   * the queue, a push. Nothing in flight means nothing here will change it:
+   * a pair no rule settles, a push that never came. Those are dropped rather
+   * than left reading `syncing` for good.
+   */
   private resting(): EngineStatus {
+    const forked = this.contextValue?.forked;
+    for (const fileId of forked ?? []) {
+      const path = this.options.state.pathByFileId(fileId);
+      if (path === undefined || !this.acting(path)) forked?.delete(fileId);
+    }
+    const waiting = forked?.size ?? 0;
     const parked = Object.values(this.options.state.data.parked);
     const newest = parked[parked.length - 1];
-    if (newest === undefined) return { kind: "idle" };
-    const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
-    return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
+    if (newest !== undefined) {
+      const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
+      return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
+    }
+    if (waiting > 0) return { kind: "syncing", pending: waiting };
+    return { kind: "idle" };
   }
 
   /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */

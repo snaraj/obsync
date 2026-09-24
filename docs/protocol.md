@@ -213,7 +213,11 @@ retain the account-wide authority described below.
   client that keeps the id it computed omits it (as every 1.0.x client does)
   and is never answered with another id, because it would otherwise remember
   a version this server never stored. The decision is logged
-  (`decision=deduplicated`).
+  (`decision=deduplicated`). Plugin 1.1.3 relies on it for a fork whose heads
+  do not merge: every device that settles the fork posts the same closing
+  version and the same first version of one conflict copy, under a file id
+  derived from the fork (`docs/architecture.md` 3.4.1), and the server keeps
+  one of each. No server change.
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest

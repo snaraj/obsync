@@ -609,49 +609,85 @@ test("concurrent edits with a common ancestor merge, keeping both", async () => 
   assert.equal(state.fileByPath("Notes/Shared.md").versionId, merged.version_id);
 });
 
-test("overlapping edits keep both sides as a named conflict copy", async () => {
-  const { host, server, context, keys: k } = await rig();
-  host.seed("Notes/Clash.md", "line\n", 1000);
-  const base = await pushFile(context, "Notes/Clash.md");
-  const theirs = await server.publish({
-    fileId: base.fileId,
-    path: "Notes/Clash.md",
-    bytes: enc("their line\n"),
-    mtime: 1757200002000,
-    domainKey: k.domainKey,
-    manifestKey: k.manifestKey,
-    parents: [base.versionId],
-  });
-  host.seed("Notes/Clash.md", "my line\n", 2000);
-  await pushFile(context, "Notes/Clash.md");
+/**
+ * A fork of one note that does not merge: this device's version and another
+ * device's, with the ORDER of their ids chosen. The ids are hashes over a
+ * fresh nonce, so a fork is drawn until it has the order a test needs; each
+ * draw is even odds, and 64 misses in a row is not a thing that happens.
+ */
+async function forkOf(path, base, mine, theirs, lower) {
+  for (let draw = 0; draw < 64; draw++) {
+    const r = await rig();
+    r.host.seed(path, base, 1000);
+    const first = await pushFile(r.context, path);
+    const other = await r.server.publish({
+      fileId: first.fileId, path, bytes: typeof theirs === "string" ? enc(theirs) : theirs, mtime: 1757200002000,
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, parents: [first.versionId],
+    });
+    r.host.seed(path, mine, 2000);
+    const ours = await pushFile(r.context, path);
+    if ((ours.versionId < other.version_id) === (lower === "ours")) {
+      const head = r.server.journal.find((frame) => frame.version_id === other.version_id);
+      return { r, fileId: first.fileId, ours, theirs: other, head: { ...head, conflicted: true } };
+    }
+  }
+  throw new Error("no fork with that order in 64 draws");
+}
 
-  const head = server.journal.find((frame) => frame.version_id === theirs.version_id);
-  assert.equal(await applyChange(context, { ...head, conflicted: true }), "conflict_copy");
-  assert.equal(host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
-  const copy = [...host.files.keys()].find((path) => path.includes("conflict from"));
-  assert.match(copy, /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
-  assert.equal(host.text(copy), "their line\n");
-  assert.match(host.notices.join(" "), /kept both versions/);
+/** The version that closed a fork: both heads as parents, one head's chunks. */
+const closing = (server, fileId) => server.files.get(fileId).versions.find((version) => version.parents.length === 2);
+
+/**
+ * Overlapping edits do not merge, and are settled by rule (issue #135): the
+ * lower version id keeps the note on every device, the other is ONE copy on
+ * every device, and one version naming both closes the fork. Both vantage
+ * points, because a rule that holds from one side is not a rule.
+ */
+test("overlapping edits: the lower id, this device's, keeps the note and the other is one copy", async () => {
+  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "ours");
+
+  assert.equal(await applyChange(r.context, head), "skipped");
+  assert.equal(r.host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
+  const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
+  assert.equal(copy.length, 1, JSON.stringify(copy));
+  assert.match(copy[0], /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4} UTC, [0-9a-f]{6}\)\.md$/);
+  assert.equal(r.host.text(copy[0]), "their line\n");
+  const closed = closing(r.server, fileId);
+  assert.deepEqual([...closed.parents].sort(), [ours.versionId, theirs.version_id].sort());
+  assert.deepEqual(closed.sids, r.server.files.get(fileId).versions.find((v) => v.version_id === ours.versionId).sids);
+  assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");
+  assert.equal(r.state.fileByPath("Notes/Clash.md").versionId, closed.version_id);
+  assert.match(r.host.notices.join(" "), /kept both versions/);
+});
+
+test("overlapping edits: the lower id, the other device's, takes the note and this device's is one copy", async () => {
+  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "theirs");
+
+  assert.equal(await applyChange(r.context, head), "applied");
+  assert.equal(r.host.text("Notes/Clash.md"), "their line\n");
+  const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
+  assert.equal(copy.length, 1, JSON.stringify(copy));
+  assert.match(copy[0], /^Notes\/Clash \(conflict from this device, /);
+  assert.equal(r.host.text(copy[0]), "my line\n", "this device's edit is not in its copy");
+  const closed = closing(r.server, fileId);
+  assert.deepEqual(closed.sids, theirs.sids);
+  assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");
+  assert.equal(r.state.fileByPath("Notes/Clash.md").versionId, closed.version_id);
 });
 
 test("a binary conflict is never merged", async () => {
-  const { host, server, context, keys: k } = await rig();
-  host.seed("image.png", Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]), 1000);
-  const base = await pushFile(context, "image.png");
-  const theirs = await server.publish({
-    fileId: base.fileId,
-    path: "image.png",
-    bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]),
-    mtime: 1757200002000,
-    domainKey: k.domainKey,
-    manifestKey: k.manifestKey,
-    parents: [base.versionId],
-  });
-  host.seed("image.png", Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x03]), 2000);
-  await pushFile(context, "image.png");
-  const head = server.journal.find((frame) => frame.version_id === theirs.version_id);
-  assert.equal(await applyChange(context, { ...head, conflicted: true }), "conflict_copy");
-  assert.ok([...host.files.keys()].some((path) => path.startsWith("image (conflict from iPhone")));
+  const bytes = (last) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, last]);
+  for (const lower of ["ours", "theirs"]) {
+    const { r, head } = await forkOf("image.png", bytes(1), bytes(3), bytes(2), lower);
+    assert.equal(await applyChange(r.context, head), lower === "ours" ? "skipped" : "applied");
+    assert.ok(!r.host.logs.some((line) => line.includes("decision=merged")), "a binary file was merged");
+    const copy = [...r.host.files.keys()].filter((path) => path.startsWith("image (conflict from "));
+    assert.equal(copy.length, 1);
+    assert.deepEqual(
+      [[...r.host.files.get("image.png").bytes], [...r.host.files.get(copy[0]).bytes]],
+      lower === "ours" ? [[...bytes(3)], [...bytes(2)]] : [[...bytes(2)], [...bytes(3)]],
+    );
+  }
 });
 
 /**

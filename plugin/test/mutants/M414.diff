@@ -1,0 +1,12 @@
+# M414: the losing device's own note is written into a copy sized for the losing version, and refused
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2944,7 +2944,7 @@
+   assertVaultPath(manifest.path);
+   let writer: VaultWriter;
+   try {
+-    writer = await context.host.createWriter(manifest.path, fill?.length ?? manifest.size, () => undefined);
++    writer = await context.host.createWriter(manifest.path, manifest.size, () => undefined);
+   } catch (error) {
+     if ((await context.host.stat(manifest.path)) === null) throw error;
+     return null;

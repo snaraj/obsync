@@ -1,0 +1,11 @@
+# M151: a merge's own write is read as the user's edit, so a loop of merges that each rewrite the note never trips the breaker
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2025,7 +2025,6 @@
+           return deferred(context, change, "saved_during_merge");
+         }
+         const stat = await writer.commit(context.now());
+-        tally.left = stamp(stat);
+         context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+         // The result is the INCOMING version's own bytes: that version already
+         // carries this device's edit, so what the graph called a fork is a

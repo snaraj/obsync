@@ -527,3 +527,76 @@ test("Show sync status lists every parked file with its reason", (t) => {
   assert.ok(drawn.includes("Cannot write Notes/n17.md here: the file is locked"), drawn.join(" | "));
   assert.ok(drawn.includes("Cannot write Attachments/big.bin here: the disk is full"), drawn.join(" | "));
 });
+
+/**
+ * ONE STATUS, DECIDED IN ONE ORDER (issues #144 and #135). A parked file is
+ * named first, because the user has to act on it; a note still waiting on
+ * this device's own push to settle a fork comes next, as the work it is; and
+ * only then `idle`.
+ */
+test("the status names a parked file first, then a note waiting on its push, then idle", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const Q = "0e".repeat(16);
+  const n17 = await foreign(r, N17, "Notes/n17.md", "n17 as both devices first had it\n");
+  const q = await foreign(r, Q, "Notes/q.md", "one\ntwo\nthree\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/q.md") !== null && r.host.text("Notes/n17.md") !== null);
+
+  const lock = refuse(r.host, (path) => path === "Notes/n17.md", "EPERM", "commit");
+  const locked = await foreign(r, N17, "Notes/n17.md", "n17 edited on the other device\n", [n17.version_id]);
+  await d.timers.run(1000, () => r.state.data.lastSeq === locked.seq);
+  const named = { kind: "error", message: "Cannot write Notes/n17.md here: the file is locked" };
+  assert.deepEqual(d.last(), named);
+
+  // Typed here, its push still waiting out the debounce -- the clock is held
+  // -- when the other device's edit of the same note arrives.
+  r.host.seed("Notes/q.md", "ONE\ntwo\nthree\n", 1757200005000);
+  d.engine.changed("Notes/q.md");
+  const next = await foreign(r, Q, "Notes/q.md", "one\ntwo\nTHREE\n", [q.version_id]);
+  await d.timers.run(0, () => r.state.data.lastSeq === next.seq);
+  await d.timers.run(0);
+  assert.ok(d.engine.context.forked.has(Q), r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.deepEqual(d.last(), named, "a note waiting on its push hid the parked file");
+
+  // The lock is lifted and the parked file lands: the waiting note is next.
+  lock.lift();
+  await d.engine.retryParked("timer");
+  assert.deepEqual(r.state.data.parked, {});
+  assert.deepEqual(d.last(), { kind: "syncing", pending: 1 }, "a note waiting on its push read as idle");
+
+  // Its push runs, forks the note, and the fork merges: nothing is waiting.
+  await d.timers.run(100, () => r.server.files.get(Q).heads.length === 1 && d.last().kind === "idle");
+  assert.equal(r.host.text("Notes/q.md"), "ONE\ntwo\nTHREE\n");
+  assert.deepEqual(d.last(), { kind: "idle" });
+});
+
+/**
+ * A note counted as waiting because its debounce was in flight, whose
+ * debounce then ends with nothing to push -- an echo of a write sync made,
+ * bytes its record already describes -- stops counting then: nothing else
+ * would decide the status again, and it read `syncing` for good (issue #135).
+ * The count is set by hand; how a note gets into it is `cotyping.test.mjs`'s.
+ */
+test("a note counted while its debounce was in flight stops counting when that debounce pushes nothing", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const Q = "0e".repeat(16);
+  const q = await foreign(r, Q, "Notes/q.md", "one\ntwo\nthree\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/q.md") !== null && d.last()?.kind === "idle");
+
+  d.engine.context.forked.add(Q);
+  d.engine.changed("Notes/q.md");
+  const other = await foreign(r, N18, "Notes/n18.md", "another note\n");
+  await d.timers.run(0, () => r.state.data.lastSeq === other.seq);
+  assert.deepEqual(d.last(), { kind: "syncing", pending: 1 });
+
+  await d.timers.run(1000, () => d.engine.pending.size === 0);
+  await d.timers.run(0);
+  assert.deepEqual(r.server.files.get(Q).versions.map((version) => version.version_id), [q.version_id]);
+  assert.equal(d.engine.context.forked.size, 0);
+  assert.deepEqual(d.last(), { kind: "idle" });
+});

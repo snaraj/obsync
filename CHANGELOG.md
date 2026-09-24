@@ -207,6 +207,21 @@ and the other takes the same conflict name on both. A phone, which cannot move
 its own note aside, still keeps the two under different names until one of
 them is renamed or deleted, and then they agree. (#149)
 
+**Two devices typing in one open note end up with the same note.** Typing in
+one note on two devices at once used to merge once or twice, then save nearly
+every version the other device sent as a conflict copy, stop merging with
+"resolved it more than 5 times in a minute", and leave the two devices holding
+different text under one name, with a dozen copies or more on each, while both
+said `obsync: idle`. Now text typed on different lines is merged as you go, and
+both devices end on the same note holding both texts, with no conflict copy.
+Text typed on the same line cannot be merged: every device keeps the same
+version as the note, and the other goes into one conflict copy that every
+device holds, named after the device that wrote it, the time in UTC and a short
+id. Nothing typed is lost, and the two notes never stay apart. A save made
+while another device's version is arriving is never written over, and the
+status bar no longer reads `idle` while a note is still being settled. Same on
+desktop and mobile. (#135)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

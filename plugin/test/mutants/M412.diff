@@ -1,0 +1,15 @@
+# M412: text typed on top of the losing head is recorded as already published, and never reaches the other device's copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2276,9 +2276,9 @@
+   context.state.setFile(path, {
+     fileId,
+     versionId: posted.versionId,
+-    mtime: edited ? -1 : landed.mtime,
++    mtime: landed.mtime,
+     size: landed.size,
+-    sha256: edited ? "" : await sidDigest(sids),
++    sha256: await sidDigest(sids),
+   });
+   await context.state.save();
+   return path;

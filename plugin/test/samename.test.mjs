@@ -509,9 +509,17 @@ test("a save that lands on a version as it is written is not recorded as that ve
     parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
   });
 
-  assert.equal(await applyChange(r.context, next), "conflict_copy");
+  // Not written over, and not copied either: a descendant arriving over an
+  // edit not yet pushed is left for that edit's push, which forks the file,
+  // and the fork is settled then (issue #135). Nothing is lost on the way.
+  assert.equal(await applyChange(r.context, next), "skipped");
   assert.equal(r.host.text(NOTE), USER, "the save was overwritten by a later version of that id");
-  assert.equal(r.host.text(copies(r.host)[0]), `${THEIRS}and another line\n`);
+  assert.equal(r.state.fileByPath(NOTE).sha256, "", "the save could be pushed as unchanged");
+  const pushed = await pushFile(r.context, NOTE);
+  await applyChange(r.context, { ...next, heads: r.server.files.get(ours.fileId).heads, conflicted: pushed.ack.conflicted });
+  const kept = [...r.host.files.keys()].map((path) => r.host.text(path)).join("");
+  assert.ok(kept.includes(USER), `the save is in no file: ${JSON.stringify([...r.host.files.keys()])}`);
+  assert.ok(kept.includes(`${THEIRS}and another line\n`), "the later version is in no file");
 });
 
 /**

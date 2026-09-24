@@ -145,9 +145,16 @@ test("more than a handful of resolutions of one file in a window stops the mergi
     r.host.notices.filter((notice) => notice.includes("stopped merging")).length, 1,
     "the user is told once, not once per version",
   );
-  // And the breaker never drops content: both sides are still kept.
-  assert.equal(results[5], "conflict_copy");
-  assert.equal(r.host.text(NOTE), "the line this device wrote\n");
+  // And the breaker never drops content. Tripped, it merges nothing more, and
+  // the pair is still settled by the rule every device shares (issue #135):
+  // one version is the note, the other a copy, the fork closed.
+  assert.ok(["skipped", "applied"].includes(results[5]), results.join(","));
+  assert.ok(!r.host.logs.slice(r.host.logs.indexOf(storms[0])).some((line) => line.includes("decision=merged")));
+  const kept = [...r.host.files.keys()].map((path) => r.host.text(path));
+  for (const text of ["the line this device wrote\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\n`)]) {
+    assert.ok(kept.includes(text), `${JSON.stringify(text)} is in no file: ${JSON.stringify(kept)}`);
+  }
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
 });
 
 /**

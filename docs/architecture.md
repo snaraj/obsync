@@ -257,6 +257,26 @@ What the server additionally learns is that a folder deleted and recreated at
 one path is the same opaque label, which is what a file id already tells it
 across a rename. The path itself never leaves `manifest_ct`.
 
+The same construction, under its own label, names the ONE conflict copy that
+keeps the losing head of a fork that does not merge (plugin 1.1.3, section
+6.2 item 4): its file id is the first 16 bytes of
+`HMAC(K_m,d, "obsync/v1/conflict" || 0x0a || file_id || 0x0a || version_id)`,
+where `file_id` is the forked file's and `version_id` its losing head's. Every
+device that settles the fork derives the same id and posts the same first
+version, so the server keeps one copy rather than one per device. It is an
+ordinary file record: `v: 1`, a random nonce, the path only inside
+`manifest_ct`. The server learns nothing new from the id. It is keyed by
+`K_m,d`, which never reaches the server, so to the server it is an opaque
+16-byte label exactly like a random file id -- it cannot compute it, cannot
+tell it from a random one, and cannot link it to the file or the version it
+came from. It is deterministic only for a device holding the key. What the
+server does observe -- two devices posting a first version with the same
+chunks and no parents, answered as one -- is what `accept_existing` already
+shows it for any two devices writing identical content (`docs/protocol.md`,
+"One position, one version"). A distinct label keeps the two derivations
+apart: no folder path can produce a conflict copy's id, and no fork a
+folder's.
+
 ### 3.5 Request authentication
 
 Every API request carries `X-Obsync-Device`, `X-Obsync-Ts` (unix seconds),
@@ -876,10 +896,25 @@ returns immediately when a new frame lands.
    errors carry no errno.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge; a clean merge posts a new version
-   with both heads as parents. Anything else (binary, no ancestor,
-   delete-versus-edit, overlapping hunks) keeps BOTH: the foreign head is
-   written as `<name> (conflict from <device>, <date>).<ext>` and the user
-   is told. obsync never silently discards an edit.
+   with both heads as parents. Two heads that do not merge (binary, no
+   ancestor, overlapping hunks) are settled by a rule every device computes
+   alike without asking another: the head with the lower version id is the
+   note on every device; the other is ONE conflict copy on every device, with
+   a file id derived as `HMAC(K_m,d, "obsync/v1/conflict" || 0x0a || file_id
+   || 0x0a || version_id)` and a name built from what the server says about
+   that version -- `<name> (conflict from <author>, <UTC time>, <id prefix>)`
+   -- so every device that settles the pair posts the same first version and
+   the server keeps one; and one version naming both heads, holding the kept
+   head's content, closes the fork. The device whose own head lost puts what
+   its note holds beyond that head into the copy as its next version, and its
+   note is replaced only if it is exactly as it was read. A head that a later
+   version has replaced is settled against that version instead. Delete
+   versus edit keeps BOTH, and so does a pair the rule cannot see (a rename
+   against an edit, a copy name already taken): the foreign head is written
+   as `<name> (conflict from <device>, <date>).<ext>` and the user is told.
+   The status reads `syncing` while a note waits on this device's own push to
+   settle a fork, and only while that push is in flight; a parked file is
+   named before it. obsync never silently discards an edit.
 
    A version is written over a local file only when it DESCENDS from the
    version the device recorded for that file and the file still carries the
@@ -900,10 +935,14 @@ returns immediately when a new frame lands.
    path, the removal at the old path when a version moves a file, and the
    conflict copy's own destination, whose name is derived and may already hold
    something, so it is published with a create-only writer that cannot replace
-   and takes the next free name when it collides. The incoming version becomes a
-   conflict copy, the local bytes stay where they are, and the push already
-   queued for that path carries them with the parent the record names, which
-   is what makes the server see the conflict too.
+   and takes the next free name when it collides. A version that descends from
+   the recorded one, arriving over local bytes, is left for the push: nothing
+   is written or copied, the record is marked so the push cannot answer
+   `unchanged`, and the push carries the local bytes with the parent the
+   record names, which forks the file and makes the server see the conflict
+   too; that fork is then merged or settled as above. Every write over the
+   note looks at it again at the last moment, and a save that landed while a
+   version or a merge was downloading is never written over.
 
    A merge is posted only when its result is new. Two devices resolving the
    same pair of heads produce the same TEXT and two different version ids,
@@ -913,7 +952,14 @@ returns immediately when a new frame lands.
    local bytes therefore posts nothing and advances the record to the incoming
    version; a result equal to the incoming version's bytes is a fast-forward
    onto it. A device also stops merging one file after more than five
-   resolutions inside a minute, keeps both sides instead, and says so once.
+   resolutions of it in a row inside a minute with the note unchanged here in
+   between -- a save starts the count again -- and says so once; the pair is
+   then settled by the rule above, which only ever keeps a version that
+   already exists. When two devices merged one pair differently (each holding
+   keystrokes the other had not seen), the two heads share two newest
+   ancestors, and their merge is the base; when those two were themselves
+   merged differently, their base is found the same way one level down, to
+   at most three levels, each one single-chunk text.
 
    A conflict copy is published with the create-only writer at the first
    derived name nothing holds, and an occupied name is reused only when its

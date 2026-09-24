@@ -1,0 +1,14 @@
+# M305: merges of two merges of one pair are never merged again, so two people typing on different lines of one note get a conflict copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2344,10 +2344,6 @@
+   }
+   const [rootText, otherText] = texts as [string, string];
+   let merged = threeWayMerge(rootText, firstText, otherText);
+-  if (!merged.ok && levels > 1) {
+-    const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
+-    if (deeper !== null) merged = threeWayMerge(deeper, firstText, otherText);
+-  }
+   context.host.log(
+     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
+       `file=${change.file_id} seq=${change.seq}`,

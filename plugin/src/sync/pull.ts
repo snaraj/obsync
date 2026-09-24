@@ -88,6 +88,7 @@ import type { MoveResult, SyncContext, VaultStat, VaultWriter } from "./engine";
 import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
 import {
   Bytes,
+  conflictFileId,
   contentVersionId,
   decryptChunk,
   decryptManifest,
@@ -113,7 +114,7 @@ import {
   movedSelection,
   selectionAfterRename,
 } from "../syncScope";
-import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
+import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
 import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, retire, sidDigest } from "./push";
 
 /**
@@ -682,8 +683,20 @@ export async function pruneEmptyParents(context: SyncContext, path: string): Pro
 /**
  * Write a manifest's content into the vault atomically and return the stat
  * of what landed, which becomes the echo-suppression key.
+ *
+ * `over` is the record of the note this write replaces, and it is checked
+ * again at the last moment, not only before the download: a note open in an
+ * editor is saved every few seconds while someone types, and a save landing
+ * while the version downloaded was written over, keystrokes and all, with the
+ * editor then reloading the loss (issue #135). A note that moved is not
+ * written, and the answer is `null`. A note that is GONE did not move: it was
+ * deleted here, and delete versus edit keeps the edit, so the version lands
+ * and the note comes back, as it always has -- which is what a deletion
+ * still waiting to be sent then finds (issue #173).
  */
-async function materialise(context: SyncContext, manifest: Manifest): Promise<VaultStat> {
+async function materialise(context: SyncContext, manifest: Manifest): Promise<VaultStat>;
+async function materialise(context: SyncContext, manifest: Manifest, over: FileState | undefined): Promise<VaultStat | null>;
+async function materialise(context: SyncContext, manifest: Manifest, over?: FileState): Promise<VaultStat | null> {
   // The single choke point for every byte this device writes: the decoded
   // manifest's path was checked at decode, a conflict copy's derived path is
   // checked here, and neither reaches a writer unchecked.
@@ -691,6 +704,11 @@ async function materialise(context: SyncContext, manifest: Manifest): Promise<Va
   const writer = await context.host.writer(manifest.path);
   try {
     await writeVerified(context, manifest, writer);
+    const now = over === undefined ? null : await context.host.stat(manifest.path);
+    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
+      await writer.abort();
+      return null;
+    }
     // The commit's own stat, handed back rather than looked up again: it is
     // the metadata of the bytes THIS write put there, and a second stat would
     // describe whatever the user saved a moment later instead (finding 2).
@@ -747,6 +765,12 @@ async function landedAt(context: SyncContext, stat: VaultStat): Promise<VaultSta
   context.written.add(`${shown}:${stat.mtime}:${stat.size}`);
   context.host.log("pull path_class=file decision=recorded reason=vault_spelling");
   return { ...stat, path: shown };
+}
+
+/** Does the file at `path` still carry the `(mtime, size)` of `was`? */
+async function unmoved(context: SyncContext, path: string, was: { mtime: number; size: number }): Promise<boolean> {
+  const now = await context.host.stat(path);
+  return now !== null && now.mtime === was.mtime && now.size === was.size;
 }
 
 /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
@@ -1605,6 +1629,8 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
     if (atTarget === "other_file" || atTarget === "no_record") {
       const decided = await sameNameTiebreak(context, change, manifest, atTarget);
       if (decided !== null) return decided;
+    } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
+      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
     } else {
       return await keepBoth(context, change, manifest);
     }
@@ -1710,7 +1736,14 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
   }
 
   const started = context.now();
-  const landed = await materialise(context, manifest);
+  const landed = await materialise(context, manifest, localPath === manifest.path ? local : undefined);
+  if (landed === null) {
+    context.host.log(
+      `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=saved_during_pull file=${change.file_id} seq=${change.seq}`,
+    );
+    const file = await context.transport.getFile(change.file_id);
+    return await reconcile(context, file, change, manifest, localPath as string, (local as FileState).versionId);
+  }
   if (localPath !== undefined && localPath !== manifest.path) {
     // The move's delete half. The same echo, and the one that cost a renamed
     // note on every device before 1.0.4: here the file is not deleted at all,
@@ -1854,10 +1887,12 @@ export function commonAncestor(
 }
 
 /**
- * Two heads on one file. Merge when we can prove a base and the content is
- * mergeable text; otherwise keep both sides. The caller passes the file it
- * already read: deciding that these ARE two heads walks the same graph, and
- * asking twice would buy the same answer with a second request.
+ * Two heads on one file -- or a version that DESCENDS from the one this device
+ * recorded, arriving over an edit made here and not pushed yet (`applyVersion`).
+ * Merge when we can prove a base and the content is mergeable text; otherwise
+ * keep both sides. The caller passes the file it already read: deciding that
+ * these ARE two heads walks the same graph, and asking twice would buy the same
+ * answer with a second request.
  */
 async function reconcile(
   context: SyncContext,
@@ -1870,29 +1905,79 @@ async function reconcile(
   // THE BREAKER. Everything below is bounded by construction, but a bound
   // that rests on an argument is not a bound: the cost of being wrong here is
   // a device filling the server's journal and its owner's quota, on battery.
-  // More than a handful of resolutions of ONE file inside a minute is not a
-  // user editing on two devices, so this device stops merging that file and
-  // keeps both sides instead. It says so once, and the count is in the log.
+  // More than a handful of resolutions of ONE file in a row inside a minute,
+  // with nothing written to the note here in between, is not a user editing on
+  // two devices, so this device stops merging that file and keeps both sides
+  // instead. It says so once, and the count is in the log.
+  //
+  // IN A ROW. The loop of issue #110 was named by its note never changing
+  // after the first pass, and that is what is counted: resolutions that each
+  // find the note exactly as the one before left it. A save in between starts
+  // the count again. Two people typing in one open note fork it every few
+  // seconds, and counting every one of THOSE tripped the breaker within
+  // seconds and split the note between the devices for good (issue #135); a
+  // run of resolutions broken by keystrokes is bounded by the typing, exactly
+  // as a push is, and only an unbroken one can run away.
   const now = context.now();
+  const found = stamp(await context.host.stat(localPath));
   const seen = context.merges.get(change.file_id);
-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found };
+  if (tally.left !== found) tally.count = 0;
   tally.count++;
   context.merges.set(change.file_id, tally);
-  if (tally.count > MERGE_STORM_LIMIT) {
+  const prior = tally.left;
+  // Tripped, this device MERGES nothing more: a merge is the one resolution
+  // that makes new content, which is what a loop feeds on. The pair is still
+  // settled -- by the rule in `converge`, which only ever keeps a version that
+  // already exists -- because keeping both sides with nothing closing the fork
+  // is what left two devices split for good (issue #135).
+  const tripped = tally.count > MERGE_STORM_LIMIT;
+  if (tripped) {
     context.host.log(
-      `pull decision=refused reason=merge_storm file=${change.file_id} count=${tally.count} window_ms=${MERGE_STORM_MS}`,
+      `pull decision=refused reason=merge_storm file=${change.file_id} count=${tally.count} window_ms=${MERGE_STORM_MS} counted=in_a_row_note_unchanged`,
     );
     if (!context.refused.has(change.file_id)) {
       context.refused.add(change.file_id);
       context.host.notify(
-        `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a minute. ` +
-          `Both versions are kept side by side instead. Check that every device syncing this vault is up to date.`,
+        `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a row ` +
+          `in under a minute without the note changing here. Every device keeps the same version as the note and ` +
+          `the other beside it as a copy. Check that every device syncing this vault is up to date.`,
       );
     }
-    return await keepBoth(context, change, theirManifest);
   }
+  // Settled now, or left for a push again (`deferred`), which counts it anew.
+  context.forked.delete(change.file_id);
+  const result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped);
+  // What the resolution LEFT: a write stamps its own commit (`resolve`), never
+  // a later look, which could be the user's next save. One that wrote nothing
+  // leaves the note as it found it -- unless one running beside it (the feed
+  // and a push's own reconciliation resolve one fork side by side) wrote it
+  // meanwhile, whose stamp stands.
+  if (tally.left === prior) tally.left = found;
+  return result;
+}
 
-  const baseId = commonAncestor(file.versions, localVersionId, change.version_id);
+/** A note's `(mtime, size)` as one comparable value; nothing at all is `""`. */
+function stamp(stat: VaultStat | null): string {
+  return stat === null ? "" : `${stat.mtime}:${stat.size}`;
+}
+
+/** The resolution itself; `reconcile` is its breaker. */
+async function resolve(
+  context: SyncContext,
+  file: FileRecord,
+  change: ChangeRecord,
+  theirManifest: Manifest,
+  localPath: string,
+  localVersionId: string,
+  tally: { left: string },
+  tripped: boolean,
+): Promise<ApplyResult> {
+  // A version that already holds ours is a fast-forward over an edit made
+  // here and not pushed yet: its base is exactly the version recorded.
+  const ahead = reaches(file.versions, change.version_id, localVersionId);
+  const baseId = ahead ? localVersionId : commonAncestor(file.versions, localVersionId, change.version_id);
+  const before = await context.host.stat(localPath);
   const mine = await context.host.read(localPath);
   // TWO HEADS, ONE CONTENT.
   //
@@ -1912,6 +1997,7 @@ async function reconcile(
   // `sha256` is a trustworthy statement of the incoming plaintext, and the
   // local bytes are already in hand.
   if (
+    !ahead &&
     theirManifest.sha256 !== "" &&
     theirManifest.size === mine.length &&
     hex(await sha256(mine)) === theirManifest.sha256
@@ -1946,19 +2032,15 @@ async function reconcile(
   }
 
   const mergeable =
+    !tripped &&
     baseId !== null &&
     theirManifest.chunks.length === 1 &&
     theirManifest.size <= CHUNK_MAX &&
     isMergeableText(localPath, mine);
 
   if (mergeable) {
-    const baseRecord = file.versions.find((version) => version.version_id === baseId);
-    if (baseRecord) {
-      const baseManifest = await decryptRecordManifest(context, {
-        ...baseRecord,
-        file_id: change.file_id,
-        domain_id: file.domain_id,
-      });
+    const baseManifest = await manifestOf(context, file, change, baseId);
+    if (baseManifest) {
       // A merge input is held whole in memory, so it must be one chunk on
       // BOTH sides. Their head was checked above; the ancestor is checked
       // here, because the version graph is another device's to shape and a
@@ -1972,12 +2054,37 @@ async function reconcile(
       const base = await assembleBytes(context, baseManifest);
       const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();
-      const merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+      let merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+      if (!merged.ok) {
+        const crossed = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
+        if (crossed !== null) merged = threeWayMerge(crossed, decoder.decode(mine), decoder.decode(theirs));
+      }
       if (merged.ok) {
         const text = new TextEncoder().encode(merged.text);
+        // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
+        // kept a conflict copy of every version another device sent while
+        // someone typed here (issue #135). Merging it in here instead would
+        // publish the edit twice -- the push already queued, or already in
+        // flight, carries it onto the recorded version -- and two lines holding
+        // one edit make every later merge an overlap. So nothing is written: the
+        // record is marked so that push cannot come back `unchanged`, and it
+        // forks the file, which its own reconciliation merges from this same
+        // base. A version the merge could not take keeps both, as before.
+        if (ahead && !sameBytes(text, theirs)) return await deferToPush(context, change, localPath);
         const writer = await context.host.writer(localPath);
         await writer.write(text);
+        // THE NOTE IS LOOKED AT AGAIN AT THE LAST MOMENT. The downloads above
+        // take time, and a note open in an editor is saved every few seconds
+        // while someone types: a save landing meanwhile was written over,
+        // keystrokes and all, and the editor then reloaded the loss (issue
+        // #135). A note that moved is left alone. The push of that save forks
+        // the file again, and its own reconciliation merges what is there.
+        if (before === null || !(await unmoved(context, localPath, before))) {
+          await writer.abort();
+          return deferred(context, change, "saved_during_merge");
+        }
         const stat = await writer.commit(context.now());
+        tally.left = stamp(stat);
         context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
         // The result is the INCOMING version's own bytes: that version already
         // carries this device's edit, so what the graph called a fork is a
@@ -2005,19 +2112,325 @@ async function reconcile(
         context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
         return "merged";
       }
-      context.host.log(`pull decision=conflict_copy reason=${merged.reason} file=${change.file_id}`);
+      context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
     }
   }
 
-  return await keepBoth(context, change, theirManifest);
+  // Not a fork yet: the push of the edit made here makes it one, and the
+  // pair is settled then, from the version that edit was made on.
+  if (ahead) return await deferToPush(context, change, localPath);
+  return await converge(context, file, change, theirManifest, localPath, localVersionId, before, mine, tally);
 }
 
 /**
+ * A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2 kept a
+ * conflict copy of every version another device sent while someone typed here
+ * (issue #135). Merging it in here instead would publish the edit twice -- the
+ * push already queued, or already in flight, carries it onto the recorded
+ * version -- and two lines holding one edit make every later merge an
+ * overlap. So nothing is written: the record is marked so that push cannot
+ * come back `unchanged`, and it forks the file, which its own reconciliation
+ * then settles from this same base.
+ */
+async function deferToPush(context: SyncContext, change: ChangeRecord, localPath: string): Promise<ApplyResult> {
+  const held = context.state.fileByPath(localPath);
+  if (held) context.state.setFile(localPath, { ...held, sha256: "" });
+  await context.state.save();
+  return deferred(context, change, "unpushed_edit");
+}
+
+/**
+ * A note left for this device's own push to settle: until that push has run,
+ * the note here is not the note the other devices have, and the status says
+ * so rather than `idle` (issue #135). Counted, not promised: the count is
+ * dropped the moment nothing is left in flight for the note (`engine.ts`,
+ * `resting`), so a push that never comes cannot hold the status forever.
+ */
+function deferred(context: SyncContext, change: ChangeRecord, reason: string): ApplyResult {
+  context.forked.add(change.file_id);
+  context.host.log(`pull decision=deferred reason=${reason} file=${change.file_id} seq=${change.seq}`);
+  return "skipped";
+}
+
+/**
+ * TWO HEADS THAT DO NOT MERGE, SETTLED BY RULE (issue #135).
+ *
+ * Keeping both sides on each device and closing nothing left two devices
+ * holding different notes under one name for good: every later save forked
+ * the file again and made another copy on both. So the pair is settled the
+ * way the same-name rule settles two files (#113), by a rule every device
+ * computes from the same two ids without asking another:
+ *
+ *  - THE LOWER VERSION ID KEEPS THE NOTE. Every device ends holding its bytes
+ *    under the note's name.
+ *  - THE OTHER HEAD GOES TO ONE COPY, the same on every device: a file id
+ *    derived from the fork (`conflictFileId`) and a name computed from what
+ *    the server says about that version -- its author and its time, in UTC --
+ *    so every device that settles the pair posts the same first version and
+ *    the server keeps one (`docs/protocol.md`, "One position, one version").
+ *    Every device that settles it makes sure of it, because a device on an
+ *    older version keeps both its own way and then takes the kept note over
+ *    its own: the copy is where that text stays visible.
+ *  - THE FORK IS CLOSED by one version naming both heads, holding exactly the
+ *    kept head's content, offered the same way, so the next save anywhere is
+ *    an ordinary update.
+ *
+ * The device whose own head lost may hold text typed on top of it that no
+ * version has. That text goes into the copy as its next version, and the note
+ * is replaced only if it is exactly as it was read: a save landing meanwhile
+ * is never written over, and is published as an edit that forks the file
+ * again. What the person typing there sees is their note becoming the kept
+ * version with any keystrokes not yet saved carried onto it by the editor;
+ * what they had saved is in the copy.
+ *
+ * NARROW ON PURPOSE. Only while both are still heads, and only when both name
+ * this note's path: a head that has moved on is settled against the version
+ * that replaced it, which the feed brings next, and a rename against an edit,
+ * or a copy name something else already holds, is kept as both, as before.
+ */
+async function converge(
+  context: SyncContext,
+  file: FileRecord,
+  change: ChangeRecord,
+  theirManifest: Manifest,
+  localPath: string,
+  localVersionId: string,
+  before: VaultStat | null,
+  mine: Bytes,
+  tally: { left: string },
+): Promise<ApplyResult> {
+  // A head that a later version has replaced is settled against that version,
+  // which the feed brings next. One the graph does not hold at all is not a
+  // pair this rule can see, and is kept as both, as before.
+  const replaced = (id: string): boolean =>
+    !file.heads.includes(id) && file.heads.some((head) => reaches(file.versions, head, id));
+  if (replaced(localVersionId) || replaced(change.version_id)) {
+    context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+  const keeping = localVersionId < change.version_id;
+  const ours = await manifestOf(context, file, change, localVersionId);
+  const lost = file.versions.find((version) => version.version_id === (keeping ? change.version_id : localVersionId));
+  if (
+    !file.heads.includes(localVersionId) || !file.heads.includes(change.version_id) ||
+    ours === null || lost === undefined || theirManifest.path !== localPath || before === null
+  ) {
+    return await keepBoth(context, change, theirManifest);
+  }
+  const parents = [localVersionId, change.version_id].sort();
+  let copy: string | null;
+  if (keeping) {
+    copy = await keepLost(context, change, lost, theirManifest, null);
+    if (copy === null) return await keepBoth(context, change, theirManifest);
+  } else {
+    const held = context.state.fileByPath(localPath);
+    const edited = held === undefined || held.mtime !== before.mtime || held.size !== before.size;
+    const writer = await context.host.writer(localPath);
+    try {
+      await writeVerified(context, theirManifest, writer);
+      // THE CLAIM. The feed and a push's own reconciliation settle one fork
+      // side by side, and only one of them may replace the note: the one that
+      // finds the note as it was read and the record still naming the losing
+      // head takes it, in the same turn, before anything is written.
+      const claimed = (await unmoved(context, localPath, before)) ? context.state.fileByPath(localPath) : undefined;
+      if (claimed?.versionId !== localVersionId) {
+        await writer.abort();
+        return deferred(context, change, "saved_during_merge");
+      }
+      context.state.setFile(localPath, { ...claimed, versionId: change.version_id });
+      const release = async (): Promise<void> => {
+        await writer.abort();
+        context.state.setFile(localPath, claimed);
+      };
+      copy = await keepLost(context, change, lost, ours, { text: mine, edited }).catch(async (error: unknown) => {
+        await release();
+        throw error;
+      });
+      if (copy === null) {
+        // The copy already here, holding the losing text but not what was
+        // typed on it since: that text goes out as an edit of its own.
+        await release();
+        return edited ? await deferToPush(context, change, localPath) : await keepBoth(context, change, theirManifest);
+      }
+      if (!(await unmoved(context, localPath, before))) {
+        // Saved while the copy was written: the note keeps its new text, and
+        // the copy holds what it had a moment ago.
+        await release();
+        return deferred(context, change, "saved_during_copy");
+      }
+      const landed = await landedAt(context, await writer.commit(theirManifest.mtime));
+      tally.left = stamp(landed);
+      await recordAt(context, change, localPath, landed);
+    } catch (error) {
+      await writer.abort();
+      throw error;
+    }
+  }
+  const closed = await closeFork(context, change.file_id, parents, keeping ? ours : theirManifest);
+  const held = context.state.fileByPath(localPath);
+  if (held?.versionId === (keeping ? localVersionId : change.version_id)) {
+    context.state.setFile(localPath, { ...held, versionId: closed });
+    await context.state.save();
+  }
+  context.host.notify(
+    `obsync kept both versions of ${localPath}: every device keeps the same one as the note, ` +
+      `and the other is in "${copy}".`,
+  );
+  context.host.log(
+    `pull decision=converged reason=unmerged role=${keeping ? "keep" : "yield"} closed=${closed} ` +
+      `file=${change.file_id} seq=${change.seq}`,
+  );
+  return keeping ? "skipped" : "applied";
+}
+
+/**
+ * The losing head, kept in the copy every device agrees on (`converge`), or
+ * `null` when its name is held here by something else.
+ *
+ * Posted before it is written, and offered as the version the server may
+ * already hold, so a device that loses its state between the two finds it
+ * again on the feed rather than making a second. `own` is this device's own
+ * note when its head is the one that lost: its bytes are written instead of
+ * downloading the same ones, and whatever it holds beyond the losing head is
+ * left for the push to publish as the copy's next version.
+ */
+async function keepLost(
+  context: SyncContext,
+  change: ChangeRecord,
+  lost: FileRecord["versions"][number],
+  manifest: Manifest,
+  own: { text: Bytes; edited: boolean } | null,
+): Promise<string | null> {
+  const fileId = await conflictFileId(context.manifestKey, change.file_id, lost.version_id);
+  const recorded = context.state.pathByFileId(fileId);
+  if (recorded !== undefined) return own?.edited ? null : recorded;
+  if (!context.deviceNames.has(lost.device_id)) {
+    // A name read at start or on the hour: a device paired since is not in it,
+    // and every device must name its copy alike.
+    try {
+      for (const device of (await context.transport.devices()).devices) context.deviceNames.set(device.device_id, device.name);
+    } catch {
+      context.host.log(`pull decision=device_names_unread file=${change.file_id}`);
+    }
+  }
+  const when = new Date(lost.ts);
+  const path = conflictCopyPath(
+    manifest.path, context.deviceNameFor(lost.device_id), when, 1,
+    `${conflictStamp(when, true)}, ${lost.version_id.slice(0, 6)}`,
+  );
+  assertVaultPath(path);
+  const copy: Manifest = { ...manifest, path };
+  const sids = manifest.chunks.map((chunk) => chunk.sid);
+  let occupant = await context.host.stat(path);
+  if (occupant !== null && (own?.edited || (await alreadyCopied(context, copy, path, occupant)) === null)) return null;
+  const posted = await postManifest(context, fileId, [], sids, copy, copy.size, true);
+  let landed = occupant ?? (await createOnly(context, copy, own?.text));
+  if (landed === null) {
+    occupant = await context.host.stat(path);
+    landed = occupant === null || own?.edited ? null : await alreadyCopied(context, copy, path, occupant);
+    if (landed === null) return null;
+  }
+  context.authored.add(posted.versionId);
+  const edited = own?.edited === true;
+  context.state.setFile(path, {
+    fileId,
+    versionId: posted.versionId,
+    mtime: edited ? -1 : landed.mtime,
+    size: landed.size,
+    sha256: edited ? "" : await sidDigest(sids),
+  });
+  await context.state.save();
+  return path;
+}
+
+/**
+ * Close a fork: one version whose parents are both heads and whose content is
+ * exactly the kept one's. Offered as the version the server may already hold,
+ * so every device that closes the same pair lands on the same id.
+ */
+async function closeFork(context: SyncContext, fileId: string, parents: string[], kept: Manifest): Promise<string> {
+  const sids = kept.chunks.map((chunk) => chunk.sid);
+  const posted = await postManifest(context, fileId, parents, sids, kept, kept.size, true);
+  context.authored.add(posted.versionId);
+  return posted.versionId;
+}
+
+/**
+ * One version of this file, decrypted, or `null` for one its record no longer
+ * holds (retention keeps the heads and the newest versions, not every one).
+ */
+async function manifestOf(context: SyncContext, file: FileRecord, change: ChangeRecord, id: string): Promise<Manifest | null> {
+  const record = file.versions.find((version) => version.version_id === id);
+  if (record === undefined) return null;
+  return await decryptRecordManifest(context, { ...record, file_id: change.file_id, domain_id: file.domain_id });
+}
+
+/**
+ * THE BASE OF A CRISS-CROSS, or `null`.
+ *
+ * Two devices that resolve the SAME fork while each holds a keystroke the
+ * other has not seen post two DIFFERENT merges of one pair, and from then on
+ * the two lines share two newest ancestors, neither reaching the other. Either
+ * one alone as the base reads the other's half of the first merge as an edit
+ * of its own, so every later version was an overlap and a conflict copy, and
+ * the fork never closed (issue #135). The base is then those two merged over
+ * their own ancestor -- what both devices would have posted had neither been
+ * typing. When the two merges were themselves merged differently, that pair
+ * is a criss-cross too, and its base is found the same way one level down, at
+ * most `CRISS_CROSS_LEVELS` of them. Single-chunk text only, and a pair that
+ * does not merge cleanly is no base at all.
+ */
+async function crissCrossBase(
+  context: SyncContext,
+  file: FileRecord,
+  change: ChangeRecord,
+  [left, right]: [string, string],
+  first: string,
+  firstText: string,
+  levels = CRISS_CROSS_LEVELS,
+): Promise<string | null> {
+  const parents = parentsFrom(file.versions);
+  const below = reachable(parents, first);
+  const fromLeft = reachable(parents, left);
+  const fromRight = reachable(parents, right);
+  const other = file.versions.find(
+    ({ version_id: id }) => id !== left && id !== right && !below.has(id) && fromLeft.has(id) && fromRight.has(id),
+  )?.version_id;
+  if (other === undefined) return null;
+  const root = commonAncestor(file.versions, first, other, parents);
+  const texts: string[] = [];
+  for (const id of [root, other]) {
+    const manifest = id === null ? null : await manifestOf(context, file, change, id);
+    if (manifest === null || manifest.chunks.length !== 1) return null;
+    texts.push(new TextDecoder().decode(await assembleBytes(context, manifest)));
+  }
+  const [rootText, otherText] = texts as [string, string];
+  let merged = threeWayMerge(rootText, firstText, otherText);
+  if (!merged.ok && levels > 1) {
+    const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
+    if (deeper !== null) merged = threeWayMerge(deeper, firstText, otherText);
+  }
+  context.host.log(
+    `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
+      `file=${change.file_id} seq=${change.seq}`,
+  );
+  return merged.ok ? merged.text : null;
+}
+
+/**
+ * How deep a criss-cross is followed. Each level is one more fork both devices
+ * resolved at once, each holding a keystroke; the chunks it downloads and holds
+ * are bounded by it, because the version graph is another device's to shape.
+ */
+const CRISS_CROSS_LEVELS = 3;
+
+/**
  * The merge breaker. One fork of one note costs at most one merge per device,
- * so a file that needs more than this inside a minute is not being edited, it
- * is looping, and a device that keeps merging a loop is what fills a journal
- * (issue #110). Both are constants, not configuration: a device must not be
- * able to be told to keep going.
+ * so a file that needs more than this in a row inside a minute, with its note
+ * unchanged here in between, is not being edited, it is looping, and a device
+ * that keeps merging a loop is what fills a journal (issue #110). Both are
+ * constants, not configuration: a device must not be able to be told to keep
+ * going.
  */
 const MERGE_STORM_LIMIT = 5;
 const MERGE_STORM_MS = 60_000;
@@ -2660,18 +3073,19 @@ async function takeVacated(
  * the name is occupied -- by a file this device did not put there -- and the
  * caller must not treat that as a failure; anything else is one.
  */
-async function createOnly(context: SyncContext, manifest: Manifest): Promise<VaultStat | null> {
+async function createOnly(context: SyncContext, manifest: Manifest, fill?: Bytes): Promise<VaultStat | null> {
   assertVaultPath(manifest.path);
   let writer: VaultWriter;
   try {
-    writer = await context.host.createWriter(manifest.path, manifest.size, () => undefined);
+    writer = await context.host.createWriter(manifest.path, fill?.length ?? manifest.size, () => undefined);
   } catch (error) {
     if ((await context.host.stat(manifest.path)) === null) throw error;
     return null;
   }
   let stat: VaultStat;
   try {
-    await writeVerified(context, manifest, writer);
+    if (fill === undefined) await writeVerified(context, manifest, writer);
+    else await writer.write(fill);
     stat = await writer.commit(manifest.mtime);
   } catch (error) {
     await writer.abort();
@@ -2686,7 +3100,9 @@ async function createOnly(context: SyncContext, manifest: Manifest): Promise<Vau
   } catch {
     context.host.log("pull decision=copy_temp_not_removed published=true name_attempt=0");
   }
-  return await landedAt(context, stat);
+  // Bytes this device supplied are its own to publish, so their write is not
+  // marked as an echo: the watcher's event is what queues their push.
+  return fill === undefined ? await landedAt(context, stat) : stat;
 }
 
 /**

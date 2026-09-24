@@ -1,0 +1,11 @@
+# M162: the merge breaker counts every resolution again, so two people typing in one note trip it within seconds and the note splits
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1745,7 +1745,6 @@
+   const found = stamp(await context.host.stat(localPath));
+   const seen = context.merges.get(change.file_id);
+   const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found };
+-  if (tally.left !== found) tally.count = 0;
+   tally.count++;
+   context.merges.set(change.file_id, tally);
+   const prior = tally.left;

@@ -754,7 +754,9 @@ export class FakeServer {
       // The comparison deliberately excludes the encrypted manifest, exactly
       // as the server's does, which is why a rename must not promise this.
       if (posted.accept_existing === true) {
-        const twin = file.versions.find(
+        // Oldest first, as the store searches (`storage/index.rs`, `twin`), so
+        // every repeat of one position converges on the id that landed first.
+        const twin = file.versions.findLast(
           (version) =>
             Boolean(version.deleted) === Boolean(posted.deleted) &&
             sameSet(version.parents, posted.parents) &&
@@ -766,10 +768,11 @@ export class FakeServer {
           return this.json(200, this.ack(twin.seq, twin.version_id, file));
         }
       }
-      const sameHeads =
-        file.heads.length === posted.parents.length &&
-        file.heads.every((head) => posted.parents.includes(head));
-      file.heads = sameHeads ? [posted.version_id] : [...file.heads, posted.version_id];
+      // The store's own head rule (`storage/index.rs`, `apply_version`): a
+      // version replaces the heads it names and becomes one itself. A fake
+      // that kept every head a device had moved past modelled a fork that
+      // grows by one head per edit, which no server does (issue #135).
+      file.heads = [...file.heads.filter((head) => !posted.parents.includes(head)), posted.version_id];
       const version = {
         ...posted,
         device_id: request.headers["X-Obsync-Device"],
@@ -941,8 +944,7 @@ export class FakeServer {
     const versionId = await c.versionId(fileId, parents, sealed.ciphertext, sids);
     const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: domainId };
     this.files.set(fileId, file);
-    const sameHeads = file.heads.length === parents.length && file.heads.every((head) => parents.includes(head));
-    file.heads = sameHeads ? [versionId] : [...file.heads, versionId];
+    file.heads = [...file.heads.filter((head) => !parents.includes(head)), versionId];
     const version = {
       version_id: versionId,
       parents,
@@ -1144,6 +1146,7 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     refused: new Set(),
     merges: new Map(),
     pushedAt: new Map(),
+    forked: new Set(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),

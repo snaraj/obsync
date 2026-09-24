@@ -1,7 +1,7 @@
 # M83: a materialised file is recorded at the manifest's spelling
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -538,11 +538,7 @@
+@@ -659,11 +659,7 @@
    context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
    const folder = stat.path.slice(0, Math.max(0, stat.path.lastIndexOf("/")));
    if (folder === "" || context.state.folderByPath(folder) !== undefined) return stat;
@@ -13,4 +13,4 @@
 +  return stat;
  }
  
- /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
+ /** Does the file at `path` still carry the `(mtime, size)` of `was`? */

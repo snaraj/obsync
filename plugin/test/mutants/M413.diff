@@ -1,0 +1,12 @@
+# M413: an unmergeable version over an unpushed edit is copied at once, so one fork costs two copies
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2059,7 +2059,7 @@
+ 
+   // Not a fork yet: the push of the edit made here makes it one, and the
+   // pair is settled then, from the version that edit was made on.
+-  if (ahead) return await deferToPush(context, change, localPath);
++  if (ahead) return await keepBoth(context, change, theirManifest);
+   return await converge(context, file, change, theirManifest, localPath, localVersionId, before, mine, tally);
+ }
+ 
