@@ -168,6 +168,9 @@ export const UNWRITABLE: Readonly<Record<string, string>> = {
 
 /** What the status bar, the notice and Show sync status say about one parked file. */
 export function unwritableText(path: string, reason: string): string {
+  // A chunk the server lost is nothing wrong with THIS device, so it is not
+  // said as if it were (2026-09-24 verification, X2).
+  if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
 

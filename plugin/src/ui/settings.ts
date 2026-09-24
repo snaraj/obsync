@@ -556,51 +556,61 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   private perFile(visible: () => boolean): Row {
+    const desc = (): string => {
+      const policy = this.plugin.state.data.policy;
+      return this.plugin.isMobile
+        ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay on the server and appear under "Show remote-only files", to fetch one at a time. Currently ${formatBytes(policy.perFileMaxBytes)}.`
+        : `Desktop streams files in 8 MiB windows, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`;
+    };
     return {
       name: "Largest file to download",
-      desc: () => {
-        const policy = this.plugin.state.data.policy;
-        return this.plugin.isMobile
-          ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay on the server and appear under "Show remote-only files", to fetch one at a time. Currently ${formatBytes(policy.perFileMaxBytes)}.`
-          : `Desktop streams files in 8 MiB windows, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`;
-      },
+      desc,
       visible,
-      render: (setting) => { this.ceiling(setting, "Largest file to download", "perFileMaxBytes"); },
+      render: (setting) => { this.ceiling(setting, "Largest file to download", "perFileMaxBytes", desc); },
     };
   }
 
   private total(visible: () => boolean): Row {
+    const desc = (): string => {
+      const policy = this.plugin.state.data.policy;
+      return `The vault may be larger than this device. Above this total, new files stay remote-only; 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`;
+    };
     return {
       name: "Total to keep on this device",
-      desc: () => {
-        const policy = this.plugin.state.data.policy;
-        return `The vault may be larger than this device. Above this total, new files stay remote-only; 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`;
-      },
+      desc,
       visible,
-      render: (setting) => { this.ceiling(setting, "Total to keep on this device", "totalBudgetBytes"); },
+      render: (setting) => { this.ceiling(setting, "Total to keep on this device", "totalBudgetBytes", desc); },
     };
   }
 
   /**
-   * One ceiling field. A value is kept the moment it reads as a size, and one
-   * that never does is refused OUT LOUD when the field is left -- never per
-   * keystroke, because `1 M` is on its way to `1 MB` -- naming the forms that
-   * are read, and the field goes back to what is kept. It used to stay on
-   * screen unsaved, and read "unlimited" after a restart (issue #150, S31).
+   * One ceiling field, decided when the field is LEFT (the input's `change`
+   * event) and saved then -- never per keystroke. A value kept per keystroke
+   * was kept on its way: `1 MX` passed through `1`, a one-byte ceiling that
+   * made every new note remote-only, and nothing was saved until some other
+   * write, so a restart read "unlimited" again (issue #150, S31; 2026-09-24
+   * verification). A value that does not read as a size is refused OUT LOUD,
+   * naming the forms that are read, and the field goes back to what is kept.
    */
-  private ceiling(setting: Setting, row: string, key: keyof Policy): void {
+  private ceiling(setting: Setting, row: string, key: keyof Policy, describe: () => string): void {
     let typed = formatBytes(this.plugin.state.data.policy[key]);
     setting.addText((field) => {
-      field.setValue(typed).onChange((value) => {
-        typed = value;
-        const bytes = parseBytes(value);
-        if (bytes !== null) this.plugin.state.data.policy[key] = bytes;
-      });
+      field.setValue(typed).onChange((value) => { typed = value; });
       field.inputEl.addEventListener("change", () => {
-        if (parseBytes(typed) !== null) return;
-        this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
-        new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
-        field.setValue(formatBytes(this.plugin.state.data.policy[key]));
+        const policy = this.plugin.state.data.policy;
+        const bytes = parseBytes(typed);
+        if (bytes === null) {
+          this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
+          new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+          typed = formatBytes(policy[key]);
+          field.setValue(typed);
+          return;
+        }
+        if (bytes === policy[key]) return;
+        policy[key] = bytes;
+        this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
+        setting.setDesc(describe());
+        void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
       });
     });
   }

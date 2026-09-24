@@ -1,0 +1,11 @@
+# M308: a kept ceiling is not saved, so a restart reads "unlimited" again
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -610,7 +610,6 @@
+         policy[key] = bytes;
+         this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
+         setting.setDesc(describe());
+-        void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
+       });
+     });
+   }

@@ -1,0 +1,11 @@
+# M309: a chunk the server lost is announced as something this device cannot write
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -169,7 +169,6 @@
+ export function unwritableText(path: string, reason: string): string {
+   // A chunk the server lost is nothing wrong with THIS device, so it is not
+   // said as if it were (2026-09-24 verification, X2).
+-  if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
+   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
+ }
+ 

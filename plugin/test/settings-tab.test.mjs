@@ -96,7 +96,7 @@ function open(t, overrides) {
   tab.update = () => { updates++; };
   const rows = () => tab.getSettingDefinitions().flatMap((group) => group.items.map((item) => ({ ...item, group })));
   const row = (name) => { const found = rows().find((item) => item.name === name); assert.ok(found, `row ${name}`); return found; };
-  const render = (name) => { made.length = 0; const result = row(name).render(new obsidian.Setting({})); return { result, made: [...made] }; };
+  const render = (name) => { made.length = 0; const setting = new obsidian.Setting({}); const result = row(name).render(setting); return { result, made: [...made], setting }; };
   const button = (list, text) => { const found = list.find((c) => c.kind === "button" && c.text === text); assert.ok(found, `button ${text}`); return found; };
   return { box, obsidian, plugin, calls, settings, tab, rows, row, render, button, made, vault, updates: () => updates };
 }
@@ -620,6 +620,39 @@ test("a hidden folder is refused in plain words, before any question, with the r
   assert.match(s.obsidian.notices[0], /names start with a dot/);
   assert.equal(/hidden_segment|\(/.test(s.obsidian.notices[0]), false, s.obsidian.notices[0]);
   assert.deepEqual(s.plugin.logs, ["scope decision=refused reason=hidden_segment"]);
+});
+
+test("a ceiling typed key by key is kept and saved only when the field is left, so a typo never becomes a one-byte ceiling", async (t) => {
+  // 2026-09-24 verification of the 1.1.3 train (S31 step 1, real keys): every
+  // keystroke that read as a size was kept, so `1 MX` passed through `1` and
+  // stayed a one-byte ceiling after its refusal, and a kept `1 MB` reached
+  // data.json only with some later, unrelated save.
+  const s = open(t);
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  const policy = s.plugin.state.data.policy;
+  const { setting, made: [field] } = s.render("Largest file to download");
+  const type = (text) => { for (let i = 1; i <= text.length; i++) field.change(text.slice(0, i)); };
+  const leave = () => { for (const fn of field.inputEl.listeners.change ?? []) fn(); };
+
+  type("1 MX");
+  assert.equal(policy.perFileMaxBytes, 0, "a keystroke was kept as the ceiling");
+  leave();
+  assert.equal(policy.perFileMaxBytes, 0, "the refused typo left its prefix as the ceiling");
+  assert.equal(s.obsidian.notices.length, 1);
+  assert.deepEqual(s.calls.filter((c) => c === "state.save"), [], "a refusal saves nothing");
+
+  type("1 MB");
+  assert.equal(policy.perFileMaxBytes, 0, "a keystroke was kept as the ceiling");
+  leave();
+  await tick();
+  assert.equal(policy.perFileMaxBytes, 1_000_000);
+  assert.equal(s.calls.filter((c) => c === "state.save").length, 1, "the kept ceiling was not saved");
+  assert.match(setting.desc, /Currently 977 KiB\./, "the row still names the ceiling it had");
+  assert.equal(s.plugin.logs.at(-1), "policy decision=kept field=perFileMaxBytes bytes=1000000");
+
+  leave();
+  await tick();
+  assert.equal(s.calls.filter((c) => c === "state.save").length, 1, "leaving an unchanged field saves again");
 });
 
 test("a download ceiling takes decimal and binary units, and an unreadable one is refused out loud, never dropped", async (t) => {

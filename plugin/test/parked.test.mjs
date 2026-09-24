@@ -290,7 +290,7 @@ test("a chunk missing on the server parks its file, and it arrives once a device
   assert.deepEqual(r.state.data.parked, { [VICTIM]: { path: "Attachments/victim2.bin", reason: "unknown_chunk" } });
   assert.deepEqual(d.last(), {
     kind: "error",
-    message: "Cannot write Attachments/victim2.bin here: the server is missing part of it; open a device that has it",
+    message: "Cannot download Attachments/victim2.bin: the server is missing part of it; open a device that has it",
   });
   assert.equal(d.statuses.some((status) => status.kind === "offline"), false);
 
