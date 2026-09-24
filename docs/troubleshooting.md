@@ -276,7 +276,10 @@ or signature at all — the shape a device that was never enrolled sends.
 does not verify against the secret it holds: a rebuilt server, or a journal
 volume restored from a backup older than this pairing.
 
-**Fix.** Both are the same repair: pair this device again. If the server was
+**Fix.** Both are the same repair: pair this device again. A device that
+still holds its old pairing claims nothing until it leaves: **This device** →
+**Leave this server**, which offers **Leave locally anyway** when the server
+does not recognise this device, then **Pair this device**. If the server was
 rebuilt or restored, see [`recovery.md`](recovery.md) before pairing anything,
 because the server key decides whether existing devices can be kept at all.
 If this appeared after pointing the device at a DIFFERENT server, its stored

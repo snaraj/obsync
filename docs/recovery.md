@@ -172,7 +172,10 @@ changing **Server URL** alone earns `401 bad_signature` for ever.
 3. The only ACTIVE device cannot be revoked (`last_device`, above). The dialog
    offers to leave LOCALLY instead: this device forgets the server and keeps
    every note, and the server keeps the device — revoke it from the dashboard,
-   or from another device, once one is paired.
+   or from another device, once one is paired. A server that does not
+   recognise this device at all (`401 bad_signature`: rebuilt, or restored
+   from an older backup) makes the same offer, and a device already revoked
+   simply leaves.
 
 Pairing again is a first sync for this device, so anything the new server
 already holds at the same path arrives beside the local note as a conflict

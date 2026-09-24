@@ -98,7 +98,7 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ApiError, ChangeRecord, FileRecord, ReadControl } from "../transport";
+import { ApiError, ChangeRecord, FileRecord, ReadControl, Transport } from "../transport";
 // The per-path record this device keeps, named apart from the SERVER's file
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
@@ -340,6 +340,57 @@ export function bindFolderToRecord(
 }
 
 /**
+ * A record's manifest as text, or the refusal `undecryptable` (issue #140).
+ *
+ * AES-GCM refusing a record is a fact about its bytes, not about this moment:
+ * they were sealed under a key this device does not hold -- another device
+ * pressed "Create a new vault key" or restored another vault's phrase -- or
+ * were changed after sealing. No retry changes that, so it is refused like
+ * any other manifest and the feed moves past it. It used to escape as
+ * WebCrypto's `OperationError`, whose message is empty on Obsidian's
+ * renderer, and the feed retried that one record for ever under "offline".
+ * Any OTHER failure is a fault on this device and still propagates.
+ */
+async function openManifest(
+  manifestKey: Bytes,
+  record: Pick<ChangeRecord, "file_id" | "parents" | "sids" | "manifest_ct" | "manifest_nonce">,
+): Promise<string> {
+  const binder = await contentVersionId(record.file_id, record.parents, record.sids);
+  try {
+    return await decryptManifest(manifestKey, record.file_id, binder, unhex(record.manifest_nonce), unbase64(record.manifest_ct));
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name === "OperationError") throw new ManifestError("undecryptable");
+    throw error;
+  }
+}
+
+/**
+ * What the server's vault holds under this manifest key: the newest version
+ * of every live note, by path (issue #141). Read-only -- it posts nothing --
+ * so a claimant can compare its own notes with a vault before its first sync
+ * publishes any of them. A record this key cannot open is not one it holds.
+ */
+export async function heldNotes(transport: Transport, manifestKey: Bytes): Promise<Map<string, Manifest>> {
+  const newest = new Map<string, Manifest | null>();
+  for (let since = 0; ;) {
+    const page = await transport.changes(since, 0);
+    for (const change of page.changes) {
+      try {
+        const entry = parseEntry(await openManifest(manifestKey, change));
+        newest.set(change.file_id, entry.v === 1 && !entry.deleted ? entry : null);
+      } catch (error) {
+        if (!(error instanceof ManifestError)) throw error;
+      }
+    }
+    if (page.changes.length === 0 || page.seq <= since) break;
+    since = page.seq;
+  }
+  const held = new Map<string, Manifest>();
+  for (const manifest of newest.values()) if (manifest !== null) held.set(manifest.path, manifest);
+  return held;
+}
+
+/**
  * Decrypt one record and bind whatever it turns out to be. The feed is the
  * only caller that may act on a folder; everything else means a file and
  * goes through `decryptRecordManifest`, which refuses one.
@@ -348,15 +399,7 @@ export async function decodeRecordManifest(
   context: SyncContext,
   record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
 ): Promise<Manifest | FolderManifest> {
-  const binder = await contentVersionId(record.file_id, record.parents, record.sids);
-  const json = await decryptManifest(
-    context.manifestKey,
-    record.file_id,
-    binder,
-    unhex(record.manifest_nonce),
-    unbase64(record.manifest_ct),
-  );
-  const entry = parseEntry(json);
+  const entry = parseEntry(await openManifest(context.manifestKey, record));
   // A FOLDER RECORD IS JUDGED BY THE FOLDER RULE, which differs from a file's
   // at the selection root: the selected folder itself has a record, and that
   // record is the only thing that can carry its own rename (`syncScope.ts`,
@@ -681,7 +724,19 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
   context.host.log(
     `pull path_class=manifest decision=refused reason=${reason} file=${change.file_id} seq=${change.seq}`,
   );
-  if (!context.refused.has(change.file_id)) {
+  // A key this device does not hold is about the DEVICE that sealed with it,
+  // not about one file: one notice per device, naming the one to fix (#140).
+  const key = `key\u0000${change.device_id}`;
+  if (reason === "undecryptable" && !context.refused.has(key)) {
+    context.refused.add(key);
+    const name = context.deviceNameFor(change.device_id);
+    context.host.notify(
+      `obsync cannot read changes from "${name}": they are sealed with a different vault key. This device skips ` +
+        `them and keeps receiving everything else; nothing was written here. On "${name}", restore this vault's ` +
+        "recovery phrase (obsync settings, Recovery phrase), or leave the server there and pair it again.",
+    );
+  }
+  if (reason !== "undecryptable" && !context.refused.has(change.file_id)) {
     context.refused.add(change.file_id);
     context.host.notify(
       `obsync refused a change from another device: it does not name a file or folder this device can write inside this vault (${reason}). ` +

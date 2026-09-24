@@ -220,3 +220,26 @@ test("an unpaired device is told there is nothing to leave, and nothing is asked
   assert.deepEqual(d.choices, []);
   assert.equal(d.made.length, 1, "no button that could leave anything");
 });
+
+test("a server that does not recognise this device is named as such before the local leave (#143)", async (t) => {
+  const d = dialog(t, {
+    answers: [
+      { decision: "refused", reason: "bad_signature", detail: "request signature does not verify" },
+      { decision: "left", revoked: false },
+    ],
+  });
+
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave").click();
+  await tick();
+
+  const text = d.drawn.join("\n");
+  assert.match(text, /This server does not recognise this device: it was rebuilt or restored from a backup/);
+  assert.doesNotMatch(text, /can never sync again/, "not the last-device warning");
+  d.button("Leave locally anyway").click();
+  await tick();
+
+  assert.deepEqual(d.choices.at(-1), { discardUnpushed: false, localOnly: true });
+  assert.ok(d.notices.some((notice) => notice.includes("which did not recognise it")));
+});

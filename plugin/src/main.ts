@@ -54,7 +54,8 @@
 
 import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App } from "obsidian";
-import { Bytes, hex, randomBytes, unhex } from "./crypto";
+import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource } from "./chunker";
 import { State, isPushed } from "./state";
 import {
@@ -69,7 +70,7 @@ import {
 } from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
-import { fetchRemoteOnly } from "./sync/pull";
+import { fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
@@ -300,7 +301,7 @@ export interface LeaveChoice {
 export type LeaveResult =
   | { decision: "left"; revoked: boolean }
   | { decision: "refused"; reason: "unpushed_edits"; unpushed: string[] }
-  | { decision: "refused"; reason: "last_device"; detail: string };
+  | { decision: "refused"; reason: "last_device" | "bad_signature"; detail: string };
 
 export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
   const base = parseUrl(serverUrl);
@@ -2233,21 +2234,54 @@ export default class ObsyncPlugin extends Plugin {
    */
   async unpushedEdits(): Promise<string[]> {
     const state = this.state;
-    const folders = state.data.syncFolders;
-    const tracked = async (path: string): Promise<boolean> =>
-      vaultPathRefusal(path) === null && inSyncScope(path, folders) && (await this.host.syncable(path));
     const unpushed: string[] = [];
     const seen = new Set<string>();
     for (const file of await this.host.list()) {
-      if (!(await tracked(file.path))) continue;
+      if (!(await this.tracked(file.path))) continue;
       seen.add(file.path);
       if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
     }
     for (const path of Object.keys(state.data.files)) {
-      if (seen.has(path) || !(await tracked(path))) continue;
+      if (seen.has(path) || !(await this.tracked(path))) continue;
       unpushed.push(path);
     }
     return unpushed.sort();
+  }
+
+  /** A path this device syncs: the engine's own rule (`engine.ts`, `tracked`). */
+  private async tracked(path: string): Promise<boolean> {
+    return vaultPathRefusal(path) === null && inSyncScope(path, this.state.data.syncFolders) && (await this.host.syncable(path));
+  }
+
+  /**
+   * How many notes here the server's vault does not already hold, byte for
+   * byte at the same path (issue #141). It posts nothing. A claimant asks it
+   * before its first sync, which publishes every such note to every device
+   * syncing that vault: that is how pairing a second vault merged two. A
+   * version too large to carry a whole-file digest is matched by size.
+   */
+  async notesUnknownTo(vrk: string): Promise<number> {
+    const started = Date.now();
+    const key = unhex(vrk);
+    const map = await loadDomainMap(this.transport, await domainMapKeys(key));
+    const domainId = map === null ? null : soleDomain(map);
+    const held = domainId === null
+      ? null
+      : await heldNotes(this.transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId));
+    let local = 0;
+    let unknown = 0;
+    for (const file of await this.host.list()) {
+      if (!(await this.tracked(file.path))) continue;
+      local++;
+      const there = held?.get(file.path);
+      const same = there !== undefined && there.size === file.size &&
+        (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
+      if (!same) unknown++;
+    }
+    this.log(
+      `pairing role=claimant decision=surveyed local=${local} unknown=${unknown} held=${held?.size ?? 0} duration_ms=${Date.now() - started}`,
+    );
+    return unknown;
   }
 
   /**
@@ -2268,7 +2302,10 @@ export default class ObsyncPlugin extends Plugin {
    * because an account with no active device can never sync again and nothing
    * in this release re-enrols one. That refusal is surfaced verbatim and the
    * user may still leave LOCALLY, which is `localOnly`: this device forgets
-   * the server, the server keeps the device. No other device is touched on
+   * the server, the server keeps the device. A server that does not know this
+   * device at all (`401 bad_signature`: rebuilt, restored, or another server)
+   * is offered the same local leave, never taken without asking, because a
+   * wrong address answers it too (#143). No other device is touched on
    * either path; only this device's id is ever sent.
    *
    * PLATFORM. Identical on desktop and mobile: one revoke, one metadata
@@ -2318,8 +2355,12 @@ export default class ObsyncPlugin extends Plugin {
         revoked = true;
       } catch (error) {
         reason = error instanceof ApiError ? error.code : "local_or_lost";
-        if (!(error instanceof ApiError) || error.code !== "last_device") throw error;
-        if (!choice.localOnly) return { decision: "refused", reason: "last_device", detail: error.detail };
+        // Revoked already -- from another device or the dashboard (#143, S80):
+        // what leaving asks of the server is done, so this device forgets it
+        // too, which is the one way back to pairing again.
+        if (error instanceof ApiError && error.code === "device_revoked") revoked = true;
+        else if (!(error instanceof ApiError) || (error.code !== "last_device" && error.code !== "bad_signature")) throw error;
+        else if (!choice.localOnly) return { decision: "refused", reason: error.code, detail: error.detail };
       }
       assertCurrent();
       state.forgetPairing();
@@ -2340,7 +2381,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       this.updateAvailable = null;
       this.setStatus({ kind: "idle" });
-      if (revoked) reason = "ok";
+      if (reason === "unfinished") reason = "ok";
       return { decision: "left", revoked };
     } finally {
       this.log(
@@ -2383,6 +2424,34 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   /**
+   * Would `vrk` leave this device outside the vault its server holds (issue
+   * #140)? A map lives at a file id derived from its key, so a new key or
+   * another vault's phrase finds none, and the engine would write a second
+   * map into the same account: every other device then meets records it
+   * cannot open. Only a device with a credential can ask, and only a server
+   * holding records has a vault to strand.
+   */
+  async vaultKeyStrands(vrk: string): Promise<boolean> {
+    const { state, transport } = this.captureSession();
+    if (state.data.deviceId === null) return false;
+    if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
+    // Versions, not the journal head: account and device frames move the
+    // head of a server that holds no vault yet.
+    return (await transport.changes(0, 0, 1)).changes.length > 0;
+  }
+
+  /** Restore a key from its phrase, never one that opens nothing on this server (issue #140). */
+  async restoreVaultKey(vrk: string): Promise<void> {
+    const started = Date.now();
+    const strands = await this.vaultKeyStrands(vrk);
+    this.log(`vaultkey decision=${strands ? "refused reason=opens_nothing_here" : "restored"} duration_ms=${Date.now() - started}`);
+    if (strands) {
+      throw new Error("These 24 words do not open the vault on this server: nothing there was sealed with them. The key on this device was not changed.");
+    }
+    await this.adoptVaultKey(vrk);
+  }
+
+  /**
    * First-time setup: the token the server writes privately at first boot
    * creates the account and enrols this device.
    */
@@ -2418,7 +2487,14 @@ export default class ObsyncPlugin extends Plugin {
         await this.startEngine();
       }
     } catch (error) {
-      new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+      const code = error instanceof ApiError ? error.code : "local_or_lost";
+      this.log(`setup decision=failed reason=${code}`);
+      // One server holds one vault (#141): the one route left after this
+      // refusal, pairing, would merge a second vault into the first.
+      const text = code === "already_set_up"
+        ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device with a code from a device that syncs it; a different vault needs a server of its own."
+        : error instanceof Error ? error.message : String(error);
+      new Notice(`obsync: ${text}`, 12000);
     }
   }
 

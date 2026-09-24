@@ -94,6 +94,25 @@ before, it stayed on that computer until the next edit. Files like these that
 1.1.2 already left or sent are ordinary synced files now, on every device, and
 can be deleted by hand. Phones and tablets never wrote them. (#175, #159)
 
+**One server holds one vault, and nothing swaps a vault's key or a device's
+identity without asking.** Pressing **Create a new vault key**, or restoring
+another vault's 24 words, on one computer used to stop every other computer
+from receiving anything, for good, under "offline — retrying"; pairing a second
+vault from the first merged both vaults on every device without a word; and
+**Pair this device**, or a pairing link, on a computer that already synced
+replaced its identity, so its sync stopped and a stray device appeared. Now a
+computer that meets changes it cannot read skips them, keeps receiving
+everything else, and names the device to fix. **Create a new vault key** on a
+server that holds a vault asks first, with Cancel as the default, and a phrase
+that opens nothing there is refused before it replaces the key. A device joining
+a vault asks before its first sync uploads notes that vault does not have (a
+copy of the same vault still pairs without a question), and **First-time
+setup** on a server that already holds a vault says that one server holds one
+vault. On a computer that syncs, **Pair this device** and pairing links claim
+nothing and say to leave the server first, and leaving now works for a device
+that was revoked or that the server no longer recognises. Same on desktop and
+mobile. (#140, #141, #143)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

@@ -42,7 +42,7 @@ now**. Removed folders keep their local files and their history on the server.
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
-| **Pairing** → **Pair this device** | — | Applies an unsaved folder selection, then opens the dialog that takes a pairing code from a device that already syncs. | On every device after the first |
+| **Pairing** → **Pair this device** | — | Applies an unsaved folder selection, then opens the dialog that takes a pairing code from a device that already syncs. On a device that syncs already it claims nothing and says to leave the server first. Before the first sync it asks when this vault holds notes the server's vault does not. | On every device after the first |
 | **Pairing** → **Pair a new device** | — | Mints a code, valid ten minutes, for another device to claim. | When adding a device |
 | **First-time setup** → **Set up** | — | Takes the setup token the server wrote at first boot, applies an unsaved folder selection, creates the account and enrolls this device. The token is not spent: it stays the dashboard's recovery sign-in. The dashboard calls the account `obsync`. | Once, on the first device |
 | **Name** | the platform and a short device id, e.g. `macos-1a2b` | How this device appears in the dashboard's device list and in another device's conflict copies. | Give each device a name you will recognise months later |
@@ -82,7 +82,7 @@ a revoked device is paired again as a new device.
 | Setting | What it does |
 | --- | --- |
 | **Recovery phrase** → **Show** | Re-displays the 24 words from this device's own key. Anyone holding them can read this vault |
-| **Recovery phrase** → **Restore or create** | **Restore** adopts an existing vault key from its phrase. **Create a new vault key** starts a NEW vault that existing devices will not read — see [`recovery.md`](recovery.md) before pressing it |
+| **Recovery phrase** → **Restore or create** | **Restore** adopts an existing vault key from its phrase, and refuses words that open nothing on a server that holds a vault. **Create a new vault key** starts a NEW vault that existing devices will not read, and asks first on a server that holds one — see [`recovery.md`](recovery.md) before pressing it |
 
 ## Commands, not settings
 

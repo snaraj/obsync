@@ -373,3 +373,47 @@ test("a device left with no credential can send nothing at all", async (t) => {
   await assert.rejects(() => r.instance.transport.account(), /not_paired/);
   assert.deepEqual(r.old.unsigned, [], "nothing unsigned ever reached the server it left");
 });
+
+test("a device revoked elsewhere leaves locally, which is its way back to pairing (#143)", async (t) => {
+  // S20 and S80: revoked from another device or the dashboard, and then told
+  // to leave before it may pair again. The server refuses the revoke because
+  // it is already done.
+  const r = await fixture(t, { devices: 2 });
+  r.old.devices.find((device) => device.device_id === KEYS.deviceId).revoked = true;
+  const before = vault(r.host);
+
+  const result = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+
+  assert.deepEqual(result, { decision: "left", revoked: true });
+  assert.equal(r.revokes().length, 1, "it was asked, once");
+  assert.equal(r.state().deviceId, null, "the credential the server dropped is dropped here too");
+  assert.equal(r.state().lastSeq, 0);
+  assert.deepEqual(r.state().files, {});
+  assert.equal(r.state().vrk, KEYS.vrk, "the same vault key stays");
+  assert.equal(r.instance.state.paired, false, "so pairing is open again");
+  assert.deepEqual(vault(r.host), before, "every note stays");
+  assert.match(r.unpair()[0], /decision=revoked reason=device_revoked unpushed=0 local_cleared=true/);
+});
+
+test("a server that does not know this device is offered a local leave, never taken unasked (#143)", async (t) => {
+  // S14: the server was rebuilt empty, so every signed request is refused
+  // `401 bad_signature` -- and a wrong address answers the same, which is why
+  // the local leave is the user's call and not a default.
+  const r = await fixture(t, { devices: 2 });
+  const route = r.instance.transport.options.request;
+  r.instance.transport.options.request = async (request) => request.url.endsWith("/revoke")
+    ? { status: 401, headers: {}, text: JSON.stringify({ error: "bad_signature", detail: "request signature does not verify" }), arrayBuffer: new ArrayBuffer(0) }
+    : route(request);
+  const before = r.state();
+
+  const refused = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  assert.deepEqual(refused, { decision: "refused", reason: "bad_signature", detail: "request signature does not verify" });
+  assert.deepEqual(r.state(), before, "nothing was cleared without the user's word");
+
+  const left = await r.instance.leaveServer({ discardUnpushed: false, localOnly: true });
+  assert.deepEqual(left, { decision: "left", revoked: false });
+  assert.equal(r.state().deviceId, null);
+  assert.equal(r.state().vrk, KEYS.vrk);
+  assert.equal(r.instance.state.paired, false, "so pairing is open again");
+  assert.match(r.unpair()[1], /decision=refused reason=bad_signature unpushed=0 local_cleared=true/);
+});

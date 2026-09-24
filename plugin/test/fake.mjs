@@ -622,6 +622,11 @@ export class FakeServer {
       this.addDevice(SETUP_DEVICE, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
       return this.json(201, { account_id: "aa".repeat(16), device_id: SETUP_DEVICE, device_secret: SETUP_SECRET });
     }
+    // obsyncd refuses a revoked device before the signature, on every route
+    // (`api/auth.rs`): revoking destroyed the secret it would verify against.
+    if (this.devices.some((device) => device.revoked && device.device_id === request.headers["X-Obsync-Device"])) {
+      return this.error(403, "device_revoked", "device is revoked");
+    }
     this.verify(request, target);
 
     // Match the Rust device parser before acknowledging a heartbeat or PATCH.

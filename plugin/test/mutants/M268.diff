@@ -1,0 +1,11 @@
+# M268: Cancel is no longer the default in a confirmation: Enter may take the destructive answer
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -85,7 +85,6 @@
+       )
+       .addButton((button) => {
+         button.setButtonText("Cancel").onClick(() => this.close());
+-        button.buttonEl.focus();
+       });
+   }
+ 
