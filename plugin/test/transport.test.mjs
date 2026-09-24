@@ -15,7 +15,7 @@ import { createHash, createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { ApiError, HISTORY_RESPONSE_BYTES, Transport, parseMultipart, routeFor } = require("../build/transport.js");
+const { ApiError, HISTORY_RESPONSE_BYTES, Transport, lostMessage, parseMultipart, routeFor } = require("../build/transport.js");
 const c = require("../build/crypto.js");
 
 const DEVICE_ID = "aabbccddeeff00112233445566778899";
@@ -609,4 +609,16 @@ test("every attempt says whether the server answered it, and decides nothing", a
   );
   await assert.rejects(strict.devices(), (error) => error.code === "bad_signature");
   assert.deepEqual(refused, [true]);
+});
+
+test("a connection refused on the only attempt says nothing was sent and names the port; anything else stays unknown", () => {
+  const refused = lostMessage("creating the account", { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_REFUSED" });
+  assert.match(refused, /^creating the account: nothing answers at this address and port \(network=net::ERR_CONNECTION_REFUSED\), so nothing was sent\./);
+  assert.match(refused, /port included/);
+  assert.match(lostMessage("x", { outcome: "lost", attempts: 1, reason: "network=connect ECONNREFUSED 127.0.0.1:443" }), /nothing was sent/);
+  // A timeout may have delivered the request; a refusal after an earlier attempt proves nothing about that one.
+  for (const lost of [
+    { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_TIMED_OUT" },
+    { outcome: "lost", attempts: 2, reason: "network=net::ERR_CONNECTION_REFUSED" },
+  ]) assert.match(lostMessage("x", lost), /cannot say whether it happened/, JSON.stringify(lost));
 });

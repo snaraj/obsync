@@ -204,6 +204,11 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
     ["https://sync.example.org//", "https://sync.example.org"],
     ["http://lan.example.test:8080", "http://lan.example.test:8080"],
     ["   ", ""],
+    // Copied from a browser: only the origin is the server's address (#137).
+    ["https://sync.example.org:8443/readyz", "https://sync.example.org:8443"],
+    ["HTTPS://SYNC.Example.ORG:8443/login?token=SENTINEL#top", "https://sync.example.org:8443"],
+    ["Https://phone.example.org", "https://phone.example.org"],
+    ["sync.example.org:8443/dashboard/", "https://sync.example.org:8443"],
   ]) assert.equal(normalizeServerUrl(typed), stored, typed);
 
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
@@ -217,6 +222,61 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
   field().change("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
+});
+
+test("plain http is refused on every platform, loopback on a desktop excepted, and each refusal is said once", (t) => {
+  const s = open(t);
+  const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
+  const { serverUrlRefusal } = s.settings;
+  // A desktop: plain http crosses the network in the clear, so it is refused (#136) ...
+  field().change("http://lan.example.test:8080");
+  assert.equal(s.plugin.state.data.serverUrl, "", "refused, not stored");
+  assert.equal(s.obsidian.notices.length, 1);
+  assert.match(s.obsidian.notices[0], /^Use your server's https address\. Plain HTTP would send the setup token/);
+  // ... and said ONCE while the person keeps typing into a refused address.
+  field().change("http://lan.example.test:80800");
+  field().change("http://lan.example.test:8080/x");
+  assert.equal(s.obsidian.notices.length, 1, "one notice per refusal, not one per keystroke");
+  // Only this computer itself may be reached in plain http: the README's one-computer trial.
+  for (const url of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://127.1.2.3"]) {
+    field().change(url);
+    assert.equal(s.plugin.state.data.serverUrl, url, `${url} is loopback`);
+  }
+  for (const url of ["http://127.0.0.1.example.test", "http://localhost.example.test:8080", "http://10.0.0.1:8080", "ftp://sync.example.org"]) {
+    assert.notEqual(serverUrlRefusal(url, false), null, `${url} is not loopback`);
+  }
+  // An accepted value ends the refusal, so the next one is said again.
+  field().change("http://lan.example.test:9090");
+  assert.equal(s.obsidian.notices.length, 2);
+  // A phone refuses even loopback, and takes the scheme a keyboard capitalised.
+  s.plugin.isMobile = true;
+  assert.equal(serverUrlRefusal("http://127.0.0.1:8080", true), "Mobile Obsidian only reaches HTTPS servers.");
+  field().change("Https://phone.example.org");
+  assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org");
+});
+
+test("Check asks the server without a credential before setup, and says to type an address first", async (t) => {
+  const asked = [];
+  const s = open(t, {
+    transport: {
+      account: async () => { asked.push("account"); return { name: "obsync", device_count: 2 }; },
+      pluginManifest: async () => { asked.push("manifest"); return { version: "1.1.3" }; },
+    },
+  });
+  const check = () => { s.button(s.render("Connection").made, "Check").click(); return tick(); };
+  await check();
+  assert.deepEqual(asked, [], "no address, no request");
+  assert.deepEqual(s.obsidian.notices, ["Type your server's address in Server URL first."]);
+
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  await check();
+  assert.deepEqual(asked, ["manifest"], "before setup the signed read would only say 'not paired'");
+  assert.match(s.obsidian.notices.at(-1), /^Reached your obsync server\. Next: First-time setup/);
+
+  s.plugin.state.paired = true;
+  await check();
+  assert.deepEqual(asked, ["manifest", "account"]);
+  assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
 });
 
 test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {

@@ -65,22 +65,49 @@ interface Group {
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-/** `https://` is the default, not a requirement: a bare host is completed, never refused. */
+/**
+ * `https://` is the default, not a requirement: a bare host is completed,
+ * never refused. Only the ORIGIN is kept -- scheme and host lower-cased, the
+ * port, nothing after it. obsync is served at the root of its address, and an
+ * address copied from a browser kept its `/readyz` or `/login?token=…`: every
+ * request then answered 404 "no route", and a sign-in token sat in this
+ * vault's settings (2026-09-24 battery, S08; #137). An address the platform
+ * cannot parse is kept as typed, for the refusal and the request to explain.
+ */
 export function normalizeServerUrl(value: string): string {
-  const url = value.trim().replace(/\/+$/, "");
-  return url === "" || SCHEME.test(url) ? url : "https://" + url;
+  const typed = value.trim().replace(/\/+$/, "");
+  if (typed === "") return "";
+  const url = SCHEME.test(typed) ? typed : "https://" + typed;
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? url : origin;
+  } catch {
+    return url;
+  }
 }
 
+/** Plain HTTP that never leaves this computer: the README's one-computer trial. */
+const LOOPBACK = /^http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
+
 /**
- * Why this device may not adopt a normalised address, or `null`. Mobile
- * Obsidian refuses plain HTTP outright, so it is refused at entry instead of
- * failing on every request; an empty address is "not configured", not a
- * refusal. The row below and `ObsyncPlugin.setServerUrl` share this rule.
+ * Why this device may not adopt a normalised address, or `null`; an empty
+ * address is "not configured", not a refusal. The row below and
+ * `ObsyncPlugin.setServerUrl` share this rule.
+ *
+ * PLAIN HTTP IS REFUSED ON EVERY PLATFORM, loopback on a desktop excepted.
+ * Mobile Obsidian refuses it outright. A desktop used to accept it, and a
+ * plain HTTP address in front of a terminator that redirects to HTTPS worked,
+ * silently: the setup token -- also the dashboard's recovery sign-in -- and
+ * every later request crossed the network in the clear before the redirect
+ * (2026-09-24 battery, S08; #136). `normalizeServerUrl` lower-cases the
+ * scheme, so the `Https://` a phone keyboard capitalises is the address it means.
  */
 export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
-  return url !== "" && isMobile && !url.startsWith("https://")
-    ? "Mobile Obsidian only reaches HTTPS servers."
-    : null;
+  if (url === "" || url.startsWith("https://")) return null;
+  if (isMobile) return "Mobile Obsidian only reaches HTTPS servers.";
+  return LOOPBACK.test(url)
+    ? null
+    : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
 }
 
 function message(error: unknown): string {
@@ -104,6 +131,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
   private readingDevices = false;
+  private shownRefusal: string | null = null;
 
   constructor(
     app: App,
@@ -173,10 +201,14 @@ export class ObsyncSettingTab extends PluginSettingTab {
           .onChange((value) => {
             const url = normalizeServerUrl(value);
             const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+            // Once per refusal: this runs on every keystroke, and a notice a
+            // character is a storm the person has to wait out.
             if (refusal !== null) {
-              new Notice(refusal);
+              if (refusal !== this.shownRefusal) new Notice(refusal);
+              this.shownRefusal = refusal;
               return;
             }
+            this.shownRefusal = null;
             this.plugin.state.data.serverUrl = url;
             // State reports persistence failure and stops sync through its host hook.
             void this.plugin.state.save().catch(() => {});
@@ -214,8 +246,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
       render: (setting) => {
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
-            void this.plugin.transport.account()
-              .then((account) => { new Notice(`Reached "${account.name}", ${account.device_count} device(s).`); })
+            if (this.plugin.state.data.serverUrl === "") {
+              new Notice("Type your server's address in Server URL first.");
+              return;
+            }
+            // Before setup there is no device to sign with, and the signed
+            // read answered "not paired" without asking the server anything:
+            // the one moment a person most needs to know whether the address
+            // works (2026-09-24 battery, S08; #137). The plugin manifest is the
+            // route that needs no credential.
+            const check = this.plugin.state.paired
+              ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
+              : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: First-time setup on your first device, or Pair this device.");
+            void check
+              .then((text) => { new Notice(text); })
               .catch((error: unknown) => { new Notice(message(error), 8000); });
           }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));

@@ -5,6 +5,29 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.3 - unreleased
+
+**A plain `http` server address is refused on desktops too.** A desktop used to
+accept an address starting `http://` and, in front of a server that redirects to
+HTTPS, it even worked -- after sending the setup token and every request across
+your network unencrypted first. Now the address must start `https://`, as on a
+phone. The one exception is this computer itself (`localhost` or `127.0.0.1`),
+the one-computer trial the README describes, where nothing crosses a network.
+If a desktop of yours was set up with a plain `http://` address, change it to the
+`https://` one, and rotate the recovery token as
+[the dashboard's security notes](docs/security/dashboard.md) describe: it may
+have crossed your network in the clear. (#136)
+
+**The server address takes what you paste, and says what to fix.** An address
+copied from a browser -- `…/readyz`, or a dashboard sign-in link with its token --
+is stored as the server's address alone, lower-cased, instead of failing every
+request with "404 no route" and keeping a sign-in token in your settings. A
+missing or wrong port now says that nothing answers at that address and port,
+and that nothing was sent, instead of "cannot say whether it happened".
+**Check** answers before setup too: it asks the server without a credential
+instead of saying "not paired". A refused address is announced once, not once
+per keystroke. (#137)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

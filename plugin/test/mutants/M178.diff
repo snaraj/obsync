@@ -1,0 +1,12 @@
+# M178: Check with no address sends a request to nowhere
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -246,7 +246,7 @@
+       render: (setting) => {
+         setting
+           .addButton((button) => button.setButtonText("Check").onClick(() => {
+-            if (this.plugin.state.data.serverUrl === "") {
++            if (false) {
+               new Notice("Type your server's address in Server URL first.");
+               return;
+             }

@@ -131,12 +131,24 @@ export interface Lost {
 /** What a route that must not be repeated resolves to. */
 export type Sent<T> = { outcome: "ok"; value: T } | Lost;
 
+/** A refusal at connect, as Electron and Node word it: the request never left. */
+const REFUSED = /ERR_CONNECTION_REFUSED|ECONNREFUSED/;
+
 /**
  * What to tell the user when the caller has nothing to read back. Both
  * guesses mislead — "it failed" about a revoke that worked leaves a lost
  * device trusted — so this says what is known and that nothing was repeated.
  */
 export function lostMessage(what: string, lost: Lost): string {
+  // A connection refused on the only attempt is the one unanswered send that
+  // IS known: nothing reached the server. It is also what a missing or wrong
+  // port looks like, so the message names that (2026-09-24 battery, S08; #137).
+  if (lost.attempts === 1 && REFUSED.test(lost.reason)) {
+    return (
+      `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
+      "Check the Server URL, port included: it is the port your server publishes HTTPS on."
+    );
+  }
   return (
     `${what}: the server never answered (${lost.reason}), so obsync cannot say whether it happened. ` +
     "It was not repeated, because repeating it could act twice."

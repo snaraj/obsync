@@ -1,0 +1,12 @@
+# M175: a refused address raises a notice on every keystroke
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -204,7 +204,7 @@
+             // Once per refusal: this runs on every keystroke, and a notice a
+             // character is a storm the person has to wait out.
+             if (refusal !== null) {
+-              if (refusal !== this.shownRefusal) new Notice(refusal);
++              new Notice(refusal);
+               this.shownRefusal = refusal;
+               return;
+             }
