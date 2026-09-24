@@ -73,7 +73,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { applyChange } from "./pull";
+import { Unwritable, applyChange, unwritableText } from "./pull";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
@@ -386,6 +386,17 @@ export const SCAN_BUDGET_MS = 5000;
 export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
+/**
+ * How soon a PARKED record is tried again (issue #144): one minute, doubling
+ * to half an hour for as long as anything stays parked. A retry of a file the
+ * disk had no room for downloads it again, so a five-second loop moved 5.5 GB
+ * for one 100 MiB file in nine minutes; this moves it about twice an hour.
+ * The next start and Sync now try at once, because those are the moments the
+ * user has just fixed the cause.
+ */
+export const PARK_RETRY_MS = 60 * 1000;
+export const PARK_RETRY_MAX_MS = 30 * 60 * 1000;
+
 // The host's own timers. Obsidian runs the desktop app inside Electron, where
 // the bare globals are Node's and hand back a `Timeout` object rather than the
 // numeric handle every other Obsidian surface expects; `window` is the one
@@ -478,6 +489,11 @@ export class SyncEngine {
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
   private readonly inFlight = new Set<Promise<unknown>>();
+  /** The next pass over the parked records, and the wait it was armed with. */
+  private parkHandle: unknown = null;
+  private parkDelay = 0;
+  /** The feed and a retry pass apply one at a time, never side by side. */
+  private pulling: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -583,6 +599,10 @@ export class SyncEngine {
       this.repairHandle = this.timers.set(() => { void this.repairTick(); }, REPAIR_TICK_MS);
       host.log(`scan decision=start interval_ms=${SCAN_MS} budget_ms=${SCAN_BUDGET_MS}`);
       this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
+      // What a previous run parked is tried first, before the feed applies
+      // anything: a start is when the user has most likely just fixed the
+      // cause (issue #144).
+      void this.track(this.retryParked("start"));
       this.feed = this.track(this.feedLoop());
     }
   }
@@ -598,6 +618,9 @@ export class SyncEngine {
     this.repairHandle = null;
     if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
     this.scanHandle = null;
+    if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+    this.parkHandle = null;
+    this.parkDelay = 0;
     this.repair?.cancel();
     this.repair = null;
     this.options.host.log("engine stop");
@@ -1381,7 +1404,7 @@ export class SyncEngine {
       // same name.
       this.barriers.clear();
       this.barrierPath = null;
-      this.status({ kind: "idle" });
+      this.status(this.resting());
     } finally {
       this.draining = false;
     }
@@ -1653,18 +1676,20 @@ export class SyncEngine {
     while (this.running) {
       try {
         const page = await context.transport.changes(context.state.data.lastSeq, 55);
-        for (const change of page.changes) {
-          if (!this.running) break;
-          await applyChange(context, change);
-          context.state.data.lastSeq = change.seq;
-        }
+        await this.exclusive(async () => {
+          for (const change of page.changes) {
+            if (!this.running) break;
+            await this.receive(context, change);
+            context.state.data.lastSeq = change.seq;
+          }
+        });
         if (!this.running) {
           await context.state.save();
           return;
         }
         context.state.data.lastSeq = page.seq;
         await context.state.save();
-        if (page.changes.length > 0) this.status({ kind: "idle" });
+        if (page.changes.length > 0) this.status(this.resting());
       } catch (error) {
         if (!this.running) return;
         if (error instanceof ApiError && error.code === "seq_ahead") {
@@ -1679,6 +1704,145 @@ export class SyncEngine {
         await new Promise<void>((resolve) => this.timers.set(resolve, FEED_ERROR_BACKOFF_MS));
       }
     }
+  }
+
+  /**
+   * One pull at a time: a retry pass never applies beside the feed. A failed
+   * turn hands the next one on all the same (`then(work, work)`), so one
+   * error cannot stop every later pull.
+   */
+  private exclusive(work: () => Promise<void>): Promise<void> {
+    return (this.pulling = this.pulling.then(work, work));
+  }
+
+  /**
+   * Apply one feed record -- or PARK it, and let the feed move on (issue #144).
+   *
+   * A record THIS device cannot write, for a reason that belongs to that one
+   * file or chunk (`pull.ts`, `Unwritable`), used to be rethrown here, and the
+   * feed retried the same record every five seconds without moving its
+   * cursor: one locked note, one read-only folder, one attachment on a full
+   * disk, one chunk the server had quarantined stopped every later change from
+   * arriving, in every folder, while the status bar blamed the network. Every
+   * other failure -- the server out of reach, a refusal about this device, a
+   * state that cannot be saved -- is still thrown, and keeps the handling it
+   * had: it is no fact about one record, and parking every record behind it
+   * would only hide it.
+   *
+   * A LATER VERSION OF A PARKED FILE THAT APPLIES SETTLES IT AT ONCE: the
+   * parked record is asked of the server again, which answers with what the
+   * file is NOW -- a newer version this device already has, or a deletion --
+   * so a deleted attachment stops being retried the moment its tombstone
+   * arrives, and a fork keeps both sides as it would have in order.
+   */
+  private async receive(context: SyncContext, change: ChangeRecord): Promise<void> {
+    try {
+      await applyChange(context, change);
+    } catch (error) {
+      this.park(context, change.file_id, error);
+      return;
+    }
+    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
+  }
+
+  /**
+   * Remember a record this device could not write, with the path and the
+   * reason to name, persisted with the cursor that moves past it (`state.ts`).
+   * One notice per file, when it is first parked; a retry that fails again
+   * only updates the reason. Anything that is not `Unwritable` is thrown on.
+   */
+  private park(context: SyncContext, fileId: string, error: unknown): void {
+    if (!(error instanceof Unwritable)) throw error;
+    const parked = context.state.data.parked;
+    const known = parked[fileId] !== undefined;
+    parked[fileId] = { path: error.path, reason: error.reason };
+    this.armParkRetry();
+    // The file id and the reason, never the path: a name is vault content.
+    context.host.log(
+      `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
+        `retry_ms=${this.parkDelay}`,
+    );
+    if (!known) {
+      context.host.notify(
+        `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
+          "tried again by itself, and at once when you run Sync now after fixing it.",
+      );
+    }
+    this.status(this.resting());
+  }
+
+  /** `idle` -- unless a parked file is waiting, and then that file by name, until it lands. */
+  private resting(): EngineStatus {
+    const parked = Object.values(this.options.state.data.parked);
+    const newest = parked[parked.length - 1];
+    if (newest === undefined) return { kind: "idle" };
+    const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
+    return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
+  }
+
+  /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */
+  private armParkRetry(): void {
+    if (Object.keys(this.options.state.data.parked).length === 0) {
+      if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+      this.parkHandle = null;
+      this.parkDelay = 0;
+      return;
+    }
+    if (this.parkHandle !== null || !this.running) return;
+    this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2);
+    this.parkHandle = this.timers.set(() => {
+      this.parkHandle = null;
+      void this.track(this.retryParked("timer"));
+    }, this.parkDelay);
+  }
+
+  /** Try every parked record again: the timer's turn, the start, or Sync now. */
+  private retryParked(trigger: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.running || Object.keys(this.options.state.data.parked).length === 0) return;
+      const context = this.need();
+      const started = context.now();
+      let released = 0;
+      for (const fileId of Object.keys(context.state.data.parked)) {
+        if (!this.running) return;
+        try {
+          if (await this.retryOne(context, fileId)) released++;
+        } catch (error) {
+          // Not this record's fault, so nothing is released and nothing new
+          // is said; an unreachable server ends the pass, the next one asks.
+          context.host.log(
+            `feed decision=deferred reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} ` +
+              `file=${fileId} trigger=${trigger}`,
+          );
+          if (error instanceof ApiError && error.code === "unreachable") break;
+        }
+      }
+      await context.state.save();
+      context.host.log(
+        `feed decision=retried trigger=${trigger} released=${released} ` +
+          `parked=${Object.keys(context.state.data.parked).length} retry_ms=${this.parkDelay} ` +
+          `duration_ms=${context.now() - started}`,
+      );
+      this.status(this.resting());
+    });
+  }
+
+  /**
+   * One parked record, asked of the server as its file stands NOW (`reconcileFile`,
+   * every head this device does not hold), so a version that superseded it is
+   * what lands. True once nothing about it is left to write here.
+   */
+  private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
+    try {
+      await this.reconcileFile(fileId);
+    } catch (error) {
+      this.park(context, fileId, error);
+      return false;
+    }
+    delete context.state.data.parked[fileId];
+    this.armParkRetry();
+    context.host.log(`feed decision=released file=${fileId} parked=${Object.keys(context.state.data.parked).length}`);
+    return true;
   }
 
   // --- reconciliation, the periodic scan and the heartbeat ---------------
@@ -2298,6 +2462,7 @@ export class SyncEngine {
       `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
     );
+    await this.retryParked("sync_now");
     await this.repairTick();
   }
 

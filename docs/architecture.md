@@ -851,6 +851,22 @@ returns immediately when a new frame lands.
    decrypts, so nothing unverified is written even when record and manifest
    agree, and one batched fetch is bounded by the chunk ceiling times the
    batch size rather than by lengths another device declared.
+
+   ONE RECORD THIS DEVICE CANNOT WRITE NEVER HOLDS UP THE REST (issue #144).
+   A write the host's filesystem refuses for that one file (`EPERM`, `EBUSY`,
+   `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENAMETOOLONG`), or a chunk the
+   server does not hold (`404 unknown_chunk`, or a missing part of a batch),
+   PARKS the record: its file id, path and reason are persisted with the
+   cursor that moves past it, the status and one notice name the file and the
+   reason, and every later change keeps arriving. A parked file is retried
+   against its CURRENT heads, so a later version or a deletion is what lands:
+   one minute after it parks, doubling to half an hour, and at once at the
+   next start and on **Sync now**; a later version of it that the feed
+   applies settles it at once. A retry pass and the feed apply one at a time.
+   Anything else -- the server out of reach, a refusal about this device, an
+   I/O error -- is no fact about one record and keeps the feed's own retry.
+   The filesystem causes are recognised on desktop only: the mobile adapter's
+   errors carry no errno.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge; a clean merge posts a new version
    with both heads as parents. Anything else (binary, no ancestor,

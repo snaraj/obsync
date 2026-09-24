@@ -135,6 +135,9 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // capitalisation off a selected folder, and a barrier is a record still
     // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
     retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
+    // And a parked record, which names a version on the server being left
+    // (`sync/engine.ts`, `park`; issue #144).
+    parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
   });
 
@@ -145,7 +148,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [],
+      retiredRoots: {}, folderBarriers: [], parked: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

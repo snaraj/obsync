@@ -16,7 +16,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice } from "../main";
 import { formatBytes } from "../policy";
-import { remoteOnlyList } from "../sync/pull";
+import { remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PHRASE_WORDS,
   decodePairingCode,
@@ -704,6 +704,9 @@ export class StatusModal extends Modal {
       ["This device", data.deviceId ?? "not paired"],
       ["Vault key", data.vrk === null ? "absent" : "present"],
       ["State", this.plugin.statusText()],
+      // Every file the feed moved past because this device could not write
+      // it, by name and in plain words (issue #144).
+      ...Object.values(data.parked).map((entry): [string, string] => ["Waiting to be written", unwritableText(entry.path, entry.reason)]),
       ["Files tracked", String(Object.keys(data.files).length)],
       ["Local size", formatBytes(this.plugin.state.localBytes())],
       ["Remote only", String(Object.keys(data.remoteOnly).length)],

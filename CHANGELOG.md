@@ -113,6 +113,24 @@ nothing and say to leave the server first, and leaving now works for a device
 that was revoked or that the server no longer recognises. Same on desktop and
 mobile. (#140, #141, #143)
 
+**One file this device cannot write no longer stops everything else from
+arriving.** A note locked in Finder, a read-only folder, a full disk, or a file
+whose data the server had lost while every device holding it was closed used to
+stop this device from receiving any later change -- edits, new notes and
+deletions, in every folder -- while the status bar read `offline — retrying` or
+`idle` and nothing named the file. A full disk also downloaded the same file
+again every few seconds: 5.5 GB in nine minutes for one 100 MiB attachment. Now
+that one file waits and everything else keeps arriving. The status bar and
+**Show sync status** name it and say why, for example `Cannot write
+Notes/n17.md here: the file is locked`, and one notice says so once. It is
+tried again by itself, first after a minute and then less and less often, up to
+every half hour, and at once when Obsidian starts or when you run **Sync now**
+after fixing the cause. It is remembered across restarts. If another device
+changes the file in the meantime, the latest version is what arrives; if it
+deletes it, the file is dropped and never downloaded again. On phones and
+tablets a file whose data the server lost is handled the same way, but a write
+the phone's own storage refuses still holds up later changes as before. (#144)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

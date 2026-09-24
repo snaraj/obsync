@@ -136,6 +136,47 @@ export type ApplyResult =
   | "refused"
   | "skipped";
 
+/**
+ * Why THIS device cannot write one record, in plain words, keyed by the fixed
+ * vocabulary its log lines carry: an errno the host's filesystem raised, or a
+ * chunk the server does not hold (issue #144). Each is a fact about one file
+ * or one chunk, never about the connection, so the feed parks that record and
+ * moves on instead of retrying it in front of everything else.
+ */
+export const UNWRITABLE: Readonly<Record<string, string>> = {
+  EPERM: "the file is locked",
+  EBUSY: "the file is in use by another program",
+  EACCES: "the folder is read-only",
+  EROFS: "the disk is read-only",
+  ENOSPC: "the disk is full",
+  EDQUOT: "the disk is full",
+  ENAMETOOLONG: "its name is too long for this device",
+  unknown_chunk: "the server is missing part of it; open a device that has it",
+};
+
+/** What the status bar, the notice and Show sync status say about one parked file. */
+export function unwritableText(path: string, reason: string): string {
+  return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
+}
+
+/** A record this device cannot write for a reason local to that one file or chunk. */
+export class Unwritable extends Error {
+  constructor(readonly path: string, readonly reason: string) {
+    super(`unwritable: ${reason}`);
+    this.name = "Unwritable";
+  }
+}
+
+/**
+ * The `UNWRITABLE` key for a failure, or `null` for one that is not this
+ * record's alone. Node's `fs` errors carry their errno as `code`, and so does
+ * an `ApiError` its server code; nothing else the pull path throws has one.
+ */
+function unwritable(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && Object.hasOwn(UNWRITABLE, code) ? code : null;
+}
+
 /** A decrypted manifest that does not describe a file this device may write. */
 export class ManifestError extends Error {
   constructor(readonly reason: string) {
@@ -528,7 +569,9 @@ async function* chunkPlaintexts(context: SyncContext, manifest: Manifest, contro
     for (let i = 0; i < batch.length; i++) {
       const body = bodies[i];
       const chunk = batch[i] as ManifestChunk;
-      if (!body) throw new Error(`pull: chunk ${chunk.sid} is missing on the server`);
+      // The batch's word for the single fetch's `404 unknown_chunk`, and the
+      // same refusal: one missing chunk parks one file (issue #144).
+      if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
       const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
       if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
       control?.check();
@@ -766,7 +809,14 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
   }
   if (change.device_id === context.deviceId) return "echo";
   try {
-    return await applyVersion(context, change);
+    const entry = await decodeRecordManifest(context, change);
+    return await applyVersion(context, change, entry).catch((error: unknown) => {
+      // A write THIS device's disk refused, or a chunk the server does not
+      // hold: a fact about this one record, named with the path it was for,
+      // so the feed can park it and keep the rest arriving (issue #144).
+      const reason = unwritable(error);
+      throw reason === null ? error : new Unwritable(entry.path, reason);
+    });
   } catch (error) {
     // Both refusals are the same decision to the user: this version does not
     // name a file this device may write, by its text (`ManifestError`) or by
@@ -1185,8 +1235,7 @@ function notifyFolderCase(context: SyncContext, folder: string): void {
   );
 }
 
-async function applyVersion(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
-  const entry = await decodeRecordManifest(context, change);
+async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest): Promise<ApplyResult> {
   if (entry.v === 2) return await applyFolder(context, change, entry);
   const manifest = entry;
   // `let`, because a case-only move renames the entry and then continues

@@ -1,0 +1,12 @@
+# M235: a retry pass writes files while the feed is still writing its own, side by side
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1659,7 +1659,7 @@
+    * error cannot stop every later pull.
+    */
+   private exclusive(work: () => Promise<void>): Promise<void> {
+-    return (this.pulling = this.pulling.then(work, work));
++    return (this.pulling = work());
+   }
+ 
+   /**

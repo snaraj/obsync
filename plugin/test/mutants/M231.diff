@@ -1,0 +1,12 @@
+# M231: a full disk re-downloads the parked file every minute, forever
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1736,7 +1736,7 @@
+       return;
+     }
+     if (this.parkHandle !== null || !this.running) return;
+-    this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2);
++    this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay);
+     this.parkHandle = this.timers.set(() => {
+       this.parkHandle = null;
+       void this.track(this.retryParked("timer"));

@@ -1,0 +1,12 @@
+# M222: a parked file with a damaged reason is named as "Cannot write X here: undefined"
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -156,7 +156,7 @@
+ 
+ /** What the status bar, the notice and Show sync status say about one parked file. */
+ export function unwritableText(path: string, reason: string): string {
+-  return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
++  return `Cannot write ${path} here: ${UNWRITABLE[reason]}`;
+ }
+ 
+ /** A record this device cannot write for a reason local to that one file or chunk. */

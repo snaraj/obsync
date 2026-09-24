@@ -19,7 +19,7 @@
 import { Policy, defaultPolicy } from "./policy";
 import { isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
-import { hex, randomBytes } from "./crypto";
+import { hex, isHex, randomBytes } from "./crypto";
 
 /** The supported native API surface; deliberately no enumeration method. */
 export interface SecretStore {
@@ -73,6 +73,12 @@ export interface RemoteOnlyRecord {
   size: number;
 }
 
+export interface ParkedRecord {
+  path: string;
+  /** The `UNWRITABLE` key (`sync/pull.ts`): an errno, or `unknown_chunk`. */
+  reason: string;
+}
+
 export interface EdgeHeader {
   name: string;
   value: string;
@@ -122,6 +128,14 @@ export interface ObsyncData {
    * the moves went out in front of it (review round 4, finding 3).
    */
   folderBarriers: string[];
+  /**
+   * File id to a record the feed moved past because THIS device could not
+   * write it -- a locked note, a read-only folder, a full disk, a chunk the
+   * server does not hold -- with the path and the reason to show
+   * (`sync/engine.ts`, `park`; issue #144). Persisted with the cursor that
+   * skipped it: forgetting it would lose that change on this device for good.
+   */
+  parked: Record<string, ParkedRecord>;
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
@@ -141,6 +155,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     remoteOnly: {},
     retiredRoots: {},
     folderBarriers: [],
+    parked: {},
     policy: defaultPolicy(isMobile),
   };
 }
@@ -278,6 +293,15 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
     for (const path of barriers as unknown[]) {
       if (!isVaultPath(path) || data.folderBarriers.includes(path)) continue;
       data.folderBarriers.push(path);
+    }
+  }
+  const parked = loaded["parked"];
+  if (isRecord(parked)) {
+    for (const [fileId, record] of Object.entries(parked)) {
+      // The file id goes into a request path and the path onto the screen;
+      // the reason only chooses words, so a damaged one keeps the record.
+      if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
+      data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
     }
   }
   const remoteOnly = loaded["remoteOnly"];
@@ -474,6 +498,8 @@ export class State {
     // about.
     this.data.retiredRoots = {};
     this.data.folderBarriers = [];
+    // And a parked record, which names a version on the server being left.
+    this.data.parked = {};
     this.data.remoteOnly = {};
   }
 
