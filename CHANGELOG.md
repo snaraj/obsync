@@ -5,7 +5,21 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.1.3 - unreleased
+## 1.1.3 - Unreleased
+
+**A note deleted on another device goes where your "Deleted files" setting
+says.** Since 1.1.0, on a computer, a note deleted on another device was
+removed for good: it was in neither Obsidian's `.trash` folder nor the system
+Trash, whatever **Settings → Files and links → Deleted files** said (found in
+the 2026-09-24 scenario run). It now goes, under its own name, to the system
+Trash, to the vault's `.trash` folder, or away permanently, exactly as that
+setting says; if the system Trash refuses it, it goes to `.trash`, never
+nowhere. The same holds for the old copy obsync clears away when another
+device renames a note or when two notes collide and one is moved aside, so
+your bin can now hold a copy of a note that is still in the vault under its
+new name. Phones and tablets were never affected. A note removed this way on
+1.1.2 or earlier can be brought back with **Restore from history**: search for
+its name and select **Restore a copy** on its last version.
 
 **A plain `http` server address is refused on desktops too.** A desktop used to
 accept an address starting `http://` and, in front of a server that redirects to

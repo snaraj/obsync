@@ -29,8 +29,9 @@
  * their response (5771836148) asked for: the paths where the host CANNOT
  * hold the file -- a phone, and a filesystem that refuses a second name --
  * and a save that replaces the source inode instead of writing into it.
- * Every removal here is permanent: the vault's "Deleted files" preference is
- * set to delete, so nothing is recoverable from a bin afterwards.
+ * Every removal here is permanent unless a test says otherwise: the vault's
+ * "Deleted files" preference is set to delete, so nothing is recoverable from
+ * a bin afterwards. The issue #138 tests set the other two.
  */
 
 import { strict as assert } from "node:assert";
@@ -45,6 +46,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -69,18 +71,35 @@ const LOWER = "11".repeat(16);
  * A real vault directory under the real host, wired into the rig's state,
  * server and keys. `hooks` fire INSIDE the host's own filesystem calls.
  */
-async function native(t, hooks = {}, { mobile = false } = {}) {
+async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = {}) {
   const r = await rig({ isMobile: mobile });
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-native-"));
+  // The system bin is outside the vault, as the operating system's is.
+  const systemBin = mkdtempSync(join(tmpdir(), "obsync-system-bin-"));
   mkdirSync(join(root, "Notes"));
   t.after(() => {
     rmSync(root, { recursive: true, force: true });
+    rmSync(systemBin, { recursive: true, force: true });
     rmSync(box.home, { recursive: true, force: true });
   });
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const logs = [];
   const trashed = [];
+  /**
+   * Every destructive call lands here, whichever primitive made it: the
+   * vault's `trashFile`, or the adapter's `remove`, `trashSystem` and
+   * `trashLocal`. A bin keeps the file under its own name and nothing else,
+   * flat, as Obsidian's `.trash` and the system bin both do.
+   */
+  const bin = async (path, where) => {
+    if (hooks.beforeTrash) await hooks.beforeTrash(root, path);
+    trashed.push({ path, bytes: readFileSync(join(root, path), "utf8"), bin: where });
+    if (where === "none") return fsPromises.unlink(join(root, path));
+    const into = where === "system" ? systemBin : join(root, ".trash");
+    mkdirSync(into, { recursive: true });
+    await fsPromises.rename(join(root, path), join(into, path.slice(path.lastIndexOf("/") + 1)));
+  };
   const promises = {
     ...fsPromises,
     unlink: async (path) => {
@@ -129,7 +148,17 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
       writeFileSync(join(root, path), new Uint8Array(data));
       if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
     },
-    remove: (path) => fsPromises.unlink(join(root, path)),
+    // The adapter's three removals. The system bin can be refused -- it is
+    // absent or disabled on some hosts -- and says so with `false`, or here
+    // also with a throw.
+    remove: (path) => bin(path, "none"),
+    trashLocal: (path) => bin(path, "local"),
+    trashSystem: async (path) => {
+      if (hooks.systemBin === "false") return false;
+      if (hooks.systemBin === "throws") throw new Error("system bin unavailable");
+      await bin(path, "system");
+      return true;
+    },
     // The adapter's own directory listing, which is how a PHONE asks what a
     // vault really spells a name (`ObsidianHost.spelling`): one level, with
     // vault-relative paths, exactly as Obsidian answers it. Absent here, this
@@ -146,7 +175,18 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
     },
   };
   const vault = {
-    getFileByPath: (path) => (existsSync(join(root, path)) ? { path } : null),
+    // Obsidian indexes no name with a dot-named component (checked on a real
+    // 1.13.4: a file at `Phone/.obsync-gone-probe.tmp` exists on disk and
+    // `getFileByPath` answers `null`). A fake that indexed them hid issue
+    // #138: every bound removal reached the vault by a hidden name.
+    getFileByPath: (path) =>
+      path.split("/").some((part) => part.startsWith(".")) || !existsSync(join(root, path)) ? null : { path },
+    // The "Deleted files" preference: "unset" answers `undefined`, as a vault
+    // whose preference was never changed may; "absent" models an Obsidian
+    // that no longer offers this lookup at all.
+    ...(trashOption === "absent"
+      ? {}
+      : { getConfig: (key) => (key === "trashOption" && trashOption !== "unset" ? trashOption : undefined) }),
     adapter,
     createBinary: async (path, data, options) => {
       writeFileSync(join(root, path), new Uint8Array(data), { flag: "wx" });
@@ -161,13 +201,12 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
     app: {
       vault,
       fileManager: {
-        // The vault's own trash, with the user's "Deleted files" preference
-        // set to PERMANENT: no bin, no restore, the name and its inode gone
-        // unless something else is holding it.
+        // The vault's own trash, after the user's "Deleted files" preference:
+        // by default here PERMANENT -- no bin, no restore, the name and its
+        // inode gone unless something else is holding it.
         trashFile: async (file) => {
-          if (hooks.beforeTrash) await hooks.beforeTrash(root, file.path);
-          trashed.push({ path: file.path, bytes: readFileSync(join(root, file.path), "utf8") });
-          await fsPromises.unlink(join(root, file.path));
+          if (trashOption === "none") return adapter.remove(file.path);
+          if (trashOption === "local" || !(await adapter.trashSystem(file.path))) await adapter.trashLocal(file.path);
         },
       },
     },
@@ -189,7 +228,7 @@ async function native(t, hooks = {}, { mobile = false } = {}) {
       .filter((name) => !name.startsWith("."))
       .map((name) => readFileSync(join(root, "Notes", name), "utf8"));
   const hidden = () => readdirSync(join(root, "Notes")).filter((name) => name.startsWith("."));
-  return { ...r, root, host, seed, contents, hidden, logs, trashed, notices };
+  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices };
 }
 
 /**
@@ -797,6 +836,146 @@ test("review: a descriptor save after the final hold stat remains reachable", as
   const allFiles = readdirSync(join(r.root, "Notes")).map(name => ({ name, text: readFileSync(join(r.root, "Notes", name), "utf8") }));
   assert.ok(allFiles.some(file => file.text === EDIT),
     `descriptor save lost after final check; result=${result}; files=${JSON.stringify(allFiles)}; logs=${JSON.stringify(r.logs)}`);
+});
+
+// --- where a bound removal goes (issue #138) ------------------------------
+
+/**
+ * A NOTE ANOTHER DEVICE DELETED GOES WHERE "DELETED FILES" SAYS, under its
+ * own name. The bound removal moves the note to a hidden name before anything
+ * is deleted, and Obsidian indexes no hidden name, so the call that honours
+ * the preference -- `FileManager.trashFile` -- is never reachable by that
+ * name. Through 1.1.2 the host fell to the adapter's permanent `remove`
+ * instead: every remote deletion on a desktop was permanent, whatever the
+ * setting said (the 2026-09-24 battery, S10). A sibling note keeps `Notes`
+ * from being pruned, so what is left in it afterwards can be read.
+ */
+async function deleteRemotely(r) {
+  r.seed("Notes/Keep.md", "SIBLING SENTINEL\n", 1000);
+  r.seed(NOTE, MINE, 2000);
+  await pushFile(r.context, NOTE);
+  const live = r.state.fileByPath(NOTE);
+  const tombstone = await r.server.publishTombstone({
+    fileId: live.fileId,
+    path: NOTE,
+    manifestKey: r.keys.manifestKey,
+    parents: [live.versionId],
+  });
+  return await applyChange(r.context, tombstone);
+}
+
+/** The note's text in each place a removal can put it, by its own name. */
+function whereItWent(r) {
+  const at = (path) => (existsSync(path) ? readFileSync(path, "utf8") : null);
+  return { vault: at(join(r.root, NOTE)), local: at(join(r.root, ".trash", "Same.md")), system: at(join(r.systemBin, "Same.md")) };
+}
+
+for (const [trashOption, bin] of [["local", "local"], ["system", "system"], ["unset", "system"], ["absent", "system"], ["none", "none"]]) {
+  const named = trashOption === "unset" ? "never set" : trashOption === "absent" ? "unreadable" : `"${trashOption}"`;
+  test(`a note deleted on another device goes where "Deleted files" says: ${named}`, async (t) => {
+    const r = await native(t, {}, { trashOption });
+
+    assert.equal(await deleteRemotely(r), "deleted");
+
+    assert.deepEqual(
+      whereItWent(r),
+      { vault: null, local: bin === "local" ? MINE : null, system: bin === "system" ? MINE : null },
+      `trashed=${JSON.stringify(r.trashed)}; logs=${JSON.stringify(r.logs)}`,
+    );
+    assert.deepEqual(r.trashed.map((entry) => entry.bin), [bin], "the removal was not made once, into that bin");
+    assert.ok(
+      r.logs.includes(`host path_class=file decision=trashed bin=${bin}`),
+      `the host did not say where the note went: ${JSON.stringify(r.logs)}`,
+    );
+    assert.deepEqual(r.hidden(), [], "a hold or the removal's hidden folder was left behind");
+  });
+}
+
+/**
+ * A SYSTEM BIN THAT REFUSES. Some hosts have none, or have it disabled; the
+ * adapter answers `false`. Obsidian's own trash then falls back to the vault's
+ * `.trash`, and so does this: a refusal is never read as leave to delete.
+ */
+for (const refusal of ["false", "throws"]) {
+  test(`a system bin that refuses (${refusal}) sends the note to the vault's .trash instead`, async (t) => {
+    const r = await native(t, { systemBin: refusal }, { trashOption: "system" });
+
+    assert.equal(await deleteRemotely(r), "deleted");
+
+    assert.deepEqual(whereItWent(r), { vault: null, local: MINE, system: null }, JSON.stringify(r.logs));
+    assert.deepEqual(r.trashed.map((entry) => entry.bin), ["local"]);
+    assert.ok(
+      r.logs.includes("host path_class=file decision=trashed bin=local reason=system_refused"),
+      `the fallback was not reported: ${JSON.stringify(r.logs)}`,
+    );
+    assert.deepEqual(r.hidden(), [], "a hold or the removal's hidden folder was left behind");
+  });
+}
+
+/**
+ * The hidden folder is removed only while it is empty. Anything else that
+ * lands in it during the removal stays where it is, and the log says so.
+ */
+test("a hidden folder something else wrote into is kept, and reported", async (t) => {
+  const r = await native(
+    t,
+    { beforeTrash: async (root, path) => writeFileSync(join(root, nodePath.dirname(path), "stray"), "STRAY SENTINEL\n") },
+    { trashOption: "local" },
+  );
+
+  assert.equal(await deleteRemotely(r), "deleted");
+
+  assert.equal(whereItWent(r).local, MINE);
+  const left = r.hidden().filter((name) => name.startsWith(".obsync-gone-"));
+  assert.equal(left.length, 1, `the folder was not kept: ${JSON.stringify(r.hidden())}`);
+  assert.equal(readFileSync(join(r.root, "Notes", left[0], "stray"), "utf8"), "STRAY SENTINEL\n");
+  assert.ok(
+    r.logs.includes("host path_class=folder decision=kept reason=rmdir_refused"),
+    `the kept folder was not reported: ${JSON.stringify(r.logs)}`,
+  );
+});
+
+/**
+ * THE HIDDEN FOLDER IS PART OF THE CHAIN. It is a directory this removal
+ * made, and the vault's deletion is aimed through it, so it is proved the
+ * way every directory above it is: a link put in its place -- here, before
+ * the move goes through it -- refuses the removal, and nothing is handed to
+ * the vault's deletion by a name that leads out of the vault.
+ */
+test("a hidden folder swapped for a link refuses the removal", async (t) => {
+  const outside = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  let swapped = false;
+  const r = await native(
+    t,
+    {
+      beforeRename: async (root, from, to) => {
+        const folder = nodePath.dirname(to);
+        if (swapped || !nodePath.basename(folder).startsWith(".obsync-gone-")) return;
+        swapped = true;
+        rmSync(folder, { recursive: true });
+        symlinkSync(outside, folder);
+      },
+    },
+    { trashOption: "local" },
+  );
+  r.seed(NOTE, MINE, 2000);
+  const stat = statSync(join(r.root, NOTE));
+
+  await assert.rejects(
+    r.host.trash(NOTE, { path: NOTE, mtime: Math.round(stat.mtimeMs), size: stat.size }),
+    (error) => error.refusal === "symlink_component",
+  );
+
+  assert.ok(swapped, "the test never reached the move it exists for");
+  assert.deepEqual(r.trashed, [], "the vault's deletion was aimed through a link out of the vault");
+  assert.ok(
+    r.logs.includes("host path_class=file decision=restore_failed reason=chain"),
+    `the refusal was not reported: ${JSON.stringify(r.logs)}`,
+  );
+  // And the hold still names the note inside the vault.
+  const held = r.hidden().filter((name) => name.startsWith(".obsync-hold-"));
+  assert.deepEqual(held.map((name) => readFileSync(join(r.root, "Notes", name), "utf8")), [MINE]);
 });
 
 // --- the case-only rename on the real host (issue #124) -----------------

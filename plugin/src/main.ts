@@ -1082,8 +1082,8 @@ export class ObsidianHost implements VaultHost {
    * then compared with what was copied, by device and inode as well as by
    * metadata; a mismatch means a replacement moved instead, and it is put
    * BACK under the vault name (or kept beside it) and answered `kept`. Only
-   * an entry that matches is handed to the vault's own deletion, by its
-   * hidden name, where no editor is writing.
+   * an entry that matches is handed to the vault's own deletion, from a
+   * hidden folder where no editor is writing, under its own name.
    *
    * Mobile has no second name to give, and a filesystem can refuse either
    * primitive. Those devices remove NOTHING and answer `unheld`, which is
@@ -1122,14 +1122,32 @@ export class ObsidianHost implements VaultHost {
    * the system bin. The file lookup is file-only on purpose: a folder
    * standing where a remote manifest names a file must never be deleted with
    * its contents.
+   *
+   * A NAME THE VAULT HAS NOT INDEXED GETS THE SAME PREFERENCE. Obsidian
+   * indexes no dot-named path, so every bound removal arrives here by a
+   * hidden one (`removeHeld`), and through 1.1.2 each was deleted outright
+   * whatever the setting said (issue #138). The preference is read where
+   * `trashFile` reads it and applied as `Vault.trash` applies it: a system
+   * bin that refuses falls back to `.trash`. Only "none" deletes; a value
+   * that is absent, unreadable or unknown is the default, the system bin.
    */
   private async remove(path: string): Promise<void> {
-    const file = this.plugin.app.vault.getFileByPath(path);
+    const vault = this.plugin.app.vault;
+    const file = vault.getFileByPath(path);
     if (file) {
       await this.plugin.app.fileManager.trashFile(file);
-    } else {
-      await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
+      return;
     }
+    const option = (vault as App["vault"] & { getConfig?(key: string): unknown }).getConfig?.("trashOption");
+    let bin = "system";
+    if (option === "none") {
+      await vault.adapter.remove(path);
+      bin = "none";
+    } else if (option === "local" || !(await vault.adapter.trashSystem(path).catch(() => false))) {
+      await vault.adapter.trashLocal(path);
+      bin = option === "local" ? "local" : "local reason=system_refused";
+    }
+    this.log(`host path_class=file decision=trashed bin=${bin}`);
   }
 
   /** The removal went where it was aimed: the chain held and the file is gone. */
@@ -1157,11 +1175,11 @@ export class ObsidianHost implements VaultHost {
    * holds bytes no version holds, so it goes back under the vault name, or
    * beside it when the name has been taken again, and the answer is `kept`.
    *
-   * Only a match is handed to the vault's own deletion, by the hidden name.
-   * A vault that does not index that name deletes it outright rather than
-   * moving it to the user's bin; by then its bytes are the ones this device
-   * has already published beside it, so what the "Deleted files" preference
-   * governs -- the note the user keeps -- is untouched.
+   * Only a match is handed to the vault's own deletion, from a hidden folder
+   * made for this removal and under the note's own name: hidden, so no
+   * editor writes there, and its own name, because that is the name the
+   * user's bin shows. Obsidian indexes neither, so `remove` applies the
+   * "Deleted files" preference itself (issue #138).
    */
   private async removeHeld(
     desktop: DesktopVault,
@@ -1181,14 +1199,25 @@ export class ObsidianHost implements VaultHost {
       this.log("host path_class=file decision=kept reason=hold_gone");
       return "kept";
     }
-    const name = `.obsync-gone-${hex(randomBytes(8))}.tmp`;
-    const moved = `${found.target.slice(0, found.target.lastIndexOf(desktop.path.sep))}${desktop.path.sep}${name}`;
+    // Into a hidden folder made for this removal alone, under the note's own
+    // name: the name is what the user's bin will show it by (issue #138).
+    const at = found.target.lastIndexOf(desktop.path.sep);
+    const name = `.obsync-gone-${hex(randomBytes(8))}`;
+    const folder = `${found.target.slice(0, at)}${desktop.path.sep}${name}`;
+    const moved = `${folder}${found.target.slice(at)}`;
+    let chain = found.chain;
     try {
+      await fs.promises.mkdir(folder, { recursive: false });
+      // A directory the vault's deletion is aimed through, so it joins the
+      // chain every later proof walks.
+      const made = await fs.promises.lstat(folder);
+      chain = [...found.chain, { path: folder, dev: made.dev, ino: made.ino }];
       await fs.promises.rename(found.target, moved);
     } catch {
       // Nothing moved, so nothing is removed and the name is still the
       // user's. A host that cannot make this move cannot make the promise.
       this.log("host path_class=file decision=kept reason=move_refused");
+      await fs.promises.rmdir(folder).catch(() => undefined);
       await drop();
       return "unheld";
     }
@@ -1202,11 +1231,12 @@ export class ObsidianHost implements VaultHost {
       // those bytes are reachable.
       if (await this.putBack(desktop, moved, found.target)) {
         await fs.promises.unlink(moved).catch(() => undefined);
+        await fs.promises.rmdir(folder).catch(() => undefined);
         await drop();
       }
       return "kept";
     }
-    const refusal = await chainRefusal(found.chain, walker(fs));
+    const refusal = await chainRefusal(chain, walker(fs));
     if (refusal !== null) {
       // Putting a file back through a chain that was swapped under us is how
       // a restore writes outside the vault, so the bytes stay where they are
@@ -1215,7 +1245,9 @@ export class ObsidianHost implements VaultHost {
       throw new VaultPathError(refusal);
     }
     // The destructive call, at last, and aimed at a name no editor writes to.
-    await this.remove(`${path.slice(0, path.lastIndexOf("/") + 1)}${name}`);
+    const slash = path.lastIndexOf("/") + 1;
+    await this.remove(`${path.slice(0, slash)}${name}/${path.slice(slash)}`);
+    await fs.promises.rmdir(folder).catch(() => this.log("host path_class=folder decision=kept reason=rmdir_refused"));
     // And the hold has the last word, because a rename does not close an
     // editor's DESCRIPTOR: a program that still holds the file open writes
     // through it wherever its name has gone, including between the proof

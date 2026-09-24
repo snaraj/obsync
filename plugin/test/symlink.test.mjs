@@ -89,6 +89,9 @@ async function vault({ fs: injected } = {}) {
         getFileByPath: () => null,
         getFolderByPath: () => null,
         getAllFolders: () => [],
+        // "Deleted files: permanently delete", so what the cache does not
+        // know reaches the adapter's own `remove` (issue #138).
+        getConfig: (key) => (key === "trashOption" ? "none" : undefined),
       },
       fileManager: { trashFile: async () => assert.fail("the vault cache had no entry to trash") },
     },

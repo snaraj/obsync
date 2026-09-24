@@ -733,10 +733,11 @@ returns immediately when a new frame lands.
    second name with `link`, so the inode outlives whatever the vault's
    "Deleted files" preference does with the first -- including permanent
    deletion, which is an unlink of the name it is not holding. The vault name
-   itself is then MOVED: one atomic `rename` to a hidden name in the same
-   directory, which takes whatever inode stands at that name in that instant
-   and leaves the name FREE. No check can bind a path-based destructive
-   call -- whatever a check found, the name can be replaced before the call
+   itself is then MOVED: one atomic `rename` into a hidden folder made for
+   this removal in the same directory, keeping the note's own name, which
+   takes whatever inode stands at that name in that instant and leaves the
+   name FREE. No check can bind a path-based destructive call -- whatever a
+   check found, the name can be replaced before the call
    reaches it -- so the check is moved to the far side of the rename, where
    it is about a file nothing else can reach. What MOVED is compared with
    what the caller copied: device and inode from the hold, size and
@@ -745,12 +746,14 @@ returns immediately when a new frame lands.
    leaves a DIFFERENT file there -- so what moved is renamed back under the
    vault name, or kept beside it under a visible name when that name has
    been taken again, and the answer is `kept`. Only a match is handed to the
-   vault's own deletion, BY THE HIDDEN NAME, so the destructive call cannot
-   reach a file an editor has since created at the vault name. A vault that
-   does not index that hidden name deletes it outright rather than moving it
-   to the user's bin; by then its bytes are the ones this device has already
-   published beside it, so the note the "Deleted files" preference is about
-   is untouched. Afterwards the hold still has the last word, because a
+   vault's own deletion, FROM THE HIDDEN FOLDER, so the destructive call
+   cannot reach a file an editor has since created at the vault name, and
+   under the note's own name, because that is the name the user's bin shows.
+   Obsidian indexes no dot-named path, so the host applies the "Deleted
+   files" preference itself, as `FileManager.trashFile` would: the system
+   bin, falling back to the vault's `.trash` when the system refuses; the
+   vault's `.trash`; or a permanent deletion only when that is the setting
+   (issue #138). Afterwards the hold still has the last word, because a
    rename does not close an editor's DESCRIPTOR: a program that still holds
    the file open writes through it wherever its name has gone, including
    between the proof and the removal, and including between this device's
