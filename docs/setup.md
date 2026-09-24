@@ -8,7 +8,7 @@ Every setup has the same three parts:
 
 Only the last part differs between setups. Pick the row that matches how you want to sync, then follow its guide.
 
-Not sure? Start with **Same network**. The [Quickstart](quickstart.md) takes you from nothing to two devices in sync, with a screenshot of each step in the plugin.
+Not sure? Start with **Same network**: [Same network, step by step](same-network.md) shows every screen, phone included. The [Quickstart](quickstart.md) takes you from nothing to two devices in sync, with a screenshot of each step in the plugin.
 
 ## The setups
 
@@ -19,7 +19,7 @@ Not sure? Start with **Same network**. The [Quickstart](quickstart.md) takes you
 
 | Setup | Syncs when | You need | Proven |
 | --- | --- | --- | --- |
-| **Same network:** [Compose with Caddy](server.md#any-network-no-provider-compose-with-caddy) | Your devices are on the same network as the server | A computer with Docker. One certificate trusted per device | CI runs the guide. Recorded run: macOS and iPhone, [2026-09-14](validation-runs/2026-09-14.md) |
+| **Same network:** [step by step](same-network.md), or [Compose with Caddy](server.md#any-network-no-provider-compose-with-caddy) in brief | Your devices are on the same network as the server | A computer with Docker. One certificate trusted per device | CI runs the guide. Recorded runs: macOS and iPhone, [2026-09-14](validation-runs/2026-09-14.md) and [2026-09-23](validation-runs/2026-09-23.md), the second with a Mac laptop as the server |
 | **Side by side, no Wi-Fi:** the same-network setup on one device's personal hotspot | Both devices are on that hotspot | As above, with the server's computer joined to the hotspot | Not yet recorded |
 | **Private route to a cluster:** [Kubernetes](kubernetes.md), reached through [a private route](cloudflare.md#shape-a-a-private-route-and-the-cloudflare-one-client) | The device's private-network client is connected | A Kubernetes node, and the private-network client on each device | CI installs the chart. Recorded runs: macOS and iPhone, [2026-09-20](validation-runs/2026-09-20.md) and [2026-09-21](validation-runs/2026-09-21.md) |
 | **Your own VPN:** WireGuard or Tailscale to either server above | The VPN is connected | A VPN on every device, plus [what a roaming device needs](server.md#reaching-it-from-outside-your-lan) | Not yet recorded |

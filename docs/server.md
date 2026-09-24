@@ -240,10 +240,14 @@ Copy `obsync-root.crt` to each device and install it:
   /usr/local/share/ca-certificates/obsync-root.crt`, then `sudo
   update-ca-certificates`. On Fedora and its relatives the directory is
   `/etc/pki/ca-trust/source/anchors/` and the command is `update-ca-trust`.
-- **iOS and iPadOS:** mail or AirDrop the file to the device, open it, then
-  Settings, Profile Downloaded, Install. Trust is a SECOND step and Obsidian
-  fails without it: Settings, General, About, Certificate Trust Settings,
-  and turn the certificate on.
+- **iOS and iPadOS:** send the file to the device by AirDrop, mail or the
+  Files app, then open it. If AirDrop saved it to Files without asking
+  anything, open it from the Files app. When iOS asks which device should
+  install it, choose the phone. Then Settings, General, VPN & Device
+  Management, the downloaded profile, Install. Trust is a SECOND step and
+  Obsidian fails without it: Settings, General, About, Certificate Trust
+  Settings, and turn the certificate on. Every screen is in
+  [Same network, step by step](same-network.md#trust-the-certificate-on-the-phone).
 - **Android:** Settings, Security, Encryption & credentials, Install a
   certificate, CA certificate. Android keeps user-installed authorities
   separate from the system ones and an app may decline to trust them; if

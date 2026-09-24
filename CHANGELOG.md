@@ -48,6 +48,15 @@ every device; the copy it makes can simply be deleted. Each settlement writes
 one `decision=converged` line naming the id that kept the name and the id
 retired (#131).
 
+**Same network, step by step.** A new guide,
+[Same network, step by step](docs/same-network.md), shows every screen of the
+most common setup: one computer at home runs the server and the phone syncs
+over the same Wi-Fi, with no tunnel, VPN or domain. It covers the computer's
+firewall, and the iPhone certificate install screen by screen, which the old
+one-line instruction got wrong: an AirDropped certificate lands in Files and
+is installed from Settings, General, VPN & Device Management. It is the path
+recorded in the [2026-09-23 run](docs/validation-runs/2026-09-23.md).
+
 ## 1.1.1 - 2026-09-23
 
 **The setup guide is one press away, and it says which setups are proven.**
