@@ -126,6 +126,17 @@ import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, retire
 const BATCH_BYTES = 32 << 20;
 const BATCH_SIDS = Math.max(1, Math.floor(BATCH_BYTES / CHUNK_CIPHERTEXT_MAX));
 
+/**
+ * How long after this device last published an edit of a note a deletion of
+ * it, arriving while the note is open in an editor here, is still
+ * delete-versus-edit and not a deletion (issue #146). Obsidian saves an editor
+ * two seconds after a keystroke and the queue publishes the save about a
+ * second later, so a user typing in the note publishes every few seconds;
+ * this is several of those, which is "still typing" and not "stopped a while
+ * ago". Unsaved text in the editor is kept whatever this says (`openEditing`).
+ */
+export const EDITING_WINDOW_MS = 10_000;
+
 export type ApplyResult =
   | "echo"
   | "applied"
@@ -1193,6 +1204,42 @@ async function competing(
 }
 
 /**
+ * Is the note a tombstone would remove open in an editor here and being typed
+ * in (issue #146)? `null` when no editor shows it; otherwise the fields its
+ * log line carries and whether it is held.
+ *
+ * `competing` sees the FILE, and the newest keystrokes are not in it: Obsidian
+ * keeps them in the editor until its debounced save, so a deletion that
+ * fast-forwards over the version the editor last saved passed every check and
+ * took the note from under the cursor. Held means the editor holds text the
+ * file does not, or this device published an edit of the note inside
+ * `EDITING_WINDOW_MS`. The second half is the ENGINE's to answer, not the
+ * editor's: an editor also changes when a pulled version is merged into it, and
+ * only the push queue's own record (`pushedAt`) says the change came from here.
+ *
+ * Only a tombstone whose parent IS the version this device holds is asked
+ * about. One that reaches it across versions this device never applied deletes
+ * text newer than this file, and publishing the file again would put the older
+ * text back over it.
+ */
+async function openEditing(
+  context: SyncContext,
+  path: string,
+  local: FileState,
+  change: ChangeRecord,
+): Promise<{ held: boolean; fields: string } | null> {
+  if (!change.parents.includes(local.versionId)) return null;
+  const editor = await context.host.editing(path);
+  if (editor === null) return null;
+  const at = context.pushedAt.get(path);
+  const age = at === undefined ? -1 : context.now() - at;
+  return {
+    held: editor === "unsaved" || (at !== undefined && age <= EDITING_WINDOW_MS),
+    fields: ` editor=${editor} age_ms=${age} budget_ms=${EDITING_WINDOW_MS}`,
+  };
+}
+
+/**
  * A deletion this device declined to apply, said once per file. The note is
  * still there and still the user's, so the message says what happened rather
  * than what failed -- and WHY, in the words that are true here (issue #173):
@@ -1299,16 +1346,27 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       // bytes it keeps are already on the server and a second publication
       // would add a version that says nothing new. This branch is the one
       // that holds bytes no version holds.
-      const held = await competing(context, localPath, change.file_id);
+      //
+      // AND THE EDITOR IS ONE PLACE THOSE BYTES LIVE (issue #146): a note
+      // open and being typed in holds its newest keystrokes there until the
+      // next save, so it is kept and published again the same way.
+      let held: string | null = await competing(context, localPath, change.file_id);
+      const editing = held === null && local !== undefined ? await openEditing(context, localPath, local, change) : null;
+      if (editing?.held === true) held = "open_editing";
+      const open = editing?.fields ?? "";
       if (held !== null) {
         const started = context.now();
         const revived = await pushFile(context, localPath, true);
         if (revived.status === "pushed") context.authored.add(revived.versionId);
         context.host.log(
-          `pull path_class=tombstone decision=local_edit_kept reason=${held} published=${revived.status} ` +
+          `pull path_class=tombstone decision=local_edit_kept reason=${held}${open} published=${revived.status} ` +
             `file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started}`,
         );
         if (revived.status === "pushed") {
+          // Told, once per file (`notifyKeptDeletion`): the revive sits beside
+          // the tombstone, so this device's next save of the note meets the
+          // same deletion again, through the fork guard.
+          context.refused.add(change.file_id);
           context.host.notify(
             `obsync: "${localPath}" was deleted on another device after this one changed it. ` +
               "The copy here was kept and published again, so it is back on every device.",
@@ -1359,7 +1417,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       }
       context.state.forgetPath(localPath);
       await context.state.save();
-      context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}`);
+      context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}${open}`);
       await pruneEmptyParents(context, localPath);
       return "deleted";
     }

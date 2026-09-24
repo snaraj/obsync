@@ -1,0 +1,12 @@
+# M324: a note with Windows line endings open on this device can never be deleted from another device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1589,7 +1589,7 @@
+       .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
+     const file = views[0]?.file;
+     if (!file) return null;
+-    const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
++    const lines = (text: string): string => text;
+     const disk = lines(await this.plugin.app.vault.read(file));
+     return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
+   }

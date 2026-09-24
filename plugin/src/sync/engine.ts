@@ -73,7 +73,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { Unwritable, applyChange, unwritableText } from "./pull";
+import { EDITING_WINDOW_MS, Unwritable, applyChange, unwritableText } from "./pull";
 import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 
@@ -258,6 +258,16 @@ export interface VaultHost {
    * not the engine: only the host can see the filesystem.
    */
   trashFolder(path: string): Promise<boolean>;
+  /**
+   * Is `path` open in an editor here (issue #146)? `unsaved` when an editor
+   * showing it holds text its file does not -- keystrokes inside the editor's
+   * own save debounce, which exist nowhere else -- `saved` when every editor
+   * showing it holds exactly the file, and `null` when none shows it. Only the
+   * host can see an editor; how recently the note was edited HERE is the
+   * engine's to say (`pushedAt`), because an editor also changes when a pulled
+   * version is merged into it.
+   */
+  editing(path: string): Promise<"unsaved" | "saved" | null>;
   notify(message: string): void;
   log(line: string): void;
 }
@@ -288,6 +298,13 @@ export interface SyncContext {
   readonly refused: Set<string>;
   /** Resolutions of one file inside the current window, for the merge breaker. */
   readonly merges: Map<string, { since: number; count: number }>;
+  /**
+   * When the push queue last published an edit of each path, oldest first and
+   * none older than `EDITING_WINDOW_MS`: what says a note open in an editor
+   * was saved from here seconds ago (`pull.ts`, issue #146). A pull's own
+   * write never lands here, and neither does the revive a kept deletion posts.
+   */
+  readonly pushedAt: Map<string, number>;
   /**
    * Publish a local file NOW, out of the queue's turn, and wait for it.
    *
@@ -575,6 +592,7 @@ export class SyncEngine {
       createdFolders: new Set<string>(),
       refused: new Set<string>(),
       merges: new Map<string, { since: number; count: number }>(),
+      pushedAt: new Map<string, number>(),
       publish: (path) => this.pushOne(path),
       deviceNames,
       now: () => this.nowFn(),
@@ -1535,6 +1553,15 @@ export class SyncEngine {
         return;
       }
       context.authored.add(outcome.versionId);
+      // Re-inserted, so the map stays oldest first and the trim stops at the
+      // first entry the window can still read.
+      const now = context.now();
+      context.pushedAt.delete(path);
+      context.pushedAt.set(path, now);
+      for (const [old, at] of context.pushedAt) {
+        if (now - at <= EDITING_WINDOW_MS) break;
+        context.pushedAt.delete(old);
+      }
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
       // A path this device may not sync is a decision, not a failure: it is

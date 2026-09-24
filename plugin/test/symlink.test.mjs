@@ -95,6 +95,8 @@ async function vault({ fs: injected } = {}) {
         getConfig: (key) => (key === "trashOption" ? "none" : undefined),
       },
       fileManager: { trashFile: async () => assert.fail("the vault cache had no entry to trash") },
+      // No editor is open on anything here (issue #146).
+      workspace: { getLeavesOfType: () => [] },
     },
     log: (line) => logs.push(line),
   };
@@ -127,6 +129,7 @@ async function vault({ fs: injected } = {}) {
     createdFolders: new Set(),
     refused: new Set(),
     merges: new Map(),
+    pushedAt: new Map(),
     deviceNames: new Map(),
     now: () => 1757200000000,
     deviceNameFor: () => "iPhone",

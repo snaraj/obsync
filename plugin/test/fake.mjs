@@ -85,8 +85,11 @@ class Notice {
 class TFile {}
 class TFolder {}
 class TAbstractFile {}
+// The editor view the host asks about an open note (issue #146); a test gives
+// an instance its \`file\` and \`getViewData\`, which is all the host reads.
+class MarkdownView {}
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, notices, raised,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, MarkdownView, notices, raised,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,
@@ -143,6 +146,8 @@ export class FakeHost {
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
+    /** What an editor open on a note holds, by path; no entry, no editor (issue #146). */
+    this.editors = new Map();
     this.clock = 1757200000000;
   }
 
@@ -461,6 +466,12 @@ export class FakeHost {
     this.explicitFolders.delete(entry);
     this.trashed.push(entry);
     return true;
+  }
+
+  /** An open editor against its file, compared the way the real host compares them (`main.ts`). */
+  async editing(path) {
+    if (!this.editors.has(path)) return null;
+    return this.editors.get(path) === this.text(path) ? "saved" : "unsaved";
   }
 
   notify(message) {
@@ -1132,6 +1143,7 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     createdFolders: new Set(),
     refused: new Set(),
     merges: new Map(),
+    pushedAt: new Map(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),

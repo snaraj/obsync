@@ -131,6 +131,20 @@ deletes it, the file is dropped and never downloaded again. On phones and
 tablets a file whose data the server lost is handled the same way, but a write
 the phone's own storage refuses still holds up later changes as before. (#144)
 
+**A note you are typing in stays when another device deletes it.** When a
+note was deleted on another device while you typed in it here, it vanished
+from under your cursor: the tab turned into "No file", neither device said a
+word, and what you had typed in the last second or two, and everything you
+typed after it, went nowhere. Now a deletion does not remove a note that is
+open in an editor here while it holds typing that is not saved yet, or while
+this device has sent an edit of it in the last 10 seconds. The note stays, is
+sent again so it comes back on the device that deleted it, and one notice
+says so; what you type next follows it everywhere. A note nobody has typed in
+here for longer than that is deleted as before, open or not. A note kept
+this way, or kept because it held changes this device had not uploaded yet,
+is now announced once rather than again at your next save. Same on desktop
+and mobile. (#146)
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

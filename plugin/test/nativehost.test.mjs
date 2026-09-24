@@ -209,6 +209,8 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
           if (trashOption === "local" || !(await adapter.trashSystem(file.path))) await adapter.trashLocal(file.path);
         },
       },
+      // No editor is open on anything here (issue #146).
+      workspace: { getLeavesOfType: () => [] },
     },
     manifest: { version: "1.0.7" },
     platformName: () => (mobile ? "ios" : "linux"),

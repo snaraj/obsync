@@ -808,7 +808,11 @@ returns immediately when a new frame lands.
    BOTH sides. Then the file at the path is proved against the record, so a
    note typed while Obsidian was closed -- or while its folder was outside
    the selection, which a widening replays the whole feed against -- is kept
-   and republished rather than removed. The removal itself is bound like
+   and republished rather than removed. So is a note open in an editor here
+   when the tombstone's parent is the version this device holds, if the
+   editor holds text its file does not or this device published an edit of
+   it within `EDITING_WINDOW_MS` (10 s): its newest keystrokes are in the
+   editor until Obsidian's two-second save. The removal itself is bound like
    every other: `expect` on a host that can bind one, and the unbound
    removal every device made before 1.0.7 where it cannot, because refusing
    there would drop a deletion the feed never delivers again.

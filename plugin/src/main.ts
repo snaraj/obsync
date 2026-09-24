@@ -52,7 +52,7 @@
  * `.obsidian/plugins/`.
  */
 
-import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
@@ -1567,6 +1567,31 @@ export class ObsidianHost implements VaultHost {
       throw new VaultPathError("target_identity");
     }
     return true;
+  }
+
+  /**
+   * Is `path` open in an editor, and does one hold text its file does not
+   * (issue #146)?
+   *
+   * Obsidian writes an editor to its file two seconds after a keystroke
+   * (`TextFileView.requestSave`), so until then the newest text is in the
+   * editor alone. What a view's save would write is `getViewData`, compared
+   * here with the file as the vault reads it, line endings aside: the editor
+   * keeps one `\n` for a file that has `\r\n`. Public API only -- the markdown
+   * leaves and `MarkdownView` -- identical on desktop and mobile. A leaf
+   * Obsidian has not loaded yet is not a `MarkdownView` and holds nothing
+   * typed.
+   */
+  async editing(path: string): Promise<"unsaved" | "saved" | null> {
+    const views = this.plugin.app.workspace
+      .getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
+    const file = views[0]?.file;
+    if (!file) return null;
+    const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
+    const disk = lines(await this.plugin.app.vault.read(file));
+    return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
   }
 
   notify(message: string): void {
