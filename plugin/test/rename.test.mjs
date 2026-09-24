@@ -349,6 +349,60 @@ test("a deletion the user makes after a pull-applied move is still published", a
 });
 
 /**
+ * THE DESKTOP'S OWN MOVE, AS ITS WATCHER REPORTS IT. `ObsidianHost` moves a
+ * note with the filesystem, and Obsidian's desktop watcher reports that as
+ * the old name deleted and the new one created -- never the rename the pull
+ * path armed its mark for. The delete is the move's echo: recognised as one,
+ * it is never decided as a deletion (2026-09-24 run: `removed=5` for five
+ * pulled renames, each saved only because the record had moved first), and
+ * the mark is spent rather than left to expire.
+ */
+for (const delivery of ["immediate", "deferred"]) {
+  test(`a pulled rename the desktop watcher reports as a delete is its echo, not a deletion (${delivery} vault events)`, async (t) => {
+    const { server, timers, a, b } = await pair(t, delivery, { isMobileB: false });
+    b.host.watcherMoves = true;
+    a.host.write("Note.md", BODY, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () => b.host.text("Note.md") === BODY && settled(a, "Note.md"));
+    a.host.rename("Note.md", "Renamed.md");
+    await timers.run(STEP_MS, landed(server, () => b.host.text("Renamed.md") === BODY && settled(b, "Renamed.md")));
+    await timers.run(STEP_MS);
+
+    assert.deepEqual(tombstones(server), [], story(server, a, b));
+    const watch = b.host.logs.filter((line) => line.startsWith("watch"));
+    assert.ok(watch.some((line) => line.includes("decision=echo_suppressed event=delete reason=moved")), watch.join(" | "));
+    assert.ok(!watch.some((line) => line.includes("reason=vanished")), `the move was decided as a deletion: ${watch.join(" | ")}`);
+    assert.equal(b.state.fileByPath("Renamed.md").fileId, a.state.fileByPath("Renamed.md").fileId);
+  });
+}
+
+test("a note typed where a pulled rename left, and deleted, is deleted everywhere though the move's delete never came", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+  b.host.watcherMoves = true;
+  b.host.silent.add("Note.md");
+  a.host.write("Note.md", BODY, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => b.host.text("Note.md") === BODY && settled(a, "Note.md"));
+  a.host.rename("Note.md", "Renamed.md");
+  await timers.run(STEP_MS, () => b.host.text("Renamed.md") === BODY && settled(b, "Renamed.md"));
+
+  const other = "a different note\n";
+  b.host.write("Note.md", other, 4000);
+  await timers.run(STEP_MS, () => a.host.text("Note.md") === other && settled(b, "Note.md"));
+  const fileId = b.state.fileByPath("Note.md").fileId;
+  b.host.silent.delete("Note.md");
+  b.host.remove("Note.md");
+  await timers.run(STEP_MS, () => a.host.text("Note.md") === null);
+  await timers.run(STEP_MS);
+
+  assert.equal(tombstones(server).length, 1, `the new note's deletion was swallowed: ${story(server, a, b)}`);
+  assert.equal(tombstones(server)[0].file_id, fileId);
+  assert.equal(a.host.text("Renamed.md"), BODY, "and the renamed note was not touched");
+});
+
+/**
  * The other half of the suppression: it is owed ONE delete event, and a vault
  * event can go missing — that is why startup reconciliation exists at all. A
  * suppression that waited for a lost event forever would swallow the deletion

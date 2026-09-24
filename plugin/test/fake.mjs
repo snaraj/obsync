@@ -1218,6 +1218,8 @@ export class EventVault extends FakeHost {
     this.listeners = new Map();
     /** Paths whose `delete` event this vault never delivers (a watcher miss). */
     this.silent = new Set();
+    /** Report the plugin's own file moves as a delete and a create, as the desktop watcher does. */
+    this.watcherMoves = false;
   }
 
   on(name, handler) {
@@ -1277,8 +1279,15 @@ export class EventVault extends FakeHost {
     // for (`destination`).
     const landed = this.destination(to);
     const outcome = await super.move(from, to);
-    // Obsidian reports a rename this plugin performed like any other.
-    if (outcome === "moved") this.emit("rename", this.entry(landed), from);
+    // Obsidian reports a rename this plugin performed like any other -- or,
+    // as the desktop watcher reports the filesystem rename `ObsidianHost`
+    // makes, as the old name deleted and the new one created.
+    if (outcome !== "moved") return outcome;
+    if (!this.watcherMoves) this.emit("rename", this.entry(landed), from);
+    else {
+      if (!this.silent.has(from)) this.emit("delete", this.entry(from));
+      this.emit("create", this.entry(landed));
+    }
     return outcome;
   }
 

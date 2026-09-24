@@ -646,7 +646,9 @@ export class SyncEngine {
     // suppression now is what keeps it from swallowing the deletion of THIS
     // file: a vault event that goes missing must cost one echo, never one
     // tombstone.
-    this.need().trashed.delete(path);
+    const context = this.need();
+    context.trashed.delete(path);
+    for (const mark of context.moved) if (mark.startsWith(`${path}\u0000`)) context.moved.delete(mark);
     this.deletions.delete(path);
     this.debounce(path, 0);
   }
@@ -666,11 +668,20 @@ export class SyncEngine {
    * for each at its new name: Obsidian never sees a rename. So the delete
    * waits `DEBOUNCE_MS` for the other half and is decided then, in
    * `settleVanished`.
+   *
+   * The pull path's own MOVE reaches here the same way on desktop: the host
+   * moves with the filesystem, and the watcher reports that as a delete at
+   * the old name beside a create at the new one, never the rename its mark
+   * was armed for. The delete is that echo -- a note the pull path just moved
+   * away is the only thing to delete there -- and was otherwise decided as a
+   * deletion that published nothing only because the record had moved first.
    */
   deleted(path: string): void {
     if (!this.running || !this.tracked(path, "delete")) return;
-    if (this.need().trashed.delete(path)) {
-      this.options.host.log("watch path_class=file decision=echo_suppressed event=delete");
+    const context = this.need();
+    const away = [...context.moved].find((mark) => mark.startsWith(`${path}\u0000`));
+    if (context.trashed.delete(path) || (away !== undefined && context.moved.delete(away))) {
+      this.options.host.log(`watch path_class=file decision=echo_suppressed event=delete${away === undefined ? "" : " reason=moved"}`);
       return;
     }
     this.unschedule(path);
