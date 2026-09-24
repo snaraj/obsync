@@ -110,6 +110,22 @@ and a test asserts every route it emits appears there.
 
 ## Pairing
 
+Since 1.1.3, a claim may include `vault: {"envelope":"<base64>","nonce":"<24hex>"}`.
+It seals UTF-8 JSON `{"name":"<vault name>","notes":<Markdown note count>}` with
+AES-256-GCM, a random 12-byte nonce, and the pairing ID as additional data.
+The key is `HKDF(PS, "obsync/v1/pair-vault", pairing_id)` (32 bytes), distinct
+from the vault-key envelope key. Names are 1–256 JavaScript string units with
+no control or bidi formatting characters; counts are nonnegative safe integers.
+The server accepts only a valid base64 envelope of at most 2048 characters
+and at least 16 decoded bytes, plus a 24-character hexadecimal nonce. It
+validates before enrolling, retains only those two fields in the in-memory
+pairing, and returns them inside `claimant.vault` to the creator alone.
+No clear vault name or note count reaches storage or logs. The approving device
+must authenticate and validate present details before offering approval.
+Absent details preserve pairing with older clients or servers; an old server
+ignores the optional field, so its approval prompt cannot name the new vault.
+
+
 - `POST /v1/pairing` (device auth) → `201 {"pairing_id":"<32hex>",
   "enroll_token":"<64hex>","expires":<unix_s>}`.
 - `POST /v1/pairing/{id}/claim` (no device auth; body carries the token)
@@ -231,6 +247,19 @@ retain the account-wide authority described below.
   `docs/architecture.md` 6.2.4); the feed is the normal path.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
+
+Since plugin 1.1.3, when a concurrent edit wins over a deletion, its live
+settlement names both the locally held version and the tombstone as parents.
+The deletion remains in version history but ceases to be a current head.
+Only those observed versions are incorporated; an unseen concurrent live edit
+remains a head for the ordinary merge rule. Identical settlements opt into
+`accept_existing`, so two devices resolving the same position store one version.
+A failed publication retains the local file and warns truthfully; a successful
+settlement adds no deletion notice. Replaying the historical tombstone against
+its live descendant changes nothing. This uses the existing version graph and
+v1 manifest, so older servers accept it and older clients read the kept note
+normally; they may still create a new unresolved deletion fork themselves.
+
 
 A **retirement** (plugin 1.1.3) is a tombstone for a file id that duplicates
 another id holding the same note at the same name. Its manifest adds

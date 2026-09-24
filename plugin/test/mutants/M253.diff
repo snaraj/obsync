@@ -1,10 +1,10 @@
 # M253: a device whose unpublished changes were kept says they are already on the server, which is false
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1214,7 +1214,7 @@
-           // budget. The bytes are still here and still unpublished, so the
-           // user is told the weaker thing that is true, and the next push is
-           // what carries them.
+@@ -1421,7 +1421,7 @@
+         if (revived.status !== "pushed") {
+           // Failed publication still needs an actionable warning: the edit
+           // exists only here until it can reach the server.
 -          notifyKeptDeletion(context, change, localPath, false);
 +          notifyKeptDeletion(context, change, localPath, true);
          }

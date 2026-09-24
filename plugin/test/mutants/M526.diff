@@ -1,0 +1,12 @@
+# M526: creator does not show claimant note count
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -188,7 +188,7 @@
+     const vault = claimant.vault === undefined ? null : await openPairingVault(secret, pairingId, claimant.vault);
+     if (this.closed) return;
+     statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?` +
+-      (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`));
++      (vault === null ? "" : ` It will sync vault "${vault.name}" (notes) with this server's vault.`));
+     new Setting(this.contentEl)
+       .addButton((button) =>
+         button

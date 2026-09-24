@@ -109,23 +109,15 @@ for (const typist of ["desktop", "phone"]) {
       assert.ok(line, pulls(typing.host));
       assert.match(line, /^pull path_class=tombstone decision=local_edit_kept reason=open_editing /);
       assert.match(line, new RegExp(` editor=${buffer} age_ms=700 budget_ms=${EDITING_WINDOW_MS} published=pushed `));
-      assert.deepEqual(
-        typing.host.notices.filter((notice) => notice.includes(NOTE)),
-        [`obsync: "${NOTE}" was deleted on another device after this one changed it. ` +
-          "The copy here was kept and published again, so it is back on every device."],
-        "the typing device is told once",
-      );
+      assert.deepEqual(typing.host.notices.filter(notice => notice.includes(NOTE)), []);
 
-      // And the editor's next save reaches the other device: nothing typed is
-      // lost. The revive sits beside the tombstone, so that save meets the
-      // deletion once more on its way (`reconcileFile`) -- kept, and not
-      // announced a second time.
+      // The next save reaches the other device without meeting the deletion again.
       typing.host.editors.delete(NOTE);
       typing.host.write(NOTE, TYPED, 3000);
       await timers.run(STEP_MS, () =>
-        deleting.host.text(NOTE) === TYPED && typing.host.logs.some((entry) => entry.includes("reason=delete_vs_edit")));
+        deleting.host.text(NOTE) === TYPED);
       assert.equal(typing.host.text(NOTE), TYPED);
-      assert.equal(typing.host.notices.length, 1, `told twice about one deletion: ${typing.host.notices.join(" | ")}`);
+      assert.equal(typing.host.notices.length, 0, "no repeated deletion notices (#178)");
       assert.equal((await server.noteFiles(k.manifestKey)).length, 1, "one note, still one file id");
       assert.ok((await versions(server, k)).some((version) => version.text === TYPED));
     });
@@ -192,7 +184,7 @@ for (const isMobile of [false, true]) {
     const after = (await versions(r.server, r.keys)).at(-1);
     assert.deepEqual(
       [after.fileId, after.parents, after.deleted, after.text],
-      [r.pushed.fileId, [r.pushed.versionId], false, SAVED],
+      [r.pushed.fileId, [r.pushed.versionId, r.tombstone.version_id], false, SAVED],
       "the note was not published again under its own id, so it stays deleted everywhere else",
     );
     assert.equal(r.state.fileByPath(NOTE).versionId, after.versionId);
@@ -200,7 +192,7 @@ for (const isMobile of [false, true]) {
       pulls(r.host),
       new RegExp(`decision=local_edit_kept reason=open_editing editor=unsaved age_ms=-1 budget_ms=${EDITING_WINDOW_MS} published=pushed`),
     );
-    assert.equal(r.host.notices.length, 1);
+    assert.equal(r.host.notices.length, 0, "settled deletion is silent (#178)");
   });
 
   test(`an open note published from here within the window is kept, to its last millisecond (${platform})`, async () => {

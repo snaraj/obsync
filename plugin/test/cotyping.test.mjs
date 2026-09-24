@@ -656,8 +656,7 @@ test("a save landing while the losing note is copied keeps the note", async () =
 /**
  * NEVER `syncing` FOR GOOD. A note waiting on this device's own push counts as
  * work only while that push is in flight. Nothing in flight -- a push that
- * never came, or a file that stays two-headed for reasons no rule here
- * settles (a deletion revived over an edit, issue #106) -- must come to rest,
+ * never came, or a fork waiting for later work -- must come to rest,
  * or the status bar reads `syncing` forever over nothing happening.
  */
 test("a file left with two heads, or a note whose push is not in flight, comes to rest", async (t) => {
@@ -673,8 +672,7 @@ test("a file left with two heads, or a note whose push is not in flight, comes t
   const other = a.state.fileByPath(OTHER);
   const keys = { domainKey: k.domainKey, manifestKey: k.manifestKey };
 
-  // Two heads for good: deleted on another device over an edit made here,
-  // which is published again and stays beside the deletion (#106).
+  // A deletion over an edit settles to one live head (#178).
   a.host.seed(NOTE, "base, edited here\n", 2000);
   await server.publishTombstone({ fileId: note.fileId, path: NOTE, manifestKey: k.manifestKey, parents: [note.versionId] });
   // And a note left for a push that nothing has queued: edited with no event.
@@ -683,7 +681,7 @@ test("a file left with two heads, or a note whose push is not in flight, comes t
   await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("decision=deferred reason=unpushed_edit")));
   await timers.run(STEP_MS);
 
-  assert.equal(server.files.get(note.fileId).heads.length, 2, "the fixture did not leave a file with two heads");
+  assert.equal(server.files.get(note.fileId).heads.length, 1, "delete-versus-edit has settled (#178)");
   assert.deepEqual(statuses.at(-1), { kind: "idle" }, JSON.stringify(statuses.slice(-4)));
   assert.equal(a.engine.context.forked.size, 0, "a note with nothing in flight is still counted");
 });

@@ -7,6 +7,14 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.3 - Unreleased
 
+**An edit that races a deletion stays as one current note.** The kept edit now
+incorporates the deletion into its history instead of leaving the deletion as
+a second current version forever. Later saves do not meet that deletion again,
+and a successful settlement shows no notice. Startup upload and restoration of
+the kept edit wait for each other, so their race cannot leave two versions of
+the same edit. Another device's unseen edit is still preserved for the ordinary
+conflict rule. Same on desktop and mobile. (#178)
+
 **A note deleted on another device goes where your "Deleted files" setting
 says.** Since 1.1.0, on a computer, a note deleted on another device was
 removed for good: it was in neither Obsidian's `.trash` folder nor the system
@@ -106,7 +114,11 @@ everything else, and names the device to fix. **Create a new vault key** on a
 server that holds a vault asks first, with Cancel as the default, and a phrase
 that opens nothing there is refused before it replaces the key. A device joining
 a vault asks before its first sync uploads notes that vault does not have (a
-copy of the same vault still pairs without a question), and **First-time
+copy of the same vault still pairs without a question). The approving device
+also shows the new device's vault name and Markdown note count. Those details
+are sealed under the pairing code's secret: the server stores only bounded
+ciphertext, and malformed details cannot offer an approval button. An older
+server omits the details and keeps the existing device-only prompt. **First-time
 setup** on a server that already holds a vault says that one server holds one
 vault. On a computer that syncs, **Pair this device** and pairing links claim
 nothing and say to leave the server first, and leaving now works for a device

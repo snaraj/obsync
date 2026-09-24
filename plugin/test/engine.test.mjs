@@ -389,7 +389,7 @@ test("a tombstone does not take an edit this device never published", async () =
   // the note returns on every device instead of waiting for the next push.
   // The weaker "did not delete" notice is what a revive that could not
   // reach the server falls back to, and the test below is that side.
-  assert.match(host.notices.join(" "), /was kept and published again/);
+  assert.deepEqual(host.notices, [], "a settled deletion needs no notice (#178)");
   assert.ok(
     host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=pushed")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
@@ -457,9 +457,8 @@ test("a tombstone that forks from the version this device holds is one side of a
   );
   // And the notice says what happened (issue #173): the version here is
   // already on the server, so there is nothing "not uploaded yet" to upload.
-  assert.equal(host.notices.length, 1);
-  assert.match(host.notices[0], /did not delete Notes\/Doomed\.md: another device deleted it without having seen/);
-  assert.doesNotMatch(host.notices[0], /not uploaded|uploaded as a new version/);
+  assert.deepEqual(host.notices, [], "the edit wins and the deletion moves to history (#178)");
+  assert.equal(server.files.get(created.file_id).heads.length, 1);
 });
 
 test("a save landing between the tombstone's check and its removal is kept", async () => {

@@ -88,3 +88,11 @@ version is the server's sole current head. Replaying an old version of a note
 that has since been deleted or changed does not retire a later independent
 note. An edit or replacement of the local record during that check also stops
 adoption. The selected keeper is saved before the duplicate identity is retired.
+
+
+If one device deletes a note while another edits it, the edit stays. The
+settlement incorporates the deletion as a parent, so the server holds one
+current note and keeps the deletion only in history. Later edits do not reopen
+the same deletion conflict, and successful settlement produces no notice.
+An unpublished edit that cannot yet be sent remains on its device with a
+warning until it can be published.

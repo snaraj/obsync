@@ -26,12 +26,14 @@ import {
   newVaultKey,
   normalisePhrase,
   openEnvelope,
+  openPairingVault,
+  sealPairingVault,
   pairingLink,
   recoveryPhrase,
   sealEnvelope,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
-import { ApiError, PairingEnvelope, Sent, lostMessage } from "../transport";
+import { ApiError, PairingClaimant, PairingEnvelope, Sent, lostMessage } from "../transport";
 
 function fail(error: unknown): void {
   new Notice(error instanceof Error ? error.message : String(error), 8000);
@@ -112,6 +114,7 @@ export function confirmFirst(app: App, heading: string, detail: string, action: 
  */
 export class PairCreateModal extends Modal {
   private polling = false;
+  private closed = false;
 
   constructor(
     app: App,
@@ -121,6 +124,7 @@ export class PairCreateModal extends Modal {
   }
 
   override onOpen(): void {
+    this.closed = false;
     this.setTitle("Pair a new device");
     this.contentEl.createEl("p", {
       text: "Open obsync on the new device and paste this code. It expires in ten minutes and carries the only copy of your vault key that will ever cross the network — sealed so the server cannot read it.",
@@ -130,6 +134,7 @@ export class PairCreateModal extends Modal {
 
   override onClose(): void {
     this.polling = false;
+    this.closed = true;
     this.contentEl.empty();
   }
 
@@ -163,7 +168,7 @@ export class PairCreateModal extends Modal {
         if (status.state === "claimed" && status.claimant) {
           codeEl.remove();
           this.polling = false;
-          this.approve(pairing.pairing_id, secret, status.claimant, statusEl);
+          await this.approve(pairing.pairing_id, secret, status.claimant, statusEl);
           return;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
@@ -174,13 +179,16 @@ export class PairCreateModal extends Modal {
     }
   }
 
-  private approve(
+  private async approve(
     pairingId: string,
     secret: Uint8Array<ArrayBuffer>,
-    claimant: { name: string; platform: string; app_version: string },
+    claimant: PairingClaimant,
     statusEl: HTMLElement,
-  ): void {
-    statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?`);
+  ): Promise<void> {
+    const vault = claimant.vault === undefined ? null : await openPairingVault(secret, pairingId, claimant.vault);
+    if (this.closed) return;
+    statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?` +
+      (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`));
     new Setting(this.contentEl)
       .addButton((button) =>
         button
@@ -285,11 +293,17 @@ export class PairClaimModal extends Modal {
       }
       const { state, transport, assertCurrent } = this.plugin.captureSession();
       const parsed = decodePairingCode(this.code);
+      const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
+        name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
+      });
+      assertCurrent();
+      if (!this.waiting) return;
       const credential = value(
         await transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
           name: this.plugin.deviceName(),
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
+          vault,
         }),
         "claiming the pairing",
       );

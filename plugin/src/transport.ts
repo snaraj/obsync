@@ -352,6 +352,7 @@ export interface PairingCreated {
 }
 
 export interface PairingClaimant {
+  vault?: { envelope: string; nonce: string };
   device_id: string;
   name: string;
   platform: string;
@@ -699,7 +700,7 @@ export class Transport {
   pairingClaim(
     pairingId: string,
     enrollToken: string,
-    info: { name: string; platform: string; app_version: string },
+    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string } },
   ): Promise<Sent<PairingCredential>> {
     return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",

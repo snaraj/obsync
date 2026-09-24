@@ -1,0 +1,12 @@
+# M652: unpublished edit leaves the deletion as another head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1412,7 +1412,7 @@
+       const open = editing?.fields ?? "";
+       if (held !== null) {
+         const started = context.now();
+-        const revived = await reviveFile(context, localPath, change.version_id);
++        const revived = await pushFile(context, localPath, true);
+         if (revived.status === "pushed") context.authored.add(revived.versionId);
+         context.host.log(
+           `pull path_class=tombstone decision=local_edit_kept reason=${held}${open} published=${revived.status} ` +

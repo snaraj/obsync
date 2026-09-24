@@ -1,12 +1,12 @@
-# M252: a device keeping a note another device deleted from an older version says it holds changes not uploaded yet, which is false
+# M252: a deferred settlement of a published edit says it was not uploaded
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1175,7 +1175,7 @@
-           context.host.log(
-             `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
-           );
--          notifyKeptDeletion(context, change, localPath, true);
-+          notifyKeptDeletion(context, change, localPath, false);
+@@ -1381,7 +1381,7 @@
+           // unrelated concurrent edit remains a head for ordinary merge handling.
+           const settled = await reviveFile(context, localPath, change.version_id);
+           if (settled.status === "pushed") context.authored.add(settled.versionId);
+-          else notifyKeptDeletion(context, change, localPath, true);
++          else notifyKeptDeletion(context, change, localPath, false);
            return "skipped";
          }
        }

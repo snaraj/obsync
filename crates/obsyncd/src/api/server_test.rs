@@ -3732,3 +3732,71 @@ fn a_revoked_or_pending_device_id_is_not_a_credential() {
         "the operator still sees a revoked device still trying"
     );
 }
+
+#[test]
+fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
+    let h = Harness::start("pairing-vault");
+    let creator = h.setup_account();
+    let created = Req::post("/v1/pairing")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let id = created.get("pairing_id").and_then(Value::as_str).unwrap();
+    let token = created.get("enroll_token").and_then(Value::as_str).unwrap();
+    let envelope = obsync_core::base64::encode(&[7; 32]);
+    let nonce = "cd".repeat(12);
+    let body = |ct: &str, iv: &str| {
+        format!(
+            r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"1.1.3","vault":{{"envelope":"{ct}","nonce":"{iv}","unknown":"discard"}}}}"#
+        )
+    };
+    for (ct, iv) in [
+        ("A".repeat(2052), nonce.clone()),
+        ("!".into(), nonce.clone()),
+        (envelope.clone(), "ab".into()),
+    ] {
+        let bad = Req::post(&format!("/v1/pairing/{id}/claim"))
+            .body(&body(&ct, &iv))
+            .send(h.addr);
+        assert_eq!(bad.status, 400);
+        let state = Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json();
+        assert_eq!(state.get("state").and_then(Value::as_str), Some("open"));
+    }
+    let good = Req::post(&format!("/v1/pairing/{id}/claim"))
+        .body(&body(&envelope, &nonce))
+        .send(h.addr);
+    assert_eq!(good.status, 201, "{}", good.text());
+    let claimant = Cred::from_json(&good.json());
+    let state = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let sealed = state.get("claimant").unwrap().get("vault").unwrap();
+    assert_eq!(
+        sealed.get("envelope").and_then(Value::as_str),
+        Some(envelope.as_str())
+    );
+    assert_eq!(
+        sealed.get("nonce").and_then(Value::as_str),
+        Some(nonce.as_str())
+    );
+    assert!(sealed.get("unknown").is_none());
+    assert_eq!(
+        Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&claimant, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+    approve_pairing(&h, &creator, id);
+    assert_eq!(
+        Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&claimant, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+}

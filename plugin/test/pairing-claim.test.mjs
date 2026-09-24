@@ -78,7 +78,9 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
       assert.equal(saves.at(-1)?.vrk, KEYS.vrk, "the approved key must already be persisted");
     },
     transport: {
-      pairingClaim: async (pairingId, enrollToken) => {
+      pairingClaim: async (pairingId, enrollToken, info) => {
+        assert.deepEqual(await pairing.openPairingVault(secret, id, info.vault), { name: "Pairing test vault", notes: 2 });
+        assert.ok(!JSON.stringify(info).includes("Pairing test vault"), "the server receives ciphertext only");
         assert.equal(pairingId, id); assert.equal(enrollToken, token);
         calls.push("claim");
         await beforeClaim(plugin);
@@ -94,7 +96,7 @@ async function claimant(t, response, onWait = () => {}, beforeKeySave = async ()
   // The real host: over no filesystem unless a test names the vault root on disk.
   const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
   plugin.host = new ObsidianHost(plugin, root === null ? null : { fs: { promises: fsPromises }, path: nodePath, base: root });
-  const modal = new PairClaimModal({}, plugin, pairing.encodePairingCode(id, token, secret));
+  const modal = new PairClaimModal({ vault: { getName: () => "Pairing test vault", getMarkdownFiles: () => [1, 2] } }, plugin, pairing.encodePairingCode(id, token, secret));
   modal.contentEl = { createEl: () => ({}), empty: () => {} };
   modal.close = () => modal.onClose();
   const previousWindow = globalThis.window;

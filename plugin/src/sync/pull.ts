@@ -115,7 +115,7 @@ import {
   selectionAfterRename,
 } from "../syncScope";
 import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, bury, postManifest, pushFile, retire, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, bury, postManifest, pushFile, reviveFile, retire, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -1376,7 +1376,12 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
           context.host.log(
             `pull path_class=tombstone decision=local_edit_kept reason=delete_vs_edit file=${change.file_id} seq=${change.seq}`,
           );
-          notifyKeptDeletion(context, change, localPath, true);
+          // Retire the deletion from the current heads, preserving it in history.
+          // Only the locally held edit and this tombstone are incorporated; an
+          // unrelated concurrent edit remains a head for ordinary merge handling.
+          const settled = await reviveFile(context, localPath, change.version_id);
+          if (settled.status === "pushed") context.authored.add(settled.versionId);
+          else notifyKeptDeletion(context, change, localPath, true);
           return "skipped";
         }
       }
@@ -1394,11 +1399,9 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       // every device. That is delete-versus-edit keeping both, which
       // `docs/architecture.md` 6.2 item 4 already promises.
       //
-      // THE FORK GUARD ABOVE DOES NOT REVIVE, and that is not an oversight:
-      // it fires only while `local.versionId` is a published version, so the
-      // bytes it keeps are already on the server and a second publication
-      // would add a version that says nothing new. This branch is the one
-      // that holds bytes no version holds.
+      // A successful revive incorporates both the local edit's parent and
+      // the deletion. The deletion remains in history, no longer a current
+      // head that every subsequent save must meet again (issue #178).
       //
       // AND THE EDITOR IS ONE PLACE THOSE BYTES LIVE (issue #146): a note
       // open and being typed in holds its newest keystrokes there until the
@@ -1409,26 +1412,15 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       const open = editing?.fields ?? "";
       if (held !== null) {
         const started = context.now();
-        const revived = await pushFile(context, localPath, true);
+        const revived = await reviveFile(context, localPath, change.version_id);
         if (revived.status === "pushed") context.authored.add(revived.versionId);
         context.host.log(
           `pull path_class=tombstone decision=local_edit_kept reason=${held}${open} published=${revived.status} ` +
             `file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started}`,
         );
-        if (revived.status === "pushed") {
-          // Told, once per file (`notifyKeptDeletion`): the revive sits beside
-          // the tombstone, so this device's next save of the note meets the
-          // same deletion again, through the fork guard.
-          context.refused.add(change.file_id);
-          context.host.notify(
-            `obsync: "${localPath}" was deleted on another device after this one changed it. ` +
-              "The copy here was kept and published again, so it is back on every device.",
-          );
-        } else {
-          // The revive did not reach the server: offline, refused, or out of
-          // budget. The bytes are still here and still unpublished, so the
-          // user is told the weaker thing that is true, and the next push is
-          // what carries them.
+        if (revived.status !== "pushed") {
+          // Failed publication still needs an actionable warning: the edit
+          // exists only here until it can reach the server.
           notifyKeptDeletion(context, change, localPath, false);
         }
         return "skipped";

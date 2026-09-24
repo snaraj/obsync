@@ -227,7 +227,29 @@ async function uploadMissing(
  * posted, and offered for deduplication, so two devices re-sending one lost
  * version publish one.
  */
-export async function pushFile(context: SyncContext, path: string, force = false, over?: string[]): Promise<PushOutcome> {
+const publications = new WeakMap<SyncContext, Map<string, Promise<PushOutcome>>>();
+
+/** A revive must observe the record left by a startup push already in flight. */
+async function serialPublication(context: SyncContext, path: string, publish: () => Promise<PushOutcome>): Promise<PushOutcome> {
+  let paths = publications.get(context);
+  if (paths === undefined) { paths = new Map(); publications.set(context, paths); }
+  const previous = paths.get(path);
+  const current = (previous ?? Promise.resolve()).catch(() => undefined).then(publish);
+  paths.set(path, current);
+  try { return await current; }
+  finally { if (paths.get(path) === current) paths.delete(path); }
+}
+
+export function pushFile(context: SyncContext, path: string, force = false, over?: string[]): Promise<PushOutcome> {
+  return serialPublication(context, path, () => publishFile(context, path, force, over));
+}
+
+/** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
+export function reviveFile(context: SyncContext, path: string, tombstone: string): Promise<PushOutcome> {
+  return serialPublication(context, path, () => publishFile(context, path, true, undefined, tombstone));
+}
+
+async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
   if (!stat) throw new Error(`push: ${path} disappeared`);
@@ -323,7 +345,9 @@ export async function pushFile(context: SyncContext, path: string, force = false
     sha256: plaintextHash,
     deleted: false,
   };
-  const parents = over ?? (record && record.versionId !== "" ? [record.versionId] : []);
+  const parents = tombstone === undefined
+    ? over ?? (record && record.versionId !== "" ? [record.versionId] : [])
+    : [...new Set([...(record?.versionId ? [record.versionId] : []), tombstone])];
   // A RENAME IS NEVER OFFERED FOR DEDUPLICATION. The server's identity for a
   // position is `(file_id, parent set, sids, deleted)` and does not cover the
   // encrypted manifest (`docs/protocol.md`, "One position, one version"), and
@@ -333,7 +357,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // their own echo -- `authored` -- and keep two different paths for one file
   // id with no version left that could settle it. Every other post offers it:
   // same parents, same chunks, same path is the same version (issue #114).
-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, over !== undefined || !force);
+  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, tombstone !== undefined || over !== undefined || !force);
   // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
   // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so
   // it settles the pair here, by the rule every other device applies to it.

@@ -363,6 +363,10 @@ that phrase the vault is unrecoverable by design.
    device-authenticated route refuses it (`403 device_pending`) except
    polling this pairing's envelope (`409 not_approved`). A claimant has no
    authority of any kind until step 3.
+   On current clients the claim also includes optional sealed `{name, notes}`
+   for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
+   AES-GCM binding to the pairing ID keep these details blind to the server;
+   the creator decrypts them before showing approval (protocol: Pairing).
 3. The paired device polls the pairing, shows "Approve <name> on
    <platform>?", and on approval encrypts `{VRK}` with `K_pair =
    HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
@@ -833,7 +837,11 @@ returns immediately when a new frame lands.
    device holds is one side of a fork: the graph says whether this device
    has already incorporated it (skip), whether it descends from what this
    device holds (apply), or neither, which is delete-versus-edit and keeps
-   BOTH sides. Then the file at the path is proved against the record, so a
+   the edit live and the deletion in history. A live settlement names the held
+   version and the deletion as parents, consuming the deletion head without
+   consuming unseen live edits. Per-path publication is serialized so a startup
+   push finishes before a revive selects its parents. Then the file at the
+   path is proved against the record, so a
    note typed while Obsidian was closed -- or while its folder was outside
    the selection, which a widening replays the whole feed against -- is kept
    and republished rather than removed. So is a note open in an editor here

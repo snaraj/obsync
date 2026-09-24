@@ -985,7 +985,7 @@ test("a remote delete over an unpushed local edit keeps the edit and republishes
   assert.match(line, /reason=local_edit/);
   assert.match(line, /published=pushed/);
   assert.match(line, /duration_ms=\d+/);
-  assert.equal(host.notices.length, 1, "and the user is told once");
+  assert.equal(host.notices.length, 0, "settled delete-versus-edit is silent (#178)");
 });
 
 test("a tombstone for a file this device no longer tracks leaves the path alone", async () => {
@@ -1074,4 +1074,11 @@ test("a delete raced by an edit reaches the other device as a live note", async 
     `the desktop's line reached no version: ${story(server, a, b)}`,
   );
   assert.equal(server.vaultFiles().length, 1, "one note, still one file id");
+  const file = server.files.get(server.vaultFiles()[0]);
+  assert.equal(file.heads.length, 1, JSON.stringify({heads:file.heads,versions:file.versions.map(v=>({id:v.version_id,parents:v.parents,deleted:v.deleted,device:v.device_id}))}));
+  assert.ok(file.versions.some(version => version.deleted), "the deletion is retained in history");
+  a.host.write(SHARED, BASE + DESKTOP_LINE + "a later edit\n", 9000);
+  await timers.run(STEP_MS, () => b.host.text(SHARED) === BASE + DESKTOP_LINE + "a later edit\n");
+  assert.equal(file.heads.length, 1, "later edits do not reopen the deletion fork");
+  assert.ok(![...a.host.notices, ...b.host.notices].some(notice => /did not delete|was kept and published/.test(notice)));
 });
