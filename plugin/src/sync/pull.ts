@@ -2379,6 +2379,18 @@ async function convergeIdentical(
     );
     return "skipped";
   }
+  // A feed frame can predate a deletion or a later edit. Only a current,
+  // sole live head may replace this device's independent live identity.
+  const current = await context.transport.getFile(change.file_id);
+  if (current.heads.length !== 1 || current.heads[0] !== change.version_id) {
+    context.host.log(`pull decision=skipped reason=historical_twin file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+  if (context.state.fileByPath(manifest.path) !== ours ||
+      await identicalAtName(context, change, manifest.path, ours) === null) {
+    context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
   await recordAt(context, change, manifest.path, stat);
   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
   context.host.log(

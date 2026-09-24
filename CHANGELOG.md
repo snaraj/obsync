@@ -7,6 +7,14 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.2 - 2026-09-23
 
+**An old deleted twin cannot erase a newer note.** When catching up on history,
+obsync checks that an identical note is still the server's current version
+before retiring this device's independent copy. An edit arriving during that
+check stays on its own identity. The keeper's identity is saved before the
+old identity is retired, so restarting preserves that decision. A full server
+encountered during automatic chunk repair remains a visible error instead of
+being reported as offline. (#131, #129)
+
 **Sync resumes by itself when the server becomes reachable again.** Until now a
 device that opened Obsidian while its server could not be reached -- a laptop
 waking before Wi-Fi, a phone away from the home network, a server restarting --

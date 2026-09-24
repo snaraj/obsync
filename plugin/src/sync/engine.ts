@@ -2116,7 +2116,7 @@ export class SyncEngine {
         // the status bar already reads `offline — retrying` from the first
         // unanswered attempt, and an error sending an offline person to the
         // server's scrub report is a false alarm (the 2026-09-23 run).
-        const absent = error instanceof ApiError && error.code === "unreachable";
+        const absent = error instanceof ApiError && error.code === "unreachable" && error.status !== 507;
         host.log(`repair decision=deferred reason=${busy ? "busy" : absent ? "unreachable" : "read_or_write_failed"} ${budget()}`);
         if (absent) delay = REPAIR_SCAN_MS;
         else if (!busy) {

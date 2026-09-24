@@ -82,3 +82,9 @@ the other. There is no third state and no silent overwrite.
   conflicts neither tool can reconcile, and obsync can only see its own.
 - On a device that has been offline for a long time, open Obsidian and let
   **Sync now** finish before editing.
+
+An identical note is adopted from another file identity only while that incoming
+version is the server's sole current head. Replaying an old version of a note
+that has since been deleted or changed does not retire a later independent
+note. An edit or replacement of the local record during that check also stops
+adoption. The selected keeper is saved before the duplicate identity is retired.
