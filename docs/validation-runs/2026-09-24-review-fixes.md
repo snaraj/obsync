@@ -83,3 +83,26 @@ had necessarily been written. The barrier now waits for both, with every
 assertion retained. The original log is preserved; the final M501 run has
 only its intended HTTP 507 witness. The final full gate includes this test
 repair and passes. No kill is attributed to that unrelated timing failure.
+
+## Independent pull-side persistence witness
+
+The review of `37c05bf` cleared the replacement race and identified a remaining
+coverage gap: M128 removes both the pull-side keeper replacement and its save,
+while M502 protects the separate push-side save. Removing only the pull-side
+save still passed the prior suite.
+
+The new regression persists the higher identity, applies its identical lower
+identity through the real pull path, and reloads State from storage when the
+higher identity's retirement is submitted. It requires the lower identity and
+its version at that boundary, requires it again after settlement, and checks
+the note remains intact and the predecessor was actually retired. M726 removes
+only that persistence call. It applies, compiles, and fails this one witness
+in the complete **784-test** suite: 783 pass and one fails. No production code
+changed; the bundle remains `7a937b63cbcf8f7bb536a45a0c40b34aeb3c066bb57817dfa99a46acd3006848`.
+
+The pinned full `make check` passes all 784 plugin tests, 144 core tests,
+367 server tests, two CLI tests, 70 dashboard tests and 767 contracts. Coverage
+remains 94.65%; the one core benchmark remains ignored; both secret scans pass.
+The mutation scratch initially omitted the vendored Obsidian declarations and
+could not compile. That setup failure is retained separately and is not a kill.
+The historical matrix counts above are unchanged; only M726 was newly measured.
