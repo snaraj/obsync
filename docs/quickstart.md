@@ -2,8 +2,21 @@
 
 The first device and the second one, every step in full. It assumes your own
 server is already running; if it is not, start with [Run the server](server.md)
-and come back here. The five screenshots below are from the device run this
-release was validated on; the sections after them are the same path in full.
+and come back here.
+
+Your notes remain ordinary files on your devices. The server stores encrypted
+copies; it does not receive the key that opens your notes or their names.
+You choose where it runs: a computer at home, a homelab, or another host you
+control. You can reach it away from home through your own VPN or HTTPS front
+end. Cloudflare is one optional route. [Run the server](server.md) explains
+those choices, including who you trust to handle the connection.
+
+Keep a separate backup of your vault and store your recovery phrase somewhere
+safe. Sync carries changes between devices, including unwanted changes made
+by a compromised device; encryption alone cannot protect that device from
+malware or replace a backup. [Recovery](recovery.md) explains what obsync can
+restore, and [Obsidian's backup guide](https://obsidian.md/help/backup) explains
+how a separate backup protects your local files.
 
 <!-- Capture rule (AGENTS.md, docs/captures/README.md): the five files below
      are committed PNGs from a validated device run, displayed in the declared
@@ -12,8 +25,9 @@ release was validated on; the sections after them are the same path in full.
 
 ## Get synced in five steps
 
-The path this release was validated on, from an empty vault to two devices in
-sync. All five assume your own server is already running.
+The installation path, from an empty vault to two devices in sync. Older
+captures call the setup row First-time setup; its current name is Setup or
+recover. All five assume your own server is already running.
 
 1. **Install from Community plugins.** In Settings → Community plugins →
    Browse, search for **Self Hosted Private Sync** and select Install, then
@@ -24,7 +38,7 @@ sync. All five assume your own server is already running.
 
 2. **Point it at your server and set it up.** Open the plugin's settings tab,
    set **Server URL** to your own server, choose which folders this device
-   syncs, then paste your setup token under **First-time setup**.
+   syncs, then paste your setup token under **Setup or recover**.
 
    ![The plugin settings tab scrolled to the folder selection, Pairing, and the First-time setup token field](captures/02-first-time-setup.png)
 
@@ -52,6 +66,11 @@ The dashboard's device list and its revoke button are described under
 See your devices in the daily-use page and were not exercised in the 1.0.0
 device run recorded in the validation runs for 2026-09-14.
 
+Capture provenance: the first four screenshots record the original
+installation journey. The fifth shows the two-way edit check on the 1.1.3
+candidate. The validation records identify newer recovery screens and the
+exact builds tested; the sections below describe the current controls.
+
 ## Set up this computer (the first device)
 
 Use Obsidian 1.13.0 or newer on each device. Credentials and vault keys use
@@ -71,14 +90,15 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 
 4. Under **Sync folders on this device**, choose **Selected folders only**
    if the vault also contains code or files you do not want shared, and
-   enter relative folders such as `Notes`, one per line. **Set up** and
+   enter relative folders such as `Notes`, one per line. **Set up or recover** and
    **Pair this device** apply what you typed; **Save** applies it on its own.
    An empty selected list syncs no files; **Whole vault** is the default.
-   Select the final folders now: after sync has history, the selection may
-   only narrow. To stage a first sync within one vault, keep personal files
+   To stage a first sync within one vault, keep personal files
    in an excluded folder, test disposable notes inside the selected folder,
    then move the personal files in and run **Sync now**.
-5. Under **First-time setup**, paste the setup token and select **Set up**:
+   You can also add folders later in this device's settings; saving the wider
+   selection downloads existing server history for those folders.
+5. Under **Setup or recover**, paste the setup token and select **Set up or recover**:
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](assets/settings-setup.png)
 
@@ -118,16 +138,23 @@ isolation boundary. Native restart persistence is a separate validation step.
    under **Pairing code** and tap **Pair** — or open the link, which is the
    same dialog with the code already in it.
 
-   ![The Pair this device dialog on the second device, with the empty Pairing code field and the Pair button](assets/pair-this-device.png)
+   ![The phone's Pair this device dialog with an empty Pairing code field and Pair button](assets/phone-candidate-113/empty-pairing.png)
 
-   Phone screenshots are not in this repository yet; the dialog above is the
-   same one on a computer. They are taken on the maintainer's own devices and
-   added when a validation run records them.
-4. Back on the computer, approve the device by its name when asked. The phone
+   This is the actual phone dialog, captured before entering a code. For
+   certificate setup, follow [Add the phone](same-network.md#add-the-phone).
+4. Back on the computer, check the device name and, on updated devices, the
+   new device's vault name and note count before approving. If these are not
+   the vault you intended, select **Reject**. The phone
    receives the vault key encrypted under a pairing secret that never touches
    the server; until you approve, the phone has no authority of any kind.
 
    ![The first device asking whether to approve the new device by name, with Approve and Reject buttons](assets/pair-approve.png)
+
+   The 1.1.3 candidate also names the joining vault. This real desktop test
+   used the disposable vault “Slot2 B”, containing 215 notes; the pairing code
+   had already disappeared when the screenshot was taken.
+
+   ![Approval names the joining vault and its note count before granting access](assets/pairing-approve-vault.png)
 
 5. Edit a note on the phone. It appears on the computer within seconds, and
    the other way round. That is the whole loop.

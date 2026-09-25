@@ -1,0 +1,12 @@
+# M291: a restored copy's temp left by a quit is never removed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -108,7 +108,7 @@
+  * (`desktopWriter`) and a restored copy's (`createWriter`). Not a hold's --
+  * a hold may be the last name of a save (`hold`).
+  */
+-const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
++const WRITE_TEMP = /^\.obsync-(?:write)-[0-9a-f]+\.tmp$/;
+ 
+ /**
+  * What makes a folder a vault that syncs with this plugin (issue #180):

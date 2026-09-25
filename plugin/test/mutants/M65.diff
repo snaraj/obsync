@@ -1,16 +1,11 @@
 # M65: the adopted version is proved by everything except the path
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -391,11 +391,7 @@
-         unbase64(version.manifest_ct),
+@@ -722,7 +722,6 @@
        ),
-     ) as Partial<Manifest>;
--    return (
+     ) as Partial<Manifest | PauseManifest>;
+     return (
 -      theirs.path === manifest.path &&
--      theirs.size === manifest.size &&
--      theirs.deleted === manifest.deleted
--    );
-+    return theirs.size === manifest.size && theirs.deleted === manifest.deleted;
-   } catch {
-     return false;
-   }
+       theirs.size === manifest.size &&
+       theirs.deleted === manifest.deleted &&
+       (manifest.v !== 3 || (theirs.v === 3 && theirs.kind === "pause" && theirs.target === manifest.target && theirs.paused === manifest.paused))

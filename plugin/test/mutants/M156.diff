@@ -1,0 +1,11 @@
+# M156: a version arriving over an unpushed edit is merged and published here as well, so one edit lands on two lines and later merges overlap
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1906,7 +1906,6 @@
+         // record is marked so that push cannot come back `unchanged`, and it
+         // forks the file, which its own reconciliation merges from this same
+         // base. A version the merge could not take keeps both, as before.
+-        if (ahead && !sameBytes(text, theirs)) return await deferToPush(context, change, localPath);
+         const writer = await context.host.writer(localPath);
+         await writer.write(text);
+         // THE NOTE IS LOOKED AT AGAIN AT THE LAST MOMENT. The downloads above

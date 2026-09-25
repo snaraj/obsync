@@ -3,6 +3,34 @@
 Two devices edited the same file before either of them synced. obsync never
 discards an edit to resolve that, so exactly one of two things happens.
 
+Changes in different paragraphs usually appear together in one note. When
+both devices change the same line, obsync keeps a second file beside the
+original so you can compare them. Your notes remain ordinary files you can
+open and edit in Obsidian.
+
+## What to do with a conflict copy
+
+1. Open the original and the file with **conflict from** in its name. You can
+   use Obsidian's **Open to the right** action to compare them side by side.
+2. Copy the text you want to keep into the original, then check the result.
+3. Delete the extra copy when you are satisfied. That deletion syncs too;
+   [retained history](storage.md) still holds the earlier versions.
+
+This real desktop capture uses a disposable note edited differently on two
+devices. The left note holds the first device's sentence; the right copy holds
+the second. Both files reached both devices.
+
+![The original note and its conflict copy preserve the two different sentences](assets/conflict-comparison.png)
+
+## One device deleted the note while another edited it
+
+The edit stays. You get the edited note back, without a new conflict copy or
+repeated successful-resolution notices. The deletion stays in history. If an
+edit cannot yet be uploaded, it remains on that device with a warning until
+it can be sent.
+
+The sections below explain the detailed merge rules and filenames.
+
 ## A text file is merged
 
 A merge happens only when ALL of these hold, and any one of them failing gives
@@ -52,9 +80,10 @@ A conflict copy is a new file beside the original, in the same folder:
 Notes/Ideas.md  ->  Notes/Ideas (conflict from iPhone, 2026-09-07 1432).md
 ```
 
-- The name is the original's, plus `(conflict from <device>, YYYY-MM-DD HHmm)`
-  before the extension. The timestamp is the local time on the device that
-  wrote the copy.
+- The name includes the original's name, **conflict from**, the other device,
+  and a timestamp. Current shared conflict names use UTC and a short stable
+  suffix so devices choose the same copy. Older or locally preserved copies
+  can use the earlier local-time format shown above.
 - `<device>` is the other device's name, as it appears in the plugin's Devices
   list. Characters a vault or a filesystem rejects are replaced with spaces and
   the name is cut to 40 characters, so a device named from another machine can
@@ -63,14 +92,6 @@ Notes/Ideas.md  ->  Notes/Ideas (conflict from iPhone, 2026-09-07 1432).md
 
 Nothing is lost: the original keeps one side of the edit and the copy carries
 the other. There is no third state and no silent overwrite.
-
-## What to do with one
-
-1. Open both files and decide what the merged note should say.
-2. Edit the original until it is right.
-3. Delete the conflict copy. It is an ordinary file in your vault, so deleting
-   it syncs like any other deletion, and the 30 days of version history
-   (`docs/storage.md`) still hold both sides if you want them back.
 
 ## Avoiding them
 
@@ -88,3 +109,11 @@ version is the server's sole current head. Replaying an old version of a note
 that has since been deleted or changed does not retire a later independent
 note. An edit or replacement of the local record during that check also stops
 adoption. The selected keeper is saved before the duplicate identity is retired.
+
+
+If one device deletes a note while another edits it, the edit stays. The
+settlement incorporates the deletion as a parent, so the server holds one
+current note and keeps the deletion only in history. Later edits do not reopen
+the same deletion conflict, and successful settlement produces no notice.
+An unpublished edit that cannot yet be sent remains on its device with a
+warning until it can be published.

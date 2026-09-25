@@ -1,0 +1,12 @@
+# M342: a swap moves the note it waits on to a conflict name and publishes that, instead of waiting for it to leave
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2550,7 +2550,7 @@
+ ): Promise<ApplyResult> {
+   if (occupant === "no_record") await identify(context, manifest.path, change.file_id);
+   const ours = context.state.fileByPath(manifest.path);
+-  if (ours !== undefined && context.authored.has(ours.versionId)) {
++  if (ours !== undefined) {
+     const keep = ours.fileId < change.file_id;
+     const moved = keep ? null : await moveAside(context, manifest.path, ours, new Date(context.now()));
+     context.host.log(

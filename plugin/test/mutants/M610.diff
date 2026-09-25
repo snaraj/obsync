@@ -1,0 +1,12 @@
+# M610: re-enrollment retains the old device list error
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -537,7 +537,7 @@
+     await this.plugin.setUpAccount(this.draftToken, ACCOUNT_NAME);
+     if (this.plugin.state.data.deviceId !== null) {
+       this.draftToken = "";
+-      this.left(); // Re-enrollment replaces the identity behind the device list.
++      this.update();
+     } else this.update();
+   }
+ 

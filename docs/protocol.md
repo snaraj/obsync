@@ -59,7 +59,8 @@ answers the same.
 | --- | --- | --- |
 | `GET /livez`, `GET /readyz` | yes | reads |
 | `GET /v1/account` | yes | read |
-| `POST /v1/setup` | **no** | creates the account and mints a credential |
+| `POST /v1/setup` | **no** | creates or recovers the account and mints a credential |
+| `POST /v1/account/recovery` | **no** | explicit registration acknowledgement; a lost response is surfaced |
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
@@ -100,15 +101,49 @@ and a test asserts every route it emits appears there.
   `{"setup_token":"…","account_name":"…","device":{"name":"…","platform":
   "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
   "device_secret":"<64hex>"}`: creates the account and enrols the first
-  device in one step, since pairing requires a paired device. Valid once;
-  `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
+  device in one step, since pairing requires a paired device. Without recovery
+  proof, `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
   token is compared FIRST, so both refusals are reachable only in that
   order: a caller holding the token learns the account exists, and a caller
   without it learns nothing about whether the server is claimed.
+- First setup may include `recovery_verifier:<64hex>`, committed in the same
+  durable account frame. Existing accounts may be re-entered through the same
+  `POST /v1/setup` with the setup token and `recovery_proof:<64hex>`; the response
+  also has `recovered:true`. The proof is 32 bytes from
+  `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.
+  The verifier is lowercase hex `SHA-256(proof)`. The server compares hashes
+  in constant time, never receives VRK or a content decryption key, and returns
+  `403 bad_recovery_proof` for a wrong proof. `409 recovery_unavailable` means
+  no verifier was registered before credentials were lost. A valid recovery
+  enrolls a new active device on the same account, without renaming it,
+  replacing content or reviving revoked credentials. It is never auto-retried.
+- `POST /v1/account/recovery` (device auth)
+  `{"recovery_verifier":"<64hex>"}` → `204`. Register once after the client has
+  successfully opened its vault. Repeating the same verifier is harmless;
+  `409 recovery_mismatch` refuses replacement. Invalid shape is `400` before
+  storage changes. The verifier survives journal replay and snapshots but is
+  omitted from account responses. Old accounts without the field remain
+  readable and retain their last-device safeguard.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
   "quota_bytes","used_bytes","device_count"}`.
 
 ## Pairing
+
+Since 1.1.3, a claim may include `vault: {"envelope":"<base64>","nonce":"<24hex>"}`.
+It seals UTF-8 JSON `{"name":"<vault name>","notes":<Markdown note count>}` with
+AES-256-GCM, a random 12-byte nonce, and the pairing ID as additional data.
+The key is `HKDF(PS, "obsync/v1/pair-vault", pairing_id)` (32 bytes), distinct
+from the vault-key envelope key. Names are 1–256 JavaScript string units with
+no control or bidi formatting characters; counts are nonnegative safe integers.
+The server accepts only a valid base64 envelope of at most 2048 characters
+and at least 16 decoded bytes, plus a 24-character hexadecimal nonce. It
+validates before enrolling, retains only those two fields in the in-memory
+pairing, and returns them inside `claimant.vault` to the creator alone.
+No clear vault name or note count reaches storage or logs. The approving device
+must authenticate and validate present details before offering approval.
+Absent details preserve pairing with older clients or servers; an old server
+ignores the optional field, so its approval prompt cannot name the new vault.
+
 
 - `POST /v1/pairing` (device auth) → `201 {"pairing_id":"<32hex>",
   "enroll_token":"<64hex>","expires":<unix_s>}`.
@@ -155,7 +190,7 @@ retain the account-wide authority described below.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself
-  while it is the only device.
+  while it is the only active device unless account recovery is registered.
 - `POST /v1/devices/heartbeat` `{"app_version","policy"}` → `204`; updates
   `last_seen` and the reported policy. Sent on start and hourly.
 
@@ -213,7 +248,11 @@ retain the account-wide authority described below.
   client that keeps the id it computed omits it (as every 1.0.x client does)
   and is never answered with another id, because it would otherwise remember
   a version this server never stored. The decision is logged
-  (`decision=deduplicated`).
+  (`decision=deduplicated`). Plugin 1.1.3 relies on it for a fork whose heads
+  do not merge: every device that settles the fork posts the same closing
+  version and the same first version of one conflict copy, under a file id
+  derived from the fork (`docs/architecture.md` 3.4.1), and the server keeps
+  one of each. No server change.
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
@@ -222,9 +261,31 @@ retain the account-wide authority described below.
 - `GET /v1/files/{file_id}/versions/{version_id}` → one version record.
 - `GET /v1/files?after=<file_id>&limit=<n>` → `{"files":[{"file_id",
   "domain_id","heads","conflicted","latest_ts"}],"next":"<file_id>|null"}`.
-  Used for initial reconciliation; the feed is the normal path.
+  Used for initial reconciliation, and by a device checking which of its
+  versions a server rebuilt from a backup still holds (plugin 1.1.3,
+  `docs/architecture.md` 6.2.4); the feed is the normal path.
 
 A **tombstone** is a version with `"deleted":true` and no sids.
+
+Since plugin 1.1.3, when a concurrent edit wins over a deletion, its live
+settlement names both the locally held version and the tombstone as parents.
+The deletion remains in version history but ceases to be a current head.
+Only those observed versions are incorporated; an unseen concurrent live edit
+remains a head for the ordinary merge rule. Identical settlements opt into
+`accept_existing`, so two devices resolving the same position store one version.
+A failed publication retains the local file and warns truthfully; a successful
+settlement adds no deletion notice. Replaying the historical tombstone against
+its live descendant changes nothing. This uses the existing version graph and
+v1 manifest, so older servers accept it and older clients read the kept note
+normally; they may still create a new unresolved deletion fork themselves.
+
+
+A **retirement** (plugin 1.1.3) is a tombstone for a file id that duplicates
+another id holding the same note at the same name. Its manifest adds
+`"keeper":"<32hex>"`, the id that keeps the name. A receiver that still records
+the retired id there, over a file whose bytes the keeper's live head holds,
+records the name under the keeper and deletes nothing. A plugin before 1.1.3
+ignores the field and applies an ordinary deletion. **No server change.**
 
 ### Folder records (plugin 1.1.0)
 
@@ -381,6 +442,47 @@ of the function at each), and the copy the tests run against is
 `plugin/test/fixtures/decoder-1.0.x.mjs`, which says how to re-derive both.
 Any later record type must move `v` again for the same reason.
 
+### Rewrite pause controls (plugin 1.1.3)
+
+A hold is a separate encrypted manifest with `v: 3`, `kind: "pause"`, a
+canonical file `path`, its 16-byte lowercase-hex `target` file id, boolean
+`paused`, the engine's `domain`, and the constant fields `size: 0`,
+`chunks: []`, `sha256: ""`, `deleted: false`. Its opaque file id is the first
+16 bytes of `HMAC-SHA256(manifest_key, UTF8("obsync/v1/pause/" + target))`.
+The receiver checks that binding and the ordinary domain/size/chunk/deletion
+bindings before acting. Nothing about a hold travels in clear text.
+
+A note manifest can additionally carry `answer: true`: its author observed a
+background write within five seconds of a received version without recent
+trusted Markdown editor input (including an active IME composition). Merely
+showing the note in a passive editor does not exempt the write. This advisory signal permits detection of sequential
+rewrites as well as overlapping ones. It grants no additional authority.
+An overlapping answer can be detected first by the device whose editor has
+recent trusted input. It uses the same control, holding before the ordinary
+conflict-copy rule can replace its saved text. A recipient with current
+background-answer proof for that exact target retains its background Resume
+role. These are local decisions; they add no manifest field or server API.
+
+A pause control holds the target only if the control version is still a head;
+an old pause replayed after Resume is ignored. Local pause state survives a
+restart. Clearing the control does not resume another device automatically:
+each held device explicitly resumes after its user stops the rewriting
+plugin. Each publication parents every observed control head. Identical
+controls are reused without another post. Opposite controls at one position
+must never be deduplicated as the same operation: their `v`, `kind`, `target`
+and `paused` fields participate in the client's adoption check. Concurrent
+opposite posts can leave two heads; the current pause holds, and the next
+explicit Resume parents both, leaving one cleared head. No polling loop
+publishes new control versions. The existing server API needs no change.
+
+Plugins before 1.1.3 reject `v: 3` as an unknown manifest version and advance
+the feed. Because the control has its own file id, rejection cannot overwrite,
+delete or replace the actual note or its history. Mixed versions keep syncing
+ordinary notes, but all devices must update for a shared hold to stop the
+rewrite storm. The unchanged 1.1.1 client is exercised by
+`plugin/test/legacy-pause-check.mjs` against a control followed by a normal
+note; the receipt records refusal, application and an advanced feed cursor.
+
 ## Change feed
 
 - `GET /v1/changes?since=<seq>&wait=<seconds ≤ 55>&limit=<n ≤ 1000>` →
@@ -453,7 +555,7 @@ device whose link opened it is revoked.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
-  target is the only ACTIVE device. Revocation also closes the dashboard
+  target is the only ACTIVE device and account recovery is unregistered. Revocation also closes the dashboard
   sessions that device's links opened and drops the links it minted.
 - `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
   "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",

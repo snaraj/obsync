@@ -1,0 +1,11 @@
+# M578: a stopped engine publishes and forgets a hold when Resume was queued
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1973,7 +1973,6 @@
+     // when it has a note to bring back.
+     if (Object.keys(this.options.state.data.paused).length === 0) return Promise.resolve();
+     return this.exclusive(async () => {
+-      if (!this.running) return;
+       const context = this.need();
+       const paused = context.state.data.paused;
+       for (const id of fileId === undefined ? Object.keys(paused) : [fileId]) {

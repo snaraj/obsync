@@ -1,0 +1,12 @@
+# M656: failed publication cancels the revival waiting behind it
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -234,7 +234,7 @@
+   let paths = publications.get(context);
+   if (paths === undefined) { paths = new Map(); publications.set(context, paths); }
+   const previous = paths.get(path);
+-  const current = (previous ?? Promise.resolve()).catch(() => undefined).then(publish);
++  const current = (previous ?? Promise.resolve()).then(publish);
+   paths.set(path, current);
+   try { return await current; }
+   finally { if (paths.get(path) === current) paths.delete(path); }

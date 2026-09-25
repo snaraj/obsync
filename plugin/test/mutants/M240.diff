@@ -1,0 +1,12 @@
+# M240: a device syncing selected folders measures the bulk-deletion share against every record it kept, so 12 of 20 selected notes gone is deleted everywhere
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1900,7 +1900,7 @@
+     // that was never gone (issue #139).
+     let removed = 0;
+     const scope = context.state.data.syncFolders;
+-    const tracked = Object.keys(context.state.data.files).filter((path) => inSyncScope(path, scope)).length;
++    const tracked = Object.keys(context.state.data.files).length;
+     const still = new Set(missing);
+     const kept = this.heldDeletions.filter((path) => still.has(path));
+     if (kept.length < this.heldDeletions.length) {

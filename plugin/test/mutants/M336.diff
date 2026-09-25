@@ -1,0 +1,11 @@
+# M336: a note the user is typing into is moved to a conflict name when another note wants its place
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2687,7 +2687,6 @@
+       try {
+         if (!(await movable(context, path, record))) continue;
+         if (holder !== undefined) {
+-          if (!(await movable(context, want, holder))) continue;
+           const when = new Date(context.now());
+           outcome = "occupied";
+           for (let attempt = 1; outcome === "occupied" && attempt <= CONFLICT_COPY_NAMES; attempt++) {

@@ -149,12 +149,16 @@ function pad(value: number): string {
   return value < 10 ? `0${value}` : String(value);
 }
 
-/** `YYYY-MM-DD HHmm` in the device's local time, as the user reads it. */
-export function conflictStamp(when: Date): string {
-  return (
-    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ` +
-    `${pad(when.getHours())}${pad(when.getMinutes())}`
-  );
+/**
+ * `YYYY-MM-DD HHmm` in the device's local time, as the user reads it -- or in
+ * UTC, for a name every device must compute alike wherever it is.
+ */
+export function conflictStamp(when: Date, utc = false): string {
+  return utc
+    ? `${when.getUTCFullYear()}-${pad(when.getUTCMonth() + 1)}-${pad(when.getUTCDate())} ` +
+        `${pad(when.getUTCHours())}${pad(when.getUTCMinutes())} UTC`
+    : `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ` +
+        `${pad(when.getHours())}${pad(when.getMinutes())}`;
 }
 
 /**
@@ -168,7 +172,13 @@ export function conflictStamp(when: Date): string {
  * has (issue #98, review round 1). Attempt 1 is the plain name, so a vault
  * that never collides never grows an ordinal.
  */
-export function conflictCopyPath(path: string, deviceName: string, when: Date, attempt = 1): string {
+export function conflictCopyPath(
+  path: string,
+  deviceName: string,
+  when: Date,
+  attempt = 1,
+  stamp = conflictStamp(when),
+): string {
   const slash = path.lastIndexOf("/");
   const folder = slash < 0 ? "" : path.slice(0, slash + 1);
   const name = slash < 0 ? path : path.slice(slash + 1);
@@ -176,7 +186,7 @@ export function conflictCopyPath(path: string, deviceName: string, when: Date, a
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const extension = dot > 0 ? name.slice(dot) : "";
   const ordinal = attempt > 1 ? ` ${attempt}` : "";
-  return `${folder}${stem} (conflict from ${sanitiseDeviceName(deviceName)}, ${conflictStamp(when)})${ordinal}${extension}`;
+  return `${folder}${stem} (conflict from ${sanitiseDeviceName(deviceName)}, ${stamp})${ordinal}${extension}`;
 }
 
 /** Text files are merged; everything else takes the conflict-copy path. */

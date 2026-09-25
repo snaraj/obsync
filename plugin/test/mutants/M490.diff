@@ -1,0 +1,14 @@
+# M490: the status bar reads idle over a note that is paused and no longer syncing
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1949,10 +1949,6 @@
+     }
+     const paused = Object.values(this.options.state.data.paused);
+     const last = paused[paused.length - 1];
+-    if (last !== undefined) {
+-      const more = paused.length > 1 ? ` and ${paused.length - 1} more` : "";
+-      return { kind: "paused", message: `${last.path}${more} (Show sync status)` };
+-    }
+     if (waiting > 0) return { kind: "syncing", pending: waiting };
+     return { kind: "idle" };
+   }

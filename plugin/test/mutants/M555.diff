@@ -1,0 +1,14 @@
+# M555: restart republishes an identical hold and repeated Resume creates more versions
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -25,10 +25,6 @@
+       const version = file.versions.find((entry) => entry.version_id === head);
+       return version === undefined ? null : await decodeRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+     }));
+-    if (current.length > 0 && current.every((entry) => entry?.v === 3 && entry.paused === paused)) {
+-      if (paused && held !== undefined) announced.add(held);
+-      return;
+-    }
+   }
+   catch (error) {
+     if (!(error instanceof ApiError) || error.status !== 404) throw error;

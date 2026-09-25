@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { memorySecrets } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { State, defaultData, isPushed, parseData } = require("../build/state.js");
+const { GRAVES_MAX, State, defaultData, isPushed, parseData } = require("../build/state.js");
 const policy = require("../build/policy.js");
 
 function store() {
@@ -72,6 +72,24 @@ test("a corrupt or partial data file degrades to a resync, never a crash", () =>
   assert.deepEqual(mixed.policy, { perFileMaxBytes: 100, totalBudgetBytes: 0 });
 });
 
+/**
+ * The name a note waits for beside its own (issue #149) is read back like
+ * every other path in the data file: as input, and a name that is not a vault
+ * path is dropped rather than handed to a move.
+ */
+test("a remembered waiting name survives a load only when it is a vault path", () => {
+  const data = parseData({
+    files: {
+      "Notes/Copy.md": { fileId: "f", versionId: "v", mtime: 1, size: 2, sha256: "s", name: "Notes/Name.md" },
+      "Notes/Other.md": { fileId: "g", versionId: "v", mtime: 1, size: 2, sha256: "s", name: "../outside.md" },
+      "Notes/Plain.md": { fileId: "h", versionId: "v", mtime: 1, size: 2, sha256: "s" },
+    },
+  }, false);
+  assert.equal(data.files["Notes/Copy.md"].name, "Notes/Name.md");
+  assert.equal(data.files["Notes/Other.md"].name, undefined, "a name outside the vault was kept");
+  assert.equal("name" in data.files["Notes/Plain.md"], false);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -109,6 +127,60 @@ test("recording a file clears its remote-only entry", async () => {
   assert.equal(state.data.remoteOnly["f1"], undefined);
 });
 
+test("the feed mark, the graves and a record's server time load only when well formed (#145)", () => {
+  const ID = "ab".repeat(16), VERSION = "cd".repeat(32);
+  const mark = { seq: 7, fileId: ID, versionId: VERSION, ts: 1757200000000, replay: false };
+  const good = parseData({
+    feedMark: mark,
+    graves: {
+      [ID]: { versionId: VERSION, path: "Notes/gone.md", folder: false, ts: 5 },
+      ["ef".repeat(16)]: { versionId: VERSION, path: "Notes", folder: true },
+      "not-an-id": { versionId: VERSION, path: "Notes/x.md", folder: false },
+      ["01".repeat(16)]: { versionId: "short", path: "Notes/x.md", folder: false },
+      ["02".repeat(16)]: { versionId: VERSION, path: "../outside.md", folder: false },
+      ["03".repeat(16)]: { versionId: VERSION, path: "Notes/x.md" },
+    },
+    files: {
+      "a.md": { fileId: "f", versionId: "v", mtime: 1, size: 2, sha256: "s", ts: 9 },
+      "b.md": { fileId: "f", versionId: "v", mtime: 1, size: 2, sha256: "s", ts: "nine" },
+    },
+  }, false);
+  assert.deepEqual(good.feedMark, mark);
+  assert.deepEqual(Object.keys(good.graves), [ID, "ef".repeat(16)], "a grave names a request path and a publication");
+  assert.equal(good.graves[ID].ts, 5);
+  assert.equal(good.graves["ef".repeat(16)].ts, undefined);
+  assert.equal(good.files["a.md"].ts, 9);
+  assert.equal("ts" in good.files["b.md"], false, "an unreadable time is no time");
+  // No mark is a device that has not read the feed yet -- a 1.1.2 data file
+  // among them -- and never a mark of zero.
+  for (const broken of [{ ...mark, seq: 0 }, { ...mark, seq: 1.5 }, { ...mark, fileId: "f" }, { ...mark, versionId: ID },
+    { ...mark, ts: "late" }, { ...mark, replay: 1 }, { seq: 7 }, "mark", null]) {
+    assert.equal(parseData({ feedMark: broken }, false).feedMark, null, JSON.stringify(broken));
+  }
+  assert.equal(parseData({}, false).feedMark, null);
+  assert.deepEqual(parseData({}, false).graves, {});
+});
+
+test("graves are capped oldest first, and a file recorded again has none", async () => {
+  const state = await State.open(store(), false, memorySecrets());
+  const id = (n) => n.toString(16).padStart(32, "0");
+  let dropped = 0;
+  for (let n = 1; n <= GRAVES_MAX + 3; n++) dropped += state.bury(id(n), { versionId: "cd".repeat(32), path: `Notes/${n}.md`, folder: false });
+  assert.equal(dropped, 3);
+  assert.equal(Object.keys(state.data.graves).length, GRAVES_MAX);
+  assert.deepEqual(Object.keys(state.data.graves).slice(0, 2), [id(4), id(5)], "the oldest go first");
+  state.setFile("Notes/9.md", { fileId: id(9), versionId: "v", mtime: 1, size: 1, sha256: "s" });
+  state.setFolder("Notes/10", { fileId: id(10), versionId: "v" });
+  assert.equal(state.data.graves[id(9)], undefined, "a note alive again is no deletion to re-send");
+  assert.equal(state.data.graves[id(10)], undefined);
+  const many = {};
+  for (let n = 1; n <= GRAVES_MAX + 2; n++) many[id(n)] = { versionId: "cd".repeat(32), path: `Notes/${n}.md`, folder: false };
+  const reloaded = parseData({ graves: many }, false);
+  assert.equal(Object.keys(reloaded.graves).length, GRAVES_MAX, "a data file holding more than the cap loads the newest");
+  assert.equal(reloaded.graves[id(1)], undefined);
+  assert.equal(reloaded.graves[id(GRAVES_MAX + 2)].path, `Notes/${GRAVES_MAX + 2}.md`);
+});
+
 test("pushed means the record matches the bytes the vault holds now", () => {
   const record = { fileId: "f1", versionId: "v1", mtime: 5, size: 7, sha256: "s" };
   assert.equal(isPushed(record, 5, 7), true);
@@ -135,6 +207,16 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // capitalisation off a selected folder, and a barrier is a record still
     // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
     retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
+    // And a parked record, which names a version on the server being left
+    // (`sync/engine.ts`, `park`; issue #144).
+    parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
+    // And a paused note (#179), which names a file id on that server too.
+    paused: { f6: { path: "Notes/stamped.md" } },
+    // And the feed mark and the graves (#145), which name entries and
+    // versions on the server being left: a mark kept for the next server
+    // would read its journal as a restored one.
+    feedMark: { seq: 9, fileId: "f1", versionId: "v1", ts: 5, replay: false },
+    graves: { f4: { versionId: "v4", path: "Notes/gone.md", folder: false } },
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
   });
 
@@ -145,7 +227,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [],
+      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, feedMark: null, graves: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

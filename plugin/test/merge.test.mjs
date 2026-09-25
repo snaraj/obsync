@@ -141,13 +141,23 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   const storms = r.host.logs.filter((line) => line.includes("reason=merge_storm"));
   assert.equal(storms.length, 1, r.host.logs.filter((l) => l.startsWith("pull")).join(" | "));
   assert.match(storms[0], /decision=refused reason=merge_storm file=[0-9a-f]{32} count=6 window_ms=60000/);
-  assert.equal(
-    r.host.notices.filter((notice) => notice.includes("stopped merging")).length, 1,
-    "the user is told once, not once per version",
-  );
-  // And the breaker never drops content: both sides are still kept.
-  assert.equal(results[5], "conflict_copy");
-  assert.equal(r.host.text(NOTE), "the line this device wrote\n");
+  const told = r.host.notices.filter((notice) => notice.includes("stopped merging"));
+  assert.equal(told.length, 1, "the user is told once, not once per version");
+  // What was seen, and no cause this device cannot see: every device here is
+  // current, and a notice that blamed an out-of-date one sent S89 looking for
+  // one (issue #179).
+  assert.match(told[0], /resolved it more than 5 times in a row in under a minute without the note changing here\./);
+  assert.doesNotMatch(told[0], /up to date/);
+  // And the breaker never drops content. Tripped, it merges nothing more, and
+  // the pair is still settled by the rule every device shares (issue #135):
+  // one version is the note, the other a copy, the fork closed.
+  assert.ok(["skipped", "applied"].includes(results[5]), results.join(","));
+  assert.ok(!r.host.logs.slice(r.host.logs.indexOf(storms[0])).some((line) => line.includes("decision=merged")));
+  const kept = [...r.host.files.keys()].map((path) => r.host.text(path));
+  for (const text of ["the line this device wrote\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\n`)]) {
+    assert.ok(kept.includes(text), `${JSON.stringify(text)} is in no file: ${JSON.stringify(kept)}`);
+  }
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
 });
 
 /**

@@ -1,0 +1,14 @@
+# M159: a version is written over a save the user made while it downloaded, and the editor reloads the loss
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -694,10 +694,6 @@
+   try {
+     await writeVerified(context, manifest, writer);
+     const now = over === undefined ? null : await context.host.stat(manifest.path);
+-    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
+-      await writer.abort();
+-      return null;
+-    }
+     // The commit's own stat, handed back rather than looked up again: it is
+     // the metadata of the bytes THIS write put there, and a second stat would
+     // describe whatever the user saved a moment later instead (finding 2).

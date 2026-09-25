@@ -1,0 +1,12 @@
+# M449: bytes typed here are recorded as another device's version of the same size and time, and never uploaded
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2295,7 +2295,7 @@
+     const since = context.state.data.lastSeq;
+     try {
+       const held = await heldNotes(context.transport, context.manifestKey, since);
+-      return { notes: new Map([...held].filter(([, note]) => note.device_id === context.deviceId)), since, started };
++      return { notes: new Map(held), since, started };
+     } catch (error) {
+       context.host.log(
+         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +

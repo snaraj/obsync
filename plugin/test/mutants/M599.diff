@@ -1,0 +1,12 @@
+# M599: force pairing after empty-server switch
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -551,7 +551,7 @@
+     if (!this.live) return;
+     this.onLeft();
+     this.close();
+-    if (mode === "pair") new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
++    if (true) new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
+     else new AccountSetupModal(this.app, this.plugin).open();
+   }
+ }

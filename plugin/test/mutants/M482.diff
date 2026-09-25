@@ -1,0 +1,12 @@
+# M482: an edit made before another device's version arrived counts as an answer to it, and the note pauses
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -158,7 +158,7 @@
+  */
+ export async function answerOf(context: SyncContext, path: string, mtime: number): Promise<number | null> {
+   const arrived = context.arrivals.get(path);
+-  if (arrived === undefined || mtime < arrived || mtime - arrived >= ANSWER_MS) return null;
++  if (arrived === undefined || mtime - arrived >= ANSWER_MS) return null;
+   return context.host.typing(path) ? null : arrived;
+ }
+ 

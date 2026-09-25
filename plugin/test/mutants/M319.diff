@@ -1,0 +1,11 @@
+# M319: a note being typed in is deleted from under the cursor in the pause just after a save (the save is never remembered)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1534,7 +1534,6 @@
+       // first entry the window can still read.
+       const now = context.now();
+       context.pushedAt.delete(path);
+-      context.pushedAt.set(path, now);
+       for (const [old, at] of context.pushedAt) {
+         if (now - at <= EDITING_WINDOW_MS) break;
+         context.pushedAt.delete(old);

@@ -1,0 +1,12 @@
+# M608: register a verifier after the key changes
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2726,7 +2726,7 @@
+       if (vrk === null || this.forgottenDevice) return;
+       const { verifier } = await accountRecovery(vrk);
+       assertCurrent();
+-      if (state.data.vrk !== vrk) return;
++      if (false) return;
+       const registered = await transport.registerRecovery(verifier);
+       assertCurrent();
+       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);

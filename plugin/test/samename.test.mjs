@@ -21,10 +21,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
+import { DEVICE_B, KEYS, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { applyChange } = require("../build/sync/pull.js");
+const { applyChange, settleBeside } = require("../build/sync/pull.js");
 const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
 const { QUIET_MS } = require("../build/sync/engine.js");
@@ -509,9 +509,17 @@ test("a save that lands on a version as it is written is not recorded as that ve
     parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
   });
 
-  assert.equal(await applyChange(r.context, next), "conflict_copy");
+  // Not written over, and not copied either: a descendant arriving over an
+  // edit not yet pushed is left for that edit's push, which forks the file,
+  // and the fork is settled then (issue #135). Nothing is lost on the way.
+  assert.equal(await applyChange(r.context, next), "skipped");
   assert.equal(r.host.text(NOTE), USER, "the save was overwritten by a later version of that id");
-  assert.equal(r.host.text(copies(r.host)[0]), `${THEIRS}and another line\n`);
+  assert.equal(r.state.fileByPath(NOTE).sha256, "", "the save could be pushed as unchanged");
+  const pushed = await pushFile(r.context, NOTE);
+  await applyChange(r.context, { ...next, heads: r.server.files.get(ours.fileId).heads, conflicted: pushed.ack.conflicted });
+  const kept = [...r.host.files.keys()].map((path) => r.host.text(path)).join("");
+  assert.ok(kept.includes(USER), `the save is in no file: ${JSON.stringify([...r.host.files.keys()])}`);
+  assert.ok(kept.includes(`${THEIRS}and another line\n`), "the later version is in no file");
 });
 
 /**
@@ -1396,4 +1404,361 @@ test("a record of other bytes landing while the push reads is not taken for this
   const outcome = await pushFile(r.context, NOTE);
   assert.notEqual(outcome.status, "unchanged", "a push was dropped for a record of other bytes");
   assert.ok(!r.host.logs.some((line) => line.includes("recorded_during_read")), r.host.logs.join(" | "));
+});
+
+/*
+ * ONE NOTE, TWO IDS, ACROSS VERSIONS (issue #147).
+ *
+ * The rule above leaves the pair's HIGHER id to its own device to retire, and
+ * a device on 1.1.1 has no such rule: it goes on editing the note under its
+ * own id. The holder of the lower id waited for a retirement that never came,
+ * and every later edit met the name as a collision -- a conflict copy each
+ * time, which updating the older device did not stop, because both feeds were
+ * past the pair. An EDIT of the twin is what settles it: its parent held these
+ * very bytes at this very name, so the device that made it holds that id and
+ * is not retiring it.
+ */
+
+const SHARED = "Shared.md";
+
+/**
+ * S13 after its first step. Both vaults hold the note: the desktop (a) under
+ * the LOWER id, which it keeps as the #131 rule says, retiring nothing; the
+ * laptop (b) under the HIGHER id, which it never retires. b stands for 1.1.1:
+ * its feed is past a's version and it tracks its own, which is where 1.1.1
+ * left the real laptop, and what it does from here -- publish its edits under
+ * that id, pass over a tombstone for an id it does not track, apply a version
+ * of the id it tracks -- is what 1.1.1 does too.
+ */
+async function skewed(t) {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", { isMobileB: false });
+  const bytes = enc(SAME_TEXT);
+  const versions = {};
+  for (const [device, fileId, deviceId, mtime] of [[a, LOWER, KEYS.deviceId, 1000], [b, HIGHER, DEVICE_B, 1500]]) {
+    device.host.write(SHARED, SAME_TEXT, mtime);
+    const version = await server.publish({
+      fileId, path: SHARED, bytes, mtime, deviceId, domainKey: keys.domainKey, manifestKey: keys.manifestKey,
+    });
+    device.state.setFile(SHARED, {
+      fileId, versionId: version.version_id, mtime, size: bytes.length, sha256: await sidDigest(version.sids),
+    });
+    versions[fileId] = version;
+  }
+  a.state.data.lastSeq = versions[LOWER].seq;
+  b.state.data.lastSeq = server.seq;
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("identical_same_name role=keep")));
+  const story = () => `desktop=${JSON.stringify([...a.host.files.keys()])} laptop=${JSON.stringify([...b.host.files.keys()])} ` +
+    `| desktop: ${pullLog(a)} | laptop: ${pullLog(b)}`;
+  return { server, timers, a, b, keys, versions, story };
+}
+
+/** One edit on `from`, waited for on `to` until it lands at the name or beside it. */
+async function edit(timers, from, to, text, mtime) {
+  from.host.write(SHARED, text, mtime);
+  await timers.run(STEP_MS, () => to.host.text(SHARED) === text || copies(to.host).length > 0);
+  await timers.run(STEP_MS);
+}
+
+/** One id for the note on both devices, the same text, and no copy anywhere. */
+function one(a, b, text, story) {
+  for (const device of [a, b]) {
+    assert.deepEqual(copies(device.host), [], `a copy was made: ${story()}`);
+    assert.equal(device.host.text(SHARED), text, `the edit did not reach the note: ${story()}`);
+  }
+  assert.equal(a.state.fileByPath(SHARED).fileId, b.state.fileByPath(SHARED).fileId, `the devices track different ids: ${story()}`);
+  return a.state.fileByPath(SHARED).fileId;
+}
+
+test("mixed versions: the older device's edit settles the pair on its id, with no copy", async (t) => {
+  const { server, timers, a, b, keys, versions, story } = await skewed(t);
+  const FROM_B = `${SAME_TEXT}typed on the laptop\n`;
+
+  await edit(timers, b, a, FROM_B, 3000);
+
+  assert.equal(one(a, b, FROM_B, story), HIGHER, `the pair did not settle on the id the laptop edits: ${story()}`);
+  // The desktop retired its own id once, on the version it recorded; the
+  // laptop's id carries every version it had.
+  const lower = await published(server, LOWER, keys.manifestKey);
+  assert.equal(lower.filter((manifest) => manifest.deleted).length, 1, `the desktop's id was not retired once: ${story()}`);
+  assert.deepEqual(server.files.get(LOWER).versions[0].parents, [versions[LOWER].version_id]);
+  assert.equal((await published(server, HIGHER, keys.manifestKey)).at(-1).deleted, false);
+  assert.ok(pullLog(a).includes(`decision=converged reason=edited_twin keeper=${HIGHER} retired=${LOWER} tombstone=posted`), story());
+
+  // And every later edit, from either side, is an ordinary update.
+  const FROM_A = `${FROM_B}and on the desktop\n`;
+  await edit(timers, a, b, FROM_A, 4000);
+  one(a, b, FROM_A, story);
+  const AGAIN = `${FROM_A}and the laptop again\n`;
+  await edit(timers, b, a, AGAIN, 5000);
+  assert.equal(one(a, b, AGAIN, story), HIGHER);
+});
+
+test("an update in place: once the older device runs this version, the newer device's edit settles the pair too", async (t) => {
+  const { server, timers, a, b, keys, versions, story } = await skewed(t);
+  // The laptop is updated where it stands: same device, same state, a new
+  // engine. Nothing re-meets the pair -- both feeds are past it -- so the two
+  // ids are still two after the restart, exactly as on the real laptop.
+  b.engine.stop();
+  await b.engine.start();
+  await timers.run(STEP_MS);
+  assert.notEqual(a.state.fileByPath(SHARED).fileId, b.state.fileByPath(SHARED).fileId, "precondition: the pair is split");
+  const FROM_A = `${SAME_TEXT}typed on the desktop\n`;
+
+  await edit(timers, a, b, FROM_A, 3000);
+
+  assert.equal(one(a, b, FROM_A, story), LOWER, `the pair did not settle on the id the desktop edits: ${story()}`);
+  const higher = await published(server, HIGHER, keys.manifestKey);
+  assert.equal(higher.filter((manifest) => manifest.deleted).length, 1, `the laptop's id was not retired once: ${story()}`);
+  assert.deepEqual(server.files.get(HIGHER).versions[0].parents, [versions[HIGHER].version_id]);
+  assert.ok(pullLog(b).includes(`decision=converged reason=edited_twin keeper=${LOWER} retired=${HIGHER} tombstone=posted`), story());
+
+  const FROM_B = `${FROM_A}and on the laptop\n`;
+  await edit(timers, b, a, FROM_B, 4000);
+  assert.equal(one(a, b, FROM_B, story), LOWER);
+});
+
+const EDIT = `${SAME_TEXT}and a line typed on the other device\n`;
+
+/**
+ * This device holding `ours` at NOTE, clean; the other device's `theirs` made
+ * as a twin of it and then edited, unseen here until the edit arrives.
+ */
+async function editedTwin(ours, theirs, { parentText = SAME_TEXT, parentPath = NOTE, parentKey } = {}) {
+  const r = await rig();
+  const bytes = r.host.seed(NOTE, SAME_TEXT, 2000);
+  const own = await r.server.publish({
+    fileId: ours, path: NOTE, bytes, mtime: 2000, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  r.state.setFile(NOTE, {
+    fileId: ours, versionId: own.version_id, mtime: 2000, size: bytes.length, sha256: await sidDigest(own.sids),
+  });
+  const parent = await r.server.publish({
+    fileId: theirs, path: parentPath, bytes: enc(parentText), mtime: 3000,
+    domainKey: r.keys.domainKey, manifestKey: parentKey ?? r.keys.manifestKey,
+  });
+  const frame = await r.server.publish({
+    fileId: theirs, path: NOTE, bytes: enc(EDIT), mtime: 5000, parents: [parent.version_id],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  return { r, own, frame };
+}
+
+test("an edit of the twin is taken as an update, from either side, and only this device's id is retired", async () => {
+  for (const [ours, theirs] of [[LOWER, HIGHER], [HIGHER, LOWER]]) {
+    const { r, own, frame } = await editedTwin(ours, theirs);
+
+    assert.equal(await applyChange(r.context, frame), "applied", pullLog(r));
+
+    assert.deepEqual(copies(r.host), [], `the twin's edit was copied: ${pullLog(r)}`);
+    assert.equal(r.host.text(NOTE), EDIT, "the edit did not reach the note");
+    const record = r.state.fileByPath(NOTE);
+    assert.equal(record.fileId, theirs, "the name is not recorded under the id that was edited");
+    assert.equal(record.versionId, frame.version_id);
+    assert.equal(r.state.pathByFileId(ours), undefined, "the retired id is still recorded");
+    const walk = await published(r.server, ours, r.keys.manifestKey);
+    assert.equal(walk.length, 2, "this device's id was not retired exactly once");
+    assert.equal(walk.at(-1).deleted, true);
+    assert.deepEqual(r.server.files.get(ours).versions[0].parents, [own.version_id]);
+    assert.equal((await published(r.server, theirs, r.keys.manifestKey)).at(-1).deleted, false, "the edited id was retired");
+  }
+});
+
+test("an edit that is not provably of this very note keeps both, and retires nothing", async () => {
+  const cases = {
+    "a different note": { parentText: THEIRS },
+    "a twin somewhere else": { parentPath: "Notes/Elsewhere.md" },
+    "a parent this vault cannot read": { parentKey: new Uint8Array(32).fill(7) },
+    "an unpushed edit here": { local: "the same note on both devices, and typed on here\n" },
+  };
+  for (const [name, { local, ...options }] of Object.entries(cases)) {
+    const { r, frame } = await editedTwin(LOWER, HIGHER, options);
+    if (local !== undefined) r.host.seed(NOTE, local, 2500);
+
+    await applyChange(r.context, frame);
+
+    const texts = [...r.host.files.keys()].map((path) => r.host.text(path)).sort();
+    assert.deepEqual(texts, [EDIT, local ?? SAME_TEXT].sort(), `${name}: a note was lost or merged: ${pullLog(r)}`);
+    assert.equal((await published(r.server, LOWER, r.keys.manifestKey)).at(-1).deleted, false, `${name}: this device's id was retired`);
+    assert.ok(!pullLog(r).includes("edited_twin"), `${name}: ${pullLog(r)}`);
+  }
+});
+
+// --- beside is temporary (issue #149) ----------------------------------------
+
+/**
+ * The vault has reported the copy this device wrote. The engine consumes
+ * that echo when the vault's own event for the write arrives; this rig has
+ * no engine, so the test says when it happened.
+ */
+const reported = (r) => r.context.written.clear();
+
+/** The other device renames this device's own note at the name to another. */
+const renameAway = (r) => r.server.publish({
+  fileId: LOWER, path: OTHER, bytes: enc(MINE), mtime: 7000, parents: [r.state.fileByPath(NOTE).versionId],
+  domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+});
+
+test("a copy beside its name takes it as soon as the note holding the name is renamed away", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  assert.equal(r.state.fileByPath(copy).name, NOTE, "the copy does not remember the name it waits for");
+  assert.equal((await r.reload()).fileByPath(copy).name, NOTE, "and a restart forgets it");
+  reported(r);
+  // Waiting is not a refusal: while the name is held, nothing is tried or said.
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.logs.filter((line) => line.includes("beside")).length, 0, pullLog(r));
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(OTHER), MINE, "the rename did not land");
+  assert.equal(r.host.text(NOTE), THEIRS, `the copy did not take its name: ${pullLog(r)}`);
+  assert.equal(r.host.text(copy), null, "and left a duplicate behind");
+  assert.equal(r.state.pathByFileId(HIGHER), NOTE);
+  assert.equal(r.state.fileByPath(NOTE).name, undefined, "it still waits for the name it has");
+  assert.deepEqual(r.host.trashed, [], "a move trashed something");
+  assert.ok(r.host.logs.some((line) => line === `pull path_class=file decision=renamed_from_beside file=${HIGHER} seq=${r.server.seq}`),
+    pullLog(r));
+});
+
+test("a name another record still holds is not taken, even once its file is gone", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  // Deleted here, and its deletion not published yet: its record still
+  // stands, and it is what that tombstone is posted from.
+  r.host.files.delete(NOTE);
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.text(copy), THEIRS);
+  assert.equal(r.state.fileByPath(NOTE)?.fileId, LOWER, "the record of a deletion still to be published was replaced");
+});
+
+test("a copy beside its name that holds an unpushed edit stays where it is", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  r.host.seed(copy, "the user's own words\n", 9000);
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(copy), "the user's own words\n", "an unpushed edit was moved to another name");
+  assert.equal(r.host.text(NOTE), null);
+  assert.equal(r.state.pathByFileId(HIGHER), copy);
+});
+
+test("a move to the freed name that fails is logged, and the version that freed it stays applied", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+  reported(r);
+  const move = r.host.move.bind(r.host);
+  r.host.move = async (from, to) => {
+    if (from === copy) throw new Error("the disk refused");
+    return move(from, to);
+  };
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+
+  assert.equal(r.host.text(OTHER), MINE);
+  assert.equal(r.host.text(copy), THEIRS);
+  assert.ok(r.host.logs.includes(`pull path_class=file decision=beside_kept reason=failed file=${HIGHER} seq=${r.server.seq}`),
+    pullLog(r));
+});
+
+/**
+ * NOT BEFORE THE VAULT HAS REPORTED ITS OWN WRITE. That report can come after
+ * a move, and a move whose echo it clears is read as the user renaming
+ * whichever note the pull has put at that name since. So a copy whose write
+ * is still unreported waits, and moves at the next pass after the report.
+ */
+test("a copy beside its name waits for the vault to report its write before it moves", async () => {
+  const { r, frame } = await collision(LOWER, HIGHER);
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = copies(r.host)[0];
+
+  assert.equal(await applyChange(r.context, await renameAway(r)), "applied");
+  assert.equal(r.host.text(copy), THEIRS, "a copy moved before its write was reported");
+  assert.equal(r.host.text(NOTE), null);
+
+  reported(r);
+  await settleBeside(r.context, 0);
+  assert.equal(r.host.text(NOTE), THEIRS, pullLog(r));
+  assert.equal(r.state.pathByFileId(HIGHER), NOTE);
+});
+
+const DRAFT_TEXT = "the draft\n";
+const FINAL_TEXT = "the final text, longer\n";
+
+/**
+ * A swap as the other device publishes it: this device's two notes, Draft and
+ * Final, and the two versions that trade their names. The note that was Final
+ * holds the LOWER id and arrives first, so the same-name rule, were it asked,
+ * would move the note it waits on.
+ */
+async function swapped() {
+  const r = await rig();
+  r.host.seed("Notes/Draft.md", DRAFT_TEXT, 1000);
+  r.host.seed("Notes/Final.md", FINAL_TEXT, 1000);
+  r.state.setFile("Notes/Draft.md", { fileId: HIGHER, versionId: "", mtime: -1, size: 0, sha256: "" });
+  r.state.setFile("Notes/Final.md", { fileId: LOWER, versionId: "", mtime: -1, size: 0, sha256: "" });
+  await pushFile(r.context, "Notes/Draft.md");
+  await pushFile(r.context, "Notes/Final.md");
+  const version = (fileId, path, text, from) => r.server.publish({
+    fileId, path, bytes: enc(text), mtime: 1000, parents: [r.state.fileByPath(from).versionId],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const first = await version(LOWER, "Notes/Draft.md", FINAL_TEXT, "Notes/Final.md");
+  const second = await version(HIGHER, "Notes/Final.md", DRAFT_TEXT, "Notes/Draft.md");
+  r.server.requests.length = 0;
+  assert.equal(await applyChange(r.context, first), "applied");
+  assert.equal(r.state.fileByPath("Notes/Final.md").name, "Notes/Draft.md", "the first version did not wait beside its name");
+  return { r, second };
+}
+
+/** Both notes under the names the other device gave them, and nothing else. */
+function swappedNames(r) {
+  assert.equal(r.host.text("Notes/Draft.md"), FINAL_TEXT, pullLog(r));
+  assert.equal(r.host.text("Notes/Final.md"), DRAFT_TEXT, pullLog(r));
+  assert.equal(r.state.fileByPath("Notes/Draft.md").fileId, LOWER);
+  assert.equal(r.state.fileByPath("Notes/Final.md").fileId, HIGHER);
+  assert.equal(Object.values(r.state.data.files).filter((record) => record.name !== undefined).length, 0);
+  assert.deepEqual(r.host.trashed, [], "a swap trashed a note");
+}
+
+test("a swap that arrives as two versions ends with each note under its new name", async () => {
+  const { r, second } = await swapped();
+  assert.equal(await applyChange(r.context, second), "applied");
+  swappedNames(r);
+  // Names only: nothing was downloaded or written for either (issue #108).
+  assert.deepEqual(r.server.requests.filter((request) => request.method === "GET" && request.target.startsWith("/v1/chunks")),
+    [], pullLog(r));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.includes(`pull path_class=file decision=parked_beside outcome=moved file=${LOWER} seq=${second.seq}`),
+    pullLog(r));
+});
+
+test("the note waiting at a name steps aside to the next free name when the first is taken", async () => {
+  const { r, second } = await swapped();
+  // Either note of the pair may be the one that steps aside: the first name
+  // each would take is taken.
+  const taken = ["Notes/Draft.md", "Notes/Final.md"].map((path) => conflictCopyPath(path, "this device", new Date(r.host.clock), 1));
+  for (const path of taken) r.host.seed(path, "a note the user keeps under that name\n", 500);
+  assert.equal(await applyChange(r.context, second), "applied");
+  swappedNames(r);
+  for (const path of taken) assert.equal(r.host.text(path), "a note the user keeps under that name\n");
+  assert.deepEqual(copies(r.host).sort(), [...taken].sort());
+});
+
+test("a note waiting at a name that holds an unpushed edit is not moved for the version that wants the name", async () => {
+  const { r, second } = await swapped();
+  r.host.seed("Notes/Final.md", `${FINAL_TEXT}typed here\n`, 9000);
+  await applyChange(r.context, second);
+  assert.equal(r.host.text("Notes/Final.md"), `${FINAL_TEXT}typed here\n`, "the edit was moved or replaced");
+  assert.equal(r.state.fileByPath("Notes/Final.md").fileId, LOWER);
+  assert.equal(r.state.pathByFileId(HIGHER), "Notes/Draft.md");
+  assert.equal(r.state.fileByPath("Notes/Draft.md").name, "Notes/Final.md", pullLog(r));
 });

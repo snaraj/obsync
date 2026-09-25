@@ -1,0 +1,11 @@
+# M358: Cancel on "not a folder in this vault" saves the folder anyway
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -400,7 +400,6 @@
+           "Save anyway",
+         );
+         this.plugin.log(`scope decision=${kept ? "confirmed" : "declined"} reason=not_a_folder folders=${missing.length}`);
+-        if (!kept) return null;
+       }
+       selection.forEach((folder, index) => {
+         const spelled = shown[index];

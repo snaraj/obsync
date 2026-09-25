@@ -1,0 +1,12 @@
+# M193: with "Deleted files" set to the vault's .trash, a note deleted elsewhere goes to the system Trash instead
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1143,7 +1143,7 @@
+     if (option === "none") {
+       await vault.adapter.remove(path);
+       bin = "none";
+-    } else if (option === "local" || !(await vault.adapter.trashSystem(path).catch(() => false))) {
++    } else if (!(await vault.adapter.trashSystem(path).catch(() => false))) {
+       await vault.adapter.trashLocal(path);
+       bin = option === "local" ? "local" : "local reason=system_refused";
+     }

@@ -1,0 +1,12 @@
+# M224: a data file can name a parked file outside the vault, and the status bar shows it
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -300,7 +300,7 @@
+     for (const [fileId, record] of Object.entries(parked)) {
+       // The file id goes into a request path and the path onto the screen;
+       // the reason only chooses words, so a damaged one keeps the record.
+-      if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
++      if (!isHex(fileId, 16) || !isRecord(record) || typeof record["path"] !== "string") continue;
+       data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+     }
+   }

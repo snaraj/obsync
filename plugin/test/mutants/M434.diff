@@ -1,0 +1,12 @@
+# M434: a file that merely wears the plugin folder's name makes a vault count as synced
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -489,7 +489,7 @@
+     let at = dir;
+     for (const name of PLUGIN_FOLDER) {
+       at = desktop.path.resolve(at, name);
+-      if ((await walker(desktop.fs).lstat(at))?.isDirectory() !== true) return false;
++      if ((await walker(desktop.fs).lstat(at)) === null) return false;
+     }
+     return true;
+   }

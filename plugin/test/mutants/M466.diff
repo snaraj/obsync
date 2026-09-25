@@ -1,0 +1,12 @@
+# M466: the graves grow without bound
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -671,7 +671,7 @@
+   bury(fileId: string, grave: Grave): number {
+     delete this.data.graves[fileId];
+     this.data.graves[fileId] = grave;
+-    const over = Object.keys(this.data.graves).slice(0, -GRAVES_MAX);
++    const over = Object.keys(this.data.graves).slice(0, 0);
+     for (const id of over) delete this.data.graves[id];
+     return over.length;
+   }

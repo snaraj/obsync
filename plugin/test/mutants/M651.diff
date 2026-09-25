@@ -1,0 +1,12 @@
+# M651: published edit leaves the deletion as another head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1379,7 +1379,7 @@
+           // Retire the deletion from the current heads, preserving it in history.
+           // Only the locally held edit and this tombstone are incorporated; an
+           // unrelated concurrent edit remains a head for ordinary merge handling.
+-          const settled = await reviveFile(context, localPath, change.version_id);
++          const settled = await pushFile(context, localPath, true);
+           if (settled.status === "pushed") context.authored.add(settled.versionId);
+           else notifyKeptDeletion(context, change, localPath, true);
+           return "skipped";

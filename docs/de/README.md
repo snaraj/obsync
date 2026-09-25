@@ -109,7 +109,7 @@ zeigt; unter iOS ist das Vertrauen ein zweiter Schalter nach der Installation.
 
    ![Der Einstellungsreiter des Plugins: das Feld Server URL mit einem Demo-Hostnamen, das Feld für Edge-Header und die Zeile Connection mit den Schaltflächen Check und Open dashboard](../assets/settings-server.png)
 
-3. Füge das Setup-Token unter **First-time setup** ein, wähle **Set up** und
+3. Füge das Setup-Token unter **Setup or recover** ein, wähle **Set up or recover** und
    schreib die 24-Wörter-Wiederherstellungsphrase auf.
 
    ![Der Abschnitt This device des Einstellungsreiters: die Zeile Pairing mit Pair this device und Pair a new device, die Zeile First-time setup mit dem Feld Setup token und der Schaltfläche Set up sowie die Zeile Vault key](../assets/settings-setup.png)

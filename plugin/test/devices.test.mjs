@@ -37,7 +37,7 @@ async function plugin(wrap = (request) => request) {
     edgeHeaders: () => [],
     maxAttempts: 2,
   });
-  const instance = Object.create(ObsyncPlugin.prototype);
+  const instance = new ObsyncPlugin();
   instance.state = state;
   instance.transport = transport;
   instance.engine = null;
@@ -186,7 +186,7 @@ test("revoking this device stops syncing and says so in the status", async () =>
 
   assert.equal(stopped, true, "the engine was stopped");
   assert.equal(instance.engine, null);
-  assert.match(instance.statusText(), /this device was revoked/);
+  assert.match(instance.statusText(), /no longer recognises this device/);
   assert.equal(server.devices[0].revoked, true);
 });
 

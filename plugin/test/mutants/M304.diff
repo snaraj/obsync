@@ -1,0 +1,12 @@
+# M304: a device that left the server locally logs it as a refusal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2416,7 +2416,7 @@
+       return { decision: "left", revoked };
+     } finally {
+       this.log(
+-        `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
++        `unpair decision=${revoked ? "revoked" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
+       );
+       // However this ended, a device that is still paired goes on syncing:

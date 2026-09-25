@@ -389,7 +389,7 @@ test("a tombstone does not take an edit this device never published", async () =
   // the note returns on every device instead of waiting for the next push.
   // The weaker "did not delete" notice is what a revive that could not
   // reach the server falls back to, and the test below is that side.
-  assert.match(host.notices.join(" "), /was kept and published again/);
+  assert.deepEqual(host.notices, [], "a settled deletion needs no notice (#178)");
   assert.ok(
     host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=pushed")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
@@ -424,7 +424,7 @@ test("a tombstone whose revive cannot publish keeps the file and says only that"
     host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=growing")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
-  assert.match(host.notices.join(" "), /did not delete/);
+  assert.match(host.notices.join(" "), /did not delete Notes\/Doomed\.md: it holds changes this device has not uploaded yet/);
   assert.doesNotMatch(
     host.notices.join(" "),
     /published again/,
@@ -455,6 +455,10 @@ test("a tombstone that forks from the version this device holds is one side of a
     host.logs.some((line) => line.includes("path_class=tombstone decision=local_edit_kept reason=delete_vs_edit")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
+  // And the notice says what happened (issue #173): the version here is
+  // already on the server, so there is nothing "not uploaded yet" to upload.
+  assert.deepEqual(host.notices, [], "the edit wins and the deletion moves to history (#178)");
+  assert.equal(server.files.get(created.file_id).heads.length, 1);
 });
 
 test("a save landing between the tombstone's check and its removal is kept", async () => {
@@ -604,61 +608,104 @@ test("concurrent edits with a common ancestor merge, keeping both", async () => 
   assert.equal(state.fileByPath("Notes/Shared.md").versionId, merged.version_id);
 });
 
-test("overlapping edits keep both sides as a named conflict copy", async () => {
-  const { host, server, context, keys: k } = await rig();
-  host.seed("Notes/Clash.md", "line\n", 1000);
-  const base = await pushFile(context, "Notes/Clash.md");
-  const theirs = await server.publish({
-    fileId: base.fileId,
-    path: "Notes/Clash.md",
-    bytes: enc("their line\n"),
-    mtime: 1757200002000,
-    domainKey: k.domainKey,
-    manifestKey: k.manifestKey,
-    parents: [base.versionId],
-  });
-  host.seed("Notes/Clash.md", "my line\n", 2000);
-  await pushFile(context, "Notes/Clash.md");
+/**
+ * A fork of one note that does not merge: this device's version and another
+ * device's, with the ORDER of their ids chosen. The ids are hashes over a
+ * fresh nonce, so a fork is drawn until it has the order a test needs; each
+ * draw is even odds, and 64 misses in a row is not a thing that happens.
+ */
+async function forkOf(path, base, mine, theirs, lower) {
+  for (let draw = 0; draw < 64; draw++) {
+    const r = await rig();
+    r.host.seed(path, base, 1000);
+    const first = await pushFile(r.context, path);
+    const other = await r.server.publish({
+      fileId: first.fileId, path, bytes: typeof theirs === "string" ? enc(theirs) : theirs, mtime: 1757200002000,
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, parents: [first.versionId],
+    });
+    r.host.seed(path, mine, 2000);
+    const ours = await pushFile(r.context, path);
+    if ((ours.versionId < other.version_id) === (lower === "ours")) {
+      const head = r.server.journal.find((frame) => frame.version_id === other.version_id);
+      return { r, fileId: first.fileId, ours, theirs: other, head: { ...head, conflicted: true } };
+    }
+  }
+  throw new Error("no fork with that order in 64 draws");
+}
 
-  const head = server.journal.find((frame) => frame.version_id === theirs.version_id);
-  assert.equal(await applyChange(context, { ...head, conflicted: true }), "conflict_copy");
-  assert.equal(host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
-  const copy = [...host.files.keys()].find((path) => path.includes("conflict from"));
-  assert.match(copy, /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
-  assert.equal(host.text(copy), "their line\n");
-  assert.match(host.notices.join(" "), /kept both versions/);
+/** The version that closed a fork: both heads as parents, one head's chunks. */
+const closing = (server, fileId) => server.files.get(fileId).versions.find((version) => version.parents.length === 2);
+
+/**
+ * Overlapping edits do not merge, and are settled by rule (issue #135): the
+ * lower version id keeps the note on every device, the other is ONE copy on
+ * every device, and one version naming both closes the fork. Both vantage
+ * points, because a rule that holds from one side is not a rule.
+ */
+test("overlapping edits: the lower id, this device's, keeps the note and the other is one copy", async () => {
+  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "ours");
+
+  assert.equal(await applyChange(r.context, head), "skipped");
+  assert.equal(r.host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
+  const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
+  assert.equal(copy.length, 1, JSON.stringify(copy));
+  assert.match(copy[0], /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4} UTC, [0-9a-f]{6}\)\.md$/);
+  assert.equal(r.host.text(copy[0]), "their line\n");
+  const closed = closing(r.server, fileId);
+  assert.deepEqual([...closed.parents].sort(), [ours.versionId, theirs.version_id].sort());
+  assert.deepEqual(closed.sids, r.server.files.get(fileId).versions.find((v) => v.version_id === ours.versionId).sids);
+  assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");
+  assert.equal(r.state.fileByPath("Notes/Clash.md").versionId, closed.version_id);
+  assert.match(r.host.notices.join(" "), /kept both versions/);
+});
+
+test("overlapping edits: the lower id, the other device's, takes the note and this device's is one copy", async () => {
+  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "theirs");
+
+  assert.equal(await applyChange(r.context, head), "applied");
+  assert.equal(r.host.text("Notes/Clash.md"), "their line\n");
+  const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
+  assert.equal(copy.length, 1, JSON.stringify(copy));
+  assert.match(copy[0], /^Notes\/Clash \(conflict from this device, /);
+  assert.equal(r.host.text(copy[0]), "my line\n", "this device's edit is not in its copy");
+  const closed = closing(r.server, fileId);
+  assert.deepEqual(closed.sids, theirs.sids);
+  assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");
+  assert.equal(r.state.fileByPath("Notes/Clash.md").versionId, closed.version_id);
 });
 
 test("a binary conflict is never merged", async () => {
-  const { host, server, context, keys: k } = await rig();
-  host.seed("image.png", Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]), 1000);
-  const base = await pushFile(context, "image.png");
-  const theirs = await server.publish({
-    fileId: base.fileId,
-    path: "image.png",
-    bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]),
-    mtime: 1757200002000,
-    domainKey: k.domainKey,
-    manifestKey: k.manifestKey,
-    parents: [base.versionId],
-  });
-  host.seed("image.png", Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x03]), 2000);
-  await pushFile(context, "image.png");
-  const head = server.journal.find((frame) => frame.version_id === theirs.version_id);
-  assert.equal(await applyChange(context, { ...head, conflicted: true }), "conflict_copy");
-  assert.ok([...host.files.keys()].some((path) => path.startsWith("image (conflict from iPhone")));
+  const bytes = (last) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, last]);
+  for (const lower of ["ours", "theirs"]) {
+    const { r, head } = await forkOf("image.png", bytes(1), bytes(3), bytes(2), lower);
+    assert.equal(await applyChange(r.context, head), lower === "ours" ? "skipped" : "applied");
+    assert.ok(!r.host.logs.some((line) => line.includes("decision=merged")), "a binary file was merged");
+    const copy = [...r.host.files.keys()].filter((path) => path.startsWith("image (conflict from "));
+    assert.equal(copy.length, 1);
+    assert.deepEqual(
+      [[...r.host.files.get("image.png").bytes], [...r.host.files.get(copy[0]).bytes]],
+      lower === "ours" ? [[...bytes(3)], [...bytes(2)]] : [[...bytes(2)], [...bytes(3)]],
+    );
+  }
 });
 
 /**
  * The fake server, wrapped so it spends nonces exactly as obsyncd does and
  * loses one answer. `before` loses the request instead, so the server never
  * saw it: the two together are the whole ambiguity a lost answer creates.
+ * `meanwhile` is what happens on this device while the loss is being settled
+ * -- it runs once, before the first request after the loss.
  */
-function lossy(server, host, state, { target, before = false }) {
+function lossy(server, host, state, { target, before = false, meanwhile = null }) {
   const spent = new Set();
   let lost = false;
   return new Transport({
     request: async (request) => {
+      if (lost && meanwhile !== null) {
+        const run = meanwhile;
+        meanwhile = null;
+        await run();
+      }
       const nonce = request.headers["X-Obsync-Nonce"];
       if (nonce !== undefined) {
         if (spent.has(nonce)) {
@@ -736,6 +783,127 @@ test("a version post that never arrived is posted again under a fresh signature"
   assert.equal(posts(server, outcome.fileId), 1, "the server saw the post exactly once: the re-post");
   assert.ok(host.logs.some((line) => line.includes("decision=reconciled") && line.includes("committed=false")));
   assert.equal(host.logs.some((line) => line.includes("status=401")), false);
+});
+
+/**
+ * A DELETION WHOSE FIRST SEND WAS LOST IS DECIDED AGAIN BEFORE IT IS SENT
+ * AGAIN (issue #173). Settling a lost answer reads the file back with retries
+ * -- 45 seconds of them in the battery -- and the note can come back in that
+ * time: restored here, or rewritten by another device's change pulled in the
+ * meantime. The re-send used to go out on the first send's word, deleting a
+ * note that was back and forking its file on the server for good.
+ */
+async function lostDeletion(path, meanwhile) {
+  const r = await rig();
+  r.host.seed(path, "one line\n", 1000);
+  const created = await pushFile(r.context, path);
+  r.host.files.delete(path);
+  const transport = lossy(r.server, r.host, r.state, { target: "/versions", before: true, meanwhile: () => meanwhile(r, created) });
+  const outcome = await pushDelete({ ...r.context, transport }, path);
+  return { ...r, created, outcome };
+}
+
+test("a lost deletion is sent again only while the note is still gone", async () => {
+  const { host, server, state, created, outcome } = await lostDeletion("Notes/Gone.md", async () => undefined);
+
+  assert.ok(outcome, "a deletion that is still true was dropped");
+  assert.equal(posts(server, created.fileId), 2, "the create and the one re-send");
+  assert.equal(server.journal.at(-1).deleted, true);
+  assert.equal(state.fileByPath("Notes/Gone.md"), undefined);
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=resent reason=still_gone file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+});
+
+test("a lost deletion is not sent again once the note is back on the disk", async () => {
+  const { host, server, state, created, outcome } = await lostDeletion("Notes/Back.md", async ({ host }) => {
+    host.seed("Notes/Back.md", "one line\n", 1000);
+  });
+
+  assert.equal(outcome, null, "a stale deletion was sent for a note that is back");
+  assert.equal(posts(server, created.fileId), 1, "the deletion was re-sent");
+  assert.deepEqual(server.files.get(created.fileId).heads, [created.versionId]);
+  assert.equal(host.text("Notes/Back.md"), "one line\n");
+  assert.ok(state.fileByPath("Notes/Back.md"), "the record of a note that is here was dropped");
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=file_present file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+  // The user put it back: nothing happened that they do not already know.
+  assert.deepEqual(host.notices, []);
+});
+
+test("a lost deletion is not sent again once another device's change brought the note back", async () => {
+  // The battery's shape (S79): deleted here while offline, edited and renamed
+  // on the other devices, and pulled back under its new name while this
+  // device was still settling its lost deletion.
+  const { host, server, created, outcome } = await lostDeletion("Notes/n13.md", async ({ server, context, host, keys: k }, created) => {
+    host.clock += 45000;
+    const renamed = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/n13-final.md",
+      bytes: enc("one line\nA-line\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, renamed);
+  });
+
+  assert.equal(outcome, null, "a stale deletion was sent for a note another device changed");
+  const file = server.files.get(created.fileId);
+  assert.equal(file.heads.length, 1, "the file forked on the server");
+  assert.equal(server.journal.some((frame) => frame.deleted), false);
+  assert.equal(host.text("Notes/n13-final.md"), "one line\nA-line\n");
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=record_changed file=${created.fileId} age_ms=45000`), host.logs.join(" | "));
+  // Said on the device where it happened: the note it deleted is back.
+  assert.equal(host.notices.length, 1, host.notices.join(" | "));
+  assert.match(host.notices[0], /Notes\/n13\.md/);
+  assert.match(host.notices[0], /Notes\/n13-final\.md/);
+  assert.match(host.notices[0], /changed on another device/);
+});
+
+test("a lost deletion withdrawn for another device's edit at the same name says the note is back, not back under its own name", async () => {
+  const { host, created, outcome } = await lostDeletion("Notes/Same.md", async ({ server, context, keys: k }, created) => {
+    const edited = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/Same.md",
+      bytes: enc("one line\nedited elsewhere\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, edited);
+  });
+
+  assert.equal(outcome, null);
+  assert.equal(host.text("Notes/Same.md"), "one line\nedited elsewhere\n");
+  assert.equal(host.notices.length, 1, host.notices.join(" | "));
+  assert.match(host.notices[0], /changed on another device before this deletion reached the server, so the note is back here\.$/);
+});
+
+test("a lost deletion is not sent again once the note has moved past the version it was decided from", async () => {
+  // Another device's edit is pulled in while the loss is settled, and the
+  // note is deleted here again at once: the path is empty again, but the
+  // first send's tombstone names a version the note has moved past, and sent
+  // it would fork the file -- the second deletion is the one to publish.
+  const { host, server, created, outcome } = await lostDeletion("Notes/Twice.md", async ({ server, context, host, keys: k }, created) => {
+    const edited = await server.publish({
+      fileId: created.fileId,
+      path: "Notes/Twice.md",
+      bytes: enc("one line\nB-line\n"),
+      mtime: 1757200002000,
+      domainKey: k.domainKey,
+      manifestKey: k.manifestKey,
+      parents: [created.versionId],
+    });
+    await applyChange(context, edited);
+    host.files.delete("Notes/Twice.md");
+  });
+
+  assert.equal(outcome, null, "a tombstone for a version the note has moved past was sent");
+  assert.equal(server.files.get(created.fileId).heads.length, 1, "the file forked on the server");
+  assert.equal(server.journal.some((frame) => frame.deleted), false);
+  assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=record_changed file=${created.fileId} age_ms=0`), host.logs.join(" | "));
+  // Nothing came back here, so there is nothing to tell.
+  assert.deepEqual(host.notices, []);
 });
 
 test("the common ancestor walk finds the shared base, or nothing", () => {
@@ -886,6 +1054,106 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   await timers.run(1000, () => state.fileByPath("Copying.bin") !== undefined);
   assert.equal(state.fileByPath("Copying.bin") !== undefined, true, "it pushes once the file settles");
   engine.stop();
+});
+
+/**
+ * A SAVE THE MODIFICATION TIME CANNOT SEE (issue #175). FAT32 keeps a file's
+ * modification time to the even second, so a second save of the same size
+ * inside one step leaves `(mtime, size)` exactly as the first push recorded
+ * it, and nothing that compares those two numbers can tell it happened. The
+ * engine's clock here is the timers' own, so "later" means the same thing to
+ * the push that measures an age and to the timer that fires on it.
+ */
+const STEP = 1790244622000;
+
+function coarseRig(rigged, timers, start = STEP + 300) {
+  Object.defineProperty(rigged.host, "clock", { get: () => start + timers.now, configurable: true });
+  const reads = [];
+  const read = rigged.host.read.bind(rigged.host);
+  rigged.host.read = async (path) => {
+    reads.push(path);
+    return await read(path);
+  };
+  return reads;
+}
+
+const rechecks = (host) => host.logs.filter((line) => line.startsWith("push path_class=file decision=recheck"));
+
+test("a second save of the same size inside one coarse mtime step is still sent", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const reads = coarseRig(rigged, timers);
+  const engine = engineOf(rigged, timers);
+
+  host.seed("Notes/n05.md", "LINE 3\nline 4\n", STEP);
+  await engine.start();
+  await timers.run(100, () => state.fileByPath("Notes/n05.md") !== undefined);
+  const first = state.fileByPath("Notes/n05.md");
+
+  // 0.6 s later, the same number of bytes, and the volume stamps it with the
+  // same even second.
+  host.seed("Notes/n05.md", "LINE 3\nLINE 4\n", STEP);
+  engine.changed("Notes/n05.md");
+  await timers.run(100, () => state.fileByPath("Notes/n05.md").versionId !== first.versionId);
+
+  const now = state.fileByPath("Notes/n05.md");
+  assert.equal(now.mtime, first.mtime, "the time never moved");
+  assert.notEqual(now.sha256, first.sha256, "and the bytes that were sent are the second save's");
+  assert.deepEqual(reads, ["Notes/n05.md", "Notes/n05.md"], "one read to publish, one when the step closed");
+  assert.equal(rechecks(host).length, 1, host.logs.join(" | "));
+  assert.match(rechecks(host)[0], /reason=coarse_mtime delay_ms=1[0-9]{3}$/);
+  engine.stop();
+});
+
+test("a file whose modification time can still move is never read twice", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const reads = coarseRig(rigged, timers);
+  const engine = engineOf(rigged, timers);
+
+  // A fine-grained stamp (APFS, NTFS, ext4), a whole second long past, and a
+  // whole second far ahead of this clock: none of them can hide a save.
+  host.seed("Notes/fine.md", "a fine stamp\n", STEP + 123);
+  host.seed("Notes/old.md", "an old stamp\n", STEP - 60_000);
+  host.seed("Notes/ahead.md", "a stamp ahead\n", STEP + 86_400_000);
+  await engine.start();
+  await timers.run(100, () => ["fine", "old", "ahead"].every((name) => state.fileByPath(`Notes/${name}.md`) !== undefined));
+  await timers.run(1000);
+
+  assert.equal(reads.length, 3, reads.join(", "));
+  assert.deepEqual(rechecks(host), []);
+  engine.stop();
+});
+
+test("each start clears an interrupted write's leftovers before it lists the vault, and a failed clean-up stops nothing", async () => {
+  const rigged = await rig();
+  const { host } = rigged;
+  const order = [];
+  host.sweep = async () => { order.push("sweep"); };
+  const list = host.list.bind(host);
+  host.list = async () => {
+    order.push("list");
+    return await list();
+  };
+  const engine = engineOf(rigged, new FakeTimers());
+  await engine.start();
+  engine.stop();
+  assert.deepEqual(order, ["sweep", "list"]);
+
+  // A walk that stops part way -- a file this user cannot stat -- is logged,
+  // and the start goes on.
+  host.sweep = async () => {
+    order.push("sweep");
+    throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  };
+  order.length = 0;
+  const again = engineOf(rigged, new FakeTimers());
+  await again.start();
+  again.stop();
+  assert.deepEqual(order, ["sweep", "list"]);
+  assert.ok(host.logs.includes("host path_class=temp decision=failed reason=sweep code=EACCES"), host.logs.join(" | "));
 });
 
 /** The engine, wired to one rig. The domain comes from the vault's map. */
@@ -1459,10 +1727,11 @@ test("sync now waits for the drain already running, and says which decision it t
   );
 
   // The other decision, so the line distinguishes two states rather than
-  // always naming one: nothing queued, no drain running.
+  // always naming one: no drain running; Sync now verifies the two records
+  // even when their metadata has not changed (#179).
   await engine.syncNow();
   assert.ok(
-    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=0 follow_up=0")),
+    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=1 in_flight=1 follow_up=0")),
     host.logs.join(" | "),
   );
   engine.stop();
@@ -1474,22 +1743,27 @@ test("sync now drains again for work queued after the drain it joined took its l
   const timers = new FakeTimers();
   // The window a join cannot cover: the drain's loop has ended, so an
   // enqueue landing in it joins a drain that will never look at the queue
-  // again. In the field that enqueue is a debounce timer or a vault deletion
-  // firing in the turn between the drain finishing and "Sync now" resuming;
-  // here it is the idle status the drain posts from inside that same turn.
+  // again. In the field that enqueue is a debounce timer, a settled vault
+  // deletion or a rename firing in the turn between the drain finishing and
+  // "Sync now" resuming; here it is a rename -- the one of the three a vault
+  // event queues in the same turn, since a deletion now waits for the other
+  // half of a move (#139) -- made from the idle status the drain posts
+  // inside that same turn.
   let armed = false;
   parkedFeed(server);
   const engine = engineOf(rigged, timers, {
     onStatus: (status) => {
       if (status.kind !== "idle" || !armed) return;
       armed = false;
+      host.files.set("Moved.md", host.files.get("Gone.md"));
       host.files.delete("Gone.md");
-      engine.deleted("Gone.md");
+      engine.renamed("Gone.md", "Moved.md");
     },
   });
-  host.seed("Gone.md", "deleted while the drain ran\n", 1000);
+  host.seed("Gone.md", "renamed while the drain ran\n", 1000);
   await engine.start();
   await timers.run(1000, () => state.fileByPath("Gone.md") !== undefined);
+  const goneId = state.fileByPath("Gone.md").fileId;
 
   const held = heldReads(host);
   host.seed("One.md", "the first note\n", 2000);
@@ -1499,23 +1773,54 @@ test("sync now drains again for work queued after the drain it joined took its l
   await timers.run(1000, () => held.reads.length === 1);
   armed = true;
 
-  let tombstoneAtReturn = null;
+  let movedAtReturn = null;
   const now = engine.syncNow().then(() => {
-    tombstoneAtReturn = server.journal.some((frame) => frame.deleted === true);
+    movedAtReturn = server.journal.filter((frame) => frame.file_id === goneId).length === 2;
   });
   held.release();
-  await timers.run(1000, () => tombstoneAtReturn !== null);
+  await timers.run(1000, () => movedAtReturn !== null);
   await now;
 
-  assert.equal(armed, false, "the deletion really was queued inside that window");
-  assert.equal(tombstoneAtReturn, true, "sync now returned before the path queued mid-drain was pushed");
-  assert.equal(state.fileByPath("Gone.md"), undefined, "and the tombstone was recorded");
+  assert.equal(armed, false, "the rename really was queued inside that window");
+  assert.equal(movedAtReturn, true, "sync now returned before the path queued mid-drain was pushed");
+  assert.equal(state.fileByPath("Moved.md").fileId, goneId, "and the move was recorded");
   assert.equal(state.fileByPath("One.md") !== undefined, true);
   assert.equal(state.fileByPath("Two.md") !== undefined, true);
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=1 follow_up=1")),
+      line.startsWith("sync_now decision=joined_running_drain queued=3 in_flight=1 follow_up=1")),
     host.logs.join(" | "),
   );
   engine.stop();
+});
+
+
+test("a pull publication joining an older upload still sends the edit made while it waited", async (t) => {
+  const r = await rig(), timers = new FakeTimers();
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers });
+  t.after(() => engine.stop());
+  await engine.start();
+  r.host.seed("joined.md", "older upload\n", 1000);
+  const post = r.transport.postVersion.bind(r.transport);
+  const started = deferred(), release = deferred();
+  let first = true;
+  r.transport.postVersion = async (...args) => {
+    if (first) { first = false; started.resolve(); await release.promise; }
+    return post(...args);
+  };
+  const older = engine.context.publish("joined.md");
+  await started.promise;
+  r.host.seed("joined.md", "latest edit made while upload waited\n", 2000);
+  // This is the out-of-turn pull caller. No watcher event or periodic scan
+  // supplies the second publication for it.
+  const joined = engine.context.publish("joined.md");
+  release.resolve();
+  await Promise.all([older, joined]);
+  for (let i = 0; i < 1000 && r.state.fileByPath("joined.md")?.mtime !== 2000; i++) await new Promise(setImmediate);
+  const record = r.state.fileByPath("joined.md");
+  assert.equal(record.mtime, 2000, "the joined request was dropped after the older acknowledgment");
+  assert.equal(record.size, new TextEncoder().encode("latest edit made while upload waited\n").length);
+  const file = r.server.files.get(record.fileId);
+  assert.equal(file.versions.length, 2);
+  assert.deepEqual(file.heads, [record.versionId]);
 });

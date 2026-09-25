@@ -1,0 +1,12 @@
+# M534: a clear control pauses the note again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -938,7 +938,7 @@
+ /** A current encrypted pause holds the target on every updated device. */
+ async function applyPause(context: SyncContext, change: ChangeRecord, manifest: PauseManifest): Promise<ApplyResult> {
+   const started = context.now();
+-  if (!manifest.paused || context.state.data.paused[manifest.target] !== undefined) return "skipped";
++  if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   const file = await context.transport.getFile(change.file_id);
+   // Replaying a pause that a later Resume cleared must not pause it again.
+   if (!file.heads.includes(change.version_id)) return "skipped";

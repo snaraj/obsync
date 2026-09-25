@@ -1,0 +1,12 @@
+# M559: a fresh local file at a held path escapes the hold
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1618,7 +1618,7 @@
+         return;
+       }
+       const held = context.state.fileByPath(path);
+-      if ((held !== undefined && context.state.data.paused[held.fileId] !== undefined) || Object.values(context.state.data.paused).some((entry) => entry.path === path)) {
++      if ((held !== undefined && context.state.data.paused[held.fileId] !== undefined)) {
+         if (held !== undefined && context.state.data.paused[held.fileId]?.remote !== true) await publishPause(context, held.fileId, path, true);
+         context.host.log(`push path_class=file decision=skipped reason=paused file=${held?.fileId ?? "untracked"}`);
+         return;

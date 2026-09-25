@@ -1,0 +1,13 @@
+# M201: a note moved in Finder inside the selection loses its history: it is tombstoned and republished under a new file id
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -784,8 +784,7 @@
+     const only = found.length === 1 ? (found[0] as VaultStat) : null;
+     const folders = context.state.data.syncFolders;
+     if (only !== null && inSyncScope(only.path, folders) && (await context.host.syncable(only.path))) {
+-      this.renamed(from, only.path);
+-      return "moved";
++      return null;
+     }
+     return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
+   }

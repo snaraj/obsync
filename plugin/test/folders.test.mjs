@@ -568,10 +568,10 @@ test("a folder record that disagrees with the version it rode in is refused", as
 test("a manifest version this build does not know is refused, and the feed moves on", async (t) => {
   const { context, host, server, state, keys: k } = await rig();
   // What 1.0.x does with a `v: 2` record is what this build must do with a
-  // `v: 3` one: refuse it, write nothing, tell the user once, keep going.
+  // `v: 4` one: refuse it, write nothing, tell the user once, keep going.
   const future = await server.publishManifest({
     fileId: "5a".repeat(16),
-    manifest: { v: 3, path: "Later.md", size: 0, mtime: 1757200000000, domain: DOMAIN, chunks: [], sha256: "", deleted: false },
+    manifest: { v: 4, path: "Later.md", size: 0, mtime: 1757200000000, domain: DOMAIN, chunks: [], sha256: "", deleted: false },
     sids: [], parents: [], deviceId: OTHER_DEVICE, manifestKey: k.manifestKey, bytes: 0,
   });
   assert.equal(await applyChange(context, future), "refused");

@@ -1,0 +1,12 @@
+# M346: an edit to a note waiting beside its name is never written, and the old text stays under the new version
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2596,7 +2596,7 @@
+   // (issue #108), and a write the vault has not reported yet is a note that
+   // cannot move (`settleBeside`).
+   const local = context.state.fileByPath(settled) as FileState;
+-  const beside = local.sha256 === (await sidDigest(change.sids))
++  const beside = true
+     ? (await context.host.stat(settled)) ?? { path: settled, mtime: local.mtime, size: local.size }
+     : await materialise(context, { ...manifest, path: settled });
+   await recordAt(context, change, beside.path, beside, manifest.path);

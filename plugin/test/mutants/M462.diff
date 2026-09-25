@@ -1,0 +1,12 @@
+# M462: a version where this device read none, with its last entry gone, costs a second read to notice
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -92,7 +92,7 @@
+     if (page.head_seq < cursor) reason = "head_behind";
+     else if (first?.seq === mark.seq && first.version_id !== mark.versionId) reason = "mark_replaced";
+     else if (first?.seq === mark.seq) reason = next !== undefined && next.seq <= cursor ? "unseen_entry" : null;
+-    else if (first !== undefined && first.seq <= cursor) reason = "unseen_entry";
++    else if (first !== undefined && first.seq < 0) reason = "unseen_entry";
+     else {
+       requests++;
+       reason = await transport.getVersion(mark.fileId, mark.versionId).then(() => "mark_moved", (error: unknown) => {

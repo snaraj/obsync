@@ -1,0 +1,12 @@
+# M455: a retirement over a file its keeper holds deletes it, as S98 deleted a 1 GiB file
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1339,8 +1339,6 @@
+         }
+       }
+       // A RETIREMENT NEVER DELETES WHAT ITS KEEPER HOLDS (issue #181).
+-      if (manifest.keeper !== undefined && local !== undefined &&
+-        (await retiredInto(context, change, manifest.keeper, localPath, local))) return "skipped";
+       // A TOMBSTONE IS A STATEMENT ABOUT BYTES THE SERVER HAS (issue #106).
+       // Bytes this device never pushed are bytes no version holds, so moving
+       // them to the trash here is the one loss no history can undo, and the

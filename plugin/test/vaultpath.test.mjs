@@ -142,6 +142,9 @@ function desktopHost({ files = [] } = {}) {
         getFiles: () => files,
         getAbstractFileByPath: () => null,
         getFileByPath: (path) => known.get(path) ?? null,
+        // "Deleted files: permanently delete", so a path the vault does not
+        // know reaches the adapter's own `remove` (issue #138).
+        getConfig: (key) => (key === "trashOption" ? "none" : undefined),
         trash: async (file) => systemTrashed.push(file.path),
       },
     },

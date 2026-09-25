@@ -1,0 +1,12 @@
+# M581: ignore revoked credentials
+--- a/plugin/src/accountRecovery.ts
++++ b/plugin/src/accountRecovery.ts
+@@ -6,7 +6,7 @@
+ 
+ export function forgottenCredential(error: unknown): error is ApiError {
+   return error instanceof ApiError &&
+-    ((error.status === 401 && error.code === "bad_signature") || (error.status === 403 && error.code === "device_revoked"));
++    ((error.status === 401 && error.code === "bad_signature") || (error.status === 404 && error.code === "device_revoked"));
+ }
+ 
+ /** RFC 5869 domain separation; the server stores only SHA-256(proof). */

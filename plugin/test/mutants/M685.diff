@@ -1,0 +1,12 @@
+# M685: new popout windows miss editor input
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1905,7 +1905,7 @@
+ 
+     this.registerVaultEvents();
+     this.host.trackInput(window);
+-    this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
++    this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, _opened) => undefined));
+     // The device's own word that its network is back is the cheapest signal
+     // there is, and the one a laptop lid or a phone leaving a tunnel produces;
+     // it runs the pending retry now instead of at the timer, and is nothing

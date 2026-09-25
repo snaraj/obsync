@@ -1,0 +1,12 @@
+# M714: merges omit an in-flight upload from their parents because they cannot wait for its receipt
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -247,7 +247,7 @@
+ 
+ /** The upload whose receipt a concurrent merge must include in its parents. */
+ export function pendingPublication(context: SyncContext, path: string): Promise<PushOutcome> | undefined {
+-  return publications.get(context)?.get(path);
++  return publications.get(context)?.get(path) && undefined;
+ }
+ 
+ /** A revive must observe the record left by a startup push already in flight. */

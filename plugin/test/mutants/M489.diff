@@ -1,0 +1,12 @@
+# M489: every event on a note whose record already describes it is read and sent again, however long after the last sync
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1425,7 +1425,7 @@
+     // word, as it always was.
+     const record = context.state.fileByPath(path);
+     const described = record !== undefined && record.mtime === stat.mtime && record.size === stat.size;
+-    if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
++    if (described && stat.size > CHUNK_MAX) return;
+     // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
+     // ago: comparing against it is what puts real time between the two
+     // observations. The first settle has nothing to compare with, so it

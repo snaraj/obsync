@@ -1,0 +1,21 @@
+# M531: the local hold never reaches the other device, including on retry
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2251,7 +2251,6 @@
+       "would bounce between your devices. obsync paused syncing it here; nothing was deleted. Stop that plugin " +
+       "changing synced notes, then run Sync now, or press Resume in Show sync status.",
+   );
+-  await publishPause(context, change.file_id, localPath, true);
+   return true;
+ }
+ 
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1619,7 +1619,6 @@
+       }
+       const held = context.state.fileByPath(path);
+       if ((held !== undefined && context.state.data.paused[held.fileId] !== undefined) || Object.values(context.state.data.paused).some((entry) => entry.path === path)) {
+-        if (held !== undefined && context.state.data.paused[held.fileId]?.remote !== true) await publishPause(context, held.fileId, path, true);
+         context.host.log(`push path_class=file decision=skipped reason=paused file=${held?.fileId ?? "untracked"}`);
+         return;
+       }

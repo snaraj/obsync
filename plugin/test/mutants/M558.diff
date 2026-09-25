@@ -1,0 +1,11 @@
+# M558: a save during Resume drops the hold despite publishing nothing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2278,7 +2278,6 @@
+     }
+     return file.heads;
+   });
+-  if (pushed.status === "growing") throw new Error("note_changing");
+   context.authored.add(pushed.versionId);
+   return "published_held";
+ }

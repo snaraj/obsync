@@ -1,0 +1,11 @@
+# M196: leaving the server address field adopts nothing
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -208,7 +208,6 @@
+           // it stored once the address itself was refused, a loopback address
+           // raised a refusal halfway through, and a paired device's requests
+           // went to whatever prefix was current (2026-09-24, verifying #136).
+-          field.inputEl.addEventListener("change", () => { this.adoptServerUrl(); });
+         });
+       },
+     };

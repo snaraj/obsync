@@ -18,7 +18,7 @@ this one does not repeat it.
 | Adversary | Can see or do | Cannot |
 | --- | --- | --- |
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
-| TLS terminator / edge operator | request metadata, ciphertext, and credentials in clear at the terminator: the device secret at setup/pairing, dashboard session cookies and recovery sign-in links | read vault content, names or vault keys; replace client code through the sync server (installation uses Obsidian's directory and GitHub assets, with the client trust limits in `docs/community-plugin.md`) |
+| TLS terminator / edge operator | request metadata, ciphertext, and credentials in clear at the terminator: the device secret at setup/pairing, the account-recovery authentication proof and setup token, dashboard session cookies and recovery sign-in links | read vault content, names or vault keys; replace client code through the sync server (installation uses Obsidian's directory and GitHub assets, with the client trust limits in `docs/community-plugin.md`) |
 | Server operator or stolen volumes | ciphertext, sizes, version graph, device activity; wrapped device credentials can be recovered if the server wrapping key is also available | decrypt vault content without a device-held vault key |
 | Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); make new authenticated server requests after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves; outlive its pairing (expiry destroys it, and so does the next start, since pairings do not survive one) |
@@ -74,7 +74,7 @@ Native app-restart persistence remains separate acceptance evidence.
 ## Residual risks recorded for v1
 
 1. Every credential crosses the TLS terminator in clear: the device secret
-   at setup/pairing and the dashboard session cookie
+   at setup/pairing, the account-recovery proof plus setup token, and the dashboard session cookie
    and recovery link for as long as sessions exist. The terminator is in the
    trust base for credentials and out of it for content
    (`docs/architecture.md` 2.1, choice 1). The dashboard's cookies are

@@ -1,0 +1,12 @@
+# M343: a rename onto a just-made name moves the wrong note aside, so the two devices name both notes differently
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2551,7 +2551,7 @@
+   if (occupant === "no_record") await identify(context, manifest.path, change.file_id);
+   const ours = context.state.fileByPath(manifest.path);
+   if (ours !== undefined && context.authored.has(ours.versionId)) {
+-    const keep = ours.fileId < change.file_id;
++    const keep = ours.fileId > change.file_id;
+     const moved = keep ? null : await moveAside(context, manifest.path, ours, new Date(context.now()));
+     context.host.log(
+       `pull decision=same_name_tiebreak winner=${keep ? ours.fileId : change.file_id} ` +

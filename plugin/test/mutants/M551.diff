@@ -1,0 +1,12 @@
+# M551: Resume adopts a conflicting pause at the same server position
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -700,7 +700,7 @@
+       theirs.path === manifest.path &&
+       theirs.size === manifest.size &&
+       theirs.deleted === manifest.deleted &&
+-      (manifest.v !== 3 || (theirs.v === 3 && theirs.kind === "pause" && theirs.target === manifest.target && theirs.paused === manifest.paused))
++      (manifest.v !== 3 || (theirs.v === 3 && theirs.kind === "pause" && theirs.target === manifest.target))
+     );
+   } catch {
+     return false;

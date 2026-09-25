@@ -1,0 +1,11 @@
+# M316: a note that is not open anywhere is kept, not deleted, when this device edited it seconds ago
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1180,7 +1180,6 @@
+ ): Promise<{ held: boolean; fields: string } | null> {
+   if (!change.parents.includes(local.versionId)) return null;
+   const editor = await context.host.editing(path);
+-  if (editor === null) return null;
+   const at = context.pushedAt.get(path);
+   const age = at === undefined ? -1 : context.now() - at;
+   return {

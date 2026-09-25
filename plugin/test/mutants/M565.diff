@@ -1,0 +1,12 @@
+# M565: Resume buffers a file above its single-chunk budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2315,7 +2315,7 @@
+   if (path === undefined || record === undefined) return "untracked";
+   const before = await context.host.stat(path);
+   if (before === null) return "deleted_here";
+-  if (before.size > CHUNK_MAX) return "ordinary";
++  if (before.size > CHUNK_MAX * 2) return "ordinary";
+   const mine = await context.host.read(path);
+   if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";
+   const file = await context.transport.getFile(fileId);

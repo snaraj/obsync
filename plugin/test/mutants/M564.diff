@@ -1,0 +1,12 @@
+# M564: Resume overwrites a local deletion with the current remote note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2314,7 +2314,7 @@
+   const record = path === undefined ? undefined : context.state.fileByPath(path);
+   if (path === undefined || record === undefined) return "untracked";
+   const before = await context.host.stat(path);
+-  if (before === null) return "deleted_here";
++  if (before === null) return "ordinary";
+   if (before.size > CHUNK_MAX) return "ordinary";
+   const mine = await context.host.read(path);
+   if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";

@@ -3732,3 +3732,223 @@ fn a_revoked_or_pending_device_id_is_not_a_credential() {
         "the operator still sees a revoked device still trying"
     );
 }
+
+#[test]
+fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
+    let h = Harness::start("pairing-vault");
+    let creator = h.setup_account();
+    let created = Req::post("/v1/pairing")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let id = created.get("pairing_id").and_then(Value::as_str).unwrap();
+    let token = created.get("enroll_token").and_then(Value::as_str).unwrap();
+    let envelope = obsync_core::base64::encode(&[7; 32]);
+    let nonce = "cd".repeat(12);
+    let body = |ct: &str, iv: &str| {
+        format!(
+            r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"1.1.3","vault":{{"envelope":"{ct}","nonce":"{iv}","unknown":"discard"}}}}"#
+        )
+    };
+    for (ct, iv) in [
+        ("A".repeat(2052), nonce.clone()),
+        ("!".into(), nonce.clone()),
+        (envelope.clone(), "ab".into()),
+    ] {
+        let bad = Req::post(&format!("/v1/pairing/{id}/claim"))
+            .body(&body(&ct, &iv))
+            .send(h.addr);
+        assert_eq!(bad.status, 400);
+        let state = Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json();
+        assert_eq!(state.get("state").and_then(Value::as_str), Some("open"));
+    }
+    let good = Req::post(&format!("/v1/pairing/{id}/claim"))
+        .body(&body(&envelope, &nonce))
+        .send(h.addr);
+    assert_eq!(good.status, 201, "{}", good.text());
+    let claimant = Cred::from_json(&good.json());
+    let state = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let sealed = state.get("claimant").unwrap().get("vault").unwrap();
+    assert_eq!(
+        sealed.get("envelope").and_then(Value::as_str),
+        Some(envelope.as_str())
+    );
+    assert_eq!(
+        sealed.get("nonce").and_then(Value::as_str),
+        Some(nonce.as_str())
+    );
+    assert!(sealed.get("unknown").is_none());
+    assert_eq!(
+        Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&claimant, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+    approve_pairing(&h, &creator, id);
+    assert_eq!(
+        Req::get(&format!("/v1/pairing/{id}"))
+            .sign(&claimant, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+}
+
+#[test]
+fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
+    let h = Harness::start("account-reenrol");
+    let creator = h.setup_account();
+    let proof = "11".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0x11; 32]));
+    let register = format!(r#"{{"recovery_verifier":"{verifier}"}}"#);
+    assert_eq!(
+        Req::post("/v1/account/recovery")
+            .body(&register)
+            .send(h.addr)
+            .status,
+        401
+    );
+    assert_eq!(
+        Req::post("/v1/account/recovery")
+            .body(&register)
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .status,
+        204
+    );
+    assert_eq!(
+        Req::post("/v1/account/recovery")
+            .body(&register)
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .status,
+        204
+    );
+    let changed = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{}"}}"#, "22".repeat(32)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(changed.status, 409);
+    let account = Req::get("/v1/account").sign(&creator, NOW).send(h.addr);
+    assert!(!account.text().contains(&verifier));
+    let retained = b"opaque retained ciphertext";
+    let sid = hex::encode(&sha256::sha256(retained));
+    assert_eq!(
+        Req::new("PUT", &format!("/v1/chunks/{sid}"))
+            .raw_body(retained)
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .status,
+        201
+    );
+    let revoked = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoked.status, 204, "{}", revoked.text());
+    let recover = |token: &str, evidence: &str| {
+        format!(
+            r#"{{"setup_token":"{token}","account_name":"must not rename","recovery_proof":"{evidence}","device":{{"name":"returned","platform":"ios","app_version":"1.1.3"}}}}"#
+        )
+    };
+    assert_eq!(
+        Req::post("/v1/setup")
+            .body(&recover(&"00".repeat(32), &proof))
+            .send(h.addr)
+            .status,
+        401
+    );
+    assert_eq!(
+        Req::post("/v1/setup")
+            .body(&recover(&"5e".repeat(32), &"00".repeat(32)))
+            .send(h.addr)
+            .status,
+        403
+    );
+    let result = Req::post("/v1/setup")
+        .body(&recover(&"5e".repeat(32), &proof))
+        .send(h.addr);
+    assert_eq!(result.status, 201, "{}", result.text());
+    assert_eq!(result.json().get("recovered"), Some(&Value::Bool(true)));
+    let returned = Cred::from_json(&result.json());
+    let current = Req::get("/v1/account").sign(&returned, NOW).send(h.addr);
+    assert_eq!(current.status, 200);
+    assert_eq!(
+        current.json().get("account_id"),
+        account.json().get("account_id")
+    );
+    assert_eq!(current.json().get("name"), account.json().get("name"));
+    assert_eq!(
+        Req::get(&format!("/v1/chunks/{sid}"))
+            .sign(&returned, NOW)
+            .send(h.addr)
+            .body,
+        retained
+    );
+    assert_eq!(
+        Req::get("/v1/account")
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+    assert!(!h.captured().contains(&proof));
+}
+
+#[test]
+fn a_legacy_account_needs_an_authenticated_recovery_registration() {
+    let h = Harness::start("legacy-account-recovery");
+    let creator = h.setup_account();
+    let body = format!(
+        r#"{{"setup_token":"{}","account_name":"vault","recovery_proof":"{}","device":{{"name":"return","platform":"macos","app_version":"1.1.3"}}}}"#,
+        "5e".repeat(32),
+        "11".repeat(32)
+    );
+    let refused = Req::post("/v1/setup").body(&body).send(h.addr);
+    assert_eq!(refused.status, 409);
+    assert_eq!(refused.code(), "recovery_unavailable");
+    let invalid = Req::post("/v1/account/recovery")
+        .body(r#"{"recovery_verifier":"not-a-hash"}"#)
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(invalid.status, 400);
+    assert_eq!(
+        Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .status,
+        409
+    );
+}
+
+#[test]
+fn first_setup_accepts_a_verifier_and_rejects_malformed_values_before_claiming() {
+    let h = Harness::start("initial-account-recovery");
+    let body = |verifier: &str| {
+        format!(
+            r#"{{"setup_token":"{}","account_name":"vault","recovery_verifier":"{verifier}","device":{{"name":"first","platform":"macos","app_version":"1.1.3"}}}}"#,
+            "5e".repeat(32)
+        )
+    };
+    assert_eq!(
+        Req::post("/v1/setup")
+            .body(&body("wrong"))
+            .send(h.addr)
+            .status,
+        400
+    );
+    let first = Req::post("/v1/setup")
+        .body(&body(&"ab".repeat(32)))
+        .send(h.addr);
+    assert_eq!(first.status, 201);
+    assert_eq!(
+        h.app.store.account().unwrap().recovery_verifier,
+        Some("ab".repeat(32))
+    );
+}

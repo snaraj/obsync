@@ -1,0 +1,11 @@
+# M251: a withdrawn deletion surfaces as a sync error instead of the note simply staying
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -426,7 +426,6 @@
+   // the two devices to disagree about.
+   const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true, () => stillGone(context, path, record, manifest.mtime))
+     .catch((error: unknown) => {
+-      if (error instanceof ApiError && error.code === "withdrawn") return null;
+       throw error;
+     });
+   if (ack === null) return null;

@@ -1,0 +1,11 @@
+# M375: a device that reconnects after the restore never asks again
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1752,7 +1752,6 @@
+           this.restoreDue = { verdict: "restored", reason: "seq_ahead" };
+           continue;
+         }
+-        verify = true;
+         const message = error instanceof Error ? error.message : String(error);
+         context.host.log(`feed decision=retry reason=${message}`);
+         this.status({ kind: "offline" });

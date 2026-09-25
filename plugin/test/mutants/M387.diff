@@ -1,0 +1,11 @@
+# M387: a deletion this device made is not remembered, and comes back after a restore
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -450,7 +450,6 @@
+     });
+   if (ack === null) return null;
+   context.state.forgetPath(path);
+-  bury(context, record.fileId, ack.versionId, path, false);
+   await context.state.save();
+   context.host.log(`push path_class=tombstone decision=deleted version=${ack.versionId}`);
+   return { status: "pushed", fileId: record.fileId, versionId: ack.versionId, ack: ack.ack };
