@@ -1392,19 +1392,46 @@ test("a record that names no version is never retired, however alike the bytes",
   assert.equal((await published(r.server, HIGHER, r.keys.manifestKey)).at(-1).deleted, false);
 });
 
-test("a record of other bytes landing while the push reads is not taken for this push", async () => {
-  const { r, adopt } = await adoptionRace(HIGHER);
-  const read = r.host.read.bind(r.host);
-  r.host.read = async (path) => {
-    const bytes = await read(path);
-    await adopt();
-    r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), sha256: "ab".repeat(32) });
-    return bytes;
-  };
-  const outcome = await pushFile(r.context, NOTE);
-  assert.notEqual(outcome.status, "unchanged", "a push was dropped for a record of other bytes");
-  assert.ok(!r.host.logs.some((line) => line.includes("recorded_during_read")), r.host.logs.join(" | "));
-});
+for (const window of ["read", "post"]) {
+  for (const [adoptedId, role] of [["00".repeat(16), "lower"], ["ff".repeat(16), "higher"]]) {
+    test(`a record of other bytes landing during the push ${window} is not deduplicated (${role} id)`, async () => {
+      const r = await rig();
+      r.host.seed(NOTE, MINE, 2000);
+      const bytes = enc(THEIRS);
+      const other = await r.server.publish({ fileId: adoptedId, path: NOTE, bytes, mtime: 4000,
+        domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+      const adopt = async () => r.state.setFile(NOTE, {
+        fileId: adoptedId, versionId: other.version_id, mtime: 4000,
+        size: bytes.length, sha256: await sidDigest(other.sids),
+      });
+      if (window === "read") {
+        const read = r.host.read.bind(r.host);
+        r.host.read = async path => { const result = await read(path); await adopt(); return result; };
+      }
+      const post = r.transport.postVersion.bind(r.transport);
+      let posted;
+      r.transport.postVersion = async (id, version) => {
+        const result = await post(id, version);
+        if (posted === undefined && id !== adoptedId) {
+          posted = id;
+          if (window === "post") await adopt();
+        }
+        return result;
+      };
+
+      const outcome = await pushFile(r.context, NOTE);
+      assert.ok(posted !== undefined, "the intended upload boundary was not reached");
+      assert.equal(role === "lower" ? adoptedId < posted : adoptedId > posted, true);
+      assert.equal(outcome.status, "pushed", "a push was dropped for a record of other bytes");
+      assert.equal(outcome.fileId, posted);
+      assert.equal(r.host.text(NOTE), MINE);
+      assert.equal(r.server.journal.some(frame => frame.deleted), false, "different content was retired as a duplicate");
+      for (const id of [adoptedId, posted]) assert.equal(r.server.files.get(id).versions[0].deleted, false);
+      assert.equal((await r.reload()).fileByPath(NOTE).fileId, posted);
+      assert.ok(!r.host.logs.some(line => /reason=recorded_during_(read|post)/.test(line)), r.host.logs.join(" | "));
+    });
+  }
+}
 
 /*
  * ONE NOTE, TWO IDS, ACROSS VERSIONS (issue #147).

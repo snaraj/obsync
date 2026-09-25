@@ -106,3 +106,27 @@ remains 94.65%; the one core benchmark remains ignored; both secret scans pass.
 The mutation scratch initially omitted the vendored Obsidian declarations and
 could not compile. That setup failure is retained separately and is not a kill.
 The historical matrix counts above are unchanged; only M726 was newly measured.
+
+## Deterministic upload-content witness
+
+The successor's final matrix at `20d5d97` measured M133 surviving all 1,117
+plugin tests. The production digest guard remained intact. The inherited
+witness only rejected an `unchanged` outcome: when the random posted file ID
+sorted below the adopted ID, the mutant returned `pushed` and wrongly retired
+the adopted content without an assertion detecting it. Its historical kill
+therefore depended on ID order.
+
+The replacement covers both ID orders at both the read and post boundaries,
+with independently published different plaintexts. It requires the intended
+upload, its outcome and durable identity, intact local bytes, neither identity
+retired, and no duplicate-settlement log. All four cases pass pristine.
+In the complete **787-test 1.1.2 suite**, M131 applies, compiles and fails the
+two read cases (785 pass); M133 applies, compiles and fails all four cases
+(783 pass). Both mutations keep their original meaning and are unchanged.
+
+The 1.1.2 full gate passes 787 plugin tests, 144 core + 367 server + two CLI
+tests, 70 dashboard tests, 767 contracts and both secret scans; Rust coverage
+is 94.65%. No production source changed, and its native bundle remains
+`7a937b63cbcf8f7bb536a45a0c40b34aeb3c066bb57817dfa99a46acd3006848`.
+Earlier matrix measurements remain historical; the four replacement cases
+strengthen the old assertion rather than crediting a random outcome as proof.

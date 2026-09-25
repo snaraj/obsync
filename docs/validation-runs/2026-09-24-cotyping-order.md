@@ -106,3 +106,11 @@ two, one and three focused failing tests respectively, after successful builds.
 The current bundle is
 `530ca4aeb1fee893817f99110346226e7573714c542f3d303b45971e0f4b85aa`.
 Complete mutation measurement and affected native acceptance remain pending.
+
+The first final matrix stopped after **54 cases** because M133 survived its
+complete 1,117-test run. Its ID-order-dependent witness is replaced as recorded
+in [the review repair log](2026-09-24-review-fixes.md#deterministic-upload-content-witness).
+The strengthened 1.1.3 suite passes **1,120 tests** in the pinned full gate;
+Rust, dashboard, contract, coverage and secret-scan results remain passing.
+Production source and the `530ca4ae` bundle are unchanged. The partial matrix
+and its survivor are retained; the complete matrix must use the updated suite.
