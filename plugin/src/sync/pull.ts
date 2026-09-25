@@ -172,6 +172,9 @@ export type ApplyResult =
   | "refused"
   | "skipped";
 
+/** The native writer leaves an unsaved or recently active editor alone. */
+export class EditorBusy extends Error {}
+
 /**
  * Why THIS device cannot write one record, in plain words, keyed by the fixed
  * vocabulary its log lines carry: an errno the host's filesystem raised, or a
@@ -194,6 +197,7 @@ export const UNWRITABLE: Readonly<Record<string, string>> = {
 export function unwritableText(path: string, reason: string): string {
   // A chunk the server lost is nothing wrong with THIS device, so it is not
   // said as if it were (2026-09-24 verification, X2).
+  if (reason === "active_editor") return `Waiting for typing to settle in ${path}`;
   if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
@@ -911,6 +915,7 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, in
     // return before this point.
     if (entry.v === 1) await incoming?.();
     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
+      if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
       // A write THIS device's disk refused, or a chunk the server does not
       // hold: a fact about this one record, named with the path it was for,
       // so the feed can park it and keep the rest arriving (issue #144).

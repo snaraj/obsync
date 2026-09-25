@@ -129,7 +129,7 @@ export interface RemoteOnlyRecord {
 
 export interface ParkedRecord {
   path: string;
-  /** The `UNWRITABLE` key (`sync/pull.ts`): an errno, or `unknown_chunk`. */
+  /** An `UNWRITABLE` key, or `active_editor` while a native editor settles. */
   reason: string;
 }
 

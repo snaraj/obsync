@@ -1,11 +1,11 @@
 # M234: a file parked again later waits as long as the last episode's backoff had grown, not one minute
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1729,12 +1729,6 @@
+@@ -2091,12 +2091,6 @@
  
    /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */
    private armParkRetry(): void {
--    if (Object.keys(this.options.state.data.parked).length === 0) {
+-    if (!Object.values(this.options.state.data.parked).some((entry) => entry.reason !== "active_editor")) {
 -      if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
 -      this.parkHandle = null;
 -      this.parkDelay = 0;

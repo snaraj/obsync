@@ -9,6 +9,11 @@ that just arrived from another device. When both devices replace the same
 existing text, obsync keeps a second file beside the original so you can
 compare them. Your notes remain ordinary files you can open and edit in Obsidian.
 
+While you are typing, incoming changes to that note can wait until you pause.
+obsync waits for your text to save and for ten seconds without typing in the
+note, then brings in the latest changes automatically. Other notes keep
+syncing. You do not need to close the note or press **Sync now**.
+
 ## What to do with a conflict copy
 
 1. Open the original and the file with **conflict from** in its name. You can

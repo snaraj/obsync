@@ -548,6 +548,7 @@ export class SyncEngine {
   /** The next pass over the parked records, and the wait it was armed with. */
   private parkHandle: unknown = null;
   private parkDelay = 0;
+  private editorHandle: unknown = null;
   /** The feed and a retry pass apply one at a time, never side by side. */
   private pulling: Promise<void> = Promise.resolve();
 
@@ -687,6 +688,8 @@ export class SyncEngine {
     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
     this.parkHandle = null;
     this.parkDelay = 0;
+    if (this.editorHandle !== null) this.timers.clear(this.editorHandle);
+    this.editorHandle = null;
     this.repair?.cancel();
     this.repair = null;
     this.options.host.log("engine stop");
@@ -1668,6 +1671,13 @@ export class SyncEngine {
       }
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
+      // A push can immediately reconcile a competing head. A native editor
+      // refusal in that pull uses the same durable retry as the feed.
+      const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;
+      if (held !== undefined) {
+        this.park(context, held.fileId, error);
+        return;
+      }
       // A path this device may not sync is a decision, not a failure: it is
       // logged and dropped, and the status bar stays quiet. Every other
       // failure is the user's business.
@@ -1943,12 +1953,13 @@ export class SyncEngine {
     const known = parked[fileId] !== undefined;
     parked[fileId] = { path: error.path, reason: error.reason };
     this.armParkRetry();
+    this.armEditorRetry();
     // The file id and the reason, never the path: a name is vault content.
     context.host.log(
       `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
-        `retry_ms=${this.parkDelay}`,
+        `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
     );
-    if (!known) {
+    if (!known && error.reason !== "active_editor") {
       context.host.notify(
         `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
           "tried again by itself, and at once when you run Sync now after fixing it.",
@@ -1974,8 +1985,9 @@ export class SyncEngine {
       const path = this.options.state.pathByFileId(fileId);
       if (path === undefined || !this.acting(path)) forked?.delete(fileId);
     }
-    const waiting = forked?.size ?? 0;
-    const parked = Object.values(this.options.state.data.parked);
+    const records = Object.values(this.options.state.data.parked);
+    const waiting = (forked?.size ?? 0) + records.filter((entry) => entry.reason === "active_editor").length;
+    const parked = records.filter((entry) => entry.reason !== "active_editor");
     const newest = parked[parked.length - 1];
     if (newest !== undefined) {
       const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
@@ -2046,9 +2058,40 @@ export class SyncEngine {
     });
   }
 
+  /** Active-editor waits use the durable parked record, but need no error notice or long backoff. */
+  private armEditorRetry(): void {
+    if (!this.running || this.editorHandle !== null ||
+      !Object.values(this.options.state.data.parked).some((entry) => entry.reason === "active_editor")) return;
+    this.editorHandle = this.timers.set(() => {
+      this.editorHandle = null;
+      void this.track(this.retryEditors());
+    }, 1000);
+  }
+
+  private retryEditors(): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.running) return;
+      const context = this.need();
+      try {
+        for (const [fileId, entry] of Object.entries(context.state.data.parked)) {
+          if (!this.running) return;
+          if (entry.reason === "active_editor") await this.retryOne(context, fileId);
+        }
+        await context.state.save();
+        this.status(this.resting());
+      } catch (error) {
+        context.host.log(`pull decision=editor_retry_failed reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} retry_ms=1000`);
+        this.status(error instanceof ApiError && error.code === "unreachable"
+          ? { kind: "offline" } : { kind: "error", message: "An editor update could not finish. It will be retried automatically." });
+      } finally {
+        this.armEditorRetry();
+      }
+    });
+  }
+
   /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */
   private armParkRetry(): void {
-    if (Object.keys(this.options.state.data.parked).length === 0) {
+    if (!Object.values(this.options.state.data.parked).some((entry) => entry.reason !== "active_editor")) {
       if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
       this.parkHandle = null;
       this.parkDelay = 0;
@@ -2071,6 +2114,7 @@ export class SyncEngine {
       let released = 0;
       for (const fileId of Object.keys(context.state.data.parked)) {
         if (!this.running) return;
+        if (trigger === "timer" && context.state.data.parked[fileId]?.reason === "active_editor") continue;
         try {
           if (await this.retryOne(context, fileId)) released++;
         } catch (error) {
@@ -2099,6 +2143,12 @@ export class SyncEngine {
    * what lands. True once nothing about it is left to write here.
    */
   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
+    const waiting = context.state.data.parked[fileId];
+    if (waiting?.reason === "active_editor" &&
+      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
+      this.armEditorRetry();
+      return false;
+    }
     try {
       await this.reconcileFile(fileId);
     } catch (error) {

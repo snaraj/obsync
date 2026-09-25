@@ -1,10 +1,10 @@
 # M238: one parked file the server refuses stops every other parked file from being retried, and Sync now fails
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1752,17 +1752,7 @@
-       let released = 0;
+@@ -2115,17 +2115,7 @@
        for (const fileId of Object.keys(context.state.data.parked)) {
          if (!this.running) return;
+         if (trigger === "timer" && context.state.data.parked[fileId]?.reason === "active_editor") continue;
 -        try {
 -          if (await this.retryOne(context, fileId)) released++;
 -        } catch (error) {

@@ -1,7 +1,7 @@
 # M320: the plugin's memory of recent saves grows with every note it publishes, for the life of the plugin
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1535,10 +1535,6 @@
+@@ -1665,10 +1665,6 @@
        const now = context.now();
        context.pushedAt.delete(path);
        context.pushedAt.set(path, now);
@@ -11,4 +11,4 @@
 -      }
        if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
      } catch (error) {
-       // A path this device may not sync is a decision, not a failure: it is
+       // A push can immediately reconcile a competing head. A native editor

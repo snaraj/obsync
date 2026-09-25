@@ -1,0 +1,12 @@
+# M813: The retry overwrites an unsaved buffer once recent input ends.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2145,7 +2145,7 @@
+   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
+     const waiting = context.state.data.parked[fileId];
+     if (waiting?.reason === "active_editor" &&
+-      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
++      (context.host.typing(waiting.path))) {
+       this.armEditorRetry();
+       return false;
+     }

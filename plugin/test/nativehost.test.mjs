@@ -230,7 +230,93 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
       .filter((name) => !name.startsWith("."))
       .map((name) => readFileSync(join(root, "Notes", name), "utf8"));
   const hidden = () => readdirSync(join(root, "Notes")).filter((name) => name.startsWith("."));
-  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices };
+  const openEditor = (path, text) => {
+    const { MarkdownView } = box.require("obsidian");
+    const view = new MarkdownView();
+    view.file = { path };
+    view.getViewData = () => text.value;
+    vault.read = async (file) => readFileSync(join(root, file.path), "utf8");
+    plugin.app.workspace.getLeavesOfType = () => [{ view }];
+    return view;
+  };
+  const applyIncoming = (change) => box.require(join(box.home, "build/sync/pull.js")).applyChange(r.context, change);
+  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, applyIncoming };
+}
+
+for (const mobile of [false, true]) {
+  for (const fork of [false, true]) {
+    for (const late of [false, true]) {
+      test(`incoming ${fork ? "merge" : "fast-forward"} waits for unsaved native editor text (${mobile ? "mobile" : "desktop"}, ${late ? "during download" : "before download"})`, async (t) => {
+        const r = await native(t, {}, { mobile });
+        const baseText = "Shared: START|";
+        r.seed(NOTE, baseText, 1000);
+        const base = await pushFile(r.context, NOTE);
+        if (fork) {
+          r.seed(NOTE, baseText + "A", 2000);
+          await pushFile(r.context, NOTE);
+        }
+        const disk = readFileSync(join(r.root, NOTE), "utf8");
+        const buffered = { value: disk + (late ? "" : "B") };
+        r.openEditor(NOTE, buffered);
+        if (late) {
+          const writer = r.host.writer.bind(r.host);
+          r.host.writer = async (path) => {
+            const pending = await writer(path);
+            return { ...pending, write: async (bytes) => {
+              await pending.write(bytes);
+              if (path === NOTE) buffered.value = disk + "B";
+            } };
+          };
+        }
+        const before = structuredClone(r.state.fileByPath(NOTE));
+        const incoming = await r.server.publish({
+          fileId: base.fileId, path: NOTE, bytes: enc(baseText + "a"), mtime: 3000,
+          parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+        });
+        assert.equal(await r.host.editing(NOTE), late ? "saved" : "unsaved");
+        await assert.rejects(r.applyIncoming(incoming), { name: "Unwritable", reason: "active_editor" });
+        assert.equal(readFileSync(join(r.root, NOTE), "utf8"), disk, "no external write reaches the pending editor");
+        assert.equal(buffered.value, disk + "B");
+        assert.deepEqual(r.state.fileByPath(NOTE), before, "no incoming receipt describes unwritten text");
+        assert.deepEqual(r.hidden(), [], "a deferred write leaves no temp file");
+        // The engine persists this per-note refusal before advancing its feed.
+
+        r.seed(NOTE, buffered.value, 4000);
+        assert.equal(await r.host.editing(NOTE), "saved");
+        await pushFile(r.context, NOTE);
+        await r.applyIncoming(incoming);
+        const result = readFileSync(join(r.root, NOTE), "utf8");
+        assert.ok(result.includes("B") && result.includes("a"), "both the saved keystroke and peer text survive");
+        if (fork) assert.ok(result.includes("A"));
+        assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the later save converges the fork");
+        assert.deepEqual(r.hidden(), []);
+      });
+    }
+  }
+}
+
+for (const mobile of [false, true]) {
+  test(`a saved native editor with recent input defers until that input settles (${mobile ? "mobile" : "desktop"})`, async (t) => {
+    const r = await native(t, {}, { mobile });
+    r.seed(NOTE, "Shared: START|", 1000);
+    const base = await pushFile(r.context, NOTE);
+    const buffered = { value: "Shared: START|" };
+    const view = r.openEditor(NOTE, buffered);
+    r.host.inputAt.set(view, { path: NOTE, at: Date.now() });
+    const incoming = await r.server.publish({
+      fileId: base.fileId, path: NOTE, bytes: enc("Shared: START|a"), mtime: 3000,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    assert.equal(await r.host.editing(NOTE), "saved");
+    assert.equal(r.host.typing(NOTE), true);
+    await assert.rejects(r.applyIncoming(incoming), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), buffered.value);
+    assert.deepEqual(r.hidden(), []);
+    r.host.inputAt.delete(view);
+    assert.equal(await r.applyIncoming(incoming), "applied");
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "Shared: START|a");
+    assert.deepEqual(r.hidden(), []);
+  });
 }
 
 /**

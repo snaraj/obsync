@@ -364,7 +364,7 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=3 unknown=3 held=2 duration_ms=\d+$/.test(line)));
 });
 
-test("First-time setup on a server that already holds a vault says one server holds one vault (#141)", async (t) => {
+test("Setup on a server without registered recovery says one server holds one vault (#141)", async (t) => {
   const p = await plugin(t, { metadata: { deviceId: null, deviceSecret: null } });
   await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.ok(p.notices.some((notice) =>
@@ -373,4 +373,36 @@ test("First-time setup on a server that already holds a vault says one server ho
   assert.equal(p.notices.some((notice) => notice.includes("already_set_up")), false, "not the raw server code");
   assert.ok(p.logs.includes("setup decision=failed reason=recovery_unavailable"));
   assert.equal(p.instance.state.data.deviceId, null);
+});
+
+test("Setup on an older server explains already_set_up without exposing the raw code (#141)", async (t) => {
+  const server = new FakeServer();
+  const request = server.request;
+  let setupRequests = 0;
+  // Older servers refuse repeat setup even when the new client supplies
+  // recovery proof. Exercise that wire response through the real transport;
+  // the recovery_unavailable case above takes a different notice branch.
+  server.request = async (input) => {
+    if (new URL(input.url).pathname === "/v1/setup" && input.method === "POST") {
+      setupRequests++;
+      const body = JSON.parse(input.body);
+      assert.equal(body.setup_token, SETUP_TOKEN);
+      assert.match(body.recovery_proof, /^[0-9a-f]{64}$/);
+      return server.error(409, "already_set_up", "this server already holds an account");
+    }
+    return request(input);
+  };
+  const p = await plugin(t, { server, metadata: { deviceId: null, deviceSecret: null } });
+  await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(setupRequests, 1, "an explicit refusal is not retried");
+  assert.equal(p.notices.length, 1);
+  assert.match(p.notices[0], /This server already holds a vault, and one server holds one vault/);
+  assert.match(p.notices[0], /Pair this device/);
+  assert.match(p.notices[0], /restore its recovery phrase and use Setup or recover with the setup token/);
+  assert.match(p.notices[0], /a different vault needs a server of its own/);
+  assert.equal(p.notices[0].includes("already_set_up"), false);
+  assert.deepEqual(p.logs, ["setup decision=failed reason=already_set_up"]);
+  assert.equal(p.instance.state.data.deviceId, null);
+  assert.equal(p.instance.state.data.deviceSecret, null);
+  assert.equal(p.starts(), 0, "refused setup cannot start syncing");
 });

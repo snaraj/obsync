@@ -112,7 +112,7 @@ one note on two devices at once used to merge once or twice, then save nearly
 every version the other device sent as a conflict copy, stop merging with
 "resolved it more than 5 times in a minute", and leave the two devices holding
 different text under one name, with a dozen copies or more on each, while both
-said `obsync: idle`. Now text typed on different lines is merged as you go, and
+said `obsync: idle`. Now text typed on different lines is merged, and
 both devices end on the same note holding both texts, with no conflict copy.
 When both devices add text at the end of the same line, their shared addition
 is kept once and the different additions are joined in the same order on both.
@@ -124,7 +124,11 @@ the same version as the note, and the other goes into one conflict copy that eve
 device holds, named after the device that wrote it, the time in UTC and a short
 id. Nothing typed is lost, and the two notes never stay apart. A save made
 while another device's version is arriving is never written over, and the
-status bar no longer reads `idle` while a note is still being settled. Delayed
+status bar no longer reads `idle` while a note is still being settled. Incoming
+updates wait while this note has unsaved text or you have typed in it during
+the last ten seconds, then retry automatically. Other notes keep syncing.
+This prevents Obsidian's own external-change merge from rewriting an editor
+while obsync is reconciling the same text. Delayed
 upload receipts no longer put an older version back into the device's records.
 Merges and editor uploads wait for one another's receipts before choosing
 parents, including an upload that finishes while a merge is being prepared.

@@ -1,0 +1,12 @@
+# M812: The retry ignores recent native input.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2145,7 +2145,7 @@
+   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
+     const waiting = context.state.data.parked[fileId];
+     if (waiting?.reason === "active_editor" &&
+-      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
++      (await context.host.editing(waiting.path) === "unsaved")) {
+       this.armEditorRetry();
+       return false;
+     }

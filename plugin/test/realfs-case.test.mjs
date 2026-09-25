@@ -196,6 +196,7 @@ async function vault(t, folderOnDisk, { fold = false } = {}) {
     log: (line) => logs.push(line),
     app: {
       vault: vaultApi,
+      workspace: { getLeavesOfType: () => [] },
       fileManager: {
         trashFile: async (file) => {
           const target = join(root, file.path);

@@ -230,6 +230,18 @@ everywhere** on the dashboard, which closes every session the server holds.
 dashboard's custody, and that is why it is worth rotating after a restore
 from a backup somebody else handled ([`security/dashboard.md`](security/dashboard.md)).
 
+## Stop syncing this device
+
+Open the plugin's settings, find **Leave this server**, and choose **Leave**.
+Read the confirmation before continuing. Your notes and recovery phrase stay
+on this device; the server revokes only this device's access. Other devices
+keep syncing. Choose **Cancel** to keep this device connected.
+
+![The phone's Leave confirmation explains which data stays and which sync settings are forgotten](assets/phone-candidate-113/editor-save-phone-leave.png)
+
+Pairing again is a fresh sync. Identical notes remain single notes; if the
+same path holds different text, both versions are preserved for you to review.
+
 ## Moving this vault to a different server
 
 A different server INSTANCE, not the same one at a new address: a rebuilt

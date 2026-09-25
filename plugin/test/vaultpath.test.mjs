@@ -129,6 +129,7 @@ function desktopHost({ files = [] } = {}) {
   const plugin = {
     state: { data: {} },
     app: {
+      workspace: { getLeavesOfType: () => [] },
       // The real one applies the user's "Deleted files" preference; what is
       // modelled here is that it is the call, and that the file goes away.
       fileManager: {

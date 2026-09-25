@@ -25,6 +25,11 @@ The status bar reads `obsync: not paired` before pairing, then `obsync: idle`
 retrying` when the server cannot be reached, and `obsync: error — <reason>`
 when sync has stopped and needs you.
 
+An incoming update may also stay pending while you type in its note. After
+your text saves and you pause typing for ten seconds, obsync retries it
+automatically. Other notes keep syncing; **Show sync status** explains the
+wait.
+
 `obsync: paused — <note>` means a note is being rewritten repeatedly after
 sync, often by a plugin that updates a timestamp. The note stays on your
 device, and other notes continue syncing. See [Stop repeated rewrites](#stop-repeated-rewrites).

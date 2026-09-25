@@ -1,12 +1,12 @@
 # M416: a note whose push never comes keeps the status reading syncing for good
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1807,7 +1807,7 @@
+@@ -1983,7 +1983,7 @@
      const forked = this.contextValue?.forked;
      for (const fileId of forked ?? []) {
        const path = this.options.state.pathByFileId(fileId);
 -      if (path === undefined || !this.acting(path)) forked?.delete(fileId);
 +      if (path === undefined) forked?.delete(fileId);
      }
-     const waiting = forked?.size ?? 0;
-     const parked = Object.values(this.options.state.data.parked);
+     const records = Object.values(this.options.state.data.parked);
+     const waiting = (forked?.size ?? 0) + records.filter((entry) => entry.reason === "active_editor").length;

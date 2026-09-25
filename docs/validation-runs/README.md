@@ -1,5 +1,9 @@
 # Validation runs
 
+- [2026-09-25 native editor-save follow-up](2026-09-25-native-editor-save.md):
+  retained same-line failures, adjacent-line passes, and the active-editor
+  retry repair with its automated evidence and outstanding native gate.
+
 The 2026-09-24 candidate work has separate records for
 [native desktop checks](2026-09-24-native-1.1.3.md),
 [account recovery](2026-09-24-account-recovery.md),

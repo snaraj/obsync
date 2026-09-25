@@ -71,7 +71,7 @@ import {
 } from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
-import { EDITING_WINDOW_MS, fetchRemoteOnly, heldNotes } from "./sync/pull";
+import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
@@ -851,6 +851,7 @@ export class ObsidianHost implements VaultHost {
           joined.set(part, at);
           at += part.length;
         }
+        await this.assertEditorIdle(path);
         await adapter.writeBinary(path, joined.buffer, { mtime });
         // The SIZE is ours: the bytes handed to the adapter, not what a look
         // at the name says a moment later. The mtime is taken from the name
@@ -1078,6 +1079,12 @@ export class ObsidianHost implements VaultHost {
         // 3, finding 2).
         const wrote = await walker(fs).lstat(temp);
         if (wrote === null) throw new VaultPathError("temp_identity");
+        try {
+          await this.assertEditorIdle(path);
+        } catch (error) {
+          await discard();
+          throw error;
+        }
         await fs.promises.rename(temp, target);
         this.temps.delete(temp);
         // The rename is the moment the file takes its real name, so the
@@ -1699,6 +1706,17 @@ export class ObsidianHost implements VaultHost {
       throw new VaultPathError("target_identity");
     }
     return true;
+  }
+
+  private async assertEditorIdle(path: string): Promise<void> {
+    // A stable disk stat does not include the keystrokes still waiting in
+    // Obsidian's two-second save debounce. Writing under that buffer invokes
+    // a second, host-app merge of text obsync has already merged (#135).
+    // The file can briefly match the buffer while the host still has an
+    // external reload queued. Leave recent trusted typing alone too; the
+    // engine retries this note after input settles, without blocking others.
+    // Check after downloads and filesystem preparation have waited.
+    if (await this.editing(path) === "unsaved" || this.typing(path)) throw new EditorBusy();
   }
 
   /**

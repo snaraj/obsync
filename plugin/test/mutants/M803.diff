@@ -1,0 +1,11 @@
+# M803: Stopping leaves the owned editor retry timer armed.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -688,7 +688,6 @@
+     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+     this.parkHandle = null;
+     this.parkDelay = 0;
+-    if (this.editorHandle !== null) this.timers.clear(this.editorHandle);
+     this.editorHandle = null;
+     this.repair?.cancel();
+     this.repair = null;
