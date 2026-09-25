@@ -996,9 +996,18 @@ returns immediately when a new frame lands.
    version; a result equal to the incoming version's bytes is a fast-forward
    onto it. A device also stops merging one file after more than five
    resolutions of it in a row inside a minute with the note unchanged here in
-   between -- a save starts the count again -- and says so once; the pair is
-   then settled by the rule above, which only ever keeps a version that
-   already exists. When two devices merged one pair differently (each holding
+   between -- a save starts the count again -- and says so once. Superseded
+   incoming heads with a retained descendant are skipped before counting.
+   A new peer version that descends from its previous version but not from
+   this device's recorded version also starts a new run: it is independent
+   progress, not an answer to this device's output. Repeated heads, unrelated
+   forks and descendants of this device's output still consume the limit.
+   A tripped pair is settled by the rule above, which only ever keeps a
+   version that already exists. Merge writes reserve the same per-path
+   publication queue as uploads before making their bytes visible to an
+   editor; the reservation lasts through the receipt and record update. A
+   completed upload that advanced the record during merge preparation causes
+   a fresh graph read before writing or publishing. When two devices merged one pair differently (each holding
    keystrokes the other had not seen), the two heads share two newest
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to

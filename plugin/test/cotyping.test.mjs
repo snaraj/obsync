@@ -26,7 +26,7 @@ import { KEYS, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
-const { pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
+const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
 const NOTE = "Notes/Both.md";
@@ -271,6 +271,85 @@ const storms = (r) => r.host.logs.filter((line) => line.includes("reason=merge_s
  * hold -- so every resolution keeps both and none of them writes the note:
  * what moves the count is the typing alone.
  */
+test("repeating one foreign head does not reset the loop budget", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "base\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "mine\n", 2000);
+  await pushFile(r.context, NOTE);
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: "ab".repeat(32) });
+  const other = await foreign(r, base.fileId, "theirs\n", [base.versionId], 3000);
+  for (let attempt = 0; attempt < 6; attempt++) await applyChange(r.context, other);
+  assert.equal(storms(r).length, 1, pulls(r.host));
+  assert.match(storms(r)[0], /count=6/);
+  assert.ok(!r.host.logs.some((line) => line.includes("reason=independent_peer_progress")), pulls(r.host));
+});
+
+test("peer versions that incorporate our own output still consume the loop budget", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  const ours = await pushFile(r.context, NOTE);
+  // A saved local edit remains unpushed while the peer keeps answering the
+  // same local publication. No new local edit breaks this run of decisions.
+  r.host.seed(NOTE, "ONE\ntwo\nTHREE LOCAL\n", 3000);
+  let parent = ours.versionId;
+  for (let word = 1; word <= 6; word++) {
+    const frame = await foreign(r, base.fileId, `ONE\nTWO ${word}\nthree\n`, [parent], 4000 + word);
+    parent = frame.version_id;
+    await applyChange(r.context, frame);
+  }
+  assert.equal(storms(r).length, 1, pulls(r.host));
+  assert.match(storms(r)[0], /count=6/);
+  assert.ok(!r.host.logs.some((line) => line.includes("reason=independent_peer_progress")), pulls(r.host));
+});
+
+test("one typist can stop while the peer continues its independent branch", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  await pushFile(r.context, NOTE);
+  let parent = base.versionId;
+  for (let word = 1; word <= 8; word++) {
+    r.host.clock += 1000;
+    const frame = await foreign(r, base.fileId, `one\ntwo\nTHREE ${word}\n`, [parent], 3000 + word);
+    parent = frame.version_id;
+    assert.equal(await applyChange(r.context, frame), "merged", pulls(r.host));
+    assert.equal(r.host.text(NOTE), `ONE\ntwo\nTHREE ${word}\n`);
+  }
+  assert.deepEqual(copies(r.host), []);
+  assert.deepEqual(storms(r), []);
+  assert.ok(r.host.logs.some((line) => line.includes("reason=independent_peer_progress")));
+});
+
+test("superseded typing frames neither merge nor consume the loop budget", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  await pushFile(r.context, NOTE);
+  let parent = base.versionId;
+  const frames = [];
+  for (let word = 1; word <= 8; word++) {
+    const frame = await foreign(r, base.fileId, `one\ntwo\nTHREE ${word}\n`, [parent], 3000 + word);
+    frames.push(frame);
+    parent = frame.version_id;
+  }
+  const journal = r.server.journal.length;
+  for (const frame of frames.slice(0, -1)) {
+    assert.equal(await applyChange(r.context, frame), "skipped");
+    assert.equal(r.host.text(NOTE), "ONE\ntwo\nthree\n");
+  }
+  assert.equal(r.server.journal.length, journal, "old typing frames produced new merge versions");
+  assert.equal(r.context.merges.size, 0, "obsolete frames consumed the merge-loop budget");
+  assert.equal(await applyChange(r.context, frames.at(-1)), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), "ONE\ntwo\nTHREE 8\n");
+  assert.deepEqual(copies(r.host), []);
+  assert.deepEqual(storms(r), []);
+});
+
 test("the merge breaker counts resolutions in a row, and an edit here starts the count again", async () => {
   const r = await rig();
   r.host.seed(NOTE, "the line both sides start from\n", 1000);
@@ -438,7 +517,78 @@ test("a delayed upload acknowledgement cannot replace a newer pulled record", as
     "the next keystrokes must descend from the pulled content");
 });
 
-test("a delayed merge receipt cannot replace a newer pulled record", async () => {
+test("a merge includes an upload completed after it read the version graph", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  await pushFile(r.context, NOTE);
+  const other = await foreign(r, base.fileId, "one\ntwo\nTHREE\n", [base.versionId], 3000);
+  const writer = r.host.writer.bind(r.host);
+  let uploaded;
+  r.host.writer = async (path) => {
+    r.host.writer = writer;
+    // Same bytes and stat, newer publication: the file recheck cannot see it,
+    // and the publication promise has gone by the time the merge checks it.
+    uploaded = await pushFile(r.context, NOTE, true);
+    return writer(path);
+  };
+  await applyChange(r.context, other);
+  const file = r.server.files.get(base.fileId);
+  assert.equal(file.heads.length, 1, "the completed upload was left as an orphan head");
+  assert.deepEqual(file.versions[0].parents, [uploaded.versionId, other.version_id].sort());
+  assert.equal(r.host.text(NOTE), "ONE\ntwo\nTHREE\n");
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("reason=merge_parent_advanced")));
+});
+
+for (const boundary of ["write", "receipt"]) {
+  test(`an editor upload inherits the pending merge at its ${boundary} boundary`, async () => {
+    const r = await rig();
+    r.host.seed(NOTE, "one\ntwo\nthree\nfour\nfive\n", 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "ONE\ntwo\nthree\nfour\nfive\n", 2000);
+    await pushFile(r.context, NOTE);
+    const other = await foreign(r, base.fileId, "one\ntwo\nthree\nfour\nFIVE\n", [base.versionId], 3000);
+    const typed = "ONE TYPED\ntwo\nthree\nfour\nFIVE\n";
+    let sending, reserved, mergeId;
+    const enqueue = () => {
+      reserved = pendingPublication(r.context, NOTE) !== undefined;
+      r.host.seed(NOTE, typed, 4000);
+      sending = pushFile(r.context, NOTE);
+    };
+    if (boundary === "write") {
+      const writer = r.host.writer.bind(r.host);
+      r.host.writer = async (path) => {
+        const output = await writer(path);
+        return { ...output, commit: async (mtime) => {
+          const landed = await output.commit(mtime);
+          enqueue();
+          return landed;
+        } };
+      };
+    }
+    const post = r.transport.postVersion.bind(r.transport);
+    r.transport.postVersion = async (...args) => {
+      const ack = await post(...args);
+      if (mergeId === undefined) {
+        mergeId = ack.value.version_id;
+        if (boundary === "receipt") enqueue();
+      }
+      return ack;
+    };
+    await applyChange(r.context, other);
+    await sending;
+    const file = r.server.files.get(base.fileId);
+    assert.deepEqual(file.versions[0].parents, [mergeId], "the editor upload forked from the pre-merge parent");
+    assert.equal(reserved, true, "the merged bytes were visible before their publication was reserved");
+    assert.equal(file.heads.length, 1);
+    assert.equal(r.host.text(NOTE), typed);
+    assert.deepEqual(copies(r.host), []);
+  });
+}
+
+test("a delayed merge receipt cannot replace a newer recorded version", async () => {
   const r = await rig();
   r.host.seed(NOTE, "one\ntwo\nthree\nfour\nfive\n", 1000);
   const base = await pushFile(r.context, NOTE);
@@ -461,7 +611,13 @@ test("a delayed merge receipt cannot replace a newer pulled record", async () =>
   const text = "ONE\ntwo\nTHREE TYPED\nfour\nFIVE\n";
   const next = await foreign(r, base.fileId, text, [ack.value.version_id], 4000);
   try {
-    await applyChange(r.context, next);
+    // Model a record advanced by another local lifecycle operation while the
+    // receipt is withheld. Pull merges now serialize behind that receipt, so
+    // waiting for a second merge before releasing it would deadlock the test.
+    r.host.seed(NOTE, text, 4000);
+    r.state.setFile(NOTE, { fileId: base.fileId, versionId: next.version_id,
+      mtime: 4000, size: enc(text).length, sha256: await sidDigest(next.sids) });
+    await r.state.save();
     assert.equal(r.host.text(NOTE), text);
     assert.equal(r.state.fileByPath(NOTE).versionId, next.version_id);
   } finally { release(); }

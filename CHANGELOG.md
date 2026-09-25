@@ -121,8 +121,12 @@ id. Nothing typed is lost, and the two notes never stay apart. A save made
 while another device's version is arriving is never written over, and the
 status bar no longer reads `idle` while a note is still being settled. Delayed
 upload receipts no longer put an older version back into the device's records.
-Merges wait for those receipts before choosing their parents, and identical
-merged versions share their own content as the base for your next edits. This
+Merges and editor uploads wait for one another's receipts before choosing
+parents, including an upload that finishes while a merge is being prepared.
+Older feed entries do not consume the loop limit, and one person can stop
+typing while the other continues an independent edit. Repeated replies to
+obsync's own output still reach the same limit. Identical merged versions
+share their own content as the base for your next edits. This
 prevents slow connections from splitting newly typed text into false conflict
 copies. Same on desktop and mobile. (#135)
 

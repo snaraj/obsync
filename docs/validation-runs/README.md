@@ -61,3 +61,5 @@ legible is naming the wrong fact: name the class instead.
 - [Co-typing with delayed receipts](2026-09-24-cotyping-delayed-ack.md): pristine-baseline failure, deterministic reproductions and repair; simulation boundaries stated.
 
 - [2026-09-24 replacement-build device follow-up](2026-09-24-replacement-device-followup.md): exact repaired 1.1.2 desktop with the final 1.1.3 phone, identical offline notes and automatic recovery.
+
+- [Co-typing publication order follow-up](2026-09-24-cotyping-order.md): delayed uploads, loop-budget regressions and retained failed schedules.

@@ -1,0 +1,18 @@
+# M716: obsolete typing frames are merged and consume the loop budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1987,14 +1987,6 @@
+   localPath: string,
+   localVersionId: string,
+ ): Promise<ApplyResult> {
+-  // Obsolete feed entries are not new forks. Counting and merging each one
+-  // while catching up can trip the loop breaker on an ordinary typing burst.
+-  // Require a retained descendant head; a missing graph entry is no proof.
+-  if (!file.heads.includes(change.version_id) &&
+-    file.heads.some((head) => reaches(file.versions, head, change.version_id))) {
+-    context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+-    return "skipped";
+-  }
+   // THE BREAKER. Everything below is bounded by construction, but a bound
+   // that rests on an argument is not a bound: the cost of being wrong here is
+   // a device filling the server's journal and its owner's quota, on battery.

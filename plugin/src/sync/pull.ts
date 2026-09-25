@@ -116,7 +116,7 @@ import {
 } from "../syncScope";
 import { pauseId, publishPause } from "./pause";
 import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, reviveFile, retire, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, reviveFile, retire, serialPublication, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -1987,6 +1987,14 @@ async function reconcile(
   localPath: string,
   localVersionId: string,
 ): Promise<ApplyResult> {
+  // Obsolete feed entries are not new forks. Counting and merging each one
+  // while catching up can trip the loop breaker on an ordinary typing burst.
+  // Require a retained descendant head; a missing graph entry is no proof.
+  if (!file.heads.includes(change.version_id) &&
+    file.heads.some((head) => reaches(file.versions, head, change.version_id))) {
+    context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
   // THE BREAKER. Everything below is bounded by construction, but a bound
   // that rests on an argument is not a bound: the cost of being wrong here is
   // a device filling the server's journal and its owner's quota, on battery.
@@ -2006,8 +2014,16 @@ async function reconcile(
   const now = context.now();
   const found = stamp(await context.host.stat(localPath));
   const seen = context.merges.get(change.file_id);
-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found };
-  if (tally.left !== found) tally.count = 0;
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found, remote: change.version_id };
+  // A peer extending its own branch without receiving our merge is making
+  // independent progress, not answering our output in a feedback loop. One
+  // typist may stop before the other; the remaining edits still merge here.
+  const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
+    reaches(file.versions, change.version_id, tally.remote) &&
+    !reaches(file.versions, change.version_id, localVersionId);
+  if (tally.left !== found || independent) tally.count = 0;
+  if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq}`);
+  tally.remote = change.version_id;
   tally.count++;
   context.merges.set(change.file_id, tally);
   const prior = tally.left;
@@ -2202,35 +2218,49 @@ async function resolve(
           context.host.log(`pull decision=retry reason=upload_completed file=${change.file_id} seq=${change.seq}`);
           return await applyVersion(context, change, theirManifest);
         }
-        const stat = await writer.commit(context.now());
-        tally.left = stamp(stat);
-        context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
-        // The result is the INCOMING version's own bytes: that version already
-        // carries this device's edit, so what the graph called a fork is a
-        // fast-forward onto it. Adopt it and post nothing -- a third version
-        // saying what the second already says is how the storm was fed. A
-        // result that is new to both sides is a real resolution and is posted
-        // once, which terminates because the other device then finds its own
-        // bytes in it.
-        if (sameBytes(text, theirs)) {
-          context.state.setFile(localPath, {
-            fileId: change.file_id,
-            versionId: change.version_id,
-            mtime: stat.mtime,
-            size: stat.size,
-            sha256: await sidDigest(change.sids),
-            ts: change.ts,
-          });
-          await context.state.save();
-          context.host.log(
-            `pull decision=applied reason=incoming_holds_merge bytes=${theirManifest.size} file=${change.file_id} seq=${change.seq}`,
-          );
-          return "applied";
+        // The upload may have completed during the merge's awaits, leaving
+        // no pending promise but a newer parent. Re-read the graph instead of
+        // publishing a sibling that omits an edit already included in mine.
+        if (context.state.fileByPath(localPath)?.versionId !== localVersionId) {
+          await writer.abort();
+          context.host.log(`pull decision=retry reason=merge_parent_advanced file=${change.file_id} seq=${change.seq}`);
+          return await applyVersion(context, change, theirManifest);
         }
-        await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
-        context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
-        context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
-        return "merged";
+        // Reserve before the merged bytes reach the editor. Its watcher can
+        // enqueue a push during commit, and that push must inherit this merge's
+        // receipt rather than publish the new bytes onto the old parent.
+        context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
+        return await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
+          const stat = await writer.commit(context.now());
+          tally.left = stamp(stat);
+          context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+          // The result is the INCOMING version's own bytes: that version already
+          // carries this device's edit, so what the graph called a fork is a
+          // fast-forward onto it. Adopt it and post nothing -- a third version
+          // saying what the second already says is how the storm was fed. A
+          // result that is new to both sides is a real resolution and is posted
+          // once, which terminates because the other device then finds its own
+          // bytes in it.
+          if (sameBytes(text, theirs)) {
+            context.state.setFile(localPath, {
+              fileId: change.file_id,
+              versionId: change.version_id,
+              mtime: stat.mtime,
+              size: stat.size,
+              sha256: await sidDigest(change.sids),
+              ts: change.ts,
+            });
+            await context.state.save();
+            context.host.log(
+              `pull decision=applied reason=incoming_holds_merge bytes=${theirManifest.size} file=${change.file_id} seq=${change.seq}`,
+            );
+            return "applied";
+          }
+          await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
+          context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
+          context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
+          return "merged";
+        });
       }
       context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
     }

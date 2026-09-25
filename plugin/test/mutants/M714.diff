@@ -4,9 +4,9 @@
 @@ -247,7 +247,7 @@
  
  /** The upload whose receipt a concurrent merge must include in its parents. */
- export function pendingPublication(context: SyncContext, path: string): Promise<PushOutcome> | undefined {
+ export function pendingPublication(context: SyncContext, path: string): Promise<unknown> | undefined {
 -  return publications.get(context)?.get(path);
 +  return publications.get(context)?.get(path) && undefined;
  }
  
- /** A revive must observe the record left by a startup push already in flight. */
+ /** Uploads and merge writes observe the receipt left by the preceding publication. */

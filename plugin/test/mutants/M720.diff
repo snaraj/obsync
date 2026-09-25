@@ -1,0 +1,11 @@
+# M720: unrelated forks reset the loop budget without ancestor proof
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2019,7 +2019,6 @@
+   // independent progress, not answering our output in a feedback loop. One
+   // typist may stop before the other; the remaining edits still merge here.
+   const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
+-    reaches(file.versions, change.version_id, tally.remote) &&
+     !reaches(file.versions, change.version_id, localVersionId);
+   if (tally.left !== found || independent) tally.count = 0;
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq}`);

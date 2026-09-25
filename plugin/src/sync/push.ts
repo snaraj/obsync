@@ -243,15 +243,15 @@ async function uploadMissing(
  * posted, and offered for deduplication, so two devices re-sending one lost
  * version publish one.
  */
-const publications = new WeakMap<SyncContext, Map<string, Promise<PushOutcome>>>();
+const publications = new WeakMap<SyncContext, Map<string, Promise<unknown>>>();
 
 /** The upload whose receipt a concurrent merge must include in its parents. */
-export function pendingPublication(context: SyncContext, path: string): Promise<PushOutcome> | undefined {
+export function pendingPublication(context: SyncContext, path: string): Promise<unknown> | undefined {
   return publications.get(context)?.get(path);
 }
 
-/** A revive must observe the record left by a startup push already in flight. */
-async function serialPublication(context: SyncContext, path: string, publish: () => Promise<PushOutcome>): Promise<PushOutcome> {
+/** Uploads and merge writes observe the receipt left by the preceding publication. */
+export async function serialPublication<T>(context: SyncContext, path: string, publish: () => Promise<T>): Promise<T> {
   let paths = publications.get(context);
   if (paths === undefined) { paths = new Map(); publications.set(context, paths); }
   const previous = paths.get(path);
