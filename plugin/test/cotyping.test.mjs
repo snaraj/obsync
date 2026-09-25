@@ -999,6 +999,66 @@ test("two settlements of one fork at once on the losing device make one copy", a
   assert.deepEqual([record.mtime, record.size], [stat.mtime, stat.size], pulls(r.host));
 });
 
+/** Both devices preserve the same losing head before either sees a receipt. */
+test("two devices settling the same overlap publish one shared conflict-copy version", async (t) => {
+  const { server, timers, a, b } = await pair(t);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS);
+  await Promise.all([a.engine.stopAndWait(), b.engine.stopAndWait()]);
+  const left = a.engine.context, right = b.engine.context;
+  a.host.seed(NOTE, "base\n", 1000);
+  const base = await pushFile(left, NOTE);
+  await applyChange(right, server.journal.at(-1));
+  a.host.seed(NOTE, "desktop replacement\n", 2000);
+  b.host.seed(NOTE, "phone replacement\n", 3000);
+  const ours = await pushFile(left, NOTE);
+  const ourFrame = server.journal.at(-1);
+  const theirs = await pushFile(right, NOTE);
+  const theirFrame = server.journal.at(-1);
+  assert.equal(server.files.get(base.fileId).heads.length, 2);
+
+  let release;
+  const joined = new Promise(resolve => { release = resolve; });
+  const attempts = [];
+  // Let a broken single-publisher path reach an assertion, not cancellation.
+  const timeout = setTimeout(release, 1000);
+  t.after(() => { clearTimeout(timeout); release(); });
+  for (const device of [a, b]) {
+    const post = device.transport.postVersion.bind(device.transport);
+    device.transport.postVersion = async (fileId, version) => {
+      if (fileId !== base.fileId && version.parents.length === 0) {
+        attempts.push({ device: device.state.data.deviceId, fileId });
+        if (attempts.length === 2) release();
+        await joined;
+      }
+      return post(fileId, version);
+    };
+  }
+  await Promise.all([applyChange(left, theirFrame), applyChange(right, ourFrame)]);
+  clearTimeout(timeout);
+  assert.equal(attempts.length, 2, "both devices must preserve the losing head independently");
+  assert.equal(new Set(attempts.map(attempt => attempt.device)).size, 2);
+  assert.deepEqual(copies(a.host), copies(b.host), "the devices named different conflict copies");
+  assert.equal(copies(a.host).length, 1);
+  const copy = copies(a.host)[0];
+  const recordA = a.state.fileByPath(copy), recordB = b.state.fileByPath(copy);
+  assert.equal(recordA.fileId, recordB.fileId);
+  const stored = server.files.get(recordA.fileId);
+  assert.equal(stored.versions.length, 1, "the same conflict copy was published twice");
+  assert.equal(stored.heads.length, 1, "the preserved copy was itself forked");
+  assert.equal(recordA.versionId, recordB.versionId, "devices must record the acknowledged copy version");
+  assert.equal(recordA.versionId, stored.heads[0]);
+  assert.equal(server.deduplicated.filter(entry => entry.fileId === recordA.fileId).length, 1);
+  const desktopKept = ours.versionId < theirs.versionId;
+  for (const device of [a, b]) {
+    assert.equal(device.host.text(NOTE), desktopKept ? "desktop replacement\n" : "phone replacement\n");
+    assert.equal(device.host.text(copy), desktopKept ? "phone replacement\n" : "desktop replacement\n");
+  }
+  assert.equal(server.files.get(base.fileId).heads.length, 1);
+  assert.equal(a.state.fileByPath(NOTE).versionId, b.state.fileByPath(NOTE).versionId);
+});
+
 /**
  * Text typed here on top of the losing head is in no version. It goes into the
  * copy, and the copy's record must not describe it as published: that is

@@ -20,7 +20,7 @@ The first insertion repair incorrectly merged competing prefixes. The two existi
 
 ## Author checks
 
-The final production bundle SHA-256 is
+The production bundle SHA-256 at the preceding arrival/shared-base repair was
 `74422fb18ce29e5b2d79e0213b55203c026cc81fcde49e343d3b2e63ed5f06c8`.
 The preceding full gate passed 1,163 plugin tests. After three further negative witnesses and the rename wait correction, six isolated pristine copies each passed all **1,166** plugin tests. The final `make check` also passes: 1,166 plugin tests, 144 core + 375 server tests and two CLI tests, 70 dashboard tests, 767 contracts, 94.73% Rust line coverage, and both secret scans. The core benchmark remains intentionally ignored. Source and test hashes were unchanged throughout that run.
 
@@ -75,8 +75,20 @@ cause is not claimed as proven. After the deterministic closure repair, the
 full local gate and six independent 1,168-test baselines pass. M797 applies,
 compiles and produces two focused assertion failures with no cancellations;
 restoration is verified. All 742 mutation patches pass exact-context preflight.
-The complete campaign is running; no final matrix result is claimed. Native
-acceptance is still pending.
+That campaign stopped after M165 survived all 1,168 tests. The co-typing
+session checked each conflict copy's root-version count, but its successful
+no-copy outcomes did not exercise concurrent publication of a preserved copy.
+A new two-device witness creates an overlapping replacement and holds both
+copy posts until each device has independently computed its preservation.
+It checks one shared copy path, file ID, acknowledged version and server
+head, exactly one stored copy version, both original texts and a closed main
+fork. M165 withdraws the copy's deduplication offer: it applies and compiles,
+then fails because two copy versions were stored (one assertion failure,
+zero cancellations). Restored production code passes. This is a test-only
+repair; the production bundle remains
+`ddd6683f65ea001e833116f386606604b168b641e5ce995d6b19a28abb47480c`.
+Earlier measurements are preserved. No final matrix or native acceptance
+result is claimed.
 
 Reproduce the focused behavior with the pinned toolchain:
 
