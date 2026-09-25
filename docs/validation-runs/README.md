@@ -65,3 +65,5 @@ legible is naming the wrong fact: name the class instead.
 - [Co-typing publication order follow-up](2026-09-24-cotyping-order.md): delayed uploads, loop-budget regressions and retained failed schedules.
 
 - [Historical catch-up and typing repairs](2026-09-24-history-and-typing.md): bounded history replay, adjacent line edits, same-line appends and preserved safety witnesses.
+
+- [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md): opaque masks, metadata removal and unchanged visible evidence.
