@@ -1,0 +1,12 @@
+# M500: historical twin retirement ignores current server heads
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2382,7 +2382,7 @@
+   // A feed frame can predate a deletion or a later edit. Only a current,
+   // sole live head may replace this device's independent live identity.
+   const current = await context.transport.getFile(change.file_id);
+-  if (current.heads.length !== 1 || current.heads[0] !== change.version_id) {
++  if (current.heads.length === 0) {
+     context.host.log(`pull decision=skipped reason=historical_twin file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

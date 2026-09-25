@@ -1,0 +1,12 @@
+# M127: the identical pair keeps the HIGHER id
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2372,7 +2372,7 @@
+   manifest: Manifest,
+   ours: FileState,
+ ): Promise<ApplyResult> {
+-  if (ours.fileId < change.file_id) {
++  if (ours.fileId > change.file_id) {
+     context.host.log(
+       `pull decision=converged reason=identical_same_name role=keep keeper=${ours.fileId} file=${change.file_id} seq=${change.seq}`,
+     );

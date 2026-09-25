@@ -1,9 +1,9 @@
 # M01: the tie-break comparison reversed
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1194,7 +1194,7 @@
-   const ours = context.state.fileByPath(manifest.path);
-   if (ours === undefined) return await keepBoth(context, change, manifest);
+@@ -2291,7 +2291,7 @@
+   const same = await identicalAtName(context, change, manifest.path, ours);
+   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
  
 -  if (ours.fileId < change.file_id) {
 +  if (ours.fileId > change.file_id) {

@@ -1,0 +1,12 @@
+# M122: the identical-name check never matches
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2345,7 +2345,7 @@
+   if (ours.sha256 !== (await sidDigest(change.sids))) return null;
+   const stat = await context.host.stat(path);
+   if (stat === null || stat.mtime !== ours.mtime || stat.size !== ours.size) return null;
+-  return stat;
++  return null;
+ }
+ 
+ /**

@@ -25,7 +25,7 @@ import { DEVICE_B, STEP_MS, digest, pair, published, rig, settled } from "./fake
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
-const { pushFile } = require("../build/sync/push.js");
+const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
 const { QUIET_MS } = require("../build/sync/engine.js");
 
@@ -1145,3 +1145,282 @@ test("two devices that name one note twice converge, and stay converged", async 
   assert.equal(a.host.text(other), `${PHONE}a later line\n`, `a later edit did not reach the desktop: ${story()}`);
   assert.equal([...a.host.files.keys(), ...b.host.files.keys()].length, before, `a later edit made a copy: ${story()}`);
 });
+
+/*
+ * ONE NAME, ONE CONTENT (issue #131).
+ *
+ * Two devices that start with the same notes -- a vault copied by hand, or one
+ * moved over from another sync tool -- publish every note under their own id
+ * before either pulls the other's. The rule above kept one and copied the
+ * other beside it: a conflict copy of identical bytes for every note. Equal
+ * chunk-id digests are equal bytes, so the pair now settles on the lower id
+ * with no copy: its holder does nothing, and the holder of the higher id
+ * records the name under the lower one and retires its own id.
+ */
+
+const SAME_TEXT = "the same note on both devices\n";
+
+/** This device holding `ours` at NOTE, published and recorded clean; and the other device's twin. */
+async function twins(ours, theirs, theirText = SAME_TEXT) {
+  const r = await rig();
+  const bytes = r.host.seed(NOTE, SAME_TEXT, 2000);
+  const own = await r.server.publish({
+    fileId: ours, path: NOTE, bytes, mtime: 2000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  r.state.setFile(NOTE, {
+    fileId: ours, versionId: own.version_id, mtime: 2000, size: bytes.length, sha256: await sidDigest(own.sids),
+  });
+  const frame = await r.server.publish({
+    fileId: theirs, path: NOTE, bytes: enc(theirText), mtime: 4000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  return { r, own, frame };
+}
+
+const pullLog = (r) => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+
+test("identical notes: the holder of the lower id keeps the name and writes nothing", async () => {
+  const { r, own, frame } = await twins(LOWER, HIGHER);
+  const before = r.server.journal.length;
+
+  assert.equal(await applyChange(r.context, frame), "skipped");
+
+  assert.deepEqual(copies(r.host), [], `an identical note was copied: ${pullLog(r)}`);
+  assert.equal(r.host.text(NOTE), SAME_TEXT);
+  assert.equal(r.host.files.get(NOTE).mtime, 2000, "the note was rewritten");
+  assert.equal(r.state.fileByPath(NOTE).fileId, LOWER);
+  assert.equal(r.state.fileByPath(NOTE).versionId, own.version_id);
+  assert.equal(r.state.pathByFileId(HIGHER), undefined, "the duplicate id was recorded");
+  assert.equal(r.server.journal.length, before, "the keeping device published something");
+  assert.ok(pullLog(r).includes(`decision=converged reason=identical_same_name role=keep keeper=${LOWER}`), pullLog(r));
+});
+
+test("identical notes: the holder of the higher id adopts the lower id and retires its own", async () => {
+  const { r, own, frame } = await twins(HIGHER, LOWER);
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+
+  assert.deepEqual(copies(r.host), [], `an identical note was copied: ${pullLog(r)}`);
+  assert.equal(r.host.text(NOTE), SAME_TEXT);
+  assert.equal(r.host.files.get(NOTE).mtime, 2000, "the note was rewritten");
+  assert.ok(!r.context.trashed.has(NOTE), "the note was trashed");
+  const record = r.state.fileByPath(NOTE);
+  assert.equal(record.fileId, LOWER, "the name is not recorded under the id that keeps it");
+  assert.equal(record.versionId, frame.version_id);
+  assert.equal(record.mtime, 2000);
+  assert.equal(r.state.pathByFileId(HIGHER), undefined, "the retired id is still recorded");
+  // One tombstone for this device's own id, on the version it recorded: that
+  // is what keeps a device paired later from being handed the duplicate.
+  const walk = await published(r.server, HIGHER, r.keys.manifestKey);
+  assert.equal(walk.length, 2, "the duplicate id was not retired exactly once");
+  assert.equal(walk.at(-1).deleted, true);
+  assert.deepEqual(r.server.files.get(HIGHER).versions[0].parents, [own.version_id]);
+  const lower = await published(r.server, LOWER, r.keys.manifestKey);
+  assert.equal(lower.length, 1, "the id that keeps the name was touched");
+  assert.ok(
+    pullLog(r).includes(`decision=converged reason=identical_same_name role=yield keeper=${LOWER} retired=${HIGHER} tombstone=posted`),
+    pullLog(r),
+  );
+});
+
+test("one differing byte still keeps both notes, from either side", async () => {
+  // Same length, so only the content decides.
+  const DIFFERENT = "the same note on both devicez\n";
+  assert.equal(DIFFERENT.length, SAME_TEXT.length);
+  for (const [ours, theirs] of [[LOWER, HIGHER], [HIGHER, LOWER]]) {
+    const { r, frame } = await twins(ours, theirs, DIFFERENT);
+    await applyChange(r.context, frame);
+    const texts = [NOTE, ...copies(r.host)].map((path) => r.host.text(path)).sort();
+    assert.deepEqual(texts, [SAME_TEXT, DIFFERENT].sort(), `a note was lost or merged: ${pullLog(r)}`);
+    assert.ok(!pullLog(r).includes("identical_same_name"), pullLog(r));
+    assert.equal((await published(r.server, HIGHER, r.keys.manifestKey)).at(-1).deleted, false);
+  }
+});
+
+test("a note with an edit not yet pushed is never taken for its recorded twin", async () => {
+  // The record still says the note IS the shared version; the disk says
+  // otherwise. Converging would record the edit as a version it is not and
+  // retire the id that carries it. Once by mtime, once by size.
+  for (const [text, mtime] of [["the same note on both devicex\n", 3000], ["the same note, typed on\n", 2000]]) {
+    const { r, frame } = await twins(HIGHER, LOWER);
+    r.host.seed(NOTE, text, mtime);
+    await applyChange(r.context, frame);
+    assert.ok(!pullLog(r).includes("identical_same_name"), pullLog(r));
+    assert.equal((await published(r.server, HIGHER, r.keys.manifestKey)).at(-1).deleted, false, "the edited id was retired");
+    const texts = [...r.host.files.keys()].map((path) => r.host.text(path));
+    assert.ok(texts.includes(text), `the unpushed edit was lost: ${pullLog(r)}`);
+  }
+});
+
+test("a tombstone that cannot be posted costs a duplicate id, never the note", async () => {
+  const { r, frame } = await twins(HIGHER, LOWER);
+  const post = r.context.transport.postVersion.bind(r.context.transport);
+  r.context.transport.postVersion = async () => { throw new Error("offline"); };
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+  r.context.transport.postVersion = post;
+
+  assert.deepEqual(copies(r.host), []);
+  assert.equal(r.host.text(NOTE), SAME_TEXT);
+  assert.equal(r.state.fileByPath(NOTE).fileId, LOWER);
+  assert.equal((await published(r.server, HIGHER, r.keys.manifestKey)).length, 1);
+  assert.ok(pullLog(r).includes("tombstone=failed"), pullLog(r));
+});
+
+test("two devices that start with the same note converge on one, with no copy", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", { isMobileB: false });
+  const WELCOME = "Welcome.md";
+  const TEXT = "the note both vaults already held\n";
+
+  a.host.write(WELCOME, TEXT, 1000);
+  b.host.write(WELCOME, TEXT, 1500);
+  await a.engine.start();
+  await timers.run(STEP_MS, () => settled(a, WELCOME));
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, WELCOME) && settled(a, WELCOME));
+  await timers.run(STEP_MS);
+
+  const story = () => `desktop=${JSON.stringify([...a.host.files.keys()])} ` +
+    `laptop=${JSON.stringify([...b.host.files.keys()])} versions=${server.journal.length}`;
+  for (const device of [a, b]) {
+    assert.deepEqual([...device.host.files.keys()], [WELCOME], `a copy was made: ${story()}`);
+    assert.equal(device.host.text(WELCOME), TEXT);
+  }
+  assert.equal(a.state.fileByPath(WELCOME).fileId, b.state.fileByPath(WELCOME).fileId, `the devices track different ids: ${story()}`);
+  // One live note on the server: any second id is retired.
+  const live = [];
+  for (const id of await server.noteFiles(keys.manifestKey)) {
+    if (!(await published(server, id, keys.manifestKey)).at(-1).deleted) live.push(id);
+  }
+  assert.equal(live.length, 1, `not exactly one live note: ${story()}`);
+
+  // And a later edit on either side applies plainly on the other.
+  a.host.write(WELCOME, `${TEXT}a later line\n`, 7000);
+  await timers.run(STEP_MS, () => b.host.text(WELCOME) === `${TEXT}a later line\n`);
+  await timers.run(STEP_MS);
+  b.host.write(WELCOME, `${TEXT}a later line\nand another\n`, 8000);
+  await timers.run(STEP_MS, () => a.host.text(WELCOME) === `${TEXT}a later line\nand another\n`);
+  await timers.run(STEP_MS);
+  for (const device of [a, b]) {
+    assert.deepEqual([...device.host.files.keys()], [WELCOME], `a later edit made a copy: ${story()}`);
+  }
+});
+
+/*
+ * THE SAME PAIR, MADE BY ONE DEVICE'S OWN QUEUE (issue #131). A note this
+ * device never published is being pushed when the pull adopts another
+ * device's version of the same bytes at that name. Posting on would publish
+ * the note twice, and recording the post would replace the adoption.
+ */
+
+/** A rig holding NOTE unpublished, and an adoption of `adoptedId` ready to land mid-push. */
+async function adoptionRace(adoptedId) {
+  const r = await rig();
+  const bytes = r.host.seed(NOTE, SAME_TEXT, 2000);
+  const other = await r.server.publish({
+    fileId: adoptedId, path: NOTE, bytes, mtime: 1000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const adopt = async () => r.state.setFile(NOTE, {
+    fileId: adoptedId, versionId: other.version_id, mtime: 2000, size: bytes.length, sha256: await sidDigest(other.sids),
+  });
+  return { r, other, adopt };
+}
+
+test("an adoption that lands while the push reads it publishes nothing", async () => {
+  const { r, other, adopt } = await adoptionRace(HIGHER);
+  const read = r.host.read.bind(r.host);
+  r.host.read = async (path) => { const bytes = await read(path); await adopt(); return bytes; };
+  const before = r.server.vaultFiles().length;
+
+  const outcome = await pushFile(r.context, NOTE);
+
+  assert.equal(outcome.status, "unchanged");
+  assert.equal(outcome.fileId, HIGHER);
+  assert.equal(r.server.vaultFiles().length, before, "the note was published under a second id");
+  assert.equal(r.state.fileByPath(NOTE).versionId, other.version_id, "the adoption was replaced");
+  assert.ok(r.host.logs.some((line) => line.includes("reason=recorded_during_read")), r.host.logs.join(" | "));
+});
+
+for (const [adoptedId, role] of [["00".repeat(16), "keep"], ["ff".repeat(16), "yield"]]) {
+  test(`an adoption that lands while the push posts settles the pair on the lower id (${role})`, async () => {
+    const { r, other, adopt } = await adoptionRace(adoptedId);
+    const post = r.context.transport.postVersion.bind(r.context.transport);
+    let posted = null;
+    r.context.transport.postVersion = async (fileId, version) => {
+      const sent = await post(fileId, version);
+      if (posted === null && fileId !== adoptedId) { posted = fileId; await adopt(); }
+      return sent;
+    };
+
+    const outcome = await pushFile(r.context, NOTE);
+
+    assert.ok(posted !== null, "the push posted nothing, so the window was never reached");
+    const [keeper, loser] = [adoptedId, posted].sort();
+    assert.equal(r.state.fileByPath(NOTE).fileId, keeper, "the name is not recorded under the lower id");
+    assert.equal(outcome.fileId, keeper);
+    assert.equal(r.host.text(NOTE), SAME_TEXT);
+    // The higher id is retired, once, on the version this device knew; the
+    // lower keeps every version it had.
+    const lost = await published(r.server, loser, r.keys.manifestKey);
+    assert.equal(lost.at(-1).deleted, true, "the higher id was not retired");
+    assert.equal(lost.filter((manifest) => manifest.deleted).length, 1);
+    assert.equal((await published(r.server, keeper, r.keys.manifestKey)).at(-1).deleted, false, "the lower id was retired");
+    const known = loser === adoptedId ? other.version_id : r.server.files.get(loser).versions[1].version_id;
+    assert.deepEqual(r.server.files.get(loser).versions[0].parents, [known]);
+    assert.ok(
+      r.host.logs.some((line) => line.includes(`reason=recorded_during_post role=${role} keeper=${keeper} retired=${loser} tombstone=posted`)),
+      r.host.logs.join(" | "),
+    );
+  });
+}
+
+test("a record that names no version is never retired, however alike the bytes", async () => {
+  const { r, frame } = await twins(HIGHER, LOWER);
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: "" });
+  await applyChange(r.context, frame);
+  assert.ok(!pullLog(r).includes("identical_same_name"), pullLog(r));
+  assert.equal((await published(r.server, HIGHER, r.keys.manifestKey)).at(-1).deleted, false);
+});
+
+for (const window of ["read", "post"]) {
+  for (const [adoptedId, role] of [["00".repeat(16), "lower"], ["ff".repeat(16), "higher"]]) {
+    test(`a record of other bytes landing during the push ${window} is not deduplicated (${role} id)`, async () => {
+      const r = await rig();
+      r.host.seed(NOTE, MINE, 2000);
+      const bytes = enc(THEIRS);
+      const other = await r.server.publish({ fileId: adoptedId, path: NOTE, bytes, mtime: 4000,
+        domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+      const adopt = async () => r.state.setFile(NOTE, {
+        fileId: adoptedId, versionId: other.version_id, mtime: 4000,
+        size: bytes.length, sha256: await sidDigest(other.sids),
+      });
+      if (window === "read") {
+        const read = r.host.read.bind(r.host);
+        r.host.read = async path => { const result = await read(path); await adopt(); return result; };
+      }
+      const post = r.transport.postVersion.bind(r.transport);
+      let posted;
+      r.transport.postVersion = async (id, version) => {
+        const result = await post(id, version);
+        if (posted === undefined && id !== adoptedId) {
+          posted = id;
+          if (window === "post") await adopt();
+        }
+        return result;
+      };
+
+      const outcome = await pushFile(r.context, NOTE);
+      assert.ok(posted !== undefined, "the intended upload boundary was not reached");
+      assert.equal(role === "lower" ? adoptedId < posted : adoptedId > posted, true);
+      assert.equal(outcome.status, "pushed", "a push was dropped for a record of other bytes");
+      assert.equal(outcome.fileId, posted);
+      assert.equal(r.host.text(NOTE), MINE);
+      assert.equal(r.server.journal.some(frame => frame.deleted), false, "different content was retired as a duplicate");
+      for (const id of [adoptedId, posted]) assert.equal(r.server.files.get(id).versions[0].deleted, false);
+      assert.equal((await r.reload()).fileByPath(NOTE).fileId, posted);
+      assert.ok(!r.host.logs.some(line => /reason=recorded_during_(read|post)/.test(line)), r.host.logs.join(" | "));
+    });
+  }
+}

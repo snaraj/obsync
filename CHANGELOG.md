@@ -5,6 +5,104 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.2 - 2026-09-23
+
+**An old deleted twin cannot erase a newer note.** When catching up on history,
+obsync checks that an identical note is still the server's current version
+before retiring this device's independent copy. An edit arriving during that
+check stays on its own identity. If a newer local identity arrives while that
+check is waiting, it is kept too: the final identity check and replacement
+now happen together, with no wait between them. The keeper's identity is saved before the
+old identity is retired, so restarting preserves that decision. A full server
+encountered during automatic chunk repair remains a visible error instead of
+being reported as offline. (#131, #129)
+
+**Sync resumes by itself when the server becomes reachable again.** Until now a
+device that opened Obsidian while its server could not be reached -- a laptop
+waking before Wi-Fi, a phone away from the home network, a server restarting --
+stopped with `obsync: error` and stayed stopped until someone ran **Sync now**.
+It now keeps trying on its own: 5 s after the failed start, doubling to every
+5 minutes, for as long as Obsidian is open, and at once when the device reports
+its network back. The status bar and the settings **Connection** row say
+`obsync: offline — retrying` while it waits, and go back to `idle` the moment a
+start gets through. Nothing needs pressing when you return; **Sync now** only
+makes the next attempt happen now.
+
+**The status bar says so from the first request that gets no answer.** A
+device that could not reach its server used to read `obsync: idle` for about a
+minute and a half, the time the plugin spends retrying one request, before
+`offline — retrying` appeared; measured on real devices in the 2026-09-23 run.
+It now switches at the first unanswered request and goes back to what it said
+before at the next answered one. An error that needs you is never covered, and
+a device that is not paired still reads `not paired`. The background repair
+check no longer mistakes a missing server for damage either: while offline it
+used to flash `error — Server repair could not verify…`, sending people to look
+for a problem that was only the network; it now waits for the next check.
+
+**Obsidian opens at once when the server cannot be reached.** Opening Obsidian
+away from a server it could not reach held the whole app on "Loading plugins…"
+for as long as the plugin kept trying to connect -- over three minutes on an
+iPhone and 88 to 119 seconds on desktops in the 2026-09-24 run -- with
+"Reload app in Restricted Mode", which turns every community plugin off, as the
+highlighted way out. The plugin no longer makes Obsidian wait for the server:
+the app opens, the status bar reads `offline — retrying`, and sync starts when
+the server answers.
+
+**Restarting Obsidian no longer deletes empty folders on your other devices.**
+The plugin could start its first sync while Obsidian was still listing the
+vault, compare against that empty listing, and conclude that everything was
+gone: every empty folder was then deleted on your other devices (into their
+trash), and every note was listed under **Deletions held back** with a
+**Confirm** that would have deleted it everywhere. Notes were only saved by the
+checks that hold back a mass deletion. This happened on 1.1.1 too, on some
+restarts and not others, more often in bigger vaults. The first sync now waits
+until Obsidian has finished listing the vault.
+
+**The sync status window reads on a phone.** A long **State** line, such as an
+error, squeezed the labels beside it to one letter per line; labels now break
+only between words.
+
+**A refusal at start is still a stop.** When Obsidian starts, a revoked or
+unapproved device, a signature the server rejects, a clock too far off, a server
+that has run out of space, or a vault key that does not open the vault's records
+still show `obsync: error — <reason>` and are never retried by a timer: those
+need you, and knocking again would not change the answer. The plugin tells the
+two apart by what the server said, not by the wording of a message. A device
+that is already running when one of these refusals arrives still reads
+`offline — retrying` in this release; that is #155.
+
+**Same on every platform.** Desktop and mobile use the same timer and the same
+`online` event. On a phone, a pause that runs out while Obsidian is in the
+background fires when the app returns to the foreground.
+
+Each scheduled retry, each retry run, each resume and each stop writes one line
+to the developer console (`engine decision=retry_scheduled ...`,
+`decision=retrying`, `decision=resumed`, `decision=stopped reason=start_failed`),
+so a device that is not syncing says why.
+
+**Two devices that start with the same notes keep one of each.** A vault copied
+to a second device by hand, or moved over from another sync tool, no longer
+turns every note into a conflict copy of identical content at first sync. A note
+whose bytes are the same on both devices, at the same name, settles on one file
+with no copy, whatever order the two devices publish and pull in; a note that
+differs by even one character is still kept twice, as a conflict copy
+([Conflicts](docs/conflicts.md)). The comparison reads nothing and downloads
+nothing: identical notes already share chunk ids. The files on disk are never
+written, moved or deleted to settle the pair -- the duplicate is retired on the
+server. A device older than 1.1.2 still copies identical content, so update
+every device; the copy it makes can simply be deleted. Each settlement writes
+one `decision=converged` line naming the id that kept the name and the id
+retired (#131).
+
+**Same network, step by step.** A new guide,
+[Same network, step by step](docs/same-network.md), shows every screen of the
+most common setup: one computer at home runs the server and the phone syncs
+over the same Wi-Fi, with no tunnel, VPN or domain. It covers the computer's
+firewall, and the iPhone certificate install screen by screen, which the old
+one-line instruction got wrong: an AirDropped certificate lands in Files and
+is installed from Settings, General, VPN & Device Management. It is the path
+recorded in the [2026-09-23 run](docs/validation-runs/2026-09-23.md).
+
 ## 1.1.1 - 2026-09-23
 
 **The setup guide is one press away, and it says which setups are proven.**

@@ -694,6 +694,9 @@ async function lifecyclePlugin(t) {
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const Engine = box.require(join(box.home, "build/sync/engine.js")).SyncEngine;
   const instance = new Plugin();
+  // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
+  const load = instance.onload.bind(instance);
+  instance.onload = async () => { await load(); await instance.firstStart; };
   const r = await fakeState();
   const logs = [], statuses = [], mounts = [];
   instance.state = r.state;
@@ -701,7 +704,7 @@ async function lifecyclePlugin(t) {
   instance.host = { log: (line) => logs.push(line) };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
   instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);

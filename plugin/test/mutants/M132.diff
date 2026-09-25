@@ -1,0 +1,12 @@
+# M132: a record that appears during the post is never settled
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -305,7 +305,7 @@
+   // it settles the pair here, by the rule every other device applies to it.
+   if (record === undefined) {
+     const adopted = context.state.fileByPath(path);
+-    if (adopted !== undefined && adopted.sha256 === digest) {
++    if (adopted !== undefined && adopted.sha256 === digest && digest === "") {
+       return await settleDuplicate(context, path, adopted, { fileId, versionId: ack.versionId, mtime: stat.mtime, size: stat.size, sha256: digest }, ack.ack);
+     }
+   }

@@ -1,0 +1,12 @@
+# M146: a transport from an earlier session is heard
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1545,7 +1545,7 @@
+       log: (line) => this.log(line),
+       // Only this session's transport speaks for the status bar.
+       reachable: (answered) => {
+-        if (this.transport === transport) this.reachability(answered);
++        this.reachability(answered);
+       },
+     });
+     this.transport = transport;

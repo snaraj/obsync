@@ -1,0 +1,12 @@
+# M135: the post-window keeper does not retire the posted duplicate
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -366,7 +366,7 @@
+   ack: VersionAck,
+ ): Promise<PushOutcome> {
+   if (adopted.fileId < posted.fileId) {
+-    const retired = await retire(context, posted.fileId, posted.versionId, path);
++    const retired = "posted";
+     context.host.log(
+       `push path_class=file decision=converged reason=recorded_during_post role=keep keeper=${adopted.fileId} retired=${posted.fileId} tombstone=${retired}`,
+     );

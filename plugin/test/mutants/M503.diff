@@ -1,0 +1,12 @@
+# M503: twin adoption ignores an edit during current-head lookup
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2385,7 +2385,7 @@
+     context.host.log(`pull decision=skipped reason=historical_twin file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
+-  const checked = await identicalAtName(context, change, manifest.path, ours);
++  const checked = { mtime: ours.mtime, size: ours.size };
+   if (checked === null || context.state.fileByPath(manifest.path) !== ours) {
+     context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
+     return "skipped";

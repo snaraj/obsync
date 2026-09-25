@@ -1,0 +1,12 @@
+# M111: a 507 the transport retried out is retried again
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -212,7 +212,7 @@
+  * is exactly the noise a server log should not have to hold.
+  */
+ function unreachable(error: unknown): error is ApiError {
+-  return error instanceof ApiError && error.code === "unreachable" && error.status !== 507;
++  return error instanceof ApiError && error.code === "unreachable";
+ }
+ 
+ /** What Obsidian's plugin manager calls this plugin, as `manifest.json` names it. */

@@ -29,7 +29,7 @@ site_description: >-
   Self-hosted, end-to-end encrypted live sync for Obsidian: one dependency-free
   Rust server you run yourself, plus an Obsidian plugin.
 site_url: https://snaraj.github.io/obsync/
-site_author: Samuel Naranjo
+site_author: obsync contributors
 copyright: MIT licensed. The server stores ciphertext only.
 
 repo_url: https://github.com/snaraj/obsync
@@ -117,6 +117,7 @@ nav:
   - Start here:
       - Choose your setup: setup.md
       - Quickstart: quickstart.md
+      - Same network, step by step: same-network.md
       - Install the plugin: community-plugin.md
       - Run the server (Docker and Compose): server.md
       - Run the server (Kubernetes): kubernetes.md
@@ -142,6 +143,8 @@ nav:
       - 2026-09-14 run: validation-runs/2026-09-14.md
       - 2026-09-20 run: validation-runs/2026-09-20.md
       - 2026-09-21 run: validation-runs/2026-09-21.md
+      - 2026-09-23 run: validation-runs/2026-09-23.md
+      - 2026-09-24 run: validation-runs/2026-09-24.md
       - Releases: release.md
       - CI map: ci-map.md
       - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md

@@ -30,6 +30,20 @@ you a conflict copy instead:
   silently and you see one file with both changes; when both devices changed
   THE SAME lines, the merge stops rather than guessing.
 
+## The same note on two devices is not a conflict
+
+Two devices that start with the same notes -- a vault copied to the second
+device by hand, or moved over from another sync tool -- each publish every note
+before either has seen the other's. When the two files at one name hold the
+same bytes, there is nothing to decide: every device keeps one file and makes
+no copy. That holds once every device syncing the vault runs 1.1.2 or later; an
+older device still copies identical content, and the copy can simply be
+deleted.
+
+Only byte-identical content qualifies. Two notes that differ by one character,
+a trailing newline, or their line endings (`\r\n` against `\n`) are two notes
+created independently, and you get a conflict copy as described below.
+
 ## Everything else becomes a conflict copy
 
 A conflict copy is a new file beside the original, in the same folder:
@@ -68,3 +82,9 @@ the other. There is no third state and no silent overwrite.
   conflicts neither tool can reconcile, and obsync can only see its own.
 - On a device that has been offline for a long time, open Obsidian and let
   **Sync now** finish before editing.
+
+An identical note is adopted from another file identity only while that incoming
+version is the server's sole current head. Replaying an old version of a note
+that has since been deleted or changed does not retire a later independent
+note. An edit or replacement of the local record during that check also stops
+adoption. The selected keeper is saved before the duplicate identity is retired.

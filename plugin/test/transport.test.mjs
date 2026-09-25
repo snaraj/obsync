@@ -65,6 +65,7 @@ function harness(responses, options = {}) {
     random: () => 0.5,
     maxAttempts: options.maxAttempts ?? 3,
     log: (line) => logged.push(line),
+    reachable: options.reachable,
   });
   const slept = [];
   const logged = [];
@@ -586,4 +587,26 @@ test("a manual read refusal names its reason, and budget_bytes only for the size
     /^history_http decision=refused reason=cancelled duration_ms=\d+$/,
   );
   assert.equal(stopped.sent.length, 0, "a cancelled read never reaches the network");
+});
+
+test("every attempt says whether the server answered it, and decides nothing", async () => {
+  // Nothing answers, then a terminator with no server behind it, then the
+  // server: three attempts, three reports, and the call returns as before.
+  const heard = [];
+  const { transport, sent } = harness(
+    [new Error("connection refused SENTINEL"), { status: 503 }, { status: 200, text: JSON.stringify({ devices: [] }) }],
+    { reachable: (answered) => heard.push(answered) },
+  );
+  assert.deepEqual(await transport.devices(), { devices: [] });
+  assert.deepEqual(heard, [false, false, true]);
+  assert.equal(sent.length, 3);
+
+  // A refusal IS an answer: the server is there, and it said no.
+  const refused = [];
+  const { transport: strict } = harness(
+    [{ status: 401, text: JSON.stringify({ error: "bad_signature", detail: "SENTINEL" }) }],
+    { reachable: (answered) => refused.push(answered) },
+  );
+  await assert.rejects(strict.devices(), (error) => error.code === "bad_signature");
+  assert.deepEqual(refused, [true]);
 });

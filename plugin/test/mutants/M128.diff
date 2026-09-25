@@ -1,0 +1,20 @@
+# M128: the yielding device does not record the lower id
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2390,16 +2390,6 @@
+     context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
+-  // The digest was already proved equal. Check and replace the identity in
+-  // one synchronous turn: recordAt would await another digest after the check.
+-  context.state.setFile(manifest.path, {
+-    fileId: change.file_id,
+-    versionId: change.version_id,
+-    mtime: checked.mtime,
+-    size: checked.size,
+-    sha256: ours.sha256,
+-  });
+-  await context.state.save();
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+   context.host.log(
+     `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

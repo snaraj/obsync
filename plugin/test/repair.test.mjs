@@ -659,3 +659,28 @@ test("a read that loses the slot mid-step is deferred, never a could-not-verify 
   await timers.run(0, () => r.server.feedWaiters.length > 0);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
 });
+
+test("a server that is not there is absence during repair, never a could-not-verify error", async () => {
+  // Seen on a real device offline (the 2026-09-23 run): the repair tick's
+  // request ran out of attempts, and the status bar sent an offline person to
+  // "check connectivity and the server scrub report".
+  const r = await note(), timers = new FakeTimers(), statuses = [];
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const before = statuses.length;
+  const { ApiError } = require("../build/transport.js");
+  r.transport.historyVersion = async () => { throw new ApiError(0, "unreachable", "network=SENTINEL"); };
+  await engine.syncNow();
+
+  assert.ok(
+    r.host.logs.some((entry) => /^repair decision=deferred reason=unreachable budget_sids=64/.test(entry)),
+    r.host.logs.join(" | "),
+  );
+  assert.equal(statuses.slice(before).some((status) => status.kind === "error"), false, "absence is not a repair error");
+  assert.equal(r.host.logs.some((entry) => entry.includes("read_or_write_failed")), false);
+  assert.equal(timers.entries.filter((entry) => entry.due - timers.now === REPAIR_SCAN_MS).length, 1,
+    "it waits for the next walk rather than knocking every second");
+  await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});

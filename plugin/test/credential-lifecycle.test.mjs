@@ -20,7 +20,7 @@ async function fixture(t, initial = null) {
   instance.saveData = async (value) => { if (hooks.save) await hooks.save(); metadata = structuredClone(value); writes.push(metadata); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.18" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };
@@ -388,6 +388,7 @@ test("an active startup failure retains its drain before a replacement load", as
   assert.equal(drains, 1);
   release.resolve();
   await loading;
+  await r.instance.firstStart; // Obsidian does not wait for the first start; this test does.
   assert.equal(r.loads(), loads + 1);
   assert.ok(r.instance.engine);
   assert.equal(r.instance.engineTeardowns.size, 0);

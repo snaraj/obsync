@@ -114,7 +114,7 @@ import {
   selectionAfterRename,
 } from "../syncScope";
 import { conflictCopyPath, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, postManifest, pushFile, retire, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -2288,6 +2288,8 @@ async function sameNameTiebreak(
   const when = new Date(context.now());
   const ours = context.state.fileByPath(manifest.path);
   if (ours === undefined) return await keepBoth(context, change, manifest);
+  const same = await identicalAtName(context, change, manifest.path, ours);
+  if (same !== null) return await convergeIdentical(context, change, manifest, ours);
 
   if (ours.fileId < change.file_id) {
     const kept = await keepBothRecorded(context, change, manifest);
@@ -2308,6 +2310,101 @@ async function sameNameTiebreak(
   // the defect issue #113 exists to end -- and a device that cannot bind a
   // removal (mobile) takes this path for EVERY collision it meets.
   return await keepBothRecorded(context, change, manifest);
+}
+
+/**
+ * Is the note at the name already the incoming version, byte for byte
+ * (issue #131)?
+ *
+ * Two devices that each start with the same notes -- a vault copied by hand,
+ * or one moved over from another sync tool -- publish every note under their
+ * own file id before either pulls the other's, so every note meets its twin at
+ * its own name. The rule above then keeps one and copies the other beside it:
+ * a conflict copy of identical bytes, once per note in the vault.
+ *
+ * THE PROOF COSTS NO READ. A chunk's id is derived from its plaintext under
+ * the domain key (`encryptChunk`), so two versions of the same bytes in one
+ * domain name the same chunk ids, and a record keeps the digest of the ids its
+ * version names. Equal digests are equal bytes, at any size and with nothing
+ * downloaded, and the server learns nothing it does not already hold: it
+ * stores both chunk lists.
+ *
+ * ONLY A CLEAN NOTE. The digest describes the version this device recorded
+ * and nothing written since, so a note whose size or mtime has moved -- an
+ * edit not yet pushed -- takes the ordinary rule, and so does a record that
+ * names no version, which has no parent a retirement could name. The stat
+ * returned is the one that was checked, which is what `recordAt` must be handed.
+ */
+async function identicalAtName(
+  context: SyncContext,
+  change: ChangeRecord,
+  path: string,
+  ours: FileState,
+): Promise<VaultStat | null> {
+  if (ours.versionId === "") return null;
+  if (ours.sha256 !== (await sidDigest(change.sids))) return null;
+  const stat = await context.host.stat(path);
+  if (stat === null || stat.mtime !== ours.mtime || stat.size !== ours.size) return null;
+  return stat;
+}
+
+/**
+ * Two file ids, one name, one content: the same rule, and no copy.
+ *
+ * The lower id keeps the name, exactly as it does for two different notes, so
+ * both devices reach one answer without negotiating. The device holding it
+ * writes and records nothing; the other id is its own device's to retire. The
+ * device holding the higher id records the name under the lower one -- its
+ * bytes ARE that version -- and publishes one tombstone for its own id, so no
+ * device, including one paired later, is handed the duplicate again. The
+ * tombstone's parent is the version this device recorded: if that id has
+ * moved on elsewhere, it forks instead of deleting, and every device holding
+ * the later edit keeps it (delete-versus-edit, issue #98).
+ *
+ * The note on disk is never written, moved or trashed on either side. A
+ * tombstone that cannot be posted costs a duplicate id on the server, never a
+ * note: the keeper records nothing for it, and a device that meets it later
+ * settles it by this same rule.
+ */
+async function convergeIdentical(
+  context: SyncContext,
+  change: ChangeRecord,
+  manifest: Manifest,
+  ours: FileState,
+): Promise<ApplyResult> {
+  if (ours.fileId < change.file_id) {
+    context.host.log(
+      `pull decision=converged reason=identical_same_name role=keep keeper=${ours.fileId} file=${change.file_id} seq=${change.seq}`,
+    );
+    return "skipped";
+  }
+  // A feed frame can predate a deletion or a later edit. Only a current,
+  // sole live head may replace this device's independent live identity.
+  const current = await context.transport.getFile(change.file_id);
+  if (current.heads.length !== 1 || current.heads[0] !== change.version_id) {
+    context.host.log(`pull decision=skipped reason=historical_twin file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+  const checked = await identicalAtName(context, change, manifest.path, ours);
+  if (checked === null || context.state.fileByPath(manifest.path) !== ours) {
+    context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+  // The digest was already proved equal. Check and replace the identity in
+  // one synchronous turn: recordAt would await another digest after the check.
+  context.state.setFile(manifest.path, {
+    fileId: change.file_id,
+    versionId: change.version_id,
+    mtime: checked.mtime,
+    size: checked.size,
+    sha256: ours.sha256,
+  });
+  await context.state.save();
+  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+  context.host.log(
+    `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,
+  );
+  return "applied";
 }
 
 /**

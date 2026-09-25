@@ -1,0 +1,12 @@
+# M130: a push never rereads the record before posting
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -271,7 +271,7 @@
+   // conflict copy of issue #131, one edit later. So an unpublished note's
+   // record is read again at the last moment before a version exists, and one
+   // that holds these same bytes IS this push.
+-  if (record === undefined) {
++  if (record === undefined && digest === "") {
+     const adopted = context.state.fileByPath(path);
+     if (adopted !== undefined && adopted.sha256 === digest) {
+       context.host.log(`push path_class=file decision=unchanged reason=recorded_during_read file=${adopted.fileId}`);

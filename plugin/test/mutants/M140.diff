@@ -1,0 +1,12 @@
+# M140: the transport calls every attempt answered
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -523,7 +523,7 @@
+         reason: `network=${error instanceof Error ? error.message : String(error)}`,
+       };
+     }
+-    this.options.reachable?.(outcome.kind === "settled");
++    this.options.reachable?.(true);
+     return outcome;
+   }
+ 

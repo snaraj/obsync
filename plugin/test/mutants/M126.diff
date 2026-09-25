@@ -1,0 +1,12 @@
+# M126: a note whose size moved is taken for its recorded version
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2344,7 +2344,7 @@
+   if (ours.versionId === "") return null;
+   if (ours.sha256 !== (await sidDigest(change.sids))) return null;
+   const stat = await context.host.stat(path);
+-  if (stat === null || stat.mtime !== ours.mtime || stat.size !== ours.size) return null;
++  if (stat === null || stat.mtime !== ours.mtime) return null;
+   return stat;
+ }
+ 

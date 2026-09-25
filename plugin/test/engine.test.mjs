@@ -1356,7 +1356,11 @@ test("a deletion refused because the file came back is published as the change i
   const queuedByScan = () =>
     host.logs.filter((line) => /^scan decision=queued .* queued=[1-9]/.test(line)).length;
   const scansBefore = queuedByScan();
-  await timers.run(1000, () => posted().length === 2);
+  // A server frame is visible before its local record is saved. Wait for
+  // the record asserted below too; otherwise WebCrypto scheduling can make
+  // an unrelated mutation look like a deletion-republication failure.
+  await timers.run(1000, () => posted().length === 2 &&
+    state.fileByPath("Notes/Back.md")?.versionId === posted()[1].version_id);
   assert.ok(returned, "the test never reached the window it exists for");
   assert.equal(queuedByScan(), scansBefore,
     "the periodic scan published this change, so nothing here proves the refusal was republished");

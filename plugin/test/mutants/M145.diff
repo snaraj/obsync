@@ -1,0 +1,12 @@
+# M145: an answer puts back idle, not what it covered
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2442,7 +2442,7 @@
+     this.unanswered = null;
+     if (raised === null || this.statusValue !== raised.shown) return;
+     this.log("engine decision=online reason=answered");
+-    this.setStatus(raised.covered);
++    this.setStatus({ kind: "idle" });
+   }
+ 
+   statusText(): string {

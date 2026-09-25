@@ -1,4 +1,4 @@
-# Mutation kill matrix - the 1.1.0 train
+# Mutation kill matrix - the 1.1.2 train
 
 Every guard this range adds or carries, mutated against the whole plugin
 suite. Each mutant is an exact unified diff beside this file with its subject
@@ -7,9 +7,9 @@ numbers and `record.py` writes this file from them, so a table whose counts
 have drifted from the suite is a table anyone can catch.
 
     sh plugin/test/mutants/matrix.sh > matrix.log
-    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants 732
+    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants 775
 
-The last argument is the size of the clean suite -- 732 tests here, which
+The last argument is the size of the clean suite -- 775 tests here, which
 `node --test` prints as `# tests` -- so every count below is out of the whole
 suite. One mutant can be re-measured on its own:
 
@@ -25,115 +25,155 @@ the same range as the repair.
 
 | Mutant | Subject | Killed by |
 | --- | --- | --- |
-| M01 | the tie-break comparison reversed | 39/732 |
-| M02 | the tie-break always keeps the name | 23/732 |
-| M03 | the tie-break always renames | 17/732 |
-| M04 | a name this device already settled is ignored | 7/732 |
-| M05 | a settled occupant is written over unchecked | 5/732 |
-| M06 | keep-and-record records no copy | 13/732 |
-| M07 | the moved file's delete is left unmarked | 3/732 |
-| M08 | the moved file's record is left clean | 4/732 |
-| M09 | no free name reports the move as done | 1/732 |
-| M10 | an unidentified file is never settled | 3/732 |
-| M11 | the source of a move is never checked for a local edit | 2/732 |
-| M12 | adoption takes any occupant of the length | 2/732 |
-| M13 | identify believes any publish outcome | 1/732 |
-| M14 | a failed publish reports success | 1/732 |
-| M15 | one path pushed twice at once | 4/732 |
-| M16 | the source is not re-stat-ed before the trash | 1/732 |
-| M17 | the refusal is logged and the move reported as done | 1/732 |
-| M18 | the move reads the whole file again | 2/732 |
-| M19 | the copy window is the rest of the file | 1/732 |
-| M20 | a copy that failed under a moving source is raised, not refused | 1/732 |
-| M21 | the fake's create-only writer accepts a short copy | 1/732 |
-| M22 | the digest proof is bound to a fresh stat | 2/732 |
-| M23 | recordAt stats the file itself | 4/732 |
-| M24 | the settled write records a fresh stat | 3/732 |
-| M25 | the joined request is dropped, as before | **SURVIVES** 0/732 |
-| M26 | the follow-up is remembered and never queued | **SURVIVES** 0/732 |
-| M27 | the record is never saved | 1/732 |
+| M01 | the tie-break comparison reversed | 39/775 |
+| M02 | the tie-break always keeps the name | 23/775 |
+| M03 | the tie-break always renames | 17/775 |
+| M04 | a name this device already settled is ignored | 8/775 |
+| M05 | a settled occupant is written over unchecked | 5/775 |
+| M06 | keep-and-record records no copy | 13/775 |
+| M07 | the moved file's delete is left unmarked | 3/775 |
+| M08 | the moved file's record is left clean | 4/775 |
+| M09 | no free name reports the move as done | 1/775 |
+| M10 | an unidentified file is never settled | 3/775 |
+| M11 | the source of a move is never checked for a local edit | 2/775 |
+| M12 | adoption takes any occupant of the length | 2/775 |
+| M13 | identify believes any publish outcome | 1/775 |
+| M14 | a failed publish reports success | 1/775 |
+| M15 | one path pushed twice at once | 3/775 |
+| M16 | the source is not re-stat-ed before the trash | 1/775 |
+| M17 | the refusal is logged and the move reported as done | 1/775 |
+| M18 | the move reads the whole file again | 2/775 |
+| M19 | the copy window is the rest of the file | 1/775 |
+| M20 | a copy that failed under a moving source is raised, not refused | 1/775 |
+| M21 | the fake's create-only writer accepts a short copy | 1/775 |
+| M22 | the digest proof is bound to a fresh stat | 2/775 |
+| M23 | recordAt stats the file itself | 4/775 |
+| M24 | the settled write records a fresh stat | 3/775 |
+| M25 | the joined request is dropped, as before | **SURVIVES** 0/775 |
+| M26 | the follow-up is remembered and never queued | **SURVIVES** 0/775 |
+| M27 | the record is never saved | 1/775 |
 | M28 | any held answer enters the rule, not only one about the destination | equivalent, see below |
-| M29 | the id the server answers with is ignored | 5/732 |
-| M30 | a post never offers the version the server already holds | 3/732 |
-| M31 | a rename offers itself for deduplication | 1/732 |
-| M32 | the domain map offers itself for deduplication | 1/732 |
-| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 3/732 |
-| M34 | 121: sync now never drains again for work queued behind it | 1/732 |
-| M35 | 121: sync now always reports that it joined a running drain | 1/732 |
-| M36 | 56: the in-flight byte ceiling admits anything | 1/732 |
-| M37 | 56: a chunk already in flight is uploaded a second time | 1/732 |
-| M38 | 56: the probe always answers that the body never landed | 1/732 |
-| M39 | 56: the 409 retry re-uploads every chunk again | 1/732 |
-| M40 | 91: a renamed folder does not take the selection with it | 5/732 |
-| M41 | 91: a file leaving the selection is published as a deletion | 6/732 |
-| M42 | 91: both sides of the move are judged by the selection after it | 5/732 |
-| M43 | 91: the followed selection is never persisted | 1/732 |
-| M44 | 92: every scope change replays from zero, narrowing included | 1/732 |
-| M45 | no hold is ever taken, so no move is ever completed | 11/732 |
-| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/732 |
-| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/732 |
-| M48 | a tombstone is posted without asking whether the file is still there | 3/732 |
-| M49 | a refused deletion is dropped instead of published as the change it is | 1/732 |
-| M50 | a move the filesystem refused is removed by its live name anyway | 1/732 |
-| M51 | a removal with no hold behind it is made anyway, with the window open | 3/732 |
-| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 3/732 |
-| M53 | what moved is not proved against what was copied | 4/732 |
-| M54 | the file is put back and deleted by the name an editor writes to | 4/732 |
-| M55 | the vacated name is written over instead of created | 1/732 |
-| M56 | a save made through an open descriptor after the move is not noticed | 4/732 |
-| M57 | a tombstone is applied without proving the file against its record | 3/732 |
-| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 6/732 |
-| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/732 |
-| M60 | the put-back looks at the destination and then replaces whatever took it | 2/732 |
-| M61 | the hold is released whether or not the restore landed | 1/732 |
-| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/732 |
-| M63 | an upload that outlived its path records it anyway | 1/732 |
-| M64 | a folder rename moves the records and leaves the pending work behind | 1/732 |
-| M65 | the adopted version is proved by everything except the path | 3/732 |
-| M66 | the repost after a refused adoption offers the promise again | 3/732 |
-| M67 | the bulk-deletion floor is removed, so any pass can hold | 2/732 |
-| M68 | a count alone decides a bulk deletion, without the share | 1/732 |
-| M69 | the periodic scan may clear a hold the startup pass took | 2/732 |
-| M70 | the confirmation queues nothing, so a real deletion never publishes | 1/732 |
-| M71 | every remote rename falls back to write-then-trash | 2/732 |
-| M72 | the rename shortcut stops proving the source holds this content | 3/732 |
-| M73 | leaving a server keeps the folder records it minted | 1/732 |
-| M74 | the fake host renames a DIRECTORY component from a file's move | 1/732 |
-| M75 | a folder record stops re-casing the directory it names | 20/732 |
-| M76 | a note's move records a spelling the vault does not show | 4/732 |
-| M77 | a rename that changed no byte downloads the note again | 4/732 |
-| M78 | the folder re-case trusts the host's answer instead of the vault's listing | 1/732 |
-| M79 | a case-only folder rename publishes its folder record after the moves | 11/732 |
-| M80 | each half of a folder rename reads the selection for itself | 2/732 |
-| M81 | the case-only folder record is enqueued first and not held to | 8/732 |
-| M82 | a batch takes its paths without looking for a barrier | 8/732 |
-| M83 | a materialised file is recorded at the manifest's spelling | 2/732 |
-| M84 | a re-case carries the records and leaves their heads behind | 1/732 |
-| M85 | the scan's move pairing stops asking about a directory's case | 1/732 |
-| M86 | a folder rename this device DISCOVERS is declined as a stale record | 1/732 |
-| M87 | a pairing is declined on a host that keeps the two spellings apart | 1/732 |
-| M88 | an echo mark armed for an event that never comes is never expired | 3/732 |
-| M89 | a folder record is judged by the file rule, as it was | 6/732 |
-| M90 | an incoming folder record is judged by the file rule, as it was | 8/732 |
-| M91 | a received re-case leaves the selection at the old spelling | 1/732 |
-| M92 | a discovered folder re-case goes out in the two loops' order | 1/732 |
-| M93 | a folder is removed though the vault spells it another way | 1/732 |
-| M94 | a failed folder post is logged and dropped, as it was | 3/732 |
-| M95 | a retried folder record is put back without its barrier | 3/732 |
-| M96 | the fake's folder removal compares names without folding case | 1/732 |
-| M97 | the receiver admits a case-twin of a selected folder with no tombstone behind it | 7/732 |
-| M98 | a folder tombstone arms the retirement whatever record this device holds | 2/732 |
-| M99 | a folder tombstone retires every selected folder rather than the one it names | 1/732 |
-| M100 | the retirement is armed by a tombstone that is not this record's own | 1/732 |
-| M101 | the retirement is not spent by the folder record that takes it | 1/732 |
-| M102 | a record written for a folder leaves its retirement open | 1/732 |
-| M103 | the folder rule's case tolerance compares whole paths again | 2/732 |
-| M104 | a rename of a file onto its own path is taken as a rename | 1/732 |
-| M105 | a folder rename onto its own path still fans out into per-file moves | 1/732 |
-| M106 | a folder rename onto its own path still publishes a tombstone and a record | 1/732 |
-| M107 | the folder record's hold is not restored at the next start | 1/732 |
-| M108 | the reconcile pass queues the folder records it owes after the file work | 1/732 |
-| M109 | the fake reports a folder rename that landed where it started | 1/732 |
+| M29 | the id the server answers with is ignored | 6/775 |
+| M30 | a post never offers the version the server already holds | 3/775 |
+| M31 | a rename offers itself for deduplication | 1/775 |
+| M32 | the domain map offers itself for deduplication | 1/775 |
+| M33 | 121: drain() resolves immediately while draining (the 1.0.6 early return) | 3/775 |
+| M34 | 121: sync now never drains again for work queued behind it | 1/775 |
+| M35 | 121: sync now always reports that it joined a running drain | 1/775 |
+| M36 | 56: the in-flight byte ceiling admits anything | 1/775 |
+| M37 | 56: a chunk already in flight is uploaded a second time | 1/775 |
+| M38 | 56: the probe always answers that the body never landed | 1/775 |
+| M39 | 56: the 409 retry re-uploads every chunk again | 1/775 |
+| M40 | 91: a renamed folder does not take the selection with it | 5/775 |
+| M41 | 91: a file leaving the selection is published as a deletion | 6/775 |
+| M42 | 91: both sides of the move are judged by the selection after it | 5/775 |
+| M43 | 91: the followed selection is never persisted | 1/775 |
+| M44 | 92: every scope change replays from zero, narrowing included | 1/775 |
+| M45 | no hold is ever taken, so no move is ever completed | 11/775 |
+| M46 | the desktop writer answers with a fresh look at the name instead of the bytes it committed | 1/775 |
+| M47 | the local-copy bound is applied to the streaming host instead of the one that buffers | 1/775 |
+| M48 | a tombstone is posted without asking whether the file is still there | 3/775 |
+| M49 | a refused deletion is dropped instead of published as the change it is | 1/775 |
+| M50 | a move the filesystem refused is removed by its live name anyway | 1/775 |
+| M51 | a removal with no hold behind it is made anyway, with the window open | 3/775 |
+| M52 | a host that cannot bind a removal is asked to move anyway, and copies first | 2/775 |
+| M53 | what moved is not proved against what was copied | 4/775 |
+| M54 | the file is put back and deleted by the name an editor writes to | 4/775 |
+| M55 | the vacated name is written over instead of created | 1/775 |
+| M56 | a save made through an open descriptor after the move is not noticed | 4/775 |
+| M57 | a tombstone is applied without proving the file against its record | 3/775 |
+| M58 | a replayed tombstone is obeyed whatever this device's version descends from | 6/775 |
+| M59 | the tombstone's removal is not bound to the bytes it was told to remove | 1/775 |
+| M60 | the put-back looks at the destination and then replaces whatever took it | 2/775 |
+| M61 | the hold is released whether or not the restore landed | 1/775 |
+| M62 | the hold is unlinked on a stat, with no descriptor left to answer for it | 1/775 |
+| M63 | an upload that outlived its path records it anyway | 1/775 |
+| M64 | a folder rename moves the records and leaves the pending work behind | 1/775 |
+| M65 | the adopted version is proved by everything except the path | 3/775 |
+| M66 | the repost after a refused adoption offers the promise again | 3/775 |
+| M67 | the bulk-deletion floor is removed, so any pass can hold | 2/775 |
+| M68 | a count alone decides a bulk deletion, without the share | 1/775 |
+| M69 | the periodic scan may clear a hold the startup pass took | 2/775 |
+| M70 | the confirmation queues nothing, so a real deletion never publishes | 1/775 |
+| M71 | every remote rename falls back to write-then-trash | 2/775 |
+| M72 | the rename shortcut stops proving the source holds this content | 3/775 |
+| M73 | leaving a server keeps the folder records it minted | 1/775 |
+| M74 | the fake host renames a DIRECTORY component from a file's move | 1/775 |
+| M75 | a folder record stops re-casing the directory it names | 20/775 |
+| M76 | a note's move records a spelling the vault does not show | 4/775 |
+| M77 | a rename that changed no byte downloads the note again | 4/775 |
+| M78 | the folder re-case trusts the host's answer instead of the vault's listing | 1/775 |
+| M79 | a case-only folder rename publishes its folder record after the moves | 11/775 |
+| M80 | each half of a folder rename reads the selection for itself | 2/775 |
+| M81 | the case-only folder record is enqueued first and not held to | 7/775 |
+| M82 | a batch takes its paths without looking for a barrier | 8/775 |
+| M83 | a materialised file is recorded at the manifest's spelling | 2/775 |
+| M84 | a re-case carries the records and leaves their heads behind | 1/775 |
+| M85 | the scan's move pairing stops asking about a directory's case | 1/775 |
+| M86 | a folder rename this device DISCOVERS is declined as a stale record | 1/775 |
+| M87 | a pairing is declined on a host that keeps the two spellings apart | 1/775 |
+| M88 | an echo mark armed for an event that never comes is never expired | 3/775 |
+| M89 | a folder record is judged by the file rule, as it was | 6/775 |
+| M90 | an incoming folder record is judged by the file rule, as it was | 8/775 |
+| M91 | a received re-case leaves the selection at the old spelling | 1/775 |
+| M92 | a discovered folder re-case goes out in the two loops' order | 1/775 |
+| M93 | a folder is removed though the vault spells it another way | 1/775 |
+| M94 | a failed folder post is logged and dropped, as it was | 3/775 |
+| M95 | a retried folder record is put back without its barrier | 3/775 |
+| M96 | the fake's folder removal compares names without folding case | 1/775 |
+| M97 | the receiver admits a case-twin of a selected folder with no tombstone behind it | 7/775 |
+| M98 | a folder tombstone arms the retirement whatever record this device holds | 2/775 |
+| M99 | a folder tombstone retires every selected folder rather than the one it names | 1/775 |
+| M100 | the retirement is armed by a tombstone that is not this record's own | 1/775 |
+| M101 | the retirement is not spent by the folder record that takes it | 1/775 |
+| M102 | a record written for a folder leaves its retirement open | 1/775 |
+| M103 | the folder rule's case tolerance compares whole paths again | 2/775 |
+| M104 | a rename of a file onto its own path is taken as a rename | 1/775 |
+| M105 | a folder rename onto its own path still fans out into per-file moves | 1/775 |
+| M106 | a folder rename onto its own path still publishes a tombstone and a record | 1/775 |
+| M107 | the folder record's hold is not restored at the next start | 1/775 |
+| M108 | the reconcile pass queues the folder records it owes after the file work | 1/775 |
+| M109 | the fake reports a folder rename that landed where it started | 1/775 |
+| M110 | an outage is classified as a refusal, and a refusal as an outage | 15/775 |
+| M111 | a 507 the transport retried out is retried again | 1/775 |
+| M112 | the reconnect pause is never capped | 1/775 |
+| M113 | the reconnect pause never grows | 2/775 |
+| M114 | teardown leaves the reconnect armed | 1/775 |
+| M115 | the network coming back is not listened for | 1/775 |
+| M116 | a start leaves the pending reconnect timer armed | 1/775 |
+| M117 | a resume leaves the status bar saying offline | 1/775 |
+| M118 | leaving the server leaves the reconnect armed | 1/775 |
+| M119 | a folder-selection change carries the old reconnect cycle on | 1/775 |
+| M120 | a start that succeeded does not close the reconnect cycle | 1/775 |
+| M121 | online starts an engine whether or not a retry is pending | 9/775 |
+| M122 | the identical-name check never matches | 3/775 |
+| M123 | a record naming no version is settled anyway | 1/775 |
+| M124 | identical names are settled without comparing chunk digests | 40/775 |
+| M125 | a note whose mtime moved is taken for its recorded version | 1/775 |
+| M126 | a note whose size moved is taken for its recorded version | 1/775 |
+| M127 | the identical pair keeps the HIGHER id | 3/775 |
+| M128 | the yielding device does not record the lower id | 2/775 |
+| M129 | the yielding device does not retire its own id | 2/775 |
+| M130 | a push never rereads the record before posting | 1/775 |
+| M131 | a record of other bytes found before posting is taken for the push | 1/775 |
+| M132 | a record that appears during the post is never settled | 2/775 |
+| M133 | a record of other bytes that appears during the post is settled as a duplicate | 1/775 |
+| M134 | the post-window pair keeps the HIGHER id | 2/775 |
+| M135 | the post-window keeper does not retire the posted duplicate | 1/775 |
+| M136 | the post-window yield does not record the lower id | 1/775 |
+| M137 | the post-window yield does not retire the adopted id | 1/775 |
+| M138 | a tombstone that cannot be posted is raised | 1/775 |
+| M139 | the transport never says whether the server answered | 1/775 |
+| M140 | the transport calls every attempt answered | 1/775 |
+| M141 | an unanswered attempt is not shown | 2/775 |
+| M142 | an unanswered attempt covers an error | 2/775 |
+| M143 | an unpaired device is shown offline | 1/775 |
+| M144 | an answer clears any offline, the reconnect cycle's included | 1/775 |
+| M145 | an answer puts back idle, not what it covered | 1/775 |
+| M146 | a transport from an earlier session is heard | 1/775 |
+| M147 | a server that is not there is reported as a repair failure | 1/775 |
+| M148 | onload waits for the first start, holding Obsidian's loading screen until the server answers | 2/775 |
+| M149 | the first start reconciles before Obsidian has listed the vault | 1/775 |
 
 ## Which tests killed each mutant
 
@@ -227,6 +267,7 @@ the same range as the repair.
 
 **M04** - a name this device already settled is ignored
 
+- a case-only move is refused, not forced, when another file wears the destination
 - a native settled write records the metadata of the bytes it committed
 - control: a native settled copy protects a save made after commit returns
 - a second version with the same size and modification time still reaches the vault
@@ -263,7 +304,7 @@ the same range as the repair.
 
 - the holder of the higher id moves its own note aside and yields the path
 - a note far larger than memory is moved aside a window at a time
-- two devices that name one note twice converge, and stay converged
+- a note the queue is already pushing is not published a second time
 
 **M08** - the moved file's record is left clean
 
@@ -303,7 +344,6 @@ the same range as the repair.
 **M15** - one path pushed twice at once
 
 - a note written while this device was closed survives one the other device made at the same path
-- a note the queue is already pushing is not published a second time
 - an edit made while a note is being pushed is not left behind
 - two devices that name one note twice converge, and stay converged
 
@@ -409,6 +449,7 @@ the same range as the repair.
 - two engines that merge one note identically end on ONE version
 - ordinary concurrent edit must not adopt another device's rename-and-edit manifest
 - a persisted unposted rename must retain the dedupe opt-out after state reload
+- two devices resolving one concurrent edit settle instead of looping
 
 **M30** - a post never offers the version the server already holds
 
@@ -533,7 +574,6 @@ the same range as the repair.
 
 - a note written while this device was closed survives one the other device made at the same path
 - a device that cannot bind a removal keeps both instead of moving its own note
-- a note the queue is already pushing is not published a second time
 
 **M53** - what moved is not proved against what was copied
 
@@ -718,7 +758,6 @@ the same range as the repair.
 - a folder record's hold survives a restart: the post failed while it was stopped
 - a folder record's hold survives a restart: the plugin reloaded and a new engine took over
 - a folder record reported twice while its post is in flight publishes one record and keeps no hold
-- a folder record whose post keeps failing expires with a decision, and the queue drains
 
 **M82** - a batch takes its paths without looking for a barrier
 
@@ -865,3 +904,236 @@ the same range as the repair.
 **M109** - the fake reports a folder rename that landed where it started
 
 - the fake reports no rename for a folder move that landed where it started
+
+**M110** - an outage is classified as a refusal, and a refusal as an outage
+
+- a start the server could not be reached for is retried, and the next one that gets through resumes
+- the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts
+- a terminator answering 5xx for a server that is not there is an outage too
+- the device reporting its network back runs the pending retry now, and is nothing otherwise
+- online while a retry is already running starts no second engine
+- 401 bad_signature is not retried: it stays an error until the person acts
+- 401 stale_timestamp is not retried: it stays an error until the person acts
+- 403 device_revoked is not retried: it stays an error until the person acts
+- 403 device_pending is not retried: it stays an error until the person acts
+- unloading the plugin cancels the pending retry
+- leaving the server cancels the pending retry, and the device stays not paired
+- changing the folder selection cancels the pending retry; the start it ends with opens a fresh cycle
+- Sync now takes the place of the pending retry: one engine, and the cycle goes on from where it was
+- a manual start that gets through disarms the pending retry
+- an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline
+
+**M111** - a 507 the transport retried out is retried again
+
+- 507 after the transport's retries is not retried: it stays an error until the person acts
+
+**M112** - the reconnect pause is never capped
+
+- the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts
+
+**M113** - the reconnect pause never grows
+
+- the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts
+- Sync now takes the place of the pending retry: one engine, and the cycle goes on from where it was
+
+**M114** - teardown leaves the reconnect armed
+
+- unloading the plugin cancels the pending retry
+
+**M115** - the network coming back is not listened for
+
+- the device reporting its network back runs the pending retry now, and is nothing otherwise
+
+**M116** - a start leaves the pending reconnect timer armed
+
+- a manual start that gets through disarms the pending retry
+
+**M117** - a resume leaves the status bar saying offline
+
+- a start the server could not be reached for is retried, and the next one that gets through resumes
+
+**M118** - leaving the server leaves the reconnect armed
+
+- leaving the server cancels the pending retry, and the device stays not paired
+
+**M119** - a folder-selection change carries the old reconnect cycle on
+
+- changing the folder selection cancels the pending retry; the start it ends with opens a fresh cycle
+
+**M120** - a start that succeeded does not close the reconnect cycle
+
+- a start the server could not be reached for is retried, and the next one that gets through resumes
+
+**M121** - online starts an engine whether or not a retry is pending
+
+- the device reporting its network back runs the pending retry now, and is nothing otherwise
+- online while a retry is already running starts no second engine
+- 401 bad_signature is not retried: it stays an error until the person acts
+- 401 stale_timestamp is not retried: it stays an error until the person acts
+- 403 device_revoked is not retried: it stays an error until the person acts
+- 403 device_pending is not retried: it stays an error until the person acts
+- 507 after the transport's retries is not retried: it stays an error until the person acts
+- a domain map this version cannot read is not retried: it stays an error until the person acts
+- a key that does not decrypt is not retried: it stays an error until the person acts
+
+**M122** - the identical-name check never matches
+
+- identical notes: the holder of the lower id keeps the name and writes nothing
+- identical notes: the holder of the higher id adopts the lower id and retires its own
+- a tombstone that cannot be posted costs a duplicate id, never the note
+
+**M123** - a record naming no version is settled anyway
+
+- a record that names no version is never retired, however alike the bytes
+
+**M124** - identical names are settled without comparing chunk digests
+
+- control: a native move refuses an edit that arrives before its last stat
+- a native move preserves an edit arriving inside the trash operation
+- an ordinary native move drops its hold and leaves the copy behind
+- a native settled write records the metadata of the bytes it committed
+- control: a native settled copy protects a save made after commit returns
+- a mobile host removes nothing, and the note survives the window
+- a hold refused with EPERM removes nothing, and the note survives the window
+- a hold refused with EXDEV removes nothing, and the note survives the window
+- a hold refused with unsupported removes nothing, and the note survives the window
+- a move refused with EXDEV removes nothing, and the note survives the window
+- a save that replaces the source between the hold and the removal is preserved
+- follow-up: a replacing save inside permanent removal remains in the vault
+- a replacement that lands before the move is put back, not removed
+- an in-place save before the move is put back, not removed
+- a restore that lands nowhere keeps the hold rather than releasing it
+- review: restoring a changed moved file does not overwrite a later save
+- review: a blocked restore retains the only hold containing the later edit
+- review: a descriptor save after the final hold stat remains reachable
+- a note written while this device was closed survives one the other device made at the same path
+- a pull never replaces a note this device tracks under another identity (other_file)
+- the holder of the lower id keeps the path and records the other note
+- the holder of the higher id moves its own note aside and yields the path
+- a later version of the other note lands on its own name, not on a new copy
+- the published rename arrives as a plain move, not another copy
+- a rename whose name this device already chose is a no-op, not a second file
+- an unpushed local edit at the settled name is kept, not replaced
+- the copy's record is stored, not only held in memory
+- a note this device never published is given an id before the rule decides
+- and it yields the name once it has one, when the other id sorts lower
+- a local file of the same length that is NOT this version is never adopted
+- a note replaced while it is being adopted is not marked as that version
+- a copy replaced while it is being matched is not recorded as the version
+- a save that lands on a settled copy as it is written is not recorded as that version
+- when no name is free this device keeps its own note and takes none
+- an edit typed while the note is being moved aside is never trashed
+- a device that cannot bind a removal keeps both instead of moving its own note
+- a note truncated while it is being copied aside is refused, not torn
+- two devices that name one note twice converge, and stay converged
+- one differing byte still keeps both notes, from either side
+- a widening keeps a note the newly covered folder held and the server also has
+
+**M125** - a note whose mtime moved is taken for its recorded version
+
+- a note with an edit not yet pushed is never taken for its recorded twin
+
+**M126** - a note whose size moved is taken for its recorded version
+
+- a note with an edit not yet pushed is never taken for its recorded twin
+
+**M127** - the identical pair keeps the HIGHER id
+
+- identical notes: the holder of the lower id keeps the name and writes nothing
+- identical notes: the holder of the higher id adopts the lower id and retires its own
+- a tombstone that cannot be posted costs a duplicate id, never the note
+
+**M128** - the yielding device does not record the lower id
+
+- identical notes: the holder of the higher id adopts the lower id and retires its own
+- a tombstone that cannot be posted costs a duplicate id, never the note
+
+**M129** - the yielding device does not retire its own id
+
+- identical notes: the holder of the higher id adopts the lower id and retires its own
+- a tombstone that cannot be posted costs a duplicate id, never the note
+
+**M130** - a push never rereads the record before posting
+
+- an adoption that lands while the push reads it publishes nothing
+
+**M131** - a record of other bytes found before posting is taken for the push
+
+- a record of other bytes landing while the push reads is not taken for this push
+
+**M132** - a record that appears during the post is never settled
+
+- an adoption that lands while the push posts settles the pair on the lower id (keep)
+- an adoption that lands while the push posts settles the pair on the lower id (yield)
+
+**M133** - a record of other bytes that appears during the post is settled as a duplicate
+
+- a record of other bytes landing while the push reads is not taken for this push
+
+**M134** - the post-window pair keeps the HIGHER id
+
+- an adoption that lands while the push posts settles the pair on the lower id (keep)
+- an adoption that lands while the push posts settles the pair on the lower id (yield)
+
+**M135** - the post-window keeper does not retire the posted duplicate
+
+- an adoption that lands while the push posts settles the pair on the lower id (keep)
+
+**M136** - the post-window yield does not record the lower id
+
+- an adoption that lands while the push posts settles the pair on the lower id (yield)
+
+**M137** - the post-window yield does not retire the adopted id
+
+- an adoption that lands while the push posts settles the pair on the lower id (yield)
+
+**M138** - a tombstone that cannot be posted is raised
+
+- a tombstone that cannot be posted costs a duplicate id, never the note
+
+**M139** - the transport never says whether the server answered
+
+- every attempt says whether the server answered it, and decides nothing
+
+**M140** - the transport calls every attempt answered
+
+- every attempt says whether the server answered it, and decides nothing
+
+**M141** - an unanswered attempt is not shown
+
+- a start still inside the transport's retries already reads offline, and the answer puts idle back
+- an answer puts back the syncing it covered, and never a status raised since
+
+**M142** - an unanswered attempt covers an error
+
+- a start still inside the transport's retries already reads offline, and the answer puts idle back
+- an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline
+
+**M143** - an unpaired device is shown offline
+
+- an unpaired device stays not paired, and a transport from an earlier session is not heard
+
+**M144** - an answer clears any offline, the reconnect cycle's included
+
+- an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline
+
+**M145** - an answer puts back idle, not what it covered
+
+- an answer puts back the syncing it covered, and never a status raised since
+
+**M146** - a transport from an earlier session is heard
+
+- an unpaired device stays not paired, and a transport from an earlier session is not heard
+
+**M147** - a server that is not there is reported as a repair failure
+
+- a server that is not there is absence during repair, never a could-not-verify error
+
+**M148** - onload waits for the first start, holding Obsidian's loading screen until the server answers
+
+- Obsidian finishes loading while the first start still waits for the server
+- the first start waits until Obsidian has listed the vault
+
+**M149** - the first start reconciles before Obsidian has listed the vault
+
+- the first start waits until Obsidian has listed the vault

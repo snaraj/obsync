@@ -1,0 +1,12 @@
+# M504: twin adoption ignores a replacement record during lookup
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2386,7 +2386,7 @@
+     return "skipped";
+   }
+   const checked = await identicalAtName(context, change, manifest.path, ours);
+-  if (checked === null || context.state.fileByPath(manifest.path) !== ours) {
++  if (checked === null) {
+     context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
