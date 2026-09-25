@@ -1804,6 +1804,9 @@ test("a pull publication joining an older upload still sends the edit made while
   const post = r.transport.postVersion.bind(r.transport);
   const started = deferred(), release = deferred();
   let first = true;
+  let reads = 0;
+  const read = r.host.read.bind(r.host);
+  r.host.read = async (path) => { if (path === "joined.md") reads++; return read(path); };
   r.transport.postVersion = async (...args) => {
     if (first) { first = false; started.resolve(); await release.promise; }
     return post(...args);
@@ -1813,9 +1816,9 @@ test("a pull publication joining an older upload still sends the edit made while
   r.host.seed("joined.md", "latest edit made while upload waited\n", 2000);
   // This is the out-of-turn pull caller. No watcher event or periodic scan
   // supplies the second publication for it.
-  const joined = engine.context.publish("joined.md");
+  const joined = Array.from({ length: 12 }, () => engine.context.publish("joined.md"));
   release.resolve();
-  await Promise.all([older, joined]);
+  await Promise.all([older, ...joined]);
   for (let i = 0; i < 1000 && r.state.fileByPath("joined.md")?.mtime !== 2000; i++) await new Promise(setImmediate);
   const record = r.state.fileByPath("joined.md");
   assert.equal(record.mtime, 2000, "the joined request was dropped after the older acknowledgment");
@@ -1823,4 +1826,5 @@ test("a pull publication joining an older upload still sends the edit made while
   const file = r.server.files.get(record.fileId);
   assert.equal(file.versions.length, 2);
   assert.deepEqual(file.heads, [record.versionId]);
+  assert.equal(reads, 2, "overlapping pull requests share one upload and one follow-up read, not one read per request");
 });

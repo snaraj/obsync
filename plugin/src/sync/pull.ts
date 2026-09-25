@@ -2135,14 +2135,14 @@ async function resolve(
     );
     // Agreeing is not the same as closing. The file is still forked on the
     // server, and the next real edit would reconcile against the head this
-    // device did not choose. So the device holding the WINNING head -- and
-    // only that device, because both compute the same winner -- publishes one
-    // version naming both heads as parents. The other says nothing, which is
-    // what keeps this from becoming a second storm. Narrow on purpose: exactly
-    // these two heads and no others, or the record convergence stands alone.
+    // device did not choose. Either device can close exactly the two heads
+    // it compared: the holder of the smaller id may be offline, or both
+    // devices may already hold the larger one while catching up. Concurrent
+    // closures name the same parents and chunks; postMerged offers the
+    // existing version and authenticates its manifest before adopting it.
+    // Exactly these two heads and no others, or convergence stands alone.
     if (
       held !== undefined &&
-      head === localVersionId &&
       file.heads.length === 2 &&
       file.heads.includes(localVersionId) &&
       file.heads.includes(change.version_id)

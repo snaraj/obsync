@@ -28,6 +28,56 @@ Fifty new or re-cut mutation controls apply with zero fuzz, compile and fail the
 
 All **741** catalog patches pass strict application preflight. Their complete 1,166-test mutation campaign is running as a separate measurement; the historical `MATRIX.md` is not its result.
 
+### Mutation measurement follow-up, 2026-09-25
+
+The partial campaign stopped at M148 because the old runner omitted Node's
+cancellation count. Full TAP reproduces all 1,166 outcomes: 1,164 pass, one
+loading-screen assertion fails, and the vault-listing test reaches its
+60-second timeout and is reported as cancelled. The runner now retains all
+summary counts, and the recorder displays cancellations separately from
+assertion failures. Incomplete runs and compile failures remain unmeasured.
+
+M15 separately survived all 1,166 tests. The newer publication lock keeps
+uploads serial, but the existing joined-upload test did not exercise a burst
+of requests. Its strengthened witness sends twelve overlapping requests while
+the older upload is held, then checks both complete versions, the latest
+record and exactly two note reads. Pristine reads the older and latest bytes
+once each; M15 reads thirteen times and fails. M25 and M26 also still fail the
+retained latest-edit assertion. All three controls apply, compile, fail the
+focused witness and restore cleanly. No production code changed. Earlier
+partial measurements are preserved; they are not the final matrix.
+
+The complete gate passed after that witness change, but one of six fresh
+baselines reached the phone-to-desktop case-only rename's log assertion before
+the note-move receipts arrived. Its folder had already changed case, which
+made the old path/stat condition look settled. Delaying those receipts by
+400 ms reproduces the premature assertion. The fixture now keeps that delay
+and waits for both note-move versions to be published, recorded on both
+devices and consumed from the feed. All original path, identity, content,
+no-tombstone, no-conflict and held-move assertions remain unchanged. The
+targeted corrected test passes; this changes no production behavior.
+
+A later six-run baseline retained both complete sequences and no conflict
+copies, but one adjacent-line run left two server heads. Its original failure
+is retained. Investigation also deterministically reproduced an identical-head
+closure gap: a device holding the larger head adopted the smaller one without
+closing the fork, depending on the other holder to be online. Either holder
+now closes exactly the two authenticated, compared heads. Simultaneous
+closures use the existing authenticated deduplication path and append one
+frame. The original third-head and retired-head refusal cases still pass.
+The positive control now exercises the smaller holder alone, larger holder
+alone and both racing; M797 restores the dependency on the smaller holder.
+The co-typing failure report now includes both local version IDs, current
+heads and feed positions so a remaining fork can be distinguished from
+unfinished feed consumption. The original adjacent-line failure did not recur
+in twenty focused diagnostic repeats before the repair, so its exact timing
+cause is not claimed as proven. After the deterministic closure repair, the
+full local gate and six independent 1,168-test baselines pass. M797 applies,
+compiles and produces two focused assertion failures with no cancellations;
+restoration is verified. All 742 mutation patches pass exact-context preflight.
+The complete campaign is running; no final matrix result is claimed. Native
+acceptance is still pending.
+
 Reproduce the focused behavior with the pinned toolchain:
 
 ```sh

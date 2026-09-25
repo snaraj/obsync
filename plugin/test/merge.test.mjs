@@ -283,9 +283,8 @@ for (const shape of ["a third divergent head", "our version already retired", "t
     const twins = [await publish(SHARED, 4000), await publish(SHARED, 4001)];
     const third = await publish("a third device's own line\n", 5000);
 
-    // Which of the twins this device holds is not left to chance: the closing
-    // version is published by the holder of the SMALLER id, so this device
-    // must hold it for the guard below to be the thing under test at all.
+    // Keep the ordering fixed so a random manifest nonce cannot change the
+    // guard this case exercises. Either holder may close a compared pair.
     twins.sort((left, right) => (left.version_id < right.version_id ? -1 : 1));
     const [ours, theirs] = twins;
     const record = r.state.fileByPath(NOTE);
@@ -327,36 +326,67 @@ for (const shape of ["a third divergent head", "our version already retired", "t
 }
 
 /**
- * The positive control for the same guard: exactly the two heads it compared,
- * both current, and this device holding the smaller id. That is the one shape
- * that may publish a closing version, and it must.
+ * Either holder must close exactly the two heads it compared, even when the
+ * other holder is offline. If both race, the server keeps one closing frame.
  */
-test("the equal-byte shortcut does close a fork of exactly the two heads it compared", async () => {
-  const { rig } = await import("./fake.mjs");
-  const { createRequire } = await import("node:module");
-  const require = createRequire(import.meta.url);
-  const { applyChange } = require("../build/sync/pull.js");
-  const { pushFile } = require("../build/sync/push.js");
+for (const holder of ["smaller", "larger", "both"]) {
+  test(`the equal-byte shortcut closes exactly two compared heads with ${holder} holders online`, async () => {
+    const { rig } = await import("./fake.mjs");
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const { applyChange } = require("../build/sync/pull.js");
+    const { pushFile } = require("../build/sync/push.js");
 
-  const r = await rig();
-  const NOTE = "Notes/Heads.md";
-  const SHARED = "the bytes both heads carry\n";
-  r.host.seed(NOTE, SHARED, 1000);
-  const base = await pushFile(r.context, NOTE);
-  const publish = (mtime) => r.server.publish({
-    fileId: base.fileId, path: NOTE, bytes: new TextEncoder().encode(SHARED), mtime,
-    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    const r = await rig();
+    const NOTE = "Notes/Heads.md";
+    const SHARED = "the bytes both heads carry\n";
+    r.host.seed(NOTE, SHARED, 1000);
+    const base = await pushFile(r.context, NOTE);
+    const publish = (mtime) => r.server.publish({
+      fileId: base.fileId, path: NOTE, bytes: new TextEncoder().encode(SHARED), mtime,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    const twins = [await publish(4000), await publish(4001)];
+    twins.sort((left, right) => (left.version_id < right.version_id ? -1 : 1));
+    const [ours, theirs] = holder === "larger" ? [...twins].reverse() : twins;
+    r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: ours.version_id });
+    r.server.files.get(base.fileId).heads = [ours.version_id, theirs.version_id];
+
+    const before = r.server.journal.length;
+    if (holder === "both") {
+      const other = await rig();
+      other.host.seed(NOTE, SHARED, 1000);
+      other.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: theirs.version_id });
+      other.context.transport = r.transport;
+      const post = r.transport.postVersion.bind(r.transport);
+      let posts = 0;
+      let release;
+      const joined = new Promise(resolve => { release = resolve; });
+      // Both compare the original fork before either receipt can arrive.
+      // The timeout releases a broken single-publisher implementation so its
+      // missing second post becomes an assertion, not a cancelled test.
+      const timeout = setTimeout(release, 500);
+      r.transport.postVersion = async (...args) => {
+        if (++posts === 2) release();
+        await joined;
+        return post(...args);
+      };
+      try {
+        assert.deepEqual(await Promise.all([
+          applyChange(r.context, theirs), applyChange(other.context, ours),
+        ]), ["skipped", "skipped"]);
+      } finally { clearTimeout(timeout); }
+      assert.equal(posts, 2, "one holder waited for the other device to close the fork");
+      assert.equal(r.server.deduplicated.length, 1, "concurrent closures were not deduplicated");
+      assert.equal(r.state.fileByPath(NOTE).versionId, other.state.fileByPath(NOTE).versionId);
+    } else {
+      assert.equal(await applyChange(r.context, theirs), "skipped");
+    }
+    assert.equal(r.server.journal.length, before + 1, "one fork must cost one closing frame");
+    assert.ok(
+      r.host.logs.some((line) => line.includes("decision=resolved reason=identical_heads")),
+      r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+    );
+    assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
   });
-  const twins = [await publish(4000), await publish(4001)];
-  twins.sort((left, right) => (left.version_id < right.version_id ? -1 : 1));
-  const [ours, theirs] = twins;
-  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: ours.version_id });
-  r.server.files.get(base.fileId).heads = [ours.version_id, theirs.version_id];
-
-  assert.equal(await applyChange(r.context, theirs), "skipped");
-  assert.ok(
-    r.host.logs.some((line) => line.includes("decision=resolved reason=identical_heads")),
-    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
-  );
-  assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
-});
+}

@@ -44,7 +44,7 @@ for line in log.splitlines():
     start = re.match(r"^=== (M\d+)\.diff ===$", line)
     if start:
         current = start.group(1)
-        sections[current] = {"tests": [], "applied": True, "built": True}
+        sections[current] = {"tests": [], "applied": True, "built": True, "cancelled": 0}
         continue
     if current is None:
         continue
@@ -55,6 +55,9 @@ for line in log.splitlines():
     hit = re.match(r"^not ok \d+ - (.+)$", line)
     if hit:
         sections[current]["tests"].append(hit.group(1).strip())
+    cancelled = re.match(r"^# cancelled (\d+)$", line)
+    if cancelled:
+        sections[current]["cancelled"] = int(cancelled.group(1))
 
 subjects = {}
 for patch in sorted(root.glob("M*.diff")):
@@ -106,6 +109,9 @@ out = [
     "that fails to apply is neither a kill nor a survival -- it is an unmeasured",
     "guard, which is why every mutant whose context a repair moves is re-cut in",
     "the same range as the repair.",
+    "Node reports deliberately hung tests as cancelled rather than assertion",
+    "failures. Those rejected tests remain named below, and their cancellation",
+    "count is shown separately in the table; they are not passing assertions.",
     "",
     "| Mutant | Subject | Killed by |",
     "| --- | --- | --- |",
@@ -122,6 +128,8 @@ for ident in sorted(subjects, key=lambda name: int(name[1:])):
         count = f"**SURVIVES** 0/{total}"
     else:
         count = f"{len(entry['tests'])}/{total}"
+        if entry["cancelled"]:
+            count += f" ({entry['cancelled']} cancelled)"
     out.append(f"| {ident} | {subjects[ident]} | {count} |")
 
 out += ["", "## Which tests killed each mutant", ""]
