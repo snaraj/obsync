@@ -49,3 +49,5 @@ referenced from here. Redact by role. A record that needs a private fact to be
 legible is naming the wrong fact: name the class instead.
 
 - [2026-09-24 native iPhone acceptance](2026-09-24-phone-candidate.md): current 1.1.2 installation, identical first sync, two-way edits, offline restart and automatic recovery.
+
+- [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md): opaque masks, metadata removal and unchanged visible evidence.
