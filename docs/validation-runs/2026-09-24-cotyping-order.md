@@ -60,3 +60,49 @@ ignored. Six pristine matrix baselines, complete mutation measurement and
 affected native follow-up remain pending. The existing matrix is historical until its
 replacement is measured. No Ready or release claim follows from these focused
 results.
+
+## Final baseline follow-up
+
+The subsequent six-lane baseline did not establish a clean final candidate.
+One lane observed a case-rename fixture before its delayed note moves had
+finished. Waiting for the folder alone was insufficient: its two note records
+must match their latest server frames on both devices. A 400 ms transport
+delay reproduces the old assertion failure; the corrected barrier retains
+the two-version, identity, path and quiet-scan assertions.
+
+A later baseline exposed a real pending-change race. A note can move before
+Obsidian reports its rename, while an earlier change is still settling. The
+missing old path went directly to deletion. It now enters the existing bounded
+move-discovery path; an old path whose identity was already removed by a pulled
+move is ignored. A deterministic withheld-rename test fails before this repair
+and passes after it. M724 restores the direct deletion and fails that test;
+M725 removes the stale-identity check and fails both pulled-move echo tests.
+Both controls apply and compile.
+
+Continued typing also produced a deeper crossed-merge chain in a diagnostic
+full-suite run: one sequence survived only in a conflict copy. A successful
+merge using a virtual criss-cross base now defers when the local bytes differ
+from its authenticated recorded head. The normal push publishes the typing
+on that parent before another merge, so both devices merge published inputs.
+The regression requires no premature publication, intact typed bytes, then
+complete combined text, one server head and no conflict copies. Removing this
+deferral (M727) or reversing its digest comparison (M728) compiles and fails
+the witness. The existing three-level graph and memory bounds remain intact.
+
+Two other asynchronous fixture barriers now wait for their actual completion:
+the nested-vault refusal before measuring notice quietness, and the new
+engine's restore probe before asserting its count. Their original assertions
+remain. Diagnostic traces and prior failures are retained outside the repo;
+they are not mutation kills or final native acceptance.
+
+The follow-up's pinned `make check` passes **1,117 plugin tests**, 144 core +
+375 server + two CLI tests, 70 dashboard tests, 767 contracts and both secret
+scans, with 94.73% Rust line coverage. This includes the predecessor's new
+independent pull-persistence witness. Six separate pristine matrix lanes each
+pass the same 1,117 tests. All **673** mutation patches apply with zero fuzz;
+M152 retains its original crossed-base removal and M726 retains its save-only
+removal after re-cutting their context. M724, M725, M727 and M728 have one,
+two, one and three focused failing tests respectively, after successful builds.
+The current bundle is
+`530ca4aeb1fee893817f99110346226e7573714c542f3d303b45971e0f4b85aa`.
+Complete mutation measurement and affected native acceptance remain pending.

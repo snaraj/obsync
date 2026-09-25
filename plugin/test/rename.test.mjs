@@ -377,6 +377,29 @@ for (const delivery of ["immediate", "deferred"]) {
   });
 }
 
+test("a pending change whose note moved before its rename event follows the live note instead of deleting it", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate");
+  a.host.write("Note.md", BODY, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(a, "Note.md") && settled(b, "Note.md"));
+  await timers.run(STEP_MS);
+  const id = a.state.fileByPath("Note.md").fileId;
+  const emit = a.host.emit.bind(a.host);
+  a.host.emit = (name, ...args) => { if (name !== "rename") emit(name, ...args); };
+  a.engine.changed("Note.md");
+  a.host.rename("Note.md", "Renamed.md");
+  await timers.run(STEP_MS, landed(server, () =>
+    b.host.text("Renamed.md") === BODY && settled(a, "Renamed.md") && settled(b, "Renamed.md")));
+  await timers.run(STEP_MS);
+  assert.deepEqual(tombstones(server), [], story(server, a, b));
+  for (const device of [a, b]) {
+    assert.equal(device.host.text("Renamed.md"), BODY);
+    assert.equal(device.state.fileByPath("Renamed.md").fileId, id);
+    assert.deepEqual(device.host.trashed, []);
+  }
+});
+
 test("a note typed where a pulled rename left, and deleted, is deleted everywhere though the move's delete never came", async (t) => {
   const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
   b.host.watcherMoves = true;

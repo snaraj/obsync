@@ -667,6 +667,27 @@ test("two merges of one pair merge again, on the pair merged as their base", asy
   assert.ok(r.host.logs.some((line) => line.includes("decision=merge_base reason=criss_cross")), pulls(r.host));
 });
 
+test("typing beyond a criss-cross head is published before another merge of that pair", async () => {
+  const r = await rig();
+  const theirs = await crissCross(r, (base) => foreign(r, base.fileId, "ONE\ntwo\nthree\nfour\nfive\n", [base.versionId], 2000));
+  const prior = r.state.fileByPath(NOTE).versionId;
+  const typed = "ONE a TYPED\ntwo\nthree\nfour\nFIVE\n";
+  r.host.seed(NOTE, typed, 6000);
+  const count = r.server.journal.length;
+  assert.equal(await applyChange(r.context, theirs), "skipped", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=unpublished_criss_cross")), pulls(r.host));
+  assert.equal(r.server.journal.length, count, "unpublished typing made another different merge of the same pair");
+  assert.equal(r.host.text(NOTE), typed);
+  assert.equal(r.state.fileByPath(NOTE).versionId, prior);
+  await pushFile(r.context, NOTE);
+  await applyChange(r.context, theirs);
+  assert.equal(r.host.text(NOTE), "ONE a TYPED\ntwo\nthree\nfour\nFIVE b\n");
+  assert.deepEqual(copies(r.host), []);
+  const file = r.server.files.get(r.state.fileByPath(NOTE).fileId);
+  assert.equal(file.heads.length, 1);
+  assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+});
+
 /**
  * AND AGAIN. The two merges of that pair can be merged differently in turn,
  * each device holding one more keystroke, and then the two ancestors of the

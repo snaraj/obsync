@@ -53,6 +53,30 @@ test("a keeper selected while a push posts is persisted before the adopted id is
   assert.equal(r.server.files.get(HIGH).versions[0].deleted, true);
 });
 
+test("pull adoption persists its keeper before retiring the prior identical identity (#133)", async () => {
+  const r = await rig();
+  const bytes = r.host.seed(PATH, TEXT, 3000);
+  const publish = fileId => r.server.publish({ fileId, path: PATH, bytes, mtime: 3000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const own = await publish(HIGH);
+  r.state.setFile(PATH, { fileId: HIGH, versionId: own.version_id, mtime: 3000,
+    size: bytes.length, sha256: await sidDigest(own.sids) });
+  await r.state.save();
+  const twin = await publish(LOW);
+  const post = r.transport.postVersion.bind(r.transport);
+  let atRetirement;
+  r.transport.postVersion = async (id, version) => {
+    if (id === HIGH && version.deleted) atRetirement = (await r.reload()).fileByPath(PATH);
+    return post(id, version);
+  };
+  await applyChange(r.context, twin);
+  assert.equal(atRetirement?.fileId, LOW, "retirement preceded durable keeper metadata");
+  assert.equal(atRetirement.versionId, twin.version_id);
+  assert.equal((await r.reload()).fileByPath(PATH).fileId, LOW, "restart restored the retired predecessor");
+  assert.equal(r.host.text(PATH), TEXT);
+  assert.equal(r.server.files.get(HIGH).versions[0].deleted, true);
+});
+
 test("a real transport 507 during chunk repair remains a visible storage refusal (#133)", async () => {
   const r = await rig(), timers = new FakeTimers(), statuses = [];
   r.host.seed(PATH, TEXT, 3000);

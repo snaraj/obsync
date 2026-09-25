@@ -1406,8 +1406,12 @@ export class SyncEngine {
   ): Promise<void> {
     const stat = await context.host.stat(path);
     if (!stat) {
-      this.deletions.add(path);
-      this.enqueue(path);
+      if (context.state.fileByPath(path) === undefined) return;
+      // A pending change can settle between a filesystem rename and its
+      // watcher event. Ask where the note went through the same bounded
+      // move check as a delete event before publishing any tombstone.
+      context.host.log("watch path_class=file decision=deferred reason=missing_during_settle");
+      this.deleted(path);
       return;
     }
     const key = `${path}:${stat.mtime}:${stat.size}`;

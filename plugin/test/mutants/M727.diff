@@ -1,0 +1,22 @@
+# M727: unpublished typing is included in another criss-cross merge before its own upload
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2191,17 +2191,7 @@
+         }
+       }
+       if (merged.ok) {
+-        if (crossed) {
+-          const own = await manifestOf(context, file, change, localVersionId);
+-          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
+-            // Two devices adding unpublished typing to another merge of a
+-            // criss-cross create different merges of the same pair again.
+-            // Publish this edit on its recorded parent before merging, so
+-            // continued typing cannot grow that ambiguity one level per save.
+-            context.host.log(`pull decision=deferred reason=unpublished_criss_cross file=${change.file_id} seq=${change.seq}`);
+-            return await deferToPush(context, change, localPath);
+-          }
+-        }
++        void crossed;
+         const text = new TextEncoder().encode(merged.text);
+         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
+         // kept a conflict copy of every version another device sent while

@@ -196,7 +196,9 @@ test("a folder that is a vault of its own is neither published nor written into,
 
   // The watcher's way in: a note the inner vault just wrote.
   r.seed("Sub/new.md", INNER, 1757200002000);
+  const beforeChange = notSynced(r).length;
   engine.changed("Sub/new.md");
+  await timers.run(STEP_MS, () => notSynced(r).length > beforeChange);
   await timers.run(SCAN_MS);
   const quiet = notSynced(r).length;
   const scans = r.counts.scans;

@@ -2182,11 +2182,26 @@ async function resolve(
       const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();
       let merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+      let crossed = false;
       if (!merged.ok) {
-        const crossed = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
-        if (crossed !== null) merged = threeWayMerge(crossed, decoder.decode(mine), decoder.decode(theirs));
+        const shared = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
+        if (shared !== null) {
+          crossed = true;
+          merged = threeWayMerge(shared, decoder.decode(mine), decoder.decode(theirs));
+        }
       }
       if (merged.ok) {
+        if (crossed) {
+          const own = await manifestOf(context, file, change, localVersionId);
+          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
+            // Two devices adding unpublished typing to another merge of a
+            // criss-cross create different merges of the same pair again.
+            // Publish this edit on its recorded parent before merging, so
+            // continued typing cannot grow that ambiguity one level per save.
+            context.host.log(`pull decision=deferred reason=unpublished_criss_cross file=${change.file_id} seq=${change.seq}`);
+            return await deferToPush(context, change, localPath);
+          }
+        }
         const text = new TextEncoder().encode(merged.text);
         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
         // kept a conflict copy of every version another device sent while

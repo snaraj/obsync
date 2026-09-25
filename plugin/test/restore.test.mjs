@@ -579,12 +579,13 @@ test("a device updated from 1.1.2 has no mark: no probe, and its first feed entr
   assert.equal(probes(), 0, "no mark, no probe");
   assert.equal(r.host.logs.some((line) => /^restore |^feed decision=(restored|suspected)/.test(line)), false);
   await halt(engine, r.server, timers);
-  // The previous engine already polled this cursor. Only a new request can
-  // prove the replacement engine completed its startup restore check.
+  // An untracked poll from the previous engine can finish signing after
+  // stopAndWait. Wait for the replacement's probe as well as its new poll;
+  // an old request arriving late cannot establish that startup completed.
   const beforeRestart = r.server.requests.length;
   engine = new SyncEngine({ ...r, timers, now: () => r.host.clock });
   await engine.start();
-  await timers.run(STEP_MS, () => r.server.requests.slice(beforeRestart).some((request) => request.target === `/v1/changes?since=${r.server.seq}&wait=55&limit=1000`) &&
+  await timers.run(STEP_MS, () => probes() > 0 && r.server.requests.slice(beforeRestart).some((request) => request.target === `/v1/changes?since=${r.server.seq}&wait=55&limit=1000`) &&
     r.server.feedWaiters.length > 0);
   assert.equal(probes(), 1, "the next start asks once");
   await halt(engine, r.server, timers);

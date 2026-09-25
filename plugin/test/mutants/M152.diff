@@ -1,14 +1,17 @@
 # M152: two different merges of one pair are never merged again, so every later version of the note becomes a conflict copy
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1993,10 +1993,6 @@
-       const theirs = await assembleBytes(context, theirManifest);
+@@ -2183,13 +2183,6 @@
        const decoder = new TextDecoder();
        let merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+       let crossed = false;
 -      if (!merged.ok) {
--        const crossed = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
--        if (crossed !== null) merged = threeWayMerge(crossed, decoder.decode(mine), decoder.decode(theirs));
+-        const shared = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
+-        if (shared !== null) {
+-          crossed = true;
+-          merged = threeWayMerge(shared, decoder.decode(mine), decoder.decode(theirs));
+-        }
 -      }
        if (merged.ok) {
-         const text = new TextEncoder().encode(merged.text);
-         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
+         if (crossed) {
+           const own = await manifestOf(context, file, change, localVersionId);
