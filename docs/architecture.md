@@ -938,8 +938,15 @@ returns immediately when a new frame lands.
    The filesystem causes are recognised on desktop only: the mobile adapter's
    errors carry no errno.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
-   → a homegrown three-way line merge; a clean merge posts a new version
-   with both heads as parents. Two heads that do not merge (binary, no
+   → a homegrown three-way line merge. Each side's changed base intervals
+   are compared independently, so adjacent line edits need no unchanged
+   separator. When both replace exactly one line only by appending to its
+   original text, keep their common appended prefix once (by Unicode code
+   point), then join their different additions in lexicographic order.
+   This gives both devices the same text without using a clock or device role.
+   Replacements of existing characters and multi-line overlaps stay conflicts.
+   A clean merge posts a new version with both heads as parents.
+   Two heads that do not merge (binary, no
    ancestor, overlapping hunks) are settled by a rule every device computes
    alike without asking another: the head with the lower version id is the
    note on every device; the other is ONE conflict copy on every device, with

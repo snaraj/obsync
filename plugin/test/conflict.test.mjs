@@ -24,6 +24,85 @@ test("a clean merge takes both sides' changes", () => {
   assert.equal(merged.text, lines("ONE", "two", "three", "four", "FIVE"));
 });
 
+test("edits to adjacent lines merge without requiring a shared unchanged line", () => {
+  for (const [mine, theirs] of [["ONE\ntwo", "one\nTWO"], ["one\nTWO", "ONE\ntwo"]]) {
+    assert.deepEqual(threeWayMerge("one\ntwo", mine, theirs), { ok: true, text: "ONE\nTWO" });
+  }
+});
+
+test("a deletion beside an edited line keeps that edit in either device order", () => {
+  for (const [mine, theirs] of [["two\nthree", "one\nTWO\nthree"], ["one\nTWO\nthree", "two\nthree"]]) {
+    assert.deepEqual(threeWayMerge("one\ntwo\nthree", mine, theirs), { ok: true, text: "TWO\nthree" });
+  }
+});
+
+test("adjacent replacements may add lines without swallowing the other replacement", () => {
+  assert.deepEqual(threeWayMerge("one\ntwo", "ONE\nextra\ntwo", "one\nTWO"),
+    { ok: true, text: "ONE\nextra\nTWO" });
+});
+
+test("identical insertions are kept once and different insertions at the same boundary refuse", () => {
+  const base = "one\ntwo";
+  assert.deepEqual(threeWayMerge(base, "one\nextra\ntwo", "one\nextra\ntwo"),
+    { ok: true, text: "one\nextra\ntwo" });
+  assert.deepEqual(threeWayMerge(base, "one\nleft\ntwo", "one\nright\ntwo"),
+    { ok: false, reason: "overlap" });
+});
+
+test("partly overlapping multi-line changes remain conflicts in either order", () => {
+  const base = "one\ntwo\nthree";
+  for (const [mine, theirs] of [["ONE\nTWO\nthree", "one\nother two\nTHREE"], ["one\nother two\nTHREE", "ONE\nTWO\nthree"]]) {
+    assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("the same replacement text at different base intervals is not the same edit", () => {
+  assert.deepEqual(threeWayMerge("one\ntwo", "X\ntwo", "one\nX"), { ok: true, text: "X\nX" });
+  for (const [mine, theirs] of [["X", "one\nX"], ["X\ntwo", "X"]]) {
+    assert.deepEqual(threeWayMerge("one\ntwo", mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("an insertion and replacement beginning at the same boundary are conservatively refused", () => {
+  for (const [mine, theirs] of [["inserted\none\ntwo", "ONE\ntwo"], ["ONE\ntwo", "inserted\none\ntwo"]]) {
+    assert.deepEqual(threeWayMerge("one\ntwo", mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("unchanged lines between and after neighboring edits remain in order", () => {
+  assert.deepEqual(threeWayMerge("first\none\ntwo\nlast", "first\nONE\ntwo\nlast", "first\none\nTWO\nlast"),
+    { ok: true, text: "first\nONE\nTWO\nlast" });
+});
+
+test("concurrent appends to one line keep both additions in the same order on both devices", () => {
+  for (const [mine, theirs] of [["note: A", "note: B"], ["note: B", "note: A"]]) {
+    assert.deepEqual(threeWayMerge("note: ", mine, theirs), { ok: true, text: "note: AB" });
+  }
+});
+
+test("a shared appended prefix is kept once without splitting Unicode characters", () => {
+  for (const [mine, theirs] of [["note: shared 😀", "note: shared 😄"], ["note: shared 😄", "note: shared 😀"]]) {
+    assert.deepEqual(threeWayMerge("note: ", mine, theirs), { ok: true, text: "note: shared 😀😄" });
+  }
+  assert.deepEqual(threeWayMerge("note: ", "note: abc", "note: ab"), { ok: true, text: "note: abc" });
+  assert.deepEqual(threeWayMerge("note: ", "note: 😀A", "note: 😀B"), { ok: true, text: "note: 😀AB" });
+});
+
+test("replacements of existing characters are not classified as appends", () => {
+  for (const [mine, theirs] of [["wordX", "wordY"], ["wordY", "wordX"], ["word!A", "wordX"], ["wordX", "word!A"]]) {
+    assert.deepEqual(threeWayMerge("word!", mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("appending cannot absorb a competing multi-line replacement", () => {
+  assert.deepEqual(threeWayMerge("one\ntwo", "oneX", "oneY"), { ok: false, reason: "overlap" });
+  assert.deepEqual(threeWayMerge("one\ntwo", "oneX\ntwo", "oneY"), { ok: false, reason: "overlap" });
+  assert.deepEqual(threeWayMerge("one\ntwo", "one\ntwoX", "twoY"), { ok: false, reason: "overlap" });
+  for (const [mine, theirs] of [["oneX\nextra\ntwo", "oneY\ntwo"], ["oneY\ntwo", "oneX\nextra\ntwo"]]) {
+    assert.deepEqual(threeWayMerge("one\ntwo", mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
 test("an insertion on one side lands once", () => {
   const base = lines("a", "b", "c");
   const mine = lines("a", "b", "b2", "c");

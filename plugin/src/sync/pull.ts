@@ -1989,9 +1989,14 @@ async function reconcile(
 ): Promise<ApplyResult> {
   // Obsolete feed entries are not new forks. Counting and merging each one
   // while catching up can trip the loop breaker on an ordinary typing burst.
-  // Require a retained descendant head; a missing graph entry is no proof.
-  if (!file.heads.includes(change.version_id) &&
-    file.heads.some((head) => reaches(file.versions, head, change.version_id))) {
+  // The file endpoint caps older versions, but includes EVERY current head.
+  // Its truncated ancestry cannot prove that an old fork was incorporated:
+  // requiring that proof recreated historical copies on a fresh device.
+  // A complete, nonempty head view proves this incoming version is obsolete;
+  // leave local bytes untouched and let later feed entries advance them.
+  const completeHeads = file.heads.length > 0 &&
+    file.heads.every(head => file.versions.some(version => version.version_id === head));
+  if (completeHeads && !file.heads.includes(change.version_id)) {
     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }

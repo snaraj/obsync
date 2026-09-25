@@ -294,7 +294,18 @@ for (const shape of ["a third divergent head", "our version already retired", "t
     const file = r.server.files.get(base.fileId);
     if (shape === "a third divergent head") file.heads = [ours.version_id, theirs.version_id, third.version_id];
     if (shape === "our version already retired") file.heads = [theirs.version_id, third.version_id];
-    if (shape === "their version already retired") file.heads = [ours.version_id, third.version_id];
+    if (shape === "their version already retired") {
+      file.heads = [ours.version_id, third.version_id];
+      // A complete current-head view now skips this obsolete feed entry
+      // before reconciliation (history-catchup.test.mjs). Keep exercising
+      // the closing guard through its conservative incomplete-view path:
+      // an unreadable third head must never be retired without comparison.
+      const getFile = r.transport.getFile.bind(r.transport);
+      r.transport.getFile = async id => {
+        const view = await getFile(id);
+        return { ...view, versions: view.versions.filter(version => version.version_id !== third.version_id) };
+      };
+    }
     const before = r.server.journal.length;
 
     assert.equal(await applyChange(r.context, theirs), "skipped");

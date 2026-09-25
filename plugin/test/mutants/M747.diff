@@ -1,0 +1,12 @@
+# M747: truncate replacement lines before the matching anchor
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -96,7 +96,7 @@
+     const there = at === base.length ? side.length : alignment.get(at);
+     if (there === undefined) continue;
+     if (at > start || there > sideStart) {
+-      edits.push({ start, end: at, lines: side.slice(sideStart, there) });
++      edits.push({ start, end: at, lines: side.slice(sideStart, Math.max(sideStart, there - 1)) });
+     }
+     start = at + 1;
+     sideStart = there + 1;

@@ -1,0 +1,12 @@
+# M754: drop extra replacement lines from the other side
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -152,7 +152,7 @@
+         next = mine; m++; t++;
+       } else if (
+         mine.start === theirs.start && mine.end === theirs.end &&
+-        mine.end === mine.start + 1 && mine.lines.length === 1 && theirs.lines.length === 1
++        mine.end === mine.start + 1 && mine.lines.length === 1
+       ) {
+         const appended = mergeLineAppends(baseLines[mine.start] as string, mine.lines[0] as string, theirs.lines[0] as string);
+         if (appended === null) return { ok: false, reason: "overlap" };

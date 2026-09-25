@@ -517,9 +517,12 @@ test("a save that lands on a version as it is written is not recorded as that ve
   assert.equal(r.state.fileByPath(NOTE).sha256, "", "the save could be pushed as unchanged");
   const pushed = await pushFile(r.context, NOTE);
   await applyChange(r.context, { ...next, heads: r.server.files.get(ours.fileId).heads, conflicted: pushed.ack.conflicted });
-  const kept = [...r.host.files.keys()].map((path) => r.host.text(path)).join("");
-  assert.ok(kept.includes(USER), `the save is in no file: ${JSON.stringify([...r.host.files.keys()])}`);
-  assert.ok(kept.includes(`${THEIRS}and another line\n`), "the later version is in no file");
+  // USER replaces the common ancestor's first line; the peer only appends
+  // another line. These adjacent edits now merge. Requiring THEIRS itself
+  // to survive would require keeping the base text the user replaced.
+  assert.equal(r.host.text(NOTE), `${USER}and another line\n`,
+    "the local replacement and the peer's added line did not both survive");
+  assert.deepEqual(copies(r.host), [], "independent adjacent edits need no copy");
 });
 
 /**

@@ -2,7 +2,8 @@
  * Conflict resolution, `docs/architecture.md` 6.2 item 4.
  *
  * Two heads on a text file with a reachable common ancestor get a homegrown
- * three-way line merge; a clean merge becomes a new version with BOTH heads
+ * three-way line merge, including append-only changes to the same line;
+ * a clean merge becomes a new version with BOTH heads
  * as parents. Anything else — binary content, no common ancestor, delete
  * versus edit, overlapping hunks, or a file too large to align — keeps both
  * sides: the foreign head is written beside the local one as
@@ -85,12 +86,47 @@ export function alignLines(base: string[], side: string[]): Map<number, number> 
   return map;
 }
 
+type LineEdit = { start: number; end: number; lines: string[] };
+
+/** Changed base intervals from ONE side's alignment, including insertions. */
+function lineEdits(base: string[], side: string[], alignment: Map<number, number>): LineEdit[] {
+  const edits: LineEdit[] = [];
+  let start = 0;
+  let sideStart = 0;
+  for (let at = 0; at <= base.length; at++) {
+    const there = at === base.length ? side.length : alignment.get(at);
+    if (there === undefined) continue;
+    if (at > start || there > sideStart) {
+      edits.push({ start, end: at, lines: side.slice(sideStart, there) });
+    }
+    start = at + 1;
+    sideStart = there + 1;
+  }
+  return edits;
+}
+
+/** Both users only appended: retain the shared prefix and order additions alike. */
+function mergeLineAppends(base: string, mine: string, theirs: string): string | null {
+  if (!mine.startsWith(base) || !theirs.startsWith(base)) return null;
+  const left = mine.slice(base.length);
+  const right = theirs.slice(base.length);
+  let shared = 0;
+  // Walk code points so different emoji cannot share half a surrogate pair.
+  for (const point of left) {
+    if (!right.startsWith(point, shared)) break;
+    shared += point.length;
+  }
+  const a = left.slice(shared);
+  const b = right.slice(shared);
+  return base + left.slice(0, shared) + (a < b ? a + b : b + a);
+}
+
 /**
  * Three-way line merge. `base` is the common ancestor, `mine` the local
  * text, `theirs` the foreign head. A hunk where only one side moved takes
- * that side; a hunk where both sides made the same move takes it once; a
- * hunk where both sides moved differently is a conflict and nothing is
- * merged.
+ * that side; identical edits are taken once. Appends to one line retain its
+ * existing text, keep a shared addition once, and join the different additions
+ * in lexicographic order. Other intersecting edits remain a conflict.
  */
 export function threeWayMerge(base: string, mine: string, theirs: string): MergeOutcome {
   const baseLines = splitLines(base);
@@ -100,33 +136,47 @@ export function threeWayMerge(base: string, mine: string, theirs: string): Merge
   const toTheirs = alignLines(baseLines, theirsLines);
   if (!toMine || !toTheirs) return { ok: false, reason: "too_large" };
 
-  const anchors: { base: number; mine: number; theirs: number }[] = [];
-  for (let i = 0; i < baseLines.length; i++) {
-    const m = toMine.get(i);
-    const t = toTheirs.get(i);
-    if (m !== undefined && t !== undefined) anchors.push({ base: i, mine: m, theirs: t });
-  }
-  anchors.push({ base: baseLines.length, mine: mineLines.length, theirs: theirsLines.length });
-
+  // Intersecting unchanged anchors groups adjacent, independent line edits
+  // into one false overlap. Compare each side's actual changed intervals.
+  const left = lineEdits(baseLines, mineLines, toMine);
+  const right = lineEdits(baseLines, theirsLines, toTheirs);
   const out: string[] = [];
-  let b = 0;
+  let cursor = 0;
   let m = 0;
   let t = 0;
-  for (const anchor of anchors) {
-    const baseHunk = baseLines.slice(b, anchor.base);
-    const mineHunk = mineLines.slice(m, anchor.mine);
-    const theirsHunk = theirsLines.slice(t, anchor.theirs);
-    const mineMoved = !sameLines(mineHunk, baseHunk);
-    const theirsMoved = !sameLines(theirsHunk, baseHunk);
-    if (mineMoved && theirsMoved && !sameLines(mineHunk, theirsHunk)) {
-      return { ok: false, reason: "overlap" };
+  while (m < left.length || t < right.length) {
+    const mine = left[m];
+    const theirs = right[t];
+    let next: LineEdit;
+    if (mine && theirs) {
+      if (mine.start === theirs.start && mine.end === theirs.end && sameLines(mine.lines, theirs.lines)) {
+        next = mine; m++; t++;
+      } else if (
+        mine.start === theirs.start && mine.end === theirs.end &&
+        mine.end === mine.start + 1 && mine.lines.length === 1 && theirs.lines.length === 1
+      ) {
+        const appended = mergeLineAppends(baseLines[mine.start] as string, mine.lines[0] as string, theirs.lines[0] as string);
+        if (appended === null) return { ok: false, reason: "overlap" };
+        next = { start: mine.start, end: mine.end, lines: [appended] }; m++; t++;
+      } else if (mine.end <= theirs.start && mine.start < theirs.start) {
+        next = mine; m++;
+      } else if (theirs.end <= mine.start && theirs.start < mine.start) {
+        next = theirs; t++;
+      } else {
+        // Different insertions at one boundary, or intersecting changed
+        // intervals: ordering these would guess which text the user meant.
+        return { ok: false, reason: "overlap" };
+      }
+    } else if (mine) {
+      next = mine; m++;
+    } else {
+      next = theirs as LineEdit; t++;
     }
-    out.push(...(mineMoved ? mineHunk : theirsHunk));
-    if (anchor.base < baseLines.length) out.push(baseLines[anchor.base] as string);
-    b = anchor.base + 1;
-    m = anchor.mine + 1;
-    t = anchor.theirs + 1;
+    while (cursor < next.start) out.push(baseLines[cursor++] as string);
+    for (const line of next.lines) out.push(line);
+    cursor = next.end;
   }
+  while (cursor < baseLines.length) out.push(baseLines[cursor++] as string);
   return { ok: true, text: out.join("\n") };
 }
 

@@ -114,8 +114,10 @@ every version the other device sent as a conflict copy, stop merging with
 different text under one name, with a dozen copies or more on each, while both
 said `obsync: idle`. Now text typed on different lines is merged as you go, and
 both devices end on the same note holding both texts, with no conflict copy.
-Text typed on the same line cannot be merged: every device keeps the same
-version as the note, and the other goes into one conflict copy that every
+When both devices add text at the end of the same line, their shared addition
+is kept once and the different additions are joined in the same order on both.
+Changes that replace the same existing text still conflict: every device keeps
+the same version as the note, and the other goes into one conflict copy that every
 device holds, named after the device that wrote it, the time in UTC and a short
 id. Nothing typed is lost, and the two notes never stay apart. A save made
 while another device's version is arriving is never written over, and the
@@ -123,7 +125,10 @@ status bar no longer reads `idle` while a note is still being settled. Delayed
 upload receipts no longer put an older version back into the device's records.
 Merges and editor uploads wait for one another's receipts before choosing
 parents, including an upload that finishes while a merge is being prepared.
-Older feed entries do not consume the loop limit, and one person can stop
+Adjacent line edits no longer need an unchanged line between them to merge.
+A freshly paired device no longer recreates resolved historical conflicts
+when the server's file view has trimmed older parent links. Older feed entries
+do not consume the loop limit, and one person can stop
 typing while the other continues an independent edit. Repeated replies to
 obsync's own output still reach the same limit. Identical merged versions
 share their own content as the base for your next edits. This

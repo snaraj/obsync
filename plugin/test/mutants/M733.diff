@@ -1,0 +1,12 @@
+# M733: ignore side-only gaps and lose insertions
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -95,7 +95,7 @@
+   for (let at = 0; at <= base.length; at++) {
+     const there = at === base.length ? side.length : alignment.get(at);
+     if (there === undefined) continue;
+-    if (at > start || there > sideStart) {
++    if (at > start) {
+       edits.push({ start, end: at, lines: side.slice(sideStart, there) });
+     }
+     start = at + 1;

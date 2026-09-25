@@ -1,0 +1,12 @@
+# M741: refuse a right edit adjacent to the left edit
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -159,7 +159,7 @@
+         next = { start: mine.start, end: mine.end, lines: [appended] }; m++; t++;
+       } else if (mine.end <= theirs.start && mine.start < theirs.start) {
+         next = mine; m++;
+-      } else if (theirs.end <= mine.start && theirs.start < mine.start) {
++      } else if (theirs.end < mine.start && theirs.start < mine.start) {
+         next = theirs; t++;
+       } else {
+         // Different insertions at one boundary, or intersecting changed

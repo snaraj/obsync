@@ -122,8 +122,8 @@ const pulls = (host) => host.logs.filter((line) => line.startsWith("pull")).join
  * nobody typing: the device run of #135, in virtual time. `placeA`/`placeB`
  * say where each cursor is; `textA`/`textB` are what each types.
  */
-async function session(t, { placeA, placeB, textA, textB }) {
-  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false }) {
+  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB });
   // One clock for everything a device reads the time from: file mtimes, the
   // merge breaker's window, the virtual timers. A minute of typing is a
   // minute on all three.
@@ -142,10 +142,10 @@ async function session(t, { placeA, placeB, textA, textB }) {
     }
   };
 
-  a.host.write(NOTE, BASE, a.host.clock);
+  a.host.write(NOTE, base, a.host.clock);
   await a.engine.start();
   await b.engine.start();
-  await timers.run(STEP_MS, () => b.host.text(NOTE) === BASE && b.state.fileByPath(NOTE) !== undefined && a.state.fileByPath(NOTE) !== undefined);
+  await timers.run(STEP_MS, () => b.host.text(NOTE) === base && b.state.fileByPath(NOTE) !== undefined && a.state.fileByPath(NOTE) !== undefined);
   const fileId = a.state.fileByPath(NOTE).fileId;
 
   const editors = { a: new OpenEditor(a, timers, placeA), b: new OpenEditor(b, timers, placeB) };
@@ -221,14 +221,23 @@ test("two devices typing in one open note converge on one note on both", async (
   assert.deepEqual(copies(a.host), [], `conflict copies were made:\n  ${story}`);
 });
 
+test("desktop and mobile typing on adjacent lines retain both complete sequences without copies", async (t) => {
+  const { a, story } = await session(t, {
+    placeA: atEnd, placeB: atEndOfFirstLine, textA: A_TEXT, textB: B_TEXT,
+    base: "# Both\n", isMobileB: true,
+  });
+  assert.ok(a.host.text(NOTE).includes(A_TEXT), `the desktop sequence is incomplete:\n  ${story}`);
+  assert.ok(a.host.text(NOTE).includes(B_TEXT), `the phone sequence is incomplete:\n  ${story}`);
+  assert.deepEqual(copies(a.host), [], `adjacent lines produced conflict copies:\n  ${story}`);
+});
+
 /**
- * THE SAME LINE. A line merge cannot put two people's words into one line, so
- * every pair of saves that crossed is a fork that does not merge, settled by
- * rule: one version kept as the note everywhere, the other in ONE copy that
- * every device holds, the fork closed. Each keystroke is a character typed
- * nowhere else, so "nothing was lost" is checked one keystroke at a time.
+ * THE SAME LINE. S02's second case appends to the same line on both devices.
+ * Appends retain every existing character, so their additions can be joined
+ * deterministically. Each keystroke is unique: loss and duplication are both
+ * visible, and the main note must hold each character once with no copies.
  */
-test("two devices typing on the same line of one open note converge, with one copy per fork", async (t) => {
+test("two devices appending on the same line converge with every keystroke once and no copies", async (t) => {
   const onLine2 = (text, typed) => {
     const lines = text.split("\n");
     lines[1] += typed;
@@ -237,19 +246,14 @@ test("two devices typing on the same line of one open note converge, with one co
   const unique = (from, count) => Array.from({ length: count }, (_, index) => String.fromCodePoint(from + index)).join("");
   const textA = unique(0x4e00, 60);
   const textB = unique(0x5000, 40);
-  const { a, b, file, story } = await session(t, { placeA: onLine2, placeB: onLine2, textA, textB });
-
-  // At most one copy per fork that did not merge: a closing version names two
-  // heads and holds the bytes of one of them.
-  const closings = file.versions.filter((version) =>
-    version.parents.length === 2 &&
-    file.versions.some((parent) => version.parents.includes(parent.version_id) && parent.sids.join() === version.sids.join()));
-  assert.ok(closings.length > 0, `no fork was settled by the rule, so this is not the same-line case:\n  ${story}`);
-  assert.ok(copies(a.host).length <= closings.length, `${copies(a.host).length} copies for ${closings.length} forks:\n  ${story}`);
+  const { a, b, story } = await session(t, { placeA: onLine2, placeB: onLine2, textA, textB });
   for (const device of [a, b]) {
-    const everything = [NOTE, ...copies(device.host)].map((path) => device.host.text(path)).join("");
-    const lost = [...textA, ...textB].filter((key) => !everything.includes(key));
-    assert.deepEqual(lost, [], `keystrokes that are in no file on the ${device === a ? "desktop" : "laptop"}:\n  ${story}`);
+    assert.deepEqual(copies(device.host), [], `same-line appends created copies:\n  ${story}`);
+    const main = [...device.host.text(NOTE)];
+    for (const key of [...textA, ...textB]) {
+      assert.equal(main.filter(point => point === key).length, 1,
+        `a keystroke was lost or duplicated in the main note:\n  ${story}`);
+    }
   }
 });
 
@@ -708,15 +712,15 @@ test("merges of merges of one pair merge again, three levels down and no further
     let [one, five] = ["ONE", "FIVE"];
     let ours = await publish(lines(one, "five"), [base.versionId]);
     let theirs = await publish(lines("one", five), [base.versionId]);
-    // Every level is two merges of the pair below, each with one more word
-    // typed on its own line: a line-1 edit here, a line-5 edit there.
+    // Prepend each word so the append-only rule cannot resolve directly
+    // against an older base: this fixture must exercise recursive bases.
     for (let level = 1; level <= levels; level++) {
       const pair = [ours.version_id, theirs.version_id];
-      ours = await publish(lines(`${one} a${level}`, five), pair);
-      theirs = await publish(lines(one, `${five} b${level}`), pair);
-      [one, five] = [`${one} a${level}`, `${five} b${level}`];
+      ours = await publish(lines(`a${level} ${one}`, five), pair);
+      theirs = await publish(lines(one, `b${level} ${five}`), pair);
+      [one, five] = [`a${level} ${one}`, `b${level} ${five}`];
     }
-    const mine = r.host.seed(NOTE, lines(one, five.replace(/ b\d+$/, "")), mtime);
+    const mine = r.host.seed(NOTE, lines(one, five.replace(/^b\d+ /, "")), mtime);
     r.state.setFile(NOTE, {
       fileId: base.fileId, versionId: ours.version_id, mtime, size: mine.length, sha256: await sidDigest(ours.sids),
     });

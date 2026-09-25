@@ -1,0 +1,12 @@
+# M751: merge appended text across different ending base lines
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -151,7 +151,7 @@
+       if (mine.start === theirs.start && mine.end === theirs.end && sameLines(mine.lines, theirs.lines)) {
+         next = mine; m++; t++;
+       } else if (
+-        mine.start === theirs.start && mine.end === theirs.end &&
++        mine.start === theirs.start &&
+         mine.end === mine.start + 1 && mine.lines.length === 1 && theirs.lines.length === 1
+       ) {
+         const appended = mergeLineAppends(baseLines[mine.start] as string, mine.lines[0] as string, theirs.lines[0] as string);
