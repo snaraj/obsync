@@ -100,6 +100,11 @@ Stop the rewriting plugin before using it.
 
 ![The paused note's explanation and Resume button](assets/rewrite-resume.png)
 
+On a phone, open **Show sync status** from the command palette. The same
+explanation and **Resume** control appear below the status details:
+
+![The phone offers Resume for a note paused by repeated rewrites](assets/phone-candidate-113/rewrite-resume.png)
+
 [The validation record](validation-runs/2026-09-24-rewrite-storm.md) separates
 native observations from automated coverage.
 

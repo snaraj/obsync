@@ -82,7 +82,7 @@ The local evidence files are `179-overlap-typing-times.json`,
 explains the editor-overlap guard and its mutations. Both Resume orders pass
 the automated suite; this native rerun exercised B first only. Two application
 instances on one laptop do not establish two physical computers or the
-required iPhone S89 result.
+required iPhone S89 result. The subsequent [desktop and phone run](2026-09-24-phone-1.1.3.md#rewrite-hold-on-desktop-and-phone) completes that case on the final candidate.
 
 ## Older-client compatibility
 

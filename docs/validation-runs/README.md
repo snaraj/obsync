@@ -59,3 +59,5 @@ legible is naming the wrong fact: name the class instead.
 - [2026-09-24 phone candidate 1.1.3](2026-09-24-phone-1.1.3.md): separate candidate installation and current native acceptance scope.
 
 - [Co-typing with delayed receipts](2026-09-24-cotyping-delayed-ack.md): pristine-baseline failure, deterministic reproductions and repair; simulation boundaries stated.
+
+- [2026-09-24 replacement-build device follow-up](2026-09-24-replacement-device-followup.md): exact repaired 1.1.2 desktop with the final 1.1.3 phone, identical offline notes and automatic recovery.
