@@ -29,7 +29,7 @@ site_description: >-
   Self-hosted, end-to-end encrypted live sync for Obsidian: one dependency-free
   Rust server you run yourself, plus an Obsidian plugin.
 site_url: https://snaraj.github.io/obsync/
-site_author: Samuel Naranjo
+site_author: obsync contributors
 copyright: MIT licensed. The server stores ciphertext only.
 
 repo_url: https://github.com/snaraj/obsync
