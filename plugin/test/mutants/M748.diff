@@ -1,8 +1,8 @@
 # M748: repeat the unchanged matching anchor inside the next edit
 --- a/plugin/src/sync/conflict.ts
 +++ b/plugin/src/sync/conflict.ts
-@@ -99,7 +99,7 @@
-       edits.push({ start, end: at, lines: side.slice(sideStart, there) });
+@@ -110,7 +110,7 @@
+       } else edits.push({ start, end: at, lines });
      }
      start = at + 1;
 -    sideStart = there + 1;

@@ -1,12 +1,12 @@
 # M721: a peer answering our own publication bypasses the loop budget
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2020,7 +2020,7 @@
-   // typist may stop before the other; the remaining edits still merge here.
-   const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
-     reaches(file.versions, change.version_id, tally.remote) &&
+@@ -2038,7 +2038,7 @@
+   const remote = remotes.get(change.device_id);
+   const independent = remote !== undefined && remote !== change.version_id &&
+     reaches(file.versions, change.version_id, remote) &&
 -    !reaches(file.versions, change.version_id, localVersionId);
 +    true;
    if (tally.left !== found || independent) tally.count = 0;
-   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq}`);
-   tally.remote = change.version_id;
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+   remotes.set(change.device_id, change.version_id);

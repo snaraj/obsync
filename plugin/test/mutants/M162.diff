@@ -1,12 +1,12 @@
 # M162: the merge breaker counts every resolution again, so two people typing in one note trip it within seconds and the note splits
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2021,7 +2021,7 @@
-   const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
-     reaches(file.versions, change.version_id, tally.remote) &&
+@@ -2039,7 +2039,7 @@
+   const independent = remote !== undefined && remote !== change.version_id &&
+     reaches(file.versions, change.version_id, remote) &&
      !reaches(file.versions, change.version_id, localVersionId);
 -  if (tally.left !== found || independent) tally.count = 0;
 +  if (independent) tally.count = 0;
-   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq}`);
-   tally.remote = change.version_id;
-   tally.count++;
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+   remotes.set(change.device_id, change.version_id);
+   // Bound the bookkeeping by the version graph already received. Forgotten

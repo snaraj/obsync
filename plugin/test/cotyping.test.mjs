@@ -269,6 +269,29 @@ const foreign = (r, fileId, text, parents, mtime) => r.server.publish({
 });
 const storms = (r) => r.host.logs.filter((line) => line.includes("reason=merge_storm"));
 
+for (const isMobile of [false, true]) test(`continued adjacent appends reconcile without copies (${isMobile ? "mobile" : "desktop"})`, async () => {
+  const r = await rig({ isMobile });
+  r.host.seed(NOTE, "Desktop: START\nPhone: START", 1000);
+  const base = await pushFile(r.context, NOTE);
+  // A third receiver can combine both typists' early additions before either
+  // sees it. Each later branch then changes both lines relative to this base.
+  r.host.seed(NOTE, "Desktop: STARTABC\nPhone: STARTab", 2000);
+  await pushFile(r.context, NOTE);
+  const incoming = await foreign(r, base.fileId, "Desktop: STARTAB\nPhone: STARTabc", [base.versionId], 3000);
+  assert.equal(await applyChange(r.context, incoming), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), "Desktop: STARTABC\nPhone: STARTabc");
+  assert.deepEqual(copies(r.host), []);
+  assert.deepEqual(storms(r), []);
+  const file = r.server.files.get(base.fileId);
+  assert.equal(file.heads.length, 1);
+  assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+  // An ordinary follow-up must keep the common result and advance that head.
+  r.host.seed(NOTE, "Desktop: STARTABCD\nPhone: STARTabc", 4000);
+  await pushFile(r.context, NOTE);
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1);
+  assert.deepEqual(copies(r.host), []);
+});
+
 /**
  * THE BREAKER COUNTS A RUN, NOT A MINUTE. Eight resolutions with someone
  * typing here between every two of them are two people editing, and must
@@ -329,6 +352,59 @@ test("one typist can stop while the peer continues its independent branch", asyn
   assert.deepEqual(copies(r.host), []);
   assert.deepEqual(storms(r), []);
   assert.ok(r.host.logs.some((line) => line.includes("reason=independent_peer_progress")));
+});
+
+for (const sameLine of [false, true]) test(`a passive third device merges alternating progress from two independent typists (${sameLine ? "same line" : "adjacent lines"})`, async () => {
+  const r = await rig();
+  const textAt = (a, b) => sameLine ? `Shared: START|${"A".repeat(a)}${"b".repeat(b)}`
+    : `Desktop: START${"A".repeat(a)}\nPhone: START${"b".repeat(b)}`;
+  const baseText = textAt(0, 0);
+  r.host.seed(NOTE, baseText, 1000);
+  const base = await pushFile(r.context, NOTE);
+  const parents = [base.versionId, base.versionId];
+  for (let count = 1; count <= 12; count++) {
+    for (const side of [0, 1]) {
+      r.host.clock += 1000;
+      const text = side === 0 ? textAt(count, 0) : textAt(0, count);
+      const frame = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(text),
+        mtime: 2000 + 2 * count + side, parents: [parents[side]],
+        deviceId: (side === 0 ? "ab" : "cd").repeat(16),
+        domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+      parents[side] = frame.version_id;
+      await applyChange(r.context, frame);
+    }
+    assert.equal(r.host.text(NOTE), textAt(count, count), pulls(r.host));
+    assert.deepEqual(copies(r.host), [], pulls(r.host));
+    assert.deepEqual(storms(r), [], pulls(r.host));
+  }
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1);
+});
+
+test("alternating authors do not exempt a feedback loop and forgotten authors leave no bookkeeping", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  const ours = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "ONE\ntwo\nTHREE LOCAL\n", 3000);
+  let parent = ours.versionId;
+  for (let round = 1; round <= 6; round++) {
+    const frame = await r.server.publish({ fileId: ours.fileId, path: NOTE,
+      bytes: enc(`ONE\nTWO ${round}\nthree\n`), mtime: 4000 + round,
+      parents: [parent], deviceId: (round % 2 ? "ab" : "cd").repeat(16),
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    parent = frame.version_id;
+    await applyChange(r.context, frame);
+  }
+  assert.equal(storms(r).length, 1, pulls(r.host));
+  assert.ok(!r.host.logs.some(line => line.includes("reason=independent_peer_progress")));
+  // Retention can forget an inactive author. Keep no per-author entry whose
+  // version the received graph no longer carries, even during a refused loop.
+  const tally = r.context.merges.get(ours.fileId);
+  tally.remote.set("ee".repeat(16), "ff".repeat(32));
+  const last = await foreign(r, ours.fileId, "ONE\nTWO 7\nthree\n", [parent], 5000);
+  await applyChange(r.context, last);
+  assert.ok(!tally.remote.has("ee".repeat(16)), "forgotten graph ancestry was retained");
 });
 
 test("superseded typing frames neither merge nor consume the loop budget", async () => {

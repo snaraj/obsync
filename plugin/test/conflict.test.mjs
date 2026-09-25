@@ -30,6 +30,27 @@ test("edits to adjacent lines merge without requiring a shared unchanged line", 
   }
 });
 
+test("shared appends on adjacent lines do not turn continued typing into an overlap", () => {
+  const base = "Desktop: START\nPhone: START";
+  for (const mine of ["Desktop: STARTABC\nPhone: STARTab", "Desktop: STARTABC\nPhone: START"]) {
+    const theirs = "Desktop: STARTAB\nPhone: STARTabc";
+    for (const [left, right] of [[mine, theirs], [theirs, mine]]) {
+      assert.deepEqual(threeWayMerge(base, left, right),
+        { ok: true, text: "Desktop: STARTABC\nPhone: STARTabc" });
+    }
+  }
+});
+
+test("adjacent append runs preserve unchanged anchors and Unicode additions", () => {
+  const base = "heading\none\ntwo\nlast\n";
+  const mine = "heading\none😀A\ntwoB\nlast\n";
+  const theirs = "heading\none😀\ntwoBC\nlast\n";
+  for (const [left, right] of [[mine, theirs], [theirs, mine]]) {
+    assert.deepEqual(threeWayMerge(base, left, right),
+      { ok: true, text: "heading\none😀A\ntwoBC\nlast\n" });
+  }
+});
+
 test("a deletion beside an edited line keeps that edit in either device order", () => {
   for (const [mine, theirs] of [["two\nthree", "one\nTWO\nthree"], ["one\nTWO\nthree", "two\nthree"]]) {
     assert.deepEqual(threeWayMerge("one\ntwo\nthree", mine, theirs), { ok: true, text: "TWO\nthree" });
@@ -52,6 +73,13 @@ test("identical insertions are kept once and different insertions at the same bo
 test("partly overlapping multi-line changes remain conflicts in either order", () => {
   const base = "one\ntwo\nthree";
   for (const [mine, theirs] of [["ONE\nTWO\nthree", "one\nother two\nTHREE"], ["one\nother two\nTHREE", "ONE\nTWO\nthree"]]) {
+    assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("a multi-line replacement remains atomic beside competing appends", () => {
+  const base = "first\nold line";
+  for (const [mine, theirs] of [["firstA\nnew line", "firstB\nnew line"], ["firstB\nnew line", "firstA\nnew line"]]) {
     assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: false, reason: "overlap" });
   }
 });

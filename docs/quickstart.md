@@ -129,7 +129,9 @@ isolation boundary. Native restart persistence is a separate validation step.
    device** applies it, and it is local, not copied by the pairing code.
    Files keep their relative folder names.
 
-   ![Self Hosted Private Sync installed and enabled on the phone](assets/phone-candidate-113/head-closure-installed.png)
+   ![Self Hosted Private Sync installed and enabled on the phone](assets/phone-candidate-113/final-train-installed.png)
+
+   ![The phone's fresh sync settings, with the Server URL field and Check button](assets/phone-candidate-113/final-train-unpaired.png)
 
 2. On the computer, run the command **Pair a new device** (also a button in
    the settings tab). It shows a one-time pairing code, valid ten minutes, and
@@ -141,7 +143,7 @@ isolation boundary. Native restart persistence is a separate validation step.
    under **Pairing code** and tap **Pair** — or open the link, which is the
    same dialog with the code already in it.
 
-   ![The phone's Pair this device dialog with an empty Pairing code field and Pair button](assets/phone-candidate-113/empty-pairing.png)
+   ![The phone's Pair this device dialog with an empty Pairing code field and Pair button](assets/phone-candidate-113/final-train-empty-pairing.png)
 
    This is the actual phone dialog, captured before entering a code. For
    certificate setup, follow [Add the phone](same-network.md#add-the-phone).
@@ -151,7 +153,7 @@ isolation boundary. Native restart persistence is a separate validation step.
    receives the vault key encrypted under a pairing secret that never touches
    the server; until you approve, the phone has no authority of any kind.
 
-   ![The computer names the phone vault and its note count before approval](assets/phone-candidate-113/head-closure-approval.png)
+   ![The computer names the phone vault and its note count before approval](assets/phone-candidate-113/final-train-approval.png)
 
    If the phone holds notes the server does not have, it asks before adding
    them. **Pair and upload** shares those notes with your other paired
@@ -159,7 +161,7 @@ isolation boundary. Native restart persistence is a separate validation step.
    separate; it needs its own server. The server address is covered in this
    screenshot.
 
-   ![The phone asks before uploading notes that are new to this server](assets/phone-candidate-113/head-closure-vault-confirm.png)
+   ![The phone asks before uploading notes that are new to this server](assets/phone-candidate-113/final-train-vault-confirm.png)
 
 5. Edit a note on the phone. It appears on the computer within seconds, and
    the other way round. That is the whole loop.

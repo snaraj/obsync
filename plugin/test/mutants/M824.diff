@@ -1,12 +1,12 @@
-# M719: independent peer typing consumes the loop budget
+# M824: Do not record a new independent remote version.
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2039,7 +2039,7 @@
-   const independent = remote !== undefined && remote !== change.version_id &&
-     reaches(file.versions, change.version_id, remote) &&
+@@ -2041,7 +2041,7 @@
      !reaches(file.versions, change.version_id, localVersionId);
--  if (tally.left !== found || independent) tally.count = 0;
-+  if (tally.left !== found) tally.count = 0;
+   if (tally.left !== found || independent) tally.count = 0;
    if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
-   remotes.set(change.device_id, change.version_id);
+-  remotes.set(change.device_id, change.version_id);
++  // Forgot this author version.
    // Bound the bookkeeping by the version graph already received. Forgotten
+   // ancestry cannot prove independent progress and never exempts a loop.
+   const retained = new Set(file.versions.map(version => version.version_id));

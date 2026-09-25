@@ -133,6 +133,9 @@ upload receipts no longer put an older version back into the device's records.
 Merges and editor uploads wait for one another's receipts before choosing
 parents, including an upload that finishes while a merge is being prepared.
 Adjacent line edits no longer need an unchanged line between them to merge.
+Continued additions to neighboring lines remain independent after a shared
+merge. A third device receiving both people's edits tracks their progress
+separately, so it does not mistake their typing for a rewrite loop.
 A freshly paired device no longer recreates resolved historical conflicts
 when the server's file view has trimmed older parent links. Older feed entries
 do not consume the loop limit, and one person can stop

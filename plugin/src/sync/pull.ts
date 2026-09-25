@@ -2028,16 +2028,25 @@ async function reconcile(
   const now = context.now();
   const found = stamp(await context.host.stat(localPath));
   const seen = context.merges.get(change.file_id);
-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found, remote: change.version_id };
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0, left: found };
   // A peer extending its own branch without receiving our merge is making
   // independent progress, not answering our output in a feedback loop. One
   // typist may stop before the other; the remaining edits still merge here.
-  const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
-    reaches(file.versions, change.version_id, tally.remote) &&
+  // Keep each author's progress: a passive third device sees alternating
+  // branches, neither of which descends from the other author's last edit.
+  const remotes = tally.remote ?? new Map<string, string>();
+  const remote = remotes.get(change.device_id);
+  const independent = remote !== undefined && remote !== change.version_id &&
+    reaches(file.versions, change.version_id, remote) &&
     !reaches(file.versions, change.version_id, localVersionId);
   if (tally.left !== found || independent) tally.count = 0;
-  if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq}`);
-  tally.remote = change.version_id;
+  if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+  remotes.set(change.device_id, change.version_id);
+  // Bound the bookkeeping by the version graph already received. Forgotten
+  // ancestry cannot prove independent progress and never exempts a loop.
+  const retained = new Set(file.versions.map(version => version.version_id));
+  for (const [author, version] of remotes) if (!retained.has(version)) remotes.delete(author);
+  tally.remote = remotes;
   tally.count++;
   context.merges.set(change.file_id, tally);
   const prior = tally.left;

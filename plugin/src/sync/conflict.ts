@@ -97,7 +97,17 @@ function lineEdits(base: string[], side: string[], alignment: Map<number, number
     const there = at === base.length ? side.length : alignment.get(at);
     if (there === undefined) continue;
     if (at > start || there > sideStart) {
-      edits.push({ start, end: at, lines: side.slice(sideStart, there) });
+      const lines = side.slice(sideStart, there);
+      // A peer may already have combined appends to neighboring lines. LCS
+      // then groups them into one replacement, hiding the independent lines
+      // from later typing. Split only an equal-length run that preserves every
+      // original line as its prefix; structural edits remain one interval.
+      if (at - start > 1 && lines.length === at - start &&
+        lines.every((line, index) => line.startsWith(base[start + index] as string))) {
+        for (let index = 0; index < lines.length; index++) {
+          edits.push({ start: start + index, end: start + index + 1, lines: [lines[index] as string] });
+        }
+      } else edits.push({ start, end: at, lines });
     }
     start = at + 1;
     sideStart = there + 1;

@@ -1,5 +1,9 @@
 # Validation runs
 
+- [2026-09-25 three-device typing follow-up](2026-09-25-passive-peer-typing.md):
+  adjacent-block and passive-receiver failures, their automated repairs,
+  mixed-build native controls, and the final phone installation checkpoint.
+
 - [2026-09-25 native editor-save follow-up](2026-09-25-native-editor-save.md):
   retained same-line failures, adjacent-line passes, and the active-editor
   retry repair with its automated evidence and outstanding native gate.

@@ -116,3 +116,8 @@ This record does not claim final S02 acceptance, production-path installation,
 production deployment, or completed QA cleanup. Other validation scenarios
 were not attempted during these typing runs; their earlier records retain
 their original build scope.
+
+The subsequent [three-device typing follow-up](2026-09-25-passive-peer-typing.md)
+records the active-editor retry candidate's native failure, two additional
+merge repairs and the next candidate's evidence. The checkpoint above is
+retained as the state observed before that follow-up.
