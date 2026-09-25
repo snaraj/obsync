@@ -85,8 +85,11 @@ class Notice {
 class TFile {}
 class TFolder {}
 class TAbstractFile {}
+// The editor view the host asks about an open note (issue #146); a test gives
+// an instance its \`file\` and \`getViewData\`, which is all the host reads.
+class MarkdownView {}
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, notices, raised,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, MarkdownView, notices, raised,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,
@@ -143,6 +146,8 @@ export class FakeHost {
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
+    /** What an editor open on a note holds, by path; no entry, no editor (issue #146). */
+    this.editors = new Map();
     this.clock = 1757200000000;
   }
 
@@ -252,9 +257,28 @@ export class FakeHost {
     }));
   }
 
+  /**
+   * Obsidian's whole index, whatever the selection (`main.ts`): hidden paths
+   * are not in it -- the vault's own `.trash` among them, which is where a
+   * note deleted in Obsidian goes and must never count as moved.
+   */
+  async inventory() {
+    return (await this.list()).filter((file) => vp.isVaultPath(file.path));
+  }
+
   /** The real host refuses a path with a symlink component; this one is told. */
   async syncable(path) {
     return !this.unsyncable.has(path);
+  }
+
+  /** No folder of this vault is a vault of its own (`nested-vault.test.mjs` uses a real one). */
+  async inNestedVault() {
+    return false;
+  }
+
+  /** Nor does this vault sit inside another one, when a test hands it to the plugin as its host. */
+  async enclosingVault() {
+    return null;
   }
 
   async stat(path) {
@@ -454,6 +478,15 @@ export class FakeHost {
     return true;
   }
 
+  inputAt = new Map();
+  typing(path) { return this.clock - (this.inputAt.get(path) ?? -Infinity) < 10_000; }
+
+  /** An open editor against its file, compared the way the real host compares them (`main.ts`). */
+  async editing(path) {
+    if (!this.editors.has(path)) return null;
+    return this.editors.get(path) === this.text(path) ? "saved" : "unsaved";
+  }
+
   notify(message) {
     this.notices.push(message);
   }
@@ -480,6 +513,12 @@ export class FakeServer {
     this.files = new Map();
     this.journal = [];
     this.seq = 0;
+    /**
+     * The server's clock for the versions it stamps: obsyncd stamps each one
+     * with its own time, so later posts carry later times (issue #145 reads
+     * them against the device's feed mark). A restore does not turn it back.
+     */
+    this.clock = 1757200000000;
     /** Posts this server answered with a version it already held (#114). */
     this.deduplicated = [];
     /** Set to model a server before 1.0.7: no `version_id` in the answer. */
@@ -496,12 +535,16 @@ export class FakeServer {
       },
     ];
     this.claimed = claimed;
+    this.recoveryVerifier = null;
+    this.recoveries = 0;
     if (!claimed) {
       this.devices = [];
       this.secrets = new Map();
     }
     this.requests = [];
     this.unsigned = [];
+    /** Devices whose requests never arrive: a network gone, not a refusal. */
+    this.unreachable = new Set();
     this.feedWaiters = [];
     this.heartbeats = 0;
     /** Set by `seedDomainMap`: the reserved file the map occupies. */
@@ -590,6 +633,7 @@ export class FakeServer {
   }
 
   async request(request) {
+    if (this.unreachable.has(request.headers["X-Obsync-Device"])) throw new Error("fake server: no route to host");
     const target = request.url.replace(/^https?:\/\/[^/]+/, "");
     const [path, query] = target.split("?");
     this.requests.push({
@@ -608,12 +652,32 @@ export class FakeServer {
     if (path === "/v1/setup" && request.method === "POST") {
       const body = json();
       if (body.setup_token !== SETUP_TOKEN) return this.error(401, "bad_setup_token", "that is not this server's setup token");
-      if (this.claimed) return this.error(409, "already_set_up", "this server already holds an account");
+      if (body.recovery_verifier !== undefined && !/^[0-9a-f]{64}$/.test(body.recovery_verifier)) return this.error(400, "bad_request");
+      const recovered = this.claimed;
+      if (recovered) {
+        if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
+        if (this.recoveryVerifier === null) return this.error(409, "recovery_unavailable", "a paired device must register recovery first");
+        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof) || createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex") !== this.recoveryVerifier) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+      } else this.recoveryVerifier = body.recovery_verifier ?? null;
       this.claimed = true;
-      this.addDevice(SETUP_DEVICE, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
-      return this.json(201, { account_id: "aa".repeat(16), device_id: SETUP_DEVICE, device_secret: SETUP_SECRET });
+      const id = recovered ? (++this.recoveries).toString(16).padStart(32, "0") : SETUP_DEVICE;
+      this.addDevice(id, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
+      return this.json(201, { account_id: "aa".repeat(16), device_id: id, device_secret: SETUP_SECRET, recovered });
     }
+    // obsyncd refuses a revoked device before the signature, on every route
+    // (`api/auth.rs`): revoking destroyed the secret it would verify against.
+    if (this.devices.some((device) => device.revoked && device.device_id === request.headers["X-Obsync-Device"])) {
+      return this.error(403, "device_revoked", "device is revoked");
+    }
+    if (!this.secrets.has(request.headers["X-Obsync-Device"])) return this.error(401, "bad_signature", "signature does not match");
     this.verify(request, target);
+    if (path === "/v1/account/recovery" && request.method === "POST") {
+      const verifier = json().recovery_verifier;
+      if (!/^[0-9a-f]{64}$/.test(verifier)) return this.error(400, "bad_request");
+      if (this.recoveryVerifier !== null && this.recoveryVerifier !== verifier) return this.error(409, "recovery_mismatch");
+      this.recoveryVerifier = verifier;
+      return this.json(204, {});
+    }
 
     // Match the Rust device parser before acknowledging a heartbeat or PATCH.
     if (path === "/v1/devices/heartbeat" || (request.method === "PATCH" && path.startsWith("/v1/devices/"))) {
@@ -646,7 +710,7 @@ export class FakeServer {
       // not about who asked. A stub whose refusal differs from the server's
       // is a stub that lets a client ship a branch no server can reach.
       const live = this.devices.filter((candidate) => !candidate.revoked);
-      if (!device.revoked && live.length <= 1) {
+      if (!device.revoked && live.length <= 1 && this.recoveryVerifier === null) {
         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
       }
       device.revoked = true;
@@ -729,7 +793,9 @@ export class FakeServer {
       // The comparison deliberately excludes the encrypted manifest, exactly
       // as the server's does, which is why a rename must not promise this.
       if (posted.accept_existing === true) {
-        const twin = file.versions.find(
+        // Oldest first, as the store searches (`storage/index.rs`, `twin`), so
+        // every repeat of one position converges on the id that landed first.
+        const twin = file.versions.findLast(
           (version) =>
             Boolean(version.deleted) === Boolean(posted.deleted) &&
             sameSet(version.parents, posted.parents) &&
@@ -741,14 +807,15 @@ export class FakeServer {
           return this.json(200, this.ack(twin.seq, twin.version_id, file));
         }
       }
-      const sameHeads =
-        file.heads.length === posted.parents.length &&
-        file.heads.every((head) => posted.parents.includes(head));
-      file.heads = sameHeads ? [posted.version_id] : [...file.heads, posted.version_id];
+      // The store's own head rule (`storage/index.rs`, `apply_version`): a
+      // version replaces the heads it names and becomes one itself. A fake
+      // that kept every head a device had moved past modelled a fork that
+      // grows by one head per edit, which no server does (issue #135).
+      file.heads = [...file.heads.filter((head) => !posted.parents.includes(head)), posted.version_id];
       const version = {
         ...posted,
         device_id: request.headers["X-Obsync-Device"],
-        ts: 1757200000000,
+        ts: (this.clock += 1000),
         seq: ++this.seq,
       };
       file.versions.unshift(version);
@@ -761,6 +828,18 @@ export class FakeServer {
     if (versionGet) {
       const version = this.files.get(versionGet[1])?.versions.find((v) => v.version_id === versionGet[2]);
       return version ? this.json(200, version) : this.error(404, "unknown_version");
+    }
+    // The reconciliation listing (`api/files.rs`, `page`): file-id order, an
+    // exclusive cursor, at most 1000, `next` the last id included.
+    if (path === "/v1/files" && request.method === "GET") {
+      const params = new URLSearchParams(query);
+      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), 1000);
+      const ids = [...this.files.keys()].sort().filter((id) => id > (params.get("after") ?? ""));
+      const page = ids.slice(0, limit);
+      return this.json(200, {
+        files: page.map((id) => ({ file_id: id, heads: this.files.get(id).heads })),
+        next: ids.length > limit ? page[page.length - 1] : null,
+      });
     }
     const fileGet = /^\/v1\/files\/([0-9a-f]{32})$/.exec(path);
     if (fileGet) {
@@ -779,6 +858,11 @@ export class FakeServer {
     if (path === "/v1/changes") {
       const since = Number(new URLSearchParams(query).get("since") ?? 0);
       const params = new URLSearchParams(query);
+      // obsyncd's own refusal (`storage/index.rs`, `changes`): a cursor past
+      // the journal head is a journal that went BACKWARDS -- a restored volume
+      // (issue #145) -- and a stub that answered it with an empty page would
+      // hide the one signal a device gets that its server was restored.
+      if (since > this.seq) return this.error(416, "seq_ahead", `since ${since} is beyond head ${this.seq}`);
       const limit = Number(params.get("limit") ?? 1000);
       const remaining = this.journal.filter((frame) => frame.seq > since);
       const changes = remaining.slice(0, limit);
@@ -855,6 +939,33 @@ export class FakeServer {
     return versionId;
   }
 
+  /**
+   * The server as a volume backup taken at `seq` left it (issue #145,
+   * `docs/recovery.md`): every version journaled after `seq` is gone, each
+   * file's heads are what the journal up to `seq` made them -- obsyncd's own
+   * rule, a version replacing the heads it names -- a file with no version
+   * left is gone, the chunks no surviving version names are gone with the
+   * blob volume, and the NEXT frame takes `seq + 1` again: a seq the devices
+   * already used on the timeline the restore erased.
+   */
+  restoreTo(seq) {
+    const named = new Set();
+    for (const [fileId, file] of [...this.files]) {
+      const kept = file.versions.filter((version) => version.seq <= seq);
+      if (kept.length === 0) { this.files.delete(fileId); continue; }
+      let heads = [];
+      for (const version of [...kept].sort((x, y) => x.seq - y.seq)) {
+        heads = [...heads.filter((head) => !version.parents.includes(head)), version.version_id];
+      }
+      file.versions = kept;
+      file.heads = heads;
+      for (const version of kept) for (const sid of version.sids) named.add(sid);
+    }
+    for (const sid of [...this.chunks.keys()]) if (!named.has(sid)) this.chunks.delete(sid);
+    this.journal = this.journal.filter((frame) => frame.seq <= seq);
+    this.seq = seq;
+  }
+
   releaseFeed() {
     const waiters = this.feedWaiters;
     this.feedWaiters = [];
@@ -916,8 +1027,7 @@ export class FakeServer {
     const versionId = await c.versionId(fileId, parents, sealed.ciphertext, sids);
     const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: domainId };
     this.files.set(fileId, file);
-    const sameHeads = file.heads.length === parents.length && file.heads.every((head) => parents.includes(head));
-    file.heads = sameHeads ? [versionId] : [...file.heads, versionId];
+    file.heads = [...file.heads.filter((head) => !parents.includes(head)), versionId];
     const version = {
       version_id: versionId,
       parents,
@@ -1118,6 +1228,10 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     createdFolders: new Set(),
     refused: new Set(),
     merges: new Map(),
+    pushedAt: new Map(),
+    answering: new Map(),
+    arrivals: new Map(),
+    forked: new Set(),
     deviceNames: new Map([["ffffffffffffffffffffffffffffffff", "iPhone"]]),
     now: () => host.clock,
     deviceNameFor: (id) => (id === KEYS.deviceId ? "this device" : "iPhone"),
@@ -1209,6 +1323,8 @@ export class EventVault extends FakeHost {
     this.listeners = new Map();
     /** Paths whose `delete` event this vault never delivers (a watcher miss). */
     this.silent = new Set();
+    /** Report the plugin's own file moves as a delete and a create, as the desktop watcher does. */
+    this.watcherMoves = false;
   }
 
   on(name, handler) {
@@ -1268,8 +1384,15 @@ export class EventVault extends FakeHost {
     // for (`destination`).
     const landed = this.destination(to);
     const outcome = await super.move(from, to);
-    // Obsidian reports a rename this plugin performed like any other.
-    if (outcome === "moved") this.emit("rename", this.entry(landed), from);
+    // Obsidian reports a rename this plugin performed like any other -- or,
+    // as the desktop watcher reports the filesystem rename `ObsidianHost`
+    // makes, as the old name deleted and the new one created.
+    if (outcome !== "moved") return outcome;
+    if (!this.watcherMoves) this.emit("rename", this.entry(landed), from);
+    else {
+      if (!this.silent.has(from)) this.emit("delete", this.entry(from));
+      this.emit("create", this.entry(landed));
+    }
     return outcome;
   }
 

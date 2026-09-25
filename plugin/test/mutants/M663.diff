@@ -1,0 +1,12 @@
+# M663: saved typing loses its debounce allowance
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1732,7 +1732,7 @@
+       if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
+       const input = this.inputAt.get(view);
+       return this.composing.get(view) === path ||
+-        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
++        (input?.path === path && Date.now() - input.at < 0);
+     });
+   }
+ 

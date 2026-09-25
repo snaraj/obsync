@@ -1,0 +1,12 @@
+# M655: completed publication drops a later publication from the queue
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -253,7 +253,7 @@
+   const current = (previous ?? Promise.resolve()).catch(() => undefined).then(publish);
+   paths.set(path, current);
+   try { return await current; }
+-  finally { if (paths.get(path) === current) paths.delete(path); }
++  finally { paths.delete(path); }
+ }
+ 
+ export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {

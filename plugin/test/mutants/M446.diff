@@ -1,0 +1,11 @@
+# M446: a superseded session's drain logs a teardown save failure that did not happen
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1883,7 +1883,6 @@
+     // stopAndWait drains in-flight work before its final State save. That save
+     // may reject after a storage failure; retain the drain until it settles.
+     const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch((error: unknown) => {
+-      if (error instanceof StateStorageError && error.reason === "superseded") return;
+       this.log("engine decision=stopped reason=teardown_save_failed");
+     });
+     this.engineTeardowns.add(teardown);

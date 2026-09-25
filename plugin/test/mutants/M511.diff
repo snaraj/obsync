@@ -1,0 +1,12 @@
+# M511: claimant name permits controls and bidi formatting
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -151,7 +151,7 @@
+ function checkedVault(value: unknown): PairingVault {
+   const vault = value as PairingVault | null;
+   if (!vault || typeof vault.name !== "string" || vault.name.length === 0 || vault.name.length > 256 ||
+-      /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(vault.name) ||
++      false ||
+       !Number.isSafeInteger(vault.notes) || vault.notes < 0) {
+     throw new Error("pairing: invalid vault details; start pairing again");
+   }

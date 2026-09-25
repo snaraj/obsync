@@ -1,0 +1,11 @@
+# M469: a page read while a restore was pending is applied before the restore is answered
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1743,7 +1743,6 @@
+         if (!live()) return;
+         // A restore the repair pass noticed while this read waited is answered
+         // before anything the read brought is applied.
+-        if (this.restoreDue !== null) continue;
+         await this.track(this.applyPage(context, page));
+       } catch (error) {
+         if (!live()) return;

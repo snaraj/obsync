@@ -1,0 +1,12 @@
+# M436: a path through a symlinked folder is skipped silently instead of refused with a notice
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -461,7 +461,7 @@
+     try {
+       chain = (await this.confine(desktop, path, ["absent", "file", "directory", "other"])).chain;
+     } catch (error) {
+-      if (error instanceof VaultPathError) return false;
++      if (error instanceof VaultPathError) return true;
+       throw error;
+     }
+     // `chain[depth]` is the directory the first `depth` segments name.

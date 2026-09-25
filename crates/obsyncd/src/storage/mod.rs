@@ -673,6 +673,18 @@ impl Store {
 
     /// Create the one account. Valid once (docs/protocol.md, `/v1/setup`).
     pub fn setup(&self, name: &str) -> Result<AccountId, StoreError> {
+        self.setup_with_recovery(name, None)
+    }
+
+    /// Create an account and its optional recovery verifier in one durable frame.
+    ///
+    /// # Errors
+    /// An existing account, randomness failure, or a refused journal append.
+    pub fn setup_with_recovery(
+        &self,
+        name: &str,
+        recovery_verifier: Option<String>,
+    ) -> Result<AccountId, StoreError> {
         let mut journal = self.journal();
         let mut index = self.index();
         if index.account.is_some() {
@@ -684,10 +696,35 @@ impl Store {
             name: name.to_string(),
             created: UnixMs::now(),
             quota_bytes: None,
+            recovery_verifier,
         })?;
         self.log
             .info("setup", &[("account", Val::account(&account_id))]);
         Ok(account_id)
+    }
+
+    /// Register recovery once; a different verifier cannot replace the original.
+    ///
+    /// # Errors
+    /// An absent account or a refused journal append.
+    pub fn register_recovery(&self, verifier: &str) -> Result<bool, StoreError> {
+        let mut journal = self.journal();
+        let mut index = self.index();
+        let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
+        if let Some(existing) = account.recovery_verifier {
+            return Ok(obsync_core::ct::eq(
+                existing.as_bytes(),
+                verifier.as_bytes(),
+            ));
+        }
+        append(&mut journal, &mut index, |_| Frame::Account {
+            account_id: account.account_id,
+            name: account.name,
+            created: account.created,
+            quota_bytes: account.quota_bytes,
+            recovery_verifier: Some(verifier.to_string()),
+        })?;
+        Ok(true)
     }
 
     /// The account, with the usage the volumes actually hold.
@@ -849,7 +886,13 @@ impl Store {
             .record
             .active();
         let active = index.devices.values().filter(|e| e.record.active()).count();
-        if target_is_active && active <= 1 {
+        if target_is_active
+            && active <= 1
+            && index
+                .account
+                .as_ref()
+                .is_none_or(|a| a.recovery_verifier.is_none())
+        {
             return Err(StoreError::LastActiveDevice);
         }
         append(&mut journal, &mut index, |_| Frame::DeviceRevoke {

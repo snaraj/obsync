@@ -1,0 +1,12 @@
+# M590: adopt credential after vault-key change
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2680,7 +2680,7 @@
+         app_version: this.manifest.version,
+       }, recovery);
+       assertCurrent();
+-      if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
++      if (false) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
+       // Setup is not repeatable and the credential it mints exists nowhere
+       // else: a lost answer means this device may have been enrolled with a
+       // secret it never received. There is nothing to read back without a

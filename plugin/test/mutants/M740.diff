@@ -1,0 +1,12 @@
+# M740: order a left insertion against a replacement at the same boundary
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -157,7 +157,7 @@
+         const appended = mergeLineAppends(baseLines[mine.start] as string, mine.lines[0] as string, theirs.lines[0] as string);
+         if (appended === null) return { ok: false, reason: "overlap" };
+         next = { start: mine.start, end: mine.end, lines: [appended] }; m++; t++;
+-      } else if (mine.end <= theirs.start && mine.start < theirs.start) {
++      } else if (mine.end <= theirs.start) {
+         next = mine; m++;
+       } else if (theirs.end <= mine.start && theirs.start < mine.start) {
+         next = theirs; t++;

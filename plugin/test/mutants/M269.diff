@@ -1,0 +1,11 @@
+# M269: closing a confirmation with Cancel or Escape answers nothing, and pairing hangs for ever
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -91,7 +91,6 @@
+ 
+   override onClose(): void {
+     this.contentEl.empty();
+-    if (!this.answered) this.declined();
+     this.answered = true;
+   }
+ }

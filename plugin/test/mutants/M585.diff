@@ -1,0 +1,12 @@
+# M585: hide recovery behind rejected device id
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -510,7 +510,7 @@
+     return {
+       name: "Setup or recover",
+       desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. Recovery must have been registered by an updated device before its last credential was lost. Keep both the token and phrase private.",
+-      visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
++      visible: () => this.plugin.state.data.deviceId === null,
+       render: (setting) => {
+         setting
+           .addText((field) => field.setPlaceholder("Setup token").setValue(this.draftToken).onChange((value) => { this.draftToken = value.trim(); }))

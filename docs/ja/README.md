@@ -72,7 +72,7 @@ Caddy は、初回起動時に自分で生成した認証局で署名します�
 
    ![プラグインの設定タブ。デモ用のホスト名が入った Server URL 欄、エッジヘッダーの入力欄、Check と Open dashboard のボタンがある Connection の行](../assets/settings-server.png)
 
-3. セットアップトークンを **First-time setup** の下に貼り付け、**Set up** を選び、24 語のリカバリーフレーズを書き留めます。
+3. セットアップトークンを **Setup or recover** の下に貼り付け、**Set up or recover** を選び、24 語のリカバリーフレーズを書き留めます。
 
    ![設定タブの This device セクション。Pair this device と Pair a new device がある Pairing の行、Setup token 欄と Set up ボタンがある First-time setup の行、そして Vault key の行](../assets/settings-setup.png)
 

@@ -1,0 +1,12 @@
+# M550: Resume does not close the existing pause heads
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -20,7 +20,7 @@
+   let parents: string[];
+   try {
+     const file = await context.transport.getFile(fileId);
+-    parents = file.heads;
++    parents = [];
+     const current = await Promise.all(file.heads.map(async (head) => {
+       const version = file.versions.find((entry) => entry.version_id === head);
+       return version === undefined ? null : await decodeRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });

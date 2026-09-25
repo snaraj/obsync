@@ -1,0 +1,12 @@
+# M188: the removal's hidden folder can be swapped for a link and the vault's deletion follows it out of the vault
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1236,7 +1236,7 @@
+       }
+       return "kept";
+     }
+-    const refusal = await chainRefusal(chain, walker(fs));
++    const refusal = await chainRefusal(found.chain, walker(fs));
+     if (refusal !== null) {
+       // Putting a file back through a chain that was swapped under us is how
+       // a restore writes outside the vault, so the bytes stay where they are

@@ -1,0 +1,12 @@
+# M303: the note a withdrawn deletion left at its own name is announced as back "as" that same name
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -467,7 +467,7 @@
+   if (now !== undefined && (await context.host.stat(now)) !== null) {
+     context.host.notify(
+       `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
+-        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
++        `deletion reached the server, so the note is back here as "${now}".`,
+     );
+   }
+   return gone;

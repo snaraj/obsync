@@ -1,0 +1,20 @@
+# M617: offer destructive leave before Cancel
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -468,7 +468,7 @@
+       }
+     }
+     const leaving = this.mode === "switch" ? "Leave and switch" : "Leave";
+-    this.cancel(new Setting(this.contentEl)).addButton((button) =>
++    new Setting(this.contentEl).addButton((button) =>
+       button
+         .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
+         .setDestructive()
+@@ -476,6 +476,7 @@
+           void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
+         }),
+     );
++    this.cancel(new Setting(this.contentEl));
+   }
+ 
+   private async leave(choice: LeaveChoice): Promise<void> {

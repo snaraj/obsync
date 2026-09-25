@@ -104,7 +104,7 @@ request earns `401 bad_signature`. Each device has to leave and pair again.
    server → Switch server**. It cannot revoke itself on a server that no
    longer holds it, so it offers to leave LOCALLY; take that. The vault key
    stays, which is what makes this the same vault.
-2. Point it at the same **Server URL** and run **First-time setup** with the
+2. Point it at the same **Server URL** and run **Setup or recover** with the
    new token. It re-uploads the whole vault, because the server holds nothing.
 3. On every other device, leave locally the same way, then pair with a code
    from the first device rather than the setup token

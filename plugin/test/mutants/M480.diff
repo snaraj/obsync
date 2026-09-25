@@ -1,0 +1,11 @@
+# M480: a note two devices' plugins keep rewriting bounces on for as long as both run, a copy and a notice every round
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2208,7 +2208,6 @@
+ 
+   // Two sides that do not merge, and this one a plugin's answer to a sync:
+   // the storm, held here before it makes a copy (issue #179).
+-  if (await rewriteStorm(context, change, localPath)) return "skipped";
+   // The other device's authenticated answer can arrive before it sees our
+   // competing save. Do not first replace an active editor with that older
+   // answer: the next keystrokes would then extend the wrong text, splitting

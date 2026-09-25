@@ -1,0 +1,12 @@
+# M760: order concurrent additions by device role rather than a common rule
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -117,7 +117,7 @@
+   }
+   const a = left.slice(shared);
+   const b = right.slice(shared);
+-  return base + left.slice(0, shared) + (a < b ? a + b : b + a);
++  return base + left.slice(0, shared) + (a + b);
+ }
+ 
+ /**

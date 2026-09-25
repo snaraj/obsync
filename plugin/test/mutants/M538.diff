@@ -1,0 +1,12 @@
+# M538: a malformed target id is accepted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -276,7 +276,7 @@
+ export function parseEntry(json: string): Manifest | FolderManifest | PauseManifest {
+   const value = manifestObject(json);
+   if (value["v"] === 3) {
+-    if (value["kind"] !== "pause" || typeof value["target"] !== "string" || !isHex(value["target"], 16) || typeof value["paused"] !== "boolean" || value["deleted"] !== false) throw new ManifestError("pause");
++    if (value["kind"] !== "pause" || typeof value["target"] !== "string" || typeof value["paused"] !== "boolean" || value["deleted"] !== false) throw new ManifestError("pause");
+     folderManifest({ ...value, kind: "directory" });
+     return value as unknown as PauseManifest;
+   }

@@ -110,8 +110,8 @@ Caddy подписывает сертификатом удостоверяюще
 
    ![Вкладка настроек плагина: поле Server URL с демонстрационным именем хоста, поле заголовков периметра и строка Connection с кнопками Check и Open dashboard](../assets/settings-server.png)
 
-3. Вставьте токен первичной настройки в **First-time setup**, выберите
-   **Set up** и запишите фразу восстановления из 24 слов.
+3. Вставьте токен первичной настройки в **Setup or recover**, выберите
+   **Set up or recover** и запишите фразу восстановления из 24 слов.
 
    ![Раздел This device вкладки настроек: строка Pairing с Pair this device и Pair a new device, строка First-time setup с полем Setup token и кнопкой Set up, а также строка Vault key](../assets/settings-setup.png)
 

@@ -1,0 +1,12 @@
+# M788: replay our anchor as another insertion
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -140,7 +140,7 @@
+     const endT = at === points.length ? right.length : b.get(at) as number;
+     out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);
+     if (at < points.length) out.push(points[at] as string);
+-    m = endM + 1; t = endT + 1;
++    m = endM; t = endT + 1;
+   }
+   return out.join("");
+ }

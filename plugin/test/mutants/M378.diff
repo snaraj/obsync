@@ -1,0 +1,12 @@
+# M378: a note kept behind a move out of the selection is re-sent over its newer history
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -218,7 +218,7 @@
+     const file = await transport.getFile(entry.fileId);
+     const seen = mark === null ? [] : file.versions.filter((version) => version.ts <= mark.ts);
+     if (seen.length === 0) return "no_ancestor";
+-    if (entry.ts !== undefined && seen.some((version) => version.ts > (entry.ts as number))) return "superseded";
++    if (entry.ts !== undefined && seen.some((version) => version.ts < 0)) return "superseded";
+     const tops = seen.filter((version) => !seen.some((other) => other.parents.includes(version.version_id)));
+     if (entry.kind === "tombstone" && tops.every((version) => version.deleted)) return "already_deleted";
+     parents = tops.map((version) => version.version_id);

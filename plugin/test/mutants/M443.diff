@@ -1,0 +1,11 @@
+# M443: a replaced session finishing a leave rewrites the native secret its successor holds
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -571,7 +571,6 @@
+     // decides on is the revision metadata actually names.
+     await this.settled();
+     this.assertAvailable();
+-    this.assertHolder();
+     const envelope = this.envelope;
+     if (envelope === null || envelope.previous === null) return;
+     if (this.record === null || this.record.revision !== envelope.current.revision ||

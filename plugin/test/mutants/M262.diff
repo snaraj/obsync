@@ -1,0 +1,12 @@
+# M262: the unreadable-changes notice no longer says which device to fix
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -729,7 +729,7 @@
+   const key = `key\u0000${change.device_id}`;
+   if (reason === "undecryptable" && !context.refused.has(key)) {
+     context.refused.add(key);
+-    const name = context.deviceNameFor(change.device_id);
++    const name = context.deviceNameFor("");
+     context.host.notify(
+       `obsync cannot read changes from "${name}": they are sealed with a different vault key. This device skips ` +
+         `them and keeps receiving everything else; nothing was written here. On "${name}", restore this vault's ` +

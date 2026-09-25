@@ -102,12 +102,34 @@ function walk(root, folder = "") {
 }
 
 /**
+ * A CASE-FOLDING VOLUME over whatever the temporary directory is (#150), so a
+ * test that needs one runs on an ext4 runner too: every path handed to the
+ * filesystem resolves, one component at a time, to the entry the directory
+ * keeps, exactly as APFS resolves it. Only a path's FIRST argument is folded,
+ * which is every call the listing and a push make.
+ */
+function folding(root) {
+  const real = (path) => {
+    if (typeof path !== "string" || !path.startsWith(root)) return path;
+    let at = root;
+    for (const segment of path.slice(root.length).split(nodePath.sep).filter(Boolean)) {
+      let names = [];
+      try { names = readdirSync(at); } catch { /* not a directory: the call itself answers */ }
+      at = join(at, names.includes(segment) ? segment : names.find((name) => name.toLowerCase() === segment.toLowerCase()) ?? segment);
+    }
+    return at;
+  };
+  return { promises: Object.fromEntries(Object.entries(fsPromises).map(([name, value]) =>
+    [name, typeof value === "function" ? (path, ...rest) => value(real(path), ...rest) : value])) };
+}
+
+/**
  * A real vault directory under the real desktop host, with the rig's state,
  * server and keys behind it. The vault surface is Obsidian's, answered from
  * the filesystem: its index IS the directory here, which is what makes a
  * spelling the directory keeps and a spelling the record keeps comparable.
  */
-async function vault(t, folderOnDisk) {
+async function vault(t, folderOnDisk, { fold = false } = {}) {
   const r = await rig();
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-realfs-case-"));
@@ -115,7 +137,7 @@ async function vault(t, folderOnDisk) {
     rmSync(root, { recursive: true, force: true });
     rmSync(box.home, { recursive: true, force: true });
   });
-  const folds = foldsCase(root);
+  const folds = fold || foldsCase(root);
   mkdirSync(join(root, folderOnDisk));
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const logs = [];
@@ -150,11 +172,14 @@ async function vault(t, folderOnDisk) {
       return { files: below.files.map((file) => file.path), folders: below.folders };
     },
   };
+  const { TFolder } = box.require("obsidian");
   const vaultApi = {
     adapter,
     getFiles: () => walk(root).files,
     getAllFolders: () => walk(root).folders.map((path) => ({ path })),
-    getAbstractFileByPath: () => null,
+    // A FOLDER by the exact spelling the directory keeps, as Obsidian's index
+    // holds it (#150); files, and every other spelling, are not looked up here.
+    getAbstractFileByPath: (path) => (walk(root).folders.includes(path) ? Object.assign(new TFolder(), { path, children: [] }) : null),
     getFileByPath: (path) =>
       existsSync(join(root, path)) && statSync(join(root, path)).isFile() ? { path } : null,
     getFolderByPath: (path) =>
@@ -183,7 +208,7 @@ async function vault(t, folderOnDisk) {
     platformName: () => "macos",
     deviceName: () => "sentinel-device",
   };
-  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises: fsPromises } });
+  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: fold ? folding(root) : { promises: fsPromises } });
   host.notify = (message) => notices.push(message);
   r.context.host = host;
   // The two counters an assertion about "nothing was downloaded" and one
@@ -706,4 +731,51 @@ test("real filesystem: the write marks a pull leaves behind expire with the next
   // The cost of expiring one, measured: nothing on the wire, because a push
   // of a file whose recorded digest has not changed posts nothing.
   assert.equal(r.server.journal.length, settled, `expiring a write mark published a version: ${story(r)}`);
+});
+
+/**
+ * A SELECTION TYPED IN ANOTHER CASE THAN THE VAULT'S FOLDER (#150, S30a).
+ *
+ * `notes`, typed for the real `Notes` and saved by 1.1.2 as it was typed. On
+ * a volume that folds case the scan's walk from the selection's own spelling
+ * reached `Notes/` anyway and reported every note in it as `notes/...`: paths
+ * no record held, so the device published the whole folder again under the
+ * other spelling, carrying its OLDER text over the other device's newer edit.
+ * The walk now starts only from a folder Obsidian's index holds under exactly
+ * the selected name -- the question `list()` already asks -- so a selection
+ * the vault spells differently syncs nothing from here, and publishes nothing.
+ */
+test("a selected folder typed in another case than the vault's is never walked, so nothing is published: 0 pushes", async (t) => {
+  const r = await vault(t, "Notes", { fold: true });
+  r.seed("Notes/x1.md", ONE, 1000);
+  r.seed("Notes/x2.md", TWO, 1000);
+  await pushFile(r.context, "Notes/x1.md");
+  await pushFile(r.context, "Notes/x2.md");
+
+  // The control: the vault's own spelling is walked, so a skip below is the rule and not a broken listing.
+  r.state.data.syncFolders = ["Notes"];
+  assert.deepEqual((await r.host.scan()).map((file) => file.path).sort(), ["Notes/x1.md", "Notes/x2.md"]);
+  r.state.data.syncFolders = ["notes"];
+  assert.deepEqual(await r.host.scan(), [], `the typed spelling was walked: ${story(r)}`);
+  assert.ok(r.logs.includes("scan decision=skipped reason=not_a_vault_folder"), r.logs.join(" | "));
+
+  const settled = r.server.journal.length;
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, now: () => timers.now, timers,
+  });
+  t.after(async () => {
+    engine.stop();
+    r.server.releaseFeed();
+    await engine.stopAndWait();
+  });
+  await engine.start();
+  const scansBefore = r.counts.scans;
+  await timers.run(SCAN_MS);
+  await timers.run(SCAN_MS);
+
+  assert.ok(r.counts.scans >= scansBefore + 2, `the periodic scan did not run: ${story(r)}`);
+  assert.equal(r.server.journal.length, settled, `the folder was published under the typed spelling: ${story(r)}`);
+  assert.deepEqual(Object.keys(r.state.data.files).sort(), ["Notes/x1.md", "Notes/x2.md"], story(r));
+  assert.deepEqual(walk(r.root).files.map((file) => file.path).sort(), ["Notes/x1.md", "Notes/x2.md"], story(r));
 });

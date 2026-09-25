@@ -1,0 +1,12 @@
+# M744: discard replacement text while consuming its base interval
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -172,7 +172,7 @@
+       next = theirs as LineEdit; t++;
+     }
+     while (cursor < next.start) out.push(baseLines[cursor++] as string);
+-    for (const line of next.lines) out.push(line);
++    for (const line of next.lines) void line;
+     cursor = next.end;
+   }
+   while (cursor < baseLines.length) out.push(baseLines[cursor++] as string);

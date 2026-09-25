@@ -337,7 +337,7 @@ test("review: a folder rename retains the pending upload of an untracked new not
   a.host.write("Notes/new.md", "NEW NOTE SENTINEL", 1000);
   assert.equal(a.state.fileByPath("Notes/new.md"), undefined, "the new note is still debouncing");
   a.host.renameFolder("Notes", "Journal");
-  await timers.run(STEP_MS);
+  await timers.run(STEP_MS, () => b.host.text("Journal/new.md") === "NEW NOTE SENTINEL");
   t.diagnostic(JSON.stringify({ scope: a.state.data.syncFolders, desktop: a.host.text("Journal/new.md"),
     phone: b.host.text("Journal/new.md"), serverFiles: server.vaultFiles().length,
     desktopLogs: a.host.logs }));

@@ -1,0 +1,16 @@
+# M723: a completed upload is omitted from the merge parents, leaving two heads
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2221,11 +2221,7 @@
+         // The upload may have completed during the merge's awaits, leaving
+         // no pending promise but a newer parent. Re-read the graph instead of
+         // publishing a sibling that omits an edit already included in mine.
+-        if (context.state.fileByPath(localPath)?.versionId !== localVersionId) {
+-          await writer.abort();
+-          context.host.log(`pull decision=retry reason=merge_parent_advanced file=${change.file_id} seq=${change.seq}`);
+-          return await applyVersion(context, change, theirManifest);
+-        }
++
+         // Reserve before the merged bytes reach the editor. Its watcher can
+         // enqueue a push during commit, and that push must inherit this merge's
+         // receipt rather than publish the new bytes onto the old parent.

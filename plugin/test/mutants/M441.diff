@@ -1,0 +1,11 @@
+# M441: a new session reads the data file while the old one's write is still landing, and starts from older records
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -396,7 +396,6 @@
+       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
+         throw new StateStorageError("unavailable");
+       }
+-      await Promise.allSettled([lease.writing]);
+       const loaded = await store.loadData();
+       if (!isCurrent()) throw new StateStorageError("inactive_load");
+       if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");

@@ -1,0 +1,12 @@
+# M516: claimant envelope size is unbounded
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -173,7 +173,7 @@
+ }
+ 
+ export async function openPairingVault(secret: Bytes, id: string, sealed: SealedPairingVault): Promise<PairingVault> {
+-  if (typeof sealed?.envelope !== "string" || sealed.envelope.length > 2048 ||
++  if (typeof sealed?.envelope !== "string" || false ||
+       typeof sealed.nonce !== "string" || !/^[0-9a-f]{24}$/.test(sealed.nonce)) {
+     throw new Error("pairing: invalid sealed vault details; start pairing again");
+   }

@@ -1,0 +1,12 @@
+# M337: a swap stays split whenever a conflict copy from this device already has the first parking name
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2690,7 +2690,7 @@
+           if (!(await movable(context, want, holder))) continue;
+           const when = new Date(context.now());
+           outcome = "occupied";
+-          for (let attempt = 1; outcome === "occupied" && attempt <= CONFLICT_COPY_NAMES; attempt++) {
++          for (let attempt = 1; outcome === "occupied" && attempt <= 1; attempt++) {
+             outcome = await relocate(context, want, conflictCopyPath(want, context.deviceNameFor(context.deviceId), when, attempt));
+           }
+           context.host.log(`${pass} path_class=file decision=parked_beside outcome=${outcome} file=${holder.fileId} seq=${seq}`);

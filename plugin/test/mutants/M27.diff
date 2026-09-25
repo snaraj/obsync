@@ -1,9 +1,9 @@
 # M27: the record is never saved
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1360,7 +1360,6 @@
-     size: stat.size,
-     sha256: await sidDigest(change.sids),
+@@ -3467,7 +3467,6 @@
+     ...(wants === undefined ? {} : { name: wants }),
+     ts: change.ts,
    });
 -  await context.state.save();
  }

@@ -1,0 +1,12 @@
+# M170: an address copied from a browser keeps its path and query
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -79,7 +79,7 @@
+   if (typed === "") return "";
+   const url = SCHEME.test(typed) ? typed : "https://" + typed;
+   try {
+-    const origin = new URL(url).origin;
++    const origin = new URL(url).href.replace(/\/$/, "");
+     return origin === "null" ? url : origin;
+   } catch {
+     return url;

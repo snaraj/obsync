@@ -11,7 +11,7 @@ rather than implying one.
 | The **vault key**, written out as the 24-word recovery phrase | on each paired device, in Obsidian's secret storage | your notes: every chunk and every file name | the stored content cannot be read by anyone, you included |
 | A **device secret** | on that device, wrapped under the server key on the server | that device's access to the server | pair the device again |
 | The **server key** (`OBSYNC_SERVER_KEY`) | the operator's Secret, or the journal volume | the wrapped device secrets | every device must pair again — and see "every device is gone" below |
-| The **setup token** | `v1/setup-token` on the journal volume | creating the account once, and signing in to the dashboard forever after | mint a new one (below) |
+| The **setup token** | `v1/setup-token` on the journal volume | creating the account, signing in to the dashboard, and re-enrolling with proof of the vault key | mint a new one (below) |
 
 The server holds none of the first one and cannot read a note. That is the
 design, and it is also the reason recovery has the shape it does.
@@ -29,11 +29,11 @@ design, and it is also the reason recovery has the shape it does.
    **Two things revocation does not do.** It cannot be undone — there is no
    un-revoke route and no CLI that restores a revoked device, so the way
    back is to pair that device again as a new one, which gives it a new
-   device id and a new secret. And it is refused outright for the only
-   ACTIVE device, from the dashboard and from the plugin alike
-   (`409 last_device`): an account with no active device can never sync
-   again, and nothing in this release re-enrols one. Pair the replacement
-   first, then revoke.
+   device id and a new secret. The last active device can be revoked once
+   vault recovery is registered: keep the setup token and the 24-word phrase
+   before doing so. An older server or account without that registration
+   still refuses with `409 last_device`; update server and plugin while a
+   credential still works, or pair the replacement first.
 2. **Pair the replacement** from a device that still syncs: **Pair a new
    device** there, the code on the new one, approval back on the first. The
    vault key travels inside the pairing envelope, encrypted under a secret the
@@ -42,6 +42,11 @@ design, and it is also the reason recovery has the shape it does.
 The lost device keeps whatever plaintext was already in its vault folder. That
 is a device-security problem (disk encryption, remote wipe), not something a
 sync server can undo.
+
+The confirmation explains how to return before you revoke the device. This
+capture uses a disposable desktop device named by its role:
+
+![Revocation confirmation explains pairing and recovery and offers Cancel first](assets/account-recovery/142-revoke-warning.png)
 
 ## A device's plugin data is gone, but other devices still sync
 
@@ -61,21 +66,60 @@ of them is recovery:
 
 ## Every device is gone
 
-Say it plainly: **there is no supported path back to your notes in this
-version.**
+If you still have the server's setup token and this vault's recovery phrase,
+you can get back in without a second working device once recovery has been
+registered. You do not need to delete your vault or create a different key.
 
-- A new device cannot enroll itself. `POST /v1/setup` creates the account once
-  and answers `409 already_set_up` afterwards, and a pairing can only be opened
-  BY a device that is already paired.
-- The recovery phrase restores a vault key onto a device; it does not enroll
-  one.
-- `obsyncd export` writes the stored CIPHERTEXT (`<file_id>.bin.enc` plus the
-  encrypted manifests). The server implements no AES, so it cannot write
-  plaintext, and nothing else in this release can either.
+With server and plugin 1.1.3 or later, use the **setup token and the vault's
+24-word recovery phrase** together. The token alone cannot re-enrol a device.
 
-What this means in practice: your devices are the copies. Keep more than one
-paired, and keep an ordinary backup of the vault folder on at least one of
-them. The recovery phrase protects the key, not the account.
+1. Install and enable obsync in the vault, set **Server URL**, and retain any
+   access headers your deployment requires.
+2. In **Vault key**, choose **Restore** and enter this vault's 24 words. If
+   this installation retained its vault key, keep that key.
+3. Under **Setup or recover**, enter this server's setup token and select
+   **Set up or recover**. A successful recovery creates a new active device
+   credential on the existing account. Its history and encrypted files stay
+   on the server; previously revoked devices remain revoked.
+4. Let the first sync finish. Local notes stay in the vault; ordinary conflict
+   handling keeps differing local and remote versions.
+
+**Upgrade boundary:** recovery must be registered before the last credential
+is lost. New 1.1.3 setups register it with account creation. An updated paired
+plugin registers it after successfully opening the vault on an updated server.
+Older accounts that lost every credential before that registration cannot
+prove ownership through this route. They still need a working device or a
+backup containing one. The error says recovery is unavailable; it does not
+claim the phrase can grant access by itself.
+
+The plugin persists its vault key before sending first setup. If the answer
+is lost, it does not retry automatically: check the result, then explicitly
+use **Set up or recover** again with the retained key and token. A device may
+have been enrolled by the lost attempt; revoke that unused entry once access
+is restored. Keep an ordinary backup of the vault folder as well as the two
+recovery secrets.
+
+## This server no longer recognises this device
+
+A `401 bad_signature` or revoked credential stops sync with an explicit
+forgotten-device message, instead of a repeating offline status. Confirm the
+server address, then use **Setup or recover**. That action clears the rejected
+device ID, feed cursor and sync records while keeping local notes, the vault
+key, server address and access headers. It sets up an empty rebuilt server or
+re-enters a recoverable existing account. No uninstall is needed. **Pair this
+device** can instead obtain a new credential from a device that still syncs.
+
+The updated settings show the action directly when a device is forgotten:
+
+![Forgotten-device explanation and Set up or recover action, with the token field empty](assets/account-recovery/142-forgotten-device-recovery.png)
+
+After recovery, the new active device appears beside the old revoked one:
+
+![One replacement device and its revoked predecessor](assets/account-recovery/142-recovered-device.png)
+
+These desktop captures use a disposable vault. The
+[native recovery record](validation-runs/2026-09-24-account-recovery.md)
+names the tested build and confirms that all 217 local files were unchanged.
 
 ## The server is rebuilt from a volume backup
 
@@ -97,11 +141,44 @@ the journal volume), then both volumes, then start the server and read
 `/readyz`. It answers `{"ready":true,"seq":<n>}` only once the volumes are writable and
 the journal has replayed.
 
+**Changes made after the backup.** The restore takes from the server
+everything written after the backup: new notes, edits, renames, deletions and
+folders. The devices still hold them. Each device on plugin 1.1.3 or later
+notices the restore, re-sends what it holds, and shows one notice: "The server
+was restored to an earlier state; this device re-sent N changes."
+
+- **When a device notices.** When it starts or reconnects, it asks the server
+  for the last change-feed entry it read. A journal that no longer holds that
+  entry where it was, or holds entries where the device read none, was
+  rebuilt. The repair pass also notices when the server does not hold a
+  version the device recorded less than a day ago.
+- **What it re-sends.** Each note, rename and folder the server lost, onto
+  the versions the server still holds. Each deletion the device made or
+  received, from the last 1000 it remembers. Then it reads the rebuilt feed
+  from the start, skipping what it had already seen, so what other devices
+  wrote on the restored server arrives too.
+- **What it never does.** It never replaces a change another device made on
+  the restored server: the two are merged, or both are kept, by the ordinary
+  conflict rules. It never deletes a note because the server lacks it. A
+  version the server pruned by retention is not a lost one, and is not
+  re-sent.
+- **What it cannot re-send.** A deletion older than the last 1000 the device
+  remembers comes back on a device paired after the restore. A change made
+  before the device updated to 1.1.3 is re-sent only if the server lost the
+  whole note. A device paired after the backup is unknown to the restored
+  server (below), so it re-sends nothing until it is paired again.
+
+So after a restore, start every device that was syncing, let each reach
+`idle`, and only then pair a new device or reinstall one: the new device gets
+what the others re-sent. Each device logs one `restore decision=start` and one
+`restore decision=summary` line, with its budget of 1000 reads and 10 minutes.
+
 **Two ways this bites:**
 
 - **A journal older than a pairing.** Devices paired after that backup do not
   exist in the restored index, and every request they make is refused
-  `401 bad_signature`. Pair them again from a device the restore does know.
+  `401 bad_signature`. Pair from a device the restore knows, or use the
+  forgotten-device recovery action above when recovery was registered in the backup.
 - **A lost server key.** Every device secret was wrapped under it, so no device
   can authenticate and no device can open a pairing for a new one. That is the
   "every device is gone" case, arriving from the server's side. Back the key up
@@ -158,26 +235,34 @@ from a backup somebody else handled ([`security/dashboard.md`](security/dashboar
 A different server INSTANCE, not the same one at a new address: a rebuilt
 server, a second one you are migrating to, or a laptop's test server you are
 done with. The device credential is bound to the server that minted it, so
-changing **Server URL** alone earns `401 bad_signature` for ever.
+changing **Server URL** alone yields the forgotten-device message.
+
+The confirmation explains what stays on this device and what it forgets.
+Choose **Cancel** to keep using the current server.
+
+![The Switch server confirmation keeps notes and the vault key, and explains which sync settings are forgotten](assets/account-recovery/142-switch-warning.png)
 
 1. On the device, **This device** → **Leave this server** → **Switch server**.
    It revokes this device on the old server, forgets the server address, the
    edge headers, the feed cursor and every file record, and then asks for the
-   new address and opens **Pair this device** for it.
+   new address. Choose **Pair with existing vault** or **Set up or recover**.
 2. Pair against the new server: a code from a device that already syncs this
-   vault there, or **First-time setup** with that server's setup token if the
+   vault there, or **Set up or recover** with that server's setup token if the
    new server has no account yet. Either way the VAULT KEY on this device is
    kept, so this is the same vault; a new key would be a new vault
    ([`settings.md`](settings.md)).
-3. The only ACTIVE device cannot be revoked (`last_device`, above). The dialog
-   offers to leave LOCALLY instead: this device forgets the server and keeps
-   every note, and the server keeps the device — revoke it from the dashboard,
-   or from another device, once one is paired.
+3. Switch each device in that order. Once recovery is registered, the last
+   device is revoked normally too, so none remains active on the old server.
+   An older server or unregistered legacy account still refuses the last
+   revoke and explains the upgrade requirement. Leaving locally is explicit;
+   it keeps that credential active remotely. A device already revoked simply
+   leaves. Keep the old server's setup token and vault phrase if you need to
+   return to its history later.
 
-Pairing again is a first sync for this device, so anything the new server
-already holds at the same path arrives beside the local note as a conflict
-copy ([`conflicts.md`](conflicts.md)). Nothing in the vault is deleted at any
-point.
+Pairing again is a first sync for this device. Identical notes stay one note.
+If the local and server versions differ at the same path, both are kept for
+you to compare ([Conflicts](conflicts.md)). Leaving the old server does not
+delete your local notes.
 
 ## Moving the server to a new address
 

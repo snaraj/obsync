@@ -95,8 +95,8 @@ Caddy підписує сертифікатом центру, який він с
 
    ![Вкладка налаштувань плагіна: поле Server URL із демонстраційним іменем хоста, поле заголовків краю та рядок Connection з кнопками Check і Open dashboard](../assets/settings-server.png)
 
-3. Вставте токен початкового налаштування під **First-time setup**, виберіть
-   **Set up** і запишіть 24-слівну фразу відновлення.
+3. Вставте токен початкового налаштування під **Setup or recover**, виберіть
+   **Set up or recover** і запишіть 24-слівну фразу відновлення.
 
    ![Розділ This device вкладки налаштувань: рядок Pairing із Pair this device та Pair a new device, рядок First-time setup із полем Setup token і кнопкою Set up, а також рядок Vault key](../assets/settings-setup.png)
 

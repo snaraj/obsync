@@ -1,0 +1,12 @@
+# M372: a version where this device read none after its last entry is not noticed
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -91,7 +91,7 @@
+     const [first, next] = page.changes;
+     if (page.head_seq < cursor) reason = "head_behind";
+     else if (first?.seq === mark.seq && first.version_id !== mark.versionId) reason = "mark_replaced";
+-    else if (first?.seq === mark.seq) reason = next !== undefined && next.seq <= cursor ? "unseen_entry" : null;
++    else if (first?.seq === mark.seq) reason = null;
+     else if (first !== undefined && first.seq <= cursor) reason = "unseen_entry";
+     else {
+       requests++;

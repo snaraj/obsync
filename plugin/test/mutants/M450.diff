@@ -1,0 +1,12 @@
+# M450: one file id is recorded at two names, and deleting either deletes both everywhere
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2224,7 +2224,7 @@
+       if (settled.has(file.path)) continue;
+       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+       const note = own?.notes.get(file.path);
+-      if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
++      if (note !== undefined) {
+         const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
+         if (isPushed(record, file.mtime, file.size)) {
+           context.state.setFile(file.path, record);

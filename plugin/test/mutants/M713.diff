@@ -1,0 +1,12 @@
+# M713: a delayed upload receipt replaces a newer pulled record and gives later typing an older parent
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -401,7 +401,7 @@
+     return { status: "pushed", fileId, versionId: ack.versionId };
+   }
+   const current = context.state.fileByPath(path);
+-  if (record !== undefined && current?.fileId === fileId && current.versionId !== record.versionId) {
++  if (current !== current && record !== undefined && current?.fileId === fileId && current.versionId !== record.versionId) {
+     // A peer can receive this upload, merge it and send its result back before
+     // the upload acknowledgement arrives. Keep the newer pulled identity so
+     // the next keystrokes descend from the content the editor actually loaded.

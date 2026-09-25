@@ -1,0 +1,12 @@
+# M423: a synced vault two folders above this one goes unnoticed, and the inner vault pairs
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -123,7 +123,7 @@
+  * bound on an absurd path rather than a defence: the walk ends at the
+  * filesystem root long before this on any real disk.
+  */
+-const NESTING_LEVELS = 32;
++const NESTING_LEVELS = 1;
+ 
+ // The Node filesystem, reached through Electron's `require`. Typed narrowly
+ // rather than as `any`: only these calls are used, and only on desktop.

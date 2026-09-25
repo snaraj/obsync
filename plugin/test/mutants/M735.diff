@@ -1,0 +1,12 @@
+# M735: stop collecting edits at the first changed line
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -94,7 +94,7 @@
+   let sideStart = 0;
+   for (let at = 0; at <= base.length; at++) {
+     const there = at === base.length ? side.length : alignment.get(at);
+-    if (there === undefined) continue;
++    if (there === undefined) break;
+     if (at > start || there > sideStart) {
+       edits.push({ start, end: at, lines: side.slice(sideStart, there) });
+     }

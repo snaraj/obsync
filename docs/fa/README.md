@@ -72,7 +72,7 @@ Caddy با مرجعی امضا می‌کند که خودش در نخستین ر�
 
    ![زبانهٔ تنظیمات افزونه: فیلد Server URL با یک نام میزبان نمونه، کادر سرآیندهای لبه، و ردیف Connection با دکمه‌های Check و Open dashboard آن](../assets/settings-server.png)
 
-3. توکن راه‌اندازی را زیر **First-time setup** بچسبانید، **Set up** را بزنید، و عبارت بازیابی ۲۴ کلمه‌ای را بنویسید.
+3. توکن راه‌اندازی را زیر **Setup or recover** بچسبانید، **Set up or recover** را بزنید، و عبارت بازیابی ۲۴ کلمه‌ای را بنویسید.
 
    ![بخش This device از زبانهٔ تنظیمات: ردیف Pairing با Pair this device و Pair a new device، ردیف First-time setup با فیلد Setup token و دکمهٔ Set up، و ردیف Vault key](../assets/settings-setup.png)
 

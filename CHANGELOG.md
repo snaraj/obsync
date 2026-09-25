@@ -5,6 +5,318 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.3 - Unreleased
+
+**Turning obsync off and on during an upload no longer loses track of your
+files, or deletes one.** When you turned obsync off and on again in Community
+plugins while a big file was uploading, the session you turned off went on
+waiting for its upload and, a minute or two later, saved its older records
+over the new session's. obsync then uploaded files that were already synced as
+if they were new, and a 1 GiB file vanished from the computer that made it,
+while the other computer kept it. Now only the newest session writes obsync's
+records; one that was turned off stops and writes nothing more. A file whose
+record was lost anyway -- a phone force-quit in the middle of saving it -- is
+recognised at the next start as the one this device already uploaded, with no
+new copy on the server. And when another device settles two copies of one
+file, a device still tracking the retired copy keeps the file if the kept
+copy holds the same bytes. Devices before 1.1.3 still apply that settling as
+an ordinary deletion. Same on desktop and mobile (#181).
+
+**A server restored from a backup gets back what your devices did after it.**
+When the server was rebuilt from a volume backup, the changes made after that
+backup stayed on the devices that made or received them. A new or reinstalled
+device got the old vault. The others read `idle`, then showed "Server repair
+could not verify a retained file ... check connectivity" for good. Each device
+now notices that the server went back in time, when it reconnects or when its
+repair pass finds a version gone. It re-sends the notes, renames and deletions
+the server lost, and says once: "The server was restored to an earlier state;
+this device re-sent N changes." A note another device changed on the restored
+server is merged or kept beside the re-sent one, never replaced. A deletion is
+re-sent only by a device that made or received it; each remembers its last
+1000. A change made before a device updated to 1.1.3 is re-sent only when the
+server lost the whole note. Same on desktop and mobile. (#145)
+
+**Moving or renaming a folder outside Obsidian no longer deletes its notes on
+your other devices.** A folder renamed in Finder or another file manager while
+Obsidian was open reached the other devices as deletions: its notes vanished
+there and, when the new folder was still synced, came back a second later as
+new files with their history left behind; when it was outside **Sync folders on
+this device**, they stayed deleted, with no word on either device. A deletion
+now waits half a second for the rest of what Obsidian reports. A note whose
+bytes are in the vault under a new name inside the selection is published as
+the move it is, history and all; one outside the selection stops syncing from
+this device but stays on the others, and one notice says how many notes left.
+The same holds for a folder moved while Obsidian was closed, which could delete
+a small folder on the other devices or leave a "Deletions held back" warning
+whose Confirm button would have deleted notes that were right there: that
+warning no longer counts a note found in the vault under another name, lets go
+of one that turns up again within 30 seconds, and Confirm never deletes one
+found under another name. A note you really delete is still deleted everywhere, half
+a second later. Same on desktop and mobile: the check compares the names,
+sizes and times Obsidian already holds in memory, and never opens a file
+outside your selection (#139).
+
+**Held-back deletions wait for you, and a deletion is checked again before it is
+re-sent.** On a device set to sync selected folders only, the "Deletions held
+back" check counted every note the device had ever recorded, including notes
+outside those folders, so 12 of 20 selected notes gone while Obsidian was closed
+were deleted on your other devices without a question. It now counts only the
+notes in the folders this device syncs, and the notice gives that number. Once
+deletions are held back, **Sync now** no longer sends them when some of the notes
+come back: notes that return are let go of, the rest wait for **Confirm
+deletions**, and Sync now says they are still waiting. And a deletion whose first
+send got no answer was sent again tens of seconds later without looking again, so
+a note restored in the meantime, or brought back by another device's edit or
+rename, was deleted anyway and left split in two on the server. It is now checked
+against the vault first and dropped when the note is back, and the device that
+deleted it says why the note came back. Your other devices no longer claim to
+hold "changes this device has not uploaded yet" when a note was deleted
+elsewhere from an older version: they say the version they have is already on
+the server and kept. Same on desktop and mobile. (#172, #173)
+
+**An edit that races a deletion stays as one current note.** The kept edit now
+incorporates the deletion into its history instead of leaving the deletion as
+a second current version forever. Later saves do not meet that deletion again,
+and a successful settlement shows no notice. Startup upload and restoration of
+the kept edit wait for each other, so their race cannot leave two versions of
+the same edit. Another device's unseen edit is still preserved for the ordinary
+conflict rule. Same on desktop and mobile. (#178)
+
+**A note you are typing in stays when another device deletes it.** When a
+note was deleted on another device while you typed in it here, it vanished
+from under your cursor: the tab turned into "No file", neither device said a
+word, and what you had typed in the last second or two, and everything you
+typed after it, went nowhere. Now a deletion does not remove a note that is
+open in an editor here while it holds typing that is not saved yet, or while
+this device has sent an edit of it in the last 10 seconds. The note stays, is
+sent again so it comes back on the device that deleted it, without a repeated notice; what you type next follows it everywhere. A note nobody has typed in
+here for longer than that is deleted as before, open or not. The deletion remains in history and successful restoration is quiet. Same on desktop
+and mobile. (#146)
+
+**A note deleted on another device goes where your "Deleted files" setting
+says.** Since 1.1.0, on a computer, a note deleted on another device was
+removed for good: it was in neither Obsidian's `.trash` folder nor the system
+Trash, whatever **Settings → Files and links → Deleted files** said (found in
+the 2026-09-24 scenario run). It now goes, under its own name, to the system
+Trash, to the vault's `.trash` folder, or away permanently, exactly as that
+setting says; if the system Trash refuses it, it goes to `.trash`, never
+nowhere. The same holds for the old copy obsync clears away when another
+device renames a note or when two notes collide and one is moved aside, so
+your bin can now hold a copy of a note that is still in the vault under its
+new name. Phones and tablets were never affected. A note removed this way on
+1.1.2 or earlier can be brought back with **Restore from history**: search for
+its name and select **Restore a copy** on its last version.
+
+**Two devices typing in one open note end up with the same note.** Typing in
+one note on two devices at once used to merge once or twice, then save nearly
+every version the other device sent as a conflict copy, stop merging with
+"resolved it more than 5 times in a minute", and leave the two devices holding
+different text under one name, with a dozen copies or more on each, while both
+said `obsync: idle`. Now text typed on different lines is merged as you go, and
+both devices end on the same note holding both texts, with no conflict copy.
+When both devices add text at the end of the same line, their shared addition
+is kept once and the different additions are joined in the same order on both.
+Continued typing before text received from the other device also merges while
+keeping the line's original characters. Shared merge ancestors are combined
+first so text already present on both sides is not added again.
+Changes that replace the same existing text still conflict: every device keeps
+the same version as the note, and the other goes into one conflict copy that every
+device holds, named after the device that wrote it, the time in UTC and a short
+id. Nothing typed is lost, and the two notes never stay apart. A save made
+while another device's version is arriving is never written over, and the
+status bar no longer reads `idle` while a note is still being settled. Delayed
+upload receipts no longer put an older version back into the device's records.
+Merges and editor uploads wait for one another's receipts before choosing
+parents, including an upload that finishes while a merge is being prepared.
+Adjacent line edits no longer need an unchanged line between them to merge.
+A freshly paired device no longer recreates resolved historical conflicts
+when the server's file view has trimmed older parent links. Older feed entries
+do not consume the loop limit, and one person can stop
+typing while the other continues an independent edit. Repeated replies to
+obsync's own output still reach the same limit. Identical merged versions
+share their own content as the base for your next edits. This
+prevents slow connections from splitting newly typed text into false conflict
+copies. Same on desktop and mobile. (#135)
+
+**A note that split in two while one device still ran 1.1.1 becomes one note
+again.** When two devices started with the same notes and one still ran 1.1.1,
+a few of them stayed tracked twice, once per device. Every edit made on the
+1.1.1 device then reached the other one as a `(conflict from another device,
+…)` copy while its own note kept the old text, and updating the older device
+did not stop it. Now the first edit of such a note settles it: the device whose
+note still holds the text that edit started from takes the edit into that note
+and retires its own duplicate on the server, with no copy and nothing lost.
+Edits made on a 1.1.1 device settle this way as soon as the other device runs
+1.1.3, and edits from either side once both do; an edit made first on the newer
+device while the other still runs 1.1.1 meets 1.1.1's own rule, which keeps
+the older device's previous text beside the note once. A note that already has
+such a copy stays as it is: delete the note that kept the old text and rename
+the copy to its name. Same on desktop and mobile; each settlement writes one
+`decision=converged reason=edited_twin` line (#147).
+
+**Two notes that trade names show the same names on every device.** Swapping
+two notes' names in one go (Draft becomes Final and Final becomes Draft), or
+renaming a note to a name another computer had just used while it was closed,
+left that other computer showing the notes under the opposite names for good:
+"Draft" on one was "Final" on the other, its next edit could undo the rename,
+and both status bars showed "Server repair could not verify a retained file …
+check connectivity". Now a note that arrives while its name is still taken
+waits beside it and moves to its name as soon as the name is free: when the
+other note's own rename arrives, and otherwise at the next scan, within 30
+seconds -- when you free the name yourself, or when the swap also changed a
+note's text. The move is a rename, never a write over anything, and a note
+holding changes not sent yet is not moved. Two different notes that
+want one name are settled the same way on both computers: one keeps the name
+and the other takes the same conflict name on both. A phone, which cannot move
+its own note aside, still keeps the two under different names until one of
+them is renamed or deleted, and then they agree. (#149)
+
+**A note that plugins keep rewriting after sync pauses on every updated
+device instead of filling the vault with copies.** The pause survives a
+restart, leaves local text untouched, and gives one notice with a way to
+resume. Two people typing in open editors still sync normally. Stop the
+plugin rewriting synced notes, then use **Sync now** or **Resume** in **Show
+sync status** on the held devices: local typing is retained, and the
+background rewrite is kept beside the note. **Sync now** also compares
+content even when a plugin preserved both the note's size and modification
+time. The merge-breaker notice no longer blames out-of-date devices. The
+shared pause requires 1.1.3 on every device; older plugins safely skip its
+encrypted control record and keep syncing. Same behavior on desktop and
+mobile. (#179)
+
+**A folder of a synced vault, opened as a vault of its own, no longer copies
+the vault into itself.** Opening a folder such as `Sub` as its own vault and
+pairing it with the same server filled every device, within seconds, with
+`Sub/Sub/Sub/…` 98 levels deep, and nothing said a word. Now a vault that sits
+inside a vault with obsync installed refuses to be set up, paired (by code or
+by link) or started, before anything is sent: "This folder is inside the synced
+vault … Open the outer vault instead, or use Selected folders there." A vault
+paired before this release stops the same way, with one notice. The outer
+vault, for its part, sends nothing from a folder that holds its own
+`.obsidian/plugins/obsync-private-sync`, and writes, moves or removes nothing
+in it; one notice names the folder. That stops the loop whichever vault was
+paired first, on whichever computer. The notes in that folder stay as they
+are; to sync them from the outer vault again, uninstall obsync in the inner
+one. On a phone the outer vault's side works the same, while the inner vault's
+check looks outside its own folder, which only a computer can do. (#180)
+
+**Recover an account without a syncing device.** Setup now registers a
+vault-key verifier; existing paired devices register it when both server and
+plugin are updated. The server's setup token plus this vault's retained key or
+24-word phrase can then enroll a replacement, even after the last device
+leaves. Wrong words or a token alone cannot enroll. A device forgotten by a
+rebuilt server now says so, stops retrying authentication, and exposes
+**Setup or recover** without an uninstall. Local notes and the vault key stay.
+Switching offers setup for an empty server or pairing with an existing vault;
+the last device can leave normally once recovery is registered. Legacy
+accounts that lost every credential before registration still cannot use this
+route; the error and recovery guide say why. (#142)
+
+**One server holds one vault, and nothing swaps a vault's key or a device's
+identity without asking.** Pressing **Create a new vault key**, or restoring
+another vault's 24 words, on one computer used to stop every other computer
+from receiving anything, for good, under "offline — retrying"; pairing a second
+vault from the first merged both vaults on every device without a word; and
+**Pair this device**, or a pairing link, on a computer that already synced
+replaced its identity, so its sync stopped and a stray device appeared. Now a
+computer that meets changes it cannot read skips them, keeps receiving
+everything else, and names the device to fix. **Create a new vault key** on a
+server that holds a vault asks first, with Cancel as the default, and a phrase
+that opens nothing there is refused before it replaces the key. A device joining
+a vault asks before its first sync uploads notes that vault does not have (a
+copy of the same vault still pairs without a question). The approving device
+also shows the new device's vault name and Markdown note count. Those details
+are sealed under the pairing code's secret: the server stores only bounded
+ciphertext, and malformed details cannot offer an approval button. An older
+server omits the details and keeps the existing device-only prompt. **Set up or recover** on a server that already holds a vault requires its
+registered vault-key proof as well as the setup token; a different vault
+cannot silently replace it. On a computer that syncs, **Pair this device** and pairing links claim
+nothing and say to leave the server first, and leaving now works for a device
+that was revoked or that the server no longer recognises. Same on desktop and
+mobile. (#140, #141, #143)
+
+**A plain `http` server address is refused on desktops too.** A desktop used to
+accept an address starting `http://` and, in front of a server that redirects to
+HTTPS, it even worked -- after sending the setup token and every request across
+your network unencrypted first. Now the address must start `https://`, as on a
+phone. The one exception is this computer itself (`localhost` or `127.0.0.1`),
+the one-computer trial the README describes, where nothing crosses a network.
+If a desktop of yours was set up with a plain `http://` address, change it to the
+`https://` one, and rotate the recovery token as
+[the dashboard's security notes](docs/security/dashboard.md) describe: it may
+have crossed your network in the clear. (#136)
+
+**A vault on a USB stick or memory card receives changes again, and a stopped
+download leaves nothing behind.** On a drive formatted FAT32 or exFAT, a
+computer refused every note another device sent, each time with a notice naming
+`temp_identity`, left a file named like `note.md.obsync-1a2b3c4d5e6f.tmp`
+beside the note, and then sent that file to your other devices. Quitting
+Obsidian in the middle of a large download left the same kind of half-file,
+which also reached every device. Now those drives receive notes like any other,
+a download is written under a hidden name that is never synced, and a leftover
+from a quit is removed the next time Obsidian starts. On such a drive a second
+save of the same length made within two seconds of the first is also sent now;
+before, it stayed on that computer until the next edit. Files like these that
+1.1.2 already left or sent are ordinary synced files now, on every device, and
+can be deleted by hand. Phones and tablets never wrote them. (#175, #159)
+
+**One file this device cannot write no longer stops everything else from
+arriving.** A note locked in Finder, a read-only folder, a full disk, or a file
+whose data the server had lost while every device holding it was closed used to
+stop this device from receiving any later change -- edits, new notes and
+deletions, in every folder -- while the status bar read `offline — retrying` or
+`idle` and nothing named the file. A full disk also downloaded the same file
+again every few seconds: 5.5 GB in nine minutes for one 100 MiB attachment. Now
+that one file waits and everything else keeps arriving. The status bar and
+**Show sync status** name it and say why, for example `Cannot write
+Notes/n17.md here: the file is locked`, and one notice says so once. It is
+tried again by itself, first after a minute and then less and less often, up to
+every half hour, and at once when Obsidian starts or when you run **Sync now**
+after fixing the cause. It is remembered across restarts. If another device
+changes the file in the meantime, the latest version is what arrives; if it
+deletes it, the file is dropped and never downloaded again. On phones and
+tablets a file whose data the server lost is handled the same way, but a write
+the phone's own storage refuses still holds up later changes as before. (#144)
+
+**Folder selection and download limits check what you type.** Under
+**Selected folders**, a folder the vault does not have, or an empty list, was
+saved with a plain "saved" while the status bar read `idle` and nothing synced.
+On a Mac, a folder typed in the wrong case (`notes` for `Notes`) stopped sync
+for that folder. A minute later that computer sent the folder's notes out again
+as new files carrying its older text, so the other computer's newer edit ended
+up in a conflict copy, followed by a lasting repair error. Now a folder the
+vault does not have is asked about first, with Cancel as the default. A folder
+typed in the wrong case is saved the way the vault spells it, and a notice says
+so. An empty selection says that nothing will sync, and the status bar reads
+`idle — syncing no folders`. A hidden folder is refused in plain words. A
+computer never sends out a folder under a spelling the vault does not use. A
+selection that 1.1.2 already saved in the wrong case syncs nothing from that
+folder until you save it again. **Largest file to download** and **Total to
+keep on this device** now accept `1 MB` and `2 GB` as well as `1 MiB`. A value
+they cannot read is refused with a notice that lists the accepted forms.
+Before, it stayed on screen unsaved and read "unlimited" after a restart.
+Saving a folder selection no longer shows "Waiting for transfers…" for up to a
+minute when nothing is transferring. Same on desktop and mobile, except that
+only a computer ever sent a folder out under the wrong spelling. (#150)
+
+**The server address takes what you paste, and says what to fix.** An address
+copied from a browser -- `…/readyz`, or a dashboard sign-in link with its token --
+is stored as the server's address alone, lower-cased, instead of failing every
+request with "404 no route" and keeping a sign-in token in your settings. A
+missing or wrong port now says that nothing answers at that address and port,
+and that nothing was sent, instead of "cannot say whether it happened".
+**Check** answers before setup too: it asks the server without a credential
+instead of saying "not paired". A refused address is announced once, not once
+per keystroke. (#137)
+
+**Pressing Enter in a confirmation no longer does the thing it asks about.**
+In obsync's confirmation dialogs -- revoking a device, and new in this release,
+creating a new vault key, pairing a vault that holds notes the server's vault
+lacks, and saving a folder the vault does not have -- the action was the button
+Obsidian gave the focus to, so pressing Enter revoked the device or replaced
+the key instead of cancelling. Cancel is now the first button and holds the
+focus; the action takes a click or a tap. Same on desktop and mobile.
+
 ## 1.1.2 - 2026-09-23
 
 **An old deleted twin cannot erase a newer note.** When catching up on history,

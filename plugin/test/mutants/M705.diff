@@ -1,0 +1,12 @@
+# M705: Resume records the old version over the peer bytes
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2359,7 +2359,7 @@
+   }
+   const landed = await materialise(context, restore, { ...record, mtime: before.mtime, size: before.size });
+   if (landed === null) return "saved_meanwhile";
+-  await recordAt(context, { ...restored, file_id: fileId }, path, landed);
++  await recordAt(context, { ...version, file_id: fileId }, path, landed);
+   context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
+   return "kept_beside";
+ }

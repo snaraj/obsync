@@ -1,0 +1,12 @@
+# M707: Resume admits a deleted or oversized peer head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2353,7 +2353,7 @@
+   const restored = peer === undefined ? version : peer;
+   const restore = peer === undefined ? recorded : await decryptRecordManifest(context, { ...peer, file_id: fileId, domain_id: file.domain_id });
+   // A deleted manifest has no chunks, so the one-chunk check also excludes it.
+-  if (restore.path !== path || restore.chunks.length !== 1) {
++  if (restore.path !== path) {
+     context.host.log(`pull decision=refused reason=resume_peer_shape file=${fileId} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+     throw new ManifestError("resume_peer_shape");
+   }

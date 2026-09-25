@@ -60,6 +60,7 @@ pub(crate) enum Frame {
         name: String,
         created: UnixMs,
         quota_bytes: Option<u64>,
+        recovery_verifier: Option<String>,
     },
     /// A device was paired. `wrapped` is the secret under the server key.
     Device {
@@ -1255,11 +1256,13 @@ impl Record {
                 name,
                 created,
                 quota_bytes,
+                recovery_verifier,
             } => {
                 pairs.push(("id", text(*account_id)));
                 pairs.push(("name", text(name)));
                 pairs.push(("created", num(created.0)));
                 pairs.push(("quota", opt_num(*quota_bytes)));
+                pairs.push(("recovery", opt_text(recovery_verifier)));
             }
             Frame::Device { record, wrapped } => {
                 pairs.push(("device", device_value(record, wrapped)));
@@ -1333,6 +1336,7 @@ impl Record {
                 name: field_str(&value, "name")?.to_string(),
                 created: UnixMs(field_num(&value, "created")?),
                 quota_bytes: field_opt_num(&value, "quota"),
+                recovery_verifier: recovery_verifier(&value)?,
             },
             "device" => {
                 let (record, wrapped) = device_from(field(&value, "device")?)?;
@@ -1410,6 +1414,7 @@ fn snapshot_value(index: &Index) -> Value {
             ("name", text(&account.name)),
             ("created", num(account.created.0)),
             ("quota", opt_num(account.quota_bytes)),
+            ("recovery", opt_text(&account.recovery_verifier)),
         ]),
         None => Value::Null,
     };
@@ -1466,6 +1471,21 @@ fn snapshot_value(index: &Index) -> Value {
     ])
 }
 
+fn recovery_verifier(value: &Value) -> Result<Option<String>, StoreError> {
+    match value.get("recovery") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| StoreError::Corrupt("invalid recovery verifier".into()))?;
+            if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(StoreError::Corrupt("invalid recovery verifier".into()));
+            }
+            Ok(Some(text.to_ascii_lowercase()))
+        }
+    }
+}
+
 fn index_from_value(value: &Value) -> Result<Index, StoreError> {
     if field_str(value, "t")? != "snapshot" {
         return Err(StoreError::Corrupt("not a snapshot frame".to_string()));
@@ -1480,6 +1500,7 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
             name: field_str(account, "name")?.to_string(),
             created: UnixMs(field_num(account, "created")?),
             quota_bytes: field_opt_num(account, "quota"),
+            recovery_verifier: recovery_verifier(account)?,
             used_bytes: 0,
         });
     }
@@ -1565,6 +1586,7 @@ mod tests {
             name: "sentinel".to_string(),
             created: UnixMs(1_757_000_000_000),
             quota_bytes: Some(1024),
+            recovery_verifier: None,
         }
     }
 
@@ -1582,6 +1604,48 @@ mod tests {
             .replay(Seq(0), &mut |record| seen.push(record.clone()))
             .expect("replay");
         (seen, report)
+    }
+
+    #[test]
+    fn account_recovery_frames_refuse_malformed_verifiers_and_read_legacy_frames() {
+        for bad in [
+            "\"short\"".to_string(),
+            format!("\"{}\"", "z".repeat(64)),
+            "false".into(),
+            "23".into(),
+            "{}".into(),
+        ] {
+            let account = format!(
+                r#"{{"id":"{}","name":"vault","created":1,"quota":null,"recovery":{bad}}}"#,
+                "11".repeat(16)
+            );
+            let frame = format!(r#"{{"t":"account","s":1,{}"#, &account[1..]);
+            assert!(
+                Record::decode(frame.as_bytes()).is_err(),
+                "invalid account frame: {bad}"
+            );
+            let snapshot =
+                format!(r#"{{"t":"snapshot","s":1,"account":{account},"devices":[],"files":[]}}"#);
+            let parsed = json::parse(snapshot.as_bytes()).unwrap();
+            assert!(
+                index_from_value(&parsed).is_err(),
+                "invalid snapshot: {bad}"
+            );
+        }
+        for suffix in ["".to_string(), ",\"recovery\":null".into()] {
+            let frame = format!(
+                r#"{{"t":"account","s":1,"id":"{}","name":"legacy","created":1,"quota":null{suffix}}}"#,
+                "11".repeat(16)
+            );
+            let parsed = Record::decode(frame.as_bytes()).unwrap();
+            assert!(matches!(
+                parsed.frame,
+                Frame::Account {
+                    recovery_verifier: None,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

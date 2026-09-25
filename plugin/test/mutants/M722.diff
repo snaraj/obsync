@@ -1,0 +1,12 @@
+# M722: the same repeated foreign head resets the loop budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2018,7 +2018,7 @@
+   // A peer extending its own branch without receiving our merge is making
+   // independent progress, not answering our output in a feedback loop. One
+   // typist may stop before the other; the remaining edits still merge here.
+-  const independent = tally.remote !== undefined && tally.remote !== change.version_id &&
++  const independent = tally.remote !== undefined &&
+     reaches(file.versions, change.version_id, tally.remote) &&
+     !reaches(file.versions, change.version_id, localVersionId);
+   if (tally.left !== found || independent) tally.count = 0;

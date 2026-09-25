@@ -1,0 +1,11 @@
+# M331: a note waiting beside its name never takes it when this device's own user frees it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1723,7 +1723,6 @@
+       // FIRST, so the listing below sees where they went: a note waiting
+       // beside its name for one this device's own user has since freed
+       // (issue #149).
+-      await settleBeside(context, context.state.data.lastSeq, "scan");
+       const own = context.host.scan === undefined ? null : await context.host.scan();
+       await this.survey(own ?? await context.host.list(), false, "scan");
+     } catch (error) {

@@ -1,0 +1,12 @@
+# M767: carry background proof across trusted typing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2288,7 +2288,7 @@
+           // cannot give this device the editor's Resume role. A stale verdict,
+           // an actual editor input, and an incoming-only result prove no such
+           // contribution; the latter returned above without carrying it.
+-          if (answer !== null && !context.host.typing(localPath)) {
++          if (answer !== null) {
+             context.answering.set(change.file_id, { arrived: answer, mtime: stat.mtime });
+             context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
+           }

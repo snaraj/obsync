@@ -1,0 +1,12 @@
+# M182: a note deleted on another device disappears for good, whatever "Deleted files" says
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1138,7 +1138,7 @@
+       await this.plugin.app.fileManager.trashFile(file);
+       return;
+     }
+-    const option = (vault as App["vault"] & { getConfig?(key: string): unknown }).getConfig?.("trashOption");
++    const option = "none" as unknown;
+     let bin = "system";
+     if (option === "none") {
+       await vault.adapter.remove(path);

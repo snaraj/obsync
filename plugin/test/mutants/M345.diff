@@ -1,0 +1,12 @@
+# M345: a conflict copy never takes its name when the note holding it goes, and the repair pass reports it as a mismatch
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2792,7 +2792,7 @@
+ ): Promise<ApplyResult> {
+   const copy = await keepBothAt(context, change, manifest);
+   if (copy === null) return "refused";
+-  await recordAt(context, change, copy.path, copy.stat, manifest.path);
++  await recordAt(context, change, copy.path, copy.stat);
+   return "conflict_copy";
+ }
+ 

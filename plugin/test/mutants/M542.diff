@@ -1,0 +1,11 @@
+# M542: an invalid background-answer flag is accepted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -312,7 +312,6 @@
+   const digest = value["sha256"];
+   if (digest !== "" && !digest32(digest)) throw new ManifestError("sha256");
+   // A retirement's keeper is a file id, and it goes into a request path (#181).
+-  if (value["answer"] !== undefined && value["answer"] !== true) throw new ManifestError("answer");
+   const keeper = value["keeper"];
+   if (keeper !== undefined && (typeof keeper !== "string" || !isHex(keeper, 16))) throw new ManifestError("keeper");
+   const chunks = value["chunks"];

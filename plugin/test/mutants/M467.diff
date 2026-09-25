@@ -1,0 +1,12 @@
+# M467: an entry the feed parked does not move the mark: every start reads the journal as rebuilt
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1920,7 +1920,7 @@
+         // yesterday's note over today's, a deletion undone, a rename reverted.
+         const mark = context.state.data.feedMark;
+         if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+-        else this.processed(context, change, await this.receive(context, change));
++        else { const result = await this.receive(context, change); if (result !== null) this.processed(context, change, result); }
+         context.state.data.lastSeq = change.seq;
+       }
+     });

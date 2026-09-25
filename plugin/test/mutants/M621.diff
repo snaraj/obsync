@@ -1,0 +1,11 @@
+# M621: Resume can write a path whose tracked identity changed
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2352,7 +2352,6 @@
+     // This lookup and write share the copy's publication queue, so an older
+     // upload cannot acknowledge between the parent proof and this publication.
+     const record = context.state.fileByPath(path);
+-    if (record?.fileId !== id) return fail("identity");
+     const before = await context.host.stat(path);
+     if (before === null || before.size > CHUNK_MAX) return fail("local_budget");
+     const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);

@@ -1,0 +1,12 @@
+# M562: Resume clears a hold after a concurrent local save interrupted restoration
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1990,7 +1990,7 @@
+             outcome = await publishHeld(context, id, entry.path);
+           } else {
+             outcome = await resumePaused(context, id);
+-            if (outcome === "no_free_name" || outcome === "saved_meanwhile") throw new Error(outcome);
++            if (outcome === "no_free_name") throw new Error(outcome);
+             if (outcome !== "deleted_here") await this.reconcileFile(id);
+           }
+           await publishPause(context, id, entry.path, false);

@@ -1,0 +1,12 @@
+# M300: a pull's own move on desktop is decided as a deletion of the note it moved, logged as removed
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -680,7 +680,7 @@
+     if (!this.running || !this.tracked(path, "delete")) return;
+     const context = this.need();
+     const away = [...context.moved].find((mark) => mark.startsWith(`${path}\u0000`));
+-    if (context.trashed.delete(path) || (away !== undefined && context.moved.delete(away))) {
++    if (context.trashed.delete(path)) {
+       this.options.host.log(`watch path_class=file decision=echo_suppressed event=delete${away === undefined ? "" : " reason=moved"}`);
+       return;
+     }

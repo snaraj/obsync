@@ -1,0 +1,12 @@
+# M743: discard unchanged lines before each edit
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -171,7 +171,7 @@
+     } else {
+       next = theirs as LineEdit; t++;
+     }
+-    while (cursor < next.start) out.push(baseLines[cursor++] as string);
++    cursor = next.start;
+     for (const line of next.lines) out.push(line);
+     cursor = next.end;
+   }

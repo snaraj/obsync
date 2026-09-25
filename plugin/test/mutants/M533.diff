@@ -1,0 +1,11 @@
+# M533: a replayed historical pause holds a note after Resume
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -942,7 +942,6 @@
+   if (!manifest.paused || context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   const file = await context.transport.getFile(change.file_id);
+   // Replaying a pause that a later Resume cleared must not pause it again.
+-  if (!file.heads.includes(change.version_id)) return "skipped";
+   const path = context.state.pathByFileId(manifest.target) ?? manifest.path;
+   assertSyncPath(path, context.state.data.syncFolders);
+   // The editor can detect the collision first. The author of the automatic

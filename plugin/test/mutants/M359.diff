@@ -1,0 +1,12 @@
+# M359: `1 MB` in a download ceiling is dropped without a word and reads "unlimited" after a restart
+--- a/plugin/src/policy.ts
++++ b/plugin/src/policy.ts
+@@ -86,7 +86,7 @@
+   const trimmed = text.trim().toLowerCase();
+   if (trimmed === "" ) return null;
+   if (trimmed === "unlimited" || trimmed === "0") return 0;
+-  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)?$/.exec(trimmed);
++  const match = /^(\d+(?:\.\d+)?)\s*(b|kib|mib|gib|tib)?$/.exec(trimmed);
+   if (!match) return null;
+   const scale = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12, kib: 1024, mib: MIB, gib: GIB, tib: 1024 * GIB }[match[2] ?? "b"] ?? 1;
+   return Math.round(Number(match[1]) * scale);

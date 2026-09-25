@@ -1,0 +1,12 @@
+# M194: with "Deleted files" set to delete permanently, a note deleted elsewhere still goes to the system Trash
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1140,7 +1140,7 @@
+     }
+     const option = (vault as App["vault"] & { getConfig?(key: string): unknown }).getConfig?.("trashOption");
+     let bin = "system";
+-    if (option === "none") {
++    if (option === "never") {
+       await vault.adapter.remove(path);
+       bin = "none";
+     } else if (option === "local" || !(await vault.adapter.trashSystem(path).catch(() => false))) {

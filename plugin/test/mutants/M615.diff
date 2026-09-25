@@ -1,0 +1,12 @@
+# M615: ignore pairing close callback
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -263,7 +263,7 @@
+   override onClose(): void {
+     this.waiting = false;
+     this.contentEl.empty();
+-    this.afterClose();
++    // Mutant: leave the underlying settings stale.
+   }
+ 
+   private async claim(): Promise<void> {

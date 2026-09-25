@@ -96,7 +96,7 @@ command that installs it.
 
 On your computer, follow the [Quickstart](quickstart.md) to install the plugin,
 set **Server URL** to your name (with `:8443` if you moved the port), and run
-**First-time setup** with the server's setup token. That device creates the
+**Setup or recover** with the server's setup token. That device creates the
 vault key and shows you the recovery phrase.
 
 ## Add the phone

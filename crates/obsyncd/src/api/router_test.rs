@@ -28,6 +28,10 @@ fn health_endpoints_resolve() {
 fn setup_and_account_resolve() {
     assert_eq!(route("POST", "/v1/setup"), Route::Setup);
     assert_eq!(route("GET", "/v1/account"), Route::Account);
+    assert_eq!(
+        route("POST", "/v1/account/recovery"),
+        Route::RecoveryRegister
+    );
 }
 
 #[test]

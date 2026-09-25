@@ -1,0 +1,12 @@
+# M339: a note that has taken its name still counts as waiting, so it can be moved off it again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2629,7 +2629,7 @@
+   const record = context.state.fileByPath(from) as FileState;
+   const { name, ...arrived } = record;
+   context.state.forgetPath(from);
+-  context.state.setFile(to, name === to ? arrived : record);
++  context.state.setFile(to, record);
+   await context.state.save();
+   await pruneEmptyParents(context, from);
+   return outcome;

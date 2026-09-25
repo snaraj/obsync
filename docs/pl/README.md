@@ -96,7 +96,7 @@ na iOS zaufanie certyfikatowi to drugi przełącznik po jego zainstalowaniu.
 
    ![Karta ustawień wtyczki: pole Server URL z demonstracyjną nazwą hosta, pole nagłówków brzegu sieci i wiersz Connection z przyciskami Check oraz Open dashboard](../assets/settings-server.png)
 
-3. Wklej token konfiguracji w **First-time setup**, wybierz **Set up** i zapisz
+3. Wklej token konfiguracji w **Setup or recover**, wybierz **Set up or recover** i zapisz
    24-wyrazową frazę odzyskiwania.
 
    ![Sekcja This device karty ustawień: wiersz Pairing z Pair this device i Pair a new device, wiersz First-time setup z polem Setup token i przyciskiem Set up oraz wiersz Vault key](../assets/settings-setup.png)

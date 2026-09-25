@@ -1,0 +1,12 @@
+# M444: turning the plugin off and on gives each object its own lease, and the old one's late save rolls the new one back
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1676,7 +1676,7 @@
+       this.log(`state decision=stopped reason=${error.reason}`);
+       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
+       new Notice(error.message, 15000);
+-    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id)).catch((error: unknown) => {
++    }, () => this.isCurrent(generation)).catch((error: unknown) => {
+       if (!this.isCurrent(generation)) return null;
+       throw error;
+     });

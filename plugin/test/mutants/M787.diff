@@ -1,0 +1,12 @@
+# M787: drop the unchanged character anchors while merging insertions
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -139,7 +139,7 @@
+     const endM = at === points.length ? left.length : a.get(at) as number;
+     const endT = at === points.length ? right.length : b.get(at) as number;
+     out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);
+-    if (at < points.length) out.push(points[at] as string);
++    if (at < points.length) out.push("");
+     m = endM + 1; t = endT + 1;
+   }
+   return out.join("");

@@ -1,0 +1,12 @@
+# M595: gate phrase restore with rejected credential
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2627,7 +2627,7 @@
+    */
+   async vaultKeyStrands(vrk: string): Promise<boolean> {
+     const { state, transport } = this.captureSession();
+-    if (state.data.deviceId === null || this.forgottenDevice) return false;
++    if (state.data.deviceId === null) return false;
+     if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
+     // Versions, not the journal head: account and device frames move the
+     // head of a server that holds no vault yet.

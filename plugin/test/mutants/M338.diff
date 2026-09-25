@@ -1,0 +1,12 @@
+# M338: one rename the disk refuses stops the device receiving any change
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2698,7 +2698,7 @@
+         }
+         outcome = await relocate(context, path, want);
+       } catch (error) {
+-        outcome = error instanceof VaultPathError ? error.refusal : "failed";
++        throw error;
+       }
+       context.host.log(
+         `${pass} path_class=file decision=${outcome === "moved" ? "renamed_from_beside" : `beside_kept reason=${outcome}`} ` +

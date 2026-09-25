@@ -1,0 +1,12 @@
+# M634: a growing copy clears the hold when its last recorded digest already matches
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2371,7 +2371,7 @@
+     } finally { await writer.abort(); }
+     return file.heads;
+   });
+-  if (pushed.status === "growing" || pushed.ack?.conflicted === true || context.state.fileByPath(path)?.sha256 !== mineDigest) return fail("publication");
++  if (pushed.ack?.conflicted === true || context.state.fileByPath(path)?.sha256 !== mineDigest) return fail("publication");
+   context.authored.add(pushed.versionId);
+   context.host.log(`pull decision=resume_copy_advanced file=${change.file_id} copy=${id} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+   return path;

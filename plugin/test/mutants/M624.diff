@@ -1,0 +1,11 @@
+# M624: Resume overwrites an unpublished same-metadata copy edit
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2356,7 +2356,6 @@
+     const before = await context.host.stat(path);
+     if (before === null || before.size > CHUNK_MAX) return fail("local_budget");
+     const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);
+-    if (!known(localDigest)) return fail("local_edit");
+     const file = await context.transport.getFile(id);
+     if (file.heads.length !== 1) return fail("heads");
+     const head = file.versions.find((entry) => entry.version_id === file.heads[0]);

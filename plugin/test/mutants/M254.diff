@@ -1,0 +1,12 @@
+# M254: a deletion whose first send was lost is never sent again, even though the note is still gone
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -501,7 +501,7 @@
+         `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
+     );
+   }
+-  return gone;
++  return false;
+ }
+ 
+ /** The manifest every folder record carries; `deleted` is the only choice. */

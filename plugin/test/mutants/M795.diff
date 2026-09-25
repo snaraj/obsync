@@ -1,0 +1,12 @@
+# M795: drop insertions after the last unchanged character
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -135,7 +135,7 @@
+   if (a.get(0) !== 0 || b.get(0) !== 0) return null;
+   const out: string[] = [];
+   let m = 0, t = 0;
+-  for (let at = 0; at <= points.length; at++) {
++  for (let at = 0; at < points.length; at++) {
+     const endM = at === points.length ? left.length : a.get(at) as number;
+     const endT = at === points.length ? right.length : b.get(at) as number;
+     out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);

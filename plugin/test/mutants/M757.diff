@@ -1,0 +1,12 @@
+# M757: consume unequal appended characters as a shared prefix
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -112,7 +112,7 @@
+   let shared = 0;
+   // Walk code points so different emoji cannot share half a surrogate pair.
+   for (const point of left) {
+-    if (!right.startsWith(point, shared)) break;
++    if (false) break;
+     shared += point.length;
+   }
+   const a = left.slice(shared);

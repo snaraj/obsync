@@ -57,7 +57,8 @@
  * whole files through the vault adapter. Both use the same loops.
  */
 
-import { ByteSource } from "../chunker";
+import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
+import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
 import {
   DomainMap,
@@ -70,12 +71,14 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, Transport } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { applyChange } from "./pull";
-import { pushDelete, pushFile, pushFolder, pushFolderDelete } from "./push";
+import { ANSWER_MS, ApplyResult, answerOf, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
+import { publishPause } from "./pause";
+import { pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
+import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
 export interface VaultStat {
   path: string;
@@ -140,6 +143,14 @@ export interface VaultHost {
   readonly deviceName: string;
   list(): Promise<VaultStat[]>;
   /**
+   * Every file in Obsidian's index, INSIDE THE SELECTION OR NOT, with the
+   * size and mtime the index cached: no filesystem walk, no content. It
+   * answers one question, asked before a note is called deleted -- are its
+   * bytes still in this vault under another name (issue #139)? -- and is never
+   * read, queued or published from.
+   */
+  inventory(): Promise<VaultStat[]>;
+  /**
    * The vault as the FILESYSTEM has it, or `null` when this host has no view
    * of its own.
    *
@@ -153,6 +164,12 @@ export interface VaultHost {
    */
   scan?(): Promise<VaultStat[] | null>;
   /**
+   * Remove the temp files this host's writes left when the device stopped in
+   * the middle of them (issue #159). Called at each start, before anything
+   * lists the vault; a host whose writes leave nothing behind has none.
+   */
+  sweep?(): Promise<void>;
+  /**
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
    * only the host can see the filesystem (`vaultPath.ts`).
@@ -164,6 +181,13 @@ export interface VaultHost {
    * every caller but the reconcile pass's folder loops.
    */
   syncable(path: string, kind?: "file" | "folder"): Promise<boolean>;
+  /**
+   * Is `path` in a folder of this vault that is a vault OF ITS OWN syncing
+   * with this plugin, or that folder itself (issue #180)? Whatever lands
+   * there, that vault publishes again one level deeper, so nothing there is
+   * published or applied here. Only the host can see the folder that says so.
+   */
+  inNestedVault(path: string): Promise<boolean>;
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
@@ -244,6 +268,18 @@ export interface VaultHost {
    * not the engine: only the host can see the filesystem.
    */
   trashFolder(path: string): Promise<boolean>;
+  /**
+   * Is `path` open in an editor here (issue #146)? `unsaved` when an editor
+   * showing it holds text its file does not -- keystrokes inside the editor's
+   * own save debounce, which exist nowhere else -- `saved` when every editor
+   * showing it holds exactly the file, and `null` when none shows it. Only the
+   * host can see an editor; how recently the note was edited HERE is the
+   * engine's to say (`pushedAt`), because an editor also changes when a pulled
+   * version is merged into it.
+   */
+  editing(path: string): Promise<"unsaved" | "saved" | null>;
+  /** Recent trusted editor input, including a composition still in progress. */
+  typing(path: string): boolean;
   notify(message: string): void;
   log(line: string): void;
 }
@@ -272,8 +308,33 @@ export interface SyncContext {
   readonly createdFolders: Set<string>;
   /** File ids whose refusal the user has already been told about, once each. */
   readonly refused: Set<string>;
-  /** Resolutions of one file inside the current window, for the merge breaker. */
-  readonly merges: Map<string, { since: number; count: number }>;
+  /**
+   * Resolutions of one file inside the current window, for the merge breaker,
+   * and the `(mtime, size)` the last one left the note at (`pull.ts`).
+   */
+  readonly merges: Map<string, { since: number; count: number; left: string; remote?: string }>;
+  /**
+   * File ids whose note here waits on this device's own push to settle a fork
+   * (`pull.ts`, `deferred`): the status is not `idle` while one is in flight
+   * (`resting`, issue #135).
+   */
+  readonly forked: Set<string>;
+  /**
+   * When the push queue last published an edit of each path, oldest first and
+   * none older than `EDITING_WINDOW_MS`: what says a note open in an editor
+   * was saved from here seconds ago (`pull.ts`, issue #146). A pull's own
+   * write never lands here, and neither does the revive a kept deletion posts.
+   */
+  readonly pushedAt: Map<string, number>;
+  /**
+   * The watcher's verdict on the latest change here to each file id: the time
+   * of that change, and the arrival of another device's version it ANSWERED,
+   * or `null` (`answered`, `pull.ts` `answerOf`, issue #179). What the pull
+   * path asks before it settles a collision on that note.
+   */
+  readonly answering: Map<string, { mtime: number; arrived: number | null }>;
+  /** When another device's version of each path last arrived here (`receive`). */
+  readonly arrivals: Map<string, number>;
   /**
    * Publish a local file NOW, out of the queue's turn, and wait for it.
    *
@@ -295,7 +356,8 @@ export type EngineStatus =
   | { kind: "idle" }
   | { kind: "syncing"; pending: number }
   | { kind: "offline" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; code?: string }
+  | { kind: "paused"; message: string };
 
 export interface Timers {
   set(fn: () => void, ms: number): unknown;
@@ -337,6 +399,14 @@ export const HEARTBEAT_MS = 60 * 60 * 1000;
 export const SCAN_MS = 30 * 1000;
 
 /**
+ * The coarsest step a vault volume keeps a modification time to: FAT32's two
+ * seconds. A whole-second time read within one step of now can still be the
+ * time of a later save of the same size (issue #175), so such a push looks
+ * again when the step has closed (`recheck`).
+ */
+export const MTIME_STEP_MS = 2000;
+
+/**
  * THE BULK-DELETION FLOOR (issue #123). Below this many candidates a pass
  * that would tombstone everything it tracks is an ordinary small vault
  * emptying, and holding it back would teach the user to confirm without
@@ -364,6 +434,17 @@ export const SCAN_BUDGET_MS = 5000;
 export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 
+/**
+ * How soon a PARKED record is tried again (issue #144): one minute, doubling
+ * to half an hour for as long as anything stays parked. A retry of a file the
+ * disk had no room for downloads it again, so a five-second loop moved 5.5 GB
+ * for one 100 MiB file in nine minutes; this moves it about twice an hour.
+ * The next start and Sync now try at once, because those are the moments the
+ * user has just fixed the cause.
+ */
+export const PARK_RETRY_MS = 60 * 1000;
+export const PARK_RETRY_MAX_MS = 30 * 60 * 1000;
+
 // The host's own timers. Obsidian runs the desktop app inside Electron, where
 // the bare globals are Node's and hand back a `Timeout` object rather than the
 // numeric handle every other Obsidian surface expects; `window` is the one
@@ -373,6 +454,19 @@ const QUIET_RECHECKS = Math.ceil(QUIET_MS / RECHECK_MS);
 
 /** The directory a path lives in; `""` for a path at the vault root. */
 const folderOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+
+/**
+ * A listing by `(mtime, size)`, built once, so that asking where N vanished
+ * records went costs N lookups and not N walks of the whole vault.
+ */
+const byStat = (files: VaultStat[]): Map<string, VaultStat[]> => {
+  const out = new Map<string, VaultStat[]>();
+  for (const file of files) {
+    const key = `${file.mtime}:${file.size}`;
+    out.set(key, [...(out.get(key) ?? []), file]);
+  }
+  return out;
+};
 
 const defaultTimers: Timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
@@ -419,22 +513,43 @@ export class SyncEngine {
   private readonly again = new Set<string>();
   private running = false;
   private cancelled = false;
-  private feed: Promise<void> | null = null;
   private heartbeatHandle: unknown = null;
   private repairHandle: unknown = null;
   private scanHandle: unknown = null;
   private repair: ChunkRepair | null = null;
   private repairWork: Promise<void> | null = null;
   private repairNoticeShown = false;
-  private scopeExitNoticeShown = false;
+  /** Notes that left the selection since the user was last told, counted for one notice. */
+  private exited = 0;
+  /**
+   * Watcher deletions waiting `DEBOUNCE_MS` for the other half of a move, and
+   * the folder deletions reported with them (issue #139, `settleVanished`).
+   */
+  private readonly vanished = new Set<string>();
+  private readonly vanishedFolders = new Set<string>();
+  private vanishHandle: unknown = null;
   private caseGhostNoticeShown = false;
   /** Tombstones one pass refused to publish, awaiting the user's word. */
   private heldDeletions: string[] = [];
   private bulkNoticeShown = false;
+  /** Whether this engine has read the feed for its own notes (`ownNotes`); one start per engine. */
+  private ownRead = false;
   /** When the repair tick began yielding to a manual history operation. */
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
+  /**
+   * A restored server this engine has to answer before it applies another
+   * feed entry (issue #145), and the file ids a check has already decided,
+   * so the repair pass meeting one again does not start another.
+   */
+  private restoreDue: Suspicion | null = null;
+  private readonly judged = new Set<string>();
   private readonly inFlight = new Set<Promise<unknown>>();
+  /** The next pass over the parked records, and the wait it was armed with. */
+  private parkHandle: unknown = null;
+  private parkDelay = 0;
+  /** The feed and a retry pass apply one at a time, never side by side. */
+  private pulling: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -515,7 +630,11 @@ export class SyncEngine {
       moved: new Set<string>(),
       createdFolders: new Set<string>(),
       refused: new Set<string>(),
-      merges: new Map<string, { since: number; count: number }>(),
+      merges: new Map<string, { since: number; count: number; left: string }>(),
+      pushedAt: new Map<string, number>(),
+      answering: new Map<string, { mtime: number; arrived: number | null }>(),
+      arrivals: new Map<string, number>(),
+      forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
       deviceNames,
       now: () => this.nowFn(),
@@ -530,6 +649,9 @@ export class SyncEngine {
     // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
     // finding 3).
     this.restoreFolderBarriers();
+    // Cleaning up is never a reason not to sync.
+    await host.sweep?.().catch((error: unknown) =>
+      host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
     await this.reconcile();
     if (this.running) {
       const context = this.need();
@@ -537,7 +659,17 @@ export class SyncEngine {
       this.repairHandle = this.timers.set(() => { void this.repairTick(); }, REPAIR_TICK_MS);
       host.log(`scan decision=start interval_ms=${SCAN_MS} budget_ms=${SCAN_BUDGET_MS}`);
       this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
-      this.feed = this.track(this.feedLoop());
+      // What a previous run parked is tried first, before the feed applies
+      // anything: a start is when the user has most likely just fixed the
+      // cause (issue #144).
+      void this.track(this.retryParked("start"));
+      // A paused note stays paused across a restart, and says so: the plugin
+      // that rewrote it is most likely still there (issue #179).
+      if (Object.keys(state.data.paused).length > 0) this.status(this.resting());
+      // Not tracked: only the pages it applies are (`feedLoop`).
+      void this.feedLoop().catch((error: unknown) => {
+        host.log(`feed decision=failed reason=${error instanceof Error ? error.name : "unknown"}`);
+      });
     }
   }
 
@@ -552,6 +684,9 @@ export class SyncEngine {
     this.repairHandle = null;
     if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
     this.scanHandle = null;
+    if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+    this.parkHandle = null;
+    this.parkDelay = 0;
     this.repair?.cancel();
     this.repair = null;
     this.options.host.log("engine stop");
@@ -617,7 +752,9 @@ export class SyncEngine {
     // suppression now is what keeps it from swallowing the deletion of THIS
     // file: a vault event that goes missing must cost one echo, never one
     // tombstone.
-    this.need().trashed.delete(path);
+    const context = this.need();
+    context.trashed.delete(path);
+    for (const mark of context.moved) if (mark.startsWith(`${path}\u0000`)) context.moved.delete(mark);
     this.deletions.delete(path);
     this.debounce(path, 0);
   }
@@ -631,16 +768,149 @@ export class SyncEngine {
    * tombstone for a file id the vault still holds under another name, so the
    * echo is dropped once, by the path the pull path recorded before trashing
    * it (issue #96).
+   *
+   * AND A DELETE IS NOT YET A DELETION (issue #139). A folder moved in a file
+   * manager reaches here as a delete for every note in it, beside a create
+   * for each at its new name: Obsidian never sees a rename. So the delete
+   * waits `DEBOUNCE_MS` for the other half and is decided then, in
+   * `settleVanished`.
+   *
+   * The pull path's own MOVE reaches here the same way on desktop: the host
+   * moves with the filesystem, and the watcher reports that as a delete at
+   * the old name beside a create at the new one, never the rename its mark
+   * was armed for. The delete is that echo -- a note the pull path just moved
+   * away is the only thing to delete there -- and was otherwise decided as a
+   * deletion that published nothing only because the record had moved first.
    */
   deleted(path: string): void {
     if (!this.running || !this.tracked(path, "delete")) return;
-    if (this.need().trashed.delete(path)) {
-      this.options.host.log("watch path_class=file decision=echo_suppressed event=delete");
+    const context = this.need();
+    const away = [...context.moved].find((mark) => mark.startsWith(`${path}\u0000`));
+    if (context.trashed.delete(path) || (away !== undefined && context.moved.delete(away))) {
+      this.options.host.log(`watch path_class=file decision=echo_suppressed event=delete${away === undefined ? "" : " reason=moved"}`);
       return;
     }
     this.unschedule(path);
-    this.deletions.add(path);
-    this.enqueue(path);
+    // A push still queued for it would only find the file gone: the batch
+    // decides for this path now, as the queued deletion used to.
+    const queued = this.queue.indexOf(path);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    this.vanish([path]);
+  }
+
+  /**
+   * A folder delete from the vault's watcher. Deleted with the notes inside
+   * it, it waits with them, so that a folder whose notes turn out to have
+   * LEFT the selection is not the one thing published as deleted. With
+   * nothing waiting it is the ordinary folder deletion, at once.
+   */
+  folderVanished(path: string): void {
+    if (this.vanished.size === 0) this.folderDeleted(path);
+    else this.vanishedFolders.add(path);
+  }
+
+  /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */
+  private vanish(paths: string[]): void {
+    for (const path of paths) this.vanished.add(path);
+    if (this.vanishHandle === null) {
+      this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+    }
+  }
+
+  /**
+   * Decide what the deletes of one burst were (issue #139).
+   *
+   * A path that is back is the change it is. Otherwise the vault is asked
+   * where its bytes went, by the rule the periodic scan pairs moves with
+   * (`follow`): a move keeps the file id, a note that left the selection is
+   * never a deletion, and only a note whose bytes are nowhere in the vault
+   * is published as deleted -- through the same queue as ever, so the
+   * "file is present" refusal still has the last word. The folders deleted
+   * with them go LAST, after the moves that empty them; in a burst where
+   * notes left the selection, the folders left with them. A burst that
+   * settles after a stop decides nothing: its records stay for the next
+   * start's reconcile pass.
+   */
+  private async settleVanished(): Promise<void> {
+    this.vanishHandle = null;
+    const paths = [...this.vanished];
+    const folders = [...this.vanishedFolders];
+    this.vanished.clear();
+    this.vanishedFolders.clear();
+    if (!this.running) return;
+    const context = this.need();
+    const started = context.now();
+    const left: string[] = [];
+    let moved = 0;
+    let removed = 0;
+    try {
+      const index = byStat(await context.host.inventory());
+      for (const path of paths) {
+        if (!this.running) return;
+        const outcome = await this.follow(context, path, index, new Set());
+        if (outcome === "moved") moved++;
+        else if (outcome === "left") left.push(path);
+        else {
+          this.deletions.add(path);
+          this.enqueue(path);
+          removed++;
+        }
+      }
+    } catch (error) {
+      // Nothing is published on a question the vault could not answer: the
+      // records stay, and the next reconcile pass asks it again.
+      context.host.log(
+        `watch decision=failed reason=vanished_unsettled files=${paths.length} budget_ms=${DEBOUNCE_MS} ` +
+          `duration_ms=${context.now() - started} error=${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    for (const path of left) this.leftScope(path);
+    for (const folder of folders) {
+      if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
+      else this.folderDeleted(folder);
+    }
+    context.host.log(
+      `watch decision=settled reason=vanished files=${paths.length} moved=${moved} left=${left.length} ` +
+        `removed=${removed} folders=${folders.length} budget_ms=${DEBOUNCE_MS} duration_ms=${context.now() - started}`,
+    );
+  }
+
+  /**
+   * Where did a vanished record's bytes go? `null` when nowhere in this vault
+   * -- the one answer after which a tombstone may follow.
+   *
+   * THE PERIODIC SCAN'S OWN RULE (`survey`, MOVES), asked of the whole index:
+   * the unrecorded files carrying the record's `(mtime, size)`. Exactly one,
+   * in the selection, is the MOVE, and keeps the file id. Any outside it --
+   * one or several, because there is nothing to guess about a note this
+   * device will not publish -- means the note LEFT the selection: alive here,
+   * so never a deletion (`leftScope`). An ambiguous pair inside the selection
+   * stays unpaired, exactly as the scan leaves it.
+   */
+  private async follow(
+    context: SyncContext,
+    from: string,
+    index: Map<string, VaultStat[]>,
+    taken: Set<string>,
+  ): Promise<"moved" | "left" | null> {
+    const record = context.state.fileByPath(from);
+    const found = record === undefined ? [] : this.carriers(record, index, taken);
+    // A file that is still there is not gone, whatever else carries its bytes.
+    if (found.length === 0 || (await context.host.stat(from)) !== null) return null;
+    const only = found.length === 1 ? (found[0] as VaultStat) : null;
+    const folders = context.state.data.syncFolders;
+    if (only !== null && inSyncScope(only.path, folders) && (await context.host.syncable(only.path))) {
+      this.renamed(from, only.path);
+      return "moved";
+    }
+    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
+  }
+
+  /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */
+  private carriers(record: { mtime: number; size: number }, files: Map<string, VaultStat[]>, taken: Set<string>): VaultStat[] {
+    return (files.get(`${record.mtime}:${record.size}`) ?? []).filter((file) => !taken.has(file.path) &&
+      this.options.state.fileByPath(file.path) === undefined);
   }
 
   /**
@@ -822,7 +1092,9 @@ export class SyncEngine {
    * live note, and every other device obeys it (issue #91). Nothing is
    * published: dropping the record also disarms the tombstone the next
    * startup scan would infer from the old path's absence, the debounce and
-   * queued push it may still be owed are cancelled, and the user is told once.
+   * queued push it may still be owed are cancelled, and the user is told once
+   * per move, with the count: every caller makes its exits in one synchronous
+   * run, so the notice waits for the end of it (issue #139).
    */
   private leftScope(from: string): void {
     const context = this.need();
@@ -838,14 +1110,18 @@ export class SyncEngine {
       });
     }
     context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
-    if (this.scopeExitNoticeShown) return;
-    this.scopeExitNoticeShown = true;
-    context.host.notify(
-      "obsync: a file was moved out of the folders this device syncs, so this device stopped syncing it. " +
-        "Nothing was deleted: the file is still in this vault, your other devices keep their copy, and the " +
-        "server keeps its history. Move it back into a selected folder, or add its new folder under " +
-        "Sync folders on this device.",
-    );
+    if (this.exited++ > 0) return;
+    void Promise.resolve().then(() => {
+      const count = this.exited;
+      this.exited = 0;
+      context.host.log(`scope decision=left_selection files=${count}`);
+      context.host.notify(
+        `obsync: ${count} note(s) moved out of the folders this device syncs; they stay on your other devices. ` +
+          "Nothing was deleted: they are still in this vault and the server keeps their history. This device " +
+          "no longer syncs them -- move them back into a selected folder, or add their new folder under " +
+          "Sync folders on this device.",
+      );
+    });
   }
 
   /**
@@ -860,21 +1136,20 @@ export class SyncEngine {
    * The user says the deletions were real. THE HELD SET IS PUBLISHED AS IT
    * WAS FOUND, not re-derived: re-scanning here would ask the vault a second
    * question the user has not answered, and a file that came back in the
-   * meantime is not in the set the user was shown. Each path is queued
-   * exactly as the pass would have queued it, so everything downstream --
-   * the "file is present" refusal, the scope check, the echo marks -- still
-   * applies, and a note restored between the notice and the click is still
-   * refused by the push that finds it on the disk.
+   * meantime is not in the set the user was shown. Each path is decided
+   * exactly as a watcher deletion is (`settleVanished`), so everything
+   * downstream -- the "file is present" refusal, the scope check, the echo
+   * marks -- still applies, a note restored between the notice and the click
+   * is still refused by the push that finds it on the disk, and one whose
+   * bytes are back under another name is a move or a note that left the
+   * selection, never a deletion (issue #139).
    */
   confirmHeldDeletions(): void {
     if (!this.running || this.heldDeletions.length === 0) return;
     const held = this.heldDeletions;
     this.heldDeletions = [];
     this.bulkNoticeShown = false;
-    for (const path of held) {
-      this.deletions.add(path);
-      this.enqueue(path);
-    }
+    this.vanish(held);
     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
   }
 
@@ -1109,7 +1384,18 @@ export class SyncEngine {
       context.host.log(
         `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      // A note waiting on its push was counted while this debounce was in
+      // flight (`resting`). One that ends with no push -- an echo, bytes the
+      // record already describes -- leaves nothing else that would decide the
+      // status again, and it would read `syncing` for good (issue #135).
+      if (this.running && context.forked.size > 0 && !this.draining && !this.acting(path)) this.status(this.resting());
     }
+  }
+
+  /** Something here will still act on this note: its debounce, the queue, or a push. */
+  private acting(path: string): boolean {
+    return this.pending.has(path) || this.queue.includes(path) || this.pushing.has(path);
   }
 
   private async settleTracked(
@@ -1120,8 +1406,12 @@ export class SyncEngine {
   ): Promise<void> {
     const stat = await context.host.stat(path);
     if (!stat) {
-      this.deletions.add(path);
-      this.enqueue(path);
+      if (context.state.fileByPath(path) === undefined) return;
+      // A pending change can settle between a filesystem rename and its
+      // watcher event. Ask where the note went through the same bounded
+      // move check as a delete event before publishing any tombstone.
+      context.host.log("watch path_class=file decision=deferred reason=missing_during_settle");
+      this.deleted(path);
       return;
     }
     const key = `${path}:${stat.mtime}:${stat.size}`;
@@ -1130,8 +1420,20 @@ export class SyncEngine {
       context.host.log(`watch path_class=file decision=echo_suppressed`);
       return;
     }
+    // A CHANGE RIGHT AFTER ANOTHER DEVICE'S VERSION ARRIVED IS READ, even when
+    // the record's `(mtime, size)` already describes it (issue #179). Something
+    // wrote the file -- that is what the event says -- and a plugin answering
+    // a sync can leave both numbers as they were: a fixed-width stamp keeps the
+    // size, and a plugin that keeps a note's modified time keeps the other.
+    // Trusted, those bytes were never sent, and two devices said `idle` over
+    // two different notes. The push compares the DIGEST and posts nothing for
+    // the recorded bytes, so this costs one read of a note per such event
+    // while its arrival is remembered (`sweepEchoes`), and is bounded by what
+    // arrives; anywhere else, and above one chunk, the metadata is taken at its
+    // word, as it always was.
     const record = context.state.fileByPath(path);
-    if (record && record.mtime === stat.mtime && record.size === stat.size) return;
+    const described = record !== undefined && record.mtime === stat.mtime && record.size === stat.size;
+    if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
     // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
     // ago: comparing against it is what puts real time between the two
     // observations. The first settle has nothing to compare with, so it
@@ -1153,7 +1455,30 @@ export class SyncEngine {
     // `debounce`, and clearing it before them would drop the timer this
     // settle just decided to take again.
     this.unschedule(path);
+    if (!described) await this.answered(context, stat);
     this.enqueue(path);
+  }
+
+  /**
+   * Does this change ANSWER another device's version (issue #179)? It does
+   * when it lands within `ANSWER_MS` of that version's arrival, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
+   * versions too -- are #135's to settle. The answer is published like any
+   * other edit; what it decides is what the pull path does when it next finds
+   * this note COLLIDING with another device's change on the same lines
+   * (`pull.ts`, `rewriteStorm`). A plugin on one device answering a person
+   * typing on the other merges cleanly and is never paused; two plugins
+   * rewriting one line after each other's syncs never merge, and that is the
+   * storm. Echo suppression is untouched: the pull path's own write never
+   * gets here (`settleTracked`).
+   */
+  private async answered(context: SyncContext, stat: VaultStat): Promise<void> {
+    const record = context.state.fileByPath(stat.path);
+    // A later feed arrival must not re-judge the same save against a clock
+    // that came after it. A user's null verdict is just as durable as an
+    // automatic answer until another local save changes the timestamp.
+    if (record !== undefined && context.answering.get(record.fileId)?.mtime !== stat.mtime) {
+      context.answering.set(record.fileId, { mtime: stat.mtime, arrived: await answerOf(context, stat.path, stat.mtime) });
+    }
   }
 
   private enqueue(path: string): void {
@@ -1195,7 +1520,7 @@ export class SyncEngine {
       // same name.
       this.barriers.clear();
       this.barrierPath = null;
-      this.status({ kind: "idle" });
+      this.status(this.resting());
     } finally {
       this.draining = false;
     }
@@ -1300,6 +1625,12 @@ export class SyncEngine {
         }
         return;
       }
+      const held = context.state.fileByPath(path);
+      if ((held !== undefined && context.state.data.paused[held.fileId] !== undefined) || Object.values(context.state.data.paused).some((entry) => entry.path === path)) {
+        if (held !== undefined && context.state.data.paused[held.fileId]?.remote !== true) await publishPause(context, held.fileId, path, true);
+        context.host.log(`push path_class=file decision=skipped reason=paused file=${held?.fileId ?? "untracked"}`);
+        return;
+      }
       if (this.deletions.has(path)) {
         this.deletions.delete(path);
         const outcome = await pushDelete(context, path);
@@ -1314,7 +1645,9 @@ export class SyncEngine {
         if ((await context.host.stat(path)) === null) return;
       }
       const forced = this.renames.delete(path);
+      const asked = context.now();
       const outcome = await pushFile(context, path, forced);
+      if (outcome.status !== "growing") this.recheck(context, path, asked);
       if (outcome.status === "unchanged") return;
       if (outcome.status === "growing") {
         // The file moved while it was read: nothing was published, so this is
@@ -1324,6 +1657,15 @@ export class SyncEngine {
         return;
       }
       context.authored.add(outcome.versionId);
+      // Re-inserted, so the map stays oldest first and the trim stops at the
+      // first entry the window can still read.
+      const now = context.now();
+      context.pushedAt.delete(path);
+      context.pushedAt.set(path, now);
+      for (const [old, at] of context.pushedAt) {
+        if (now - at <= EDITING_WINDOW_MS) break;
+        context.pushedAt.delete(old);
+      }
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
       // A path this device may not sync is a decision, not a failure: it is
@@ -1337,6 +1679,29 @@ export class SyncEngine {
       context.host.log(`push path_class=file decision=failed reason=${message}`);
       this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
     }
+  }
+
+  /**
+   * A SAVE THE MODIFICATION TIME CANNOT SEE (issue #175).
+   *
+   * Every later look at a pushed file -- the watcher's settle, the scan, the
+   * next start -- trusts an unchanged `(mtime, size)` to mean unchanged
+   * bytes. On FAT32 the time is kept to the even second (HFS+ and ext3 to the
+   * second), so a save of the same size inside the step the push read in
+   * keeps both numbers and is never sent. So a push that read a whole-second
+   * time within one step of `asked` pushes once more when the step has
+   * closed: `pushFile` compares the digest and posts nothing if the bytes did
+   * not change. A fine-grained time, or one a step away, cannot hide a save,
+   * and is never read twice.
+   */
+  private recheck(context: SyncContext, path: string, asked: number): void {
+    const record = context.state.fileByPath(path);
+    if (record === undefined || record.mtime % 1000 !== 0) return;
+    const age = asked - record.mtime;
+    if (Math.abs(age) >= MTIME_STEP_MS) return;
+    const delay = MTIME_STEP_MS - age;
+    context.host.log(`push path_class=file decision=recheck reason=coarse_mtime delay_ms=${delay}`);
+    this.timers.set(() => this.enqueue(path), delay);
   }
 
   /**
@@ -1437,37 +1802,393 @@ export class SyncEngine {
 
   // --- feed --------------------------------------------------------------
 
+  /**
+   * The change feed, one long poll after another.
+   *
+   * A STOP WAITS FOR THE PAGE BEING APPLIED, NEVER FOR THE POLL (issue #150).
+   * A poll parked on the server moves nothing, and its answer after a stop is
+   * dropped unread -- no change applied, no cursor moved, nothing saved, so a
+   * reload that already holds the state is never written over. Tracked whole,
+   * the loop held every folder Save at "Waiting for transfers..." for the
+   * rest of the server's 55 s window with nothing transferring (S30). The
+   * loop belongs to the start that made it: one that outlives a stop never
+   * runs beside the next start's.
+   */
   private async feedLoop(): Promise<void> {
     const context = this.need();
-    while (this.running) {
+    const live = (): boolean => this.running && this.contextValue === context;
+    // THE JOURNAL IS ASKED WHETHER IT WENT BACK, at start and after every
+    // failed read -- the moments a server can have been rebuilt from a backup
+    // underneath this device (issue #145, `restore.ts`). A read, like the
+    // poll: untracked, and its answer after a stop is dropped unread.
+    let verify = true;
+    while (live()) {
       try {
-        const page = await context.transport.changes(context.state.data.lastSeq, 55);
-        for (const change of page.changes) {
-          if (!this.running) break;
-          await applyChange(context, change);
-          context.state.data.lastSeq = change.seq;
+        if (verify) {
+          const found = await probeFeed(context);
+          if (!live()) return;
+          this.restoreDue ??= found;
+          verify = false;
         }
-        if (!this.running) {
-          await context.state.save();
+        // Answered before the next page, one pull at a time (`recover`).
+        if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
+        if (!live()) return;
+        const page = await context.transport.changes(context.state.data.lastSeq, 55);
+        if (!live()) return;
+        // A restore the repair pass noticed while this read waited is answered
+        // before anything the read brought is applied.
+        if (this.restoreDue !== null) continue;
+        await this.track(this.applyPage(context, page));
+      } catch (error) {
+        if (!live()) return;
+        if (forgottenCredential(error)) {
+          context.host.log("feed decision=stopped reason=forgotten_device");
+          this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+          this.stop();
           return;
         }
-        context.state.data.lastSeq = page.seq;
-        await context.state.save();
-        if (page.changes.length > 0) this.status({ kind: "idle" });
-      } catch (error) {
-        if (!this.running) return;
         if (error instanceof ApiError && error.code === "seq_ahead") {
           context.host.log("feed decision=resync reason=seq_ahead");
-          context.state.data.lastSeq = 0;
-          await context.state.save();
+          this.restoreDue = { verdict: "restored", reason: "seq_ahead" };
           continue;
         }
+        verify = true;
         const message = error instanceof Error ? error.message : String(error);
         context.host.log(`feed decision=retry reason=${message}`);
         this.status({ kind: "offline" });
         await new Promise<void>((resolve) => this.timers.set(resolve, FEED_ERROR_BACKOFF_MS));
       }
     }
+  }
+
+  /**
+   * One pull at a time: a retry pass never applies beside the feed. A failed
+   * turn hands the next one on all the same (`then(work, work)`), so one
+   * error cannot stop every later pull.
+   */
+  private exclusive(work: () => Promise<void>): Promise<void> {
+    return (this.pulling = this.pulling.then(work, work));
+  }
+
+  /**
+   * Apply one feed record -- or PARK it, and let the feed move on (issue #144).
+   *
+   * A record THIS device cannot write, for a reason that belongs to that one
+   * file or chunk (`pull.ts`, `Unwritable`), used to be rethrown here, and the
+   * feed retried the same record every five seconds without moving its
+   * cursor: one locked note, one read-only folder, one attachment on a full
+   * disk, one chunk the server had quarantined stopped every later change from
+   * arriving, in every folder, while the status bar blamed the network. Every
+   * other failure -- the server out of reach, a refusal about this device, a
+   * state that cannot be saved -- is still thrown, and keeps the handling it
+   * had: it is no fact about one record, and parking every record behind it
+   * would only hide it.
+   *
+   * A LATER VERSION OF A PARKED FILE THAT APPLIES SETTLES IT AT ONCE: the
+   * parked record is asked of the server again, which answers with what the
+   * file is NOW -- a newer version this device already has, or a deletion --
+   * so a deleted attachment stops being retried the moment its tombstone
+   * arrives, and a fork keeps both sides as it would have in order.
+   *
+   * What the pull decided, or `null` for a record parked: either way the feed
+   * has consumed it, and the mark moves past it (`processed`, issue #145).
+   */
+  private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+    // Another device's authenticated version arrives before its write can
+    // trigger a host plugin. Waiting until applyChange returns can miss a
+    // rewrite made by that plugin during the filesystem event itself.
+    const arrived = context.now();
+    const remember = async (): Promise<void> => {
+      const path = context.state.pathByFileId(change.file_id);
+      if (path === undefined || !inSyncScope(path, context.state.data.syncFolders)) return;
+      // Preserve a waiting save's verdict against the previous arrival before
+      // replacing that clock with a time later than the save being judged.
+      const stat = await context.host.stat(path);
+      const local = context.state.fileByPath(path);
+      if (stat !== null && local?.fileId === change.file_id &&
+        (local.mtime !== stat.mtime || local.size !== stat.size)) {
+        await this.answered(context, stat);
+        context.host.log(`watch decision=edit_verdict_preserved reason=arrival_advanced file=${change.file_id} seq=${change.seq}`);
+      }
+      context.arrivals.delete(path);
+      context.arrivals.set(path, arrived);
+    };
+    let incoming = false;
+    let result: ApplyResult;
+    try {
+      result = await applyChange(context, change, async () => {
+        incoming = true;
+        await remember();
+      });
+    } catch (error) {
+      this.park(context, change.file_id, error);
+      return null;
+    }
+    // First materialisation and renames can establish a different tracked
+    // path. Only an authenticated ordinary version supplies this evidence.
+    if (incoming) await remember();
+    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
+    return result;
+  }
+
+  /**
+   * Remember a record this device could not write, with the path and the
+   * reason to name, persisted with the cursor that moves past it (`state.ts`).
+   * One notice per file, when it is first parked; a retry that fails again
+   * only updates the reason. Anything that is not `Unwritable` is thrown on.
+   */
+  private park(context: SyncContext, fileId: string, error: unknown): void {
+    if (!(error instanceof Unwritable)) throw error;
+    const parked = context.state.data.parked;
+    const known = parked[fileId] !== undefined;
+    parked[fileId] = { path: error.path, reason: error.reason };
+    this.armParkRetry();
+    // The file id and the reason, never the path: a name is vault content.
+    context.host.log(
+      `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
+        `retry_ms=${this.parkDelay}`,
+    );
+    if (!known) {
+      context.host.notify(
+        `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
+          "tried again by itself, and at once when you run Sync now after fixing it.",
+      );
+    }
+    this.status(this.resting());
+  }
+
+  /**
+   * What the status says when nothing is being pushed or pulled, decided in
+   * ONE place and in this order: a parked file by name, until it lands; then
+   * notes still waiting on this device's own push to settle a fork (issue
+   * #135), as the work they are; then `idle`.
+   *
+   * A note counts only while something is in flight for it -- its debounce,
+   * the queue, a push. Nothing in flight means nothing here will change it:
+   * a pair no rule settles, a push that never came. Those are dropped rather
+   * than left reading `syncing` for good.
+   */
+  private resting(): EngineStatus {
+    const forked = this.contextValue?.forked;
+    for (const fileId of forked ?? []) {
+      const path = this.options.state.pathByFileId(fileId);
+      if (path === undefined || !this.acting(path)) forked?.delete(fileId);
+    }
+    const waiting = forked?.size ?? 0;
+    const parked = Object.values(this.options.state.data.parked);
+    const newest = parked[parked.length - 1];
+    if (newest !== undefined) {
+      const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
+      return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
+    }
+    const paused = Object.values(this.options.state.data.paused);
+    const last = paused[paused.length - 1];
+    if (last !== undefined) {
+      const more = paused.length > 1 ? ` and ${paused.length - 1} more` : "";
+      return { kind: "paused", message: `${last.path}${more} (Show sync status)` };
+    }
+    if (waiting > 0) return { kind: "syncing", pending: waiting };
+    return { kind: "idle" };
+  }
+
+  /**
+   * Sync a paused note again (issue #179): one, from Resume in Show sync
+   * status, or every one, from Sync now -- the moments the user has just
+   * turned off whatever kept rewriting it. The note is first brought to what
+   * the other devices have (`resumePaused`), then asked of the server as any
+   * parked record is, then settled by the watcher as if it had just changed,
+   * which publishes what this device holds, or its deletion. A resume that
+   * fails leaves the note paused, to be resumed again.
+   */
+  resume(fileId?: string, trigger = "sync_now"): Promise<void> {
+    // Nothing paused waits for nothing: Sync now joins the pull queue only
+    // when it has a note to bring back.
+    if (Object.keys(this.options.state.data.paused).length === 0) return Promise.resolve();
+    return this.exclusive(async () => {
+      if (!this.running) return;
+      const context = this.need();
+      const paused = context.state.data.paused;
+      for (const id of fileId === undefined ? Object.keys(paused) : [fileId]) {
+        const entry = paused[id];
+        if (entry === undefined) continue;
+        const started = context.now();
+        delete paused[id];
+        let outcome: string;
+        try {
+          if (entry.remote === true && context.state.pathByFileId(id) !== undefined && await context.host.stat(entry.path) !== null) {
+            // The peer held our note before applying anything. Preserve the
+            // local editor's newest text as the next head, even if its last
+            // keystrokes were saved after the pause arrived.
+            outcome = await publishHeld(context, id, entry.path);
+          } else {
+            outcome = await resumePaused(context, id);
+            if (outcome === "no_free_name" || outcome === "saved_meanwhile") throw new Error(outcome);
+            if (outcome !== "deleted_here") await this.reconcileFile(id);
+          }
+          await publishPause(context, id, entry.path, false);
+        } catch (error) {
+          paused[id] = entry;
+          outcome = `failed_${error instanceof ApiError ? `http_${error.status}` : "error"}`;
+        }
+        await context.state.save();
+        const path = context.state.pathByFileId(id);
+        if (path !== undefined && paused[id] === undefined) {
+          context.answering.delete(id);
+          context.arrivals.delete(path);
+          this.changed(path);
+        }
+        context.host.log(
+          `pull decision=resumed outcome=${outcome} file=${id} trigger=${trigger} ` +
+            `paused=${Object.keys(paused).length} duration_ms=${context.now() - started}`,
+        );
+      }
+      this.status(this.resting());
+    });
+  }
+
+  /** Arm the next pass, one doubling later; with nothing parked, disarm and start over. */
+  private armParkRetry(): void {
+    if (Object.keys(this.options.state.data.parked).length === 0) {
+      if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+      this.parkHandle = null;
+      this.parkDelay = 0;
+      return;
+    }
+    if (this.parkHandle !== null || !this.running) return;
+    this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2);
+    this.parkHandle = this.timers.set(() => {
+      this.parkHandle = null;
+      void this.track(this.retryParked("timer"));
+    }, this.parkDelay);
+  }
+
+  /** Try every parked record again: the timer's turn, the start, or Sync now. */
+  private retryParked(trigger: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.running || Object.keys(this.options.state.data.parked).length === 0) return;
+      const context = this.need();
+      const started = context.now();
+      let released = 0;
+      for (const fileId of Object.keys(context.state.data.parked)) {
+        if (!this.running) return;
+        try {
+          if (await this.retryOne(context, fileId)) released++;
+        } catch (error) {
+          // Not this record's fault, so nothing is released and nothing new
+          // is said; an unreachable server ends the pass, the next one asks.
+          context.host.log(
+            `feed decision=deferred reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} ` +
+              `file=${fileId} trigger=${trigger}`,
+          );
+          if (error instanceof ApiError && error.code === "unreachable") break;
+        }
+      }
+      await context.state.save();
+      context.host.log(
+        `feed decision=retried trigger=${trigger} released=${released} ` +
+          `parked=${Object.keys(context.state.data.parked).length} retry_ms=${this.parkDelay} ` +
+          `duration_ms=${context.now() - started}`,
+      );
+      this.status(this.resting());
+    });
+  }
+
+  /**
+   * One parked record, asked of the server as its file stands NOW (`reconcileFile`,
+   * every head this device does not hold), so a version that superseded it is
+   * what lands. True once nothing about it is left to write here.
+   */
+  private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
+    try {
+      await this.reconcileFile(fileId);
+    } catch (error) {
+      this.park(context, fileId, error);
+      return false;
+    }
+    delete context.state.data.parked[fileId];
+    this.armParkRetry();
+    context.host.log(`feed decision=released file=${fileId} parked=${Object.keys(context.state.data.parked).length}`);
+    return true;
+  }
+
+  /**
+   * One page of the feed, in order; a stop ends it after the change in hand.
+   * Its records are applied one pull at a time beside a retry pass
+   * (`exclusive`), and a record this device cannot write is parked (`receive`).
+   */
+  private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+    let replayed = 0;
+    await this.exclusive(async () => {
+      for (const change of page.changes) {
+        if (!this.running) break;
+        // Re-reading a rebuilt journal from zero (issue #145): what this
+        // device already processed is not news, and applied again it is
+        // yesterday's note over today's, a deletion undone, a rename reverted.
+        const mark = context.state.data.feedMark;
+        if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+        else this.processed(context, change, await this.receive(context, change));
+        context.state.data.lastSeq = change.seq;
+      }
+    });
+    if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
+    if (!this.running) {
+      await context.state.save();
+      return;
+    }
+    context.state.data.lastSeq = page.seq;
+    await context.state.save();
+    if (page.changes.length > 0) this.status(this.resting());
+  }
+
+  /**
+   * One feed entry consumed -- applied, skipped, echoed or parked -- is the
+   * new mark: a mark left behind a parked entry would find that entry in
+   * `(mark, cursor]` at the next start and read the journal as a rebuilt one.
+   * An echo of this device's own version also tells the record (or grave)
+   * that version's server time, which places it against the mark after a
+   * restore.
+   */
+  private processed(context: SyncContext, change: ChangeRecord, result: ApplyResult | null): void {
+    const { state } = context;
+    if (result === "echo") {
+      const path = state.pathByFileId(change.file_id);
+      const record = path === undefined ? undefined : state.fileByPath(path);
+      if (record?.versionId === change.version_id) record.ts = change.ts;
+      const grave = state.data.graves[change.file_id];
+      if (grave?.versionId === change.version_id) grave.ts = change.ts;
+    }
+    state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
+  }
+
+  /**
+   * Answer a restored server (issue #145): re-send what it lost, then --
+   * when the restore is proved, or something had to be re-sent -- read the
+   * journal again from zero, skipping what this device had already seen, so
+   * what other devices wrote on the rebuilt server arrives even where it
+   * reused seqs this device had read past. One notice per run that re-sent.
+   */
+  private recover(context: SyncContext, due: Suspicion): Promise<void> {
+    // ONE PULL AT A TIME: the check re-sends and the rewind moves the cursor,
+    // and neither may run beside a page or a parked record's retry.
+    return this.exclusive(async () => {
+      const live = (): boolean => this.running && this.contextValue === context;
+      if (!live()) return;
+      const resent = await recoverLost(context, due, this.judged, live);
+      // Stopped part way, nothing is decided: the next start asks again.
+      if (!live()) return;
+      this.restoreDue = null;
+      if (due.verdict === "restored" || resent > 0) {
+        const mark = context.state.data.feedMark;
+        if (mark !== null) context.state.data.feedMark = { ...mark, replay: true };
+        context.state.data.lastSeq = 0;
+      }
+      await context.state.save();
+      if (resent > 0) {
+        context.host.notify(
+          `obsync: The server was restored to an earlier state; this device re-sent ${resent} change${resent === 1 ? "" : "s"}.`,
+        );
+      }
+    });
   }
 
   // --- reconciliation, the periodic scan and the heartbeat ---------------
@@ -1478,12 +2199,12 @@ export class SyncEngine {
    * recorded path the vault no longer has. This is what makes an edit made
    * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
-  reconcile(): Promise<void> {
-    return this.track(this.reconcileLocal());
+  reconcile(verifyContent = false): Promise<void> {
+    return this.track(this.reconcileLocal(verifyContent));
   }
 
-  private async reconcileLocal(): Promise<void> {
-    await this.survey(await this.need().host.list(), true, "reconcile");
+  private async reconcileLocal(verifyContent: boolean): Promise<void> {
+    await this.survey(await this.need().host.list(), true, "reconcile", verifyContent);
   }
 
   /**
@@ -1509,6 +2230,10 @@ export class SyncEngine {
   private async scanLocal(): Promise<void> {
     const context = this.need();
     try {
+      // FIRST, so the listing below sees where they went: a note waiting
+      // beside its name for one this device's own user has since freed
+      // (issue #149).
+      await settleBeside(context, context.state.data.lastSeq, "scan");
       const own = context.host.scan === undefined ? null : await context.host.scan();
       await this.survey(own ?? await context.host.list(), false, "scan");
     } catch (error) {
@@ -1537,11 +2262,12 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyContent = false): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
+    const verify: VaultStat[] = [];
     let skipped = 0;
     // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
     // The scan is additive and never publishes a tombstone, and a folder
@@ -1594,7 +2320,10 @@ export class SyncEngine {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
       seen.add(file.path);
-      if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) continue;
+      if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) {
+        if (verifyContent) verify.push(file);
+        continue;
+      }
       fresh.push(file);
     }
     // The listing by folded name, built once: a vault of ten thousand files
@@ -1643,13 +2372,12 @@ export class SyncEngine {
     // normalisation check settled is handled in exactly the same way.
     let moves = 0;
     let declined = 0;
+    const freshByStat = byStat(fresh);
     for (const from of gone) {
       if (!this.running) return;
       const record = context.state.fileByPath(from);
       if (record === undefined || settled.has(from)) continue;
-      const candidates = fresh.filter((file) => !settled.has(file.path) &&
-        file.mtime === record.mtime && file.size === record.size &&
-        context.state.fileByPath(file.path) === undefined);
+      const candidates = this.carriers(record, freshByStat, settled);
       if (candidates.length !== 1) continue;
       const to = (candidates[0] as VaultStat).path;
       if (await this.recordsOnly(context, from, to, recordedFolders, label)) {
@@ -1686,78 +2414,150 @@ export class SyncEngine {
         cased++;
         continue;
       }
-      if (!tombstones) continue;
       candidates.push(from);
     }
 
-    // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). A
-    // selected folder renamed from outside Obsidian while the app was closed
-    // reaches this pass as EVERY recorded path under it having vanished: no
-    // rename event ever arrived, the new paths sit outside the selection, and
-    // the old ones are gone. Published, those tombstones delete the notes on
-    // every other device, while the notes themselves sit untracked on this
-    // one under the new name. The vault is not empty and nothing asked for a
-    // deletion; the only thing that happened is that this device stopped
-    // being able to see its own files.
+    // BYTES STILL IN THE VAULT ARE NOT A DELETION (issue #139), in both
+    // passes. A selected folder renamed while the app was closed leaves its
+    // notes under a name the selection does not cover, which no listing of
+    // the selection can show: the whole index is asked instead, and a note
+    // found there LEFT the selection -- never a deletion, never a hold.
+    // Asked only when something is gone, which is almost never.
+    const missing: string[] = [];
+    const left: string[] = [];
+    if (candidates.length > 0) {
+      const index = byStat(await context.host.inventory());
+      for (const from of candidates) {
+        if (!this.running) return;
+        // The moves are the pairing above's, which saw every file of the
+        // selection; what is left to find here is outside it.
+        const outcome = await this.follow(context, from, index, settled);
+        if (outcome === "left") left.push(from);
+        else if (outcome === null) missing.push(from);
+      }
+      for (const from of left) this.leftScope(from);
+    }
+
+    // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). What
+    // is still missing here has no bytes anywhere in the index -- a folder
+    // moved out of the vault, a volume that mounted empty, an index not yet
+    // built -- and when that is most of what this device tracks, nothing
+    // asked for a deletion: this device has stopped being able to see its
+    // own files. Published, those tombstones delete the notes on every other
+    // device.
     //
     // So the pass holds them, says what it found, and publishes nothing until
     // the user says which it was. `confirmHeldDeletions` is the other half:
     // a folder the user really did delete still reaches every device, one
     // click later. The rule is deliberately about SHARE and not about
-    // folders -- a rename of the one selected folder, a move of the vault
-    // root, and a volume that mounted empty all arrive here identically, and
-    // the share is what they have in common.
+    // folders -- a move of the vault root and a volume that mounted empty
+    // arrive here identically, and the share is what they have in common.
     //
-    // ONLY THIS PASS MAY TOUCH THE HOLD. The periodic scan reaches here with
-    // no candidates at all -- it never tombstones -- so letting it fall into
-    // the publishing branch below would clear a hold the startup pass took,
-    // thirty seconds later and with nobody asked. The whole decision is
-    // therefore inside `tombstones`.
+    // WHAT THIS DEVICE TRACKS IS WHAT ITS SELECTION COVERS (issue #172).
+    // Narrowing the selection keeps the records outside it, and counted,
+    // they diluted the share: twelve of twenty selected notes gone was
+    // measured as twelve of twenty-nine, and published.
+    //
+    // ONLY THE USER MAY PUBLISH THE HOLD, and only this pass may take one.
+    // The periodic scan never tombstones, so letting it fall into the
+    // publishing branch below would clear a hold the startup pass took,
+    // thirty seconds later and with nobody asked. And a hold still pending is
+    // the user's question, not this pass's: re-derived from scratch, a Sync
+    // now after a partial fix fell under half and published what the user
+    // was still being asked about (issue #172). So a pass holds what is still
+    // missing, and all either pass may do is stop OFFERING a note that is no
+    // longer missing -- back, moved, or out of the selection -- which
+    // publishes nothing and takes nothing from the user's decision but a note
+    // that was never gone (issue #139).
     let removed = 0;
-    const tracked = Object.keys(context.state.data.files).length;
-    if (!tombstones) {
-      // Nothing to publish and nothing to decide.
-    } else if (candidates.length >= BULK_DELETION_MIN && candidates.length * 2 > tracked) {
-      this.heldDeletions = candidates;
+    const scope = context.state.data.syncFolders;
+    const tracked = Object.keys(context.state.data.files).filter((path) => inSyncScope(path, scope)).length;
+    const still = new Set(missing);
+    const kept = this.heldDeletions.filter((path) => still.has(path));
+    if (kept.length < this.heldDeletions.length) {
       context.host.log(
-        `${label} decision=refused reason=bulk_deletion candidates=${candidates.length} tracked=${tracked}`,
+        `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+      );
+      this.heldDeletions = kept;
+    }
+    if (tombstones && (kept.length > 0 || (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
+      this.heldDeletions = missing;
+      context.host.log(
+        `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked} pending=${kept.length}`,
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
         context.host.notify(
-          `obsync stopped ${candidates.length} deletions it was about to send to your other devices: ` +
-            `it can no longer see ${candidates.length} of the ${tracked} notes it syncs here, and nothing ` +
+          `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
+            `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
             "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
             "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
             "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
         );
       }
-    } else {
+    } else if (tombstones) {
       this.heldDeletions = [];
       this.bulkNoticeShown = false;
-      for (const from of candidates) {
+      for (const from of missing) {
         this.deletions.add(from);
         this.enqueue(from);
         removed++;
       }
     }
 
+    // A FILE THIS DEVICE ALREADY PUBLISHED IS NOT A NEW FILE (issue #181).
+    // A record can be lost with its version live -- a session's late save
+    // over its successor's, a force-quit between the post and the save -- and
+    // published again it took a NEW file id, whose twin the identical-name
+    // rule then retired with a deletion. So the name is asked of this
+    // device's own newest live version first, and a file that is still
+    // exactly what this device published is recorded as that version again.
+    // "Exactly" is `isPushed`, the one definition this pass already trusts
+    // for every tracked file, against the stat this device's own manifest
+    // carries.
+    const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
+    const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
     let queued = 0;
-    for (const file of fresh) {
-      if (!this.running) return;
-      if (settled.has(file.path)) continue;
+    for (const file of verify) {
       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
       this.enqueue(file.path);
       queued++;
     }
+    let adopted = 0;
+    for (const file of fresh) {
+      if (!this.running) return;
+      if (settled.has(file.path)) continue;
+      if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+      const note = own?.notes.get(file.path);
+      if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
+        const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
+        if (isPushed(record, file.mtime, file.size)) {
+          context.state.setFile(file.path, record);
+          context.host.log(`${label} path_class=file decision=adopted reason=own_version file=${note.file_id}`);
+          adopted++;
+          continue;
+        }
+      }
+      this.enqueue(file.path);
+      queued++;
+    }
+    if (own !== null) {
+      context.host.log(
+        `${label} decision=held since=${own.since} untracked=${untracked.length} adopted=${adopted} ` +
+          `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - own.started}`,
+      );
+    }
     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
     // retired once the notes under it have published their own tombstones, so
-    // the receiver's folder is empty by the time it is asked to remove it.
+    // the receiver's folder is empty by the time it is asked to remove it. In
+    // a pass where notes LEFT the selection, the folders that went left with
+    // them (`settleVanished`).
     if (tombstones) {
       for (const folder of Object.keys(context.state.data.folders)) {
         if (!this.running) return;
         if (present.has(folder) || casedFolders.has(folder)) continue;
         if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
         this.folderRemovals.add(folder);
         this.enqueue(folder);
         folderQueued++;
@@ -1774,11 +2574,40 @@ export class SyncEngine {
         `${label} decision=queued files=${seen.size} queued=${queued} moved=${moves} removed=${removed} ` +
           `folders=${present.size} folders_queued=${folderQueued} folders_skipped=${folderSkipped} ` +
           `skipped=${skipped} budget_ms=${SCAN_BUDGET_MS} duration_ms=${duration} cased=${cased} ` +
-          `not_paired=${declined}`,
+          `not_paired=${declined} left=${left.length}`,
       );
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).
     this.sweepEchoes(context, label);
+  }
+
+  /**
+   * This device's own newest live notes, by name (issue #181): ONE walk of
+   * the feed per start, from this device's cursor -- a version whose record
+   * was lost was posted after the cursor that was saved with it -- and only
+   * when some name has no record. The reader is pairing's (`heldNotes`). A
+   * walk that fails leaves those files to be published as they always were,
+   * which costs a duplicate id, never a note: a retirement never deletes what
+   * its keeper holds (`pull.ts`, `retiredInto`).
+   */
+  private async ownNotes(
+    context: SyncContext,
+    untracked: number,
+  ): Promise<{ notes: Map<string, HeldNote>; since: number; started: number } | null> {
+    if (untracked === 0 || this.ownRead) return null;
+    this.ownRead = true;
+    const started = context.now();
+    const since = context.state.data.lastSeq;
+    try {
+      const held = await heldNotes(context.transport, context.manifestKey, since);
+      return { notes: new Map([...held].filter(([, note]) => note.device_id === context.deviceId)), since, started };
+    } catch (error) {
+      context.host.log(
+        `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
+          `untracked=${untracked} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -1901,6 +2730,12 @@ export class SyncEngine {
       }
     }
     this.echoSweep = armed;
+    // And what the rewrite storm is judged by (issue #179): an arrival once
+    // nothing can answer it any more, and a verdict one pass after its edit,
+    // so neither grows with the vault for as long as the plugin runs.
+    const now = context.now();
+    for (const [path, at] of context.arrivals) if (now - at >= ANSWER_MS) context.arrivals.delete(path);
+    for (const [fileId, verdict] of context.answering) if (now - verdict.mtime >= SCAN_MS) context.answering.delete(fileId);
     // No path in the line: a name is vault content (requirement 6).
     if (expired > 0) context.host.log(`${label} decision=echo_expired marks=${expired} armed=${armed.size}`);
   }
@@ -2031,7 +2866,20 @@ export class SyncEngine {
   async syncNow(): Promise<void> {
     const started = this.nowFn();
     const joined = this.draining;
-    await this.reconcile();
+    const pending = this.heldDeletions.length > 0;
+    // A paused note first, so what it holds is in the pass below (issue #179).
+    await this.resume();
+    // An explicit repair command verifies content even when a fixed-width
+    // plugin rewrite retained both recorded metadata fields (#179).
+    await this.reconcile(true);
+    // The command that "syncs everything" did not send the deletions the user
+    // is still being asked about, and says so rather than nothing (#172).
+    if (pending && this.heldDeletions.length > 0) {
+      this.options.host.notify(
+        `obsync is still holding back ${this.heldDeletions.length} deletions: Sync now does not send them. Put ` +
+          "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
+      );
+    }
     const queued = this.queue.length;
     const inFlight = this.active;
     await this.drain();
@@ -2041,6 +2889,7 @@ export class SyncEngine {
       `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
     );
+    await this.retryParked("sync_now");
     await this.repairTick();
   }
 
@@ -2096,7 +2945,15 @@ export class SyncEngine {
       if (!this.running || this.repair !== repair) return;
       if (result.kind === "idle") delay = REPAIR_SCAN_MS;
       if (result.kind === "repaired") host.log(`repair decision=verified bytes=${result.bytes} ${budget()}`);
-      else if (result.kind !== "unresolved") host.log(`repair decision=${result.kind} ${budget()}`);
+      else if (result.kind === "lost") {
+        // NOT A READ OR WRITE FAILURE (issue #145): the server does not hold
+        // the version this device recorded. The feed loop decides what that
+        // is -- a version too young to have been collected is a restore --
+        // before it applies anything else.
+        const verdict = young(this.nowFn(), result.ts) ? "restored" : "suspected";
+        host.log(`repair decision=lost reason=unknown_version verdict=${verdict} file=${result.fileId} ${budget()}`);
+        if (!this.judged.has(result.fileId)) this.restoreDue ??= { verdict, reason: "repair" };
+      } else if (result.kind !== "unresolved") host.log(`repair decision=${result.kind} ${budget()}`);
       if (result.kind === "unresolved") {
         host.log(`repair decision=unresolved reason=${result.reason} ${budget()}`);
         const message = result.reason === "range_read_unavailable"

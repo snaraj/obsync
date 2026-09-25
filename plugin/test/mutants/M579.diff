@@ -1,0 +1,11 @@
+# M579: a peer hold disappears on restart because it was never persisted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -952,7 +952,6 @@
+     await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
+   if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   context.state.data.paused[manifest.target] = { path, remote: true };
+-  await context.state.save();
+   context.host.log(`pull decision=paused reason=peer_rewrite_storm file=${manifest.target} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+   context.host.notify(`obsync paused syncing ${path}: another device detected repeated rewrites after sync. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+   return "skipped";

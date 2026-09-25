@@ -1,0 +1,12 @@
+# M165: each device publishes its own first version of the shared copy, so the copy is published twice
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2150,7 +2150,7 @@
+   const sids = manifest.chunks.map((chunk) => chunk.sid);
+   let occupant = await context.host.stat(path);
+   if (occupant !== null && (own?.edited || (await alreadyCopied(context, copy, path, occupant)) === null)) return null;
+-  const posted = await postManifest(context, fileId, [], sids, copy, copy.size, true);
++  const posted = await postManifest(context, fileId, [], sids, copy, copy.size, false);
+   let landed = occupant ?? (await createOnly(context, copy, own?.text));
+   if (landed === null) {
+     occupant = await context.host.stat(path);

@@ -1,0 +1,11 @@
+# M189: every deletion from another device leaves an empty hidden folder behind in the note's folder
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1247,7 +1247,6 @@
+     // The destructive call, at last, and aimed at a name no editor writes to.
+     const slash = path.lastIndexOf("/") + 1;
+     await this.remove(`${path.slice(0, slash)}${name}/${path.slice(slash)}`);
+-    await fs.promises.rmdir(folder).catch(() => this.log("host path_class=folder decision=kept reason=rmdir_refused"));
+     // And the hold has the last word, because a rename does not close an
+     // editor's DESCRIPTOR: a program that still holds the file open writes
+     // through it wherever its name has gone, including between the proof

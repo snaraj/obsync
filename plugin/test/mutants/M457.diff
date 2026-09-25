@@ -1,0 +1,11 @@
+# M457: a keeper this device records elsewhere is recorded at a second name too
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2591,7 +2591,6 @@
+   path: string,
+   ours: FileState,
+ ): Promise<boolean> {
+-  if (context.state.pathByFileId(keeper) !== undefined) return false;
+   const started = context.now();
+   const file = await context.transport.getFile(keeper).catch((error: unknown) => {
+     if (error instanceof ApiError && error.code === "unknown_file") return null;

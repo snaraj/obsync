@@ -1,0 +1,12 @@
+# M307: a ceiling is kept per keystroke, so a typo like "1 MX" leaves a one-byte ceiling that makes every new note remote-only
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -595,7 +595,7 @@
+   private ceiling(setting: Setting, row: string, key: keyof Policy, describe: () => string): void {
+     let typed = formatBytes(this.plugin.state.data.policy[key]);
+     setting.addText((field) => {
+-      field.setValue(typed).onChange((value) => { typed = value; });
++      field.setValue(typed).onChange((value) => { typed = value; const kept = parseBytes(value); if (kept !== null) this.plugin.state.data.policy[key] = kept; });
+       field.inputEl.addEventListener("change", () => {
+         const policy = this.plugin.state.data.policy;
+         const bytes = parseBytes(typed);
