@@ -116,6 +116,9 @@ said `obsync: idle`. Now text typed on different lines is merged as you go, and
 both devices end on the same note holding both texts, with no conflict copy.
 When both devices add text at the end of the same line, their shared addition
 is kept once and the different additions are joined in the same order on both.
+Continued typing before text received from the other device also merges while
+keeping the line's original characters. Shared merge ancestors are combined
+first so text already present on both sides is not added again.
 Changes that replace the same existing text still conflict: every device keeps
 the same version as the note, and the other goes into one conflict copy that every
 device holds, named after the device that wrote it, the time in UTC and a short

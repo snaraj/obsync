@@ -107,7 +107,7 @@ function lineEdits(base: string[], side: string[], alignment: Map<number, number
 
 /** Both users only appended: retain the shared prefix and order additions alike. */
 function mergeLineAppends(base: string, mine: string, theirs: string): string | null {
-  if (!mine.startsWith(base) || !theirs.startsWith(base)) return null;
+  if (!mine.startsWith(base) || !theirs.startsWith(base)) return mergeLineInsertions(base, mine, theirs);
   const left = mine.slice(base.length);
   const right = theirs.slice(base.length);
   let shared = 0;
@@ -119,6 +119,30 @@ function mergeLineAppends(base: string, mine: string, theirs: string): string | 
   const a = left.slice(shared);
   const b = right.slice(shared);
   return base + left.slice(0, shared) + (a < b ? a + b : b + a);
+}
+
+/**
+ * After a merge, continued typing can precede text learned from the peer.
+ * It still extends an unchanged beginning: every original code point must
+ * remain on both sides, with the first one in place. Align those anchors
+ * under the same memory bound, then merge each gap independently. Competing
+ * prefixes, replacements and deletions remain conflicts.
+ */
+function mergeLineInsertions(base: string, mine: string, theirs: string): string | null {
+  const points = [...base], left = [...mine], right = [...theirs];
+  const a = alignLines(points, left), b = alignLines(points, right);
+  if (a === null || b === null || a.size !== points.length || b.size !== points.length) return null;
+  if (a.get(0) !== 0 || b.get(0) !== 0) return null;
+  const out: string[] = [];
+  let m = 0, t = 0;
+  for (let at = 0; at <= points.length; at++) {
+    const endM = at === points.length ? left.length : a.get(at) as number;
+    const endT = at === points.length ? right.length : b.get(at) as number;
+    out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);
+    if (at < points.length) out.push(points[at] as string);
+    m = endM + 1; t = endT + 1;
+  }
+  return out.join("");
 }
 
 /**

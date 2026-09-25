@@ -671,6 +671,47 @@ test("two merges of one pair merge again, on the pair merged as their base", asy
   assert.ok(r.host.logs.some((line) => line.includes("decision=merge_base reason=criss_cross")), pulls(r.host));
 });
 
+test("a clean-looking append uses both shared ancestors without replaying their text", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "ab\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  const right = await foreign(r, root.fileId, "abR\n", [root.versionId], 2000);
+  const left = await foreign(r, root.fileId, "abL\n", [root.versionId], 3000);
+  const parents = [left.version_id, right.version_id];
+  const ours = await foreign(r, root.fileId, "abLRx\n", parents, 4000);
+  const theirs = await foreign(r, root.fileId, "abLyR\n", parents, 5000);
+  const mine = r.host.seed(NOTE, "abLRx\n", 4000);
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: ours.version_id,
+    mtime: 4000, size: mine.length, sha256: await sidDigest(ours.sids) });
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), "abLyRx\n", "the shared R is old text, not two independent additions");
+  assert.deepEqual(copies(r.host), []);
+  assert.equal(r.server.files.get(root.fileId).heads.length, 1);
+});
+
+for (const deeper of [false, true]) test(`an unresolvable shared base cannot be replaced by one ancestor (deeper: ${deeper})`, async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "ab\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  let stamp = 1000;
+  const post = (text, parents) => foreign(r, root.fileId, text, parents, stamp += 1000);
+  const right = await post("XY\n", [root.versionId]);
+  const left = await post("abL\n", [root.versionId]);
+  let parents = [left.version_id, right.version_id];
+  if (deeper) {
+    const a = await post("abL1\n", parents), b = await post("abL2\n", parents);
+    parents = [a.version_id, b.version_id];
+  }
+  const text = deeper ? "abL12" : "abL";
+  const ours = await post(text + "x\n", parents), theirs = await post(text + "y\n", parents);
+  const mine = r.host.seed(NOTE, text + "x\n", stamp - 1000);
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: ours.version_id,
+    mtime: stamp - 1000, size: mine.length, sha256: await sidDigest(ours.sids) });
+  assert.notEqual(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(copies(r.host).length, 1);
+  assert.deepEqual([r.host.text(NOTE), r.host.text(copies(r.host)[0])].sort(), [text + "x\n", text + "y\n"].sort());
+});
+
 test("typing beyond a criss-cross head is published before another merge of that pair", async () => {
   const r = await rig();
   const theirs = await crissCross(r, (base) => foreign(r, base.fileId, "ONE\ntwo\nthree\nfour\nfive\n", [base.versionId], 2000));

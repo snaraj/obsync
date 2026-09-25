@@ -1,9 +1,9 @@
 # M727: unpublished typing is included in another criss-cross merge before its own upload
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2191,17 +2191,7 @@
-         }
-       }
+@@ -2198,17 +2198,7 @@
+       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
        if (merged.ok) {
 -        if (crossed) {
 -          const own = await manifestOf(context, file, change, localVersionId);

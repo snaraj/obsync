@@ -1,12 +1,12 @@
 # M306: a criss-cross is followed one level deeper than the bound, so another device's version graph decides how much this device downloads and holds
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2344,7 +2344,7 @@
-   }
-   const [rootText, otherText] = texts as [string, string];
-   let merged = threeWayMerge(rootText, firstText, otherText);
--  if (!merged.ok && levels > 1) {
-+  if (!merged.ok && levels > 0) {
-     const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
-     if (deeper !== null) merged = threeWayMerge(deeper, firstText, otherText);
-   }
+@@ -2774,7 +2774,7 @@
+     ({ version_id: id }) => id !== left && id !== right && !below.has(id) && fromLeft.has(id) && fromRight.has(id),
+   )?.version_id;
+   if (other === undefined) return null;
+-  if (levels === 0) return false;
++  if (levels === -1) return false;
+   const root = commonAncestor(file.versions, first, other, parents);
+   const texts: string[] = [];
+   for (const id of [root, other]) {

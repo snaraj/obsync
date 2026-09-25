@@ -1,0 +1,12 @@
+# M766: accept stale background proof
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2368,7 +2368,7 @@
+   if (record === undefined || context.host.typing(path)) return null;
+   const judged = context.answering.get(fileId);
+   const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+-  return judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
++  return judged !== undefined ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
+ }
+
+ /**

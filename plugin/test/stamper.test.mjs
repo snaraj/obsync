@@ -688,6 +688,123 @@ test("answer flags distinguish actual input from passive buffer lag", async () =
   assert.equal(await answerOf(r.context, NOTE, r.host.clock), null);
 });
 
+for (const typed of [false, true]) test(`a later arrival cannot erase the verdict on a waiting local save (typed: ${typed})`, async (t) => {
+  const run = await devices(t, "# n10\nlocal: base\nremote: base\n");
+  const { a, b, fileId, advance } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = a.engine.need(), bc = b.engine.need();
+  const firstArrival = bc.arrivals.get(NOTE);
+  assert.equal(typeof firstArrival, "number");
+  await advance(500);
+  b.host.write(NOTE, b.host.text(NOTE).replace("local: base", "local: changed"), b.host.clock);
+  if (typed) {
+    b.host.inputAt.set(NOTE, b.host.clock);
+    await b.engine.answered(bc, await b.host.stat(NOTE));
+    b.host.inputAt.delete(NOTE); // The editor has closed before the next arrival.
+  }
+  const saved = await b.host.stat(NOTE);
+  await advance(100);
+  a.host.write(NOTE, a.host.text(NOTE).replace("remote: base", "remote: changed"), a.host.clock);
+  const next = await pushFile(ac, NOTE);
+  const frame = run.server.journal.find(entry => entry.version_id === next.versionId);
+  assert.equal(await b.engine.receive(bc, frame), "skipped", "the pending local save must publish before this fast-forward");
+  assert.ok(bc.arrivals.get(NOTE) > saved.mtime, "a later arrival replaces the old arrival time");
+  await b.engine.answered(bc, saved); // The debounced watcher finally settles.
+  const posted = await pushFile(bc, NOTE);
+  const { decryptRecordManifest } = require("../build/sync/pull.js");
+  const manifest = await decryptRecordManifest(ac, run.server.journal.find(entry => entry.version_id === posted.versionId));
+  assert.equal(manifest.answer === true, !typed, "the published verdict describes this save, not the most recent arrival");
+});
+
+for (const mode of ["unchanged", "missing", "replaced", "outside"]) test(`arrival bookkeeping cannot classify ${mode} bytes as a local rewrite`, async (t) => {
+  const run = await devices(t, "# n10\nunchanged\n");
+  const { a, b, fileId, advance } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = a.engine.need(), bc = b.engine.need();
+  await advance(500);
+  a.host.write(NOTE, "# n10\nremote edit\n", a.host.clock);
+  const next = await pushFile(ac, NOTE);
+  const frame = run.server.journal.find(entry => entry.version_id === next.versionId);
+  const stat = b.host.stat.bind(b.host);
+  if (mode === "missing") b.host.files.delete(NOTE);
+  if (mode === "outside") b.state.data.syncFolders = ["Elsewhere"];
+  if (mode === "replaced" || mode === "outside") b.host.stat = async path => {
+    if (path === NOTE) {
+      assert.notEqual(mode, "outside", "do not inspect a note outside the selected folders");
+      b.host.seed(NOTE, "an unrelated local file", b.host.clock);
+      b.state.setFile(NOTE, { ...b.state.fileByPath(NOTE), fileId: "aa".repeat(16) });
+    }
+    return await stat(path);
+  };
+  await b.engine.receive(bc, frame);
+  assert.equal(bc.answering.size, 0, "a remote version, vanished file or different identity provides no local-edit proof");
+  if (mode === "unchanged") assert.equal(b.host.text(NOTE), a.host.text(NOTE));
+});
+
+test("arrival bookkeeping does not inspect an old path outside the selected folders", async (t) => {
+  const run = await devices(t, "# n10\nbase\n");
+  const { a, b, fileId } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = a.engine.need(), bc = b.engine.need();
+  b.state.data.syncFolders = ["Inside"];
+  const frame = await run.server.publish({ fileId, path: "Inside/moved.md", bytes: new TextEncoder().encode("moved\n"),
+    mtime: b.host.clock, parents: [b.state.fileByPath(NOTE).versionId], domainKey: ac.domainKey, manifestKey: ac.manifestKey });
+  const stat = b.host.stat.bind(b.host);
+  let inspected = 0;
+  b.host.stat = async path => { if (path === NOTE) inspected++; return await stat(path); };
+  await b.engine.receive(bc, frame);
+  assert.equal(inspected, 0, "incoming metadata may name a selected destination without admitting its unselected old path");
+  assert.equal(bc.answering.size, 0);
+});
+
+for (const mode of ["echo", "invalid", "nested"]) test(`a ${mode} version supplies no pre-write arrival evidence`, async (t) => {
+  const run = await devices(t, "# n10\nbase\n");
+  const { a, b, advance } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = a.engine.need(), bc = b.engine.need();
+  const before = bc.arrivals.get(NOTE);
+  const original = b.host.text(NOTE);
+  await advance(ANSWER_MS + 1);
+  a.host.write(NOTE, "# n10\nremote\n", a.host.clock);
+  const next = await pushFile(ac, NOTE);
+  const frame = { ...run.server.journal.find(entry => entry.version_id === next.versionId) };
+  if (mode === "echo") frame.device_id = bc.deviceId;
+  if (mode === "invalid") frame.manifest_ct = "AAAA";
+  if (mode === "nested") b.host.inNestedVault = async path => path === NOTE;
+  await b.engine.receive(bc, frame);
+  assert.equal(bc.arrivals.get(NOTE), before, "an ignored or unauthenticated record cannot replace arrival evidence");
+  assert.equal(b.host.text(NOTE), original);
+});
+
+test("a host plugin can recognize an arrival before the incoming write returns", async (t) => {
+  const run = await devices(t, "# n10\nbase\n");
+  const { a, b, advance } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = a.engine.need(), bc = b.engine.need();
+  await advance(ANSWER_MS + 1);
+  a.host.write(NOTE, "# n10\nremote\n", a.host.clock);
+  const next = await pushFile(ac, NOTE);
+  const frame = run.server.journal.find(entry => entry.version_id === next.versionId);
+  const writer = b.host.writer.bind(b.host);
+  let observed;
+  b.host.writer = async path => {
+    const sink = await writer(path), commit = sink.commit.bind(sink);
+    sink.commit = async mtime => {
+      const stat = await commit(mtime);
+      if (path === NOTE) observed = await answerOf(bc, NOTE, b.host.clock);
+      return stat;
+    };
+    return sink;
+  };
+  assert.equal(await b.engine.receive(bc, frame), "applied");
+  assert.equal(observed, b.host.clock, "the filesystem event must already have the authenticated arrival's time");
+});
+
 // Native n14: A sees B's published automatic answer BEFORE B sees A's
 // competing save. A's active editor must not first be replaced by the older
 // answer (splitting ABCDEFGH into the copy and ABCDIJKL into the main note).

@@ -944,6 +944,14 @@ returns immediately when a new frame lands.
    original text, keep their common appended prefix once (by Unicode code
    point), then join their different additions in lexicographic order.
    This gives both devices the same text without using a clock or device role.
+   Continued typing before an already received suffix uses code-point
+   alignment under the same 4,000,000-cell bound: all original characters
+   must remain in order, with the first in place. Each gap merges by the same
+   shared-prefix rule. Competing prefixes remain conflicts. If the graph
+   has two incomparable common ancestors, combine them before comparing the
+   current edits, even when the first comparison would look clean. An
+   unresolvable or over-depth shared base refuses the merge; it cannot fall
+   back to just one ancestor and replay the other's text.
    Replacements of existing characters and multi-line overlaps stay conflicts.
    A clean merge posts a new version with both heads as parents.
    Two heads that do not merge (binary, no
@@ -959,9 +967,10 @@ returns immediately when a new frame lands.
    its note holds beyond that head into the copy as its next version, and its
    note is replaced only if it is exactly as it was read. A head that a later
    version has replaced is settled against that version instead. Delete
-   versus edit keeps BOTH, and so does a pair the rule cannot see (a rename
-   against an edit, a copy name already taken): the foreign head is written
-   as `<name> (conflict from <device>, <date>).<ext>` and the user is told.
+   versus edit keeps the live edit as one current head, with the deletion in
+   history. A pair the rule cannot see (a rename against an edit, a copy name
+   already taken) keeps both: the foreign head is written as
+   `<name> (conflict from <device>, <date>).<ext>` and the user is told.
    The status reads `syncing` while a note waits on this device's own push to
    settle a fork, and only while that push is in flight; a parked file is
    named before it. obsync never silently discards an edit.

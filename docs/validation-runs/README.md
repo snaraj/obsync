@@ -67,3 +67,5 @@ legible is naming the wrong fact: name the class instead.
 - [Historical catch-up and typing repairs](2026-09-24-history-and-typing.md): bounded history replay, adjacent line edits, same-line appends and preserved safety witnesses.
 
 - [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md): opaque masks, metadata removal and unchanged visible evidence.
+
+- [Arrival timing and shared merge bases](2026-09-24-arrival-and-shared-base.md): background Resume roles, continued typing, shared-text duplication and retained failed schedules.

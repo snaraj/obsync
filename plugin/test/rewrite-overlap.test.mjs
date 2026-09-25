@@ -106,7 +106,92 @@ for (const typed of [false, true]) test(`a received hold uses the target note's 
 });
 
 const { resumePaused, decryptRecordManifest } = require("../build/sync/pull.js");
+// A clean merge can finish while the editor's encrypted hold is in flight.
+// Its own filesystem write must not turn the background author into the
+// editor on Resume: the merged note still contains that author's rewrite.
+for (const settled of [true, false]) for (const delivery of ["control", "overlap"]) test(`a clean merge retains the background role before a delayed ${delivery} (settled: ${settled})`, async () => {
+  const r = await rig();
+  r.host.seed(NOTE, BASE, r.host.clock - 60_000);
+  r.base = await pushFile(r.context, NOTE);
+  let background = BASE.replace("stamp: base", "stamp: background");
+  r.host.seed(NOTE, background, r.host.clock);
+  r.context.answering.set(r.base.fileId, { mtime: r.host.clock, arrived: r.host.clock - 1000 });
+  const answer = await pushFile(r.context, NOTE);
+  assert.equal((await decryptRecordManifest(r.context, r.server.journal.find(v => v.version_id === answer.versionId))).answer, true);
+  r.host.clock += 100;
+  if (!settled) {
+    r.context.arrivals.set(NOTE, r.host.clock - 1000);
+    background = BASE.replace("stamp: base", "stamp: background again");
+    r.host.seed(NOTE, background, r.host.clock);
+    // The next stamp has not reached the debounce verdict yet.
+    assert.notEqual(r.context.answering.get(r.base.fileId).mtime, r.host.clock);
+    r.host.clock += 100;
+  }
+  const clean = await peer(r, BASE.replace("end", "remote end"), [r.base.versionId], false);
+  assert.equal(await applyChange(r.context, clean), "merged");
+  assert.equal(r.host.text(NOTE), background.replace("end", "remote end"));
+  assert.deepEqual(r.state.data.paused, {}, "a clean merge alone must not pause syncing");
+  if (delivery === "control") {
+    const id = await pauseId(r.context, r.base.fileId);
+    const manifest = { v: 3, kind: "pause", target: r.base.fileId, paused: true, path: NOTE,
+      domain: r.context.domainId, size: 0, chunks: [], sha256: "", deleted: false };
+    const control = await r.server.publishManifest({ fileId: id, manifest, sids: [], parents: [], deviceId: PEER,
+      manifestKey: r.keys.manifestKey, bytes: 0 });
+    await applyChange(r.context, control);
+    assert.equal(r.server.files.get(id).versions.length, 1, "receiving the hold must not answer with a duplicate control");
+  } else {
+    const overlap = await peer(r, BASE.replace("stamp: base", "stamp: editor"), [r.base.versionId], false);
+    await applyChange(r.context, overlap);
+  }
+  assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE } }, "Resume must keep background bytes beside the editor's note");
+  assert.deepEqual((await r.reload()).data.paused, r.state.data.paused);
+  assert.equal(r.host.files.size, 1, "hold before making a conflict copy");
+  assert.equal(r.host.notices.filter(n => n.startsWith(`${NOTE} was rewritten on this device`)).length, 1);
+});
+
 const HELD = "stamp: held later\n\nABCDEFGH plus independent held text\n\nend\n";
+for (const verdict of ["absent", "user", "stale", "typing", "typing_during", "typing_expired_during", "incoming"]) test(`a clean merge cannot create background proof from ${verdict} input`, async () => {
+  const r = await rig();
+  r.host.seed(NOTE, BASE, r.host.clock - 60_000);
+  r.base = await pushFile(r.context, NOTE);
+  const local = BASE.replace("stamp: base", "stamp: local");
+  r.host.seed(NOTE, local, r.host.clock);
+  if (verdict !== "absent") r.context.answering.set(r.base.fileId, {
+    mtime: r.host.clock - (verdict === "stale" ? 1 : 0),
+    arrived: verdict === "user" ? null : r.host.clock - 1000,
+  });
+  await pushFile(r.context, NOTE);
+  r.host.clock += 100;
+  if (verdict === "typing" || verdict === "typing_expired_during") r.host.inputAt.set(NOTE, r.host.clock);
+  if (verdict === "typing_during" || verdict === "typing_expired_during") {
+    const writer = r.host.writer.bind(r.host);
+    r.host.writer = async path => {
+      const sink = await writer(path), commit = sink.commit.bind(sink);
+      sink.commit = async mtime => {
+        if (verdict === "typing_during") r.host.inputAt.set(NOTE, r.host.clock);
+        else r.host.clock += 10_001;
+        return await commit(mtime);
+      };
+      return sink;
+    };
+  }
+  const text = (verdict === "incoming" ? local : BASE).replace("end", "remote end");
+  const clean = await peer(r, text, [r.base.versionId], false);
+  assert.equal(await applyChange(r.context, clean), verdict === "incoming" ? "applied" : "merged");
+  assert.equal(r.host.text(NOTE), local.replace("end", "remote end"));
+  // The typing exemption must still hold after its recent-input window ends:
+  // the sync's own merge is not a later background edit of that user's work.
+  r.host.clock += 10_001;
+  const id = await pauseId(r.context, r.base.fileId);
+  const manifest = { v: 3, kind: "pause", target: r.base.fileId, paused: true, path: NOTE,
+    domain: r.context.domainId, size: 0, chunks: [], sha256: "", deleted: false };
+  const control = await r.server.publishManifest({ fileId: id, manifest, sids: [], parents: [], deviceId: PEER,
+    manifestKey: r.keys.manifestKey, bytes: 0 });
+  await applyChange(r.context, control);
+  assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
+  assert.equal(r.host.notices.filter(n => n.startsWith(`${NOTE} was rewritten on this device`)).length, 0);
+});
+
 async function heldFork() {
   const r = await fork();
   r.recorded = r.state.fileByPath(NOTE);

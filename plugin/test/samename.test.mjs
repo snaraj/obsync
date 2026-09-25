@@ -1121,6 +1121,10 @@ test("two devices that name one note twice converge, and stay converged", async 
   // act on, and "one rename" is a claim about those (review round 2,
   // finding 5). One file id's published path changes, exactly once, and it is
   // the higher of the two ids that contested the name.
+  // The two copies are visible before the mover's rename POST is durable.
+  // Three initial creations exist; wait for the follow-up publication, then
+  // retain the exact one-rename and correct-owner assertions below.
+  await timers.run(STEP_MS, () => server.journal.length > 3);
   const walks = new Map();
   for (const id of server.vaultFiles()) {
     walks.set(id, (await published(server, id, keys.manifestKey)).map((manifest) => manifest.path));

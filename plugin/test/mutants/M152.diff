@@ -1,17 +1,13 @@
 # M152: two different merges of one pair are never merged again, so every later version of the note becomes a conflict copy
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2183,13 +2183,6 @@
+@@ -2192,8 +2192,7 @@
        const decoder = new TextDecoder();
-       let merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
-       let crossed = false;
--      if (!merged.ok) {
--        const shared = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
--        if (shared !== null) {
--          crossed = true;
--          merged = threeWayMerge(shared, decoder.decode(mine), decoder.decode(theirs));
--        }
--      }
-       if (merged.ok) {
-         if (crossed) {
-           const own = await manifestOf(context, file, change, localVersionId);
+       // Even a clean-looking append can replay text from the other common
+       // ancestor. Resolve that shared base before comparing the new edits.
+-      const shared = mergeBase === baseManifest
+-        ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
++      const shared = null as string | null | false;
+       const crossed = typeof shared === "string";
+       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));

@@ -1,12 +1,12 @@
 # M484: an editor-typed note pauses after its editor closes because its saved verdict is ignored
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2229,7 +2229,7 @@
-   if (stat === null || record === undefined) return false;
-   const judged = context.answering.get(change.file_id);
+@@ -2368,7 +2368,7 @@
+   if (record === undefined || context.host.typing(path)) return null;
+   const judged = context.answering.get(fileId);
    const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
--  const arrived = judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
-+  const arrived = judged?.mtime === stat.mtime ? await answerOf(context, localPath, stat.mtime) : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
-   if (arrived === null || context.host.typing(localPath)) return false;
-   if (context.state.data.paused[change.file_id] !== undefined) return true;
-   context.state.data.paused[change.file_id] = { path: localPath };
+-  return judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
++  return judged?.mtime === stat.mtime ? await answerOf(context, path, stat.mtime) : unpushed ? await answerOf(context, path, stat.mtime) : null;
+ }
+
+ /**

@@ -3,10 +3,11 @@
 Two devices edited the same file before either of them synced. obsync never
 discards an edit to resolve that, so exactly one of two things happens.
 
-Changes in different paragraphs usually appear together in one note. When
-both devices change the same line, obsync keeps a second file beside the
-original so you can compare them. Your notes remain ordinary files you can
-open and edit in Obsidian.
+Changes in different paragraphs usually appear together in one note. Text
+added to the same line can also merge, including continued typing before text
+that just arrived from another device. When both devices replace the same
+existing text, obsync keeps a second file beside the original so you can
+compare them. Your notes remain ordinary files you can open and edit in Obsidian.
 
 ## What to do with a conflict copy
 
@@ -54,9 +55,12 @@ you a conflict copy instead:
   differ by thousands of lines in the middle exceed it, the merge answers
   `too_large`, and you get a conflict copy. Ordinary note editing is nowhere
   near this.
-- **The changes do not overlap.** Edits in different parts of the file merge
-  silently and you see one file with both changes; when both devices changed
-  THE SAME lines, the merge stops rather than guessing.
+- **The changes can be combined.** Edits in different parts of the file merge.
+  Additions to one line can merge when its original characters remain in order
+  on both devices and its beginning is unchanged. Shared added text appears
+  once; different additions at the same position use a consistent order.
+  Character alignment has the same 4,000,000-cell bound. Competing prefixes,
+  replacements and deletions of the same text remain conflicts.
 
 ## The same note on two devices is not a conflict
 

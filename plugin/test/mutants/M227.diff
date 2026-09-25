@@ -1,12 +1,12 @@
 # M227: every change the feed applies asks the server about its file again and logs a bogus release
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1902,7 +1902,7 @@
-       context.arrivals.delete(path);
-       context.arrivals.set(path, arrived);
-     }
+@@ -1927,7 +1927,7 @@
+     // First materialisation and renames can establish a different tracked
+     // path. Only an authenticated ordinary version supplies this evidence.
+     if (incoming) await remember();
 -    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
 +    await this.retryOne(context, change.file_id);
      return result;
    }
- 
+

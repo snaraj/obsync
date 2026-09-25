@@ -872,7 +872,7 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
 /**
  * Apply one change-feed record.
  */
-export async function applyChange(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
+export async function applyChange(context: SyncContext, change: ChangeRecord, incoming?: () => Promise<void>): Promise<ApplyResult> {
   // The owner-only domain map rides the same feed under a reserved file id
   // (`domainmap.ts`). It is not a vault file: it has no path, it is sealed
   // under `K_map` rather than a manifest key, and the engine already read it
@@ -906,6 +906,10 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
       throw new VaultPathError("nested_vault");
     }
+    // The engine must remember an authenticated arrival before a host plugin
+    // can answer the write below. Echoes, invalid manifests and nested vaults
+    // return before this point.
+    if (entry.v === 1) await incoming?.();
     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
       // A write THIS device's disk refused, or a chunk the server does not
       // hold: a fact about this one record, named with the path it was for,
@@ -2186,15 +2190,13 @@ async function resolve(
       const base = await assembleBytes(context, mergeBase);
       const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();
-      let merged = threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
-      let crossed = false;
-      if (!merged.ok) {
-        const shared = await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
-        if (shared !== null) {
-          crossed = true;
-          merged = threeWayMerge(shared, decoder.decode(mine), decoder.decode(theirs));
-        }
-      }
+      // Even a clean-looking append can replay text from the other common
+      // ancestor. Resolve that shared base before comparing the new edits.
+      const shared = mergeBase === baseManifest
+        ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+      const crossed = typeof shared === "string";
+      const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+        : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
       if (merged.ok) {
         if (crossed) {
           const own = await manifestOf(context, file, change, localVersionId);
@@ -2220,6 +2222,10 @@ async function resolve(
         if (ahead && !sameBytes(text, theirs)) return await deferToPush(context, change, localPath);
         const writer = await context.host.writer(localPath);
         await writer.write(text);
+        // A new background rewrite may still be waiting for the watcher's
+        // debounce. Judge the actual merge input before our write replaces
+        // its timestamp, using the same rule as the overlap detector.
+        const answer = before === null ? null : await editAnswer(context, change.file_id, localPath, before);
         // THE NOTE IS LOOKED AT AGAIN AT THE LAST MOMENT. The downloads above
         // take time, and a note open in an editor is saved every few seconds
         // while someone types: a save landing meanwhile was written over,
@@ -2276,6 +2282,16 @@ async function resolve(
             );
             return "applied";
           }
+          // This write is our merge, not a new edit. If its local input was
+          // a background answer, that contribution is still here. Carry its
+          // proof onto the new stat so a delayed hold (or overlap)
+          // cannot give this device the editor's Resume role. A stale verdict,
+          // an actual editor input, and an incoming-only result prove no such
+          // contribution; the latter returned above without carrying it.
+          if (answer !== null && !context.host.typing(localPath)) {
+            context.answering.set(change.file_id, { arrived: answer, mtime: stat.mtime });
+            context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
+          }
           await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
           context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
@@ -2326,11 +2342,8 @@ async function rewriteStorm(context: SyncContext, change: ChangeRecord, localPat
   // is no edit here at all: a version this device pulled carries the time of
   // the device that wrote it, which is no answer to anything.
   const stat = await context.host.stat(localPath);
-  const record = context.state.fileByPath(localPath);
-  if (stat === null || record === undefined) return false;
-  const judged = context.answering.get(change.file_id);
-  const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
-  const arrived = judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
+  if (stat === null) return false;
+  const arrived = await editAnswer(context, change.file_id, localPath, stat);
   if (arrived === null || context.host.typing(localPath)) return false;
   if (context.state.data.paused[change.file_id] !== undefined) return true;
   context.state.data.paused[change.file_id] = { path: localPath };
@@ -2347,6 +2360,15 @@ async function rewriteStorm(context: SyncContext, change: ChangeRecord, localPat
   );
   await publishPause(context, change.file_id, localPath, true);
   return true;
+}
+
+/** Classify these local bytes, before either a merge or a hold changes them. */
+async function editAnswer(context: SyncContext, fileId: string, path: string, stat: VaultStat): Promise<number | null> {
+  const record = context.state.fileByPath(path);
+  if (record === undefined || context.host.typing(path)) return null;
+  const judged = context.answering.get(fileId);
+  const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+  return judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
 }
 
 /**
@@ -2721,7 +2743,7 @@ async function manifestOf(context: SyncContext, file: FileRecord, change: Change
 }
 
 /**
- * THE BASE OF A CRISS-CROSS, or `null`.
+ * THE BASE OF A CRISS-CROSS: `null` means none, `false` means unresolvable.
  *
  * Two devices that resolve the SAME fork while each holds a keystroke the
  * other has not seen post two DIFFERENT merges of one pair, and from then on
@@ -2743,7 +2765,7 @@ async function crissCrossBase(
   first: string,
   firstText: string,
   levels = CRISS_CROSS_LEVELS,
-): Promise<string | null> {
+): Promise<string | null | false> {
   const parents = parentsFrom(file.versions);
   const below = reachable(parents, first);
   const fromLeft = reachable(parents, left);
@@ -2752,24 +2774,23 @@ async function crissCrossBase(
     ({ version_id: id }) => id !== left && id !== right && !below.has(id) && fromLeft.has(id) && fromRight.has(id),
   )?.version_id;
   if (other === undefined) return null;
+  if (levels === 0) return false;
   const root = commonAncestor(file.versions, first, other, parents);
   const texts: string[] = [];
   for (const id of [root, other]) {
     const manifest = id === null ? null : await manifestOf(context, file, change, id);
-    if (manifest === null || manifest.chunks.length !== 1) return null;
+    if (manifest === null || manifest.chunks.length !== 1) return false;
     texts.push(new TextDecoder().decode(await assembleBytes(context, manifest)));
   }
   const [rootText, otherText] = texts as [string, string];
-  let merged = threeWayMerge(rootText, firstText, otherText);
-  if (!merged.ok && levels > 1) {
-    const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
-    if (deeper !== null) merged = threeWayMerge(deeper, firstText, otherText);
-  }
+  const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
+  const merged = deeper === false ? { ok: false as const }
+    : threeWayMerge(deeper ?? rootText, firstText, otherText);
   context.host.log(
     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
       `file=${change.file_id} seq=${change.seq}`,
   );
-  return merged.ok ? merged.text : null;
+  return merged.ok ? merged.text : false;
 }
 
 /**

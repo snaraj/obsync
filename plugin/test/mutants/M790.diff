@@ -1,0 +1,13 @@
+# M790: merge against one ancestor after the shared base was refused
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2195,8 +2195,7 @@
+       const shared = mergeBase === baseManifest
+         ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+       const crossed = typeof shared === "string";
+-      const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+-        : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
++      const merged = threeWayMerge(typeof shared === "string" ? shared : decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+       if (merged.ok) {
+         if (crossed) {
+           const own = await manifestOf(context, file, change, localVersionId);

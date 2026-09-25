@@ -1473,7 +1473,10 @@ export class SyncEngine {
    */
   private async answered(context: SyncContext, stat: VaultStat): Promise<void> {
     const record = context.state.fileByPath(stat.path);
-    if (record !== undefined) {
+    // A later feed arrival must not re-judge the same save against a clock
+    // that came after it. A user's null verdict is just as durable as an
+    // automatic answer until another local save changes the timestamp.
+    if (record !== undefined && context.answering.get(record.fileId)?.mtime !== stat.mtime) {
       context.answering.set(record.fileId, { mtime: stat.mtime, arrived: await answerOf(context, stat.path, stat.mtime) });
     }
   }
@@ -1891,21 +1894,39 @@ export class SyncEngine {
    * has consumed it, and the mark moves past it (`processed`, issue #145).
    */
   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
-    // Another device's version arrives as the apply STARTS: a plugin can
-    // answer the write the apply makes before the apply returns (issue #179).
+    // Another device's authenticated version arrives before its write can
+    // trigger a host plugin. Waiting until applyChange returns can miss a
+    // rewrite made by that plugin during the filesystem event itself.
     const arrived = context.now();
+    const remember = async (): Promise<void> => {
+      const path = context.state.pathByFileId(change.file_id);
+      if (path === undefined || !inSyncScope(path, context.state.data.syncFolders)) return;
+      // Preserve a waiting save's verdict against the previous arrival before
+      // replacing that clock with a time later than the save being judged.
+      const stat = await context.host.stat(path);
+      const local = context.state.fileByPath(path);
+      if (stat !== null && local?.fileId === change.file_id &&
+        (local.mtime !== stat.mtime || local.size !== stat.size)) {
+        await this.answered(context, stat);
+        context.host.log(`watch decision=edit_verdict_preserved reason=arrival_advanced file=${change.file_id} seq=${change.seq}`);
+      }
+      context.arrivals.delete(path);
+      context.arrivals.set(path, arrived);
+    };
+    let incoming = false;
     let result: ApplyResult;
     try {
-      result = await applyChange(context, change);
+      result = await applyChange(context, change, async () => {
+        incoming = true;
+        await remember();
+      });
     } catch (error) {
       this.park(context, change.file_id, error);
       return null;
     }
-    const path = result === "echo" ? undefined : context.state.pathByFileId(change.file_id);
-    if (path !== undefined) {
-      context.arrivals.delete(path);
-      context.arrivals.set(path, arrived);
-    }
+    // First materialisation and renames can establish a different tracked
+    // path. Only an authenticated ordinary version supplies this evidence.
+    if (incoming) await remember();
     if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
   }

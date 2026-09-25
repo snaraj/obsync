@@ -88,6 +88,29 @@ test("a shared appended prefix is kept once without splitting Unicode characters
   assert.deepEqual(threeWayMerge("note: ", "note: 😀A", "note: 😀B"), { ok: true, text: "note: 😀AB" });
 });
 
+test("typing continues before an addition already learned from the other device", () => {
+  for (const [mine, theirs] of [["note: AaaBbb", "note: AaaB"], ["note: AaaB", "note: AaaBbb"]]) {
+    assert.deepEqual(threeWayMerge("note: AB", mine, theirs), { ok: true, text: "note: AaaBbb" });
+  }
+  assert.deepEqual(threeWayMerge("note: AB", "note: AaB", "note: AaabB"), { ok: true, text: "note: AaabB" });
+  assert.deepEqual(threeWayMerge("note: 😀😄", "note: 😀X😄", "note: 😀😄Y"), { ok: true, text: "note: 😀X😄Y" });
+});
+
+test("an insertion inside a line cannot absorb a competing new prefix", () => {
+  for (const [mine, theirs] of [["my line", "liXne"], ["liXne", "my line"]]) {
+    assert.deepEqual(threeWayMerge("line", mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
+test("insertion alignment refuses oversized character grids on either side", () => {
+  const base = Array.from({ length: 2100 }, (_, i) => String.fromCodePoint(0x4e00 + i)).join("");
+  const expensive = "X" + [...base].join("X") + "X";
+  const simple = "Y" + base;
+  for (const [mine, theirs] of [[expensive, simple], [simple, expensive]]) {
+    assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: false, reason: "overlap" });
+  }
+});
+
 test("replacements of existing characters are not classified as appends", () => {
   for (const [mine, theirs] of [["wordX", "wordY"], ["wordY", "wordX"], ["word!A", "wordX"], ["wordX", "word!A"]]) {
     assert.deepEqual(threeWayMerge("word!", mine, theirs), { ok: false, reason: "overlap" });

@@ -1,12 +1,21 @@
 # M661: input begun after a background judgment still pauses the typist
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2230,7 +2230,7 @@
-   const judged = context.answering.get(change.file_id);
-   const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
-   const arrived = judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, localPath, stat.mtime) : null;
+@@ -2344,7 +2344,7 @@
+   const stat = await context.host.stat(localPath);
+   if (stat === null) return false;
+   const arrived = await editAnswer(context, change.file_id, localPath, stat);
 -  if (arrived === null || context.host.typing(localPath)) return false;
 +  if (arrived === null) return false;
    if (context.state.data.paused[change.file_id] !== undefined) return true;
    context.state.data.paused[change.file_id] = { path: localPath };
    await context.state.save();
+@@ -2365,7 +2365,7 @@
+ /** Classify these local bytes, before either a merge or a hold changes them. */
+ async function editAnswer(context: SyncContext, fileId: string, path: string, stat: VaultStat): Promise<number | null> {
+   const record = context.state.fileByPath(path);
+-  if (record === undefined || context.host.typing(path)) return null;
++  if (record === undefined) return null;
+   const judged = context.answering.get(fileId);
+   const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+   return judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
