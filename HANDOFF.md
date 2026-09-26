@@ -123,8 +123,9 @@ references whose ownership can be proved, and QA Safari tabs/history/download
 entries. Never delete an owner vault, unrelated profile or whole browser history.
 A certificate-removal passcode, if requested, belongs to the owner.
 
-Obsolete branches/worktrees are being removed under explicit owner authority;
-main, the live PR branch and this handoff branch are the intended survivors.
+Removed under explicit owner authority: 50 local branches, 40 remote branches
+and the obsolete worktree. Only main, the live PR branch and this handoff
+branch remain. Both remaining worktrees are clean.
 Before deleting refs, their complete history was verified in the local
 `handoff-pre-cleanup.bundle`; the cleanup receipt records the exact inventory.
 Retain only the live campaign, its pinned toolchain, concise receipts, this
@@ -133,3 +134,23 @@ scratch experiments are not necessary to resume the work.
 
 Do not touch Bitwarden. Do not duplicate or restart the separately owned
 review/conversation monitors. Notify the owner only for a required action.
+
+## Verified final checkpoint
+
+All 58 open issue threads received a verified status update; targeted issues
+are distinguished from the untouched backlog. PR #189 has the current body
+and handoff comment. Its exact `ac1c934` head now has 23 successful hosted
+checks and one expected documentation-deployment skip, and its SSH signature
+is Verified. Draft/author hold remains unchanged.
+
+Cleanup additionally removed 83 obsolete scratch targets and 1,345 stale
+evidence entries. The live campaign, pinned tools, concise native receipts
+and one complete Git-history recovery bundle are intentionally retained.
+The campaign subsequently reached 222/796, unpaused, with no unexpected
+results. Read its current file instead of treating this snapshot as completion.
+
+No further owner decision is missing for the existing implementation. Final
+phone acceptance, the remaining phone certificate/secret/browser cleanup,
+the complete mutation result, independent review, owner merge and release
+verification remain. The next agent should execute those gates, not repeat
+completed desktop diagnosis or recreate the removed stale experiments.
