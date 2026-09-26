@@ -1,5 +1,9 @@
 # Validation runs
 
+- [2026-09-26 release preparation](2026-09-26-release-preparation.md): native
+  desktop with an emulated mobile peer over disposable HTTPS; exact phone
+  archive prepared, native phone acceptance still outstanding.
+
 - [2026-09-25 editor refusal and merge budget](2026-09-25-editor-budget.md):
   retained matched-build typing failure, refused-write accounting repair,
   1,200-test gate, nested mutation reporting repair and qualified desktop

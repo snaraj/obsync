@@ -189,12 +189,14 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
   });
   const engine = new SyncEngine({ state: r.state, host: r.host, timers, transport, onStatus: (status) => {
     statuses.push(status);
-    if (status.code === "forgotten_device") observed();
+    if (status.code === "forgotten_device" || status.kind === "offline") observed();
   } });
   t.after(() => engine.stop());
   await engine.start();
   // HMAC signing runs on WebCrypto's worker pool. A fixed count of immediate
   // turns can finish before that pool answers on a loaded Linux CI host.
+  // Observe either classification so an incorrect offline retry fails the
+  // assertions below instead of leaving this witness waiting indefinitely.
   await forgotten;
   assert.equal(refusals, 1);
   assert.ok(statuses.some((s) => s.code === "forgotten_device"));
@@ -375,18 +377,22 @@ test("registration does not bind a proof after its vault key was replaced", asyn
 });
 
 test("closing pairing while its forgotten identity resets prevents a claim", async (t) => {
-  const r = await plugin(t);
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
-  const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
-  const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
-  const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16)));
-  modal.contentEl = { empty() {} };
-  modal.close = () => modal.onClose();
-  const reset = r.instance.resetForgottenEnrollment.bind(r.instance);
-  r.instance.resetForgottenEnrollment = async () => { await reset(); modal.close(); };
-  let claims = 0;
-  r.instance.transport.pairingClaim = async () => { claims++; throw new Error("unexpected claim"); };
-  await modal.claim();
-  assert.equal(claims, 0);
-  assert.equal(r.instance.state.data.deviceId, null);
+  for (const incomplete of [false, true]) {
+    const r = await plugin(t);
+    r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+    const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+    const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
+    const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16));
+    const modal = new PairClaimModal(r.instance.app, r.instance, code);
+    modal.contentEl = { empty() {} };
+    modal.close = () => modal.onClose();
+    const reset = r.instance.resetForgottenEnrollment.bind(r.instance);
+    r.instance.resetForgottenEnrollment = async () => { await reset(); modal.close(); };
+    let claims = 0;
+    r.instance.transport.pairingClaim = async () => { claims++; throw new Error("unexpected claim"); };
+    await modal.claim();
+    assert.deepEqual(r.notices, [], "a cancelled dialog must not report a validation error");
+    assert.equal(claims, 0);
+    assert.equal(r.instance.state.data.deviceId, null);
+  }
 });

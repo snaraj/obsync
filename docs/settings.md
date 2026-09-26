@@ -34,9 +34,11 @@ device can change it for you.
 | **Selected folders** | empty | One relative folder per line. An empty list with `Selected folders only` syncs nothing, and saving one says so. A folder the vault does not have is asked about before it is saved, with Cancel as the default; a folder typed in another case (`notes` for `Notes`) is saved the way the vault spells it, and a notice says so. | With the setting above |
 | **Save on this device** → **Save** | — | Waits for transfers actually running, never for an idle connection to the server, then rescans. **Set up or recover** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
 
-The selection can only NARROW once a device has synced. To sync more of this
-vault, move the files into a folder that is already selected and run **Sync
-now**. Removed folders keep their local files and their history on the server.
+You can narrow or widen the selection after pairing. Widening replays retained
+history for the newly selected folders and publishes their local files;
+returning to **Whole vault** does the same. Narrowing keeps removed folders'
+local files and their history on the server. Save the selection on each device
+independently; no re-pairing or state reset is needed.
 
 ## This device
 

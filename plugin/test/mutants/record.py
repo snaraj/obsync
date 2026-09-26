@@ -1,4 +1,4 @@
-"""Write plugin/test/mutants/MATRIX.md from one matrix run's output.
+"""Write plugin/test/mutants/MATRIX.md from measured matrix output.
 
 The record is the output of `sh plugin/test/mutants/matrix.sh`, so it is
 generated from that output rather than edited by hand: a table whose numbers
@@ -21,6 +21,27 @@ EQUIVALENT: set[str] = set()
 # Prose kept beside a generated row. Counts are measured; only reasoning is
 # written by hand.
 NOTES = {
+    "M64": (
+        "- The original witness let periodic reconciliation rediscover the\n"
+        "  pending note after a folder rename. Its disk scan is now isolated\n"
+        "  after startup: the watcher path must deliver the note on its own.\n"
+        "  The replacement full suite reports one behavioral failure and zero\n"
+        "  cancellations, with no product-source change."
+    ),
+    "M583": (
+        "- Re-measured after repairing the test wait: the original run ended\n"
+        "  with one cancellation and no failed assertion. The wait now observes\n"
+        "  both the expected forgotten-device status and the mutant's offline\n"
+        "  status before asserting the original expected result. The replacement\n"
+        "  full suite has one assertion failure and zero cancellations."
+    ),
+    "M609": (
+        "- The original suite passed this mutant. The existing cancelled-pairing\n"
+        "  test now also closes an incomplete-code dialog while reset is pending,\n"
+        "  and requires no validation notice after cancellation. The replacement\n"
+        "  full suite has one assertion failure and zero cancellations; the\n"
+        "  product source is unchanged."
+    ),
     "M28": (
         "- NO LONGER EQUIVALENT, and kept as the record of why. Through 1.1.2 the\n"
         "  branch it removes and the rule it sends the answer into ended the same\n"
@@ -92,6 +113,9 @@ out = [
     "on its first line. Nothing below is typed by hand: the run produces the",
     "numbers and `record.py` writes this file from them, so a table whose counts",
     "have drifted from the suite is a table anyone can catch.",
+    "The [measurement provenance](MEASUREMENT.md) identifies the frozen test",
+    "tree and replacement measurements; this table does not claim that every",
+    "historical section ran against the final test tree.",
     "",
     "    sh plugin/test/mutants/matrix.sh > matrix.log",
     f"    python3 plugin/test/mutants/record.py matrix.log plugin/test/mutants {total}",
@@ -113,7 +137,7 @@ out = [
     "failures. Those rejected tests remain named below, and their cancellation",
     "count is shown separately in the table; they are not passing assertions.",
     "",
-    "| Mutant | Subject | Killed by |",
+    "| Mutant | Subject | Non-passing tests (including cancellations) |",
     "| --- | --- | --- |",
 ]
 for ident in sorted(subjects, key=lambda name: int(name[1:])):

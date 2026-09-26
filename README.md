@@ -106,13 +106,20 @@ shows; on iOS, trusting it is a second switch after installing.
 1. Settings → Community plugins → Browse → **Self Hosted Private Sync** →
    Install → Enable.
 2. Set **Server URL** to your server (`https://sync.example.org`, port included
-   unless 443), then choose **Whole vault** or **Selected folders only**; it
-   can only narrow later.
+   unless 443), then choose **Whole vault** or **Selected folders only**.
+   You can narrow or widen the selection later; removed folders keep their files.
 
    ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](docs/assets/settings-server.png)
 
 3. Paste the setup token under **Setup or recover**, select **Set up or recover**, and
    write down the 24-word recovery phrase.
+
+   If every paired device is lost, restore that phrase in a fresh vault and use
+   **Setup or recover** with the server's setup token. This requires recovery
+   to have been registered before the devices were lost and the server to
+   retain the account and encrypted files. The phrase cannot recover missing
+   server data, and an older account without recovery registration still needs
+   a paired device. See [Recovery](docs/recovery.md).
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](docs/assets/settings-setup.png)
 
