@@ -2039,7 +2039,10 @@ async function reconcile(
   const independent = remote !== undefined && remote !== change.version_id &&
     reaches(file.versions, change.version_id, remote) &&
     !reaches(file.versions, change.version_id, localVersionId);
-  if (tally.left !== found || independent) tally.count = 0;
+  if (tally.left !== found || independent) {
+    tally.count = 0;
+    tally.generation = {};
+  }
   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
   remotes.set(change.device_id, change.version_id);
   // Bound the bookkeeping by the version graph already received. Forgotten
@@ -2050,6 +2053,7 @@ async function reconcile(
   tally.count++;
   context.merges.set(change.file_id, tally);
   const prior = tally.left;
+  const generation = tally.generation;
   // Tripped, this device MERGES nothing more: a merge is the one resolution
   // that makes new content, which is what a loop feeds on. The pair is still
   // settled -- by the rule in `converge`, which only ever keeps a version that
@@ -2073,7 +2077,20 @@ async function reconcile(
   }
   // Settled now, or left for a push again (`deferred`), which counts it anew.
   context.forked.delete(change.file_id);
-  const result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped);
+  let result: ApplyResult;
+  try {
+    result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped);
+  } catch (error) {
+    // Refusing an editor write made no merge. Repeated arrivals while typing
+    // must not exhaust the loop budget and turn compatible edits into copies.
+    // A concurrent save may already have started a new run: refund only the
+    // generation charged here, without erasing another completed resolution.
+    if (error instanceof EditorBusy && tally.generation === generation) {
+      tally.count--;
+      context.host.log(`pull decision=merge_budget_refund reason=active_editor file=${change.file_id} seq=${change.seq} count=${tally.count}`);
+    }
+    throw error;
+  }
   // What the resolution LEFT: a write stamps its own commit (`resolve`), never
   // a later look, which could be the user's next save. One that wrote nothing
   // leaves the note as it found it -- unless one running beside it (the feed

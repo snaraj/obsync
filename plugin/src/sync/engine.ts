@@ -312,7 +312,7 @@ export interface SyncContext {
    * Resolutions of one file inside the current window, for the merge breaker,
    * and the `(mtime, size)` the last one left the note at (`pull.ts`).
    */
-  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string> }>;
+  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string>; generation?: object }>;
   /**
    * File ids whose note here waits on this device's own push to settle a fork
    * (`pull.ts`, `deferred`): the status is not `idle` while one is in flight

@@ -1,9 +1,9 @@
 # M824: Do not record a new independent remote version.
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2041,7 +2041,7 @@
-     !reaches(file.versions, change.version_id, localVersionId);
-   if (tally.left !== found || independent) tally.count = 0;
+@@ -2044,7 +2044,7 @@
+     tally.generation = {};
+   }
    if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
 -  remotes.set(change.device_id, change.version_id);
 +  // Forgot this author version.

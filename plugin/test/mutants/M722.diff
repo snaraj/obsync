@@ -9,4 +9,4 @@
 +  const independent = remote !== undefined &&
      reaches(file.versions, change.version_id, remote) &&
      !reaches(file.versions, change.version_id, localVersionId);
-   if (tally.left !== found || independent) tally.count = 0;
+   if (tally.left !== found || independent) {

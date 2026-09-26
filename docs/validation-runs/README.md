@@ -1,5 +1,10 @@
 # Validation runs
 
+- [2026-09-25 editor refusal and merge budget](2026-09-25-editor-budget.md):
+  retained matched-build typing failure, refused-write accounting repair,
+  1,200-test gate, nested mutation reporting repair and qualified desktop
+  rewrite control; repaired phone acceptance and cleanup remain outstanding.
+
 - [2026-09-25 three-device typing follow-up](2026-09-25-passive-peer-typing.md):
   adjacent-block and passive-receiver failures, their automated repairs,
   mixed-build native controls, and the final phone installation checkpoint.

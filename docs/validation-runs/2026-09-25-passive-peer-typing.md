@@ -140,6 +140,10 @@ phone entered use and Mirroring disconnected. Twenty events had been
 dispatched, but no phone text checkpoint was possible. This attempt is
 recorded as incomplete, not a product failure or an acceptance pass.
 
+The [editor-budget follow-up](2026-09-25-editor-budget.md) records the later
+matched-build failure, the independently reproduced editor-refusal defect,
+its repair and the remaining acceptance boundaries.
+
 ## Evidence boundaries
 
 Screenshots preserve actual UI pixels. Public PNGs contain only mandatory

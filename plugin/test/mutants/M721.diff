@@ -7,6 +7,6 @@
      reaches(file.versions, change.version_id, remote) &&
 -    !reaches(file.versions, change.version_id, localVersionId);
 +    true;
-   if (tally.left !== found || independent) tally.count = 0;
-   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
-   remotes.set(change.device_id, change.version_id);
+   if (tally.left !== found || independent) {
+     tally.count = 0;
+     tally.generation = {};

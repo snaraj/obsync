@@ -1,0 +1,12 @@
+# M826: all write failures refund the merge budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2085,7 +2085,7 @@
+     // must not exhaust the loop budget and turn compatible edits into copies.
+     // A concurrent save may already have started a new run: refund only the
+     // generation charged here, without erasing another completed resolution.
+-    if (error instanceof EditorBusy && tally.generation === generation) {
++    if (tally.generation === generation) {
+       tally.count--;
+       context.host.log(`pull decision=merge_budget_refund reason=active_editor file=${change.file_id} seq=${change.seq} count=${tally.count}`);
+     }

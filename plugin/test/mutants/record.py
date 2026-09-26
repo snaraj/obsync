@@ -52,7 +52,7 @@ for line in log.splitlines():
         sections[current]["applied"] = False
     elif "COMPILE ERROR" in line:
         sections[current]["built"] = False
-    hit = re.match(r"^not ok \d+ - (.+)$", line)
+    hit = re.match(r"^\s*not ok \d+ - (.+)$", line)
     if hit:
         sections[current]["tests"].append(hit.group(1).strip())
     cancelled = re.match(r"^# cancelled (\d+)$", line)

@@ -67,4 +67,4 @@ fi
 # that will never happen: a runner that stalls hides every mutant after it,
 # and a stall is a kill this matrix would otherwise never record.
 node --test --test-timeout=60000 --test-reporter=tap test/*.test.mjs 2>&1 |
-  grep -E '^(not ok|# (tests|pass|fail|cancelled|skipped) )' || true
+  grep -E '^[[:space:]]*not ok|^# (tests|pass|fail|cancelled|skipped) ' || true
