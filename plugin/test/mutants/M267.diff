@@ -1,0 +1,12 @@
+# M267: Create a new vault key replaces the key at once on a server that holds a vault, with no question
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -659,7 +659,7 @@
+             const vrk = hex(newVaultKey());
+             // A new key opens nothing the server holds: on a server with a
+             // vault it strands every other device (issue #140). Asked first.
+-            if (await this.plugin.vaultKeyStrands(vrk) && !(await confirmFirst(
++            if (!vrk && !(await confirmFirst(
+               this.app,
+               "Create a new vault key?",
+               "The vault on this server was sealed with another key, and a new key cannot open it. Every device " +

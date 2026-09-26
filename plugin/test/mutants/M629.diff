@@ -1,0 +1,12 @@
+# M629: a proven baseline copy cannot advance to the newer held text
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2347,7 +2347,7 @@
+   const id = await conflictFileId(context.manifestKey, change.file_id, version.version_id);
+   const baseDigest = await sidDigest(baseline.chunks.map((chunk) => chunk.sid));
+   const mineDigest = await sidDigest([(await encryptChunk(context.domainKey, mine)).sid]);
+-  const known = (digest: string): boolean => digest === baseDigest || digest === mineDigest;
++  const known = (digest: string): boolean => (void baseDigest, digest === mineDigest);
+   const pushed = await pushFile(context, path, false, async () => {
+     // This lookup and write share the copy's publication queue, so an older
+     // upload cannot acknowledge between the parent proof and this publication.

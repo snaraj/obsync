@@ -1,0 +1,11 @@
+# M440: a plugin object turned off mid-upload saves its older cursor and records over the session that replaced it
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -458,7 +458,6 @@
+   }
+ 
+   private async persist(snapshot: ObsyncData): Promise<void> {
+-    this.assertHolder();
+     if (typeof snapshot.serverUrl !== "string") throw new StateStorageError("invalid_server");
+     const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
+     const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });

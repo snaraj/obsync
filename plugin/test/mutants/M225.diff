@@ -1,0 +1,14 @@
+# M225: an unreachable server parks every record it could not fetch instead of waiting for the network
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1698,8 +1698,8 @@
+    * One notice per file, when it is first parked; a retry that fails again
+    * only updates the reason. Anything that is not `Unwritable` is thrown on.
+    */
+-  private park(context: SyncContext, fileId: string, error: unknown): void {
+-    if (!(error instanceof Unwritable)) throw error;
++  private park(context: SyncContext, fileId: string, thrown: unknown): void {
++    const error = thrown instanceof Unwritable ? thrown : new Unwritable("", "failed");
+     const parked = context.state.data.parked;
+     const known = parked[fileId] !== undefined;
+     parked[fileId] = { path: error.path, reason: error.reason };

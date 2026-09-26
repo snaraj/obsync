@@ -1,0 +1,12 @@
+# M603: reset during an active restore
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2741,7 +2741,7 @@
+   /** Forget only a rejected enrollment; keep local content, key and address. */
+   async resetForgottenEnrollment(): Promise<void> {
+     if (!this.forgottenDevice) return;
+-    if (this.changingScope || this.restoring !== null) throw new Error("Finish the current restore or folder change first.");
++    if (false) throw new Error("Finish the current restore or folder change first.");
+     const { state, assertCurrent } = this.captureSession();
+     this.cancelReconnect();
+     this.cancelHistories();

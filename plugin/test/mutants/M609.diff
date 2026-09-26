@@ -1,0 +1,12 @@
+# M609: claim after pairing dialog closes during reset
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -276,7 +276,7 @@
+     try {
+       this.waiting = true;
+       if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+-      if (!this.waiting) return;
++      // mutated: closed dialog continues enrollment
+       // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
+       // pairs with it copies that vault into itself, one level per sync.
+       const nested = await this.plugin.nestedRefusal("pairing role=claimant");

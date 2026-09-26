@@ -1,14 +1,15 @@
 # M50: a move the filesystem refused is removed by its live name anyway
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -843,11 +843,9 @@
-     try {
+@@ -1421,12 +1421,10 @@
+       chain = [...found.chain, { path: folder, dev: made.dev, ino: made.ino }];
        await fs.promises.rename(found.target, moved);
      } catch {
 -      // Nothing moved, so nothing is removed and the name is still the
 -      // user's. A host that cannot make this move cannot make the promise.
 -      this.log("host path_class=file decision=kept reason=move_refused");
 +      await this.remove(path);
+       await fs.promises.rmdir(folder).catch(() => undefined);
        await drop();
 -      return "unheld";
 +      return "removed";

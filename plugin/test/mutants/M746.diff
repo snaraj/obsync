@@ -1,0 +1,12 @@
+# M746: discard the unchanged suffix after the final edit
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -175,7 +175,7 @@
+     for (const line of next.lines) out.push(line);
+     cursor = next.end;
+   }
+-  while (cursor < baseLines.length) out.push(baseLines[cursor++] as string);
++  cursor = baseLines.length;
+   return { ok: true, text: out.join("\n") };
+ }
+ 

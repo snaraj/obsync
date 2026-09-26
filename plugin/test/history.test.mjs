@@ -254,7 +254,10 @@ test("multi-chunk restore uses bounded verified batches and ordinary engine reco
   assert.deepEqual(batches.map((q) => JSON.parse(q.json).sids.length), [3, 2]);
   const timers = new FakeTimers();
   const feed = deferred();
-  r.transport.changes = async () => feed.promise;
+  // Only the long poll is parked: a read that does not wait is answered at
+  // once, as the server answers the startup pass's own-notes read (#181).
+  const changes = r.transport.changes.bind(r.transport);
+  r.transport.changes = async (since, wait) => (wait === 0 ? changes(since, 0) : feed.promise);
   const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers });
   try {
     await engine.start();

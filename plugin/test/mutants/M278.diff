@@ -1,0 +1,12 @@
+# M278: a device the server no longer knows cannot leave, so it can never pair again
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2284,7 +2284,7 @@
+         // what leaving asks of the server is done, so this device forgets it
+         // too, which is the one way back to pairing again.
+         if (error instanceof ApiError && error.code === "device_revoked") revoked = true;
+-        else if (!(error instanceof ApiError) || (error.code !== "last_device" && error.code !== "bad_signature")) throw error;
++        else if (!(error instanceof ApiError) || (error.code !== "last_device")) throw error;
+         else if (!choice.localOnly) return { decision: "refused", reason: error.code, detail: error.detail };
+       }
+       assertCurrent();

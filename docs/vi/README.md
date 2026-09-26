@@ -106,7 +106,7 @@ chỉ dẫn; trên iOS, việc tin cậy nó là một công tắc thứ hai sau
 
    ![Thẻ cài đặt của plugin: ô Server URL chứa một tên máy mẫu, ô nhập các tiêu đề biên, và hàng Connection với các nút Check và Open dashboard của nó](../assets/settings-server.png)
 
-3. Dán token thiết lập dưới **First-time setup**, chọn **Set up**, rồi chép
+3. Dán token thiết lập dưới **Setup or recover**, chọn **Set up or recover**, rồi chép
    lại cụm từ khôi phục 24 từ.
 
    ![Mục This device của thẻ cài đặt: hàng Pairing với Pair this device và Pair a new device, hàng First-time setup với ô Setup token và nút Set up, cùng hàng Vault key](../assets/settings-setup.png)

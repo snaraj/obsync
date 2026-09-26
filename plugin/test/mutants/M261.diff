@@ -1,0 +1,12 @@
+# M261: one notice per unreadable file instead of one per device: a key change on one computer floods the others with notices
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -726,7 +726,7 @@
+   );
+   // A key this device does not hold is about the DEVICE that sealed with it,
+   // not about one file: one notice per device, naming the one to fix (#140).
+-  const key = `key\u0000${change.device_id}`;
++  const key = `key\u0000${change.file_id}`;
+   if (reason === "undecryptable" && !context.refused.has(key)) {
+     context.refused.add(key);
+     const name = context.deviceNameFor(change.device_id);

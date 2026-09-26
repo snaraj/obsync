@@ -1,0 +1,11 @@
+# M543: sequential background answers never carry their origin and bounce forever
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -361,7 +361,6 @@
+     chunks: plan,
+     sha256: plaintextHash,
+     deleted: false,
+-    ...(context.answering.get(fileId)?.mtime === stat.mtime && context.answering.get(fileId)?.arrived != null ? { answer: true as const } : {}),
+   };
+   const parents = tombstone === undefined
+     ? over ?? (record && record.versionId !== "" ? [record.versionId] : [])

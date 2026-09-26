@@ -1,0 +1,12 @@
+# M517: claimant nonce format is not validated
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -174,7 +174,7 @@
+ 
+ export async function openPairingVault(secret: Bytes, id: string, sealed: SealedPairingVault): Promise<PairingVault> {
+   if (typeof sealed?.envelope !== "string" || sealed.envelope.length > 2048 ||
+-      typeof sealed.nonce !== "string" || !/^[0-9a-f]{24}$/.test(sealed.nonce)) {
++      typeof sealed.nonce !== "string" || false) {
+     throw new Error("pairing: invalid sealed vault details; start pairing again");
+   }
+   const plaintext = await crypto.subtle.decrypt(

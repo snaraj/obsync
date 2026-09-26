@@ -1,0 +1,12 @@
+# M233: every park arms another timer, so several parked files are downloaded many times over
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1735,7 +1735,7 @@
+       this.parkDelay = 0;
+       return;
+     }
+-    if (this.parkHandle !== null || !this.running) return;
++    if (!this.running) return;
+     this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2);
+     this.parkHandle = this.timers.set(() => {
+       this.parkHandle = null;

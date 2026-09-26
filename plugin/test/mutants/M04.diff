@@ -1,11 +1,11 @@
 # M04: a name this device already settled is ignored
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1179,7 +1179,6 @@
-   // and deciding it by what occupies its ORIGINAL name would copy the file
-   // again every time it is edited, which is the defect itself (issue #113).
+@@ -2887,7 +2887,6 @@
+   // defect itself (issue #113) -- and wait there for their name to free
+   // (`renameOnto`).
    const settled = context.state.pathByFileId(change.file_id);
--  if (settled !== undefined) return await updateSettled(context, change, manifest, settled);
+-  if (settled !== undefined) return await renameOnto(context, change, manifest, occupant, settled);
    if (occupant === "no_record") {
      const stat = await context.host.stat(manifest.path);
      // Gone between the check and here: the name is free, so there is nothing

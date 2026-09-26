@@ -1,0 +1,12 @@
+# M203: a stray delete for a note that is still there hands its identity to an mtime-keeping copy elsewhere
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -780,7 +780,7 @@
+     const record = context.state.fileByPath(from);
+     const found = record === undefined ? [] : this.carriers(record, index, taken);
+     // A file that is still there is not gone, whatever else carries its bytes.
+-    if (found.length === 0 || (await context.host.stat(from)) !== null) return null;
++    if (found.length === 0) return null;
+     const only = found.length === 1 ? (found[0] as VaultStat) : null;
+     const folders = context.state.data.syncFolders;
+     if (only !== null && inSyncScope(only.path, folders) && (await context.host.syncable(only.path))) {

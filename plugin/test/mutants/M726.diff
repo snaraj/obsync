@@ -1,11 +1,11 @@
 # M726: identical pull adoption does not persist the keeper before retirement
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2398,7 +2398,6 @@
-     size: checked.size,
+@@ -3337,7 +3337,6 @@
      sha256: ours.sha256,
+     ts: change.ts,
    });
 -  await context.state.save();
-   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
    context.host.log(
      `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

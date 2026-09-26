@@ -1,0 +1,12 @@
+# M418: a note whose push is still in its debounce is dropped from the count, and the status reads idle over two different notes
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1339,7 +1339,7 @@
+ 
+   /** Something here will still act on this note: its debounce, the queue, or a push. */
+   private acting(path: string): boolean {
+-    return this.pending.has(path) || this.queue.includes(path) || this.pushing.has(path);
++    return this.queue.includes(path) || this.pushing.has(path);
+   }
+ 
+   private async settleTracked(

@@ -1,0 +1,12 @@
+# M693: the active editor resumes as the background rewriter
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2217,7 +2217,7 @@
+   if (theirManifest.answer === true && context.host.typing(localPath)) {
+     if (context.state.data.paused[change.file_id] === undefined) {
+       const started = context.now();
+-      context.state.data.paused[change.file_id] = { path: localPath, remote: true };
++      context.state.data.paused[change.file_id] = { path: localPath };
+       await context.state.save();
+       context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+       context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);

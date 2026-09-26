@@ -1,0 +1,12 @@
+# M166: two settlements of one fork on the losing device both move the note, making a second copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2174,7 +2174,7 @@
+       // finds the note as it was read and the record still naming the losing
+       // head takes it, in the same turn, before anything is written.
+       const claimed = (await unmoved(context, localPath, before)) ? context.state.fileByPath(localPath) : undefined;
+-      if (claimed?.versionId !== localVersionId) {
++      if (claimed === undefined) {
+         await writer.abort();
+         return deferred(context, change, "saved_during_merge");
+       }

@@ -100,7 +100,7 @@ async function fixture(t) {
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "1.1.1" };
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);
@@ -266,7 +266,7 @@ test("the first start waits until Obsidian has listed the vault", async (t) => {
   // every tracked note as deleted and every empty folder as gone (X1).
   const r = await fixture(t);
   let listed = null;
-  r.instance.app.workspace = { onLayoutReady: (callback) => { listed = callback; } };
+  r.instance.app.workspace = { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (callback) => { listed = callback; } };
   await Object.getPrototypeOf(r.instance).onload.call(r.instance);
   for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
   assert.equal(r.engines.length, 0, "no start while the vault is still being listed");

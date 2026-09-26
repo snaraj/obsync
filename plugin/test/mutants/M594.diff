@@ -1,0 +1,12 @@
+# M594: retain stale sync records on reset
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2752,7 +2752,7 @@
+     assertCurrent();
+     this.engine = null;
+     const { serverUrl, edgeHeaders } = state.data;
+-    state.forgetPairing();
++    // mutated: retain stale id, cursor and files
+     state.data.serverUrl = serverUrl;
+     state.data.edgeHeaders = edgeHeaders;
+     await state.save();

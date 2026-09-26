@@ -1,0 +1,11 @@
+# M298: a whole-second file pushed long after its save is read again and again
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1533,7 +1533,6 @@
+     const record = context.state.fileByPath(path);
+     if (record === undefined || record.mtime % 1000 !== 0) return;
+     const age = asked - record.mtime;
+-    if (Math.abs(age) >= MTIME_STEP_MS) return;
+     const delay = MTIME_STEP_MS - age;
+     context.host.log(`push path_class=file decision=recheck reason=coarse_mtime delay_ms=${delay}`);
+     this.timers.set(() => this.enqueue(path), delay);

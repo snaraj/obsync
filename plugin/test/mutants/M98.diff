@@ -1,10 +1,10 @@
 # M98: a folder tombstone arms the retirement whatever record this device holds
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -773,7 +773,7 @@
-     const retiring = context.state.folderByPath(path);
+@@ -939,7 +939,7 @@
      const removed = await removeFolder(context, path, shown);
      context.state.forgetFolder(path);
+     if (retiring?.fileId === change.file_id) bury(context, change.file_id, change.version_id, path, true, change.ts);
 -    if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
 +    if ((context.state.data.syncFolders ?? []).includes(path)) {
        context.state.data.retiredRoots[path] = change.file_id;

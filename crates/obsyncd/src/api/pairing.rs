@@ -77,6 +77,8 @@ pub struct Claimant {
     pub platform: String,
     /// Plugin version.
     pub app_version: String,
+    /// Optional sealed claimant vault details; the server cannot decrypt them.
+    pub vault: Option<Value>,
 }
 
 /// One pairing.
@@ -408,6 +410,7 @@ pub fn claim(
     let body = render::json_body(req)?;
     let enroll = render::field_str(&body, "enroll_token")?.to_string();
     let enrolment = devices::enrolment_fields(&body)?;
+    let vault = vault_details(&body)?;
     let (name, platform, app_version) = (
         enrolment.name.clone(),
         enrolment.platform.clone(),
@@ -429,6 +432,7 @@ pub fn claim(
             name,
             platform,
             app_version,
+            vault,
         },
     );
     drop(pairings);
@@ -440,6 +444,25 @@ pub fn claim(
             ("device_secret", s(&secret)),
         ]),
     ))
+}
+
+// Validate before claiming or enrolling, so a refused payload spends nothing.
+fn vault_details(body: &Value) -> Result<Option<Value>, ApiError> {
+    let Some(vault) = body.get("vault") else {
+        return Ok(None);
+    };
+    let envelope = render::field_str(vault, "envelope")?;
+    let nonce = render::field_str(vault, "nonce")?;
+    if envelope.len() > 2048
+        || !super::is_hex(nonce, 24)
+        || !obsync_core::base64::decode(envelope).is_ok_and(|bytes| bytes.len() >= 16)
+    {
+        return Err(ApiError::bad_request("invalid sealed vault details"));
+    }
+    Ok(Some(obj(vec![
+        ("envelope", s(envelope)),
+        ("nonce", s(nonce)),
+    ])))
 }
 
 /// `GET /v1/pairing/{id}`: the creator polls for a claimant.
@@ -460,12 +483,18 @@ pub fn state(
         .expect("pairings")
         .state_for(id, &authed.id, now)?;
     let claimant = match claimant {
-        Some(c) => obj(vec![
-            ("device_id", s(&c.device_id.to_string())),
-            ("name", s(&c.name)),
-            ("platform", s(&c.platform)),
-            ("app_version", s(&c.app_version)),
-        ]),
+        Some(c) => {
+            let mut fields = vec![
+                ("device_id", s(&c.device_id.to_string())),
+                ("name", s(&c.name)),
+                ("platform", s(&c.platform)),
+                ("app_version", s(&c.app_version)),
+            ];
+            if let Some(vault) = c.vault {
+                fields.push(("vault", vault));
+            }
+            obj(fields)
+        }
         None => Value::Null,
     };
     Ok(Response::json(
@@ -612,6 +641,56 @@ mod tests {
 
     const NOW: u64 = 1_757_200_000;
 
+    #[test]
+    fn sealed_vault_is_optional_bounded_and_opaque() {
+        assert_eq!(vault_details(&obj(vec![])).unwrap(), None);
+        let envelope = obsync_core::base64::encode(&[0; 16]);
+        let nonce = "ab".repeat(12);
+        let sealed = obj(vec![("envelope", s(&envelope)), ("nonce", s(&nonce))]);
+        assert_eq!(
+            vault_details(&obj(vec![("vault", sealed.clone())])).unwrap(),
+            Some(sealed)
+        );
+        for (ct, iv) in [
+            ("A".repeat(2052), nonce.clone()),
+            ("!".into(), nonce.clone()),
+            (obsync_core::base64::encode(&[0; 15]), nonce.clone()),
+            (envelope.clone(), "ab".into()),
+            (envelope.clone(), "z".repeat(24)),
+        ] {
+            assert!(
+                vault_details(&obj(vec![(
+                    "vault",
+                    obj(vec![("envelope", s(&ct)), ("nonce", s(&iv))])
+                )]))
+                .is_err()
+            );
+        }
+        for bad in [
+            Value::Null,
+            s("clear name"),
+            obj(vec![]),
+            obj(vec![("envelope", s(&envelope))]),
+        ] {
+            assert!(vault_details(&obj(vec![("vault", bad)])).is_err());
+        }
+        let unknown = obj(vec![(
+            "vault",
+            obj(vec![
+                ("envelope", s(&envelope)),
+                ("nonce", s(&nonce)),
+                ("name", s("must not retain")),
+            ]),
+        )]);
+        assert!(
+            vault_details(&unknown)
+                .unwrap()
+                .unwrap()
+                .get("name")
+                .is_none()
+        );
+    }
+
     fn table() -> (PairingTable, DeviceId) {
         let mut t = PairingTable::new();
         let creator = dev(1);
@@ -630,6 +709,7 @@ mod tests {
                 name: "phone".to_string(),
                 platform: "ios".to_string(),
                 app_version: "0.1.0".to_string(),
+                vault: None,
             },
         );
         (t, creator, claimant)

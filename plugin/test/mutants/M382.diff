@@ -1,0 +1,12 @@
+# M382: a re-send names the lost version as its parent and forks every note it re-sends
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -364,7 +364,7 @@
+     ...(context.answering.get(fileId)?.mtime === stat.mtime && context.answering.get(fileId)?.arrived != null ? { answer: true as const } : {}),
+   };
+   const parents = tombstone === undefined
+-    ? over ?? (record && record.versionId !== "" ? [record.versionId] : [])
++    ? (record && record.versionId !== "" ? [record.versionId] : [])
+     : [...new Set([...(record?.versionId ? [record.versionId] : []), tombstone])];
+   // A RENAME IS NEVER OFFERED FOR DEDUPLICATION. The server's identity for a
+   // position is `(file_id, parent set, sids, deleted)` and does not cover the

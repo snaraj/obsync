@@ -1,0 +1,11 @@
+# M341: a note renamed onto a name the other device just made offline keeps two names for good
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2548,7 +2548,6 @@
+   occupant: "other_file" | "no_record",
+   settled: string,
+ ): Promise<ApplyResult> {
+-  if (occupant === "no_record") await identify(context, manifest.path, change.file_id);
+   const ours = context.state.fileByPath(manifest.path);
+   if (ours !== undefined && context.authored.has(ours.versionId)) {
+     const keep = ours.fileId < change.file_id;

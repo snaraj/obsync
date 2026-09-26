@@ -1,0 +1,12 @@
+# M556: Resume takes stale peer text instead of the editor held while paused
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1983,7 +1983,7 @@
+         delete paused[id];
+         let outcome: string;
+         try {
+-          if (entry.remote === true && context.state.pathByFileId(id) !== undefined && await context.host.stat(entry.path) !== null) {
++          if (entry.remote !== true && context.state.pathByFileId(id) !== undefined && await context.host.stat(entry.path) !== null) {
+             // The peer held our note before applying anything. Preserve the
+             // local editor's newest text as the next head, even if its last
+             // keystrokes were saved after the pause arrived.

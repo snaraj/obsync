@@ -1,0 +1,11 @@
+# M296: a second save of the same size inside a coarse mtime step is never sent
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1491,7 +1491,6 @@
+       const forced = this.renames.delete(path);
+       const asked = context.now();
+       const outcome = await pushFile(context, path, forced);
+-      if (outcome.status !== "growing") this.recheck(context, path, asked);
+       if (outcome.status === "unchanged") return;
+       if (outcome.status === "growing") {
+         // The file moved while it was read: nothing was published, so this is

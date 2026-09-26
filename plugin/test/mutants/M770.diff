@@ -1,0 +1,12 @@
+# M770: invent missing background proof
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2366,7 +2366,7 @@
+ async function editAnswer(context: SyncContext, fileId: string, path: string, stat: VaultStat): Promise<number | null> {
+   const record = context.state.fileByPath(path);
+   if (record === undefined || context.host.typing(path)) return null;
+-  const judged = context.answering.get(fileId);
++  const judged = context.answering.get(fileId) ?? { mtime: stat.mtime, arrived: context.now() - 1000 };
+   const unpushed = record.mtime !== stat.mtime || record.size !== stat.size;
+   return judged?.mtime === stat.mtime ? judged.arrived : unpushed ? await answerOf(context, path, stat.mtime) : null;
+ }

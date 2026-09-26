@@ -1,0 +1,12 @@
+# M545: restart forgets which paused device must preserve its editor text
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -380,7 +380,7 @@
+   const paused = loaded["paused"];
+   if (isRecord(paused)) {
+     for (const [fileId, record] of Object.entries(paused)) {
+-      if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"], ...(record["remote"] === true ? { remote: true } : {}) };
++      if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"] };
+     }
+   }
+   // The mark names a request path and the graves a request path and a

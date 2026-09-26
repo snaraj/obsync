@@ -1,0 +1,12 @@
+# M847: append fetched ancestors after their known parents
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2033,7 +2033,7 @@
+       // Preserve child-before-parent order, including a parent fetched from
+       // the other branch in an earlier round. Timestamp order is not ancestry.
+       const before = file.versions.findIndex(candidate => version.parents.includes(candidate.version_id));
+-      file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
++      file.versions.push(version); void before;
+     }
+   }
+   if (requested.size > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);

@@ -1,0 +1,12 @@
+# M849: omit recursive criss-cross ancestry lookup
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2878,7 +2878,7 @@
+   if (other === undefined) return null;
+   if (levels === 0) return false;
+   if (commonAncestor(file.versions, first, other) === null) {
+-    await completeMergeAncestry(context, file, first, other);
++    void 0;
+   }
+   const root = commonAncestor(file.versions, first, other);
+   const texts: string[] = [];

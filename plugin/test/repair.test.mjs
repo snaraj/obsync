@@ -145,6 +145,31 @@ test("unchanged remembered file repairs the post-quarantine inventory gap; peer 
   assert.equal(peer.host.text(r.path), r.host.text(r.path));
 });
 
+/**
+ * A NOTE BESIDE ITS NAME IS NOT A MISMATCH (issue #149). Its record names a
+ * version whose manifest carries the name it waits for, which the record
+ * remembers; the repair used to find `manifest.path !== path` there and set
+ * "Server repair could not verify a retained file ... check connectivity"
+ * on both devices until the next drain, for as long as the names differed.
+ */
+test("a note waiting beside its name is repaired like any other, never reported as a mismatch", async () => {
+  const r = await rig();
+  r.path = "Notes/Same.md";
+  r.host.seed(r.path, "the note that keeps the name\n", 2000);
+  r.state.setFile(r.path, { fileId: "00".repeat(16), versionId: "", mtime: -1, size: 0, sha256: "" });
+  await pushFile(r.context, r.path);
+  const theirs = new TextEncoder().encode("REPAIR PLAINTEXT SENTINEL beside its name");
+  const frame = await r.server.publish({ fileId: "33".repeat(16), path: r.path, bytes: theirs, mtime: 4000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  assert.equal(await applyChange(r.context, frame), "conflict_copy");
+  const copy = r.state.pathByFileId("33".repeat(16));
+  assert.equal(r.state.fileByPath(copy).name, r.path);
+  r.server.chunks.delete(frame.sids[0]);
+  const repair = new ChunkRepair(r.context);
+  assert.deepEqual(await repair.step(), { kind: "checked" }, "the note at the name");
+  assert.deepEqual(await repair.step(), { kind: "repaired", bytes: theirs.length }, "the note beside it");
+});
+
 test("healthy remembered chunks are audited without reading or stat-ing local plaintext", async () => {
   const r = await note();
   r.host.read = r.host.stat = r.host.source = () => assert.fail("healthy inventory read local content");
@@ -436,6 +461,8 @@ test("repair only reports success after exact ciphertext readback", async () => 
 });
 
 test("engine automatically repairs unchanged files, idles between complete walks, and reports source loss without paths", async () => {
+  // Exercise the repair worker directly: explicit Sync now now also publishes
+  // silent local rewrites, which would replace the missing source under test.
   const r = await note(), timers = new FakeTimers(), statuses = [];
   r.state.data.lastSeq = r.server.seq;
   const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
@@ -444,17 +471,17 @@ test("engine automatically repairs unchanged files, idles between complete walks
   r.server.chunks.delete(r.sid);
   await timers.run(REPAIR_TICK_MS, () => r.host.logs.some((line) => line.startsWith("repair decision=verified")));
   assert.equal(puts(r).length, 1);
-  await engine.syncNow(); // Finish the walk, then schedule the idle interval.
+  await engine.repairTick(); // Finish the walk, then schedule the idle interval.
   assert.ok(r.host.logs.some((line) => /^repair decision=verified bytes=25 budget_sids=64 budget_chunks=1 duration_ms=\d+$/.test(line)));
   assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS));
   r.server.chunks.delete(r.sid);
   r.host.seed(r.path, "X".repeat(25), 1000);
-  await engine.syncNow();
+  await engine.repairTick();
   assert.ok(statuses.some((status) => status.kind === "error" && status.message.includes("missing chunk")));
   assert.ok(r.host.notices.some((message) => message.includes("missing chunk")));
   for (let repeat = 0; repeat < 2; repeat++) {
-    await engine.syncNow(); // Complete this walk.
-    await engine.syncNow(); // The same unavailable source is still unresolved.
+    await engine.repairTick(); // Complete this walk.
+    await engine.repairTick(); // The same unavailable source is still unresolved.
   }
   assert.equal(statuses.filter((status) => status.kind === "error" && status.message.includes("missing chunk")).length, 3);
   assert.equal(r.host.notices.filter((message) => message.includes("missing chunk")).length, 1);
@@ -492,8 +519,8 @@ test("overlapping engine requests retain a single next repair timer after both c
   await engine.start(); r.server.chunks.delete(r.sid);
   const entered = deferred(), release = deferred(), put = r.transport.putChunk.bind(r.transport);
   r.transport.putChunk = async (...args) => { entered.resolve(); await release.promise; await put(...args); };
-  const first = engine.syncNow(); await entered.promise;
-  const second = engine.syncNow(); await turn();
+  const first = engine.repairTick(); await entered.promise;
+  const second = engine.repairTick(); await turn();
   release.resolve(); await Promise.all([first, second]);
   assert.equal(timers.entries.filter((entry) => entry.due - timers.now === REPAIR_TICK_MS).length, 1);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
@@ -657,6 +684,46 @@ test("a read that loses the slot mid-step is deferred, never a could-not-verify 
   assert.equal(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS), false,
     "a collision does not push the next attempt five minutes out");
   await timers.run(0, () => r.server.feedWaiters.length > 0);
+  engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});
+
+test("a recorded version a restored server no longer holds is re-sent, never a could-not-verify error (#145)", async () => {
+  // S75: the server was rebuilt from a backup older than this note. The
+  // repair pass is the first thing to ask for the version this device
+  // recorded, and `404 unknown_version` is not a read or write failure: it is
+  // the server saying it lost a note this device still holds.
+  const r = await rig(), timers = new FakeTimers(), statuses = [];
+  const path = "Notes/restored-away.md", fileId = "5a".repeat(16);
+  const before = r.server.seq;
+  // Pulled from another device minutes ago: its server time says it is far
+  // too young for retention to have collected it.
+  const frame = await r.server.publish({ fileId, path, bytes: new TextEncoder().encode("REPAIR PLAINTEXT SENTINEL"),
+    mtime: r.host.clock, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  await applyChange(r.context, frame);
+  assert.equal(r.state.fileByPath(path).ts, frame.ts, "a pulled record knows its version's server time");
+  r.server.restoreTo(before);
+  assert.equal(r.server.files.has(fileId), false, "the restore took the note");
+  r.state.data.lastSeq = r.server.seq;
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  const started = statuses.length;
+  await engine.syncNow();
+  assert.ok(r.host.logs.some((entry) => /^repair decision=lost reason=unknown_version verdict=restored /.test(entry)), r.host.logs.join(" | "));
+  // The feed loop answers it before it applies anything else.
+  await drainingFeed(r.server, timers.run(REPAIR_TICK_MS, () => r.server.files.has(fileId)), "the re-send");
+
+  assert.equal(r.host.logs.some((entry) => entry.includes("read_or_write_failed")), false, r.host.logs.join(" | "));
+  assert.equal(statuses.slice(started).some((status) => status.kind === "error"), false, "a lost version is not a connectivity problem");
+  const file = r.server.files.get(fileId);
+  assert.equal(file.heads.length, 1);
+  const head = file.versions.find((version) => version.version_id === file.heads[0]);
+  const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, fileId,
+    await c.contentVersionId(fileId, head.parents, head.sids), c.unhex(head.manifest_nonce), c.unbase64(head.manifest_ct)));
+  assert.equal(manifest.path, path);
+  assert.equal(manifest.deleted, false);
+  assert.equal(new TextDecoder().decode(await c.decryptChunk(r.keys.domainKey, c.unhex(manifest.chunks[0].cid),
+    r.server.chunks.get(manifest.chunks[0].sid))), "REPAIR PLAINTEXT SENTINEL");
+  assert.equal(r.host.notices.filter((notice) => /The server was restored to an earlier state; this device re-sent 1 change\./.test(notice)).length, 1);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
 });
 

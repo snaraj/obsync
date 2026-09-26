@@ -1,0 +1,12 @@
+# M246: a lost deletion is re-sent after another device's rename was pulled in, deleting the renamed note and forking it on the server
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -454,7 +454,7 @@
+  * so the line says how stale that decision had become.
+  */
+ async function stillGone(context: SyncContext, path: string, record: FileState, decided: number): Promise<boolean> {
+-  const same = context.state.fileByPath(path) === record;
++  const same = true;
+   const gone = same && (await context.host.stat(path)) === null;
+   const reason = gone ? "still_gone" : same ? "file_present" : "record_changed";
+   context.host.log(`push path_class=tombstone decision=${gone ? "resent" : "withdrawn"} reason=${reason} file=${record.fileId} ` +

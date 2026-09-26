@@ -1,0 +1,12 @@
+# M390: an edit of a twin the other device never retired is copied beside the note again, and the split never heals
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2351,8 +2351,6 @@
+   if (ours === undefined) return await keepBoth(context, change, manifest);
+   const same = await identicalAtName(context, change, manifest.path, ours);
+   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
+-  const healed = await takeEditedTwin(context, change, manifest, ours);
+-  if (healed !== null) return healed;
+ 
+   if (ours.fileId < change.file_id) {
+     const kept = await keepBothRecorded(context, change, manifest);

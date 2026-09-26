@@ -1,0 +1,12 @@
+# M625: Resume consumes split copy heads without a unique lineage
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2358,7 +2358,7 @@
+     const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);
+     if (!known(localDigest)) return fail("local_edit");
+     const file = await context.transport.getFile(id);
+-    if (file.heads.length !== 1) return fail("heads");
++    if (file.heads.length === 0) return fail("heads");
+     const head = file.versions.find((entry) => entry.version_id === file.heads[0]);
+     if (head === undefined) return fail("missing_head");
+     const current = await decryptRecordManifest(context, { ...head, file_id: id, domain_id: file.domain_id });

@@ -1,0 +1,12 @@
+# M297: every quick push on any filesystem reads the file a second time
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1531,7 +1531,7 @@
+    */
+   private recheck(context: SyncContext, path: string, asked: number): void {
+     const record = context.state.fileByPath(path);
+-    if (record === undefined || record.mtime % 1000 !== 0) return;
++    if (record === undefined) return;
+     const age = asked - record.mtime;
+     if (Math.abs(age) >= MTIME_STEP_MS) return;
+     const delay = MTIME_STEP_MS - age;

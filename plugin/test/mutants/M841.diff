@@ -1,0 +1,12 @@
+# M841: walk below known shared frontier
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2003,7 +2003,7 @@
+       visited.add(id);
+       if (!known.has(id)) {
+         pending.set(id, depth);
+-      } else if (id === left || id === right || !a.has(id) || !b.has(id)) {
++      } else if (true) {
+         queue.push(...parents(id).map(parent => ({ id: parent, depth: depth + 1 })));
+       }
+     }

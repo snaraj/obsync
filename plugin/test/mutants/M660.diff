@@ -1,0 +1,12 @@
+# M660: passive open editors prevent the rewrite hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -159,7 +159,7 @@
+ export async function answerOf(context: SyncContext, path: string, mtime: number): Promise<number | null> {
+   const arrived = context.arrivals.get(path);
+   if (arrived === undefined || mtime < arrived || mtime - arrived >= ANSWER_MS) return null;
+-  return context.host.typing(path) ? null : arrived;
++  return (await context.host.editing(path)) === null ? arrived : null;
+ }
+ 
+ export type ApplyResult =

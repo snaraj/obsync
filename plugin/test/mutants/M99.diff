@@ -1,9 +1,9 @@
 # M99: a folder tombstone retires every selected folder rather than the one it names
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -774,7 +774,7 @@
-     const removed = await removeFolder(context, path, shown);
+@@ -940,7 +940,7 @@
      context.state.forgetFolder(path);
+     if (retiring?.fileId === change.file_id) bury(context, change.file_id, change.version_id, path, true, change.ts);
      if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
 -      context.state.data.retiredRoots[path] = change.file_id;
 +      for (const root of context.state.data.syncFolders ?? []) context.state.data.retiredRoots[root] = change.file_id;

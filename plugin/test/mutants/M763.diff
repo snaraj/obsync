@@ -1,0 +1,12 @@
+# M763: include the base text twice in the left addition
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -108,7 +108,7 @@
+ /** Both users only appended: retain the shared prefix and order additions alike. */
+ function mergeLineAppends(base: string, mine: string, theirs: string): string | null {
+   if (!mine.startsWith(base) || !theirs.startsWith(base)) return mergeLineInsertions(base, mine, theirs);
+-  const left = mine.slice(base.length);
++  const left = mine;
+   const right = theirs.slice(base.length);
+   let shared = 0;
+   // Walk code points so different emoji cannot share half a surrogate pair.

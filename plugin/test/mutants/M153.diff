@@ -1,0 +1,12 @@
+# M153: the criss-cross base is built from an ancestor the first one already holds, so the false overlap stays and copies return
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2771,7 +2771,7 @@
+   const fromLeft = reachable(parents, left);
+   const fromRight = reachable(parents, right);
+   const other = file.versions.find(
+-    ({ version_id: id }) => id !== left && id !== right && !below.has(id) && fromLeft.has(id) && fromRight.has(id),
++    ({ version_id: id }) => id !== left && id !== right && fromLeft.has(id) && fromRight.has(id),
+   )?.version_id;
+   if (other === undefined) return null;
+   if (levels === 0) return false;

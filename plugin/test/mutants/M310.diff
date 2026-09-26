@@ -1,0 +1,11 @@
+# M310: a note open and being typed in is deleted from under the cursor when another device deletes it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1303,7 +1303,6 @@
+       // next save, so it is kept and published again the same way.
+       let held: string | null = await competing(context, localPath, change.file_id);
+       const editing = held === null && local !== undefined ? await openEditing(context, localPath, local, change) : null;
+-      if (editing?.held === true) held = "open_editing";
+       const open = editing?.fields ?? "";
+       if (held !== null) {
+         const started = context.now();

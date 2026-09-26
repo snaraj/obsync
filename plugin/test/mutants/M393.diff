@@ -1,0 +1,13 @@
+# M393: an edit whose parent this vault cannot read is refused outright instead of kept beside the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2481,8 +2481,7 @@
+   const file = await context.transport.getFile(change.file_id);
+   const parent = file.versions.find((version) => version.version_id === change.parents[0]);
+   if (parent === undefined) return null;
+-  const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
+-    .catch(() => null);
++  const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id });
+   if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
+   const landed = await materialise(context, manifest);
+   await recordAt(context, change, landed.path, landed);

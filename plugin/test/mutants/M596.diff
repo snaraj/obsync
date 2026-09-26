@@ -1,0 +1,12 @@
+# M596: ignore rejection during registration
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2731,7 +2731,7 @@
+       assertCurrent();
+       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+     } catch (error) {
+-      if (forgottenCredential(error)) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
++      if (false) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+       // Old servers do not implement this route. Sync can continue, and their
+       // last-device refusal remains in force until server and client upgrade.
+       this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);

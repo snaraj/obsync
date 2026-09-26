@@ -1,0 +1,12 @@
+# M415: an edit arriving for a note deleted here is refused as if the deletion were a save, and the deletion then forks the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -694,7 +694,7 @@
+   try {
+     await writeVerified(context, manifest, writer);
+     const now = over === undefined ? null : await context.host.stat(manifest.path);
+-    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
++    if (over !== undefined && (now === null || now.mtime !== over.mtime || now.size !== over.size)) {
+       await writer.abort();
+       return null;
+     }

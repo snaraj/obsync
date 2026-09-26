@@ -1,0 +1,12 @@
+# M456: a retirement is withheld because an OLD version of the keeper matched, after the keeper moved on
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2597,7 +2597,7 @@
+     if (error instanceof ApiError && error.code === "unknown_file") return null;
+     throw error;
+   });
+-  for (const version of file?.versions.filter((candidate) => file.heads.includes(candidate.version_id)) ?? []) {
++  for (const version of file?.versions ?? []) {
+     const stat = await identicalAtName(context, version, path, ours);
+     if (stat === null) continue;
+     await recordAt(context, { ...version, file_id: keeper }, path, stat);

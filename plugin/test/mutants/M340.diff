@@ -1,0 +1,11 @@
+# M340: a device that only applied a swap publishes its own moves back as renames
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2617,7 +2617,6 @@
+  */
+ async function relocate(context: SyncContext, from: string, to: string): Promise<MoveResult> {
+   const echo = `${from}\u0000${to}`;
+-  context.moved.add(echo);
+   const outcome = await context.host.move(from, to).catch((error: unknown) => {
+     context.moved.delete(echo);
+     throw error;

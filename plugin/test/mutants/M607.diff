@@ -1,0 +1,12 @@
+# M607: claim pairing with stale sync records
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -275,7 +275,7 @@
+     }
+     try {
+       this.waiting = true;
+-      if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
++      if (false) await this.plugin.resetForgottenEnrollment();
+       if (!this.waiting) return;
+       // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
+       // pairs with it copies that vault into itself, one level per sync.

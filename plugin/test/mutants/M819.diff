@@ -1,0 +1,12 @@
+# M819: Merge replacements without preserving original line prefixes.
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -103,7 +103,7 @@
+       // from later typing. Split only an equal-length run that preserves every
+       // original line as its prefix; structural edits remain one interval.
+       if (at - start > 1 && lines.length === at - start &&
+-        lines.every((line, index) => line.startsWith(base[start + index] as string))) {
++        true) {
+         for (let index = 0; index < lines.length; index++) {
+           edits.push({ start: start + index, end: start + index + 1, lines: [lines[index] as string] });
+         }

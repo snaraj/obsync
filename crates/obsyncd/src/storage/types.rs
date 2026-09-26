@@ -23,6 +23,8 @@ pub struct AccountRecord {
     pub created: UnixMs,
     /// Optional ceiling on stored ciphertext.
     pub quota_bytes: Option<u64>,
+    /// SHA-256 verifier for a domain-separated vault recovery proof; no content key.
+    pub recovery_verifier: Option<String>,
     /// Ciphertext bytes currently stored.
     pub used_bytes: u64,
 }

@@ -1,0 +1,11 @@
+# M454: a retirement no longer names its keeper, and a device with rolled-back records deletes the kept file
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -166,7 +166,6 @@
+     chunks: [],
+     sha256: "",
+     deleted: true,
+-    keeper,
+   };
+   try {
+     await postManifest(context, fileId, [parent], [], manifest, 0, true);

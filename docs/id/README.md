@@ -97,7 +97,7 @@ di iOS, memercayainya adalah sakelar kedua setelah memasangnya.
 
    ![Tab pengaturan plugin: kolom Server URL yang memuat nama host contoh, kotak header edge, dan baris Connection dengan tombol Check dan Open dashboard miliknya](../assets/settings-server.png)
 
-3. Tempel token penyiapan di bawah **First-time setup**, pilih **Set up**,
+3. Tempel token penyiapan di bawah **Setup or recover**, pilih **Set up or recover**,
    lalu tulis frasa pemulihan 24 kata itu.
 
    ![Bagian This device pada tab pengaturan: baris Pairing dengan Pair this device dan Pair a new device, baris First-time setup dengan kolom Setup token dan tombol Set up, serta baris Vault key](../assets/settings-setup.png)

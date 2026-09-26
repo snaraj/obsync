@@ -1,0 +1,11 @@
+# M447: a superseded session stops without a word in the log
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1668,7 +1668,6 @@
+       // one stops and says so in the log only: nothing failed here that the
+       // user could fix, and the newer session is the one syncing.
+       const superseded = error.reason === "superseded";
+-      if (superseded) this.log("state decision=refused reason=superseded");
+       if (!this.isCurrent(generation)) return;
+       this.teardownEngine();
+       this.cancelHistories();

@@ -1,7 +1,7 @@
 # M128: the yielding device does not record the lower id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2390,16 +2390,6 @@
+@@ -3252,17 +3252,6 @@
      context.host.log(`pull decision=skipped reason=twin_changed_during_lookup file=${change.file_id} seq=${change.seq}`);
      return "skipped";
    }
@@ -13,8 +13,9 @@
 -    mtime: checked.mtime,
 -    size: checked.size,
 -    sha256: ours.sha256,
+-    ts: change.ts,
 -  });
 -  await context.state.save();
-   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
    context.host.log(
      `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

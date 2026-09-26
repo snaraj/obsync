@@ -1,0 +1,11 @@
+# M425: every note of the nested vault is read and its bytes uploaded before the post is refused
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -416,7 +416,6 @@
+     const desktop = this.desktop;
+     try {
+       if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+-      if (await this.inNestedVault(path)) throw new VaultPathError("nested_vault");
+       return true;
+     } catch (error) {
+       if (!(error instanceof VaultPathError)) throw error;

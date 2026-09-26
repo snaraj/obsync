@@ -1,0 +1,16 @@
+# M613: Resume selects heads before a queued older upload completes
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -256,9 +256,9 @@
+   finally { if (paths.get(path) === current) paths.delete(path); }
+ }
+ 
+-export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+-  // Resume selects and preserves heads only after an earlier upload is acknowledged.
+-  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
++export async function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
++  const parents = typeof over === "function" ? await over() : over;
++  return serialPublication(context, path, () => publishFile(context, path, force, parents));
+ }
+ 
+ /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */

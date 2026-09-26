@@ -1,0 +1,11 @@
+# M245: a deletion whose first send was lost is re-sent without asking whether the note is back, deleting a restored note everywhere
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -679,7 +679,6 @@
+     `push decision=reconciled reason=lost_answer file=${fileId} committed=${committed !== null}`,
+   );
+   if (committed) return committed;
+-  if (!(await stillWanted())) throw new ApiError(0, "withdrawn", fileId);
+   // Absent: a fresh signature over the same body is a first post, not a repeat.
+   const again = await context.transport.postVersion(fileId, post);
+   if (again.outcome === "ok") return again.value;

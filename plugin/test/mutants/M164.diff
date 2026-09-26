@@ -1,0 +1,12 @@
+# M164: a head a later version replaced is settled anyway, closing a fork that is not there and keeping stale text
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2029,7 +2029,7 @@
+   // pair this rule can see, and is kept as both, as before.
+   const replaced = (id: string): boolean =>
+     !file.heads.includes(id) && file.heads.some((head) => reaches(file.versions, head, id));
+-  if (replaced(localVersionId) || replaced(change.version_id)) {
++  if (false) {
+     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

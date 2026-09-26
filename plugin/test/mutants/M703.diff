@@ -1,0 +1,12 @@
+# M703: Resume selects an unrelated historical version instead of the peer head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2348,7 +2348,7 @@
+   if (kept === null) return "no_free_name";
+   const other = file.heads.filter((id) => id !== record.versionId);
+   const peer = other.length === 1
+-    ? file.versions.find((candidate) => candidate.version_id === other[0] && candidate.device_id !== context.deviceId)
++    ? file.versions.find((candidate) => candidate.version_id !== other[0] && candidate.device_id !== context.deviceId)
+     : undefined;
+   const restored = peer === undefined ? version : peer;
+   const restore = peer === undefined ? recorded : await decryptRecordManifest(context, { ...peer, file_id: fileId, domain_id: file.domain_id });

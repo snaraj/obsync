@@ -1,0 +1,12 @@
+# M684: already open popout windows miss editor input
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1930,7 +1930,7 @@
+     this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => {
+       for (const { view } of this.app.workspace.getLeavesOfType("markdown")) {
+         const opened = view.containerEl.ownerDocument.defaultView;
+-        if (opened !== null) this.host.trackInput(opened);
++        if (opened === null) this.host.trackInput(window);
+       }
+       listed();
+     })).then(async () => {

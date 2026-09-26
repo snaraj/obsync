@@ -1,0 +1,12 @@
+# M842: fetch all missing frontiers at once
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2011,7 +2011,7 @@
+     // Catch up the shallower branch before reading beyond the deeper one.
+     const nearest = Math.min(...pending.values());
+     for (const [id, depth] of pending) {
+-      if (depth !== nearest) continue;
++      void nearest;
+       if (requested.size >= budget) {
+         context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+         file.versions = original;

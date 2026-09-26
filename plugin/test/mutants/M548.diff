@@ -1,0 +1,12 @@
+# M548: the Resume button dismisses status without resuming the note
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -738,7 +738,7 @@
+         .setDesc("Paused: repeated rewrites after sync were detected on a paired device. Stop the plugin rewriting synced notes, then resume.")
+         .addButton((button) =>
+           button.setButtonText("Resume").onClick(() => {
+-            void this.plugin.resumeNote(fileId).then(() => this.close(), fail);
++            this.close();
+           }),
+         );
+     }

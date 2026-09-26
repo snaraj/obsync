@@ -7,8 +7,9 @@
 # `plugin/test`, for a mutation of a fake's fidelity) at the head that carries
 # it, so every kill count in a commit body or a PR body is reproducible by a
 # stranger with one command and no guessing about what the prose meant (review
-# round 2, finding 7). The output is TAP: every `not ok` line names a test the
-# mutant killed, and their number IS the kill count.
+# round 2, finding 7). The output is TAP: every `not ok` line names a test that
+# rejected the mutant. Node reports a deliberately hung test as cancelled,
+# separately from assertion failures, so retain every summary count as well.
 #
 # EXACT, NEVER FUZZY. `-F0` refuses to apply a hunk whose context has moved:
 # a patch that no longer describes the code it was written for must fail loudly
@@ -66,4 +67,4 @@ fi
 # that will never happen: a runner that stalls hides every mutant after it,
 # and a stall is a kill this matrix would otherwise never record.
 node --test --test-timeout=60000 --test-reporter=tap test/*.test.mjs 2>&1 |
-  grep -E '^(not ok|# (pass|fail) )' || true
+  grep -E '^[[:space:]]*not ok|^# (tests|pass|fail|cancelled|skipped) ' || true

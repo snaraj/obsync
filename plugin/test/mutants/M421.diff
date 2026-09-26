@@ -1,0 +1,15 @@
+# M421: first-time setup inside a synced vault spends the setup token and enrols the device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2663,11 +2663,6 @@
+       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
+         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
+       }
+-      const nested = await this.nestedRefusal("setup");
+-      if (nested !== null) {
+-        new Notice(`obsync: ${nested}`, 12000);
+-        return;
+-      }
+       // Persist the key BEFORE a one-time request can create its account. A
+       // lost answer then leaves the proof needed for an explicit recovery.
+       const freshKey = state.data.vrk === null;

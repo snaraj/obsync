@@ -1,0 +1,12 @@
+# M242: a Sync now that lets go of held notes that came back logs nothing about them
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1903,7 +1903,7 @@
+     const tracked = Object.keys(context.state.data.files).filter((path) => inSyncScope(path, scope)).length;
+     const still = new Set(missing);
+     const kept = this.heldDeletions.filter((path) => still.has(path));
+-    if (kept.length < this.heldDeletions.length) {
++    if (!tombstones && kept.length < this.heldDeletions.length) {
+       context.host.log(
+         `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+       );

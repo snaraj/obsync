@@ -1,0 +1,12 @@
+# M186: a vault whose "Deleted files" was never changed loses notes deleted elsewhere for good
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1140,7 +1140,7 @@
+     }
+     const option = (vault as App["vault"] & { getConfig?(key: string): unknown }).getConfig?.("trashOption");
+     let bin = "system";
+-    if (option === "none") {
++    if (option !== "local" && option !== "system") {
+       await vault.adapter.remove(path);
+       bin = "none";
+     } else if (option === "local" || !(await vault.adapter.trashSystem(path).catch(() => false))) {

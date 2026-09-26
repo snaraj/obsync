@@ -2133,8 +2133,8 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
         for name, old, new in (
             (
                 QUICKSTART_GUIDE_NAME,
-                "paste the setup token and select **Set up**",
-                "paste the one-time setup token and select **Set up**",
+                "paste the setup token and select **Set up or recover**",
+                "paste the one-time setup token and select **Set up or recover**",
             ),
             (
                 DASHBOARD_GUIDE_NAME,

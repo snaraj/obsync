@@ -1,0 +1,11 @@
+# M470: the ceiling row goes on naming the ceiling it had before the one just kept
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -609,7 +609,6 @@
+         if (bytes === policy[key]) return;
+         policy[key] = bytes;
+         this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
+-        setting.setDesc(describe());
+         void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
+       });
+     });

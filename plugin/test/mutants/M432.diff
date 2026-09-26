@@ -1,0 +1,12 @@
+# M432: on a computer, a nested vault directly under the vault root is synced both ways
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -465,7 +465,7 @@
+       throw error;
+     }
+     // `chain[depth]` is the directory the first `depth` segments name.
+-    for (let depth = 1; depth < chain.length; depth++) {
++    for (let depth = 2; depth < chain.length; depth++) {
+       if (await this.holdsPlugin(desktop, (chain[depth] as ChainLink).path)) return this.named(segments.slice(0, depth).join("/"));
+     }
+     return false;

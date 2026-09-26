@@ -1,0 +1,14 @@
+# M212: a folder renamed out of the selection while Obsidian was closed is deleted on the other devices (small) or held for a Confirm that would delete it (big)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1860,9 +1860,7 @@
+         if (!this.running) return;
+         // The moves are the pairing above's, which saw every file of the
+         // selection; what is left to find here is outside it.
+-        const outcome = await this.follow(context, from, index, settled);
+-        if (outcome === "left") left.push(from);
+-        else if (outcome === null) missing.push(from);
++        missing.push(from);
+       }
+       for (const from of left) this.leftScope(from);
+     }

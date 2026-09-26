@@ -1,0 +1,12 @@
+# M465: an entry in the mark's own millisecond, after it, is skipped by the replay
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -66,7 +66,7 @@
+ 
+ /** Was this entry already processed on the timeline the mark ends? */
+ export function seenBefore(change: Pick<ChangeRecord, "seq" | "ts">, mark: FeedMark): boolean {
+-  return change.ts < mark.ts || (change.ts === mark.ts && change.seq <= mark.seq);
++  return change.ts < mark.ts;
+ }
+ 
+ /**

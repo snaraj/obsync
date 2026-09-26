@@ -1,0 +1,12 @@
+# M681: IME completion is not observed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1749,7 +1749,7 @@
+         if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
+       }
+     };
+-    for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {
++    for (const kind of ["keydown", "beforeinput", "compositionstart", "focusout"] as const) {
+       this.plugin.registerDomEvent(target, kind, input, true);
+     }
+   }

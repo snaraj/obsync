@@ -1,0 +1,11 @@
+# M694: the editor-side hold is not persisted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2218,7 +2218,6 @@
+     if (context.state.data.paused[change.file_id] === undefined) {
+       const started = context.now();
+       context.state.data.paused[change.file_id] = { path: localPath, remote: true };
+-      await context.state.save();
+       context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+       context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+     }

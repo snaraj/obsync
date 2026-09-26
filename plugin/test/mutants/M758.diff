@@ -1,0 +1,12 @@
+# M758: split shared emoji into UTF-16 halves
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -113,7 +113,7 @@
+   // Walk code points so different emoji cannot share half a surrogate pair.
+   for (const point of left) {
+     if (!right.startsWith(point, shared)) break;
+-    shared += point.length;
++    shared += 1;
+   }
+   const a = left.slice(shared);
+   const b = right.slice(shared);

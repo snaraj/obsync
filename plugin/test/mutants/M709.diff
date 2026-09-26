@@ -1,0 +1,13 @@
+# M709: the control claims another file at the same path is its author
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -948,8 +948,7 @@
+   // The editor can detect the collision first. The author of the automatic
+   // answer still resumes as that author: preserve its held bytes beside the
+   // editor's note, rather than publishing them over the editor on Resume.
+-  if (context.state.fileByPath(path)?.fileId === manifest.target &&
+-    await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
++  if (await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
+   if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   context.state.data.paused[manifest.target] = { path, remote: true };
+   await context.state.save();

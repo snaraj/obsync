@@ -160,6 +160,7 @@ else. The acting device is named first.
 | J8 | Quit and relaunch Obsidian on both devices | each device returns to idle on its own, with no tap, no **Sync now**, and no setup or pairing prompt; record the time each took | both devices act |
 | J9 | Open a vault that also holds a large non-note folder tree (record the file count and total size) | the vault opens and the plugin reaches idle within a recorded time, or it says why not in one visible line naming the budget it exceeded and what it skipped (requirement 12); silence, a hang, or an unexplained partial scan is a fail | desktop acts, phone observes |
 | J10 | Unpair the device, then pair the same vault again | every local note is still on disk with unchanged bytes, the device appears exactly once in Devices, and sync resumes both ways; no duplicate note and no conflict copy | either device acts, the other observes |
+| J11 | After recovery is registered, close every paired test vault; restore the saved phrase in a fresh vault and use **Setup or recover** with the server's setup token | the new device receives the retained notes without approval from an old device; wrong phrases and wrong setup tokens are refused; an old account without recovery registration explains why a paired device is still needed | fresh desktop or phone acts; existing test devices stay closed |
 
 Every release whose range touches `plugin/` or the server's sync path -- the
 chunk, change, and file handlers in `crates/obsyncd/src/api/` and the storage

@@ -1,0 +1,12 @@
+# M592: keep recovered device blocked
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2758,7 +2758,7 @@
+     await state.save();
+     assertCurrent();
+     await state.forgetPreviousCredential();
+-    this.forgottenDevice = false;
++    // mutated: forgotten flag retained
+     this.setStatus({ kind: "idle" });
+   }
+ 

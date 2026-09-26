@@ -1,0 +1,12 @@
+# M701: background Resume guesses one branch from several peer heads
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2347,7 +2347,7 @@
+   const kept = await keepResumed(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, recorded, mine, before.mtime);
+   if (kept === null) return "no_free_name";
+   const other = file.heads.filter((id) => id !== record.versionId);
+-  const peer = other.length === 1
++  const peer = other.length >= 1
+     ? file.versions.find((candidate) => candidate.version_id === other[0] && candidate.device_id !== context.deviceId)
+     : undefined;
+   const restored = peer === undefined ? version : peer;

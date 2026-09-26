@@ -1,0 +1,12 @@
+# M845: omit unavailable ancestor receipt
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2022,7 +2022,7 @@
+       try { version = await context.transport.getVersion(file.file_id, id); }
+       catch (error) {
+         if (!(error instanceof ApiError) || error.status !== 404) throw error;
+-        context.host.log(`pull decision=unavailable reason=merge_ancestor file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
++        void (`pull decision=unavailable reason=merge_ancestor file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+         file.versions = original;
+         return;
+       }

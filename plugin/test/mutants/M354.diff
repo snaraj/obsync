@@ -1,0 +1,11 @@
+# M354: an empty selection is saved with a bare "saved" and nothing says that nothing syncs
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -408,7 +408,6 @@
+       });
+       if (told.length !== 0) this.plugin.log(`scope decision=recased reason=vault_spelling folders=${told.length}`);
+       folders = parseSyncFolders(selection.map((folder, index) => shown[index] ?? folder));
+-      if (folders.length === 0) told.push("No folder is selected, so nothing syncs on this device.");
+     }
+     await this.plugin.saveSyncFolders(folders);
+     this.draftScope = null;

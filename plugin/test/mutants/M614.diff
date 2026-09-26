@@ -1,0 +1,12 @@
+# M614: do not redraw settings after pairing
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -543,7 +543,7 @@
+ 
+   private async pairThisDevice(): Promise<void> {
+     if (!(await this.applyScopeDraft())) return;
+-    new PairClaimModal(this.app, this.plugin, undefined, () => { this.left(); }).open();
++    new PairClaimModal(this.app, this.plugin).open();
+   }
+ 
+   private deviceName(visible: () => boolean): Row {

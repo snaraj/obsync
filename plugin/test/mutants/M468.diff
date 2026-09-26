@@ -1,0 +1,21 @@
+# M468: a restore's check runs beside a parked record's retry
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1964,7 +1964,7 @@
+   private recover(context: SyncContext, due: Suspicion): Promise<void> {
+     // ONE PULL AT A TIME: the check re-sends and the rewind moves the cursor,
+     // and neither may run beside a page or a parked record's retry.
+-    return this.exclusive(async () => {
++    return (async () => {
+       const live = (): boolean => this.running && this.contextValue === context;
+       if (!live()) return;
+       const resent = await recoverLost(context, due, this.judged, live);
+@@ -1982,7 +1982,7 @@
+           `obsync: The server was restored to an earlier state; this device re-sent ${resent} change${resent === 1 ? "" : "s"}.`,
+         );
+       }
+-    });
++    })();
+   }
+ 
+   // --- reconciliation, the periodic scan and the heartbeat ---------------

@@ -1,0 +1,12 @@
+# M282: the writer proves its temp by the name instead of the descriptor, so a temp another process swapped is renamed into the note
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -922,7 +922,7 @@
+      */
+     const bind = async (): Promise<void> => {
+       const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
+-      opened = await handle.stat();
++      opened = (await walker(fs).lstat(temp)) ?? opened;
+       const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
+       if (!swapped) return;
+       await discard();

@@ -1,13 +1,13 @@
 # M05: a settled occupant is written over unchecked
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2201,9 +2201,6 @@
+@@ -3227,9 +3227,6 @@
    manifest: Manifest,
    settled: string,
  ): Promise<ApplyResult> {
 -  if ((await competing(context, settled, change.file_id)) !== null) {
 -    return await keepBoth(context, change, manifest);
 -  }
-   const beside = await materialise(context, { ...manifest, path: settled });
-   await recordAt(context, change, beside.path, beside);
-   context.host.log(
+   // A version that changes nothing but the name is not written again: the
+   // file there already holds it, by the proof the rename shortcut makes
+   // (issue #108), and a write the vault has not reported yet is a note that

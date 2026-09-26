@@ -1,0 +1,12 @@
+# M589: replace retained vault key during setup
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2665,7 +2665,7 @@
+       }
+       // Persist the key BEFORE a one-time request can create its account. A
+       // lost answer then leaves the proof needed for an explicit recovery.
+-      const freshKey = state.data.vrk === null;
++      const freshKey = true;
+       if (freshKey) {
+         state.data.vrk = hex(newVaultKey());
+         await state.save();

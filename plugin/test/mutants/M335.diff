@@ -1,0 +1,12 @@
+# M335: a note the user is typing into is moved to another name under them
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2646,7 +2646,7 @@
+  */
+ async function movable(context: SyncContext, path: string, record: FileState): Promise<boolean> {
+   for (const mark of context.written) if (mark.startsWith(`${path}:`)) return false;
+-  return (await competing(context, path, record.fileId)) === null;
++  return true;
+ }
+ 
+ /**

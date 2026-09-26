@@ -1,0 +1,11 @@
+# M321: a note saved all day at the front of the memory stops every older save behind it from being forgotten
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1533,7 +1533,6 @@
+       // Re-inserted, so the map stays oldest first and the trim stops at the
+       // first entry the window can still read.
+       const now = context.now();
+-      context.pushedAt.delete(path);
+       context.pushedAt.set(path, now);
+       for (const [old, at] of context.pushedAt) {
+         if (now - at <= EDITING_WINDOW_MS) break;

@@ -1,0 +1,11 @@
+# M217: with hidden paths in the index, a note deleted into Obsidian's .trash counts as moved there and its deletion never reaches the other devices
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -468,7 +468,6 @@
+    */
+   async inventory(): Promise<VaultStat[]> {
+     return this.plugin.app.vault.getFiles()
+-      .filter((file) => isVaultPath(file.path))
+       .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+   }
+ 

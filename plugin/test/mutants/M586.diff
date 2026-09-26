@@ -1,0 +1,12 @@
+# M586: permit duplicate setup actions
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2650,7 +2650,7 @@
+    * creates the account and enrols this device.
+    */
+   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
+-    if (this.enrolling) return;
++    if (false) return;
+     this.enrolling = true;
+     try {
+       if (this.forgottenDevice) await this.resetForgottenEnrollment();

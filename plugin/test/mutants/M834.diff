@@ -1,0 +1,12 @@
+# M834: fetch ancestry for incomplete head listings
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2068,7 +2068,7 @@
+     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
+-  if (completeHeads && commonAncestor(file.versions, localVersionId, change.version_id) === null) {
++  if (commonAncestor(file.versions, localVersionId, change.version_id) === null) {
+     await completeMergeAncestry(context, file, localVersionId, change.version_id);
+   }
+   // THE BREAKER. Everything below is bounded by construction, but a bound

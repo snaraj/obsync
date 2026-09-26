@@ -1,0 +1,11 @@
+# M410: the breaker, tripped, still merges: a loop that merges is never stopped
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1970,7 +1970,6 @@
+   }
+ 
+   const mergeable =
+-    !tripped &&
+     baseId !== null &&
+     theirManifest.chunks.length === 1 &&
+     theirManifest.size <= CHUNK_MAX &&

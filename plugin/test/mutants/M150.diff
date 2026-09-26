@@ -1,0 +1,11 @@
+# M150: a resolution that wrote nothing forgets the note it found, so a run of resolutions after an edit never trips the breaker
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1771,7 +1771,6 @@
+   // leaves the note as it found it -- unless one running beside it (the feed
+   // and a push's own reconciliation resolve one fork side by side) wrote it
+   // meanwhile, whose stamp stands.
+-  if (tally.left === prior) tally.left = found;
+   return result;
+ }
+ 

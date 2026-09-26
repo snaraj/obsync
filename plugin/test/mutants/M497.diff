@@ -1,0 +1,12 @@
+# M497: a note the plugin rewrote while paused is taken for unchanged at resume, and what this device held is pushed over the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2275,7 +2275,7 @@
+   if (before === null) return "deleted_here";
+   if (before.size > CHUNK_MAX) return "ordinary";
+   const mine = await context.host.read(path);
+-  if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";
++  if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) !== record.sha256) return "unchanged";
+   const file = await context.transport.getFile(fileId);
+   const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
+   if (version === undefined) return "ordinary";

@@ -1,0 +1,11 @@
+# M445: a session superseded while still loaded shows a storage error and a notice for nothing the user can fix
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1672,7 +1672,6 @@
+       if (!this.isCurrent(generation)) return;
+       this.teardownEngine();
+       this.cancelHistories();
+-      if (superseded) return;
+       this.log(`state decision=stopped reason=${error.reason}`);
+       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
+       new Notice(error.message, 15000);

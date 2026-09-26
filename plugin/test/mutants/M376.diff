@@ -1,0 +1,12 @@
+# M376: the rebuilt journal's replay re-applies yesterday: deleted notes come back
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1919,7 +1919,7 @@
+         // device already processed is not news, and applied again it is
+         // yesterday's note over today's, a deletion undone, a rename reverted.
+         const mark = context.state.data.feedMark;
+-        if (mark?.replay === true && seenBefore(change, mark)) replayed++;
++        if (mark?.replay === true && seenBefore(change, { ...mark, ts: -1 })) replayed++;
+         else this.processed(context, change, await this.receive(context, change));
+         context.state.data.lastSeq = change.seq;
+       }

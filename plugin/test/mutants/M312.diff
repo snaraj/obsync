@@ -1,0 +1,12 @@
+# M312: a note being typed in is deleted from under the cursor in the pause just after a save
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1184,7 +1184,7 @@
+   const at = context.pushedAt.get(path);
+   const age = at === undefined ? -1 : context.now() - at;
+   return {
+-    held: editor === "unsaved" || (at !== undefined && age <= EDITING_WINDOW_MS),
++    held: editor === "unsaved",
+     fields: ` editor=${editor} age_ms=${age} budget_ms=${EDITING_WINDOW_MS}`,
+   };
+ }

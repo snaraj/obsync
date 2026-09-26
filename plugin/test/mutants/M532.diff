@@ -1,0 +1,12 @@
+# M532: a peer ignores the encrypted hold and keeps publishing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1391,7 +1391,7 @@
+ }
+ 
+ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest): Promise<ApplyResult> {
+-  if (entry.v === 3) return await applyPause(context, change, entry);
++  if (entry.v === 3) return "skipped";
+   if (entry.v === 2) return await applyFolder(context, change, entry);
+   const manifest = entry;
+   if (manifest.answer === true && await rewriteStorm(context, change, manifest.path)) return "skipped";

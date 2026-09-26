@@ -1,0 +1,12 @@
+# M379: a record from before 1.1.3, whose place is unknown, is re-sent over newer history
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -213,7 +213,7 @@
+     if (held) return "held";
+     // A folder record carries no time, and is never left behind a later
+     // version of its own id: the proved restore alone re-sends it.
+-    if (entry.kind === "folder" ? !proved : entry.ts === undefined) return "unknown_position";
++    if (entry.kind === "folder" ? !proved : false) return "unknown_position";
+     request();
+     const file = await transport.getFile(entry.fileId);
+     const seen = mark === null ? [] : file.versions.filter((version) => version.ts <= mark.ts);

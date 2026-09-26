@@ -1,0 +1,12 @@
+# M521: closed creator modal recreates decrypted approval controls
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -186,7 +186,7 @@
+     statusEl: HTMLElement,
+   ): Promise<void> {
+     const vault = claimant.vault === undefined ? null : await openPairingVault(secret, pairingId, claimant.vault);
+-    if (this.closed) return;
++    if (false) return;
+     statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?` +
+       (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`));
+     new Setting(this.contentEl)

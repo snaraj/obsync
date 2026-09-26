@@ -1,7 +1,7 @@
 # M127: the identical pair keeps the HIGHER id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2372,7 +2372,7 @@
+@@ -3234,7 +3234,7 @@
    manifest: Manifest,
    ours: FileState,
  ): Promise<ApplyResult> {

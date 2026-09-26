@@ -1,0 +1,12 @@
+# M360: `1 MB` is kept as 1 MiB, so a ceiling holds 48,576 bytes more than was typed
+--- a/plugin/src/policy.ts
++++ b/plugin/src/policy.ts
+@@ -88,7 +88,7 @@
+   if (trimmed === "unlimited" || trimmed === "0") return 0;
+   const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)?$/.exec(trimmed);
+   if (!match) return null;
+-  const scale = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12, kib: 1024, mib: MIB, gib: GIB, tib: 1024 * GIB }[match[2] ?? "b"] ?? 1;
++  const scale = { b: 1, kb: 1e3, mb: MIB, gb: 1e9, tb: 1e12, kib: 1024, mib: MIB, gib: GIB, tib: 1024 * GIB }[match[2] ?? "b"] ?? 1;
+   return Math.round(Number(match[1]) * scale);
+ }
+ 

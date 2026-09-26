@@ -1,0 +1,11 @@
+# M541: a control carrying content bypasses the empty-record schema
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -277,7 +277,6 @@
+   const value = manifestObject(json);
+   if (value["v"] === 3) {
+     if (value["kind"] !== "pause" || typeof value["target"] !== "string" || !isHex(value["target"], 16) || typeof value["paused"] !== "boolean" || value["deleted"] !== false) throw new ManifestError("pause");
+-    folderManifest({ ...value, kind: "directory" });
+     return value as unknown as PauseManifest;
+   }
+   return value["v"] === 2 ? folderManifest(value) : fileManifest(value);

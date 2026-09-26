@@ -1,0 +1,11 @@
+# M191: a save that stopped a removal leaves an empty hidden folder behind once the note is put back
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1231,7 +1231,6 @@
+       // those bytes are reachable.
+       if (await this.putBack(desktop, moved, found.target)) {
+         await fs.promises.unlink(moved).catch(() => undefined);
+-        await fs.promises.rmdir(folder).catch(() => undefined);
+         await drop();
+       }
+       return "kept";

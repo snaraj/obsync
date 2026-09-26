@@ -1,0 +1,12 @@
+# M364: a device that syncs no folders reads a bare `obsync: idle`
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2663,7 +2663,7 @@
+       case "idle":
+         // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
+         if (!this.state.paired) return "not paired";
+-        return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
++        return "idle";
+       case "syncing":
+         return `syncing ${this.statusValue.pending}`;
+       case "offline":

@@ -1,0 +1,21 @@
+# M821: Collapse independent authors into one progress slot.
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2035,7 +2035,7 @@
+   // Keep each author's progress: a passive third device sees alternating
+   // branches, neither of which descends from the other author's last edit.
+   const remotes = tally.remote ?? new Map<string, string>();
+-  const remote = remotes.get(change.device_id);
++  const remote = remotes.get("all");
+   const independent = remote !== undefined && remote !== change.version_id &&
+     reaches(file.versions, change.version_id, remote) &&
+     !reaches(file.versions, change.version_id, localVersionId);
+@@ -2044,7 +2044,7 @@
+     tally.generation = {};
+   }
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+-  remotes.set(change.device_id, change.version_id);
++  remotes.set("all", change.version_id);
+   // Bound the bookkeeping by the version graph already received. Forgotten
+   // ancestry cannot prove independent progress and never exempts a loop.
+   const retained = new Set(file.versions.map(version => version.version_id));

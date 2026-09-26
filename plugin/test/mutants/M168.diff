@@ -1,0 +1,11 @@
+# M168: the status reads idle while a note waits on this device's own push to settle a fork
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1962,7 +1962,6 @@
+       const more = paused.length > 1 ? ` and ${paused.length - 1} more` : "";
+       return { kind: "paused", message: `${last.path}${more} (Show sync status)` };
+     }
+-    if (waiting > 0) return { kind: "syncing", pending: waiting };
+     return { kind: "idle" };
+   }
+ 

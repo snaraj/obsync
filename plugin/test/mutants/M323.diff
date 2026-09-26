@@ -1,0 +1,12 @@
+# M323: any note open in any editor keeps every other note from being deleted by another device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1586,7 +1586,7 @@
+     const views = this.plugin.app.workspace
+       .getLeavesOfType("markdown")
+       .map((leaf) => leaf.view)
+-      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
++      .filter((view): view is MarkdownView => view instanceof MarkdownView);
+     const file = views[0]?.file;
+     if (!file) return null;
+     const lines = (text: string): string => text.replace(/\r\n?/g, "\n");

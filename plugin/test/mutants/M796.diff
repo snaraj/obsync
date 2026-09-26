@@ -1,0 +1,12 @@
+# M796: duplicate shared text inserted before a received suffix
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -138,7 +138,7 @@
+   for (let at = 0; at <= points.length; at++) {
+     const endM = at === points.length ? left.length : a.get(at) as number;
+     const endT = at === points.length ? right.length : b.get(at) as number;
+-    out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);
++    out.push(left.slice(m, endM).join("") + right.slice(t, endT).join(""));
+     if (at < points.length) out.push(points[at] as string);
+     m = endM + 1; t = endT + 1;
+   }

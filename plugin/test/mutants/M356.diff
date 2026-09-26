@@ -1,0 +1,12 @@
+# M356: a refused selection leaves no refusal code in the log, so nobody can tell which rule refused it
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -387,7 +387,7 @@
+       try {
+         selection = parseSyncFolders(typed);
+       } catch (error) {
+-        this.plugin.log(`scope decision=refused reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"}`);
++        this.plugin.log(`scope decision=refused reason=${"invalid_selection"}`);
+         throw new Error(SELECTION_REFUSED);
+       }
+       const shown = await Promise.all(selection.map((folder) => this.vaultFolder(folder)));

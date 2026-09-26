@@ -1,0 +1,13 @@
+# M361: an unreadable ceiling such as `1 MX` is dropped without a word
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -601,8 +601,7 @@
+         const bytes = parseBytes(typed);
+         if (bytes === null) {
+           this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
+-          new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+-          typed = formatBytes(policy[key]);
++            typed = formatBytes(policy[key]);
+           field.setValue(typed);
+           return;
+         }

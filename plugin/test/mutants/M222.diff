@@ -1,0 +1,12 @@
+# M222: a parked file with a damaged reason is named as "Cannot write X here: undefined"
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -199,7 +199,7 @@
+   // said as if it were (2026-09-24 verification, X2).
+   if (reason === "active_editor") return `Waiting for typing to settle in ${path}`;
+   if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
+-  return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
++  return `Cannot write ${path} here: ${UNWRITABLE[reason]}`;
+ }
+ 
+ /** A record this device cannot write for a reason local to that one file or chunk. */

@@ -1,0 +1,12 @@
+# M778: classify unchanged remote bytes as a waiting local edit
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1906,7 +1906,7 @@
+       const stat = await context.host.stat(path);
+       const local = context.state.fileByPath(path);
+       if (stat !== null && local?.fileId === change.file_id &&
+-        (local.mtime !== stat.mtime || local.size !== stat.size)) {
++        true) {
+         await this.answered(context, stat);
+         context.host.log(`watch decision=edit_verdict_preserved reason=arrival_advanced file=${change.file_id} seq=${change.seq}`);
+       }

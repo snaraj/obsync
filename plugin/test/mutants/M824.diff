@@ -1,0 +1,12 @@
+# M824: Do not record a new independent remote version.
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2044,7 +2044,7 @@
+     tally.generation = {};
+   }
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+-  remotes.set(change.device_id, change.version_id);
++  // Forgot this author version.
+   // Bound the bookkeeping by the version graph already received. Forgotten
+   // ancestry cannot prove independent progress and never exempts a loop.
+   const retained = new Set(file.versions.map(version => version.version_id));

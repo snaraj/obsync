@@ -1,0 +1,20 @@
+# M618: offer destructive leave before Cancel on refusal
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -504,7 +504,7 @@
+     this.refusal = result.reason;
+     this.contentEl.createEl("p", { text: `The server refused to revoke this device: ${result.detail}.` });
+     this.contentEl.createEl("p", { text: result.reason === "last_device" ? LEAVE_LAST_DEVICE : LEAVE_UNKNOWN_DEVICE });
+-    this.cancel(new Setting(this.contentEl)).addButton((button) =>
++    new Setting(this.contentEl).addButton((button) =>
+       button
+         .setButtonText("Leave locally anyway")
+         .setDestructive()
+@@ -512,6 +512,7 @@
+           void this.leave({ ...choice, localOnly: true });
+         }),
+     );
++    this.cancel(new Setting(this.contentEl));
+   }
+ 
+   private left(revoked: boolean): void {

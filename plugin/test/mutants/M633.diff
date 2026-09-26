@@ -1,0 +1,12 @@
+# M633: Resume writes after the copy record has been reassigned
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2366,7 +2366,7 @@
+     const writer = await context.host.writer(path);
+     try {
+       await writer.write(mine);
+-      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
++      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid])) return fail("saved_meanwhile");
+       await landedAt(context, await writer.commit(mtime));
+     } finally { await writer.abort(); }
+     return file.heads;

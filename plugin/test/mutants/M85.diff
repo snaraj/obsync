@@ -1,8 +1,8 @@
 # M85: the scan's move pairing stops asking about a directory's case
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1324,12 +1324,6 @@
-         context.state.fileByPath(file.path) === undefined);
+@@ -2219,12 +2219,6 @@
+       const candidates = this.carriers(record, freshByStat, settled);
        if (candidates.length !== 1) continue;
        const to = (candidates[0] as VaultStat).path;
 -      if (await this.recordsOnly(context, from, to, recordedFolders, label)) {

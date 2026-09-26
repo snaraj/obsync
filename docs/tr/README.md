@@ -105,7 +105,7 @@ kurduktan sonra açılacak ikinci bir anahtardır.
 
    ![Eklentinin ayarlar sekmesi: örnek bir ana bilgisayar adı taşıyan Server URL alanı, uç nokta başlıkları kutusu ve Check ile Open dashboard düğmelerini taşıyan Connection satırı](../assets/settings-server.png)
 
-3. Kurulum belirtecini **First-time setup** altına yapıştırın, **Set up**
+3. Kurulum belirtecini **Setup or recover** altına yapıştırın, **Set up or recover**
    seçin ve 24 kelimelik kurtarma ifadesini yazın.
 
    ![Ayarlar sekmesinin This device bölümü: Pair this device ve Pair a new device düğmeleriyle Pairing satırı, Setup token alanı ve Set up düğmesiyle First-time setup satırı ve Vault key satırı](../assets/settings-setup.png)

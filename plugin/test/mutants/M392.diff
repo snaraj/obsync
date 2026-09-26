@@ -1,0 +1,12 @@
+# M392: an edit of a DIFFERENT note, or one arriving over an unpushed edit, replaces the note here
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3075,7 +3075,7 @@
+   if (parent === undefined) return null;
+   const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
+     .catch(() => null);
+-  if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
++  if (was?.path !== manifest.path) return null;
+   const landed = await materialise(context, manifest);
+   await recordAt(context, change, landed.path, landed);
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);

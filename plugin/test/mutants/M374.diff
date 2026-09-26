@@ -1,0 +1,12 @@
+# M374: a device started after the restore never asks: it skips what was written there and never re-sends
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1727,7 +1727,7 @@
+     // failed read -- the moments a server can have been rebuilt from a backup
+     // underneath this device (issue #145, `restore.ts`). A read, like the
+     // poll: untracked, and its answer after a stop is dropped unread.
+-    let verify = true;
++    let verify = false;
+     while (live()) {
+       try {
+         if (verify) {

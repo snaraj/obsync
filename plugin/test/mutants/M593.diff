@@ -1,0 +1,14 @@
+# M593: lose recovery connection settings
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2753,8 +2753,8 @@
+     this.engine = null;
+     const { serverUrl, edgeHeaders } = state.data;
+     state.forgetPairing();
+-    state.data.serverUrl = serverUrl;
+-    state.data.edgeHeaders = edgeHeaders;
++    state.data.serverUrl = "";
++    state.data.edgeHeaders = [];
+     await state.save();
+     assertCurrent();
+     await state.forgetPreviousCredential();

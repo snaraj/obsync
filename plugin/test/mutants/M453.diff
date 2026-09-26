@@ -1,0 +1,12 @@
+# M453: a feed read failing at startup stops sync instead of uploading new files
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2301,7 +2301,7 @@
+         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
+           `untracked=${untracked} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+       );
+-      return null;
++      throw error;
+     }
+   }
+ 

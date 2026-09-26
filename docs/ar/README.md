@@ -72,7 +72,7 @@ docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 
    ![تبويب إعدادات الإضافة: حقل Server URL يحمل اسم مضيف تجريبيًا، ومربع ترويسات الحافة، وصف Connection بزرّيه Check وOpen dashboard](../assets/settings-server.png)
 
-3. الصق رمز الإعداد تحت **First-time setup**، واختر **Set up**، واكتب عبارة الاسترداد المكوّنة من 24 كلمة.
+3. الصق رمز الإعداد تحت **Setup or recover**، واختر **Set up or recover**، واكتب عبارة الاسترداد المكوّنة من 24 كلمة.
 
    ![قسم This device من تبويب الإعدادات: صف Pairing مع Pair this device وPair a new device، وصف First-time setup مع حقل Setup token وزر Set up، وصف Vault key](../assets/settings-setup.png)
 

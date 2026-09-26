@@ -1,0 +1,12 @@
+# M371: another version where this device's last entry was is not noticed: the restored server's new notes are skipped
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -90,7 +90,7 @@
+     const page = await transport.changes(mark.seq - 1, 0, 2);
+     const [first, next] = page.changes;
+     if (page.head_seq < cursor) reason = "head_behind";
+-    else if (first?.seq === mark.seq && first.version_id !== mark.versionId) reason = "mark_replaced";
++    else if (first?.seq === mark.seq && first.version_id !== first.version_id) reason = "mark_replaced";
+     else if (first?.seq === mark.seq) reason = next !== undefined && next.seq <= cursor ? "unseen_entry" : null;
+     else if (first !== undefined && first.seq <= cursor) reason = "unseen_entry";
+     else {

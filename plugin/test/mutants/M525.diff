@@ -1,0 +1,12 @@
+# M525: claim reports a generic vault name
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -294,7 +294,7 @@
+       const { state, transport, assertCurrent } = this.plugin.captureSession();
+       const parsed = decodePairingCode(this.code);
+       const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
+-        name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
++        name: "Vault", notes: this.app.vault.getMarkdownFiles().length,
+       });
+       assertCurrent();
+       if (!this.waiting) return;

@@ -1,0 +1,12 @@
+# M729: an empty head view falsely proves an incoming version obsolete
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1994,7 +1994,7 @@
+   // requiring that proof recreated historical copies on a fresh device.
+   // A complete, nonempty head view proves this incoming version is obsolete;
+   // leave local bytes untouched and let later feed entries advance them.
+-  const completeHeads = file.heads.length > 0 &&
++  const completeHeads =
+     file.heads.every(head => file.versions.some(version => version.version_id === head));
+   if (completeHeads && !file.heads.includes(change.version_id)) {
+     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);

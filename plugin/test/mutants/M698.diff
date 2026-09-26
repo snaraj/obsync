@@ -1,0 +1,12 @@
+# M698: the received control classifies its own id instead of the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -949,7 +949,7 @@
+   // answer still resumes as that author: preserve its held bytes beside the
+   // editor's note, rather than publishing them over the editor on Resume.
+   if (context.state.fileByPath(path)?.fileId === manifest.target &&
+-    await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
++    await rewriteStorm(context, change, path)) return "skipped";
+   if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   context.state.data.paused[manifest.target] = { path, remote: true };
+   await context.state.save();

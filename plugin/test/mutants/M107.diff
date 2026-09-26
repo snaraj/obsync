@@ -1,11 +1,11 @@
 # M107: the folder record's hold is not restored at the next start
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -529,7 +529,6 @@
+@@ -632,7 +632,6 @@
      if (!this.running) return;
      // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
      // finding 3).
 -    this.restoreFolderBarriers();
-     await this.reconcile();
-     if (this.running) {
-       const context = this.need();
+     // Cleaning up is never a reason not to sync.
+     await host.sweep?.().catch((error: unknown) =>
+       host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));

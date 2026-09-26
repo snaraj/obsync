@@ -1,0 +1,12 @@
+# M285: a download's temp gets a visible name again, so a quit mid-download publishes the half-file to every device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -896,7 +896,7 @@
+     }
+     const { target, chain } = await this.confine(desktop, path, ["absent", "file"]);
+     const parent = target.slice(0, target.lastIndexOf(desktop.path.sep));
+-    const temp = `${parent}${desktop.path.sep}.obsync-write-${hex(randomBytes(8))}.tmp`;
++    const temp = `${parent}${desktop.path.sep}obsync-write-${hex(randomBytes(8))}.tmp`;
+     const handle = await fs.promises.open(temp, "wx");
+     this.temps.add(temp);
+     let open = true;

@@ -1,0 +1,12 @@
+# M654: revival bypasses an in-flight publication
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -246,7 +246,7 @@
+ 
+ /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
+ export function reviveFile(context: SyncContext, path: string, tombstone: string): Promise<PushOutcome> {
+-  return serialPublication(context, path, () => publishFile(context, path, true, undefined, tombstone));
++  return publishFile(context, path, true, undefined, tombstone);
+ }
+ 
+ async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {

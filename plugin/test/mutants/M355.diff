@@ -1,0 +1,12 @@
+# M355: a hidden folder is refused with the jargon "refused: not a vault path (hidden_segment)"
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -388,7 +388,7 @@
+         selection = parseSyncFolders(typed);
+       } catch (error) {
+         this.plugin.log(`scope decision=refused reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"}`);
+-        throw new Error(SELECTION_REFUSED);
++        throw error;
+       }
+       const shown = await Promise.all(selection.map((folder) => this.vaultFolder(folder)));
+       const missing = selection.filter((_, index) => shown[index] === null);

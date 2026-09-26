@@ -1,0 +1,12 @@
+# M351: `notes` typed for the real `Notes` is saved as typed, and a Mac republishes the folder with older text
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -426,7 +426,7 @@
+     const vault = this.app.vault;
+     if (vault.getFolderByPath(folder) !== null) return folder;
+     const shown = await this.plugin.host.spelling(folder).catch(() => null);
+-    return shown !== null && vault.getFolderByPath(shown) !== null ? shown : null;
++    return shown !== null && vault.getFolderByPath(shown) !== null ? folder : null;
+   }
+ 
+   private folderSelection(): Row {

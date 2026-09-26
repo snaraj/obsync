@@ -1,0 +1,11 @@
+# M544: strictly sequential answers never trip the hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1394,7 +1394,6 @@
+   if (entry.v === 3) return await applyPause(context, change, entry);
+   if (entry.v === 2) return await applyFolder(context, change, entry);
+   const manifest = entry;
+-  if (manifest.answer === true && await rewriteStorm(context, change, manifest.path)) return "skipped";
+   // `let`, because a case-only move renames the entry and then continues
+   // down the ordinary path under the new spelling (issue #124).
+   let localPath = context.state.pathByFileId(change.file_id);

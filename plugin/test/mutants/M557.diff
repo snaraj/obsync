@@ -1,0 +1,12 @@
+# M557: resuming an editor silently consumes a different live head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2274,7 +2274,7 @@
+       const version = file.versions.find((entry) => entry.version_id === head);
+       if (version === undefined) throw new Error("missing_head");
+       const manifest = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+-      if (!manifest.deleted && await keepLost(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, manifest, null) === null) throw new Error("no_free_name");
++      if (manifest.deleted && await keepLost(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, manifest, null) === null) throw new Error("no_free_name");
+     }
+     return file.heads;
+   });

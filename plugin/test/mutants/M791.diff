@@ -1,0 +1,13 @@
+# M791: ignore failure to resolve a deeper shared base
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2784,8 +2784,7 @@
+   }
+   const [rootText, otherText] = texts as [string, string];
+   const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
+-  const merged = deeper === false ? { ok: false as const }
+-    : threeWayMerge(deeper ?? rootText, firstText, otherText);
++  const merged = threeWayMerge(typeof deeper === "string" ? deeper : rootText, firstText, otherText);
+   context.host.log(
+     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
+       `file=${change.file_id} seq=${change.seq}`,

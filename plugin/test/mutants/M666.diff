@@ -1,0 +1,13 @@
+# M666: long IME compositions are classified as rewrites
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1731,8 +1731,7 @@
+     return this.plugin.app.workspace.getLeavesOfType("markdown").some(({ view }) => {
+       if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
+       const input = this.inputAt.get(view);
+-      return this.composing.get(view) === path ||
+-        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
++      return  (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
+     });
+   }
+ 

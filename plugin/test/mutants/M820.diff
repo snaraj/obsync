@@ -1,0 +1,12 @@
+# M820: Extend a split append across its next line.
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -105,7 +105,7 @@
+       if (at - start > 1 && lines.length === at - start &&
+         lines.every((line, index) => line.startsWith(base[start + index] as string))) {
+         for (let index = 0; index < lines.length; index++) {
+-          edits.push({ start: start + index, end: start + index + 1, lines: [lines[index] as string] });
++          edits.push({ start: start + index, end: start + index + 2, lines: [lines[index] as string] });
+         }
+       } else edits.push({ start, end: at, lines });
+     }

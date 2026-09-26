@@ -1,0 +1,13 @@
+# M209: a folder moved out of the selection in Finder is published as deleted before its notes are found alive
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -688,8 +688,7 @@
+    * nothing waiting it is the ordinary folder deletion, at once.
+    */
+   folderVanished(path: string): void {
+-    if (this.vanished.size === 0) this.folderDeleted(path);
+-    else this.vanishedFolders.add(path);
++    this.folderDeleted(path);
+   }
+ 
+   /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */

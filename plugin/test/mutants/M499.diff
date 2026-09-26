@@ -1,0 +1,11 @@
+# M499: the verdict kept on every note edited here is never dropped, and grows for as long as the plugin runs
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2683,7 +2683,6 @@
+     // so neither grows with the vault for as long as the plugin runs.
+     const now = context.now();
+     for (const [path, at] of context.arrivals) if (now - at >= ANSWER_MS) context.arrivals.delete(path);
+-    for (const [fileId, verdict] of context.answering) if (now - verdict.mtime >= SCAN_MS) context.answering.delete(fileId);
+     // No path in the line: a name is vault content (requirement 6).
+     if (expired > 0) context.host.log(`${label} decision=echo_expired marks=${expired} armed=${armed.size}`);
+   }

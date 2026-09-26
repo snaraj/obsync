@@ -1,0 +1,12 @@
+# M385: a version the restored server lost is the old read_or_write_failed repair error again
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -95,7 +95,7 @@
+         this.check(path, record);
+         const version = await this.context.transport.historyVersion(record.fileId, record.versionId, this.operation)
+           .catch((error: unknown) => {
+-            if (error instanceof ApiError && error.code === "unknown_version") return null;
++            if (error instanceof ApiError && error.code === "unknown_version_") return null;
+             throw error;
+           });
+         if (version === null) return { kind: "lost", fileId: record.fileId, ...(record.ts === undefined ? {} : { ts: record.ts }) };

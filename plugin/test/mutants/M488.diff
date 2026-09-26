@@ -1,0 +1,12 @@
+# M488: a rewrite right after a sync that keeps the note's size and modified time is never sent, and two devices say idle over two notes
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1425,7 +1425,7 @@
+     // word, as it always was.
+     const record = context.state.fileByPath(path);
+     const described = record !== undefined && record.mtime === stat.mtime && record.size === stat.size;
+-    if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
++    if (described) return;
+     // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
+     // ago: comparing against it is what puts real time between the two
+     // observations. The first settle has nothing to compare with, so it

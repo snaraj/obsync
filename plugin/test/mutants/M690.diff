@@ -1,0 +1,21 @@
+# M690: the typing peer makes a conflict copy before holding
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2214,17 +2214,6 @@
+   // answer: the next keystrokes would then extend the wrong text, splitting
+   // one typed line between the note and a copy (native S89). Clean merges
+   // above still work, and two people typing carry no background-answer flag.
+-  if (theirManifest.answer === true && context.host.typing(localPath)) {
+-    if (context.state.data.paused[change.file_id] === undefined) {
+-      const started = context.now();
+-      context.state.data.paused[change.file_id] = { path: localPath, remote: true };
+-      await context.state.save();
+-      context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+-      context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+-    }
+-    await publishPause(context, change.file_id, localPath, true);
+-    return "skipped";
+-  }
+   // Not a fork yet: the push of the edit made here makes it one, and the
+   // pair is settled then, from the version that edit was made on.
+   if (ahead) return await deferToPush(context, change, localPath);

@@ -1,0 +1,11 @@
+# M288: temps left by a quit are never removed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -534,7 +534,6 @@
+     let kept = 0;
+     for (const temp of found) {
+       if (this.temps.has(temp)) continue;
+-      await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+     }
+     if (removed + kept === 0) return;
+     this.log(

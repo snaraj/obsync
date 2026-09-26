@@ -1,0 +1,12 @@
+# M204: two same-size, same-mtime notes moved inside the selection stay on the other devices under their old names too: duplicates
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -787,7 +787,7 @@
+       this.renamed(from, only.path);
+       return "moved";
+     }
+-    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
++    return found.length > 0 ? "left" : null;
+   }
+ 
+   /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */

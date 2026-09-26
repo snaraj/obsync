@@ -1,0 +1,11 @@
+# M797: only the holder of the smaller identical head can close the fork
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2143,6 +2143,7 @@
+     // Exactly these two heads and no others, or convergence stands alone.
+     if (
+       held !== undefined &&
++      head === localVersionId &&
+       file.heads.length === 2 &&
+       file.heads.includes(localVersionId) &&
+       file.heads.includes(change.version_id)

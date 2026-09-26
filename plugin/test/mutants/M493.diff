@@ -1,0 +1,11 @@
+# M493: leaving a server keeps notes paused that name that server's files
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -649,7 +649,6 @@
+     // too: a mark carried to the next server would read its journal as a
+     // restored one.
+     this.data.parked = {};
+-    this.data.paused = {};
+     this.data.feedMark = null;
+     this.data.graves = {};
+     this.data.remoteOnly = {};

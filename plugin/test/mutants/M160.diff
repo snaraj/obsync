@@ -1,0 +1,12 @@
+# M160: a save made while a version downloaded is answered with a conflict copy instead of a merge
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1565,7 +1565,7 @@
+       `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=saved_during_pull file=${change.file_id} seq=${change.seq}`,
+     );
+     const file = await context.transport.getFile(change.file_id);
+-    return await reconcile(context, file, change, manifest, localPath as string, (local as FileState).versionId);
++    return await keepBoth(context, change, manifest);
+   }
+   if (localPath !== undefined && localPath !== manifest.path) {
+     // The move's delete half. The same echo, and the one that cost a renamed

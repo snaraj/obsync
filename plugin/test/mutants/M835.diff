@@ -1,0 +1,12 @@
+# M835: remove ancestry read budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2012,7 +2012,7 @@
+     const nearest = Math.min(...pending.values());
+     for (const [id, depth] of pending) {
+       if (depth !== nearest) continue;
+-      if (requested.size >= budget) {
++      if (false) {
+         context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+         file.versions = original;
+         return;

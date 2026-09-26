@@ -129,6 +129,7 @@ function desktopHost({ files = [] } = {}) {
   const plugin = {
     state: { data: {} },
     app: {
+      workspace: { getLeavesOfType: () => [] },
       // The real one applies the user's "Deleted files" preference; what is
       // modelled here is that it is the call, and that the file goes away.
       fileManager: {
@@ -142,6 +143,9 @@ function desktopHost({ files = [] } = {}) {
         getFiles: () => files,
         getAbstractFileByPath: () => null,
         getFileByPath: (path) => known.get(path) ?? null,
+        // "Deleted files: permanently delete", so a path the vault does not
+        // know reaches the adapter's own `remove` (issue #138).
+        getConfig: (key) => (key === "trashOption" ? "none" : undefined),
         trash: async (file) => systemTrashed.push(file.path),
       },
     },

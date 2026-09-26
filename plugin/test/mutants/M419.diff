@@ -1,0 +1,11 @@
+# M419: a note counted while only its echo was settling keeps the status reading syncing for good
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1333,7 +1333,6 @@
+       // flight (`resting`). One that ends with no push -- an echo, bytes the
+       // record already describes -- leaves nothing else that would decide the
+       // status again, and it would read `syncing` for good (issue #135).
+-      if (this.running && context.forked.size > 0 && !this.draining && !this.acting(path)) this.status(this.resting());
+     }
+   }
+ 

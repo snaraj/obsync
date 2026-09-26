@@ -6,7 +6,7 @@
  * over an edit this device never published, an upload that finishes after
  * its file has left the selection, and a folder rename that drops a note
  * still waiting in the debounce queue. They are the receipt's own tests,
- * carried verbatim apart from this header, so the repair is measured against
+ * carried with explicit waits and scan isolation, so the repair is measured against
  * the input that found it rather than against a restatement of it.
  *
  * Each one is red at `3a19205` and green at the commit that names it.
@@ -334,10 +334,14 @@ test("review: a folder rename retains the pending upload of an untracked new not
   a.state.data.syncFolders = ["Notes"];
   await a.engine.start();
   await b.engine.start();
+  // The watcher must carry this pending upload through the rename. A later
+  // disk scan can rediscover a lost queue entry and hide the regression.
+  // Keep that independent fallback blind to files created after startup.
+  a.host.scan = async () => [];
   a.host.write("Notes/new.md", "NEW NOTE SENTINEL", 1000);
   assert.equal(a.state.fileByPath("Notes/new.md"), undefined, "the new note is still debouncing");
   a.host.renameFolder("Notes", "Journal");
-  await timers.run(STEP_MS);
+  await timers.run(STEP_MS, () => b.host.text("Journal/new.md") === "NEW NOTE SENTINEL");
   t.diagnostic(JSON.stringify({ scope: a.state.data.syncFolders, desktop: a.host.text("Journal/new.md"),
     phone: b.host.text("Journal/new.md"), serverFiles: server.vaultFiles().length,
     desktopLogs: a.host.logs }));

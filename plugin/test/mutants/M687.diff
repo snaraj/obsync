@@ -1,0 +1,12 @@
+# M687: an IME composition transfers to a different file
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1731,7 +1731,7 @@
+     return this.plugin.app.workspace.getLeavesOfType("markdown").some(({ view }) => {
+       if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
+       const input = this.inputAt.get(view);
+-      return this.composing.get(view) === path ||
++      return this.composing.has(view) ||
+         (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
+     });
+   }

@@ -1,0 +1,11 @@
+# M438: a refusal to pair, set up or start inside a synced vault leaves no line in the log
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2027,7 +2027,6 @@
+     const started = Date.now();
+     const outer = await this.host.enclosingVault();
+     if (outer === null) return null;
+-    this.log(`${role} decision=refused reason=nested_vault duration_ms=${Date.now() - started}`);
+     return `This folder is inside the synced vault "${outer}". Syncing it too would copy that vault into itself. ` +
+       "Open the outer vault instead, or use Selected folders there.";
+   }

@@ -1,0 +1,12 @@
+# M348: a note beside its name puts "Server repair could not verify a retained file ... check connectivity" on the status bar
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -96,7 +96,7 @@
+         this.check(path, record);
+         // A note beside its name holds the version that names the name it
+         // waits for (`pull.ts`, `settleBeside`; issue #149).
+-        if (manifest.deleted || manifest.path !== (record.name ?? path) || manifest.size !== record.size) {
++        if (manifest.deleted || manifest.path !== path || manifest.size !== record.size) {
+           throw new Error("Repair version does not match the remembered local file.");
+         }
+         this.candidate = { path, record, manifest, index: 0, offset: 0 };

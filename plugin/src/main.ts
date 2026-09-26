@@ -52,11 +52,13 @@
  * `.obsidian/plugins/`.
  */
 
-import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App } from "obsidian";
-import { Bytes, hex, randomBytes, unhex } from "./crypto";
+import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } from "./accountRecovery";
+import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource } from "./chunker";
-import { State, isPushed } from "./state";
+import { State, StateStorageError, dataLease, isPushed } from "./state";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -69,13 +71,14 @@ import {
 } from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
-import { fetchRemoteOnly } from "./sync/pull";
+import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import {
+  ChainLink,
   FinalComponent,
   PathResolver,
   PathStat,
@@ -100,6 +103,28 @@ import {
  * is past what any Obsidian platform handles.
  */
 const SCAN_MAX_DEPTH = 32;
+
+/**
+ * The names this plugin's writers give their temp files: a download's
+ * (`desktopWriter`) and a restored copy's (`createWriter`). Not a hold's --
+ * a hold may be the last name of a save (`hold`).
+ */
+const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
+
+/**
+ * What makes a folder a vault that syncs with this plugin (issue #180):
+ * Obsidian's config folder holding this plugin's own folder, which the
+ * community installer names after the directory identity. Only the names are
+ * looked at, never what is in them.
+ */
+const PLUGIN_FOLDER = [".obsidian", "plugins", PAIRING_ACTION];
+
+/**
+ * How many folders above the vault root the nested-vault check looks at. A
+ * bound on an absurd path rather than a defence: the walk ends at the
+ * filesystem root long before this on any real disk.
+ */
+const NESTING_LEVELS = 32;
 
 // The Node filesystem, reached through Electron's `require`. Typed narrowly
 // rather than as `any`: only these calls are used, and only on desktop.
@@ -293,7 +318,7 @@ export interface LeaveChoice {
 export type LeaveResult =
   | { decision: "left"; revoked: boolean }
   | { decision: "refused"; reason: "unpushed_edits"; unpushed: string[] }
-  | { decision: "refused"; reason: "last_device"; detail: string };
+  | { decision: "refused"; reason: "last_device" | "bad_signature"; detail: string };
 
 export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
   const base = parseUrl(serverUrl);
@@ -329,6 +354,13 @@ function parseUrl(value: string, base?: URL): URL | null {
 
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
+  /** The temps this host's writers hold open now, which `sweep` never takes. */
+  private readonly temps = new Set<string>();
+  /** The nested vaults this host has already told the user about, once each. */
+  private readonly nested = new Set<string>();
+  private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
+  private readonly composing = new WeakMap<MarkdownView, string>();
+  private readonly inputWindows = new WeakSet<Window>();
 
   /**
    * `desktop` is the filesystem seam. It is discovered from Electron in the
@@ -376,23 +408,118 @@ export class ObsidianHost implements VaultHost {
    * symlink component — a symlinked folder is out of sync in v0.1, in both
    * directions — and says so once per event. Mobile reaches the vault only
    * through Obsidian's adapter, which the host app confines, so there is
-   * nothing here to walk.
+   * nothing here to walk. Both refuse a path in a nested vault
+   * (`inNestedVault`), before a byte of it is read or uploaded.
    */
   async syncable(path: string, kind: "file" | "folder" = "file"): Promise<boolean> {
     const folders = this.plugin.state.data.syncFolders;
     // The folder rule at the one point it differs: the selected folder itself
-    // is a folder this device publishes a record for (`syncScope.ts`).
+    // is a folder this device publishes a record for (`syncScope.ts`). It
+    // carries the string rule, so what is left to ask is the filesystem's.
     if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
     const desktop = this.desktop;
-    if (desktop === null) return isVaultPath(path);
     try {
-      await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+      if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
+      if (await this.inNestedVault(path)) throw new VaultPathError("nested_vault");
       return true;
     } catch (error) {
       if (!(error instanceof VaultPathError)) throw error;
       this.plugin.log(`host path_class=file decision=not_synced reason=${error.refusal}`);
       return false;
     }
+  }
+
+  /**
+   * Is `path` in a folder of this vault that is a vault of its own syncing
+   * with this plugin, or is it that folder (issue #180)?
+   *
+   * THE LOOP THIS CLOSES. Opened as a vault of its own and paired with the
+   * same server, `Sub` downloaded the whole vault into itself; this vault saw
+   * those downloads as new notes under `Sub/` and published them, and `Sub`
+   * downloaded them again one level deeper: `Sub/Sub/Sub/…`, 98 levels deep
+   * on every device within seconds (S96). So a folder holding
+   * `PLUGIN_FOLDER` is out of sync in both directions, as `.obsidian` is:
+   * nothing in it is published from here, and the feed writes, moves and
+   * removes nothing in it -- whichever vault was paired first, on whichever
+   * computer. It is never excluded silently, and never loudly once per note:
+   * one notice and one log line per folder (`named`).
+   *
+   * PLATFORM. Desktop walks the path first without following a link, then
+   * asks each directory on the way down with no-follow `lstat`s, so no
+   * question is carried out of the vault by a link; a path the walk refuses
+   * is the operation's to refuse in its own words, and is not nested. Mobile
+   * asks the adapter, which the host app confines to the vault. Names only,
+   * never content, on both.
+   */
+  async inNestedVault(path: string): Promise<boolean> {
+    const segments = path.split("/");
+    const desktop = this.desktop;
+    if (desktop === null) {
+      for (let depth = 1; depth <= segments.length; depth++) {
+        const folder = segments.slice(0, depth).join("/");
+        if (await this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`)) return this.named(folder);
+      }
+      return false;
+    }
+    let chain: ChainLink[];
+    try {
+      chain = (await this.confine(desktop, path, ["absent", "file", "directory", "other"])).chain;
+    } catch (error) {
+      if (error instanceof VaultPathError) return false;
+      throw error;
+    }
+    // `chain[depth]` is the directory the first `depth` segments name.
+    for (let depth = 1; depth < chain.length; depth++) {
+      if (await this.holdsPlugin(desktop, (chain[depth] as ChainLink).path)) return this.named(segments.slice(0, depth).join("/"));
+    }
+    return false;
+  }
+
+  /** Tell the user about one nested vault, once: a notice naming it, and a log line that does not. */
+  private named(folder: string): true {
+    if (this.nested.has(folder)) return true;
+    this.nested.add(folder);
+    this.log("host path_class=folder decision=excluded reason=nested_vault");
+    this.notify(
+      `obsync does not sync "${folder}": that folder is a vault of its own with obsync installed, and syncing it ` +
+        "from this vault too would copy this vault into itself. Nothing in it was changed. To sync it from this " +
+        "vault again, uninstall obsync in that folder's own vault.",
+    );
+    return true;
+  }
+
+  /** Does the directory `dir` hold `PLUGIN_FOLDER`, each step a real directory? No-follow, names only. */
+  private async holdsPlugin(desktop: DesktopVault, dir: string): Promise<boolean> {
+    let at = dir;
+    for (const name of PLUGIN_FOLDER) {
+      at = desktop.path.resolve(at, name);
+      if ((await walker(desktop.fs).lstat(at))?.isDirectory() !== true) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The name of the vault this one sits INSIDE, when that vault has this
+   * plugin (issue #180), or `null`: the other half of `inNestedVault`, asked
+   * before this vault is set up, pairs or starts. The folders above the vault
+   * root, nearest first and at most `NESTING_LEVELS` of them, one
+   * `holdsPlugin` each; nothing else is read. A link on the way up is the
+   * one this vault itself was reached through.
+   *
+   * PLATFORM. Desktop only. Mobile can see nothing outside its vault and
+   * answers `null`; there the outer vault's exclusion is the whole defence.
+   */
+  async enclosingVault(): Promise<string | null> {
+    const desktop = this.desktop;
+    if (desktop === null) return null;
+    let at = desktop.path.resolve(desktop.base);
+    for (let level = 0; level < NESTING_LEVELS; level++) {
+      const up = desktop.path.resolve(at, "..");
+      if (up === at) return null;
+      at = up;
+      if (await this.holdsPlugin(desktop, at)) return at.slice(at.lastIndexOf(desktop.path.sep) + 1) || at;
+    }
+    return null;
   }
 
   get isMobile(): boolean {
@@ -454,12 +581,22 @@ export class ObsidianHost implements VaultHost {
       }
       return files;
     }
-    const files = this.plugin.app.vault.getFiles();
-    const synced = files.filter((file) => isVaultPath(file.path));
-    if (synced.length !== files.length) {
-      this.plugin.log(`list decision=skipped_unsyncable files=${files.length - synced.length}`);
-    }
-    return synced.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
+    const synced = await this.inventory();
+    const skipped = this.plugin.app.vault.getFiles().length - synced.length;
+    if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
+    return synced;
+  }
+
+  /**
+   * The whole index, whatever the selection (`VaultHost.inventory`): the
+   * names, sizes and mtimes Obsidian already holds in memory, on desktop and
+   * mobile alike. No directory is walked and no file is opened, so a folder
+   * outside the selection is compared, never touched.
+   */
+  async inventory(): Promise<VaultStat[]> {
+    return this.plugin.app.vault.getFiles()
+      .filter((file) => isVaultPath(file.path))
+      .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }));
   }
 
   /**
@@ -489,14 +626,54 @@ export class ObsidianHost implements VaultHost {
   async scan(): Promise<VaultStat[] | null> {
     const desktop = this.desktop;
     if (desktop === null) return null;
-    const folders = this.plugin.state.data.syncFolders;
     const files: VaultStat[] = [];
-    for (const root of folders ?? [""]) await this.walk(desktop, root, files, 0);
+    for (const root of this.plugin.state.data.syncFolders ?? [""]) {
+      // ONLY A FOLDER THE VAULT HOLDS UNDER EXACTLY THE SELECTED NAME -- the
+      // question `list()` asks of the same index (issue #150). A walk from the
+      // selection's own spelling reached `Notes/` for a selected `notes` on a
+      // volume that folds case, and reported every note in it under a name no
+      // record held: the device published the folder again as new files
+      // carrying older text, over the other device's newer edits (S30a).
+      if (root !== "" && !(this.plugin.app.vault.getAbstractFileByPath(root) instanceof TFolder)) {
+        this.log("scan decision=skipped reason=not_a_vault_folder");
+        continue;
+      }
+      await this.walk(desktop, root, files, 0);
+    }
     return files;
   }
 
-  /** One directory, then its subdirectories, to a bounded depth. */
-  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number): Promise<void> {
+  /**
+   * Remove the temp files writes left when this device stopped in the middle
+   * of them (issue #159), at each engine start (`VaultHost.sweep`).
+   *
+   * Only the names a writer makes (`WRITE_TEMP`), and only as regular files:
+   * a link wearing one of those names is left where it is, as the writer
+   * leaves it. What they held came from the server and is fetched again. A
+   * temp a writer of this host holds open is not a leftover. The walk is the
+   * scan's, over the selected folders, which is where every write lands.
+   */
+  async sweep(): Promise<void> {
+    const desktop = this.desktop;
+    if (desktop === null) return;
+    const started = Date.now();
+    const found: string[] = [];
+    for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found);
+    let removed = 0;
+    let kept = 0;
+    for (const temp of found) {
+      if (this.temps.has(temp)) continue;
+      await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+    }
+    if (removed + kept === 0) return;
+    this.log(
+      `host path_class=temp decision=removed reason=interrupted_write files=${removed} kept=${kept} ` +
+        `duration_ms=${Date.now() - started}`,
+    );
+  }
+
+  /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[]): Promise<void> {
     if (depth > SCAN_MAX_DEPTH) {
       this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
       return;
@@ -532,8 +709,13 @@ export class ObsidianHost implements VaultHost {
       // every component of each one before the engine acts on it.
       const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
       if (stat === null) continue;
+      if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
       if (stat.isDirectory()) {
-        if (inSyncTree(path, folders)) await this.walk(desktop, path, out, depth + 1);
+        // A vault of its own is neither listed nor swept (`inNestedVault`);
+        // the start's reconcile pass names it, asking of every folder.
+        if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
+          await this.walk(desktop, path, out, depth + 1, temps);
+        }
         continue;
       }
       if (!stat.isFile() || !inSyncScope(path, folders)) continue;
@@ -669,6 +851,7 @@ export class ObsidianHost implements VaultHost {
           joined.set(part, at);
           at += part.length;
         }
+        await this.assertEditorIdle(path);
         await adapter.writeBinary(path, joined.buffer, { mtime });
         // The SIZE is ours: the bytes handed to the adapter, not what a look
         // at the name says a moment later. The mtime is taken from the name
@@ -740,11 +923,18 @@ export class ObsidianHost implements VaultHost {
     const handle = await fs.promises.open(temp, "wx", 0o600);
     let opened: PathStat;
     try { opened = await handle.stat(); } catch (error) { await handle.close(); throw error; }
+    this.temps.add(temp);
     let open = true;
     let at = 0;
+    // The descriptor's identity is read at each proof, as `desktopWriter`
+    // says why: a FAT32 or exFAT volume renumbers the temp at its first byte.
     const discard = async (): Promise<void> => {
+      this.temps.delete(temp);
       try {
-        if (open) await handle.close();
+        if (open) {
+          opened = await handle.stat();
+          await handle.close();
+        }
         open = false;
         if (sameFile(opened, await walker(fs).lstat(temp))) await fs.promises.unlink(temp);
       } catch { this.log("history decision=temp_cleanup_failed"); }
@@ -752,6 +942,7 @@ export class ObsidianHost implements VaultHost {
     const bind = async (): Promise<void> => {
       guard();
       const refusal = await chainRefusal(found.chain, walker(fs));
+      opened = await handle.stat();
       if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
       guard();
     };
@@ -811,10 +1002,23 @@ export class ObsidianHost implements VaultHost {
    * hold). The temp file is opened EXCLUSIVE-CREATE, which cannot follow a
    * symlink and cannot open something that already exists, and its
    * descriptor is then compared with a no-follow stat of the name: the
-   * descriptor is the identity nothing can change, so if the name no longer
+   * descriptor is the file nothing can change, so if the name no longer
    * means the same file, someone raced us and the write is refused. The same
    * comparison runs after the rename, because the rename is the moment the
    * file becomes visible under its real name.
+   *
+   * THE DESCRIPTOR'S IDENTITY IS READ AT EACH PROOF, NOT KEPT FROM THE OPEN
+   * (issue #175). FAT32 and exFAT number a file by its first cluster, and an
+   * empty file has none: the temp's inode changes when its first byte is
+   * written, so an identity kept from the open refused every write on such a
+   * volume. Both sides of each comparison are now taken at the same moment.
+   * Where inode numbers are stable, that is the identity kept from the open
+   * exactly, so nothing is weaker there; where they move, it is the only
+   * identity that describes the file the descriptor holds.
+   *
+   * THE TEMP IS A HIDDEN NAME (issue #159), so the vault-path rule keeps it
+   * out of every listing, publication and index even when a quit leaves it
+   * behind; `sweep` removes it at the next start.
    */
   private async desktopWriter(desktop: DesktopVault, path: string): Promise<VaultWriter> {
     const fs = desktop.fs;
@@ -825,15 +1029,21 @@ export class ObsidianHost implements VaultHost {
       await this.confine(desktop, folder, ["directory"]);
     }
     const { target, chain } = await this.confine(desktop, path, ["absent", "file"]);
-    const temp = `${target}.obsync-${hex(randomBytes(6))}.tmp`;
+    const parent = target.slice(0, target.lastIndexOf(desktop.path.sep));
+    const temp = `${parent}${desktop.path.sep}.obsync-write-${hex(randomBytes(8))}.tmp`;
     const handle = await fs.promises.open(temp, "wx");
+    this.temps.add(temp);
     let open = true;
-    const opened = await handle.stat();
+    let opened = await handle.stat();
 
     /** Close, and remove the temp ONLY while its name still means our file. */
     const discard = async (): Promise<void> => {
-      if (open) await handle.close();
+      if (open) {
+        opened = await handle.stat();
+        await handle.close();
+      }
       open = false;
+      this.temps.delete(temp);
       if (sameFile(opened, await walker(fs).lstat(temp))) {
         await fs.promises.unlink(temp).catch(() => undefined);
       }
@@ -846,6 +1056,7 @@ export class ObsidianHost implements VaultHost {
      */
     const bind = async (): Promise<void> => {
       const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
+      opened = await handle.stat();
       const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
       if (!swapped) return;
       await discard();
@@ -868,7 +1079,14 @@ export class ObsidianHost implements VaultHost {
         // 3, finding 2).
         const wrote = await walker(fs).lstat(temp);
         if (wrote === null) throw new VaultPathError("temp_identity");
+        try {
+          await this.assertEditorIdle(path);
+        } catch (error) {
+          await discard();
+          throw error;
+        }
         await fs.promises.rename(temp, target);
+        this.temps.delete(temp);
         // The rename is the moment the file takes its real name, so the
         // chain is checked again here: a parent swapped after the last
         // binding would otherwise leave our own inode sitting outside the
@@ -1082,8 +1300,8 @@ export class ObsidianHost implements VaultHost {
    * then compared with what was copied, by device and inode as well as by
    * metadata; a mismatch means a replacement moved instead, and it is put
    * BACK under the vault name (or kept beside it) and answered `kept`. Only
-   * an entry that matches is handed to the vault's own deletion, by its
-   * hidden name, where no editor is writing.
+   * an entry that matches is handed to the vault's own deletion, from a
+   * hidden folder where no editor is writing, under its own name.
    *
    * Mobile has no second name to give, and a filesystem can refuse either
    * primitive. Those devices remove NOTHING and answer `unheld`, which is
@@ -1122,14 +1340,32 @@ export class ObsidianHost implements VaultHost {
    * the system bin. The file lookup is file-only on purpose: a folder
    * standing where a remote manifest names a file must never be deleted with
    * its contents.
+   *
+   * A NAME THE VAULT HAS NOT INDEXED GETS THE SAME PREFERENCE. Obsidian
+   * indexes no dot-named path, so every bound removal arrives here by a
+   * hidden one (`removeHeld`), and through 1.1.2 each was deleted outright
+   * whatever the setting said (issue #138). The preference is read where
+   * `trashFile` reads it and applied as `Vault.trash` applies it: a system
+   * bin that refuses falls back to `.trash`. Only "none" deletes; a value
+   * that is absent, unreadable or unknown is the default, the system bin.
    */
   private async remove(path: string): Promise<void> {
-    const file = this.plugin.app.vault.getFileByPath(path);
+    const vault = this.plugin.app.vault;
+    const file = vault.getFileByPath(path);
     if (file) {
       await this.plugin.app.fileManager.trashFile(file);
-    } else {
-      await this.plugin.app.vault.adapter.remove(path).catch(() => undefined);
+      return;
     }
+    const option = (vault as App["vault"] & { getConfig?(key: string): unknown }).getConfig?.("trashOption");
+    let bin = "system";
+    if (option === "none") {
+      await vault.adapter.remove(path);
+      bin = "none";
+    } else if (option === "local" || !(await vault.adapter.trashSystem(path).catch(() => false))) {
+      await vault.adapter.trashLocal(path);
+      bin = option === "local" ? "local" : "local reason=system_refused";
+    }
+    this.log(`host path_class=file decision=trashed bin=${bin}`);
   }
 
   /** The removal went where it was aimed: the chain held and the file is gone. */
@@ -1157,11 +1393,11 @@ export class ObsidianHost implements VaultHost {
    * holds bytes no version holds, so it goes back under the vault name, or
    * beside it when the name has been taken again, and the answer is `kept`.
    *
-   * Only a match is handed to the vault's own deletion, by the hidden name.
-   * A vault that does not index that name deletes it outright rather than
-   * moving it to the user's bin; by then its bytes are the ones this device
-   * has already published beside it, so what the "Deleted files" preference
-   * governs -- the note the user keeps -- is untouched.
+   * Only a match is handed to the vault's own deletion, from a hidden folder
+   * made for this removal and under the note's own name: hidden, so no
+   * editor writes there, and its own name, because that is the name the
+   * user's bin shows. Obsidian indexes neither, so `remove` applies the
+   * "Deleted files" preference itself (issue #138).
    */
   private async removeHeld(
     desktop: DesktopVault,
@@ -1181,14 +1417,25 @@ export class ObsidianHost implements VaultHost {
       this.log("host path_class=file decision=kept reason=hold_gone");
       return "kept";
     }
-    const name = `.obsync-gone-${hex(randomBytes(8))}.tmp`;
-    const moved = `${found.target.slice(0, found.target.lastIndexOf(desktop.path.sep))}${desktop.path.sep}${name}`;
+    // Into a hidden folder made for this removal alone, under the note's own
+    // name: the name is what the user's bin will show it by (issue #138).
+    const at = found.target.lastIndexOf(desktop.path.sep);
+    const name = `.obsync-gone-${hex(randomBytes(8))}`;
+    const folder = `${found.target.slice(0, at)}${desktop.path.sep}${name}`;
+    const moved = `${folder}${found.target.slice(at)}`;
+    let chain = found.chain;
     try {
+      await fs.promises.mkdir(folder, { recursive: false });
+      // A directory the vault's deletion is aimed through, so it joins the
+      // chain every later proof walks.
+      const made = await fs.promises.lstat(folder);
+      chain = [...found.chain, { path: folder, dev: made.dev, ino: made.ino }];
       await fs.promises.rename(found.target, moved);
     } catch {
       // Nothing moved, so nothing is removed and the name is still the
       // user's. A host that cannot make this move cannot make the promise.
       this.log("host path_class=file decision=kept reason=move_refused");
+      await fs.promises.rmdir(folder).catch(() => undefined);
       await drop();
       return "unheld";
     }
@@ -1202,11 +1449,12 @@ export class ObsidianHost implements VaultHost {
       // those bytes are reachable.
       if (await this.putBack(desktop, moved, found.target)) {
         await fs.promises.unlink(moved).catch(() => undefined);
+        await fs.promises.rmdir(folder).catch(() => undefined);
         await drop();
       }
       return "kept";
     }
-    const refusal = await chainRefusal(found.chain, walker(fs));
+    const refusal = await chainRefusal(chain, walker(fs));
     if (refusal !== null) {
       // Putting a file back through a chain that was swapped under us is how
       // a restore writes outside the vault, so the bytes stay where they are
@@ -1215,7 +1463,9 @@ export class ObsidianHost implements VaultHost {
       throw new VaultPathError(refusal);
     }
     // The destructive call, at last, and aimed at a name no editor writes to.
-    await this.remove(`${path.slice(0, path.lastIndexOf("/") + 1)}${name}`);
+    const slash = path.lastIndexOf("/") + 1;
+    await this.remove(`${path.slice(0, slash)}${name}/${path.slice(slash)}`);
+    await fs.promises.rmdir(folder).catch(() => this.log("host path_class=folder decision=kept reason=rmdir_refused"));
     // And the hold has the last word, because a rename does not close an
     // editor's DESCRIPTOR: a program that still holds the file open writes
     // through it wherever its name has gone, including between the proof
@@ -1458,6 +1708,70 @@ export class ObsidianHost implements VaultHost {
     return true;
   }
 
+  private async assertEditorIdle(path: string): Promise<void> {
+    // A stable disk stat does not include the keystrokes still waiting in
+    // Obsidian's two-second save debounce. Writing under that buffer invokes
+    // a second, host-app merge of text obsync has already merged (#135).
+    // The file can briefly match the buffer while the host still has an
+    // external reload queued. Leave recent trusted typing alone too; the
+    // engine retries this note after input settles, without blocking others.
+    // Check after downloads and filesystem preparation have waited.
+    if (await this.editing(path) === "unsaved" || this.typing(path)) throw new EditorBusy();
+  }
+
+  /**
+   * Is `path` open in an editor, and does one hold text its file does not
+   * (issue #146)?
+   *
+   * Obsidian writes an editor to its file two seconds after a keystroke
+   * (`TextFileView.requestSave`), so until then the newest text is in the
+   * editor alone. What a view's save would write is `getViewData`, compared
+   * here with the file as the vault reads it, line endings aside: the editor
+   * keeps one `\n` for a file that has `\r\n`. Public API only -- the markdown
+   * leaves and `MarkdownView` -- identical on desktop and mobile. A leaf
+   * Obsidian has not loaded yet is not a `MarkdownView` and holds nothing
+   * typed.
+   */
+  async editing(path: string): Promise<"unsaved" | "saved" | null> {
+    const views = this.plugin.app.workspace
+      .getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
+    const file = views[0]?.file;
+    if (!file) return null;
+    const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
+    const disk = lines(await this.plugin.app.vault.read(file));
+    return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
+  }
+
+  /** A passive editor does not make plugin writes into human typing (#179). */
+  typing(path: string): boolean {
+    return this.plugin.app.workspace.getLeavesOfType("markdown").some(({ view }) => {
+      if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
+      const input = this.inputAt.get(view);
+      return this.composing.get(view) === path ||
+        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
+    });
+  }
+
+  /** Trusted DOM input covers physical keys, paste, touch keyboards and IME. */
+  trackInput(target: Window): void {
+    if (this.inputWindows.has(target)) return;
+    this.inputWindows.add(target);
+    const input = (event: Event): void => {
+      if (!event.isTrusted || event.target === null || !("nodeType" in event.target)) return;
+      for (const { view } of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+        if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
+        if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
+        if (event.type === "compositionstart") this.composing.set(view, view.file.path);
+        if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
+      }
+    };
+    for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {
+      this.plugin.registerDomEvent(target, kind, input, true);
+    }
+  }
+
   notify(message: string): void {
     new Notice(message, 10000);
   }
@@ -1480,6 +1794,8 @@ export default class ObsyncPlugin extends Plugin {
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
+  forgottenDevice = false;
+  private enrolling = false;
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
   private stateLoad: Promise<State | null> | null = null;
@@ -1517,13 +1833,19 @@ export default class ObsyncPlugin extends Plugin {
       if (!this.isCurrent(generation)) return;
     }
     const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
+      // A newer session of this plugin owns the data file (issue #181). This
+      // one stops and says so in the log only: nothing failed here that the
+      // user could fix, and the newer session is the one syncing.
+      const superseded = error.reason === "superseded";
+      if (superseded) this.log("state decision=refused reason=superseded");
       if (!this.isCurrent(generation)) return;
       this.teardownEngine();
       this.cancelHistories();
+      if (superseded) return;
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
       new Notice(error.message, 15000);
-    }, () => this.isCurrent(generation)).catch((error: unknown) => {
+    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id)).catch((error: unknown) => {
       if (!this.isCurrent(generation)) return null;
       throw error;
     });
@@ -1600,6 +1922,8 @@ export default class ObsyncPlugin extends Plugin {
     this.registerObsidianProtocolHandler(`${PAIRING_ACTION}/pair`, pair);
 
     this.registerVaultEvents();
+    this.host.trackInput(window);
+    this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
     // The device's own word that its network is back is the cheapest signal
     // there is, and the one a laptop lid or a phone leaving a tunnel produces;
     // it runs the pending retry now instead of at the timer, and is nothing
@@ -1621,7 +1945,13 @@ export default class ObsyncPlugin extends Plugin {
     // Confirm that would have published them) and every empty folder WAS
     // published as deleted, on every restart, on 1.1.1 too (2026-09-24
     // battery, X1: `reconcile decision=start budget_files=0`).
-    this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => listed())).then(async () => {
+    this.firstStart = new Promise<void>((listed) => this.app.workspace.onLayoutReady(() => {
+      for (const { view } of this.app.workspace.getLeavesOfType("markdown")) {
+        const opened = view.containerEl.ownerDocument.defaultView;
+        if (opened !== null) this.host.trackInput(opened);
+      }
+      listed();
+    })).then(async () => {
       if (this.state.paired) await this.startEngine();
       if (this.isCurrent(generation)) void this.checkForUpdate();
     });
@@ -1653,8 +1983,9 @@ export default class ObsyncPlugin extends Plugin {
           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);
           // The folder's own record, and every record beneath it: the files
           // going is what empties the tree, the records going is what removes
-          // it from the other devices (issue #104).
-          for (const path of this.foldersUnder(file.path)) this.engine?.folderDeleted(path);
+          // it from the other devices (issue #104). They wait with the notes,
+          // which may yet turn out to have moved (issue #139).
+          for (const path of this.foldersUnder(file.path)) this.engine?.folderVanished(path);
         }
       }),
     );
@@ -1735,7 +2066,8 @@ export default class ObsyncPlugin extends Plugin {
     engine.stop();
     // stopAndWait drains in-flight work before its final State save. That save
     // may reject after a storage failure; retain the drain until it settles.
-    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch(() => {
+    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch((error: unknown) => {
+      if (error instanceof StateStorageError && error.reason === "superseded") return;
       this.log("engine decision=stopped reason=teardown_save_failed");
     });
     this.engineTeardowns.add(teardown);
@@ -1756,9 +2088,27 @@ export default class ObsyncPlugin extends Plugin {
     return { state, transport, assertCurrent };
   }
 
+  /**
+   * Why this vault may not sync at all, or `null`: it sits inside another
+   * vault that has this plugin (issue #180, `ObsidianHost.enclosingVault`).
+   * Syncing both copies the outer vault into this one, and this one back into
+   * the outer, one level deeper each time. Asked before first-time setup,
+   * before a pairing claim (typed or from a link), and before every engine
+   * start, so a vault paired before this check existed stops too. Desktop
+   * only; `role` names the asker in the one line a refusal logs.
+   */
+  async nestedRefusal(role: string): Promise<string | null> {
+    const started = Date.now();
+    const outer = await this.host.enclosingVault();
+    if (outer === null) return null;
+    this.log(`${role} decision=refused reason=nested_vault duration_ms=${Date.now() - started}`);
+    return `This folder is inside the synced vault "${outer}". Syncing it too would copy that vault into itself. ` +
+      "Open the outer vault instead, or use Selected folders there.";
+  }
+
   async startEngine(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
     // and the start below either closes the cycle or continues it.
@@ -1777,6 +2127,14 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.engine = engine;
     try {
+      // Before anything is sent, and a refusal like any other below: the
+      // status says why until the person acts, and no timer retries it. The
+      // notice comes once, as the status turns to it.
+      const nested = await this.nestedRefusal("engine");
+      if (nested !== null) {
+        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+        throw new Error(nested);
+      }
       await engine.start();
       if (this.engine === engine && this.reconnect !== null) {
         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
@@ -1787,6 +2145,7 @@ export default class ObsyncPlugin extends Plugin {
         // its own to keep.
         if (this.statusValue.kind === "offline") this.setStatus({ kind: "idle" });
       }
+      if (this.engine === engine) await this.registerAccountRecovery();
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
       const attempt = (this.reconnect?.attempt ?? 0) + 1;
@@ -1796,7 +2155,9 @@ export default class ObsyncPlugin extends Plugin {
         // never knocked on again by a timer (issue #129).
         const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
         this.log(`engine decision=stopped reason=start_failed code=${code}`);
-        this.setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        this.setStatus(forgottenCredential(error)
+          ? { kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE }
+          : { kind: "error", message: error instanceof Error ? error.message : String(error) });
         return;
       }
       this.scheduleReconnect(attempt, error.status);
@@ -1849,6 +2210,11 @@ export default class ObsyncPlugin extends Plugin {
       return;
     }
     await this.engine.syncNow();
+  }
+
+  /** Resume in Show sync status: sync one paused note again (issue #179). */
+  async resumeNote(fileId: string): Promise<void> {
+    await this.engine?.resume(fileId, "status");
   }
 
   syncContext(): SyncContext | null {
@@ -2010,6 +2376,8 @@ export default class ObsyncPlugin extends Plugin {
         `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
           `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
       );
+      // Redrawn now: whether the status line names an empty selection is this save's to change.
+      this.setStatus(this.statusValue);
     } catch (error) {
       if (this.isCurrent(generation)) {
         this.log("scope decision=failed reason=not_saved");
@@ -2107,7 +2475,7 @@ export default class ObsyncPlugin extends Plugin {
     if (deviceId === this.state.data.deviceId) {
       await this.engine?.stopAndWait();
       this.engine = null;
-      this.setStatus({ kind: "error", message: "this device was revoked" });
+      this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
     }
   }
 
@@ -2122,21 +2490,54 @@ export default class ObsyncPlugin extends Plugin {
    */
   async unpushedEdits(): Promise<string[]> {
     const state = this.state;
-    const folders = state.data.syncFolders;
-    const tracked = async (path: string): Promise<boolean> =>
-      vaultPathRefusal(path) === null && inSyncScope(path, folders) && (await this.host.syncable(path));
     const unpushed: string[] = [];
     const seen = new Set<string>();
     for (const file of await this.host.list()) {
-      if (!(await tracked(file.path))) continue;
+      if (!(await this.tracked(file.path))) continue;
       seen.add(file.path);
       if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
     }
     for (const path of Object.keys(state.data.files)) {
-      if (seen.has(path) || !(await tracked(path))) continue;
+      if (seen.has(path) || !(await this.tracked(path))) continue;
       unpushed.push(path);
     }
     return unpushed.sort();
+  }
+
+  /** A path this device syncs: the engine's own rule (`engine.ts`, `tracked`). */
+  private async tracked(path: string): Promise<boolean> {
+    return vaultPathRefusal(path) === null && inSyncScope(path, this.state.data.syncFolders) && (await this.host.syncable(path));
+  }
+
+  /**
+   * How many notes here the server's vault does not already hold, byte for
+   * byte at the same path (issue #141). It posts nothing. A claimant asks it
+   * before its first sync, which publishes every such note to every device
+   * syncing that vault: that is how pairing a second vault merged two. A
+   * version too large to carry a whole-file digest is matched by size.
+   */
+  async notesUnknownTo(vrk: string): Promise<number> {
+    const started = Date.now();
+    const key = unhex(vrk);
+    const map = await loadDomainMap(this.transport, await domainMapKeys(key));
+    const domainId = map === null ? null : soleDomain(map);
+    const held = domainId === null
+      ? null
+      : await heldNotes(this.transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId));
+    let local = 0;
+    let unknown = 0;
+    for (const file of await this.host.list()) {
+      if (!(await this.tracked(file.path))) continue;
+      local++;
+      const there = held?.get(file.path);
+      const same = there !== undefined && there.size === file.size &&
+        (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
+      if (!same) unknown++;
+    }
+    this.log(
+      `pairing role=claimant decision=surveyed local=${local} unknown=${unknown} held=${held?.size ?? 0} duration_ms=${Date.now() - started}`,
+    );
+    return unknown;
   }
 
   /**
@@ -2154,10 +2555,12 @@ export default class ObsyncPlugin extends Plugin {
    * two happened.
    *
    * The server refuses to revoke the only ACTIVE device (`409 last_device`),
-   * because an account with no active device can never sync again and nothing
-   * in this release re-enrols one. That refusal is surfaced verbatim and the
+   * until vault recovery is registered. That refusal is surfaced and the
    * user may still leave LOCALLY, which is `localOnly`: this device forgets
-   * the server, the server keeps the device. No other device is touched on
+   * the server, the server keeps the device. A server that does not know this
+   * device at all (`401 bad_signature`: rebuilt, restored, or another server)
+   * is offered the same local leave, never taken without asking, because a
+   * wrong address answers it too (#143). No other device is touched on
    * either path; only this device's id is ever sent.
    *
    * PLATFORM. Identical on desktop and mobile: one revoke, one metadata
@@ -2207,8 +2610,12 @@ export default class ObsyncPlugin extends Plugin {
         revoked = true;
       } catch (error) {
         reason = error instanceof ApiError ? error.code : "local_or_lost";
-        if (!(error instanceof ApiError) || error.code !== "last_device") throw error;
-        if (!choice.localOnly) return { decision: "refused", reason: "last_device", detail: error.detail };
+        // Revoked already -- from another device or the dashboard (#143, S80):
+        // what leaving asks of the server is done, so this device forgets it
+        // too, which is the one way back to pairing again.
+        if (error instanceof ApiError && error.code === "device_revoked") revoked = true;
+        else if (!(error instanceof ApiError) || (error.code !== "last_device" && error.code !== "bad_signature")) throw error;
+        else if (!choice.localOnly) return { decision: "refused", reason: error.code, detail: error.detail };
       }
       assertCurrent();
       state.forgetPairing();
@@ -2228,12 +2635,13 @@ export default class ObsyncPlugin extends Plugin {
         );
       }
       this.updateAvailable = null;
+      this.forgottenDevice = false;
       this.setStatus({ kind: "idle" });
-      if (revoked) reason = "ok";
+      if (reason === "unfinished") reason = "ok";
       return { decision: "left", revoked };
     } finally {
       this.log(
-        `unpair decision=${revoked ? "revoked" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+        `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
       );
       // However this ended, a device that is still paired goes on syncing:
@@ -2272,43 +2680,148 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   /**
+   * Would `vrk` leave this device outside the vault its server holds (issue
+   * #140)? A map lives at a file id derived from its key, so a new key or
+   * another vault's phrase finds none, and the engine would write a second
+   * map into the same account: every other device then meets records it
+   * cannot open. Only a device with a credential can ask, and only a server
+   * holding records has a vault to strand.
+   */
+  async vaultKeyStrands(vrk: string): Promise<boolean> {
+    const { state, transport } = this.captureSession();
+    if (state.data.deviceId === null || this.forgottenDevice) return false;
+    if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
+    // Versions, not the journal head: account and device frames move the
+    // head of a server that holds no vault yet.
+    return (await transport.changes(0, 0, 1)).changes.length > 0;
+  }
+
+  /** Restore a key from its phrase, never one that opens nothing on this server (issue #140). */
+  async restoreVaultKey(vrk: string): Promise<void> {
+    const started = Date.now();
+    const strands = await this.vaultKeyStrands(vrk);
+    this.log(`vaultkey decision=${strands ? "refused reason=opens_nothing_here" : "restored"} duration_ms=${Date.now() - started}`);
+    if (strands) {
+      throw new Error("These 24 words do not open the vault on this server: nothing there was sealed with them. The key on this device was not changed.");
+    }
+    await this.adoptVaultKey(vrk);
+  }
+
+  /**
    * First-time setup: the token the server writes privately at first boot
    * creates the account and enrols this device.
    */
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
+    if (this.enrolling) return;
+    this.enrolling = true;
     try {
+      if (this.forgottenDevice) await this.resetForgottenEnrollment();
       const { state, transport, assertCurrent } = this.captureSession();
       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
       }
+      const nested = await this.nestedRefusal("setup");
+      if (nested !== null) {
+        new Notice(`obsync: ${nested}`, 12000);
+        return;
+      }
+      // Persist the key BEFORE a one-time request can create its account. A
+      // lost answer then leaves the proof needed for an explicit recovery.
+      const freshKey = state.data.vrk === null;
+      if (freshKey) {
+        state.data.vrk = hex(newVaultKey());
+        await state.save();
+      }
+      const vrk = state.data.vrk as string;
+      const recovery = await accountRecovery(vrk);
+      assertCurrent();
+      if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
       const enrolled = await transport.setup(setupToken, accountName, {
         name: this.deviceName(),
         platform: this.platformName(),
         app_version: this.manifest.version,
-      });
+      }, recovery);
       assertCurrent();
+      if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
       // Setup is not repeatable and the credential it mints exists nowhere
       // else: a lost answer means this device may have been enrolled with a
       // secret it never received. There is nothing to read back without a
-      // credential, so say exactly that. Setup cannot be repeated; the token
-      // remains the dashboard's recovery sign-in, not a second enrollment.
+      // credential, so say exactly that. An explicit new attempt can recover
+      // with the persisted key and token; no request is automatically retried.
       if (enrolled.outcome === "lost") throw new Error(lostMessage("creating the account", enrolled));
       const result = enrolled.value;
       state.data.deviceId = result.device_id;
       state.data.deviceSecret = result.device_secret;
       await state.save();
       assertCurrent();
-      new Notice("Account created and this device enrolled.");
-      if (state.data.vrk === null) {
-        await this.adoptVaultKey(hex(newVaultKey()));
+      new Notice(result.recovered ? "Account recovered and this device re-enrolled." : "Account created and this device enrolled.");
+      if (freshKey) {
+        await this.startEngine();
         assertCurrent();
         new RecoveryPhraseModal(this.app, this, true).open();
       } else {
         await this.startEngine();
       }
     } catch (error) {
-      new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+      const code = error instanceof ApiError ? error.code : "local_or_lost";
+      this.log(`setup decision=failed reason=${code}`);
+      // One server holds one vault (#141): the one route left after this
+      // refusal, pairing, would merge a second vault into the first.
+      const text = code === "already_set_up"
+        ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device from a device that syncs it, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own."
+        : code === "recovery_unavailable"
+          ? "This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost. Use Pair this device from a device that still syncs it, then update that device and server to register recovery; a different vault needs a server of its own."
+          : code === "bad_recovery_proof"
+            ? "These recovery words do not open this server’s vault. Restore its correct 24-word phrase, or pair from a syncing device. No device was enrolled; a different vault needs a server of its own."
+            : error instanceof Error ? error.message : String(error);
+      new Notice(`obsync: ${text}`, 12000);
+    } finally {
+      this.enrolling = false;
     }
+  }
+
+  /** Register once a successful engine start has opened this vault's map. */
+  async registerAccountRecovery(): Promise<void> {
+    try {
+      const { state, transport, assertCurrent } = this.captureSession();
+      const vrk = state.data.vrk;
+      if (vrk === null || this.forgottenDevice) return;
+      const { verifier } = await accountRecovery(vrk);
+      assertCurrent();
+      if (state.data.vrk !== vrk) return;
+      const registered = await transport.registerRecovery(verifier);
+      assertCurrent();
+      this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+    } catch (error) {
+      if (forgottenCredential(error)) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      // Old servers do not implement this route. Sync can continue, and their
+      // last-device refusal remains in force until server and client upgrade.
+      this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);
+    }
+  }
+
+  /** Forget only a rejected enrollment; keep local content, key and address. */
+  async resetForgottenEnrollment(): Promise<void> {
+    if (!this.forgottenDevice) return;
+    if (this.changingScope || this.restoring !== null) throw new Error("Finish the current restore or folder change first.");
+    const { state, assertCurrent } = this.captureSession();
+    this.cancelReconnect();
+    this.cancelHistories();
+    await this.engine?.stopAndWait();
+    await Promise.allSettled(this.engineTeardowns);
+    await Promise.allSettled(this.manualFetches);
+    await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+    assertCurrent();
+    this.engine = null;
+    const { serverUrl, edgeHeaders } = state.data;
+    state.forgetPairing();
+    state.data.serverUrl = serverUrl;
+    state.data.edgeHeaders = edgeHeaders;
+    await state.save();
+    assertCurrent();
+    await state.forgetPreviousCredential();
+    this.forgottenDevice = false;
+    this.setStatus({ kind: "idle" });
   }
 
   /** The setup guide, in the browser: a fixed address in the source, never data from a server. */
@@ -2422,6 +2935,10 @@ export default class ObsyncPlugin extends Plugin {
   // --- status ------------------------------------------------------------
 
   setStatus(status: EngineStatus): void {
+    if (status.kind === "error" && status.code === "forgotten_device") {
+      this.forgottenDevice = true;
+      this.teardownEngine();
+    } else if (this.forgottenDevice) return;
     this.statusValue = status;
     this.statusEl?.setText(`obsync: ${this.statusText()}`);
   }
@@ -2468,7 +2985,9 @@ export default class ObsyncPlugin extends Plugin {
   statusText(): string {
     switch (this.statusValue.kind) {
       case "idle":
-        return this.state.paired ? "idle" : "not paired";
+        // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
+        if (!this.state.paired) return "not paired";
+        return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
       case "syncing":
         return `syncing ${this.statusValue.pending}`;
       case "offline":
@@ -2477,6 +2996,8 @@ export default class ObsyncPlugin extends Plugin {
         return "offline — retrying";
       case "error":
         return `error — ${this.statusValue.message}`;
+      case "paused":
+        return `paused — ${this.statusValue.message}`;
     }
   }
 

@@ -104,12 +104,14 @@ impl Index {
                 name,
                 created,
                 quota_bytes,
+                recovery_verifier,
             } => {
                 self.account = Some(AccountRecord {
                     account_id: *account_id,
                     name: name.clone(),
                     created: *created,
                     quota_bytes: *quota_bytes,
+                    recovery_verifier: recovery_verifier.clone(),
                     used_bytes: 0,
                 });
             }

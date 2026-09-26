@@ -1,0 +1,11 @@
+# M161: a version that already holds the edit typed here is recorded under the older of two ids, so the next push forks the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1814,7 +1814,6 @@
+   // `sha256` is a trustworthy statement of the incoming plaintext, and the
+   // local bytes are already in hand.
+   if (
+-    !ahead &&
+     theirManifest.sha256 !== "" &&
+     theirManifest.size === mine.length &&
+     hex(await sha256(mine)) === theirManifest.sha256

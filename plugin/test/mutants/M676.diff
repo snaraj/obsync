@@ -1,0 +1,12 @@
+# M676: CodeMirror event handling can hide trusted input
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1750,7 +1750,7 @@
+       }
+     };
+     for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {
+-      this.plugin.registerDomEvent(target, kind, input, true);
++      this.plugin.registerDomEvent(target, kind, input, false);
+     }
+   }
+ 

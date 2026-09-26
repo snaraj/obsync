@@ -42,7 +42,7 @@
  */
 
 import type { SyncContext } from "./engine";
-import type { FileRecord as FileState } from "../state";
+import { GRAVES_MAX, type FileRecord as FileState } from "../state";
 import { CHUNK_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
@@ -63,7 +63,7 @@ import {
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { assertVaultPath } from "../vaultPath";
+import { VaultPathError, assertVaultPath } from "../vaultPath";
 
 export interface ManifestChunk {
   sid: string;
@@ -81,6 +81,27 @@ export interface Manifest {
   chunks: ManifestChunk[];
   sha256: string;
   deleted: boolean;
+  /**
+   * On a RETIREMENT only (`retire`): the file id that keeps the name. A device
+   * before 1.1.3 ignores it and applies an ordinary deletion.
+   */
+  keeper?: string;
+  /** This edit answered a sync while no editor showed the note (#179). */
+  answer?: true;
+}
+
+/** Encrypted coordination only; old plugins refuse v3 without touching a note. */
+export interface PauseManifest {
+  v: 3;
+  kind: "pause";
+  path: string;
+  target: string;
+  paused: boolean;
+  domain: string;
+  size: 0;
+  chunks: never[];
+  sha256: "";
+  deleted: false;
 }
 
 /**
@@ -121,18 +142,37 @@ export interface PushOutcome {
   ack?: VersionAck;
 }
 
+/**
+ * Remember a tombstone this device published or applied, for the one case
+ * that needs it again: a server restored from a backup that predates it
+ * (`restore.ts`, issue #145). The cap's drop is logged, never silent.
+ */
+export function bury(context: SyncContext, fileId: string, versionId: string, path: string, folder: boolean, ts?: number): void {
+  const dropped = context.state.bury(fileId, { versionId, path, folder, ...(ts === undefined ? {} : { ts }) });
+  if (dropped > 0) context.host.log(`grave decision=dropped reason=cap dropped=${dropped} budget=${GRAVES_MAX}`);
+}
+
 /** SHA-256 over the concatenated sids: a size-independent content identity. */
 export async function sidDigest(sids: string[]): Promise<string> {
   return hex(await sha256(concat(...sids.map(unhex))));
 }
 
 /**
- * Retire a file id that duplicates the note recorded at `path` under another
- * id (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
+ * Retire a file id that duplicates the note recorded at `path` under `keeper`
+ * (issue #131): one tombstone whose parent is `parent`, and nothing on disk.
  *
- * Only ever the HIGHER of two ids holding the same bytes at one name. Every
- * device that settles such a pair settles it on the lower id, so two devices
- * can never retire both halves -- which would take the note off every device.
+ * IT NAMES ITS KEEPER (issue #181), inside the manifest, so a device that
+ * still maps the name to the retired id -- a record rolled back, S98 -- asks
+ * the keeper before it deletes anything, and forgets only the retired id when
+ * the keeper holds exactly the bytes it has (`pull.ts`, `retiredInto`).
+ *
+ * Only ever the HIGHER of two ids holding the same bytes at one name, or an id
+ * whose twin another device has EDITED since (`takeEditedTwin`, issue #147).
+ * Every device that settles an unedited pair settles it on the lower id, and a
+ * device whose note has moved on from the shared bytes never takes the other
+ * half for its twin, so two devices do not retire both halves -- which would
+ * take the note off every device. The one exception is a device that edits the
+ * note and restores the shared bytes exactly before it first pulls the twin.
  * A failure is reported, never raised: the note is already recorded under the
  * id that keeps it, so the cost is a duplicate id on the server.
  */
@@ -141,6 +181,7 @@ export async function retire(
   fileId: string,
   parent: string,
   path: string,
+  keeper: string,
 ): Promise<"posted" | "failed"> {
   const manifest: Manifest = {
     v: 1,
@@ -151,6 +192,7 @@ export async function retire(
     chunks: [],
     sha256: "",
     deleted: true,
+    keeper,
   };
   try {
     await postManifest(context, fileId, [parent], [], manifest, 0, true);
@@ -195,8 +237,41 @@ async function uploadMissing(
  * exactly that case: the bytes did not move, the PATH did, and the path lives
  * inside the manifest — without this a renamed file would keep its old name
  * on every other device.
+ *
+ * `over` re-sends the file onto the parents a RESTORED server still holds,
+ * in place of the recorded version it lost (`restore.ts`, issue #145): always
+ * posted, and offered for deduplication, so two devices re-sending one lost
+ * version publish one.
  */
-export async function pushFile(context: SyncContext, path: string, force = false): Promise<PushOutcome> {
+const publications = new WeakMap<SyncContext, Map<string, Promise<unknown>>>();
+
+/** The upload whose receipt a concurrent merge must include in its parents. */
+export function pendingPublication(context: SyncContext, path: string): Promise<unknown> | undefined {
+  return publications.get(context)?.get(path);
+}
+
+/** Uploads and merge writes observe the receipt left by the preceding publication. */
+export async function serialPublication<T>(context: SyncContext, path: string, publish: () => Promise<T>): Promise<T> {
+  let paths = publications.get(context);
+  if (paths === undefined) { paths = new Map(); publications.set(context, paths); }
+  const previous = paths.get(path);
+  const current = (previous ?? Promise.resolve()).catch(() => undefined).then(publish);
+  paths.set(path, current);
+  try { return await current; }
+  finally { if (paths.get(path) === current) paths.delete(path); }
+}
+
+export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+  // Resume selects and preserves heads only after an earlier upload is acknowledged.
+  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
+}
+
+/** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
+export function reviveFile(context: SyncContext, path: string, tombstone: string): Promise<PushOutcome> {
+  return serialPublication(context, path, () => publishFile(context, path, true, undefined, tombstone));
+}
+
+async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
   if (!stat) throw new Error(`push: ${path} disappeared`);
@@ -224,7 +299,10 @@ export async function pushFile(context: SyncContext, path: string, force = false
   const sids = plan.map((chunk) => chunk.sid);
   const digest = await sidDigest(sids);
   if (!force && record && record.sha256 === digest && record.versionId !== "") {
-    context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
+    // Only over the record it read: the pull may have given this name to
+    // another note while this push read it (issue #149), and writing the old
+    // one back would put that note under the wrong file id.
+    if (context.state.fileByPath(path) === record) context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
     return { status: "unchanged", fileId, versionId: record.versionId };
   }
 
@@ -288,8 +366,11 @@ export async function pushFile(context: SyncContext, path: string, force = false
     chunks: plan,
     sha256: plaintextHash,
     deleted: false,
+    ...(context.answering.get(fileId)?.mtime === stat.mtime && context.answering.get(fileId)?.arrived != null ? { answer: true as const } : {}),
   };
-  const parents = record && record.versionId !== "" ? [record.versionId] : [];
+  const parents = tombstone === undefined
+    ? over ?? (record && record.versionId !== "" ? [record.versionId] : [])
+    : [...new Set([...(record?.versionId ? [record.versionId] : []), tombstone])];
   // A RENAME IS NEVER OFFERED FOR DEDUPLICATION. The server's identity for a
   // position is `(file_id, parent set, sids, deleted)` and does not cover the
   // encrypted manifest (`docs/protocol.md`, "One position, one version"), and
@@ -299,7 +380,7 @@ export async function pushFile(context: SyncContext, path: string, force = false
   // their own echo -- `authored` -- and keep two different paths for one file
   // id with no version left that could settle it. Every other post offers it:
   // same parents, same chunks, same path is the same version (issue #114).
-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, !force);
+  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, tombstone !== undefined || over !== undefined || !force);
   // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
   // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so
   // it settles the pair here, by the rule every other device applies to it.
@@ -324,14 +405,22 @@ export async function pushFile(context: SyncContext, path: string, force = false
     );
     return { status: "pushed", fileId, versionId: ack.versionId };
   }
-  context.state.setFile(path, {
-    fileId,
-    versionId: ack.versionId,
-    mtime: stat.mtime,
-    size: stat.size,
-    sha256: digest,
-  });
-  await context.state.save();
+  const current = context.state.fileByPath(path);
+  if (record !== undefined && current?.fileId === fileId && current.versionId !== record.versionId) {
+    // A peer can receive this upload, merge it and send its result back before
+    // the upload acknowledgement arrives. Keep the newer pulled identity so
+    // the next keystrokes descend from the content the editor actually loaded.
+    context.host.log(`push path_class=file decision=not_recorded reason=record_advanced file=${fileId} duration_ms=${context.now() - started}`);
+  } else {
+    context.state.setFile(path, {
+      fileId,
+      versionId: ack.versionId,
+      mtime: stat.mtime,
+      size: stat.size,
+      sha256: digest,
+    });
+    await context.state.save();
+  }
   // The upload's own receipt: what crossed the wire while this run was in
   // flight and the budget it is measured against (requirement 12). The
   // counters are the TRANSPORT's, so a second push running beside this one is
@@ -366,7 +455,7 @@ async function settleDuplicate(
   ack: VersionAck,
 ): Promise<PushOutcome> {
   if (adopted.fileId < posted.fileId) {
-    const retired = await retire(context, posted.fileId, posted.versionId, path);
+    const retired = await retire(context, posted.fileId, posted.versionId, path, adopted.fileId);
     context.host.log(
       `push path_class=file decision=converged reason=recorded_during_post role=keep keeper=${adopted.fileId} retired=${posted.fileId} tombstone=${retired}`,
     );
@@ -374,7 +463,7 @@ async function settleDuplicate(
   }
   context.state.setFile(path, posted);
   await context.state.save();
-  const retired = await retire(context, adopted.fileId, adopted.versionId, path);
+  const retired = await retire(context, adopted.fileId, adopted.versionId, path, posted.fileId);
   context.host.log(
     `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,
   );
@@ -424,15 +513,54 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
   // manifest blind spot applies in principle -- a tombstone's manifest names
   // a path -- and matters less, because a deleted file has no later path for
   // the two devices to disagree about.
-  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true);
+  const ack = await postManifest(context, record.fileId, parents, [], manifest, 0, true, () => stillGone(context, path, record, manifest.mtime))
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === "withdrawn") return null;
+      throw error;
+    });
+  if (ack === null) return null;
   context.state.forgetPath(path);
+  bury(context, record.fileId, ack.versionId, path, false);
   await context.state.save();
   context.host.log(`push path_class=tombstone decision=deleted version=${ack.versionId}`);
   return { status: "pushed", fileId: record.fileId, versionId: ack.versionId, ack: ack.ack };
 }
 
+/**
+ * Is a deletion whose first send was LOST still true, now that it is about to
+ * be sent again (issue #173)? Settling the loss reads the file back with
+ * retries -- 45 seconds of them in the battery -- and the answer `pushDelete`
+ * checked before the first send is that old by now. The note may be back on
+ * the disk, or the pull may have applied another device's change to it,
+ * which replaces the record this deletion was decided from or moves it to
+ * the note's new name. Sent anyway, the stale tombstone deletes a note that
+ * is back and forks its file on the server for good.
+ *
+ * The device that deleted the note is the one that knows what happened, so
+ * it is the one that says so -- when another device's change is why the note
+ * is here, which the user did not do and would otherwise see as a note that
+ * came back by itself. A note the user put back is theirs to know about.
+ * `decided` is when the first send was decided -- the tombstone's own time --
+ * so the line says how stale that decision had become.
+ */
+async function stillGone(context: SyncContext, path: string, record: FileState, decided: number): Promise<boolean> {
+  const same = context.state.fileByPath(path) === record;
+  const gone = same && (await context.host.stat(path)) === null;
+  const reason = gone ? "still_gone" : same ? "file_present" : "record_changed";
+  context.host.log(`push path_class=tombstone decision=${gone ? "resent" : "withdrawn"} reason=${reason} file=${record.fileId} ` +
+    `age_ms=${context.now() - decided}`);
+  const now = same ? undefined : context.state.pathByFileId(record.fileId);
+  if (now !== undefined && (await context.host.stat(now)) !== null) {
+    context.host.notify(
+      `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
+        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
+    );
+  }
+  return gone;
+}
+
 /** The manifest every folder record carries; `deleted` is the only choice. */
-function folderManifest(context: SyncContext, path: string, deleted: boolean): FolderManifest {
+export function folderManifest(context: SyncContext, path: string, deleted: boolean): FolderManifest {
   return { v: 2, kind: "directory", path, domain: context.domainId, size: 0, chunks: [], sha256: "", deleted };
 }
 
@@ -464,6 +592,7 @@ export async function pushFolderDelete(context: SyncContext, path: string): Prom
   const parents = record.versionId !== "" ? [record.versionId] : [];
   const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false);
   context.state.forgetFolder(path);
+  bury(context, record.fileId, ack.versionId, path, true);
   await context.state.save();
   context.host.log(`folder path_class=folder decision=published reason=deleted version=${ack.versionId}`);
   return ack.versionId;
@@ -475,16 +604,18 @@ export async function pushFolderDelete(context: SyncContext, path: string): Prom
  * chunk between the exists check and now: ASK which sids it is missing and
  * re-upload exactly those, then retry once. The refusal names one sid, and
  * re-sending the plan on its word would re-send a 20 GiB archive to replace
- * one 4 MiB chunk (issue #56).
+ * one 4 MiB chunk (issue #56). `stillWanted` is asked immediately before a
+ * LOST post is sent again (`postOnce`), and `false` withdraws it.
  */
 export async function postManifest(
   context: SyncContext,
   fileId: string,
   parents: string[],
   sids: string[],
-  manifest: Manifest | FolderManifest,
+  manifest: Manifest | FolderManifest | PauseManifest,
   bytes: number,
   acceptExisting: boolean,
+  stillWanted: () => Promise<boolean> = async () => true,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   // The folder rule for a folder record, the file rule for a file: the
   // selected folder itself has a record and is never a file (`syncScope.ts`).
@@ -498,6 +629,10 @@ export async function postManifest(
   // that no longer exists (review round 3, finding 1).
   if (manifest.v === 2) assertFolderCaseScope(manifest.path, context.state.data.syncFolders);
   else assertSyncPath(manifest.path, context.state.data.syncFolders);
+  // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
+  // the post: a rename, a tombstone and a folder record reach here without
+  // the host's `syncable`, and any of them publishes that vault's changes.
+  if (await context.host.inNestedVault(manifest.path)) throw new VaultPathError("nested_vault");
   const binder = await contentVersionId(fileId, parents, sids);
   const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
   const { nonce, ciphertext } = await seal(
@@ -545,10 +680,10 @@ export async function postManifest(
     context.host.log(
       `push path_class=file decision=not_adopted reason=other_manifest file=${fileId}`,
     );
-    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }), false);
+    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }, stillWanted), false);
   };
   try {
-    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+    return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
     const missing = new Set(await context.transport.missingChunks(sids));
@@ -556,7 +691,7 @@ export async function postManifest(
       `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
     );
     await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
-    return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+    return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   }
 }
 
@@ -583,7 +718,7 @@ async function sameOperation(
   // lost its record for would stop being republished at all. `path`, `size`
   // and `deleted` are the three fields both shapes carry, so if a caller
   // ever does offer it, the guard holds rather than being typed out of reach.
-  manifest: Manifest | FolderManifest,
+  manifest: Manifest | FolderManifest | PauseManifest,
 ): Promise<boolean> {
   try {
     const file = await context.transport.getFile(fileId);
@@ -598,11 +733,12 @@ async function sameOperation(
         unhex(version.manifest_nonce),
         unbase64(version.manifest_ct),
       ),
-    ) as Partial<Manifest>;
+    ) as Partial<Manifest | PauseManifest>;
     return (
       theirs.path === manifest.path &&
       theirs.size === manifest.size &&
-      theirs.deleted === manifest.deleted
+      theirs.deleted === manifest.deleted &&
+      (manifest.v !== 3 || (theirs.v === 3 && theirs.kind === "pause" && theirs.target === manifest.target && theirs.paused === manifest.paused))
     );
   } catch {
     return false;
@@ -621,13 +757,16 @@ async function sameOperation(
  * still buys a second write, a second nonce, and a `409 missing_chunks` if
  * the server collected a chunk in between. Reading the file record answers
  * the question that was actually asked, and reading IS repeatable, so it can
- * be retried freely. The re-post is what the read's "absent" earns.
+ * be retried freely. The re-post is what the read's "absent" earns -- and
+ * only while the caller still wants it: the read can take long enough for
+ * the reason to post to have gone (`stillGone`, issue #173).
  */
 async function postOnce(
   context: SyncContext,
   fileId: string,
   id: string,
   post: VersionPost,
+  stillWanted: () => Promise<boolean>,
 ): Promise<VersionAck> {
   const sent = await context.transport.postVersion(fileId, post);
   if (sent.outcome === "ok") return sent.value;
@@ -636,6 +775,7 @@ async function postOnce(
     `push decision=reconciled reason=lost_answer file=${fileId} committed=${committed !== null}`,
   );
   if (committed) return committed;
+  if (!(await stillWanted())) throw new ApiError(0, "withdrawn", fileId);
   // Absent: a fresh signature over the same body is a first post, not a repeat.
   const again = await context.transport.postVersion(fileId, post);
   if (again.outcome === "ok") return again.value;

@@ -1,0 +1,12 @@
+# M784: allow the peer deletion through the insertion merge
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -131,7 +131,7 @@
+ function mergeLineInsertions(base: string, mine: string, theirs: string): string | null {
+   const points = [...base], left = [...mine], right = [...theirs];
+   const a = alignLines(points, left), b = alignLines(points, right);
+-  if (a === null || b === null || a.size !== points.length || b.size !== points.length) return null;
++  if (a === null || b === null || a.size !== points.length) return null;
+   if (a.get(0) !== 0 || b.get(0) !== 0) return null;
+   const out: string[] = [];
+   let m = 0, t = 0;

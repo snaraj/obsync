@@ -72,7 +72,7 @@ Caddy 是用它在首次啟動時自行產生的憑證授權單位來簽發憑�
 
    ![外掛程式的設定分頁：填著示範主機名稱的 Server URL 欄位、邊緣節點標頭的輸入框，以及帶有 Check 與 Open dashboard 按鈕的 Connection 這一列](../assets/settings-server.png)
 
-3. 把設定權杖貼到 **First-time setup** 底下，選擇 **Set up**，然後把 24 個單字的復原詞組抄下來。
+3. 把設定權杖貼到 **Setup or recover** 底下，選擇 **Set up or recover**，然後把 24 個單字的復原詞組抄下來。
 
    ![設定分頁的 This device 區塊：含有 Pair this device 與 Pair a new device 的 Pairing 這一列、含有 Setup token 欄位與 Set up 按鈕的 First-time setup 這一列，以及 Vault key 這一列](../assets/settings-setup.png)
 

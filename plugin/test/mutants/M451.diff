@@ -1,0 +1,11 @@
+# M451: every Sync now reads the whole feed since the cursor again
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2290,7 +2290,6 @@
+     untracked: number,
+   ): Promise<{ notes: Map<string, HeldNote>; since: number; started: number } | null> {
+     if (untracked === 0 || this.ownRead) return null;
+-    this.ownRead = true;
+     const started = context.now();
+     const since = context.state.data.lastSeq;
+     try {

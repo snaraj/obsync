@@ -1,0 +1,11 @@
+# M357: `notes` is quietly saved as `Notes` and the person is never told
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -404,7 +404,6 @@
+       }
+       selection.forEach((folder, index) => {
+         const spelled = shown[index];
+-        if (spelled && spelled !== folder) told.push(`"${folder}" is saved as "${spelled}", the way this vault spells it.`);
+       });
+       if (told.length !== 0) this.plugin.log(`scope decision=recased reason=vault_spelling folders=${told.length}`);
+       folders = parseSyncFolders(selection.map((folder, index) => shown[index] ?? folder));

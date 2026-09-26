@@ -1,0 +1,12 @@
+# M377: a version the server still holds is re-sent as lost, forking a note on every device
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -206,7 +206,7 @@
+     // THE PROOF: the server says it does not hold this exact version. A
+     // version it holds under a newer head is ordinary history.
+     request();
+-    const held = await transport.getVersion(entry.fileId, entry.versionId).then(() => true, (error: unknown) => {
++    const held = await transport.getVersion(entry.fileId, entry.versionId).then(() => false, (error: unknown) => {
+       if (error instanceof ApiError && error.code === "unknown_version") return false;
+       throw error;
+     });

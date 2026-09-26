@@ -1,0 +1,12 @@
+# M734: omit the terminal alignment boundary and lose tail edits
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -92,7 +92,7 @@
+   const edits: LineEdit[] = [];
+   let start = 0;
+   let sideStart = 0;
+-  for (let at = 0; at <= base.length; at++) {
++  for (let at = 0; at < base.length; at++) {
+     const there = at === base.length ? side.length : alignment.get(at);
+     if (there === undefined) continue;
+     if (at > start || there > sideStart) {

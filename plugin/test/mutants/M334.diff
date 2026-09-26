@@ -1,0 +1,11 @@
+# M334: a swap that also edits a note moves it before the vault reports the write, and the phone publishes one note's record over the other's text
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2645,7 +2645,6 @@
+  * onto the other note's bytes. Such a note waits for its echo, then moves.
+  */
+ async function movable(context: SyncContext, path: string, record: FileState): Promise<boolean> {
+-  for (const mark of context.written) if (mark.startsWith(`${path}:`)) return false;
+   return (await competing(context, path, record.fileId)) === null;
+ }
+ 

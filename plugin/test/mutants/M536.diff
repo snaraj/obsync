@@ -1,0 +1,11 @@
+# M536: an arbitrary encrypted record can masquerade as another note hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -500,7 +500,6 @@
+   if (entry.v === 3) {
+     bindFolderToRecord(record, entry, context.domainId);
+     assertSyncPath(entry.path, context.state.data.syncFolders);
+-    if (await pauseId(context, entry.target) !== record.file_id) throw new ManifestError("pause_id");
+   } else if (entry.v === 2) {
+     bindFolderToRecord(record, entry, context.domainId);
+     admitFolderRecord(context, entry.path);

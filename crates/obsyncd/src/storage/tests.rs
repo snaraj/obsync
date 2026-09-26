@@ -446,6 +446,7 @@ fn a_quota_refuses_before_the_body_is_stored() {
             name: account.name.clone(),
             created: account.created,
             quota_bytes: Some(8),
+            recovery_verifier: account.recovery_verifier.clone(),
         })
         .expect("quota is journalled");
     }
@@ -2967,4 +2968,55 @@ fn reviewer_mutation_probe_oldest_legacy_twin_wins() {
         "first retained twin is the documented stable answer"
     );
     assert_eq!(answer.seq, original.seq);
+}
+
+#[test]
+fn account_recovery_is_immutable_and_survives_journal_and_snapshot_replay() {
+    for snapshot in [false, true] {
+        let dir = TempDir::new("account-recovery");
+        let cfg = config(&dir);
+        let setup = ready(&cfg);
+        let verifier = "a5".repeat(32);
+        put(&setup, b"retained ciphertext");
+        let before = setup.store.account().unwrap();
+        assert!(setup.store.register_recovery(&verifier).unwrap());
+        assert!(setup.store.register_recovery(&verifier).unwrap());
+        assert!(!setup.store.register_recovery(&"b6".repeat(32)).unwrap());
+        let after = setup.store.account().unwrap();
+        assert_eq!(after.account_id, before.account_id);
+        assert_eq!(after.created, before.created);
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.used_bytes, before.used_bytes);
+        assert_eq!(after.recovery_verifier, Some(verifier.clone()));
+        setup
+            .store
+            .revoke_device_unless_last(&setup.device)
+            .expect("recovery permits the last device to leave");
+        assert!(setup.store.device_secret(&setup.device).is_none());
+        if snapshot {
+            setup.store.snapshot().unwrap();
+        }
+        drop(setup);
+        let reopened = open(&cfg);
+        assert_eq!(
+            reopened.account().unwrap().recovery_verifier,
+            Some(verifier)
+        );
+        assert_eq!(reopened.account().unwrap().used_bytes, before.used_bytes);
+    }
+}
+
+#[test]
+fn initial_account_recovery_is_one_durable_setup_fact() {
+    let dir = TempDir::new("initial-account-recovery");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let verifier = "ab".repeat(32);
+    let account = store
+        .setup_with_recovery("recoverable", Some(verifier.clone()))
+        .unwrap();
+    drop(store);
+    let recovered = open(&cfg).account().unwrap();
+    assert_eq!(recovered.account_id, account);
+    assert_eq!(recovered.recovery_verifier, Some(verifier));
 }

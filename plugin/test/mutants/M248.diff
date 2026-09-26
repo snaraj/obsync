@@ -1,0 +1,12 @@
+# M248: a lost deletion is re-sent although the note is back on the disk
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -455,7 +455,7 @@
+  */
+ async function stillGone(context: SyncContext, path: string, record: FileState, decided: number): Promise<boolean> {
+   const same = context.state.fileByPath(path) === record;
+-  const gone = same && (await context.host.stat(path)) === null;
++  const gone = same;
+   const reason = gone ? "still_gone" : same ? "file_present" : "record_changed";
+   context.host.log(`push path_class=tombstone decision=${gone ? "resent" : "withdrawn"} reason=${reason} file=${record.fileId} ` +
+     `age_ms=${context.now() - decided}`);

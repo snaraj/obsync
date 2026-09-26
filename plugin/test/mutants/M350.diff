@@ -1,0 +1,12 @@
+# M350: a folder the vault does not have is saved without a question, and nothing syncs
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -392,7 +392,7 @@
+       }
+       const shown = await Promise.all(selection.map((folder) => this.vaultFolder(folder)));
+       const missing = selection.filter((_, index) => shown[index] === null);
+-      if (missing.length !== 0) {
++      if (missing.length < 0) {
+         const kept = await confirmFirst(
+           this.app,
+           `${missing.map((folder) => `"${folder}"`).join(", ")} ${missing.length === 1 ? "is not a folder" : "are not folders"} in this vault. Save anyway?`,

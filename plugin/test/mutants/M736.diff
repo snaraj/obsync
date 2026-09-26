@@ -1,0 +1,12 @@
+# M736: treat different text in the same interval as an identical edit
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -148,7 +148,7 @@
+     const theirs = right[t];
+     let next: LineEdit;
+     if (mine && theirs) {
+-      if (mine.start === theirs.start && mine.end === theirs.end && sameLines(mine.lines, theirs.lines)) {
++      if (mine.start === theirs.start && mine.end === theirs.end && true) {
+         next = mine; m++; t++;
+       } else if (
+         mine.start === theirs.start && mine.end === theirs.end &&

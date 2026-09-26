@@ -1,0 +1,12 @@
+# M352: a FILE's name typed as a folder is saved without a question, and nothing syncs
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -426,7 +426,7 @@
+     const vault = this.app.vault;
+     if (vault.getFolderByPath(folder) !== null) return folder;
+     const shown = await this.plugin.host.spelling(folder).catch(() => null);
+-    return shown !== null && vault.getFolderByPath(shown) !== null ? shown : null;
++    return shown;
+   }
+ 
+   private folderSelection(): Row {

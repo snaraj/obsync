@@ -116,7 +116,7 @@ test("plugin registers the native restore command without pairing or issuing a h
   plugin.registerEvent = () => {};
   plugin.registerObsidianProtocolHandler = () => {};
   plugin.log = () => {};
-  plugin.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  plugin.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   plugin.manifest = { version: "0.1.11" };
   await plugin.onload();
   assert.equal(commands.find((c) => c.id === "restore-history")?.name, "Restore from history");

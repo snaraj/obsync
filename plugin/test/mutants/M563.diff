@@ -1,0 +1,12 @@
+# M563: a new device cannot Resume a held note it has not downloaded yet
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2333,7 +2333,7 @@
+   const started = context.now();
+   const path = context.state.pathByFileId(fileId);
+   const record = path === undefined ? undefined : context.state.fileByPath(path);
+-  if (path === undefined || record === undefined) return "untracked";
++  if (path === undefined || record === undefined) throw new Error("untracked");
+   const before = await context.host.stat(path);
+   if (before === null) return "deleted_here";
+   if (before.size > CHUNK_MAX) return "ordinary";

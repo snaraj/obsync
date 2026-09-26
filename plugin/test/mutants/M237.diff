@@ -1,0 +1,11 @@
+# M237: with the server out of reach, a retry pass knocks once for every parked file instead of stopping
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1761,7 +1761,6 @@
+             `feed decision=deferred reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} ` +
+               `file=${fileId} trigger=${trigger}`,
+           );
+-          if (error instanceof ApiError && error.code === "unreachable") break;
+         }
+       }
+       await context.state.save();

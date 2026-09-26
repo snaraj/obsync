@@ -1,9 +1,9 @@
 # M02: the tie-break always keeps the name
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2291,7 +2291,7 @@
-   const same = await identicalAtName(context, change, manifest.path, ours);
-   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
+@@ -2354,7 +2354,7 @@
+   const healed = await takeEditedTwin(context, change, manifest, ours);
+   if (healed !== null) return healed;
  
 -  if (ours.fileId < change.file_id) {
 +  if (ours.fileId !== change.file_id) {

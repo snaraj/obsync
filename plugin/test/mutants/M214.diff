@@ -1,0 +1,11 @@
+# M214: a selected folder renamed while Obsidian was closed is published as deleted, so the other devices forget its folder record
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1943,7 +1943,6 @@
+         if (!this.running) return;
+         if (present.has(folder) || casedFolders.has(folder)) continue;
+         if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+-        if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
+         this.folderRemovals.add(folder);
+         this.enqueue(folder);
+         folderQueued++;

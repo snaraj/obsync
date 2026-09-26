@@ -1,0 +1,11 @@
+# M808: A transient connection failure forgets pending editor updates.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2080,6 +2080,7 @@
+         await context.state.save();
+         this.status(this.resting());
+       } catch (error) {
++        for (const [id, entry] of Object.entries(context.state.data.parked)) if (entry.reason === "active_editor") delete context.state.data.parked[id];
+         context.host.log(`pull decision=editor_retry_failed reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} retry_ms=1000`);
+         this.status(error instanceof ApiError && error.code === "unreachable"
+           ? { kind: "offline" } : { kind: "error", message: "An editor update could not finish. It will be retried automatically." });

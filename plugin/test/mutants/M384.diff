@@ -1,0 +1,11 @@
+# M384: the journal is not re-read after a restore: notes written on the restored server never arrive
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1974,7 +1974,6 @@
+       if (due.verdict === "restored" || resent > 0) {
+         const mark = context.state.data.feedMark;
+         if (mark !== null) context.state.data.feedMark = { ...mark, replay: true };
+-        context.state.data.lastSeq = 0;
+       }
+       await context.state.save();
+       if (resent > 0) {

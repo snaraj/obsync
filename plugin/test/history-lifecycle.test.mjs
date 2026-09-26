@@ -43,7 +43,7 @@ function reloadHarness(r) {
   instance.saveData = async (value) => { persisted = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.11" };
   instance.checkForUpdate = async () => {};
   // Use actual plugin onload/startEngine admission. The engine port keeps
@@ -275,6 +275,8 @@ for (const failure of [false, true]) test(`same-instance reload resumes after ${
     release.resolve();
     const result = await outcome;
     await Promise.all([firstLoad, secondLoad]);
+    // `onload` does not wait for the start it begins; the counts below do.
+    await r.instance.firstStart;
     assert.equal(r.host.text(path), "RETAINED SENTINEL");
     if (failure) assert.match(result.error.message, /copy may exist/);
     else { assert.equal(result.value.path, path); assert.equal(result.value.syncRequested, false); }

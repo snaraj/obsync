@@ -1,0 +1,12 @@
+# M163: the higher version id keeps the note, so a fork settles against the rule every other device applies
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2033,7 +2033,7 @@
+     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
+-  const keeping = localVersionId < change.version_id;
++  const keeping = localVersionId > change.version_id;
+   const ours = await manifestOf(context, file, change, localVersionId);
+   const lost = file.versions.find((version) => version.version_id === (keeping ? change.version_id : localVersionId));
+   if (

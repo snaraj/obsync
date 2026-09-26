@@ -1,0 +1,11 @@
+# M683: plugin startup does not observe its primary window
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1904,7 +1904,6 @@
+     this.registerObsidianProtocolHandler(`${PAIRING_ACTION}/pair`, pair);
+ 
+     this.registerVaultEvents();
+-    this.host.trackInput(window);
+     this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
+     // The device's own word that its network is back is the cheapest signal
+     // there is, and the one a laptop lid or a phone leaving a tunnel produces;

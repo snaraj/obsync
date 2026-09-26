@@ -1,0 +1,12 @@
+# M774: rejudge one saved edit against a later arrival clock
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1476,7 +1476,7 @@
+     // A later feed arrival must not re-judge the same save against a clock
+     // that came after it. A user's null verdict is just as durable as an
+     // automatic answer until another local save changes the timestamp.
+-    if (record !== undefined && context.answering.get(record.fileId)?.mtime !== stat.mtime) {
++    if (record !== undefined) {
+       context.answering.set(record.fileId, { mtime: stat.mtime, arrived: await answerOf(context, stat.path, stat.mtime) });
+     }
+   }

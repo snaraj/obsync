@@ -1,0 +1,12 @@
+# M805: A deferred native editor falsely reports idle.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1986,7 +1986,7 @@
+       if (path === undefined || !this.acting(path)) forked?.delete(fileId);
+     }
+     const records = Object.values(this.options.state.data.parked);
+-    const waiting = (forked?.size ?? 0) + records.filter((entry) => entry.reason === "active_editor").length;
++    const waiting = (forked?.size ?? 0);
+     const parked = records.filter((entry) => entry.reason !== "active_editor");
+     const newest = parked[parked.length - 1];
+     if (newest !== undefined) {

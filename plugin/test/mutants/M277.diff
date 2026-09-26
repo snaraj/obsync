@@ -1,0 +1,12 @@
+# M277: a device revoked elsewhere cannot leave, so it can never pair again
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2283,7 +2283,7 @@
+         // Revoked already -- from another device or the dashboard (#143, S80):
+         // what leaving asks of the server is done, so this device forgets it
+         // too, which is the one way back to pairing again.
+-        if (error instanceof ApiError && error.code === "device_revoked") revoked = true;
++        if (error instanceof ApiError && error.code === "device_revoked_") revoked = true;
+         else if (!(error instanceof ApiError) || (error.code !== "last_device" && error.code !== "bad_signature")) throw error;
+         else if (!choice.localOnly) return { decision: "refused", reason: error.code, detail: error.detail };
+       }

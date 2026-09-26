@@ -1,0 +1,11 @@
+# M431: the nested vault is announced again with every note that meets it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -473,7 +473,6 @@
+ 
+   /** Tell the user about one nested vault, once: a notice naming it, and a log line that does not. */
+   private named(folder: string): true {
+-    if (this.nested.has(folder)) return true;
+     this.nested.add(folder);
+     this.log("host path_class=folder decision=excluded reason=nested_vault");
+     this.notify(

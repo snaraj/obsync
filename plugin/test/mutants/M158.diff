@@ -1,0 +1,12 @@
+# M158: a merge is written over a save the user made while it downloaded, and the editor reloads the loss
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2020,7 +2020,7 @@
+         // keystrokes and all, and the editor then reloaded the loss (issue
+         // #135). A note that moved is left alone. The push of that save forks
+         // the file again, and its own reconciliation merges what is there.
+-        if (before === null || !(await unmoved(context, localPath, before))) {
++        if (before === null) {
+           await writer.abort();
+           return deferred(context, change, "saved_during_merge");
+         }

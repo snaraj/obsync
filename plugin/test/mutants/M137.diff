@@ -1,11 +1,11 @@
 # M137: the post-window yield does not retire the adopted id
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -374,7 +374,7 @@
+@@ -408,7 +408,7 @@
    }
    context.state.setFile(path, posted);
    await context.state.save();
--  const retired = await retire(context, adopted.fileId, adopted.versionId, path);
+-  const retired = await retire(context, adopted.fileId, adopted.versionId, path, posted.fileId);
 +  const retired = "posted";
    context.host.log(
      `push path_class=file decision=converged reason=recorded_during_post role=yield keeper=${posted.fileId} retired=${adopted.fileId} tombstone=${retired}`,

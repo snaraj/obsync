@@ -1,0 +1,11 @@
+# M725: a stale pending change queues a deletion after a pulled move removed its old identity
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1406,7 +1406,6 @@
+   ): Promise<void> {
+     const stat = await context.host.stat(path);
+     if (!stat) {
+-      if (context.state.fileByPath(path) === undefined) return;
+       // A pending change can settle between a filesystem rename and its
+       // watcher event. Ask where the note went through the same bounded
+       // move check as a delete event before publishing any tombstone.

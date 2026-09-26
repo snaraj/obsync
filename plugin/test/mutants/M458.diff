@@ -1,0 +1,11 @@
+# M458: a retirement naming a keeper the server does not know stops the feed for good
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2594,7 +2594,6 @@
+   if (context.state.pathByFileId(keeper) !== undefined) return false;
+   const started = context.now();
+   const file = await context.transport.getFile(keeper).catch((error: unknown) => {
+-    if (error instanceof ApiError && error.code === "unknown_file") return null;
+     throw error;
+   });
+   for (const version of file?.versions.filter((candidate) => file.heads.includes(candidate.version_id)) ?? []) {

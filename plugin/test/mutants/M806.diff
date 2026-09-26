@@ -1,0 +1,12 @@
+# M806: Normal typing raises a per-file failure notice.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1959,7 +1959,7 @@
+       `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
+         `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
+     );
+-    if (!known && error.reason !== "active_editor") {
++    if (!known) {
+       context.host.notify(
+         `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
+           "tried again by itself, and at once when you run Sync now after fixing it.",

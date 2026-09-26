@@ -1,0 +1,12 @@
+# M568: Resume writes a recorded version under a different path
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2343,7 +2343,7 @@
+   const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
+   if (version === undefined) return "ordinary";
+   const recorded = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+-  if (recorded.deleted || recorded.path !== path || recorded.chunks.length !== 1) return "ordinary";
++  if (recorded.deleted || recorded.chunks.length !== 1) return "ordinary";
+   const kept = await keepResumed(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, recorded, mine, before.mtime);
+   if (kept === null) return "no_free_name";
+   const other = file.heads.filter((id) => id !== record.versionId);

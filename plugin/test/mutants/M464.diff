@@ -1,0 +1,12 @@
+# M464: a replay already under way is probed against the old journal and started again
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -81,7 +81,7 @@
+ export async function probeFeed(context: SyncContext): Promise<Suspicion | null> {
+   const { state, transport, host } = context;
+   const mark = state.data.feedMark;
+-  if (mark === null || mark.replay) return null;
++  if (mark === null) return null;
+   const started = context.now();
+   const cursor = state.data.lastSeq;
+   let reason: string | null = null;

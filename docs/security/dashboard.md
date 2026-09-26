@@ -182,9 +182,10 @@ device.
   and now also drops the dashboard sessions its links opened and any link it
   minted that nobody has spent. It does not touch other devices, and it
   cannot be undone.
-- **The last-device refusal** protects the account itself: `POST /v1/setup`
-  answers `409 already_set_up` forever, and a pairing can only be opened by a
-  paired device, so an account with no active device can never sync again.
+- **The last-device refusal** protects accounts without registered recovery.
+  Once an authenticated client registers the vault-key verifier, the last device
+  may be revoked: the setup token plus vault-key proof can enroll a new one.
+  A legacy account that lost every credential before registration cannot do so.
 - **Sign out everywhere** ends every session in the process at once and
   drops every unspent login link with them, for the browser left behind on a
   machine the operator no longer controls.

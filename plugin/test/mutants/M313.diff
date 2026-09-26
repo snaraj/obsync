@@ -1,0 +1,12 @@
+# M313: a note merely open on this device, never edited here, can no longer be deleted from another device
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1184,7 +1184,7 @@
+   const at = context.pushedAt.get(path);
+   const age = at === undefined ? -1 : context.now() - at;
+   return {
+-    held: editor === "unsaved" || (at !== undefined && age <= EDITING_WINDOW_MS),
++    held: editor === "unsaved" || (age <= EDITING_WINDOW_MS),
+     fields: ` editor=${editor} age_ms=${age} budget_ms=${EDITING_WINDOW_MS}`,
+   };
+ }

@@ -1,0 +1,12 @@
+# M289: temps a quit left in any folder below the vault root are never removed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -710,7 +710,7 @@
+         // A vault of its own is neither listed nor swept (`inNestedVault`);
+         // the start's reconcile pass names it, asking of every folder.
+         if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
+-          await this.walk(desktop, path, out, depth + 1, temps);
++          await this.walk(desktop, path, out, depth + 1);
+         }
+         continue;
+       }

@@ -1,0 +1,12 @@
+# M396: the twin's edit is recorded here without being written, so the note keeps the old text
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3076,7 +3076,7 @@
+   const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
+     .catch(() => null);
+   if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
+-  const landed = await materialise(context, manifest);
++  const landed = { path: manifest.path, mtime: ours.mtime, size: ours.size };
+   await recordAt(context, change, landed.path, landed);
+   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
+   context.host.log(

@@ -1,0 +1,12 @@
+# M553: a server failure is treated as proof that no control exists
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -31,7 +31,7 @@
+     }
+   }
+   catch (error) {
+-    if (!(error instanceof ApiError) || error.status !== 404) throw error;
++    if (!(error instanceof ApiError)) throw error;
+     parents = [];
+   }
+   const manifest: PauseManifest = {

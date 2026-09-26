@@ -1,0 +1,12 @@
+# M514: claimant sealing omits plaintext validation
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -167,7 +167,7 @@
+   const nonce = randomBytes(12);
+   const envelope = await crypto.subtle.encrypt(
+     { name: "AES-GCM", iv: nonce, additionalData: utf8(id), tagLength: 128 },
+-    await vaultDetailsKey(secret, id), utf8(JSON.stringify(checkedVault(vault))),
++    await vaultDetailsKey(secret, id), utf8(JSON.stringify(vault)),
+   );
+   return { envelope: base64(new Uint8Array(envelope)), nonce: hex(nonce) };
+ }

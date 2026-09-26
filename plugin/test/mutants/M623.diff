@@ -1,0 +1,14 @@
+# M623: a missing copy loses its structured Resume refusal
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2353,8 +2353,8 @@
+     // upload cannot acknowledge between the parent proof and this publication.
+     const record = context.state.fileByPath(path);
+     if (record?.fileId !== id) return fail("identity");
+-    const before = await context.host.stat(path);
+-    if (before === null || before.size > CHUNK_MAX) return fail("local_budget");
++    const before = await context.host.stat(path) ?? { path, size: 0, mtime: 0 };
++    if (before.size > CHUNK_MAX) return fail("local_budget");
+     const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);
+     if (!known(localDigest)) return fail("local_edit");
+     const file = await context.transport.getFile(id);

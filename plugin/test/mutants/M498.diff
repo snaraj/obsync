@@ -1,0 +1,12 @@
+# M498: the stopped-merging notice sends you to update devices that are already up to date
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2000,7 +2000,7 @@
+       context.host.notify(
+         `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a row ` +
+           `in under a minute without the note changing here. Every device keeps the same version as the note and ` +
+-          `the other beside it as a copy.`,
++          `the other beside it as a copy. Check that every device syncing this vault is up to date.`,
+       );
+     }
+   }

@@ -1,0 +1,12 @@
+# M639: retrying an already-published held snapshot grows another history version
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2348,7 +2348,7 @@
+   const baseDigest = await sidDigest(baseline.chunks.map((chunk) => chunk.sid));
+   const mineDigest = await sidDigest([(await encryptChunk(context.domainKey, mine)).sid]);
+   const known = (digest: string): boolean => digest === baseDigest || digest === mineDigest;
+-  const pushed = await pushFile(context, path, false, async () => {
++  const pushed = await pushFile(context, path, true, async () => {
+     // This lookup and write share the copy's publication queue, so an older
+     // upload cannot acknowledge between the parent proof and this publication.
+     const record = context.state.fileByPath(path);

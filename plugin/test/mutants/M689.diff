@@ -1,0 +1,12 @@
+# M689: composition completion does not refresh the save allowance
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1744,7 +1744,7 @@
+       if (!event.isTrusted || event.target === null || !("nodeType" in event.target)) return;
+       for (const { view } of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+         if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
+-        if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
++        if (event.type !== "compositionend" && (event.type !== "focusout" || this.composing.get(view) === view.file.path)) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
+         if (event.type === "compositionstart") this.composing.set(view, view.file.path);
+         if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
+       }

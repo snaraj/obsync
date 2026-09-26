@@ -1,0 +1,12 @@
+# M274: a device whose key never arrived cannot pair again either: the guard refuses every enrolled device
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -272,7 +272,7 @@
+     // sync against another server's records doubled the vault. Leaving first
+     // clears all three; a pairing link opened here, even one this device
+     // made, claims nothing.
+-    if (this.plugin.state.paired && !this.plugin.forgottenDevice) {
++    if (this.plugin.state.data.deviceId !== null && !this.plugin.forgottenDevice) {
+       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
+       fail(new Error(
+         `This device already syncs with ${this.plugin.state.data.serverUrl} as "${this.plugin.deviceName()}", ` +

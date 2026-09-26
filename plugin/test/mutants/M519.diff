@@ -1,0 +1,12 @@
+# M519: claimant vault key reuses vault-key envelope label
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -146,7 +146,7 @@
+ /** Vault details travel only as ciphertext, with a key distinct from the VRK envelope. */
+ export interface PairingVault { name: string; notes: number }
+ export interface SealedPairingVault { envelope: string; nonce: string }
+-const VAULT_LABEL = "obsync/v1/pair-vault";
++const VAULT_LABEL = "obsync/v1/pair";
+ 
+ function checkedVault(value: unknown): PairingVault {
+   const vault = value as PairingVault | null;

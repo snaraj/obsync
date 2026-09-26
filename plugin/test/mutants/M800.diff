@@ -1,0 +1,12 @@
+# M800: Native editor refusal escapes the per-note retry classification.
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -915,7 +915,7 @@
+     // return before this point.
+     if (entry.v === 1) await incoming?.();
+     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
+-      if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
++      if (false && error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
+       // A write THIS device's disk refused, or a chunk the server does not
+       // hold: a fact about this one record, named with the path it was for,
+       // so the feed can park it and keep the rest arriving (issue #144).

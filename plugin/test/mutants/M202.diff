@@ -1,0 +1,12 @@
+# M202: notes moved out of the folder selection in Finder are deleted on every other device
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -787,7 +787,7 @@
+       this.renamed(from, only.path);
+       return "moved";
+     }
+-    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
++    return null;
+   }
+ 
+   /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */

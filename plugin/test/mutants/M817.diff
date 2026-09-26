@@ -1,0 +1,12 @@
+# M817: Group independent adjacent appends as a replacement.
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -102,7 +102,7 @@
+       // then groups them into one replacement, hiding the independent lines
+       // from later typing. Split only an equal-length run that preserves every
+       // original line as its prefix; structural edits remain one interval.
+-      if (at - start > 1 && lines.length === at - start &&
++      if (false && at - start > 1 && lines.length === at - start &&
+         lines.every((line, index) => line.startsWith(base[start + index] as string))) {
+         for (let index = 0; index < lines.length; index++) {
+           edits.push({ start: start + index, end: start + index + 1, lines: [lines[index] as string] });

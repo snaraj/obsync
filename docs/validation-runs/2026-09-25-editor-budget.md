@@ -1,0 +1,306 @@
+# Editor refusal and merge-budget follow-up, 2026-09-25
+
+This continues the [three-device typing campaign](2026-09-25-passive-peer-typing.md).
+Final acceptance remains incomplete. The record below retains a failed
+matched-build run, two passing diagnostic replays, a separately reproduced
+accounting defect, and the resulting repair's automated checks.
+The later same-line desktop retest also failed; its passing adjacent-line
+control and the narrower follow-up repair are recorded below.
+
+## Matched-build typing failure
+
+Both isolated desktop profiles and the physical phone ran Obsidian 1.13.7
+with bundle SHA-256
+`9cda676aa68087adf1e4f3eabe5b120c128fd490004fa84651ed279dd746c233`.
+The server, private routes and manual-install boundaries were unchanged from
+the preceding record. Two desktop profiles are still one physical computer.
+
+The typing desktop's displayed content stopped updating while native
+accessibility and saved files changed. Reopening that isolated app with
+the temporary `--disable-gpu` launch option restored visible editor updates.
+This is a QA environment qualification, not proof of a product cause or a
+recommended user configuration. The owner's Obsidian app was untouched.
+An earlier attempt placed the desktop caret on the wrong line; it is retained
+locally and excluded from the intended adjacent-line acceptance schedule.
+
+For the verified run, a temporary character confirmed the desktop insertion
+point at the end of the first line. It was removed and the clean two-line
+baseline was verified on both devices before measurement. Forty individual
+native key events took 61.713 seconds, including a visual checkpoint after
+the first ten letters on each device. Both sequences were correctly placed
+at that checkpoint.
+
+The final main note held all twenty desktop letters and only the first ten
+phone letters. Six new conflict copies appeared. One copy held all twenty
+phone letters: the input reached the device and was preserved, but the main
+note did not merge as required. The phone visually matched the desktop's
+incomplete main note. Read-only checksummed journal replay established one
+server head and 125 stored versions for this synthetic note; a single head
+does not make that result a pass.
+
+Two later replays added temporary diagnostics only to the two QA desktop
+installations. The diagnostics recorded merge inputs and budget decisions
+for this named synthetic note, never credentials or other notes. Both passed
+with complete main text and no additional copies. The first took 60.422
+seconds; the second deliberately allowed a twenty-second midpoint interval.
+They do not clear the uninstrumented failure. Its exact decision trace was
+not captured, so linking it to the accounting defect below remains an
+inference until repaired native acceptance is completed.
+
+## Reproduced accounting defect and repair
+
+A focused probe against the unchanged candidate established a false-conflict
+path without timing assumptions. Two compatible branches were presented
+repeatedly while the host refused the merged write with `EditorBusy`. Each
+refusal consumed the loop budget. The sixth attempt created a conflict copy
+although none of the preceding writes had completed; allowing writes again
+left the main note incomplete.
+
+The repair refunds only an editor-busy attempt. Other errors retain their
+charge and the loop limit remains unchanged. Each new local edit or proven
+independent peer advance starts a new accounting generation. A delayed
+refusal cannot refund a charge from that later generation or erase another
+completed resolution's charge. The refund has a structured diagnostic line.
+
+Four regressions cover eight refused writes followed by successful
+convergence, ordinary I/O failures, and concurrent successful resolutions
+with and without a new local edit. The unchanged candidate failed two of
+these cases. All four pass after the repair; the combined editor-retry,
+co-typing and new regression run passes 53 tests.
+
+Repaired bundle SHA-256:
+`599770e0512d9222fa08810a03980bb690876d46977debc8bc201f2a65954aa3`.
+
+The full `make check` passed with unchanged source and test hashes in
+240.438 seconds: 1,200 plugin tests, 70 dashboard tests, 144 core tests,
+375 server tests, two CLI tests, 767 repository contracts, 94.73% Rust line
+coverage and both secret scans. One core benchmark is intentionally ignored.
+Controls M825–M828 all apply and compile, fail behavioral assertions with
+zero cancellations, and pass after restoration. Eight inherited controls
+were recut without changing their defects and likewise fail their focused
+witnesses after compilation.
+
+## Native retest of the refund repair
+
+Two isolated desktop profiles ran the uninstrumented `599770e0…` bundle.
+The phone was not part of these measurements. Forty individual native key
+events on adjacent lines took 34.566 seconds, including a midpoint visual
+check. Both main notes held both complete twenty-letter sequences. The
+target's seventeen existing copies and the vault's 99 existing copies did
+not increase. Checksummed journal replay found one head, 309 stored versions
+and no paused note. This is a settled snapshot, not a five-minute quiet run.
+
+![First desktop after adjacent-line typing](../assets/phone-candidate-113/editor-budget-desktop-lan.png)
+
+![Second desktop with the same complete text](../assets/phone-candidate-113/editor-budget-desktop-peer.png)
+
+These are deterministic note-area crops of actual app captures. The word
+“Phone” is the synthetic fixture's line label; both captures are desktops.
+The retained decoded pixels are unchanged and embedded metadata is removed.
+
+The subsequent same-line schedule failed. Forty native key events took
+16.556 seconds. Both main notes retained the complete lowercase sequence,
+but not the uppercase sequence. Three additional copies appeared, including
+one with the full uppercase input. The server held one head and 327 stored
+versions. Preserving that input in a copy does not meet the same-line merge
+requirement. Temporary diagnostics were then installed only in the two QA
+profiles, but native accessibility reads timed out before a failing trace
+could be captured. The causal link below remains unproven.
+
+## Overlapping editor refusals
+
+Eight concurrent attempts exposed another accounting case: five pending
+editor writes occupied the budget before their refusals refunded it. Later
+arrivals declared a storm and created a copy. The follow-up waits when the
+budget is exhausted and the host reports unsaved input or recent typing.
+It does not reserve another attempt or declare a storm while those refused
+writes are still pending. The limit and ordinary error accounting remain
+unchanged; the wait emits a structured decision.
+
+A broader early-wait experiment was rejected because the full suite showed
+that it delayed required rewrite-conflict handling. The final change keeps
+the original co-typing tests and rewrite behavior intact. Two new regressions
+exercise overlapping refusals for unsaved input and recent typing, then
+require complete main-note convergence and one server head after typing ends.
+All 75 focused retry, budget and rewrite tests pass.
+
+The narrower change passed `make check` in 228.931 seconds with unchanged
+source and test hashes: 1,202 plugin tests, 70 dashboard tests, 144 core tests,
+375 server tests, two CLI tests, 767 repository contracts, 94.73% Rust line
+coverage and both secret scans. One core benchmark is intentionally ignored.
+M829–M832 apply, compile and fail behavioral assertions with zero
+cancellations, then pass after restoration. M822 and M823 were recut without
+changing their defects and likewise fail their focused witnesses. Native
+acceptance of this additional repair remains outstanding.
+
+Follow-up bundle SHA-256:
+`8994ae22d80b22b8a9ae49220fe8af0fe1ed92fb3f2dc5fd21bcb187d952201a`.
+
+## Retained ancestry beyond the recent listing
+
+A later native replay captured the remaining failure with the insertion
+points verified. The server's file listing contained ten versions. Continued
+typing moved the shared ancestor outside that window while its record and
+encrypted content remained in history. The client then closed a compatible
+fork as unmergeable. This was not a merge-budget refusal: the trace recorded
+zero `merge_storm` decisions. An earlier diagnostic replay placed one caret
+at the beginning of the line and is excluded from append acceptance.
+
+The repair follows omitted parent records through the existing individual
+version endpoint, stopping at the two branches' shared frontier. It makes
+at most 64 additional reads. Missing retained records or an exhausted budget
+discard the partial expansion and retain the existing conflict fallback;
+server errors remain retryable. A response cannot substitute another version
+or malformed parent identifiers. An incomplete current-head view does not
+authorize this expansion. The server API and retention settings are unchanged.
+
+Sixteen ancestry regressions cover omitted history, transient failures,
+substituted records, malformed parents, cycles, ordering, incomplete graph
+restoration, recursive criss-cross bases and the fixed read budget. Together
+with the five unchanged history catch-up tests, all 21 pass. Nineteen new
+mutation patches (M833–M851) and two context-only recuts (M306, M716) apply
+without fuzz, compile, and fail behavioral assertions with no cancellations.
+The restored focused suites pass. The first identity-substitution experiment
+was manually stopped after its fake answered indefinitely; that interrupted
+result is excluded. A bounded fake now makes the same defect fail an assertion.
+
+The first repair's full gate exposed two incomplete-head regressions. The
+repair preserves that existing refusal without changing the old assertions.
+The final `make check BASE=88e8804065a27834bc671a875551a235bafbe193` passes
+with 1,218 plugin tests, 70 dashboard tests, 144 core tests, 375 server tests,
+two CLI tests, 767 contracts, 94.73% Rust line coverage and both secret scans.
+One core benchmark is intentionally ignored. A sandbox attempt that could not
+bind loopback sockets is retained separately as an environment refusal.
+
+Both isolated desktops ran the uninstrumented final bundle:
+`ef030cab10b564982eb920d8781b9f8a7f5e01779395a2a1469e11553b4ddedb`.
+Forty alternating key events took 16.698 seconds with no midpoint pause.
+After settling, both saved notes held both complete twenty-letter sequences.
+The existing 32 target copies and 114 vault-wide copies did not increase.
+Checksummed journal replay found one head, 446 stored versions and no paused
+note. These are two native profiles on one physical laptop; they do not
+establish phone acceptance. Earlier successful runs of the preceding ancestry
+build remain in the local evidence as separate measurements.
+
+![First desktop after the continuous typing retest](../assets/phone-candidate-113/merge-ancestry-desktop-lan.png)
+
+![Second desktop with both complete sequences](../assets/phone-candidate-113/merge-ancestry-desktop-peer.png)
+
+These are actual note-area crops with unchanged retained pixels and no
+embedded metadata. The exact final bundle was downloaded to the phone in an
+eight-file archive containing no credentials, installed only in the synthetic
+two-note vault, and reloaded through Community plugins. Its pairing remains
+incomplete. The initial test address used an IP while the QA proxy certificate
+covered a hostname; the resulting TLS refusal was correct. The address was
+changed toward the existing certificate's hostname without changing trust or
+restarting the server, but its saved value was not successfully verified.
+Later inspection found a mistyped port, and another UI entry visibly dropped
+characters. Safari reached the QA server over trusted HTTPS; Obsidian's iOS
+Local Network permission was verified enabled. The unsuccessful pairing is
+therefore not evidence of a plugin networking defect. Mirroring pointer
+failures and unreliable text entry blocked final phone acceptance.
+All five superseded ZIP downloads were removed through Files; the final ZIP,
+synthetic vault and final cleanup remain outstanding.
+
+The final full mutation campaign contains 796 patches, all strictly applicable
+to this source. Twelve concurrent pristine baselines exposed load-sensitive timing failures
+in watcher, refusal-republish and folder-rename tests. Those logs are retained;
+no mutation outcome was counted from that attempt. The campaign was reduced
+to six isolated copies with identical tests and assertions. Its result is pending, and `MATRIX.md` remains historical. The preceding
+777-control run stopped after 258 completed sections with all six source
+copies restored; it is not evidence of final-campaign completion.
+
+## Mutation recording
+
+The preceding 769-control campaign stopped when M518 reported 21 failures
+but the output filter retained only eighteen names. Three failing nested
+tests were indented and omitted by the filter. The final stopped snapshot
+contains 285 completed sections, with all six source copies restored. It
+is retained as partial evidence, not a complete matrix result.
+
+The runner now retains indented failure lines and the recorder reads them.
+All 773 patches at the refund repair passed strict applicability without fuzz. Six pristine
+copies each pass the 1,200-test suite before the new frozen-input campaign.
+That campaign was later paused at 179 completed sections after the native
+same-line failure above, with all six source copies restored. It is partial
+evidence; `MATRIX.md` remains historical until a complete final campaign.
+
+A later Mac restart interrupted six in-flight controls after 61 completed
+sections. The completed logs and interrupted source copies were preserved.
+All frozen inputs still matched the author tree. The six modified source
+files were restored to those hashes, and the campaign resumed from the first
+unfinished control in each lane. This was an environment interruption, not
+a measured mutation outcome. M518 subsequently retains all 21 failure names,
+including its three nested failures: 1,179 pass, 21 fail, zero cancelled or
+skipped, and 1,200 tests measured.
+
+## Repaired phone installation
+
+Both isolated desktop installations received the uninstrumented refund
+repair before the retest above. The same bundle was downloaded to the physical phone in a
+credential-free archive and installed in the synthetic two-note vault.
+The plugin is enabled; the scoped rewrite fixture remains disabled.
+
+![The repaired plugin enabled on the phone](../assets/phone-candidate-113/editor-budget-installed.png)
+
+![The phone pairing dialog before any code was entered](../assets/phone-candidate-113/editor-budget-empty-pairing.png)
+
+These captures show the actual setup controls. Deterministic cropping removes
+unrelated settings and the background; metadata removal preserves every
+remaining pixel. No pairing code was captured. Mirroring locked during the
+subsequent UI-only code transfer and no claimant was confirmed. Pairing and
+native acceptance remain incomplete.
+
+Cleanup removed ten inactive QA directories or files, including the old
+server-recovery copies and unused isolated apps and vaults. Their measured
+receipts and screenshots remain available. The active desktop profiles,
+phone artifacts and QA containers are still needed for final acceptance and
+remain pending cleanup. A further eighteen inactive rig instances and their
+old QA symlinks were removed after process and mount checks, reclaiming about
+12.7 GiB. Their reports, screenshots and logs were retained. Owner vaults
+were not involved.
+
+## Earlier current-bundle desktop rewrite control
+
+Before the editor-budget repair, the `9cda676a…` bundle passed a scoped
+two-desktop rewrite hold lasting 303.457 seconds across eleven samples.
+Both timestamp fixtures kept changing their local note while the server
+stayed at four versions and one head, with no conflict copies.
+
+After both fixtures were disabled, the passive desktop resumed first and
+the typing desktop second. Both retained all twenty typed letters and one
+identical preserved copy. Eleven post-Resume samples over 303.474 seconds
+showed stable main and copy hashes, five stored versions, one server head,
+no paused note and both fixtures disabled. Both isolated apps had been
+gracefully reopened after UI-control timeouts before Resume; uninterrupted
+app lifetime is not claimed. A later misdirected search-text insertion took
+place after sampling ended and is excluded from these measurements.
+
+This was a desktop control. It neither exercises the phone's rewrite
+fixture nor establishes acceptance of the subsequent `599770e0…` bundle.
+Its phone typing and rewrite/Resume checks, complete mutation campaign and
+final removal of synthetic QA artifacts remain outstanding.
+
+## Handoff cleanup checkpoint
+
+The owner ended this QA session for a clean handoff. Both isolated desktop
+apps were stopped; their two synthetic vaults, profiles, old bundle backup
+and download-serving directory were removed. All four active QA containers
+and their four disposable volumes were removed and verified absent. The
+measured manual results above, including failures and exact bundle hashes,
+remain the acceptance evidence; the deleted fixtures are not prerequisites
+for reproducing them on another machine.
+
+The final synthetic phone vault and ZIP were subsequently deleted through
+Files. Downloads showed only the owner's preserved document, and the Obsidian
+folder showed only the two owner vaults. QA certificate/secret references and
+Safari QA entries remain pending; complete phone cleanup is not claimed.
+Recently Deleted was not purged. Owner vaults were not touched. A new phone run must create fresh disposable fixtures, verify the
+saved endpoint and port before pairing, and repeat the affected typing and
+rewrite/Resume journeys on the final bundle.
+
+The 796-control campaign reached a clean 196-control checkpoint with no
+unexpected outcomes. All six source copies were restored at the handoff
+pause. This is a partial count, not a passing matrix. The existing runner
+and its completion records are the authority for later progress; do not
+replace the historical `MATRIX.md` until the complete measured run passes.

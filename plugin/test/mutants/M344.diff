@@ -1,0 +1,12 @@
+# M344: a note landed beside its name forgets the name, so it stays at the old one for good
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2599,7 +2599,7 @@
+   const beside = local.sha256 === (await sidDigest(change.sids))
+     ? (await context.host.stat(settled)) ?? { path: settled, mtime: local.mtime, size: local.size }
+     : await materialise(context, { ...manifest, path: settled });
+-  await recordAt(context, change, beside.path, beside, manifest.path);
++  await recordAt(context, change, beside.path, beside);
+   context.host.log(
+     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,
+   );

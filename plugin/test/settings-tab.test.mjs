@@ -14,7 +14,13 @@ import { sandbox } from "./fake.mjs";
 const tick = () => new Promise(setImmediate);
 
 class Component {
-  constructor(kind) { this.kind = kind; this.disabled = false; }
+  constructor(kind) {
+    this.kind = kind; this.disabled = false;
+    this.inputEl = { listeners: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); } };
+    this.buttonEl = { focus: () => { this.focused = true; } };
+  }
+  /** Type a value, then leave the field: the input's `change` event. */
+  commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
   setDisabled(value) { this.disabled = value; return this; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
@@ -51,6 +57,7 @@ function stubPlugin(overrides = {}) {
       localBytes: () => 0,
     },
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
+    forgottenDevice: false,
     statusText: () => "idle",
     updateLine: () => null,
     heldDeletionLine: () => null,
@@ -65,6 +72,8 @@ function stubPlugin(overrides = {}) {
     openDashboard: async () => { calls.push("openDashboard"); },
     openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
+    logs: [],
+    log(line) { this.logs.push(line); },
     ...overrides,
   };
   return { plugin, calls };
@@ -77,14 +86,20 @@ function open(t, overrides) {
   const made = widgets(obsidian);
   const { plugin, calls } = stubPlugin(overrides);
   const settings = box.require(join(box.home, "build/ui/settings.js"));
-  const tab = new settings.ObsyncSettingTab({}, plugin);
+  // Obsidian's index of this vault's folders, keyed by the spelling the
+  // directory keeps, and a host on a volume that FOLDS case -- the owner's
+  // Mac -- whose lookup finds that one entry by either spelling (`main.ts`,
+  // `spelling`). A test on a volume that keeps spellings apart replaces it.
+  const vault = { folders: ["Notes", "Attachments", "Attachments/Sub"], getFolderByPath: (path) => (vault.folders.includes(path) ? { path } : null) };
+  plugin.host ??= { spelling: async (path) => vault.folders.find((folder) => folder.toLowerCase() === path.toLowerCase()) ?? null };
+  const tab = new settings.ObsyncSettingTab({ vault }, plugin);
   let updates = 0;
   tab.update = () => { updates++; };
   const rows = () => tab.getSettingDefinitions().flatMap((group) => group.items.map((item) => ({ ...item, group })));
   const row = (name) => { const found = rows().find((item) => item.name === name); assert.ok(found, `row ${name}`); return found; };
-  const render = (name) => { made.length = 0; const result = row(name).render(new obsidian.Setting({})); return { result, made: [...made] }; };
+  const render = (name) => { made.length = 0; const setting = new obsidian.Setting({}); const result = row(name).render(setting); return { result, made: [...made], setting }; };
   const button = (list, text) => { const found = list.find((c) => c.kind === "button" && c.text === text); assert.ok(found, `button ${text}`); return found; };
-  return { box, obsidian, plugin, calls, settings, tab, rows, row, render, button, updates: () => updates };
+  return { box, obsidian, plugin, calls, settings, tab, rows, row, render, button, made, vault, updates: () => updates };
 }
 
 test("the tab keeps the id and name Obsidian gives it, before and after every draft is used", async (t) => {
@@ -99,7 +114,7 @@ test("the tab keeps the id and name Obsidian gives it, before and after every dr
   s.plugin.state.data.deviceId = "11".repeat(16);
   s.plugin.state.paired = true;
   s.render("Name").made[0].change("Kitchen");
-  s.render("First-time setup");
+  s.render("Setup or recover");
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes");
   s.render("Device list");
@@ -145,7 +160,7 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
   const s = open(t);
   const visible = (name) => { const item = s.row(name); return item.visible === undefined ? true : item.visible(); };
   const devices = () => s.tab.getSettingDefinitions().find((group) => group.heading === "Devices").visible();
-  assert.equal(visible("First-time setup"), true);
+  assert.equal(visible("Setup or recover"), true);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), false, name);
   assert.equal(devices(), false);
   assert.equal(visible("Update available"), false);
@@ -153,7 +168,7 @@ test("the first run shows setup and hides what needs an enrolment; pairing inver
   s.plugin.state.data.deviceId = "1122334455667788990011223344ffff";
   s.plugin.state.paired = true;
   s.plugin.updateLine = () => "Self Hosted Private Sync 9.9.9 is available (this device runs 1.0.2).";
-  assert.equal(visible("First-time setup"), false);
+  assert.equal(visible("Setup or recover"), false);
   for (const name of ["Name", "Largest file to download", "Total to keep on this device", "Save to server"]) assert.equal(visible(name), true, name);
   assert.equal(devices(), true);
   assert.equal(visible("Update available"), true);
@@ -204,19 +219,99 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
     ["https://sync.example.org//", "https://sync.example.org"],
     ["http://lan.example.test:8080", "http://lan.example.test:8080"],
     ["   ", ""],
+    // Copied from a browser: only the origin is the server's address (#137).
+    ["https://sync.example.org:8443/readyz", "https://sync.example.org:8443"],
+    ["HTTPS://SYNC.Example.ORG:8443/login?token=SENTINEL#top", "https://sync.example.org:8443"],
+    ["Https://phone.example.org", "https://phone.example.org"],
+    ["sync.example.org:8443/dashboard/", "https://sync.example.org:8443"],
   ]) assert.equal(normalizeServerUrl(typed), stored, typed);
 
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
-  field().change("sync.example.org");
+  field().commit("sync.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
   assert.deepEqual(s.calls, ["state.save"]);
 
   s.plugin.isMobile = true;
-  field().change("http://lan.example.test");
+  field().commit("http://lan.example.test");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org", "refused, not stored");
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
-  field().change("phone.example.org");
+  field().commit("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
+});
+
+test("plain http is refused on every platform, loopback on a desktop excepted", (t) => {
+  const s = open(t);
+  const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
+  const { serverUrlRefusal } = s.settings;
+  // A desktop: plain http crosses the network in the clear, so it is refused (#136).
+  field().commit("http://lan.example.test:8080");
+  assert.equal(s.plugin.state.data.serverUrl, "", "refused, not stored");
+  assert.deepEqual(s.obsidian.notices.length, 1);
+  assert.match(s.obsidian.notices[0], /^Use your server's https address\. Plain HTTP would send the setup token/);
+  // Only this computer itself may be reached in plain http: the README's one-computer trial.
+  for (const url of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://127.1.2.3"]) {
+    field().commit(url);
+    assert.equal(s.plugin.state.data.serverUrl, url, `${url} is loopback`);
+  }
+  for (const url of ["http://127.0.0.1.example.test", "http://localhost.example.test:8080", "http://10.0.0.1:8080", "ftp://sync.example.org"]) {
+    assert.notEqual(serverUrlRefusal(url, false), null, `${url} is not loopback`);
+  }
+  // A phone refuses even loopback, and takes the scheme a keyboard capitalised.
+  s.plugin.isMobile = true;
+  assert.equal(serverUrlRefusal("http://127.0.0.1:8080", true), "Mobile Obsidian only reaches HTTPS servers.");
+  field().commit("Https://phone.example.org");
+  assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org");
+});
+
+test("an address typed one key at a time is adopted once, when the field is left or Settings closes", (t) => {
+  const s = open(t);
+  s.plugin.state.data.serverUrl = "https://before.example.org";
+  const field = s.render("Server URL").made.find((c) => c.kind === "text");
+  const type = (text) => { for (let i = 1; i <= text.length; i++) field.change(text.slice(0, i)); };
+  type("http://lan.example.test:8080");
+  assert.equal(s.plugin.state.data.serverUrl, "https://before.example.org", "no prefix is stored while typing");
+  assert.deepEqual(s.obsidian.notices, [], "and nothing is said while typing");
+  for (const fn of field.inputEl.listeners.change) fn();
+  assert.equal(s.plugin.state.data.serverUrl, "https://before.example.org", "a refused address leaves the one before it");
+  assert.equal(s.obsidian.notices.length, 1, "one notice, when the person is done");
+  // A loopback address typed key by key raises nothing on the way.
+  type("http://127.0.0.1:8080");
+  for (const fn of field.inputEl.listeners.change) fn();
+  assert.equal(s.plugin.state.data.serverUrl, "http://127.0.0.1:8080");
+  assert.equal(s.obsidian.notices.length, 1);
+  // Closing Settings is leaving the field: a draft is adopted, not lost.
+  const again = s.render("Server URL").made.find((c) => c.kind === "text");
+  again.change("sync.example.org");
+  s.tab.hide();
+  assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
+  // And a field nobody typed into adopts nothing.
+  const saves = s.calls.filter((c) => c === "state.save").length;
+  s.tab.hide();
+  assert.equal(s.calls.filter((c) => c === "state.save").length, saves);
+});
+
+test("Check asks the server without a credential before setup, and says to type an address first", async (t) => {
+  const asked = [];
+  const s = open(t, {
+    transport: {
+      account: async () => { asked.push("account"); return { name: "obsync", device_count: 2 }; },
+      pluginManifest: async () => { asked.push("manifest"); return { version: "1.1.3" }; },
+    },
+  });
+  const check = () => { s.button(s.render("Connection").made, "Check").click(); return tick(); };
+  await check();
+  assert.deepEqual(asked, [], "no address, no request");
+  assert.deepEqual(s.obsidian.notices, ["Type your server's address in Server URL first."]);
+
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  await check();
+  assert.deepEqual(asked, ["manifest"], "before setup the signed read would only say 'not paired'");
+  assert.match(s.obsidian.notices.at(-1), /^Reached your obsync server\. Next: Setup or recover/);
+
+  s.plugin.state.paired = true;
+  await check();
+  assert.deepEqual(asked, ["manifest", "account"]);
+  assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
 });
 
 test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {
@@ -238,22 +333,24 @@ test("leaving a server is offered only to an enrolled device, and both routes ar
 test("Set up applies an unsaved folder selection first, in that order, and keeps the token until enrolment", async (t) => {
   const s = open(t);
   s.render("Folder selection").made[0].change("selected");
-  s.render("Selected folders").made[0].change("Notes\n\nAttachments/");
-  let setup = s.render("First-time setup");
+  s.render("Selected folders").made[0].change("Notes\n\nAttachments");
+  let setup = s.render("Setup or recover");
   setup.made.find((c) => c.kind === "text").change("  TOKEN SENTINEL  ");
-  s.button(setup.made, "Set up").click();
+  s.button(setup.made, "Set up or recover").click();
   await tick();
-  assert.deepEqual(s.calls, ['saveSyncFolders:["Notes","Attachments/"]', "setUp:TOKEN SENTINEL:obsync"]);
+  // The selection is checked against the vault first (#150), so what the save
+  // receives is its canonical form.
+  assert.deepEqual(s.calls, ['saveSyncFolders:["Attachments","Notes"]', "setUp:TOKEN SENTINEL:obsync"]);
   assert.equal(s.updates(), 1);
   // Enrolment did not happen (the stub leaves deviceId null), so the pasted token is still there.
-  setup = s.render("First-time setup");
+  setup = s.render("Setup or recover");
   assert.equal(setup.made.find((c) => c.kind === "text").value, "TOKEN SENTINEL");
 
   // The same selection, once saved, is not saved again.
-  s.plugin.state.data.syncFolders = ["Notes", "Attachments/"];
+  s.plugin.state.data.syncFolders = ["Attachments", "Notes"];
   s.calls.length = 0;
   s.plugin.setUpAccount = async () => { s.calls.push("setUp"); s.plugin.state.data.deviceId = "11".repeat(16); };
-  s.button(s.render("First-time setup").made, "Set up").click();
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
   await tick();
   assert.deepEqual(s.calls, ["setUp"]);
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the enrolled rows draw");
@@ -265,7 +362,7 @@ test("a folder selection the device refuses stops Set up and Pair this device be
   s.box.require(join(s.box.home, "build/ui/modals.js")).PairClaimModal.prototype.open = () => { opened++; };
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes");
-  s.button(s.render("First-time setup").made, "Set up").click();
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
   s.button(s.render("Pairing").made, "Pair this device").click();
   await tick();
   assert.deepEqual(s.calls, []);
@@ -386,5 +483,263 @@ test("the typed folder selection reaches the save through the host's normalizePa
   s.button(s.render("Save on this device").made, "Save").click();
   await tick();
   assert.deepEqual(seen, ["Notes/", "/Attachments//Sub"], "the blank line never reached the normaliser");
-  assert.deepEqual(s.calls, ['saveSyncFolders:["Notes","Attachments/Sub"]']);
+  assert.deepEqual(s.calls, ['saveSyncFolders:["Attachments/Sub","Notes"]'], "canonical, and checked against the vault (#150)");
+});
+
+// ---- issue #150: a selection is checked against the vault before it is saved ----
+
+/**
+ * Every question the tab asks, drawn for real (`ConfirmModal.onOpen`) into
+ * recording widgets and answered by pressing the button a test names. A test
+ * that names none expects no question at all.
+ */
+function questions(s, answer) {
+  const asked = [];
+  s.obsidian.Modal.prototype.open = function () {
+    const drawn = [];
+    this.contentEl = { createEl: (tag, { text = "" } = {}) => { drawn.push(text); return {}; }, empty: () => {} };
+    this.setTitle = (title) => { this.title = title; };
+    this.close = () => this.onClose();
+    s.made.length = 0;
+    this.onOpen();
+    const buttons = [...s.made];
+    // What Obsidian does once `onOpen` returns: the focus goes to the first button.
+    buttons[0].buttonEl.focus();
+    asked.push({ title: this.title, text: drawn.join("\n"), buttons });
+    if (answer === null) assert.fail(`no question was expected, and "${this.title}" was asked`);
+    buttons.find((button) => button.text === answer).click();
+  };
+  return asked;
+}
+
+/** Type a selection and press Save, as S30 did. */
+async function saveTyped(s, text) {
+  s.render("Folder selection").made[0].change("selected");
+  s.render("Selected folders").made[0].change(text);
+  const save = s.button(s.render("Save on this device").made, "Save");
+  save.click();
+  await tick();
+  return save;
+}
+
+test("a folder the vault does not have is asked about first, Cancel holds the focus, and Cancel saves nothing", async (t) => {
+  // S30c: `Nopes` was stored with "saved" and a bare `idle`, and nothing synced.
+  const s = open(t);
+  const asked = questions(s, "Cancel");
+  const save = await saveTyped(s, "Nopes");
+
+  assert.equal(asked.length, 1, "the save never asked");
+  assert.equal(asked[0].title, '"Nopes" is not a folder in this vault. Save anyway?');
+  const [cancel, anyway] = asked[0].buttons;
+  assert.equal(anyway.text, "Save anyway");
+  assert.equal(cancel.text, "Cancel");
+  assert.equal(cancel.focused, true, "Enter is never the answer that saves");
+  assert.equal(anyway.focused, undefined);
+  assert.deepEqual(s.calls, [], "a declined selection was saved");
+  assert.deepEqual(s.obsidian.notices, [], "and nothing claimed it was");
+  assert.deepEqual(s.plugin.logs, ["scope decision=declined reason=not_a_folder folders=1"]);
+  assert.equal(save.disabled, false);
+  assert.equal(save.text, "Save");
+
+  // Saving anyway is the person's own click, and saves exactly what they typed.
+  questions(s, "Save anyway");
+  save.click();
+  await tick();
+  assert.deepEqual(s.calls, ['saveSyncFolders:["Nopes"]']);
+  assert.deepEqual(s.obsidian.notices, ["Folder selection saved on this device."]);
+  assert.equal(s.plugin.logs.at(-1), "scope decision=confirmed reason=not_a_folder folders=1");
+
+  // A FILE by that name is not a folder either: the host's lookup finds the
+  // entry, and the index does not hold it as a folder.
+  s.calls.length = 0;
+  const lookup = s.plugin.host.spelling;
+  s.plugin.host.spelling = async (path) => (path === "readme.md" ? "Readme.md" : lookup(path));
+  const again = questions(s, "Cancel");
+  await saveTyped(s, "readme.md");
+  assert.equal(again[0]?.title, '"readme.md" is not a folder in this vault. Save anyway?');
+  assert.deepEqual(s.calls, []);
+});
+
+test("a folder typed in another case is saved the way the vault spells it, and the person is told", async (t) => {
+  // S30a: `notes` for the real `Notes` was saved as typed, and the scan then
+  // republished the folder's notes under that spelling with older text.
+  const s = open(t);
+  s.vault.folders.push("Notes/Daily");
+  questions(s, null);
+  await saveTyped(s, "notes\nNotes/Daily");
+
+  // Re-cased, and then one canonical selection: the parent covers its child.
+  assert.deepEqual(s.calls, ['saveSyncFolders:["Notes"]'], "the typed spelling was saved");
+  assert.deepEqual(s.obsidian.notices, [
+    'Folder selection saved on this device. "notes" is saved as "Notes", the way this vault spells it.',
+  ]);
+  assert.deepEqual(s.plugin.logs, ["scope decision=recased reason=vault_spelling folders=1"]);
+
+  // A name the index holds exactly is the vault's own, whatever the host's
+  // lookup says: a Finder-made accented folder is decomposed on disk and
+  // composed in the index, and the lookup matches neither form to the other.
+  s.calls.length = 0;
+  s.obsidian.notices.length = 0;
+  s.vault.folders.push("Espa\u00f1ol");
+  s.plugin.host.spelling = async () => null;
+  await saveTyped(s, "Espa\u00f1ol");
+  assert.deepEqual(s.calls, ['saveSyncFolders:["Espa\u00f1ol"]']);
+  assert.deepEqual(s.obsidian.notices, ["Folder selection saved on this device."]);
+
+  // A volume that keeps two spellings apart has no `notes` at all: that is a
+  // folder the vault does not have, asked about, never quietly swapped for
+  // another folder the person did not name.
+  s.calls.length = 0;
+  s.plugin.host.spelling = async (path) => (s.vault.folders.includes(path) ? path : null);
+  const asked = questions(s, "Cancel");
+  await saveTyped(s, "notes");
+  assert.equal(asked[0]?.title, '"notes" is not a folder in this vault. Save anyway?');
+  assert.deepEqual(s.calls, []);
+});
+
+test("an empty selection is saved and says that nothing syncs", async (t) => {
+  // S30d: stored `[]`, notice only "saved", and a bare `idle`.
+  const s = open(t);
+  questions(s, null);
+  await saveTyped(s, "\n  \n");
+
+  assert.deepEqual(s.calls, ["saveSyncFolders:[]"]);
+  assert.deepEqual(s.obsidian.notices, [
+    "Folder selection saved on this device. No folder is selected, so nothing syncs on this device.",
+  ]);
+});
+
+test("a hidden folder is refused in plain words, before any question, with the refusal's code in the log", async (t) => {
+  // S30f: "refused: not a vault path (hidden_segment)".
+  const s = open(t);
+  questions(s, null);
+  await saveTyped(s, "Notes\n.obsidian");
+
+  assert.deepEqual(s.calls, [], "the refused selection reached the save");
+  assert.equal(s.obsidian.notices.length, 1);
+  assert.match(s.obsidian.notices[0], /^That selection cannot be saved: each line must be a folder inside this vault/);
+  assert.match(s.obsidian.notices[0], /names start with a dot/);
+  assert.equal(/hidden_segment|\(/.test(s.obsidian.notices[0]), false, s.obsidian.notices[0]);
+  assert.deepEqual(s.plugin.logs, ["scope decision=refused reason=hidden_segment"]);
+});
+
+test("a ceiling typed key by key is kept and saved only when the field is left, so a typo never becomes a one-byte ceiling", async (t) => {
+  // 2026-09-24 verification of the 1.1.3 train (S31 step 1, real keys): every
+  // keystroke that read as a size was kept, so `1 MX` passed through `1` and
+  // stayed a one-byte ceiling after its refusal, and a kept `1 MB` reached
+  // data.json only with some later, unrelated save.
+  const s = open(t);
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  const policy = s.plugin.state.data.policy;
+  const { setting, made: [field] } = s.render("Largest file to download");
+  const type = (text) => { for (let i = 1; i <= text.length; i++) field.change(text.slice(0, i)); };
+  const leave = () => { for (const fn of field.inputEl.listeners.change ?? []) fn(); };
+
+  type("1 MX");
+  assert.equal(policy.perFileMaxBytes, 0, "a keystroke was kept as the ceiling");
+  leave();
+  assert.equal(policy.perFileMaxBytes, 0, "the refused typo left its prefix as the ceiling");
+  assert.equal(s.obsidian.notices.length, 1);
+  assert.deepEqual(s.calls.filter((c) => c === "state.save"), [], "a refusal saves nothing");
+
+  type("1 MB");
+  assert.equal(policy.perFileMaxBytes, 0, "a keystroke was kept as the ceiling");
+  leave();
+  await tick();
+  assert.equal(policy.perFileMaxBytes, 1_000_000);
+  assert.equal(s.calls.filter((c) => c === "state.save").length, 1, "the kept ceiling was not saved");
+  assert.match(setting.desc, /Currently 977 KiB\./, "the row still names the ceiling it had");
+  assert.equal(s.plugin.logs.at(-1), "policy decision=kept field=perFileMaxBytes bytes=1000000");
+
+  leave();
+  await tick();
+  assert.equal(s.calls.filter((c) => c === "state.save").length, 1, "leaving an unchanged field saves again");
+});
+
+test("a download ceiling takes decimal and binary units, and an unreadable one is refused out loud, never dropped", async (t) => {
+  // S31 step 1: `1 MB` stayed in the field, nothing was stored, and after a
+  // restart the row read "unlimited".
+  const s = open(t);
+  const { parseBytes, formatBytes } = s.box.require(join(s.box.home, "build/policy.js"));
+  for (const [typed, bytes] of [
+    ["1 MB", 1_000_000], ["1mb", 1_000_000], ["10 KB", 10_000], ["1.5 GB", 1_500_000_000], ["2 TB", 2_000_000_000_000],
+    ["1 MiB", 1 << 20], ["512 KiB", 512 * 1024], ["7", 7], ["unlimited", 0], ["0", 0],
+    ["1 MX", null], ["MB", null], ["", null], ["-1 MB", null],
+  ]) assert.equal(parseBytes(typed), bytes, JSON.stringify(typed));
+
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  const policy = s.plugin.state.data.policy;
+  for (const [row, key, typed, bytes] of [
+    ["Largest file to download", "perFileMaxBytes", "1 MB", 1_000_000],
+    ["Total to keep on this device", "totalBudgetBytes", "2 GB", 2_000_000_000],
+  ]) {
+    const field = s.render(row).made[0];
+    field.commit(typed);
+    assert.equal(policy[key], bytes, `${row}: ${typed}`);
+    assert.deepEqual(s.obsidian.notices, [], "an accepted value raises nothing");
+
+    field.commit("1 MX");
+    assert.equal(policy[key], bytes, "an unreadable value changes nothing");
+    assert.deepEqual(s.obsidian.notices, [
+      `${row}: "1 MX" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`,
+    ]);
+    assert.equal(field.value, formatBytes(bytes), "and the field shows what is kept, not what was refused");
+    assert.equal(s.plugin.logs.at(-1), `policy decision=refused reason=unreadable_size field=${key}`);
+    s.obsidian.notices.length = 0;
+  }
+});
+
+
+test("re-enrollment replaces a cached revoked-device error with the recovered account list", async (t) => {
+  const s = open(t, { listDevices: async () => { throw new Error("device_revoked"); } });
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.match(s.row("Device list").desc, /device_revoked/);
+  s.plugin.setUpAccount = async () => { s.plugin.state.data.deviceId = "22".repeat(16); };
+  s.plugin.listDevices = async () => [{ device_id: "22".repeat(16), name: "Recovered", platform: "macos", app_version: "1.1.3", last_seen: 0, revoked: false }];
+  s.button(s.render("Setup or recover").made, "Set up or recover").click();
+  await tick();
+  s.render("Device list");
+  await tick();
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+  assert.ok(s.row("Recovered (this device)"));
+});
+
+for (const changed of ["deviceId", "serverUrl"]) for (const failed of [false, true]) {
+  test(`a previous ${changed} device-list ${failed ? "error" : "response"} cannot replace the recovered account`, async (t) => {
+    let finish, refuse;
+    const s = open(t, { listDevices: () => new Promise((resolve, reject) => { finish = resolve; refuse = reject; }) });
+    s.plugin.state.data.deviceId = "11".repeat(16);
+    s.plugin.state.data.serverUrl = "https://old.example.org";
+    s.plugin.state.paired = true;
+    s.render("Device list");
+    s.plugin.state.data[changed] = changed === "deviceId" ? "22".repeat(16) : "https://new.example.org";
+    if (failed) refuse(new Error("old identity refusal"));
+    else finish([{ device_id: "11".repeat(16), name: "Old identity", platform: "macos", app_version: "1.1.3", last_seen: 0, revoked: false }]);
+    await tick();
+    assert.equal(s.row("Device list").desc, "Reading the device list…");
+    assert.ok(!s.rows().some((row) => row.name.startsWith("Old identity")));
+    s.plugin.listDevices = async () => [];
+    s.render("Device list");
+    await tick();
+    assert.equal(s.row("Device list").desc, "0 devices on this account.");
+  });
+}
+
+
+test("closing a completed pairing redraws settings for the new identity", async (t) => {
+  const s = open(t, { listDevices: async () => { throw new Error("old refused identity"); } });
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.render("Device list"); await tick();
+  let modal;
+  const { PairClaimModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  PairClaimModal.prototype.open = function () { modal = this; };
+  s.button(s.render("Pairing").made, "Pair this device").click(); await tick();
+  assert.ok(modal);
+  s.plugin.state.data.deviceId = "22".repeat(16);
+  modal.contentEl = { empty() {} };
+  modal.onClose();
+  assert.equal(s.row("Device list").desc, "Reading the device list…");
 });

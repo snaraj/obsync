@@ -1,0 +1,11 @@
+# M353: a folder the vault holds, accented and made in Finder, is asked about as if it were missing
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -424,7 +424,6 @@
+    */
+   private async vaultFolder(folder: string): Promise<string | null> {
+     const vault = this.app.vault;
+-    if (vault.getFolderByPath(folder) !== null) return folder;
+     const shown = await this.plugin.host.spelling(folder).catch(() => null);
+     return shown !== null && vault.getFolderByPath(shown) !== null ? shown : null;
+   }

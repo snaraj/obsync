@@ -1,0 +1,12 @@
+# M157: an edit undone before its push leaves the other device's version unapplied here for good
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2075,7 +2075,7 @@
+  */
+ async function deferToPush(context: SyncContext, change: ChangeRecord, localPath: string): Promise<ApplyResult> {
+   const held = context.state.fileByPath(localPath);
+-  if (held) context.state.setFile(localPath, { ...held, sha256: "" });
++  if (held) context.state.setFile(localPath, { ...held });
+   await context.state.save();
+   return deferred(context, change, "unpushed_edit");
+ }

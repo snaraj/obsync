@@ -1144,7 +1144,7 @@ class MutatedDocumentsAreRefused(unittest.TestCase):
     SHAPE_ANCHORS = {
         "a step opener": ("1. **Install from Community plugins.**", "1. **", "Install ", "from Community plugins.**"),
         "a continuation line": ("   Browse, search for", "   ", "Browse, ", "search for"),
-        "a prose line": ("The path this release was validated on,", "", "The path ", "this release was validated on,"),
+        "a prose line": ("The installation path, from an empty vault to two devices in sync. Older", "", "The installation ", "path, from an empty vault to two devices in sync. Older"),
         "an alternative text": ("![" + ALT_ANCHOR, "![", "The recovery-phrase ", "dialog shown after first-time setup"),
     }
 

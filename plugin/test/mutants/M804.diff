@@ -1,0 +1,11 @@
+# M804: A finished retry leaves its durable wait behind.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2077,7 +2077,6 @@
+           if (!this.running) return;
+           if (entry.reason === "active_editor") await this.retryOne(context, fileId);
+         }
+-        await context.state.save();
+         this.status(this.resting());
+       } catch (error) {
+         context.host.log(`pull decision=editor_retry_failed reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} retry_ms=1000`);

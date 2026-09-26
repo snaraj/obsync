@@ -1,0 +1,11 @@
+# M433: on a phone, the nested vault is synced both ways
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -453,7 +453,6 @@
+     if (desktop === null) {
+       for (let depth = 1; depth <= segments.length; depth++) {
+         const folder = segments.slice(0, depth).join("/");
+-        if (await this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`)) return this.named(folder);
+       }
+       return false;
+     }

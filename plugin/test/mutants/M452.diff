@@ -1,0 +1,12 @@
+# M452: every start reads the feed even when every name is recorded
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2289,7 +2289,7 @@
+     context: SyncContext,
+     untracked: number,
+   ): Promise<{ notes: Map<string, HeldNote>; since: number; started: number } | null> {
+-    if (untracked === 0 || this.ownRead) return null;
++    if (this.ownRead) return null;
+     this.ownRead = true;
+     const started = context.now();
+     const since = context.state.data.lastSeq;

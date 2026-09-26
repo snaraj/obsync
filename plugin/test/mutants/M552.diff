@@ -1,0 +1,12 @@
+# M552: pause publication sends a clear and Resume sends a pause
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -35,7 +35,7 @@
+     parents = [];
+   }
+   const manifest: PauseManifest = {
+-    v: 3, kind: "pause", path, target, paused, domain: context.domainId,
++    v: 3, kind: "pause", path, target, paused: !paused, domain: context.domainId,
+     size: 0, chunks: [], sha256: "", deleted: false,
+   };
+   const posted = await postManifest(context, fileId, parents, [], manifest, 0, true);

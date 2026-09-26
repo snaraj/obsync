@@ -174,8 +174,22 @@ test("a case-only folder rename the desktop only DISCOVERS leaves the phone one 
 test("a case-only rename on the phone reaches the case-insensitive desktop as one entry", async (t) => {
   const { server, timers, a, b, ids, keys } = await seeded(t, { caseSensitiveA: false });
 
+  // Re-casing the directory can make the old note records appear settled
+  // before their move versions arrive. Hold those receipts to exercise it.
+  const post = b.transport.postVersion.bind(b.transport);
+  b.transport.postVersion = async (id, body) => {
+    if (ids.includes(id)) await new Promise((resolve) => setTimeout(resolve, 400));
+    return post(id, body);
+  };
   b.host.renameFolder("Team docs", "team docs");
-  await timers.run(STEP_MS, () => settled(a, "team docs/One.md") && settled(a, "team docs/Two.md"));
+  await timers.run(STEP_MS, () => ids.every((id, index) => {
+    const frames = server.journal.filter((frame) => frame.file_id === id);
+    const moved = frames.at(-1);
+    const path = ["team docs/One.md", "team docs/Two.md"][index];
+    return frames.length >= 2 && [a, b].every((device) =>
+      device.state.fileByPath(path)?.versionId === moved.version_id &&
+      device.state.data.lastSeq >= moved.seq);
+  }));
   await timers.run(STEP_MS);
 
   assert.deepEqual(await tombstones(server, keys.manifestKey), [], `the incoming case-only rename published a tombstone: ${story(server, a, b)}`);
@@ -251,10 +265,25 @@ test("a case-only folder rename between two devices that both fold case settles,
     caseSensitiveA: false, caseSensitiveB: false, isMobileB: false,
   });
 
+  // The folder record can re-case both vaults before either note's move
+  // reaches the server. Keep that window longer than one quiet drain, so
+  // a path-only settlement predicate cannot silently pass on an idle host.
+  const post = b.transport.postVersion.bind(b.transport);
+  b.transport.postVersion = async (id, body) => {
+    if (ids.includes(id)) await new Promise((resolve) => setTimeout(resolve, 400));
+    return post(id, body);
+  };
   b.host.renameFolder("Team docs", "team docs");
   await timers.run(STEP_MS, () =>
     a.host.files.has("team docs/One.md") && a.host.files.has("team docs/Two.md") &&
-    settled(a, "team docs/One.md") && settled(a, "team docs/Two.md"));
+    ids.every((id, index) => {
+      const frames = server.journal.filter((frame) => frame.file_id === id);
+      const moved = frames.at(-1);
+      const path = ["team docs/One.md", "team docs/Two.md"][index];
+      return frames.length >= 2 && [a, b].every((device) =>
+        device.state.fileByPath(path)?.versionId === moved.version_id &&
+        device.state.data.lastSeq >= moved.seq);
+    }));
   // Drain everything the rename started before the journal is frozen, so the
   // assertion below is about the SCAN and not about work still in flight.
   await timers.run(SCAN_MS);

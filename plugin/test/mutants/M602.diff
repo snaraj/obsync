@@ -1,0 +1,12 @@
+# M602: reset an active credential without a refusal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2740,7 +2740,7 @@
+ 
+   /** Forget only a rejected enrollment; keep local content, key and address. */
+   async resetForgottenEnrollment(): Promise<void> {
+-    if (!this.forgottenDevice) return;
++    if (false) return;
+     if (this.changingScope || this.restoring !== null) throw new Error("Finish the current restore or folder change first.");
+     const { state, assertCurrent } = this.captureSession();
+     this.cancelReconnect();

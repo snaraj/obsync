@@ -5,9 +5,10 @@ with it whenever they are on the same Wi-Fi. There is no tunnel, no VPN, no
 domain and no account with anybody. When a device is away from home, its edits
 wait on the device and go up the next time it is back on that network.
 
-Every screen below is from the [2026-09-23 run](validation-runs/2026-09-23.md):
+The setup screens below are from the [2026-09-23 run](validation-runs/2026-09-23.md):
 a Mac running the server and a desktop vault, and an iPhone on the same Wi-Fi.
-Names and codes that belong to that run are blurred.
+The Local Network permission screen was captured on 2026-09-25. Private names
+and codes are obscured.
 
 ## What you need
 
@@ -34,6 +35,12 @@ yours to choose, and on a home network they are:
   **Enable privileged port mapping** is on in its settings. Otherwise set
   `OBSYNC_HTTP_PORT=8080` and `OBSYNC_HTTPS_PORT=8443`, and add `:8443` to
   the name everywhere below.
+
+Use the name you chose for **`OBSYNC_HOST`** in the plugin's **Server URL**.
+The Wi-Fi address used for `OBSYNC_BIND_ADDRESS` is a different setting.
+Replacing the name with that address can cause a TLS error because the
+certificate identifies the name. Keep certificate checks enabled and use
+the matching name.
 
 **Let your devices in.** A computer's firewall can drop every connection from
 the phone even while the server is running. On a Mac, open **System Settings →
@@ -86,8 +93,9 @@ command that installs it.
 
 5. **Check it.** In Safari on the phone, open `https://<your name>/readyz`,
    with `:8443` if you moved the port. A page reading `{"ready":true,...}`
-   means the phone reaches the server and trusts it. A privacy warning means
-   step 4 is not done yet. "The network connection was lost" means the
+   means the phone reaches the server and trusts it. For a privacy or TLS
+   warning, first check that the address uses your `OBSYNC_HOST` name, then
+   check the trust switch in step 4. "The network connection was lost" can mean the
    firewall above, or a phone that is not on the same Wi-Fi.
 
    ![Safari on the phone showing ready true from the server](assets/lan-09-phone-reaches-server.png)
@@ -96,7 +104,7 @@ command that installs it.
 
 On your computer, follow the [Quickstart](quickstart.md) to install the plugin,
 set **Server URL** to your name (with `:8443` if you moved the port), and run
-**First-time setup** with the server's setup token. That device creates the
+**Setup or recover** with the server's setup token. That device creates the
 vault key and shows you the recovery phrase.
 
 ## Add the phone
@@ -123,6 +131,13 @@ vault key and shows you the recovery phrase.
    The setup guide is one press away at the top of this page.
 
    ![The plugin's settings on the phone: Get started with the Setup guide, then the Server URL field](assets/lan-14-plugin-settings.png)
+
+5. **Let Obsidian reach your home network.** In the iPhone's **Settings →
+   Apps → Obsidian**, check that **Local Network** is on. Safari and Obsidian
+   have separate access: reaching the server in Safari does not establish
+   that Obsidian has this permission. Return to the plugin and select **Check**.
+
+   ![Obsidian in iPhone Settings with Local Network enabled](assets/lan-22-local-network.png)
 
 ## Pair
 

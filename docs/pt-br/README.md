@@ -94,7 +94,7 @@ no iOS, confiar nele é uma segunda opção a ativar depois de instalá-lo.
 
    ![A aba de configurações do plugin: o campo Server URL com um nome de host de demonstração, a caixa dos cabeçalhos da borda e a linha Connection com os seus botões Check e Open dashboard](../assets/settings-server.png)
 
-3. Cole o token de configuração em **First-time setup**, escolha **Set up** e
+3. Cole o token de configuração em **Setup or recover**, escolha **Set up or recover** e
    anote a frase de recuperação de 24 palavras.
 
    ![A seção This device da aba de configurações: a linha Pairing com Pair this device e Pair a new device, a linha First-time setup com o campo Setup token e o botão Set up, e a linha Vault key](../assets/settings-setup.png)

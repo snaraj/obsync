@@ -1,0 +1,12 @@
+# M587: setup retains rejected enrollment
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2653,7 +2653,7 @@
+     if (this.enrolling) return;
+     this.enrolling = true;
+     try {
+-      if (this.forgottenDevice) await this.resetForgottenEnrollment();
++      if (false) await this.resetForgottenEnrollment();
+       const { state, transport, assertCurrent } = this.captureSession();
+       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
+         throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");

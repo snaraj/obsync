@@ -1,15 +1,15 @@
 /**
  * The bulk-deletion guard (issue #123).
  *
- * A folder that IS a selected sync folder, renamed or moved from outside
- * Obsidian while the app is closed, reaches the next startup as every
- * recorded path under it having vanished: no rename event ever arrived, the
- * new paths sit outside the selection and are never queued, and the old ones
- * are simply gone. Published, those tombstones delete the notes on every
- * other device, while the notes themselves sit on this one under the new
- * name, untracked. Nothing was lost locally and nothing asked for a deletion;
- * the only thing that happened is that this device stopped being able to see
- * its own files.
+ * A selected folder moved OUT OF THE VAULT while the app is closed -- or a
+ * volume that mounted empty, or an index not yet built -- reaches the next
+ * startup as every recorded path under it having vanished, with its bytes
+ * nowhere this device can see. Published, those tombstones delete the notes
+ * on every other device. Nothing asked for a deletion; the only thing that
+ * happened is that this device stopped being able to see its own files. (A
+ * folder merely RENAMED while the app was closed is no longer this case: its
+ * notes are still in the vault, and `external-move.test.mjs` proves they are
+ * followed there and never held or deleted, issue #139.)
  *
  * So the pass holds the tombstones, says what it found, and publishes nothing
  * until the user says which it was. What is proven here is the whole of that:
@@ -61,23 +61,20 @@ const tombstones = (server) => server.journal.filter((frame) => frame.deleted);
 /** The notes a selected folder holds, enough of them to be a bulk deletion. */
 const NOTES = Array.from({ length: BULK_DELETION_MIN + 2 }, (_, index) => `Notes/note-${index}.md`);
 
-test("a selected folder renamed while Obsidian was closed publishes nothing and says so once", async (t) => {
+test("a selected folder that left the vault while Obsidian was closed publishes nothing and says so once", async (t) => {
   const { host, server, state, timers, engine } = await device(t, NOTES, ["Notes"]);
   assert.deepEqual(tombstones(server), [], "the seeding published a tombstone");
 
-  // The rename, as a file manager makes it while the app is closed: the files
-  // move, no vault event is ever fired, and the new folder is outside the
-  // selection this device still holds.
-  for (const path of NOTES) {
-    host.files.set(path.replace("Notes/", "Journal/"), host.files.get(path));
-    host.files.delete(path);
-  }
+  // The folder moved out of the vault, as a file manager does it while the
+  // app is closed: the files go, no vault event is ever fired, and their
+  // bytes are nowhere in this vault.
+  for (const path of NOTES) host.files.delete(path);
 
   await engine.reconcile();
   await timers.run(1000);
 
   assert.deepEqual(tombstones(server), [],
-    `a rename nobody saw was published as ${tombstones(server).length} deletions`);
+    `a folder nobody deleted was published as ${tombstones(server).length} deletions`);
   assert.equal(engine.heldDeletionCount, NOTES.length, "the pass did not hold what it refused to publish");
   assert.ok(
     host.logs.some((line) =>
@@ -178,4 +175,100 @@ test("a small vault emptied is below the floor and still publishes", async (t) =
 
   assert.equal(tombstones(server).length, few.length, `${few.length} deletions were held back`);
   assert.equal(engine.heldDeletionCount, 0);
+});
+
+/**
+ * A device that syncs SOME folders (issue #172). Narrowing the selection keeps
+ * the records outside it -- they are what a widening resumes from -- so "what
+ * this device tracks" is not every record it holds: it is the notes the
+ * selection covers, the ones a pass can find gone at all.
+ */
+const SELECTED = Array.from({ length: 20 }, (_, index) => `Notes/n${String(index).padStart(2, "0")}.md`);
+const OUTSIDE = Array.from({ length: 9 }, (_, index) => `Other/o${index}.md`);
+
+/** A whole-vault device narrowed to `Notes` afterwards, as Settings does it. */
+async function narrowed(t) {
+  const d = await device(t, [...SELECTED, ...OUTSIDE]);
+  d.state.data.syncFolders = ["Notes"];
+  assert.equal(Object.keys(d.state.data.files).length, SELECTED.length + OUTSIDE.length, "narrowing dropped records");
+  return d;
+}
+
+test("a narrowed selection measures the share against the notes it selects", async (t) => {
+  const { host, server, timers, engine } = await narrowed(t);
+  // Twelve of the twenty selected notes are gone from the vault altogether:
+  // most of what this device syncs, and only 12 of the 29 records it holds.
+  const gone = SELECTED.slice(0, 12);
+  for (const path of gone) host.files.delete(path);
+
+  await engine.reconcile();
+  await timers.run(1000);
+
+  assert.deepEqual(tombstones(server), [], `${tombstones(server).length} of 20 selected notes were deleted everywhere`);
+  assert.equal(engine.heldDeletionCount, gone.length, "the pass did not hold what it refused to publish");
+  assert.ok(
+    host.logs.some((line) => line.includes("decision=refused reason=bulk_deletion candidates=12 tracked=20")),
+    host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
+  );
+  assert.equal(host.notices.length, 1);
+  assert.match(host.notices[0], /12 of the 20 notes/, "the notice counts records this device does not sync");
+});
+
+test("Sync now with a hold pending publishes none of it, and says the hold is still waiting", async (t) => {
+  const { host, server, timers, engine } = await narrowed(t);
+  const gone = SELECTED.slice(0, 15);
+  const away = new Map(gone.map((path) => [path, host.files.get(path)]));
+  for (const path of gone) host.files.delete(path);
+  await engine.reconcile();
+  await timers.run(1000);
+  assert.equal(engine.heldDeletionCount, gone.length);
+  assert.equal(host.notices.length, 1);
+
+  // Three put back, as the notice advises, then the "safe" button.
+  for (const path of gone.slice(0, 3)) host.files.set(path, away.get(path));
+  await engine.syncNow();
+  await timers.run(1000);
+
+  assert.deepEqual(tombstones(server), [], `Sync now published ${tombstones(server).length} held deletions`);
+  assert.equal(engine.heldDeletionCount, 12, "the hold did not shrink to what is still missing");
+  assert.ok(
+    host.logs.some((line) => line === "reconcile decision=released reason=bulk_deletion released=3 held=12"),
+    host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
+  );
+  assert.equal(host.notices.length, 2, host.notices.join(" | "));
+  assert.match(host.notices[1], /still holding back 12 deletions/);
+  assert.match(host.notices[1], /Deletions held back/);
+});
+
+test("a pending hold is never published by a pass, even once fewer than half are missing", async (t) => {
+  // THE HOLD IS THE USER'S QUESTION, NOT THE PASS'S. Six of fifteen come back:
+  // nine of twenty missing is under half, which a fresh pass would publish,
+  // and a pass must not answer on the user's behalf what they were asked.
+  const { host, server, timers, engine, state } = await device(t, SELECTED);
+  const gone = SELECTED.slice(0, 15);
+  const away = new Map(gone.map((path) => [path, host.files.get(path)]));
+  const ids = Object.fromEntries(gone.map((path) => [path, state.fileByPath(path).fileId]));
+  for (const path of gone) host.files.delete(path);
+  // Found by Sync now itself: the hold it takes is said once, not twice.
+  await engine.syncNow();
+  await timers.run(1000);
+  assert.equal(engine.heldDeletionCount, gone.length);
+  assert.equal(host.notices.length, 1, host.notices.join(" | "));
+
+  for (const path of gone.slice(0, 6)) host.files.set(path, away.get(path));
+  await engine.syncNow();
+  await timers.run(1000);
+
+  assert.deepEqual(tombstones(server), [], `a pass published ${tombstones(server).length} held deletions`);
+  assert.equal(engine.heldDeletionCount, 9);
+  assert.equal(host.notices.length, 2, host.notices.join(" | "));
+  assert.match(host.notices[1], /still holding back 9 deletions/);
+
+  // Only the user's word publishes it, and exactly what is still missing.
+  engine.confirmHeldDeletions();
+  await timers.run(1000, () => tombstones(server).length === 9);
+  assert.deepEqual(
+    tombstones(server).map((frame) => frame.file_id).sort(),
+    gone.slice(6).map((path) => ids[path]).sort(),
+  );
 });

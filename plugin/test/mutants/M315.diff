@@ -1,0 +1,11 @@
+# M315: keeping an open note republishes this device's older text over the other device's newer edit
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1178,7 +1178,6 @@
+   local: FileState,
+   change: ChangeRecord,
+ ): Promise<{ held: boolean; fields: string } | null> {
+-  if (!change.parents.includes(local.versionId)) return null;
+   const editor = await context.host.editing(path);
+   if (editor === null) return null;
+   const at = context.pushedAt.get(path);

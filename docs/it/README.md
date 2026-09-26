@@ -97,8 +97,8 @@ su iOS, fidarsi del certificato è un secondo interruttore dopo l'installazione.
 
    ![La scheda delle impostazioni del plugin: il campo Server URL con un nome host di esempio, il riquadro per le intestazioni edge e la riga Connection con i suoi pulsanti Check e Open dashboard](../assets/settings-server.png)
 
-3. Incolla il token di configurazione sotto **First-time setup**, scegli
-   **Set up** e scrivi la frase di recupero di 24 parole.
+3. Incolla il token di configurazione sotto **Setup or recover**, scegli
+   **Set up or recover** e scrivi la frase di recupero di 24 parole.
 
    ![La sezione This device della scheda delle impostazioni: la riga Pairing con Pair this device e Pair a new device, la riga First-time setup con il campo Setup token e il pulsante Set up, e la riga Vault key](../assets/settings-setup.png)
 

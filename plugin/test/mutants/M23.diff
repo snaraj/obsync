@@ -1,18 +1,11 @@
 # M23: recordAt stats the file itself
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1353,11 +1353,12 @@
-   path: string,
+@@ -3456,6 +3456,7 @@
    stat: VaultStat,
+   wants?: string,
  ): Promise<void> {
-+  const fresh = (await context.host.stat(path)) ?? stat;
++  stat = (await context.host.stat(path)) ?? stat;
    context.state.setFile(path, {
      fileId: change.file_id,
      versionId: change.version_id,
--    mtime: stat.mtime,
--    size: stat.size,
-+    mtime: fresh.mtime,
-+    size: fresh.size,
-     sha256: await sidDigest(change.sids),
-   });
-   await context.state.save();

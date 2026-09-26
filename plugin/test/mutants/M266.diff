@@ -1,0 +1,13 @@
+# M266: Restore with another vault's phrase replaces the key again, and a second domain map strands every other device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2370,9 +2370,6 @@
+     const started = Date.now();
+     const strands = await this.vaultKeyStrands(vrk);
+     this.log(`vaultkey decision=${strands ? "refused reason=opens_nothing_here" : "restored"} duration_ms=${Date.now() - started}`);
+-    if (strands) {
+-      throw new Error("These 24 words do not open the vault on this server: nothing there was sealed with them. The key on this device was not changed.");
+-    }
+     await this.adoptVaultKey(vrk);
+   }
+ 

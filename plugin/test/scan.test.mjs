@@ -30,7 +30,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, promises as fs } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
 import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
@@ -429,10 +429,21 @@ function nativeHost(t, folders) {
     rmSync(outside, { recursive: true, force: true });
   });
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const { TFolder } = box.require("obsidian");
   const logs = [];
+  // Obsidian's index holds no FILE here, and a folder only under the exact
+  // name its directory keeps: the scan walks a selected folder the index holds
+  // (#150).
+  const indexed = (path) => {
+    try {
+      return readdirSync(nodePath.dirname(join(root, path))).includes(nodePath.basename(path)) && statSync(join(root, path)).isDirectory();
+    } catch {
+      return false;
+    }
+  };
   const plugin = {
     state: { data: { syncFolders: folders } },
-    app: { vault: { adapter: {}, getFiles: () => [], getAbstractFileByPath: () => null } },
+    app: { vault: { adapter: {}, getFiles: () => [], getAbstractFileByPath: (path) => (indexed(path) ? new TFolder() : null) } },
     log: (line) => logs.push(line),
   };
   const opened = [];

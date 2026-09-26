@@ -1,0 +1,11 @@
+# M260: a record sealed under another vault key stops the feed again: every later change waits behind it under 'offline'
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -359,7 +359,6 @@
+   try {
+     return await decryptManifest(manifestKey, record.file_id, binder, unhex(record.manifest_nonce), unbase64(record.manifest_ct));
+   } catch (error) {
+-    if ((error as { name?: unknown } | null)?.name === "OperationError") throw new ManifestError("undecryptable");
+     throw error;
+   }
+ }

@@ -1,0 +1,12 @@
+# M691: ordinary user edits are treated as automatic answers
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2214,7 +2214,7 @@
+   // answer: the next keystrokes would then extend the wrong text, splitting
+   // one typed line between the note and a copy (native S89). Clean merges
+   // above still work, and two people typing carry no background-answer flag.
+-  if (theirManifest.answer === true && context.host.typing(localPath)) {
++  if (context.host.typing(localPath)) {
+     if (context.state.data.paused[change.file_id] === undefined) {
+       const started = context.now();
+       context.state.data.paused[change.file_id] = { path: localPath, remote: true };

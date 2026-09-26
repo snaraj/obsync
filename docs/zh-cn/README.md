@@ -72,7 +72,7 @@ Caddy 用它首次启动时生成的颁发机构签发证书，每台设备都�
 
    ![插件的设置页：Server URL 字段里填着一个示例主机名，边缘节点头部输入框，以及带有 Check 和 Open dashboard 按钮的 Connection 行](../assets/settings-server.png)
 
-3. 把设置令牌粘贴到 **First-time setup** 下，选择 **Set up**，然后把 24 个单词的恢复短语抄下来。
+3. 把设置令牌粘贴到 **Setup or recover** 下，选择 **Set up or recover**，然后把 24 个单词的恢复短语抄下来。
 
    ![设置页的 This device 区域：带有 Pair this device 和 Pair a new device 的 Pairing 行，带有 Setup token 字段和 Set up 按钮的 First-time setup 行，以及 Vault key 行](../assets/settings-setup.png)
 

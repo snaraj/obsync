@@ -1,0 +1,12 @@
+# M728: criss-cross deferral selects published content instead of unpublished typing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2193,7 +2193,7 @@
+       if (merged.ok) {
+         if (crossed) {
+           const own = await manifestOf(context, file, change, localVersionId);
+-          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
++          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) === own.sha256) {
+             // Two devices adding unpublished typing to another merge of a
+             // criss-cross create different merges of the same pair again.
+             // Publish this edit on its recorded parent before merging, so

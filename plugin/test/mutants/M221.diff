@@ -1,0 +1,12 @@
+# M221: a large file whose chunks the server lost stalls the whole feed again, fetched in batches
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -528,7 +528,7 @@
+       const chunk = batch[i] as ManifestChunk;
+       // The batch's word for the single fetch's `404 unknown_chunk`, and the
+       // same refusal: one missing chunk parks one file (issue #144).
+-      if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
++      if (!body) throw new Error(`pull: chunk ${chunk.sid} is missing on the server`);
+       const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+       if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
+       control?.check();

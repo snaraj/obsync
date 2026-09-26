@@ -1,0 +1,12 @@
+# M626: Resume writes over a copy after substituting another version for an unreadable head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2359,7 +2359,7 @@
+     if (!known(localDigest)) return fail("local_edit");
+     const file = await context.transport.getFile(id);
+     if (file.heads.length !== 1) return fail("heads");
+-    const head = file.versions.find((entry) => entry.version_id === file.heads[0]);
++    const head = file.versions.find((entry) => entry.version_id === file.heads[0]) ?? file.versions[0];
+     if (head === undefined) return fail("missing_head");
+     const current = await decryptRecordManifest(context, { ...head, file_id: id, domain_id: file.domain_id });
+     if (current.deleted || current.path !== path || !known(await sidDigest(current.chunks.map((chunk) => chunk.sid)))) return fail("remote_edit");

@@ -1,0 +1,11 @@
+# M293: every start logs a clean-up line even when there was nothing to clean
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -536,7 +536,6 @@
+       if (this.temps.has(temp)) continue;
+       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+     }
+-    if (removed + kept === 0) return;
+     this.log(
+       `host path_class=temp decision=removed reason=interrupted_write files=${removed} kept=${kept} ` +
+         `duration_ms=${Date.now() - started}`,

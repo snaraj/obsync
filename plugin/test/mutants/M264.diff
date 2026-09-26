@@ -1,0 +1,12 @@
+# M264: a server with no vault yet counts as one: any phrase restored there is refused
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2362,7 +2362,7 @@
+     if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
+     // Versions, not the journal head: account and device frames move the
+     // head of a server that holds no vault yet.
+-    return (await transport.changes(0, 0, 1)).changes.length > 0;
++    return (await transport.changes(0, 0, 1)).changes.length >= 0;
+   }
+ 
+   /** Restore a key from its phrase, never one that opens nothing on this server (issue #140). */

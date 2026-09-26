@@ -152,7 +152,7 @@ the same hour: fixing one does not tell you the other was not also true.
 **Cause.** This device holds no credential: setup was never completed here, or
 its stored credential was removed.
 
-**Fix.** On the first device, complete **First-time setup** with the server's
+**Fix.** On the first device, complete **Setup or recover** with the server's
 setup token. On every other device, run **Pair a new device** on a device that
 already syncs, enter the code here within ten minutes, and approve the new
 device back on the first one. A device with a lost credential is paired again
@@ -276,13 +276,14 @@ or signature at all — the shape a device that was never enrolled sends.
 does not verify against the secret it holds: a rebuilt server, or a journal
 volume restored from a backup older than this pairing.
 
-**Fix.** Both are the same repair: pair this device again. If the server was
-rebuilt or restored, see [`recovery.md`](recovery.md) before pairing anything,
-because the server key decides whether existing devices can be kept at all.
-If this appeared after pointing the device at a DIFFERENT server, its stored
-credential belongs to the old one: **This device** → **Leave this server** →
-**Switch server** (["moving this vault to a different
-server"](recovery.md#moving-this-vault-to-a-different-server)).
+**Fix.** A forgotten credential now stops the feed and names the problem.
+Confirm the server address, then use **Setup or recover** with its setup token
+and the retained vault key; for a reinstallation, restore the 24-word phrase
+first. This action clears stale sync records without deleting local notes.
+An empty rebuilt server can be set up again; an existing account needs recovery
+registered before its credentials were lost. Pair from a device still syncing
+as an alternative. See [recovery](recovery.md) for the upgrade boundary and
+[server switching](recovery.md#moving-this-vault-to-a-different-server).
 
 ## Other refusals a device can show
 

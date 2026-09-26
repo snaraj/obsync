@@ -1,0 +1,12 @@
+# M662: real typing is advertised as a background answer
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -159,7 +159,7 @@
+ export async function answerOf(context: SyncContext, path: string, mtime: number): Promise<number | null> {
+   const arrived = context.arrivals.get(path);
+   if (arrived === undefined || mtime < arrived || mtime - arrived >= ANSWER_MS) return null;
+-  return context.host.typing(path) ? null : arrived;
++  return arrived;
+ }
+ 
+ export type ApplyResult =

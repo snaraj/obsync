@@ -1,0 +1,12 @@
+# M373: an old entry retention pruned is taken for a proved restore
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -96,7 +96,7 @@
+     else {
+       requests++;
+       reason = await transport.getVersion(mark.fileId, mark.versionId).then(() => "mark_moved", (error: unknown) => {
+-        if (error instanceof ApiError && error.code === "unknown_version") return young(context.now(), mark.ts) ? "mark_lost" : "mark_gone";
++        if (error instanceof ApiError && error.code === "unknown_version") return "mark_lost";
+         throw error;
+       });
+     }

@@ -1,0 +1,12 @@
+# M833: omit retained-ancestry lookup
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2069,7 +2069,7 @@
+     return "skipped";
+   }
+   if (completeHeads && commonAncestor(file.versions, localVersionId, change.version_id) === null) {
+-    await completeMergeAncestry(context, file, localVersionId, change.version_id);
++    void 0;
+   }
+   // THE BREAKER. Everything below is bounded by construction, but a bound
+   // that rests on an argument is not a bound: the cost of being wrong here is

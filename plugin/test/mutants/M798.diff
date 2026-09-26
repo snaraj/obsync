@@ -1,0 +1,11 @@
+# M798: Mobile writes beneath an active native editor.
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -851,7 +851,6 @@
+           joined.set(part, at);
+           at += part.length;
+         }
+-        await this.assertEditorIdle(path);
+         await adapter.writeBinary(path, joined.buffer, { mtime });
+         // The SIZE is ours: the bytes handed to the adapter, not what a look
+         // at the name says a moment later. The mtime is taken from the name

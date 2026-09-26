@@ -1,0 +1,12 @@
+# M155: a version arriving while someone types here is kept as a conflict copy again, one copy per version the other device sends
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1452,8 +1452,6 @@
+     if (atTarget === "other_file" || atTarget === "no_record") {
+       const decided = await sameNameTiebreak(context, change, manifest, atTarget);
+       if (decided !== null) return decided;
+-    } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
+-      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+     } else {
+       return await keepBoth(context, change, manifest);
+     }
