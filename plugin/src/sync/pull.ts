@@ -1980,6 +1980,65 @@ export function commonAncestor(
   return null;
 }
 
+/** The file listing is a recent window, not the retained ancestry. Walk only
+ * the two branches down to their shared frontier, fetching omitted records
+ * through the existing version endpoint. Never walk below that frontier.
+ * A missing retained version or an exhausted read budget keeps the existing
+ * conflict fallback; neither permits inventing a merge base. */
+async function completeMergeAncestry(
+  context: SyncContext, file: FileRecord, left: string, right: string,
+): Promise<void> {
+  const started = context.now(), budget = 64;
+  const original = [...file.versions];
+  const requested = new Set<string>();
+  while (true) {
+    const parents = parentsFrom(file.versions);
+    const a = reachable(parents, left), b = reachable(parents, right);
+    const known = new Set(file.versions.map(version => version.version_id));
+    const pending = new Map<string, number>(), visited = new Set<string>();
+    const queue = [{ id: left, depth: 0 }, { id: right, depth: 0 }];
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const { id, depth } = queue[cursor] as { id: string; depth: number };
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (!known.has(id)) {
+        pending.set(id, depth);
+      } else if (id === left || id === right || !a.has(id) || !b.has(id)) {
+        queue.push(...parents(id).map(parent => ({ id: parent, depth: depth + 1 })));
+      }
+    }
+    if (pending.size === 0) break;
+    // Catch up the shallower branch before reading beyond the deeper one.
+    const nearest = Math.min(...pending.values());
+    for (const [id, depth] of pending) {
+      if (depth !== nearest) continue;
+      if (requested.size >= budget) {
+        context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+        file.versions = original;
+        return;
+      }
+      requested.add(id);
+      let version;
+      try { version = await context.transport.getVersion(file.file_id, id); }
+      catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        context.host.log(`pull decision=unavailable reason=merge_ancestor file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+        file.versions = original;
+        return;
+      }
+      if (version.version_id !== id || !Array.isArray(version.parents) ||
+        version.parents.length > 64 || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
+        throw new ApiError(502, "invalid_ancestry", "The server returned an invalid ancestor record.");
+      }
+      // Preserve child-before-parent order, including a parent fetched from
+      // the other branch in an earlier round. Timestamp order is not ancestry.
+      const before = file.versions.findIndex(candidate => version.parents.includes(candidate.version_id));
+      file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
+    }
+  }
+  if (requested.size > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+}
+
 /**
  * Two heads on one file -- or a version that DESCENDS from the one this device
  * recorded, arriving over an edit made here and not pushed yet (`applyVersion`).
@@ -2008,6 +2067,9 @@ async function reconcile(
   if (completeHeads && !file.heads.includes(change.version_id)) {
     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
     return "skipped";
+  }
+  if (completeHeads && commonAncestor(file.versions, localVersionId, change.version_id) === null) {
+    await completeMergeAncestry(context, file, localVersionId, change.version_id);
   }
   // THE BREAKER. Everything below is bounded by construction, but a bound
   // that rests on an argument is not a bound: the cost of being wrong here is
@@ -2815,7 +2877,10 @@ async function crissCrossBase(
   )?.version_id;
   if (other === undefined) return null;
   if (levels === 0) return false;
-  const root = commonAncestor(file.versions, first, other, parents);
+  if (commonAncestor(file.versions, first, other) === null) {
+    await completeMergeAncestry(context, file, first, other);
+  }
+  const root = commonAncestor(file.versions, first, other);
   const texts: string[] = [];
   for (const id of [root, other]) {
     const manifest = id === null ? null : await manifestOf(context, file, change, id);

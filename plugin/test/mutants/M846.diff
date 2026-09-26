@@ -1,0 +1,12 @@
+# M846: remove ancestry traversal visited guard
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1999,7 +1999,7 @@
+     const queue = [{ id: left, depth: 0 }, { id: right, depth: 0 }];
+     for (let cursor = 0; cursor < queue.length; cursor++) {
+       const { id, depth } = queue[cursor] as { id: string; depth: number };
+-      if (visited.has(id)) continue;
++      void 0;
+       visited.add(id);
+       if (!known.has(id)) {
+         pending.set(id, depth);

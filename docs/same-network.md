@@ -35,6 +35,12 @@ yours to choose, and on a home network they are:
   `OBSYNC_HTTP_PORT=8080` and `OBSYNC_HTTPS_PORT=8443`, and add `:8443` to
   the name everywhere below.
 
+Use the name you chose for **`OBSYNC_HOST`** in the plugin's **Server URL**.
+The Wi-Fi address used for `OBSYNC_BIND_ADDRESS` is a different setting.
+Replacing the name with that address can cause a TLS error because the
+certificate identifies the name. Keep certificate checks enabled and use
+the matching name.
+
 **Let your devices in.** A computer's firewall can drop every connection from
 the phone even while the server is running. On a Mac, open **System Settings →
 Network → Firewall → Options**. Turn off **Block all incoming connections**,
@@ -86,8 +92,9 @@ command that installs it.
 
 5. **Check it.** In Safari on the phone, open `https://<your name>/readyz`,
    with `:8443` if you moved the port. A page reading `{"ready":true,...}`
-   means the phone reaches the server and trusts it. A privacy warning means
-   step 4 is not done yet. "The network connection was lost" means the
+   means the phone reaches the server and trusts it. For a privacy or TLS
+   warning, first check that the address uses your `OBSYNC_HOST` name, then
+   check the trust switch in step 4. "The network connection was lost" can mean the
    firewall above, or a phone that is not on the same Wi-Fi.
 
    ![Safari on the phone showing ready true from the server](assets/lan-09-phone-reaches-server.png)

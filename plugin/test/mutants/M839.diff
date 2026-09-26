@@ -1,0 +1,12 @@
+# M839: accept too many ancestor parents
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2027,7 +2027,7 @@
+         return;
+       }
+       if (version.version_id !== id || !Array.isArray(version.parents) ||
+-        version.parents.length > 64 || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
++        false || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
+         throw new ApiError(502, "invalid_ancestry", "The server returned an invalid ancestor record.");
+       }
+       // Preserve child-before-parent order, including a parent fetched from

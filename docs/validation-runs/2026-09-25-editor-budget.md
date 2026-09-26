@@ -136,6 +136,75 @@ acceptance of this additional repair remains outstanding.
 Follow-up bundle SHA-256:
 `8994ae22d80b22b8a9ae49220fe8af0fe1ed92fb3f2dc5fd21bcb187d952201a`.
 
+## Retained ancestry beyond the recent listing
+
+A later native replay captured the remaining failure with the insertion
+points verified. The server's file listing contained ten versions. Continued
+typing moved the shared ancestor outside that window while its record and
+encrypted content remained in history. The client then closed a compatible
+fork as unmergeable. This was not a merge-budget refusal: the trace recorded
+zero `merge_storm` decisions. An earlier diagnostic replay placed one caret
+at the beginning of the line and is excluded from append acceptance.
+
+The repair follows omitted parent records through the existing individual
+version endpoint, stopping at the two branches' shared frontier. It makes
+at most 64 additional reads. Missing retained records or an exhausted budget
+discard the partial expansion and retain the existing conflict fallback;
+server errors remain retryable. A response cannot substitute another version
+or malformed parent identifiers. An incomplete current-head view does not
+authorize this expansion. The server API and retention settings are unchanged.
+
+Sixteen ancestry regressions cover omitted history, transient failures,
+substituted records, malformed parents, cycles, ordering, incomplete graph
+restoration, recursive criss-cross bases and the fixed read budget. Together
+with the five unchanged history catch-up tests, all 21 pass. Nineteen new
+mutation patches (M833–M851) and two context-only recuts (M306, M716) apply
+without fuzz, compile, and fail behavioral assertions with no cancellations.
+The restored focused suites pass. The first identity-substitution experiment
+was manually stopped after its fake answered indefinitely; that interrupted
+result is excluded. A bounded fake now makes the same defect fail an assertion.
+
+The first repair's full gate exposed two incomplete-head regressions. The
+repair preserves that existing refusal without changing the old assertions.
+The final `make check BASE=88e8804065a27834bc671a875551a235bafbe193` passes
+with 1,218 plugin tests, 70 dashboard tests, 144 core tests, 375 server tests,
+two CLI tests, 767 contracts, 94.73% Rust line coverage and both secret scans.
+One core benchmark is intentionally ignored. A sandbox attempt that could not
+bind loopback sockets is retained separately as an environment refusal.
+
+Both isolated desktops ran the uninstrumented final bundle:
+`ef030cab10b564982eb920d8781b9f8a7f5e01779395a2a1469e11553b4ddedb`.
+Forty alternating key events took 16.698 seconds with no midpoint pause.
+After settling, both saved notes held both complete twenty-letter sequences.
+The existing 32 target copies and 114 vault-wide copies did not increase.
+Checksummed journal replay found one head, 446 stored versions and no paused
+note. These are two native profiles on one physical laptop; they do not
+establish phone acceptance. Earlier successful runs of the preceding ancestry
+build remain in the local evidence as separate measurements.
+
+![First desktop after the continuous typing retest](../assets/phone-candidate-113/merge-ancestry-desktop-lan.png)
+
+![Second desktop with both complete sequences](../assets/phone-candidate-113/merge-ancestry-desktop-peer.png)
+
+These are actual note-area crops with unchanged retained pixels and no
+embedded metadata. The exact final bundle was downloaded to the phone in an
+eight-file archive containing no credentials, installed only in the synthetic
+two-note vault, and reloaded through Community plugins. Its pairing remains
+incomplete. The initial test address used an IP while the QA proxy certificate
+covered a hostname; the resulting TLS refusal was correct. The address was
+corrected to the existing certificate's hostname without changing trust or
+restarting the server. Mirroring pointer failures then blocked the retest.
+All five superseded ZIP downloads were removed through Files; the final ZIP,
+synthetic vault and final cleanup remain outstanding.
+
+The final full mutation campaign contains 796 patches, all strictly applicable
+to this source. Twelve concurrent pristine baselines exposed load-sensitive timing failures
+in watcher, refusal-republish and folder-rename tests. Those logs are retained;
+no mutation outcome was counted from that attempt. The campaign was reduced
+to six isolated copies with identical tests and assertions. Its result is pending, and `MATRIX.md` remains historical. The preceding
+777-control run stopped after 258 completed sections with all six source
+copies restored; it is not evidence of final-campaign completion.
+
 ## Mutation recording
 
 The preceding 769-control campaign stopped when M518 reported 21 failures
