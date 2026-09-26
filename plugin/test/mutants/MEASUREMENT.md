@@ -55,4 +55,20 @@ re-measurements. It does not imply every historical mutant ran against the
 final test tree. Non-passing-test counts include any cancellations, which
 are reported separately; a cancellation alone is not a behavioral kill.
 
-Campaign completion and final combined-log hash: pending.
+## Completed result
+
+All 796 controls are measured: 796 behavioral kills, zero survivors,
+zero cancellation-only kills, and all six lane source/test/package manifests
+restored. Each result accounts for the full 1,218-test suite. Eight rows
+include cancellations alongside actual failures; those cancellations are
+reported separately and are not the evidence used to count a kill.
+
+The combined log has 799 sections: 796 original sections plus the three
+replacement measurements above. Its SHA-256 is
+`0ba114be2f70127cc0072efd76b776a1cfbcd34a0743403086677b3ee9ccffa2`.
+The generated `MATRIX.md` SHA-256 is
+`25f72a0a6312ae46b0841d1aa66b7b1679edbf3a671460e1eb28a627dc7e4789`.
+An independent regeneration is byte-identical, and every table row matches
+the raw log's counts. The independent reviewer additionally verified all
+796 guards with focused positive, mutated, and restored checks; those
+independent measurements have zero cancellations.

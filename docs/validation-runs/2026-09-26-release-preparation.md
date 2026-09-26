@@ -69,8 +69,34 @@ both working-tree and outgoing-history secret scans were clean. This run
 included all three witness repairs and documentation clarifications; its
 source and test input hashes were unchanged afterwards. A sandbox attempt
 could not bind the HTTP test sockets; the successful run had loopback access.
-The [mutation provenance](../../plugin/test/mutants/MEASUREMENT.md) records
+The [mutation provenance](https://github.com/snaraj/obsync/blob/main/plugin/test/mutants/MEASUREMENT.md) records
 the three separate full-suite replacement measurements.
 
 Native phone acceptance, independent approval at the final committed head,
 owner merge, exact-main CI, and immutable release publication remain required.
+
+## Desktop vault rename and relocation follow-up
+
+Through Obsidian's native vault manager, the synthetic desktop vault was
+closed, renamed, and reopened. It returned to idle without setup or pairing.
+The device and installation identities, folder selection, and server device
+count matched the pre-rename snapshot.
+
+The same closed vault was then moved to another disposable parent directory
+using **Move vault**, and reopened. It again returned to idle with the same
+identities and selection. A new synthetic note created through the native
+vault API uploaded automatically; an authenticated server read confirmed its
+version among the file's heads. That test note was then trashed.
+
+The native controls restored the original vault name and path. Final readback
+confirmed the same identity, a running engine, one active device, the two
+initial notes, and the disabled rewrite fixture. Two revoked emulator
+registrations remain in this disposable server's history. The temporary
+relocation directory and obsolete unpaired desktop vault registration were
+removed, and the latter's exact known empty secret reference was cleared.
+Owner vaults were not changed.
+
+Receipts: `vault-after-rename.json`, `vault-after-move.json`, and
+`vault-restored-ready.json`. This proves the desktop identity and upload
+parts of J3. It does not prove phone observation or phone vault rename;
+issue #93 remains open.

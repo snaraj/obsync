@@ -1,5 +1,9 @@
 # Validation runs
 
+- [2026-09-26 final native phone acceptance](2026-09-26-phone-final.md): exact
+  candidate installation, pairing, and native desktop/phone co-typing pass;
+  rewrite hold has a Mirroring continuity limitation and Resume is pending.
+
 - [2026-09-26 release preparation](2026-09-26-release-preparation.md): native
   desktop with an emulated mobile peer over disposable HTTPS; exact phone
   archive prepared, native phone acceptance still outstanding.
