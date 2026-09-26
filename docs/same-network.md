@@ -5,9 +5,10 @@ with it whenever they are on the same Wi-Fi. There is no tunnel, no VPN, no
 domain and no account with anybody. When a device is away from home, its edits
 wait on the device and go up the next time it is back on that network.
 
-Every screen below is from the [2026-09-23 run](validation-runs/2026-09-23.md):
+The setup screens below are from the [2026-09-23 run](validation-runs/2026-09-23.md):
 a Mac running the server and a desktop vault, and an iPhone on the same Wi-Fi.
-Names and codes that belong to that run are blurred.
+The Local Network permission screen was captured on 2026-09-25. Private names
+and codes are obscured.
 
 ## What you need
 
@@ -130,6 +131,13 @@ vault key and shows you the recovery phrase.
    The setup guide is one press away at the top of this page.
 
    ![The plugin's settings on the phone: Get started with the Setup guide, then the Server URL field](assets/lan-14-plugin-settings.png)
+
+5. **Let Obsidian reach your home network.** In the iPhone's **Settings →
+   Apps → Obsidian**, check that **Local Network** is on. Safari and Obsidian
+   have separate access: reaching the server in Safari does not establish
+   that Obsidian has this permission. Return to the plugin and select **Check**.
+
+   ![Obsidian in iPhone Settings with Local Network enabled](assets/lan-22-local-network.png)
 
 ## Pair
 

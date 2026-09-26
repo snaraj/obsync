@@ -192,8 +192,13 @@ eight-file archive containing no credentials, installed only in the synthetic
 two-note vault, and reloaded through Community plugins. Its pairing remains
 incomplete. The initial test address used an IP while the QA proxy certificate
 covered a hostname; the resulting TLS refusal was correct. The address was
-corrected to the existing certificate's hostname without changing trust or
-restarting the server. Mirroring pointer failures then blocked the retest.
+changed toward the existing certificate's hostname without changing trust or
+restarting the server, but its saved value was not successfully verified.
+Later inspection found a mistyped port, and another UI entry visibly dropped
+characters. Safari reached the QA server over trusted HTTPS; Obsidian's iOS
+Local Network permission was verified enabled. The unsuccessful pairing is
+therefore not evidence of a plugin networking defect. Mirroring pointer
+failures and unreliable text entry blocked final phone acceptance.
 All five superseded ZIP downloads were removed through Files; the final ZIP,
 synthetic vault and final cleanup remain outstanding.
 
@@ -275,3 +280,27 @@ This was a desktop control. It neither exercises the phone's rewrite
 fixture nor establishes acceptance of the subsequent `599770e0…` bundle.
 Its phone typing and rewrite/Resume checks, complete mutation campaign and
 final removal of synthetic QA artifacts remain outstanding.
+
+## Handoff cleanup checkpoint
+
+The owner ended this QA session for a clean handoff. Both isolated desktop
+apps were stopped; their two synthetic vaults, profiles, old bundle backup
+and download-serving directory were removed. All four active QA containers
+and their four disposable volumes were removed and verified absent. The
+measured manual results above, including failures and exact bundle hashes,
+remain the acceptance evidence; the deleted fixtures are not prerequisites
+for reproducing them on another machine.
+
+The final synthetic phone vault and ZIP were subsequently deleted through
+Files. Downloads showed only the owner's preserved document, and the Obsidian
+folder showed only the two owner vaults. QA certificate/secret references and
+Safari QA entries remain pending; complete phone cleanup is not claimed.
+Recently Deleted was not purged. Owner vaults were not touched. A new phone run must create fresh disposable fixtures, verify the
+saved endpoint and port before pairing, and repeat the affected typing and
+rewrite/Resume journeys on the final bundle.
+
+The 796-control campaign reached a clean 196-control checkpoint with no
+unexpected outcomes. All six source copies were restored at the handoff
+pause. This is a partial count, not a passing matrix. The existing runner
+and its completion records are the authority for later progress; do not
+replace the historical `MATRIX.md` until the complete measured run passes.
