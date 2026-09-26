@@ -1,0 +1,12 @@
+# M745: retain the old changed lines after writing their replacements
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -173,7 +173,7 @@
+     }
+     while (cursor < next.start) out.push(baseLines[cursor++] as string);
+     for (const line of next.lines) out.push(line);
+-    cursor = next.end;
++    cursor = next.start;
+   }
+   while (cursor < baseLines.length) out.push(baseLines[cursor++] as string);
+   return { ok: true, text: out.join("\n") };

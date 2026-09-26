@@ -1,0 +1,11 @@
+# M272: cancelling a second vault's pairing leaves an enrolled device with no key behind on the server
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -328,7 +328,6 @@
+           "Pair and upload",
+         ))) {
+           this.plugin.log(`pairing role=claimant decision=declined unknown=${unknown}`);
+-          await this.plugin.leaveServer({ discardUnpushed: true, localOnly: false });
+           new Notice("Pairing cancelled: nothing was uploaded, and this device left the server again.", 10000);
+           this.close();
+           return;

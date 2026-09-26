@@ -108,7 +108,7 @@ no iOS, confiar nele é um segundo interruptor depois de o instalar.
 
    ![O separador de definições do plugin: o campo Server URL com um nome de anfitrião de demonstração, a caixa dos cabeçalhos da edge e a linha Connection com os seus botões Check e Open dashboard](../assets/settings-server.png)
 
-3. Cole o token de configuração em **First-time setup**, selecione **Set up**
+3. Cole o token de configuração em **Setup or recover**, selecione **Set up or recover**
    e escreva a frase de recuperação de 24 palavras.
 
    ![A secção This device do separador de definições: a linha Pairing com Pair this device e Pair a new device, a linha First-time setup com o campo Setup token e o botão Set up, e a linha Vault key](../assets/settings-setup.png)

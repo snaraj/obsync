@@ -1,0 +1,12 @@
+# M317: the log no longer says how old the last edit of an open note was, or the window, when its deletion applies
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1471,7 +1471,7 @@
+       context.state.forgetPath(localPath);
+       bury(context, change.file_id, change.version_id, localPath, false, change.ts);
+       await context.state.save();
+-      context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}${open}`);
++      context.host.log(`pull path_class=tombstone decision=deleted seq=${change.seq}`);
+       await pruneEmptyParents(context, localPath);
+       return "deleted";
+     }

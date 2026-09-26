@@ -72,7 +72,7 @@ Caddy ลงลายเซ็นด้วยผู้ออกใบรับ�
 
    ![แท็บการตั้งค่าของปลั๊กอิน: ช่อง Server URL ที่บรรจุชื่อโฮสต์สำหรับสาธิต กล่องส่วนหัวของ edge และแถว Connection พร้อมปุ่ม Check และ Open dashboard ของมัน](../assets/settings-server.png)
 
-3. วางโทเค็นตั้งค่าใต้ **First-time setup** เลือก **Set up** แล้วจดวลีกู้คืน 24 คำไว้
+3. วางโทเค็นตั้งค่าใต้ **Setup or recover** เลือก **Set up or recover** แล้วจดวลีกู้คืน 24 คำไว้
 
    ![ส่วน This device ของแท็บการตั้งค่า: แถว Pairing พร้อม Pair this device และ Pair a new device, แถว First-time setup พร้อมช่อง Setup token และปุ่ม Set up รวมถึงแถว Vault key](../assets/settings-setup.png)
 

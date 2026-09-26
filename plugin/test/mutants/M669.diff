@@ -1,0 +1,12 @@
+# M669: synthetic plugin events falsely claim human input
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1741,7 +1741,7 @@
+     if (this.inputWindows.has(target)) return;
+     this.inputWindows.add(target);
+     const input = (event: Event): void => {
+-      if (!event.isTrusted || event.target === null || !("nodeType" in event.target)) return;
++      if ( event.target === null || !("nodeType" in event.target)) return;
+       for (const { view } of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+         if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
+         if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });

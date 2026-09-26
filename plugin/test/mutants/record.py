@@ -16,48 +16,25 @@ total = int(sys.argv[3])
 # test can distinguish it and none is expected to. A mutant named here that the
 # run kills ends this program rather than being written down either way, because
 # one of the two is then wrong and only a person can say which.
-EQUIVALENT = {"M28"}
+EQUIVALENT: set[str] = set()
 
 # Prose kept beside a generated row. Counts are measured; only reasoning is
 # written by hand.
 NOTES = {
     "M28": (
-        "- EQUIVALENT, and kept as the proof of that. The branch it removes sends\n"
-        "  only an answer about the DESTINATION into the rule; the mutant sends the\n"
-        "  source's answer there too, behind a cast that asserts a type the value\n"
-        "  does not have. No outcome moves. For a file id this device already\n"
-        "  tracks, `sameNameTiebreak` hands the version straight to\n"
-        "  `updateSettled`, whose first act is to ask `competing` about that same\n"
-        "  path -- the very answer that put the call there -- so it returns\n"
-        "  `keepBoth`, which is what the `else` calls directly. The rename branch\n"
-        "  below is not reachable either: it requires `held === null`, and `held`\n"
-        "  is what got us here. What the mutant does change is the number of\n"
-        "  `stat` calls on the way to the same answer, and until this range two\n"
-        "  tests could tell the difference -- not because the outcome differed,\n"
-        "  but because each waited on a proxy for what it went on to assert, so an\n"
-        "  apply that took more turns was asserted on half-finished. Both now wait\n"
-        "  on their own condition, and the mutant is indistinguishable across five\n"
-        "  consecutive runs. It is kept rather than deleted because its shape is\n"
-        "  the argument: the cast is the cost of merging the two paths."
+        "- NO LONGER EQUIVALENT, and kept as the record of why. Through 1.1.2 the\n"
+        "  branch it removes and the rule it sends the answer into ended the same\n"
+        "  way -- `keepBoth` -- so no outcome moved and the mutant survived by\n"
+        "  construction. 1.1.3 (#135) replaced that keep-both with the lower-id\n"
+        "  settlement (`converge`): an answer about the SOURCE that now enters the\n"
+        "  rule settles a fork the unmutated code leaves to the push, and the\n"
+        "  co-typing tests see the difference. Its subject line is unchanged."
     ),
     "M26": (
-        "- WHY IT SURVIVES NOW AND DID NOT BEFORE, which is the reason this file\n"
-        "  is generated rather than typed. Every earlier run recorded one kill for\n"
-        "  it, always from the same test: `a remote rename that also edits the\n"
-        "  note downloads it rather than renaming`. That test waited for the\n"
-        "  note's TEXT and then asserted on its RECORD, so under any mutation that\n"
-        "  added a step it read a record not yet written and died of\n"
-        "  `undefined.fileId` -- which is not a fact about this mutant. The wait\n"
-        "  is correct now, the phantom is gone with it, and the true state of the\n"
-        "  guard is visible: nothing here tells `pushOne` queueing the follow-up\n"
-        "  it remembered from `pushOne` forgetting it. Reaching that needs a\n"
-        "  second request for a path WHILE it is being pushed, which the drain\n"
-        "  does not produce -- it is awaiting the batch that holds the push, so\n"
-        "  the second request waits in the queue and is served as an ordinary\n"
-        "  push afterwards. The route that does produce it is the pull path\n"
-        "  asking out of turn. The guard is kept: it is review round 2, finding 3,\n"
-        "  where the consequence was an engine reporting idle with an edit that\n"
-        "  had gone nowhere."
+        "- The previous coverage gap is closed. A pull publication now joins an\n"
+        "  older blocked upload, with no watcher or periodic scan to rescue it;\n"
+        "  dropping the remembered follow-up leaves the latest edit unposted.\n"
+        "  Both M25 and M26 are killed by that behavioral regression."
     ),
 }
 
@@ -67,7 +44,7 @@ for line in log.splitlines():
     start = re.match(r"^=== (M\d+)\.diff ===$", line)
     if start:
         current = start.group(1)
-        sections[current] = {"tests": [], "applied": True, "built": True}
+        sections[current] = {"tests": [], "applied": True, "built": True, "cancelled": 0}
         continue
     if current is None:
         continue
@@ -75,9 +52,12 @@ for line in log.splitlines():
         sections[current]["applied"] = False
     elif "COMPILE ERROR" in line:
         sections[current]["built"] = False
-    hit = re.match(r"^not ok \d+ - (.+)$", line)
+    hit = re.match(r"^\s*not ok \d+ - (.+)$", line)
     if hit:
         sections[current]["tests"].append(hit.group(1).strip())
+    cancelled = re.match(r"^# cancelled (\d+)$", line)
+    if cancelled:
+        sections[current]["cancelled"] = int(cancelled.group(1))
 
 subjects = {}
 for patch in sorted(root.glob("M*.diff")):
@@ -105,7 +85,7 @@ if contradicted:
     )
 
 out = [
-    "# Mutation kill matrix - the 1.1.2 train",
+    "# Mutation kill matrix - the 1.1.3 train",
     "",
     "Every guard this range adds or carries, mutated against the whole plugin",
     "suite. Each mutant is an exact unified diff beside this file with its subject",
@@ -129,6 +109,9 @@ out = [
     "that fails to apply is neither a kill nor a survival -- it is an unmeasured",
     "guard, which is why every mutant whose context a repair moves is re-cut in",
     "the same range as the repair.",
+    "Node reports deliberately hung tests as cancelled rather than assertion",
+    "failures. Those rejected tests remain named below, and their cancellation",
+    "count is shown separately in the table; they are not passing assertions.",
     "",
     "| Mutant | Subject | Killed by |",
     "| --- | --- | --- |",
@@ -145,6 +128,8 @@ for ident in sorted(subjects, key=lambda name: int(name[1:])):
         count = f"**SURVIVES** 0/{total}"
     else:
         count = f"{len(entry['tests'])}/{total}"
+        if entry["cancelled"]:
+            count += f" ({entry['cancelled']} cancelled)"
     out.append(f"| {ident} | {subjects[ident]} | {count} |")
 
 out += ["", "## Which tests killed each mutant", ""]

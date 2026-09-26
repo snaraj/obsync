@@ -1,0 +1,11 @@
+# M776: Remember arrivals only after a host plugin can answer the write.
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -913,7 +913,6 @@
+     // The engine must remember an authenticated arrival before a host plugin
+     // can answer the write below. Echoes, invalid manifests and nested vaults
+     // return before this point.
+-    if (entry.v === 1) await incoming?.();
+     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
+       if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
+       // A write THIS device's disk refused, or a chunk the server does not

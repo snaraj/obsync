@@ -20,7 +20,7 @@ async function fixture(t, initial = null) {
   instance.saveData = async (value) => { if (hooks.save) await hooks.save(); metadata = structuredClone(value); writes.push(metadata); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => ({ setText() {} });
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.18" };
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };
@@ -152,12 +152,13 @@ test("asynchronous settings handlers surface storage failure without an unhandle
   for (const field of ["Server URL", "Edge service-token headers"]) {
     const r = await fixture(t, identity());
     await r.instance.onload();
-    const handlers = new Map();
+    const handlers = new Map(), commits = new Map();
     class Setting {
       setName(value) { this.name = value; return this; }
       setHeading() { return this; } setDesc() { return this; }
       addText(callback) { const widget = { setPlaceholder: () => widget, setValue: () => widget,
-        onChange: (handler) => { handlers.set(this.name, handler); return widget; } }; callback(widget); return this; }
+        onChange: (handler) => { handlers.set(this.name, handler); return widget; },
+        inputEl: { addEventListener: (type, fn) => { if (type === "change") commits.set(this.name, fn); } } }; callback(widget); return this; }
       addTextArea(callback) { return this.addText(callback); }
       addButton() { return this; }
     }
@@ -169,6 +170,7 @@ test("asynchronous settings handlers surface storage failure without an unhandle
     }
     r.hooks.save = async () => { throw new Error("fixture failure"); };
     handlers.get(field)(field === "Server URL" ? "https://new.example.invalid" : "X-Local: LOCAL TOKEN SENTINEL");
+    commits.get(field)?.(); // the address is adopted when the field is left
     await tick();
     assert.equal(r.instance.state.paired, false);
     assert.ok(r.obsidian.notices.some((message) => message.includes("Sync is stopped")));

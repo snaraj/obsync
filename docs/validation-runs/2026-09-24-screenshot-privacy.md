@@ -5,13 +5,13 @@ This author repair addresses the screenshot findings in the
 It preserves the captures and their original device/version scope; it is not
 new device acceptance or an independent privacy verdict.
 
-19 committed PNGs were re-exported with only `IHDR`, `IDAT` and `IEND`
+39 committed PNGs were re-exported with only `IHDR`, `IDAT` and `IEND`
 chunks. The export removes ICC profiles, EXIF, XMP and text metadata rather
 than relying on a visible mask to hide embedded values. A scan of all
-41 committed documentation PNGs found none of those metadata chunks.
+61 committed documentation PNGs found none of those metadata chunks.
 Two older quickstart captures received the same metadata-only treatment.
 
-10 captures have small solid masks flattened into their pixels:
+12 captures have small solid masks flattened into their pixels:
 
 - Author-name fields in plugin search, plugin details and installed-plugin
   screenshots.

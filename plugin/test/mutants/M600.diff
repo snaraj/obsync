@@ -1,0 +1,12 @@
+# M600: send verifier as key proof
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -685,7 +685,7 @@
+     return this.once("POST", "/v1/setup", {
+       auth: "none",
+       json: { setup_token: setupToken, account_name: accountName, device,
+-        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.proof }) },
++        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.verifier }) },
+     });
+   }
+ 

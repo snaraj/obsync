@@ -1,0 +1,12 @@
+# M435: a vault inside a synced vault raises its refusal notice again at every start
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2058,7 +2058,7 @@
+       // notice comes once, as the status turns to it.
+       const nested = await this.nestedRefusal("engine");
+       if (nested !== null) {
+-        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
++        new Notice(`obsync: ${nested}`, 15000);
+         throw new Error(nested);
+       }
+       await engine.start();

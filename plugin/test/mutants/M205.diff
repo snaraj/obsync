@@ -1,0 +1,12 @@
+# M205: a note leaving the selection makes the engine ask the host about a path outside the selection, breaking the scope contract both layers keep
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -783,7 +783,7 @@
+     if (found.length === 0 || (await context.host.stat(from)) !== null) return null;
+     const only = found.length === 1 ? (found[0] as VaultStat) : null;
+     const folders = context.state.data.syncFolders;
+-    if (only !== null && inSyncScope(only.path, folders) && (await context.host.syncable(only.path))) {
++    if (only !== null && (await context.host.syncable(only.path))) {
+       this.renamed(from, only.path);
+       return "moved";
+     }

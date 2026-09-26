@@ -1,0 +1,12 @@
+# M851: discard the partial graph when the ancestry read budget is exhausted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2014,7 +2014,7 @@
+       if (depth !== nearest) continue;
+       if (requested.size >= budget) {
+         context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+-        file.versions = original;
++        void original;
+         return;
+       }
+       requested.add(id);

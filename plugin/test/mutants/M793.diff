@@ -1,0 +1,12 @@
+# M793: skip shared ancestors when an append looks clean
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2192,7 +2192,7 @@
+       const decoder = new TextDecoder();
+       // Even a clean-looking append can replay text from the other common
+       // ancestor. Resolve that shared base before comparing the new edits.
+-      const shared = mergeBase === baseManifest
++      const shared = mergeBase === baseManifest && !threeWayMerge(decoder.decode(base), decoder.decode(mine), decoder.decode(theirs)).ok
+         ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+       const crossed = typeof shared === "string";
+       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }

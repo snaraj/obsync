@@ -1,0 +1,11 @@
+# M816: Stopping retains the old editor timer handle.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -689,7 +689,6 @@
+     this.parkHandle = null;
+     this.parkDelay = 0;
+     if (this.editorHandle !== null) this.timers.clear(this.editorHandle);
+-    this.editorHandle = null;
+     this.repair?.cancel();
+     this.repair = null;
+     this.options.host.log("engine stop");

@@ -32,12 +32,15 @@
  * mobile reads whole files through the vault adapter.
  */
 
+import { FORGOTTEN_DEVICE } from "../accountRecovery";
 import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
-import { formatBytes, parseBytes } from "../policy";
+import { formatBytes, parseBytes, type Policy } from "../policy";
+import { parseSyncFolders } from "../syncScope";
 import type { DeviceRecord } from "../transport";
-import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal } from "./modals";
+import { VaultPathError } from "../vaultPath";
+import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst } from "./modals";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -65,23 +68,58 @@ interface Group {
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-/** `https://` is the default, not a requirement: a bare host is completed, never refused. */
+/**
+ * `https://` is the default, not a requirement: a bare host is completed,
+ * never refused. Only the ORIGIN is kept -- scheme and host lower-cased, the
+ * port, nothing after it. obsync is served at the root of its address, and an
+ * address copied from a browser kept its `/readyz` or `/login?token=…`: every
+ * request then answered 404 "no route", and a sign-in token sat in this
+ * vault's settings (2026-09-24 battery, S08; #137). An address the platform
+ * cannot parse is kept as typed, for the refusal and the request to explain.
+ */
 export function normalizeServerUrl(value: string): string {
-  const url = value.trim().replace(/\/+$/, "");
-  return url === "" || SCHEME.test(url) ? url : "https://" + url;
+  const typed = value.trim().replace(/\/+$/, "");
+  if (typed === "") return "";
+  const url = SCHEME.test(typed) ? typed : "https://" + typed;
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? url : origin;
+  } catch {
+    return url;
+  }
+}
+
+/** Plain HTTP that never leaves this computer: the README's one-computer trial. */
+const LOOPBACK = /^http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
+
+/**
+ * Why this device may not adopt a normalised address, or `null`; an empty
+ * address is "not configured", not a refusal. The row below and
+ * `ObsyncPlugin.setServerUrl` share this rule.
+ *
+ * PLAIN HTTP IS REFUSED ON EVERY PLATFORM, loopback on a desktop excepted.
+ * Mobile Obsidian refuses it outright. A desktop used to accept it, and a
+ * plain HTTP address in front of a terminator that redirects to HTTPS worked,
+ * silently: the setup token -- also the dashboard's recovery sign-in -- and
+ * every later request crossed the network in the clear before the redirect
+ * (2026-09-24 battery, S08; #136). `normalizeServerUrl` lower-cases the
+ * scheme, so the `Https://` a phone keyboard capitalises is the address it means.
+ */
+export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
+  if (url === "" || url.startsWith("https://")) return null;
+  if (isMobile) return "Mobile Obsidian only reaches HTTPS servers.";
+  return LOOPBACK.test(url)
+    ? null
+    : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
 }
 
 /**
- * Why this device may not adopt a normalised address, or `null`. Mobile
- * Obsidian refuses plain HTTP outright, so it is refused at entry instead of
- * failing on every request; an empty address is "not configured", not a
- * refusal. The row below and `ObsyncPlugin.setServerUrl` share this rule.
+ * Every refusal of the folder rule, in words. The refusal's code goes to the
+ * log and never to the person: "refused: not a vault path (hidden_segment)"
+ * was right and read as jargon (issue #150, S30f).
  */
-export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
-  return url !== "" && isMobile && !url.startsWith("https://")
-    ? "Mobile Obsidian only reaches HTTPS servers."
-    : null;
-}
+const SELECTION_REFUSED =
+  "That selection cannot be saved: each line must be a folder inside this vault, such as Notes or Projects/2026. Folders whose names start with a dot are hidden and never synced.";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -104,6 +142,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
   private readingDevices = false;
+  private draftUrl: string | null = null;
 
   constructor(
     app: App,
@@ -127,6 +166,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   override hide(): void {
+    // Closing Settings is leaving the field: what was typed is adopted, not lost.
+    this.adoptServerUrl();
     super.hide();
     this.draftScope = null;
     this.draftToken = "";
@@ -167,22 +208,36 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Server URL",
       desc: "Where this device reaches your own server, port included when it is not 443. HTTPS is assumed when you type a host name alone, and required on mobile.",
       render: (setting) => {
-        setting.addText((field) => field
-          .setPlaceholder("sync.example.org")
-          .setValue(this.plugin.state.data.serverUrl)
-          .onChange((value) => {
-            const url = normalizeServerUrl(value);
-            const refusal = serverUrlRefusal(url, this.plugin.isMobile);
-            if (refusal !== null) {
-              new Notice(refusal);
-              return;
-            }
-            this.plugin.state.data.serverUrl = url;
-            // State reports persistence failure and stops sync through its host hook.
-            void this.plugin.state.save().catch(() => {});
-          }));
+        setting.addText((field) => {
+          field
+            .setPlaceholder("sync.example.org")
+            .setValue(this.draftUrl ?? this.plugin.state.data.serverUrl)
+            .onChange((value) => { this.draftUrl = value; });
+          // Adopted when the field is left (or Settings closes), never per
+          // keystroke: every prefix used to be normalised and SAVED, so typing
+          // a plain HTTP address one key at a time left a half-typed prefix of
+          // it stored once the address itself was refused, a loopback address
+          // raised a refusal halfway through, and a paired device's requests
+          // went to whatever prefix was current (2026-09-24, verifying #136).
+          field.inputEl.addEventListener("change", () => { this.adoptServerUrl(); });
+        });
       },
     };
+  }
+
+  /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */
+  private adoptServerUrl(): void {
+    if (this.draftUrl === null) return;
+    const url = normalizeServerUrl(this.draftUrl);
+    this.draftUrl = null;
+    const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    if (refusal !== null) {
+      new Notice(refusal);
+      return;
+    }
+    this.plugin.state.data.serverUrl = url;
+    // State reports persistence failure and stops sync through its host hook.
+    void this.plugin.state.save().catch(() => {});
   }
 
   private edgeHeaders(): Row {
@@ -214,8 +269,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
       render: (setting) => {
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
-            void this.plugin.transport.account()
-              .then((account) => { new Notice(`Reached "${account.name}", ${account.device_count} device(s).`); })
+            if (this.plugin.state.data.serverUrl === "") {
+              new Notice("Type your server's address in Server URL first.");
+              return;
+            }
+            // Before setup there is no device to sign with, and the signed
+            // read answered "not paired" without asking the server anything:
+            // the one moment a person most needs to know whether the address
+            // works (2026-09-24 battery, S08; #137). The plugin manifest is the
+            // route that needs no credential.
+            const check = this.plugin.state.paired
+              ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
+              : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+            void check
+              .then((text) => { new Notice(text); })
               .catch((error: unknown) => { new Notice(message(error), 8000); });
           }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));
@@ -296,9 +363,71 @@ export class ObsyncSettingTab extends PluginSettingTab {
     return JSON.stringify(this.scopeValue()) !== JSON.stringify(this.plugin.state.data.syncFolders);
   }
 
-  private async saveScopeDraft(): Promise<void> {
-    await this.plugin.saveSyncFolders(this.scopeValue());
+  /**
+   * Save what was typed, checked against this vault first, and return what
+   * the person should be told beyond "saved" -- or `null` when they kept a
+   * folder the vault does not have out of it (issue #150).
+   *
+   * THE FOLDER RULE FIRST, so a refused line is never asked about. THEN THE
+   * VAULT. A folder Obsidian's index holds under exactly the typed name is
+   * saved as typed. One the host finds under another capitalisation -- a
+   * volume that folds case, where `notes` IS `Notes` -- is saved the way the
+   * vault spells it, and the person is told: saved as typed, the desktop scan
+   * reached that folder under the typed name and published every note in it
+   * again as a new file with older text (S30a). A volume that keeps the two
+   * apart finds nothing, and a folder the vault does not have is asked about,
+   * Cancel first: the selection never covers a folder the person did not
+   * name without their click.
+   */
+  private async saveScopeDraft(): Promise<string[] | null> {
+    const typed = this.scopeValue();
+    const told: string[] = [];
+    let folders = typed;
+    if (typed !== undefined) {
+      let selection: string[];
+      try {
+        selection = parseSyncFolders(typed);
+      } catch (error) {
+        this.plugin.log(`scope decision=refused reason=${error instanceof VaultPathError ? error.refusal : "invalid_selection"}`);
+        throw new Error(SELECTION_REFUSED);
+      }
+      const shown = await Promise.all(selection.map((folder) => this.vaultFolder(folder)));
+      const missing = selection.filter((_, index) => shown[index] === null);
+      if (missing.length !== 0) {
+        const kept = await confirmFirst(
+          this.app,
+          `${missing.map((folder) => `"${folder}"`).join(", ")} ${missing.length === 1 ? "is not a folder" : "are not folders"} in this vault. Save anyway?`,
+          "Nothing syncs from a selected folder until one with exactly that name exists in this vault. Cancel to correct it.",
+          "Save anyway",
+        );
+        this.plugin.log(`scope decision=${kept ? "confirmed" : "declined"} reason=not_a_folder folders=${missing.length}`);
+        if (!kept) return null;
+      }
+      selection.forEach((folder, index) => {
+        const spelled = shown[index];
+        if (spelled && spelled !== folder) told.push(`"${folder}" is saved as "${spelled}", the way this vault spells it.`);
+      });
+      if (told.length !== 0) this.plugin.log(`scope decision=recased reason=vault_spelling folders=${told.length}`);
+      folders = parseSyncFolders(selection.map((folder, index) => shown[index] ?? folder));
+      if (folders.length === 0) told.push("No folder is selected, so nothing syncs on this device.");
+    }
+    await this.plugin.saveSyncFolders(folders);
     this.draftScope = null;
+    return told;
+  }
+
+  /**
+   * The folder as this vault spells it, or `null` when the vault holds no
+   * folder by that name. The index answers a name it holds exactly, accents
+   * included; only a name it does not hold is asked of the host's own lookup
+   * (`main.ts`, `spelling`), and what that finds must be a folder the index
+   * holds.
+   */
+  private async vaultFolder(folder: string): Promise<string | null> {
+    const vault = this.app.vault;
+    if (vault.getFolderByPath(folder) !== null) return folder;
+    const shown = await this.plugin.host.spelling(folder).catch(() => null);
+    return shown !== null && vault.getFolderByPath(shown) !== null ? shown : null;
   }
 
   private folderSelection(): Row {
@@ -339,8 +468,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Save").onClick(() => {
           button.setDisabled(true).setButtonText("Waiting for transfers…");
-          void this.saveScopeDraft().then(() => {
-            new Notice("Folder selection saved on this device.");
+          void this.saveScopeDraft().then((told) => {
+            if (told === null) return;
+            new Notice(["Folder selection saved on this device.", ...told].join(" "));
             this.update();
           }).catch((error: unknown) => {
             new Notice(message(error), 10000);
@@ -360,6 +490,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Pairing",
       desc: () => {
         const data = this.plugin.state.data;
+        if (this.plugin.forgottenDevice) return FORGOTTEN_DEVICE;
         if (data.deviceId === null) return "Not paired yet. Pair from a device that already syncs this vault, or set up a new server below.";
         if (this.plugin.state.paired) return `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`;
         return "Enrolled, but the vault key has not arrived. Finish approval on the existing device, then restore the recovery phrase if needed. A pending dialog does not resume after a restart; do not repeat server setup.";
@@ -377,13 +508,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   private setup(): Row {
     return {
-      name: "First-time setup",
-      desc: "Paste the setup token your server wrote at first boot. It creates the account and enrolls this device, and it is not spent by that: it remains the dashboard's recovery sign-in, so keep it as carefully as the recovery phrase.",
-      visible: () => this.plugin.state.data.deviceId === null,
+      name: "Setup or recover",
+      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. Recovery must have been registered by an updated device before its last credential was lost. Keep both the token and phrase private.",
+      visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
         setting
           .addText((field) => field.setPlaceholder("Setup token").setValue(this.draftToken).onChange((value) => { this.draftToken = value.trim(); }))
-          .addButton((button) => button.setButtonText("Set up").setCta().onClick(() => { void this.setUp(); }));
+          .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => { void this.setUp(); }));
       },
     };
   }
@@ -392,8 +523,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private async applyScopeDraft(): Promise<boolean> {
     if (!this.scopeChanged()) return true;
     try {
-      await this.saveScopeDraft();
-      return true;
+      const told = await this.saveScopeDraft();
+      if (told !== null && told.length !== 0) new Notice(told.join(" "));
+      return told !== null;
     } catch (error) {
       new Notice(message(error), 10000);
       return false;
@@ -403,13 +535,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private async setUp(): Promise<void> {
     if (!(await this.applyScopeDraft())) return;
     await this.plugin.setUpAccount(this.draftToken, ACCOUNT_NAME);
-    if (this.plugin.state.data.deviceId !== null) this.draftToken = "";
-    this.update();
+    if (this.plugin.state.data.deviceId !== null) {
+      this.draftToken = "";
+      this.left(); // Re-enrollment replaces the identity behind the device list.
+    } else this.update();
   }
 
   private async pairThisDevice(): Promise<void> {
     if (!(await this.applyScopeDraft())) return;
-    new PairClaimModal(this.app, this.plugin).open();
+    new PairClaimModal(this.app, this.plugin, undefined, () => { this.left(); }).open();
   }
 
   private deviceName(visible: () => boolean): Row {
@@ -426,43 +560,63 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   private perFile(visible: () => boolean): Row {
+    const desc = (): string => {
+      const policy = this.plugin.state.data.policy;
+      return this.plugin.isMobile
+        ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay on the server and appear under "Show remote-only files", to fetch one at a time. Currently ${formatBytes(policy.perFileMaxBytes)}.`
+        : `Desktop streams files in 8 MiB windows, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`;
+    };
     return {
       name: "Largest file to download",
-      desc: () => {
-        const policy = this.plugin.state.data.policy;
-        return this.plugin.isMobile
-          ? `Mobile Obsidian reads and writes whole files in memory, so a ceiling is what keeps a large attachment from ending the app. Files above it stay on the server and appear under "Show remote-only files", to fetch one at a time. Currently ${formatBytes(policy.perFileMaxBytes)}.`
-          : `Desktop streams files in 8 MiB windows, so there is no practical ceiling; 0 means unlimited. Currently ${formatBytes(policy.perFileMaxBytes)}.`;
-      },
+      desc,
       visible,
-      render: (setting) => {
-        setting.addText((field) => field
-          .setValue(formatBytes(this.plugin.state.data.policy.perFileMaxBytes))
-          .onChange((value) => {
-            const bytes = parseBytes(value);
-            if (bytes !== null) this.plugin.state.data.policy.perFileMaxBytes = bytes;
-          }));
-      },
+      render: (setting) => { this.ceiling(setting, "Largest file to download", "perFileMaxBytes", desc); },
     };
   }
 
   private total(visible: () => boolean): Row {
+    const desc = (): string => {
+      const policy = this.plugin.state.data.policy;
+      return `The vault may be larger than this device. Above this total, new files stay remote-only; 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`;
+    };
     return {
       name: "Total to keep on this device",
-      desc: () => {
-        const policy = this.plugin.state.data.policy;
-        return `The vault may be larger than this device. Above this total, new files stay remote-only; 0 means unlimited. Currently ${formatBytes(policy.totalBudgetBytes)}, holding ${formatBytes(this.plugin.state.localBytes())}.`;
-      },
+      desc,
       visible,
-      render: (setting) => {
-        setting.addText((field) => field
-          .setValue(formatBytes(this.plugin.state.data.policy.totalBudgetBytes))
-          .onChange((value) => {
-            const bytes = parseBytes(value);
-            if (bytes !== null) this.plugin.state.data.policy.totalBudgetBytes = bytes;
-          }));
-      },
+      render: (setting) => { this.ceiling(setting, "Total to keep on this device", "totalBudgetBytes", desc); },
     };
+  }
+
+  /**
+   * One ceiling field, decided when the field is LEFT (the input's `change`
+   * event) and saved then -- never per keystroke. A value kept per keystroke
+   * was kept on its way: `1 MX` passed through `1`, a one-byte ceiling that
+   * made every new note remote-only, and nothing was saved until some other
+   * write, so a restart read "unlimited" again (issue #150, S31; 2026-09-24
+   * verification). A value that does not read as a size is refused OUT LOUD,
+   * naming the forms that are read, and the field goes back to what is kept.
+   */
+  private ceiling(setting: Setting, row: string, key: keyof Policy, describe: () => string): void {
+    let typed = formatBytes(this.plugin.state.data.policy[key]);
+    setting.addText((field) => {
+      field.setValue(typed).onChange((value) => { typed = value; });
+      field.inputEl.addEventListener("change", () => {
+        const policy = this.plugin.state.data.policy;
+        const bytes = parseBytes(typed);
+        if (bytes === null) {
+          this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
+          new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+          typed = formatBytes(policy[key]);
+          field.setValue(typed);
+          return;
+        }
+        if (bytes === policy[key]) return;
+        policy[key] = bytes;
+        this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
+        setting.setDesc(describe());
+        void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
+      });
+    });
   }
 
   private saveDevice(visible: () => boolean): Row {
@@ -551,8 +705,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private readDevices(): void {
     if (this.readingDevices) return;
     this.readingDevices = true;
+    const { deviceId, serverUrl } = this.plugin.state.data;
+    const current = (): boolean => deviceId === this.plugin.state.data.deviceId && serverUrl === this.plugin.state.data.serverUrl;
     void this.plugin.listDevices()
-      .then((devices) => { this.deviceList = devices; }, (error: unknown) => { this.deviceListError = `The device list is unavailable: ${message(error)}`; })
+      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => { if (current()) this.deviceListError = `The device list is unavailable: ${message(error)}`; })
       .finally(() => {
         this.readingDevices = false;
         this.update();
@@ -573,7 +729,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             this.app,
             `Revoke ${device.name}?`,
             self
-              ? "This device will stop syncing immediately and will need a new pairing code to come back. The vault key stays in this vault's plugin data."
+              ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
               : `${device.name} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
             () => { void this.revoke(device); },
           ).open();

@@ -1,0 +1,11 @@
+# M283: a conflict copy or restored copy on a volume that renumbers files is refused at its second write
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -808,7 +808,6 @@
+     const bind = async (): Promise<void> => {
+       guard();
+       const refusal = await chainRefusal(found.chain, walker(fs));
+-      opened = await handle.stat();
+       if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
+       guard();
+     };

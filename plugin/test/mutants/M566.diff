@@ -1,0 +1,12 @@
+# M566: a note whose old baseline expired can never Resume
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2315,7 +2315,7 @@
+   if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";
+   const file = await context.transport.getFile(fileId);
+   const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
+-  if (version === undefined) return "ordinary";
++  if (version === undefined) throw new Error("expired");
+   const recorded = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+   if (recorded.deleted || recorded.path !== path || recorded.chunks.length !== 1) return "ordinary";
+   const kept = await keepResumed(context, { ...version, file_id: fileId, domain_id: file.domain_id, seq: 0, heads: file.heads, conflicted: true }, version, recorded, mine, before.mtime);

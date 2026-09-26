@@ -131,12 +131,24 @@ export interface Lost {
 /** What a route that must not be repeated resolves to. */
 export type Sent<T> = { outcome: "ok"; value: T } | Lost;
 
+/** A refusal at connect, as Electron and Node word it: the request never left. */
+const REFUSED = /ERR_CONNECTION_REFUSED|ECONNREFUSED/;
+
 /**
  * What to tell the user when the caller has nothing to read back. Both
  * guesses mislead — "it failed" about a revoke that worked leaves a lost
  * device trusted — so this says what is known and that nothing was repeated.
  */
 export function lostMessage(what: string, lost: Lost): string {
+  // A connection refused on the only attempt is the one unanswered send that
+  // IS known: nothing reached the server. It is also what a missing or wrong
+  // port looks like, so the message names that (2026-09-24 battery, S08; #137).
+  if (lost.attempts === 1 && REFUSED.test(lost.reason)) {
+    return (
+      `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
+      "Check the Server URL, port included: it is the port your server publishes HTTPS on."
+    );
+  }
   return (
     `${what}: the server never answered (${lost.reason}), so obsync cannot say whether it happened. ` +
     "It was not repeated, because repeating it could act twice."
@@ -180,6 +192,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", path: /^\/v1\/account$/, idempotent: true },
   { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
   { method: "GET", path: /^\/v1\/changes$/, idempotent: true },
+  { method: "GET", path: /^\/v1\/files$/, idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/files/${ID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/files/${ID}/versions/${SID}$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
@@ -190,6 +203,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
   { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
+  { method: "POST", path: /^\/v1\/account\/recovery$/, idempotent: false },
   { method: "POST", path: /^\/v1\/pairing$/, idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/claim$`), idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/approve$`), idempotent: false },
@@ -263,6 +277,12 @@ export interface FileRecord {
   versions: VersionRecord[];
 }
 
+/** One page of `GET /v1/files`: every file's heads, in file-id order. */
+export interface FilesPage {
+  files: { file_id: string; heads: string[] }[];
+  next: string | null;
+}
+
 export interface ChangesPage {
   seq: number;
   head_seq: number;
@@ -333,6 +353,7 @@ export interface PairingCreated {
 }
 
 export interface PairingClaimant {
+  vault?: { envelope: string; nonce: string };
   device_id: string;
   name: string;
   platform: string;
@@ -660,11 +681,17 @@ export class Transport {
     setupToken: string,
     accountName: string,
     device: { name: string; platform: string; app_version: string },
-  ): Promise<Sent<PairingCredential & { account_id: string }>> {
+    recovery?: { verifier: string; proof: string },
+  ): Promise<Sent<PairingCredential & { account_id: string; recovered?: boolean }>> {
     return this.once("POST", "/v1/setup", {
       auth: "none",
-      json: { setup_token: setupToken, account_name: accountName, device },
+      json: { setup_token: setupToken, account_name: accountName, device,
+        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.proof }) },
     });
+  }
+
+  registerRecovery(verifier: string): Promise<Sent<void>> {
+    return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: verifier } });
   }
 
   account(): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {
@@ -680,7 +707,7 @@ export class Transport {
   pairingClaim(
     pairingId: string,
     enrollToken: string,
-    info: { name: string; platform: string; app_version: string },
+    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string } },
   ): Promise<Sent<PairingCredential>> {
     return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",
@@ -896,6 +923,16 @@ export class Transport {
 
   getFile(fileId: string): Promise<FileRecord> {
     return this.json("GET", `/v1/files/${fileId}`, { auth: "device" });
+  }
+
+  /** One version, or `404 unknown_version` when the server does not hold it. */
+  getVersion(fileId: string, versionId: string): Promise<VersionRecord> {
+    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device" });
+  }
+
+  /** The file listing (`docs/protocol.md`), at most 1000 per page. */
+  listFiles(after: string | null): Promise<FilesPage> {
+    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device" });
   }
 
   // --- change feed -------------------------------------------------------

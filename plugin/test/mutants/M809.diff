@@ -1,0 +1,15 @@
+# M809: A push reconciliation reports an active editor refusal as an error.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1673,11 +1673,6 @@
+     } catch (error) {
+       // A push can immediately reconcile a competing head. A native editor
+       // refusal in that pull uses the same durable retry as the feed.
+-      const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;
+-      if (held !== undefined) {
+-        this.park(context, held.fileId, error);
+-        return;
+-      }
+       // A path this device may not sync is a decision, not a failure: it is
+       // logged and dropped, and the status bar stays quiet. Every other
+       // failure is the user's business.

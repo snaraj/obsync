@@ -1,0 +1,12 @@
+# M383: two devices re-sending one lost version publish two, and the note forks
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -375,7 +375,7 @@
+   // their own echo -- `authored` -- and keep two different paths for one file
+   // id with no version left that could settle it. Every other post offers it:
+   // same parents, same chunks, same path is the same version (issue #114).
+-  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, tombstone !== undefined || over !== undefined || !force);
++  const ack = await postManifest(context, fileId, parents, sids, manifest, stat.size, tombstone !== undefined || !force);
+   // AND ONE THAT APPEARED WHILE IT POSTED. The note is published twice by
+   // then, and this device never pulls its own versions (`pull.ts`, ECHOES), so
+   // it settles the pair here, by the rule every other device applies to it.

@@ -1,0 +1,12 @@
+# M716: obsolete typing frames are merged and consume the loop budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2064,7 +2064,7 @@
+   // leave local bytes untouched and let later feed entries advance them.
+   const completeHeads = file.heads.length > 0 &&
+     file.heads.every(head => file.versions.some(version => version.version_id === head));
+-  if (completeHeads && !file.heads.includes(change.version_id)) {
++  if (false) {
+     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

@@ -1,0 +1,12 @@
+# M523: missing vault details are not backward compatible
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -185,7 +185,7 @@
+     claimant: PairingClaimant,
+     statusEl: HTMLElement,
+   ): Promise<void> {
+-    const vault = claimant.vault === undefined ? null : await openPairingVault(secret, pairingId, claimant.vault);
++    const vault = await openPairingVault(secret, pairingId, claimant.vault!);
+     if (this.closed) return;
+     statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?` +
+       (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`));

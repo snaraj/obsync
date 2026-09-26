@@ -1,0 +1,21 @@
+# M183: a note deleted on another device reaches the bin under a hidden placeholder name, not its own
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1204,7 +1204,7 @@
+     const at = found.target.lastIndexOf(desktop.path.sep);
+     const name = `.obsync-gone-${hex(randomBytes(8))}`;
+     const folder = `${found.target.slice(0, at)}${desktop.path.sep}${name}`;
+-    const moved = `${folder}${found.target.slice(at)}`;
++    const moved = `${folder}${desktop.path.sep}.note`;
+     let chain = found.chain;
+     try {
+       await fs.promises.mkdir(folder, { recursive: false });
+@@ -1246,7 +1246,7 @@
+     }
+     // The destructive call, at last, and aimed at a name no editor writes to.
+     const slash = path.lastIndexOf("/") + 1;
+-    await this.remove(`${path.slice(0, slash)}${name}/${path.slice(slash)}`);
++    await this.remove(`${path.slice(0, slash)}${name}/.note`);
+     await fs.promises.rmdir(folder).catch(() => this.log("host path_class=folder decision=kept reason=rmdir_refused"));
+     // And the hold has the last word, because a rename does not close an
+     // editor's DESCRIPTOR: a program that still holds the file open writes

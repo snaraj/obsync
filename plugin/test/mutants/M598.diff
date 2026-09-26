@@ -1,0 +1,12 @@
+# M598: misclassify startup authentication refusal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2099,7 +2099,7 @@
+         const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
+         this.log(`engine decision=stopped reason=start_failed code=${code}`);
+         this.setStatus(forgottenCredential(error)
+-          ? { kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE }
++          ? { kind: "offline" }
+           : { kind: "error", message: error instanceof Error ? error.message : String(error) });
+         return;
+       }

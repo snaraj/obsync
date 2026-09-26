@@ -1,0 +1,12 @@
+# M844: omit ancestry budget receipt
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2013,7 +2013,7 @@
+     for (const [id, depth] of pending) {
+       if (depth !== nearest) continue;
+       if (requested.size >= budget) {
+-        context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
++        void (`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+         file.versions = original;
+         return;
+       }

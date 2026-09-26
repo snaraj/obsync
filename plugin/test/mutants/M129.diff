@@ -1,11 +1,11 @@
 # M129: the yielding device does not retire its own id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2400,7 +2400,7 @@
-     sha256: ours.sha256,
+@@ -3263,7 +3263,7 @@
+     ts: change.ts,
    });
    await context.state.save();
--  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path);
+-  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
 +  const retired = "posted";
    context.host.log(
      `pull decision=converged reason=identical_same_name role=yield keeper=${change.file_id} retired=${ours.fileId} tombstone=${retired} seq=${change.seq}`,

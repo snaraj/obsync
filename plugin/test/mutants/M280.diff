@@ -1,0 +1,11 @@
+# M280: every note another device sends to a FAT32 or exFAT vault is refused again (temp_identity), and its temp is left
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -922,7 +922,6 @@
+      */
+     const bind = async (): Promise<void> => {
+       const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
+-      opened = await handle.stat();
+       const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
+       if (!swapped) return;
+       await discard();

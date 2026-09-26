@@ -1,0 +1,12 @@
+# M604: clear identity before old writers drain
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2746,7 +2746,7 @@
+     this.cancelReconnect();
+     this.cancelHistories();
+     await this.engine?.stopAndWait();
+-    await Promise.allSettled(this.engineTeardowns);
++    // mutated: reset before old writer drains
+     await Promise.allSettled(this.manualFetches);
+     await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+     assertCurrent();

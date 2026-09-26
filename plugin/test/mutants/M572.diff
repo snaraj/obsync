@@ -1,0 +1,12 @@
+# M572: an empty control head list vacuously proves a hold exists
+--- a/plugin/src/sync/pause.ts
++++ b/plugin/src/sync/pause.ts
+@@ -25,7 +25,7 @@
+       const version = file.versions.find((entry) => entry.version_id === head);
+       return version === undefined ? null : await decodeRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });
+     }));
+-    if (current.length > 0 && current.every((entry) => entry?.v === 3 && entry.paused === paused)) {
++    if (current.every((entry) => entry?.v === 3 && entry.paused === paused)) {
+       if (paused && held !== undefined) announced.add(held);
+       return;
+     }

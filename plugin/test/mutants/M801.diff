@@ -1,0 +1,12 @@
+# M801: A saved buffer is overwritten while native typing is still active.
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1716,7 +1716,7 @@
+     // external reload queued. Leave recent trusted typing alone too; the
+     // engine retries this note after input settles, without blocking others.
+     // Check after downloads and filesystem preparation have waited.
+-    if (await this.editing(path) === "unsaved" || this.typing(path)) throw new EditorBusy();
++    if (await this.editing(path) === "unsaved") throw new EditorBusy();
+   }
+ 
+   /**

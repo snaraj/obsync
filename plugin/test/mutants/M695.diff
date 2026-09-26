@@ -1,0 +1,11 @@
+# M695: the editor-side hold is not shared
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2222,7 +2222,6 @@
+       context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
+       context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+     }
+-    await publishPause(context, change.file_id, localPath, true);
+     return "skipped";
+   }
+   // Not a fork yet: the push of the edit made here makes it one, and the

@@ -1,12 +1,12 @@
 # M66: the repost after a refused adoption offers the promise again
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -347,7 +347,7 @@
+@@ -625,7 +625,7 @@
      context.host.log(
        `push path_class=file decision=not_adopted reason=other_manifest file=${fileId}`,
      );
--    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }), false);
-+    return await settled(await postOnce(context, fileId, id, { ...post }), false);
+-    return await settled(await postOnce(context, fileId, id, { ...post, accept_existing: false }, stillWanted), false);
++    return await settled(await postOnce(context, fileId, id, { ...post }, stillWanted), false);
    };
    try {
-     return await settled(await postOnce(context, fileId, id, post), acceptExisting);
+     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);

@@ -1,0 +1,12 @@
+# M830: ignore recent typing when concurrent resolutions exhaust the budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2055,7 +2055,7 @@
+   // those reservations will be refunded when their commit checks finish.
+   // Ordinary resolutions and rewrite detection retain their normal path.
+   if (tally.count >= MERGE_STORM_LIMIT &&
+-    (await context.host.editing(localPath) === "unsaved" || context.host.typing(localPath))) {
++    (await context.host.editing(localPath) === "unsaved")) {
+     context.host.log(`pull decision=waiting reason=active_editor phase=merge_limit file=${change.file_id} seq=${change.seq}`);
+     throw new EditorBusy();
+   }

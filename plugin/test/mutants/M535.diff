@@ -1,0 +1,20 @@
+# M535: replaying one current hold floods the device with repeated notices
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -939,7 +939,7 @@
+ /** A current encrypted pause holds the target on every updated device. */
+ async function applyPause(context: SyncContext, change: ChangeRecord, manifest: PauseManifest): Promise<ApplyResult> {
+   const started = context.now();
+-  if (!manifest.paused || context.state.data.paused[manifest.target] !== undefined) return "skipped";
++  if (!manifest.paused) return "skipped";
+   const file = await context.transport.getFile(change.file_id);
+   // Replaying a pause that a later Resume cleared must not pause it again.
+   if (!file.heads.includes(change.version_id)) return "skipped";
+@@ -950,7 +950,6 @@
+   // editor's note, rather than publishing them over the editor on Resume.
+   if (context.state.fileByPath(path)?.fileId === manifest.target &&
+     await rewriteStorm(context, { ...change, file_id: manifest.target }, path)) return "skipped";
+-  if (context.state.data.paused[manifest.target] !== undefined) return "skipped";
+   context.state.data.paused[manifest.target] = { path, remote: true };
+   await context.state.save();
+   context.host.log(`pull decision=paused reason=peer_rewrite_storm file=${manifest.target} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);

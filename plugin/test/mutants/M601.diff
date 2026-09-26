@@ -1,0 +1,12 @@
+# M601: register the wrong verifier
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -690,7 +690,7 @@
+   }
+ 
+   registerRecovery(verifier: string): Promise<Sent<void>> {
+-    return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: verifier } });
++    return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: "00".repeat(32) } });
+   }
+ 
+   account(): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {

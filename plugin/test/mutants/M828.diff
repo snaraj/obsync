@@ -1,0 +1,12 @@
+# M828: new edits keep the old budget generation
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2041,7 +2041,7 @@
+     !reaches(file.versions, change.version_id, localVersionId);
+   if (tally.left !== found || independent) {
+     tally.count = 0;
+-    tally.generation = {};
++    tally.generation = tally.generation;
+   }
+   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
+   remotes.set(change.device_id, change.version_id);

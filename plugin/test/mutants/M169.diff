@@ -1,0 +1,12 @@
+# M169: a note stays counted as waiting after its fork is settled, and the status reads syncing with nothing left to settle
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2075,8 +2075,6 @@
+       );
+     }
+   }
+-  // Settled now, or left for a push again (`deferred`), which counts it anew.
+-  context.forked.delete(change.file_id);
+   let result: ApplyResult;
+   try {
+     result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped);

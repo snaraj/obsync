@@ -45,6 +45,7 @@ export const LABEL = {
   domainMap: "obsync/v1/domainmap",
   domainMapId: "obsync/v1/domain-map",
   folder: "obsync/v1/folder",
+  conflict: "obsync/v1/conflict",
   chunk: "obsync/v1/chunk",
   nonce: "obsync/v1/nonce",
   pair: "obsync/v1/pair",
@@ -312,6 +313,21 @@ export async function domainMapIds(mapKey: Bytes): Promise<{ fileId: string; dom
  */
 export async function folderFileId(manifestKey: Bytes, path: string): Promise<string> {
   const mac = await hmacSha256(manifestKey, utf8(`${LABEL.folder}\n${path}`));
+  return hex(mac.subarray(0, 16));
+}
+
+/**
+ * The file id of the conflict copy that keeps a fork's losing head: the first
+ * 16 bytes of `HMAC(K_m,d, "obsync/v1/conflict" || 0x0a || file_id || 0x0a ||
+ * version_id)`.
+ *
+ * DERIVED, like a folder's, so every device that settles the same fork keeps
+ * the losing text in ONE file instead of one each -- one each was the dozen
+ * copies of issue #135. Keyed exactly as a folder's is, so the server learns
+ * an opaque label and not which file or version it came from.
+ */
+export async function conflictFileId(manifestKey: Bytes, fileId: string, versionId: string): Promise<string> {
+  const mac = await hmacSha256(manifestKey, utf8(`${LABEL.conflict}\n${fileId}\n${versionId}`));
   return hex(mac.subarray(0, 16));
 }
 

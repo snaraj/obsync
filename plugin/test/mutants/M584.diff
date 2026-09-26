@@ -1,0 +1,12 @@
+# M584: restart a forgotten device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2051,7 +2051,7 @@
+ 
+   async startEngine(): Promise<void> {
+     const generation = this.lifecycle;
+-    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
++    if (!this.isCurrent(generation) || !this.state.paired || this.changingScope || this.restoring !== null) return;
+     // Whoever asked for this start owns it: a reconnect still pending would
+     // be a second engine, so its timer is taken here and its count carried,
+     // and the start below either closes the cycle or continues it.

@@ -1,0 +1,12 @@
+# M722: the same repeated foreign head resets the loop budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2036,7 +2036,7 @@
+   // branches, neither of which descends from the other author's last edit.
+   const remotes = tally.remote ?? new Map<string, string>();
+   const remote = remotes.get(change.device_id);
+-  const independent = remote !== undefined && remote !== change.version_id &&
++  const independent = remote !== undefined &&
+     reaches(file.versions, change.version_id, remote) &&
+     !reaches(file.versions, change.version_id, localVersionId);
+   if (tally.left !== found || independent) {

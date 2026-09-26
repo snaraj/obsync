@@ -1,0 +1,12 @@
+# M230: the status bar reads idle right after the feed parks a file
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1931,7 +1931,7 @@
+     }
+     context.state.data.lastSeq = page.seq;
+     await context.state.save();
+-    if (page.changes.length > 0) this.status(this.resting());
++    if (page.changes.length > 0) this.status({ kind: "idle" });
+   }
+ 
+   /**

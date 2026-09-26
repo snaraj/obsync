@@ -1,0 +1,12 @@
+# M252: a deferred settlement of a published edit says it was not uploaded
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1381,7 +1381,7 @@
+           // unrelated concurrent edit remains a head for ordinary merge handling.
+           const settled = await reviveFile(context, localPath, change.version_id);
+           if (settled.status === "pushed") context.authored.add(settled.versionId);
+-          else notifyKeptDeletion(context, change, localPath, true);
++          else notifyKeptDeletion(context, change, localPath, false);
+           return "skipped";
+         }
+       }

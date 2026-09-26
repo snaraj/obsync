@@ -114,8 +114,8 @@ sur iOS, lui faire confiance est un second interrupteur, après l'installation.
 
    ![L'onglet de paramètres du module : le champ Server URL contenant un nom d'hôte de démonstration, la zone des en-têtes de bordure, et la ligne Connection avec ses boutons Check et Open dashboard](../assets/settings-server.png)
 
-3. Collez le jeton d'installation sous **First-time setup**, choisissez
-   **Set up**, et notez la phrase de récupération de 24 mots.
+3. Collez le jeton d'installation sous **Setup or recover**, choisissez
+   **Set up or recover**, et notez la phrase de récupération de 24 mots.
 
    ![La section This device de l'onglet de paramètres : la ligne Pairing avec Pair this device et Pair a new device, la ligne First-time setup avec le champ Setup token et le bouton Set up, et la ligne Vault key](../assets/settings-setup.png)
 

@@ -1,0 +1,12 @@
+# M381: a lost version is re-sent with no parents beside another device's re-send
+--- a/plugin/src/sync/restore.ts
++++ b/plugin/src/sync/restore.ts
+@@ -217,7 +217,7 @@
+     request();
+     const file = await transport.getFile(entry.fileId);
+     const seen = mark === null ? [] : file.versions.filter((version) => version.ts <= mark.ts);
+-    if (seen.length === 0) return "no_ancestor";
++    if (seen.length < 0) return "no_ancestor";
+     if (entry.ts !== undefined && seen.some((version) => version.ts > (entry.ts as number))) return "superseded";
+     const tops = seen.filter((version) => !seen.some((other) => other.parents.includes(version.version_id)));
+     if (entry.kind === "tombstone" && tops.every((version) => version.deleted)) return "already_deleted";

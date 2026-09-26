@@ -1,0 +1,11 @@
+# M362: a refused ceiling stays on screen as if it were kept
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -603,7 +603,6 @@
+           this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
+           new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+           typed = formatBytes(policy[key]);
+-          field.setValue(typed);
+           return;
+         }
+         if (bytes === policy[key]) return;

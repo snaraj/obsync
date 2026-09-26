@@ -1,0 +1,11 @@
+# M192: the log no longer says which bin a note deleted on another device went to
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1147,7 +1147,6 @@
+       await vault.adapter.trashLocal(path);
+       bin = option === "local" ? "local" : "local reason=system_refused";
+     }
+-    this.log(`host path_class=file decision=trashed bin=${bin}`);
+   }
+ 
+   /** The removal went where it was aimed: the chain held and the file is gone. */

@@ -1,0 +1,12 @@
+# M756: treat their replacement of existing text as an append
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -107,7 +107,7 @@
+
+ /** Both users only appended: retain the shared prefix and order additions alike. */
+ function mergeLineAppends(base: string, mine: string, theirs: string): string | null {
+-  if (!mine.startsWith(base) || !theirs.startsWith(base)) return mergeLineInsertions(base, mine, theirs);
++  if (!mine.startsWith(base)) return mergeLineInsertions(base, mine, theirs);
+   const left = mine.slice(base.length);
+   const right = theirs.slice(base.length);
+   let shared = 0;

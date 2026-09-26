@@ -1,5 +1,25 @@
 # Validation runs
 
+- [2026-09-25 editor refusal and merge budget](2026-09-25-editor-budget.md):
+  retained matched-build typing failure, refused-write accounting repair,
+  1,200-test gate, nested mutation reporting repair and qualified desktop
+  rewrite control; repaired phone acceptance and cleanup remain outstanding.
+
+- [2026-09-25 three-device typing follow-up](2026-09-25-passive-peer-typing.md):
+  adjacent-block and passive-receiver failures, their automated repairs,
+  mixed-build native controls, and the final phone installation checkpoint.
+
+- [2026-09-25 native editor-save follow-up](2026-09-25-native-editor-save.md):
+  retained same-line failures, adjacent-line passes, and the active-editor
+  retry repair with its automated evidence and outstanding native gate.
+
+The 2026-09-24 candidate work has separate records for
+[native desktop checks](2026-09-24-native-1.1.3.md),
+[account recovery](2026-09-24-account-recovery.md),
+[pairing and delete-versus-edit](2026-09-24-pairing-and-deletion.md), and
+[repeated-rewrite recovery](2026-09-24-rewrite-storm.md). Each identifies its
+build and distinguishes observed results from checks still outstanding.
+
 One file per device campaign, named `<date>.md` with the ISO date the run
 STARTED: `2026-09-14.md`. A run record is the evidence behind a readiness
 claim -- what was exercised, on which real devices, against which server, and
@@ -49,5 +69,16 @@ referenced from here. Redact by role. A record that needs a private fact to be
 legible is naming the wrong fact: name the class instead.
 
 - [2026-09-24 native iPhone acceptance](2026-09-24-phone-candidate.md): current 1.1.2 installation, identical first sync, two-way edits, offline restart and automatic recovery.
+- [2026-09-24 phone candidate 1.1.3](2026-09-24-phone-1.1.3.md): separate candidate installation and current native acceptance scope.
+
+- [Co-typing with delayed receipts](2026-09-24-cotyping-delayed-ack.md): pristine-baseline failure, deterministic reproductions and repair; simulation boundaries stated.
+
+- [2026-09-24 replacement-build device follow-up](2026-09-24-replacement-device-followup.md): exact repaired 1.1.2 desktop with the final 1.1.3 phone, identical offline notes and automatic recovery.
+
+- [Co-typing publication order follow-up](2026-09-24-cotyping-order.md): delayed uploads, loop-budget regressions and retained failed schedules.
+
+- [Historical catch-up and typing repairs](2026-09-24-history-and-typing.md): bounded history replay, adjacent line edits, same-line appends and preserved safety witnesses.
 
 - [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md): opaque masks, metadata removal and unchanged visible evidence.
+
+- [Arrival timing and shared merge bases](2026-09-24-arrival-and-shared-base.md): background Resume roles, continued typing, shared-text duplication and retained failed schedules.

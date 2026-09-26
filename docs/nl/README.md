@@ -109,7 +109,7 @@ installatie.
 
    ![Het instellingentabblad van de plugin: het veld Server URL met een demo-hostnaam, het vak voor de edge-headers en de rij Connection met de knoppen Check en Open dashboard](../assets/settings-server.png)
 
-3. Plak het setup-token onder **First-time setup**, kies **Set up** en schrijf
+3. Plak het setup-token onder **Setup or recover**, kies **Set up or recover** en schrijf
    de herstelzin van 24 woorden op.
 
    ![Het gedeelte This device van het instellingentabblad: de rij Pairing met Pair this device en Pair a new device, de rij First-time setup met het veld Setup token en de knop Set up, en de rij Vault key](../assets/settings-setup.png)

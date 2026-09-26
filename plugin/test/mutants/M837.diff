@@ -1,0 +1,12 @@
+# M837: accept substituted ancestor identity
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2026,7 +2026,7 @@
+         file.versions = original;
+         return;
+       }
+-      if (version.version_id !== id || !Array.isArray(version.parents) ||
++      if ( !Array.isArray(version.parents) ||
+         version.parents.length > 64 || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
+         throw new ApiError(502, "invalid_ancestry", "The server returned an invalid ancestor record.");
+       }

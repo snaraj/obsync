@@ -1,0 +1,12 @@
+# M232: the wait between retries grows without bound, so a fixed file can wait for hours
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1736,7 +1736,7 @@
+       return;
+     }
+     if (this.parkHandle !== null || !this.running) return;
+-    this.parkDelay = Math.min(PARK_RETRY_MAX_MS, this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2);
++    this.parkDelay = this.parkDelay === 0 ? PARK_RETRY_MS : this.parkDelay * 2;
+     this.parkHandle = this.timers.set(() => {
+       this.parkHandle = null;
+       void this.track(this.retryParked("timer"));

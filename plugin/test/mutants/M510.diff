@@ -1,0 +1,12 @@
+# M510: claimant name length is not bounded
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -150,7 +150,7 @@
+ 
+ function checkedVault(value: unknown): PairingVault {
+   const vault = value as PairingVault | null;
+-  if (!vault || typeof vault.name !== "string" || vault.name.length === 0 || vault.name.length > 256 ||
++  if (!vault || typeof vault.name !== "string" || vault.name.length < 0 ||
+       /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(vault.name) ||
+       !Number.isSafeInteger(vault.notes) || vault.notes < 0) {
+     throw new Error("pairing: invalid vault details; start pairing again");

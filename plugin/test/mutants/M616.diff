@@ -1,0 +1,12 @@
+# M616: forget the switch-server pairing completion callback
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -563,7 +563,7 @@
+     if (!this.live) return;
+     this.onLeft();
+     this.close();
+-    if (mode === "pair") new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
++    if (mode === "pair") new PairClaimModal(this.app, this.plugin).open();
+     else new AccountSetupModal(this.app, this.plugin).open();
+   }
+ }

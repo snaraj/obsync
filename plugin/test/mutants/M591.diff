@@ -1,0 +1,12 @@
+# M591: overwrite forgotten status with idle
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2876,7 +2876,7 @@
+     if (status.kind === "error" && status.code === "forgotten_device") {
+       this.forgottenDevice = true;
+       this.teardownEngine();
+-    } else if (this.forgottenDevice) return;
++    } else if (false) return;
+     this.statusValue = status;
+     this.statusEl?.setText(`obsync: ${this.statusText()}`);
+   }

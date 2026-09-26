@@ -1,0 +1,11 @@
+# M461: a folder deletion this device applied is not remembered, and comes back after a restore
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -889,7 +889,6 @@
+     const retiring = context.state.folderByPath(path);
+     const removed = await removeFolder(context, path, shown);
+     context.state.forgetFolder(path);
+-    if (retiring?.fileId === change.file_id) bury(context, change.file_id, change.version_id, path, true, change.ts);
+     if (retiring?.fileId === change.file_id && (context.state.data.syncFolders ?? []).includes(path)) {
+       context.state.data.retiredRoots[path] = change.file_id;
+     }

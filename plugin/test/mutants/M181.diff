@@ -1,0 +1,12 @@
+# M181: a timed-out connection is reported as nothing sent
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -132,7 +132,7 @@
+ export type Sent<T> = { outcome: "ok"; value: T } | Lost;
+ 
+ /** A refusal at connect, as Electron and Node word it: the request never left. */
+-const REFUSED = /ERR_CONNECTION_REFUSED|ECONNREFUSED/;
++const REFUSED = /ERR_CONNECTION_|ECONNREFUSED/;
+ 
+ /**
+  * What to tell the user when the caller has nothing to read back. Both

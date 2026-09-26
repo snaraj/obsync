@@ -1,0 +1,12 @@
+# M347: after a rename onto a just-made name, one note is published under the other's file id and its text replaces the other's on the other device
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -227,7 +227,7 @@
+     // Only over the record it read: the pull may have given this name to
+     // another note while this push read it (issue #149), and writing the old
+     // one back would put that note under the wrong file id.
+-    if (context.state.fileByPath(path) === record) context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
++    context.state.setFile(path, { ...record, mtime: stat.mtime, size: stat.size });
+     return { status: "unchanged", fileId, versionId: record.versionId };
+   }
+ 

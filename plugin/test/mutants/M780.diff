@@ -1,0 +1,12 @@
+# M780: inspect pending bytes outside selected folders
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1900,7 +1900,7 @@
+     const arrived = context.now();
+     const remember = async (): Promise<void> => {
+       const path = context.state.pathByFileId(change.file_id);
+-      if (path === undefined || !inSyncScope(path, context.state.data.syncFolders)) return;
++      if (path === undefined) return;
+       // Preserve a waiting save's verdict against the previous arrival before
+       // replacing that clock with a time later than the save being judged.
+       const stat = await context.host.stat(path);

@@ -16,7 +16,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice } from "../main";
 import { formatBytes } from "../policy";
-import { remoteOnlyList } from "../sync/pull";
+import { remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PHRASE_WORDS,
   decodePairingCode,
@@ -26,12 +26,14 @@ import {
   newVaultKey,
   normalisePhrase,
   openEnvelope,
+  openPairingVault,
+  sealPairingVault,
   pairingLink,
   recoveryPhrase,
   sealEnvelope,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
-import { ApiError, PairingEnvelope, Sent, lostMessage } from "../transport";
+import { ApiError, PairingClaimant, PairingEnvelope, Sent, lostMessage } from "../transport";
 
 function fail(error: unknown): void {
   new Notice(error instanceof Error ? error.message : String(error), 8000);
@@ -52,13 +54,24 @@ function value<T>(sent: Sent<T>, what: string): T {
 /**
  * Ask before something irreversible. Revocation is one-way — the server
  * drops the device's wrapped secret — so it is never one stray tap away.
+ * Cancel holds the focus, so Enter is never the destructive answer, and a
+ * dialog closed any other way is a no (`declined`).
+ *
+ * CANCEL IS DRAWN FIRST, because that is what gives it the focus: once
+ * `onOpen` returns, Obsidian moves the focus to the dialog's first button
+ * (measured on 1.13.4 and 1.13.7), over any focus given inside `onOpen`. With
+ * the action drawn first, Enter revoked a device or replaced the vault key.
  */
 export class ConfirmModal extends Modal {
+  private answered = false;
+
   constructor(
     app: App,
     private readonly heading: string,
     private readonly detail: string,
     private readonly confirmed: () => void,
+    private readonly action = "Revoke",
+    private readonly declined: () => void = () => undefined,
   ) {
     super(app);
   }
@@ -67,21 +80,31 @@ export class ConfirmModal extends Modal {
     this.setTitle(this.heading);
     this.contentEl.createEl("p", { text: this.detail });
     new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((button) =>
         button
-          .setButtonText("Revoke")
+          .setButtonText(this.action)
           .setDestructive()
           .onClick(() => {
+            this.answered = true;
             this.close();
             this.confirmed();
           }),
-      )
-      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+      );
   }
 
   override onClose(): void {
     this.contentEl.empty();
+    if (!this.answered) this.declined();
+    this.answered = true;
   }
+}
+
+/** A `ConfirmModal` as a question: true only for the destructive answer. */
+export function confirmFirst(app: App, heading: string, detail: string, action: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    new ConfirmModal(app, heading, detail, () => resolve(true), action, () => resolve(false)).open();
+  });
 }
 
 /**
@@ -91,6 +114,7 @@ export class ConfirmModal extends Modal {
  */
 export class PairCreateModal extends Modal {
   private polling = false;
+  private closed = false;
 
   constructor(
     app: App,
@@ -100,6 +124,7 @@ export class PairCreateModal extends Modal {
   }
 
   override onOpen(): void {
+    this.closed = false;
     this.setTitle("Pair a new device");
     this.contentEl.createEl("p", {
       text: "Open obsync on the new device and paste this code. It expires in ten minutes and carries the only copy of your vault key that will ever cross the network — sealed so the server cannot read it.",
@@ -109,6 +134,7 @@ export class PairCreateModal extends Modal {
 
   override onClose(): void {
     this.polling = false;
+    this.closed = true;
     this.contentEl.empty();
   }
 
@@ -142,7 +168,7 @@ export class PairCreateModal extends Modal {
         if (status.state === "claimed" && status.claimant) {
           codeEl.remove();
           this.polling = false;
-          this.approve(pairing.pairing_id, secret, status.claimant, statusEl);
+          await this.approve(pairing.pairing_id, secret, status.claimant, statusEl);
           return;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
@@ -153,13 +179,16 @@ export class PairCreateModal extends Modal {
     }
   }
 
-  private approve(
+  private async approve(
     pairingId: string,
     secret: Uint8Array<ArrayBuffer>,
-    claimant: { name: string; platform: string; app_version: string },
+    claimant: PairingClaimant,
     statusEl: HTMLElement,
-  ): void {
-    statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?`);
+  ): Promise<void> {
+    const vault = claimant.vault === undefined ? null : await openPairingVault(secret, pairingId, claimant.vault);
+    if (this.closed) return;
+    statusEl.setText(`Approve "${claimant.name}" on ${claimant.platform} (obsync ${claimant.app_version})?` +
+      (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`));
     new Setting(this.contentEl)
       .addButton((button) =>
         button
@@ -204,6 +233,7 @@ export class PairClaimModal extends Modal {
     app: App,
     private readonly plugin: ObsyncPlugin,
     code?: string,
+    private readonly afterClose: () => void = () => undefined,
   ) {
     super(app);
     this.code = code ?? "";
@@ -233,19 +263,51 @@ export class PairClaimModal extends Modal {
   override onClose(): void {
     this.waiting = false;
     this.contentEl.empty();
+    this.afterClose();
   }
 
   private async claim(): Promise<void> {
     if (this.waiting) return;
+    // A DEVICE THAT SYNCS IS NEVER RE-PAIRED IN PLACE (issue #143). A claim
+    // replaces its credential with a pending one while its cursor and file
+    // records stay, so sync stopped, a stray device appeared, and a first
+    // sync against another server's records doubled the vault. Leaving first
+    // clears all three; a pairing link opened here, even one this device
+    // made, claims nothing.
+    if (this.plugin.state.paired && !this.plugin.forgottenDevice) {
+      this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
+      fail(new Error(
+        `This device already syncs with ${this.plugin.state.data.serverUrl} as "${this.plugin.deviceName()}", ` +
+          "so nothing was claimed. To pair it again, use Leave this server in obsync's settings first.",
+      ));
+      this.close();
+      return;
+    }
     try {
       this.waiting = true;
+      if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+      if (!this.waiting) return;
+      // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that
+      // pairs with it copies that vault into itself, one level per sync.
+      const nested = await this.plugin.nestedRefusal("pairing role=claimant");
+      if (nested !== null) {
+        fail(new Error(nested));
+        this.close();
+        return;
+      }
       const { state, transport, assertCurrent } = this.plugin.captureSession();
       const parsed = decodePairingCode(this.code);
+      const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
+        name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
+      });
+      assertCurrent();
+      if (!this.waiting) return;
       const credential = value(
         await transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
           name: this.plugin.deviceName(),
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
+          vault,
         }),
         "claiming the pairing",
       );
@@ -280,6 +342,25 @@ export class PairClaimModal extends Modal {
         // `value` above makes that terminal; only not_approved polls again.
         const envelope = await openEnvelope(parsed.pairingSecret, parsed.pairingId, sealed.envelope, sealed.nonce);
         assertCurrent();
+        // BEFORE THE KEY IS KEPT, because a kept key starts the first sync,
+        // and that sync publishes every note here to every device syncing
+        // the vault (issue #141). A copy of the same vault holds nothing new
+        // and pairs without a question; anything else asks, Cancel first.
+        const unknown = await this.plugin.notesUnknownTo(envelope.vrk);
+        assertCurrent();
+        if (unknown > 0 && !(await confirmFirst(
+          this.app,
+          "Add this vault's notes to the server's vault?",
+          `This vault holds ${unknown} note(s) that are not in the vault ${state.data.serverUrl} holds. Pairing ` +
+            "uploads them to every device syncing that vault. One server holds one vault: a different vault needs a server of its own.",
+          "Pair and upload",
+        ))) {
+          this.plugin.log(`pairing role=claimant decision=declined unknown=${unknown}`);
+          await this.plugin.leaveServer({ discardUnpushed: true, localOnly: false });
+          new Notice("Pairing cancelled: nothing was uploaded, and this device left the server again.", 10000);
+          this.close();
+          return;
+        }
         state.data.vrk = envelope.vrk;
         await state.save();
         assertCurrent();
@@ -310,9 +391,11 @@ const LEAVE_KEPT =
 const LEAVE_LOST =
   "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any edge service-token headers, its place in the change feed and its record of every synced file. No other device is touched.";
 const LEAVE_AGAIN =
-  "Pairing again — with this server or another — is a first sync for this device. Where the server already holds a note at the same path, the local note stays and the server's copy arrives beside it as a conflict copy.";
+  "Pairing again — with this server or another — is a first sync for this device. Identical notes stay one note. If a local note differs from the server's note at the same path, both versions are kept for you to review.";
+const LEAVE_UNKNOWN_DEVICE =
+  "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave LOCALLY: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
 const LEAVE_LAST_DEVICE =
-  "An account whose last active device is revoked can never sync again: nothing in this release re-enrols one, so everything the server stores for this vault would stay there unreachable. Pair another device first and revoke this one from it. You can still leave LOCALLY: this device forgets the server and keeps every note, and the server keeps this device — so revoke it from the dashboard or from another device later.";
+  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving locally keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
 
 /**
  * Leaving a server, with the whole cost stated before the button (issue #79).
@@ -325,6 +408,8 @@ const LEAVE_LAST_DEVICE =
  */
 export class LeaveServerModal extends Modal {
   private live = true;
+  /** Why the server kept this device, when leaving locally is what the user chose. */
+  private refusal: "last_device" | "bad_signature" = "last_device";
 
   constructor(
     app: App,
@@ -383,15 +468,13 @@ export class LeaveServerModal extends Modal {
       }
     }
     const leaving = this.mode === "switch" ? "Leave and switch" : "Leave";
-    this.cancel(
-      new Setting(this.contentEl).addButton((button) =>
-        button
-          .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
-          .setDestructive()
-          .onClick(() => {
-            void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
-          }),
-      ),
+    this.cancel(new Setting(this.contentEl)).addButton((button) =>
+      button
+        .setButtonText(unpushed.length === 0 ? leaving : `Discard ${unpushed.length} and leave`)
+        .setDestructive()
+        .onClick(() => {
+          void this.leave({ discardUnpushed: unpushed.length > 0, localOnly: false });
+        }),
     );
   }
 
@@ -418,17 +501,16 @@ export class LeaveServerModal extends Modal {
       return;
     }
     this.contentEl.empty();
+    this.refusal = result.reason;
     this.contentEl.createEl("p", { text: `The server refused to revoke this device: ${result.detail}.` });
-    this.contentEl.createEl("p", { text: LEAVE_LAST_DEVICE });
-    this.cancel(
-      new Setting(this.contentEl).addButton((button) =>
-        button
-          .setButtonText("Leave locally anyway")
-          .setDestructive()
-          .onClick(() => {
-            void this.leave({ ...choice, localOnly: true });
-          }),
-      ),
+    this.contentEl.createEl("p", { text: result.reason === "last_device" ? LEAVE_LAST_DEVICE : LEAVE_UNKNOWN_DEVICE });
+    this.cancel(new Setting(this.contentEl)).addButton((button) =>
+      button
+        .setButtonText("Leave locally anyway")
+        .setDestructive()
+        .onClick(() => {
+          void this.leave({ ...choice, localOnly: true });
+        }),
     );
   }
 
@@ -436,7 +518,9 @@ export class LeaveServerModal extends Modal {
     new Notice(
       revoked
         ? "This device left the server. Every note is still in this vault."
-        : "This device forgot the server, which still holds this device. Every note is still in this vault.",
+        : this.refusal === "last_device"
+          ? "This device forgot the server, which still holds this device. Every note is still in this vault."
+          : "This device forgot the server, which did not recognise it. Every note is still in this vault.",
       10000,
     );
     this.onLeft();
@@ -446,7 +530,7 @@ export class LeaveServerModal extends Modal {
     }
     this.contentEl.empty();
     this.contentEl.createEl("p", {
-      text: "Enter the new server's address, then paste a pairing code from a device that already syncs this vault there. For a server with no account yet, use First-time setup in the settings tab with that server's setup token instead.",
+      text: "Enter the new server's address. Set up an empty server with its setup token, recover an existing account with that token and this vault’s key, or pair from a device already syncing there.",
     });
     let typed = "";
     new Setting(this.contentEl).setName("Server URL").addText((text) =>
@@ -457,16 +541,15 @@ export class LeaveServerModal extends Modal {
     this.cancel(
       new Setting(this.contentEl).addButton((button) =>
         button
-          .setButtonText("Continue")
-          .setCta()
-          .onClick(() => {
-            void this.adopt(typed);
-          }),
+          .setButtonText("Pair with existing vault")
+          .onClick(() => { void this.adopt(typed, "pair"); }),
+      ).addButton((button) => button.setButtonText("Set up or recover").setCta()
+        .onClick(() => { void this.adopt(typed, "setup"); })
       ),
     );
   }
 
-  private async adopt(typed: string): Promise<void> {
+  private async adopt(typed: string, mode: "pair" | "setup"): Promise<void> {
     if (typed.trim() === "") {
       new Notice("Enter the new server's address first.");
       return;
@@ -480,8 +563,27 @@ export class LeaveServerModal extends Modal {
     if (!this.live) return;
     this.onLeft();
     this.close();
-    new PairClaimModal(this.app, this.plugin).open();
+    if (mode === "pair") new PairClaimModal(this.app, this.plugin, undefined, this.onLeft).open();
+    else new AccountSetupModal(this.app, this.plugin).open();
   }
+}
+
+export class AccountSetupModal extends Modal {
+  constructor(app: App, private readonly plugin: ObsyncPlugin) { super(app); }
+  override onOpen(): void {
+    this.setTitle("Set up or recover this account");
+    this.contentEl.createEl("p", { text: "Enter this server’s setup token. An existing account also requires the vault key retained on this device, or its restored 24-word recovery phrase. An empty server uses this vault’s key." });
+    let token = "";
+    new Setting(this.contentEl).setName("Setup token").addText((field) => field.onChange((value) => { token = value.trim(); }));
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => {
+        void this.plugin.setUpAccount(token, "obsync").then(() => {
+          if (this.plugin.state.data.deviceId !== null) this.close();
+        });
+      }));
+  }
+  override onClose(): void { this.contentEl.empty(); }
 }
 
 /**
@@ -583,7 +685,7 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             const entropy = await entropyFromPhrase(normalisePhrase(this.phrase));
             assertCurrent();
-            await this.plugin.adoptVaultKey(hex(entropy));
+            await this.plugin.restoreVaultKey(hex(entropy));
             assertCurrent();
             new Notice("Vault key restored.");
             this.close();
@@ -596,7 +698,23 @@ export class VaultKeyModal extends Modal {
         button.setButtonText("Create a new vault key").onClick(async () => {
           try {
             assertCurrent();
-            await this.plugin.adoptVaultKey(hex(newVaultKey()));
+            const vrk = hex(newVaultKey());
+            // A new key opens nothing the server holds: on a server with a
+            // vault it strands every other device (issue #140). Asked first.
+            if (await this.plugin.vaultKeyStrands(vrk) && !(await confirmFirst(
+              this.app,
+              "Create a new vault key?",
+              "The vault on this server was sealed with another key, and a new key cannot open it. Every device " +
+                "syncing that vault would stop receiving this device's changes, and this device would stop receiving " +
+                "theirs. To sync that vault, restore its 24 words or pair from a device that syncs it; a different " +
+                "vault needs a server of its own.",
+              "Create a new key",
+            ))) {
+              this.plugin.log("vaultkey decision=declined reason=strands_vault");
+              return;
+            }
+            assertCurrent();
+            await this.plugin.adoptVaultKey(vrk);
             assertCurrent();
             this.close();
             new RecoveryPhraseModal(this.app, this.plugin, true).open();
@@ -628,6 +746,9 @@ export class StatusModal extends Modal {
       ["This device", data.deviceId ?? "not paired"],
       ["Vault key", data.vrk === null ? "absent" : "present"],
       ["State", this.plugin.statusText()],
+      // Every file the feed moved past because this device could not write
+      // it, by name and in plain words (issue #144).
+      ...Object.values(data.parked).map((entry): [string, string] => ["Waiting to be written", unwritableText(entry.path, entry.reason)]),
       ["Files tracked", String(Object.keys(data.files).length)],
       ["Local size", formatBytes(this.plugin.state.localBytes())],
       ["Remote only", String(Object.keys(data.remoteOnly).length)],
@@ -640,6 +761,18 @@ export class StatusModal extends Modal {
       const row = table.createEl("tr");
       row.createEl("td", { text: name });
       row.createEl("td", { text: value });
+    }
+    // Every note paused because something here rewrites it after every sync,
+    // each with its own way back (issue #179).
+    for (const [fileId, entry] of Object.entries(data.paused)) {
+      new Setting(this.contentEl)
+        .setName(entry.path)
+        .setDesc("Paused: repeated rewrites after sync were detected on a paired device. Stop the plugin rewriting synced notes, then resume.")
+        .addButton((button) =>
+          button.setButtonText("Resume").onClick(() => {
+            void this.plugin.resumeNote(fileId).then(() => this.close(), fail);
+          }),
+        );
     }
   }
 

@@ -1,0 +1,12 @@
+# M712: identical merged heads use their older graph ancestor and displace newly typed text into a conflict copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2158,7 +2158,7 @@
+         if (ownManifest?.path === localPath && !ownManifest.deleted) {
+           // Identical merges can name different parents after delayed uploads.
+           // Later typing edits their shared content, not the older ancestor.
+-          mergeBase = ownManifest;
++          mergeBase = baseManifest;
+           context.host.log(`pull decision=merge_base reason=identical_heads file=${change.file_id} seq=${change.seq}`);
+         }
+       }

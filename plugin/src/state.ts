@@ -19,7 +19,7 @@
 import { Policy, defaultPolicy } from "./policy";
 import { isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
-import { hex, randomBytes } from "./crypto";
+import { hex, isHex, randomBytes } from "./crypto";
 
 /** The supported native API surface; deliberately no enumeration method. */
 export interface SecretStore {
@@ -45,6 +45,23 @@ export interface FileRecord {
   mtime: number;
   size: number;
   sha256: string;
+  /**
+   * The name this version's manifest carries, when the pull path landed it
+   * BESIDE that name because another file held it here (issue #149). Absent
+   * when the file sits at its own name. It is what makes beside temporary:
+   * the note is moved to this name as soon as the name is free
+   * (`sync/pull.ts`, `settleBeside`).
+   */
+  name?: string;
+  /**
+   * The SERVER's time for `versionId`, from the feed entry or version record
+   * it arrived in -- this device's own posts learn theirs from their echo.
+   * Absent until then, and on every record written before 1.1.3. It places
+   * the version against the feed mark when a restored server has lost it
+   * (`sync/restore.ts`, issue #145); a record without one is never re-sent
+   * from its version's position.
+   */
+  ts?: number;
 }
 
 /**
@@ -68,9 +85,52 @@ export function isPushed(record: FileRecord | undefined, mtime: number, size: nu
   return record !== undefined && record.mtime === mtime && record.size === size;
 }
 
+/**
+ * The last change-feed entry this device processed (issue #145). The journal
+ * never reuses a seq on a server that has not been rebuilt from a backup, so
+ * this entry, asked for again, is how a device learns its server went back in
+ * time; `ts` is the server's own clock at that entry, the line between what
+ * this device has already seen and what was written after the rebuild.
+ * `replay` is set while the feed is re-read from zero after a rebuild: every
+ * entry before this one is skipped, and the first entry after it replaces it.
+ */
+export interface FeedMark {
+  seq: number;
+  fileId: string;
+  versionId: string;
+  ts: number;
+  replay: boolean;
+}
+
+/**
+ * A tombstone this device published or applied (issue #145): the one
+ * positive evidence a deletion may be re-sent from after a restored server
+ * lost it. Keyed by file id, dropped when that file id is recorded again.
+ */
+export interface Grave {
+  versionId: string;
+  path: string;
+  folder: boolean;
+  /** The tombstone's server time, as `FileRecord.ts`. */
+  ts?: number;
+}
+
+/**
+ * How many graves are kept, oldest dropped first (logged). A deletion older
+ * than the newest thousand is not re-sent after a restore: the note comes back
+ * on a device paired afterwards, and nothing is deleted anywhere.
+ */
+export const GRAVES_MAX = 1000;
+
 export interface RemoteOnlyRecord {
   path: string;
   size: number;
+}
+
+export interface ParkedRecord {
+  path: string;
+  /** An `UNWRITABLE` key, or `active_editor` while a native editor settles. */
+  reason: string;
 }
 
 export interface EdgeHeader {
@@ -122,6 +182,27 @@ export interface ObsyncData {
    * the moves went out in front of it (review round 4, finding 3).
    */
   folderBarriers: string[];
+  /**
+   * File id to a record the feed moved past because THIS device could not
+   * write it -- a locked note, a read-only folder, a full disk, a chunk the
+   * server does not hold -- with the path and the reason to show
+   * (`sync/engine.ts`, `park`; issue #144). Persisted with the cursor that
+   * skipped it: forgetting it would lose that change on this device for good.
+   */
+  parked: Record<string, ParkedRecord>;
+  /**
+   * File id to a note this device stopped syncing because something here
+   * rewrote it right after another device's version arrived, on the lines
+   * that device changed too -- two plugins stamping it, as a rule
+   * (`sync/pull.ts`, `rewriteStorm`; issue #179). Nothing about it is
+   * published or applied until the user resumes it, so it is persisted: a
+   * restart must not start the bounce again unasked.
+   */
+  paused: Record<string, { path: string; remote?: true }>;
+  /** The last feed entry processed, `null` until the first (issue #145). */
+  feedMark: FeedMark | null;
+  /** File id to the tombstone this device published or applied for it. */
+  graves: Record<string, Grave>;
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
@@ -141,6 +222,10 @@ export function defaultData(isMobile: boolean): ObsyncData {
     remoteOnly: {},
     retiredRoots: {},
     folderBarriers: [],
+    parked: {},
+    paused: {},
+    feedMark: null,
+    graves: {},
     policy: defaultPolicy(isMobile),
   };
 }
@@ -250,6 +335,9 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
         size: num(record["size"], 0),
         sha256: str(record["sha256"], ""),
       };
+      const name = record["name"];
+      if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
+      if (typeof record["ts"] === "number" && Number.isFinite(record["ts"])) data.files[path].ts = record["ts"];
     }
   }
   const folders = loaded["folders"];
@@ -280,6 +368,40 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       data.folderBarriers.push(path);
     }
   }
+  const parked = loaded["parked"];
+  if (isRecord(parked)) {
+    for (const [fileId, record] of Object.entries(parked)) {
+      // The file id goes into a request path and the path onto the screen;
+      // the reason only chooses words, so a damaged one keeps the record.
+      if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
+      data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+    }
+  }
+  const paused = loaded["paused"];
+  if (isRecord(paused)) {
+    for (const [fileId, record] of Object.entries(paused)) {
+      if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"], ...(record["remote"] === true ? { remote: true } : {}) };
+    }
+  }
+  // The mark names a request path and the graves a request path and a
+  // publication, so a malformed field is dropped rather than trusted: no mark
+  // is a device that has not read the feed yet, never a restored server.
+  const mark = loaded["feedMark"];
+  if (isRecord(mark) && Number.isSafeInteger(mark["seq"]) && (mark["seq"] as number) >= 1 &&
+    typeof mark["fileId"] === "string" && isHex(mark["fileId"], 16) &&
+    typeof mark["versionId"] === "string" && isHex(mark["versionId"], 32) &&
+    typeof mark["ts"] === "number" && Number.isFinite(mark["ts"]) && typeof mark["replay"] === "boolean") {
+    data.feedMark = { seq: mark["seq"] as number, fileId: mark["fileId"], versionId: mark["versionId"], ts: mark["ts"], replay: mark["replay"] };
+  }
+  const graves = loaded["graves"];
+  if (isRecord(graves)) {
+    for (const [fileId, grave] of Object.entries(graves).slice(-GRAVES_MAX)) {
+      if (!isHex(fileId, 16) || !isRecord(grave) || typeof grave["versionId"] !== "string" ||
+        !isHex(grave["versionId"], 32) || !isVaultPath(grave["path"]) || typeof grave["folder"] !== "boolean") continue;
+      data.graves[fileId] = { versionId: grave["versionId"], path: grave["path"], folder: grave["folder"] };
+      if (typeof grave["ts"] === "number" && Number.isFinite(grave["ts"])) data.graves[fileId].ts = grave["ts"];
+    }
+  }
   const remoteOnly = loaded["remoteOnly"];
   if (isRecord(remoteOnly)) {
     for (const [fileId, record] of Object.entries(remoteOnly)) {
@@ -298,6 +420,36 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
 }
 
 /**
+ * Who may write the data file NOW: the newest session, and the write it has
+ * in flight (issue #181).
+ *
+ * ONE PER WINDOW AND PLUGIN, NOT PER PLUGIN OBJECT. Turning the plugin off
+ * and on builds a new object from a fresh evaluation of the bundle while the
+ * old one is still draining the upload it was stopped in, and that drain ends
+ * with a save of the OLD State -- minutes later, because every request of an
+ * inactive session is refused and retried as a network error. Landing after
+ * the new object read the file, it put back the cursor and records of the
+ * session before (S98). Nothing in this module outlives the object, so the
+ * lease hangs off the window's global, keyed by the `app` both objects share.
+ * A renderer reload or a force-quit ends the old window, and its writers
+ * with it.
+ */
+export interface Lease {
+  holder: object | null;
+  writing: Promise<unknown>;
+}
+
+export function dataLease(app: object, pluginId: string): Lease {
+  const scope = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
+  const windows = scope[Symbol.for("obsync.dataLease")] ??= new WeakMap();
+  const leases = windows.get(app) ?? new Map<string, Lease>();
+  windows.set(app, leases);
+  const lease = leases.get(pluginId) ?? { holder: null, writing: Promise.resolve() };
+  leases.set(pluginId, lease);
+  return lease;
+}
+
+/**
  * The device's state with a coalescing, serialised writer.
  *
  * `save()` never runs two writes at once and never drops the newest state:
@@ -305,6 +457,11 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
  * whatever the number of requests. Each write uses a detached snapshot, with
  * a matching credential revision. Any persistence failure blocks this state
  * until reload; callers must not keep syncing from uncertain credentials.
+ *
+ * AND ONLY THE NEWEST SESSION WRITES (`Lease`). Opening claims the lease
+ * before reading, then waits for a write already dispatched; from the claim
+ * on, an older State refuses every write, `superseded`, before it touches
+ * either store.
  */
 export class State {
   private pending = false;
@@ -320,19 +477,24 @@ export class State {
     private envelope: SecretEnvelope | null,
     private serializedSecret: string | null,
     private readonly onFailure: (error: StateStorageError) => void,
+    private readonly lease: Lease,
+    private readonly claim: object,
   ) {}
 
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
     isCurrent: () => boolean = () => true,
+    lease: Lease = { holder: null, writing: Promise.resolve() },
   ): Promise<State> {
     let state: State;
     let migrate = false;
+    const claim = lease.holder = {};
     try {
       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
         throw new StateStorageError("unavailable");
       }
+      await Promise.allSettled([lease.writing]);
       const loaded = await store.loadData();
       if (!isCurrent()) throw new StateStorageError("inactive_load");
       if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");
@@ -362,12 +524,12 @@ export class State {
           throw new StateStorageError("identity_mismatch");
         }
         Object.assign(data, credentials({ ...selected }));
-        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure);
+        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
       } else {
         Object.assign(data, credentials(metadata));
         const id = hex(randomBytes(16));
         if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
-        state = new State(store, data, secrets, id, null, null, null, onFailure);
+        state = new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
         migrate = true;
       }
     } catch (error) {
@@ -386,7 +548,15 @@ export class State {
   /** Let a replacement plugin load wait for an already-dispatched metadata write. */
   settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
 
+  /** Refuse every write once a newer session has claimed the data file (`Lease`). */
+  private assertHolder(): void {
+    if (this.lease.holder !== this.claim) {
+      throw new StateStorageError("superseded", "A newer obsync session took over this vault's sync; this one stopped.");
+    }
+  }
+
   private async persist(snapshot: ObsyncData): Promise<void> {
+    this.assertHolder();
     if (typeof snapshot.serverUrl !== "string") throw new StateStorageError("invalid_server");
     const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
     const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });
@@ -410,8 +580,8 @@ export class State {
       this.serializedSecret = serialized;
     }
     try {
-      await this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
-        credentialRef: ref, credentialRevision: selected.revision });
+      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
+        credentialRef: ref, credentialRevision: selected.revision }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
     this.record = selected;
   }
@@ -474,6 +644,14 @@ export class State {
     // about.
     this.data.retiredRoots = {};
     this.data.folderBarriers = [];
+    // And a parked record, which names a version on the server being left,
+    // and the feed mark and the graves, which name entries and versions there
+    // too: a mark carried to the next server would read its journal as a
+    // restored one.
+    this.data.parked = {};
+    this.data.paused = {};
+    this.data.feedMark = null;
+    this.data.graves = {};
     this.data.remoteOnly = {};
   }
 
@@ -497,6 +675,7 @@ export class State {
     // decides on is the revision metadata actually names.
     await this.settled();
     this.assertAvailable();
+    this.assertHolder();
     const envelope = this.envelope;
     if (envelope === null || envelope.previous === null) return;
     if (this.record === null || this.record.revision !== envelope.current.revision ||
@@ -533,6 +712,9 @@ export class State {
   setFile(path: string, record: FileRecord): void {
     this.data.files[path] = record;
     delete this.data.remoteOnly[record.fileId];
+    // A file id recorded again is alive here: its old tombstone is no
+    // deletion to re-send.
+    delete this.data.graves[record.fileId];
   }
 
   forgetPath(path: string): void {
@@ -545,6 +727,7 @@ export class State {
 
   setFolder(path: string, record: FolderRecord): void {
     this.data.folders[path] = record;
+    delete this.data.graves[record.fileId];
     // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
     // rule is "the tombstone for this folder's record has been applied and no
     // record has been written for it since" (`sync/pull.ts`,
@@ -555,6 +738,18 @@ export class State {
 
   forgetFolder(path: string): void {
     delete this.data.folders[path];
+  }
+
+  /**
+   * Remember a tombstone (issue #145), newest last, and return how many of
+   * the oldest `GRAVES_MAX` pushed out; the caller logs a drop.
+   */
+  bury(fileId: string, grave: Grave): number {
+    delete this.data.graves[fileId];
+    this.data.graves[fileId] = grave;
+    const over = Object.keys(this.data.graves).slice(0, -GRAVES_MAX);
+    for (const id of over) delete this.data.graves[id];
+    return over.length;
   }
 
   /** Bytes held locally, the input to the total-budget ceiling. */

@@ -35,6 +35,7 @@ import {
   base64,
   concat,
   hex,
+  hkdf,
   pairingKey,
   randomBytes,
   sha256,
@@ -140,6 +141,47 @@ export async function openEnvelope(
     throw new Error("pairing: the envelope carries no vault key");
   }
   return { vrk: parsed.vrk };
+}
+
+/** Vault details travel only as ciphertext, with a key distinct from the VRK envelope. */
+export interface PairingVault { name: string; notes: number }
+export interface SealedPairingVault { envelope: string; nonce: string }
+const VAULT_LABEL = "obsync/v1/pair-vault";
+
+function checkedVault(value: unknown): PairingVault {
+  const vault = value as PairingVault | null;
+  if (!vault || typeof vault.name !== "string" || vault.name.length === 0 || vault.name.length > 256 ||
+      /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(vault.name) ||
+      !Number.isSafeInteger(vault.notes) || vault.notes < 0) {
+    throw new Error("pairing: invalid vault details; start pairing again");
+  }
+  return { name: vault.name, notes: vault.notes };
+}
+
+async function vaultDetailsKey(secret: Bytes, id: string): Promise<CryptoKey> {
+  const key = await hkdf(secret, utf8(VAULT_LABEL), utf8(id), 32);
+  return crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+export async function sealPairingVault(secret: Bytes, id: string, vault: PairingVault): Promise<SealedPairingVault> {
+  const nonce = randomBytes(12);
+  const envelope = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: utf8(id), tagLength: 128 },
+    await vaultDetailsKey(secret, id), utf8(JSON.stringify(checkedVault(vault))),
+  );
+  return { envelope: base64(new Uint8Array(envelope)), nonce: hex(nonce) };
+}
+
+export async function openPairingVault(secret: Bytes, id: string, sealed: SealedPairingVault): Promise<PairingVault> {
+  if (typeof sealed?.envelope !== "string" || sealed.envelope.length > 2048 ||
+      typeof sealed.nonce !== "string" || !/^[0-9a-f]{24}$/.test(sealed.nonce)) {
+    throw new Error("pairing: invalid sealed vault details; start pairing again");
+  }
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: unhex(sealed.nonce), additionalData: utf8(id), tagLength: 128 },
+    await vaultDetailsKey(secret, id), unbase64(sealed.envelope),
+  );
+  return checkedVault(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
 }
 
 /**

@@ -1,0 +1,12 @@
+# M810: The fast editor timer also retries locked files.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2075,7 +2075,7 @@
+       try {
+         for (const [fileId, entry] of Object.entries(context.state.data.parked)) {
+           if (!this.running) return;
+-          if (entry.reason === "active_editor") await this.retryOne(context, fileId);
++          if (entry.reason !== "") await this.retryOne(context, fileId);
+         }
+         await context.state.save();
+         this.status(this.resting());

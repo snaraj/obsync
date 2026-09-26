@@ -717,6 +717,7 @@ impl App {
             Route::Readyz => self.readyz(),
             Route::Setup => setup::create(self, req),
             Route::Account => setup::account(self, req, client),
+            Route::RecoveryRegister => setup::register_recovery(self, req, client),
             Route::PairingCreate => pairing::create(self, req, client),
             Route::PairingClaim(id) => pairing::claim(self, req, client, &id),
             Route::PairingState(id) => pairing::state(self, req, client, &id),
@@ -920,6 +921,7 @@ fn demands_credential(route: &Route) -> bool {
         // refusal is the `401` excluded below.
         Route::Login
         | Route::Account
+        | Route::RecoveryRegister
         | Route::PairingCreate
         | Route::PairingState(_)
         | Route::PairingApprove(_)
@@ -1008,6 +1010,8 @@ pub enum Route {
     Setup,
     /// `GET /v1/account`
     Account,
+    /// `POST /v1/account/recovery`
+    RecoveryRegister,
     /// `POST /v1/pairing`
     PairingCreate,
     /// `POST /v1/pairing/{id}/claim`
@@ -1084,6 +1088,9 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
 
         ("POST", ["v1", "setup"]) => (Route::Setup, "/v1/setup"),
         ("GET", ["v1", "account"]) => (Route::Account, "/v1/account"),
+        ("POST", ["v1", "account", "recovery"]) => {
+            (Route::RecoveryRegister, "/v1/account/recovery")
+        }
 
         ("POST", ["v1", "pairing"]) => (Route::PairingCreate, "/v1/pairing"),
         ("POST", ["v1", "pairing", id, "claim"]) => (

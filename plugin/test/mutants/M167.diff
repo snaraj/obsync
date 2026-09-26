@@ -1,0 +1,12 @@
+# M167: a save landing while the losing note is copied is written over by the kept version
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2078,7 +2078,7 @@
+         await release();
+         return edited ? await deferToPush(context, change, localPath) : await keepBoth(context, change, theirManifest);
+       }
+-      if (!(await unmoved(context, localPath, before))) {
++      if (false) {
+         // Saved while the copy was written: the note keeps its new text, and
+         // the copy holds what it had a moment ago.
+         await release();

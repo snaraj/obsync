@@ -1,0 +1,12 @@
+# M448: a synced file whose record was lost is published again under a new file id
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2226,7 +2226,7 @@
+       const note = own?.notes.get(file.path);
+       if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
+         const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
+-        if (isPushed(record, file.mtime, file.size)) {
++        if (isPushed(undefined, file.mtime, file.size)) {
+           context.state.setFile(file.path, record);
+           context.host.log(`${label} path_class=file decision=adopted reason=own_version file=${note.file_id}`);
+           adopted++;

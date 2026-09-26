@@ -1,0 +1,11 @@
+# M207: when the vault index cannot be read, every waiting deletion is published anyway, moved notes included
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -746,6 +746,7 @@
+         `watch decision=failed reason=vanished_unsettled files=${paths.length} budget_ms=${DEBOUNCE_MS} ` +
+           `duration_ms=${context.now() - started} error=${error instanceof Error ? error.message : String(error)}`,
+       );
++      for (const path of paths) { this.deletions.add(path); this.enqueue(path); }
+       return;
+     }
+     for (const path of left) this.leftScope(path);

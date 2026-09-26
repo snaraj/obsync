@@ -1,0 +1,12 @@
+# M239: every start and every Sync now writes a retry summary and a state save with nothing parked
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1746,7 +1746,7 @@
+   /** Try every parked record again: the timer's turn, the start, or Sync now. */
+   private retryParked(trigger: string): Promise<void> {
+     return this.exclusive(async () => {
+-      if (!this.running || Object.keys(this.options.state.data.parked).length === 0) return;
++      if (!this.running) return;
+       const context = this.need();
+       const started = context.now();
+       let released = 0;

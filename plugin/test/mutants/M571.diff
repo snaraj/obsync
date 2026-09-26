@@ -1,0 +1,12 @@
+# M571: a save during resume materialisation clears the hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2358,7 +2358,7 @@
+     throw new ManifestError("resume_peer_shape");
+   }
+   const landed = await materialise(context, restore, { ...record, mtime: before.mtime, size: before.size });
+-  if (landed === null) return "saved_meanwhile";
++  if (landed === null) return "ordinary";
+   await recordAt(context, { ...restored, file_id: fileId }, path, landed);
+   context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
+   return "kept_beside";

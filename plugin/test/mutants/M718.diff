@@ -1,0 +1,13 @@
+# M718: reserve the merge after writing, so a watcher upload can keep the old parent
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2214,8 +2214,8 @@
+         // enqueue a push during commit, and that push must inherit this merge's
+         // receipt rather than publish the new bytes onto the old parent.
+         context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
++        const stat = await writer.commit(context.now());
+         return await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
+-          const stat = await writer.commit(context.now());
+           tally.left = stamp(stat);
+           context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+           // The result is the INCOMING version's own bytes: that version already

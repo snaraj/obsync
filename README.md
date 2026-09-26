@@ -14,6 +14,10 @@ desktop can ([`docs/troubleshooting.md`](docs/troubleshooting.md)).
 Install it from Settings → Community plugins → Browse as **Self Hosted Private
 Sync** (plugin id `obsync-private-sync`), on Obsidian 1.13.0 or newer.
 
+Run it in your own homelab with [Docker Compose](docs/server.md) or
+[Kubernetes](docs/kubernetes.md). Use your home network, your own VPN, an HTTPS
+proxy, or a tunnel you choose. Cloudflare is optional.
+
 **New here? Start with the [setup guide](https://snaraj.github.io/obsync/setup/).** It helps you choose how your
 devices reach your server, says which setups have been proven on real devices, and
 walks through each one. In Obsidian it is one press away: **Settings → Self Hosted
@@ -81,7 +85,9 @@ server instead: [Run the server](docs/server.md).
 
 At first boot the server mints a setup token and writes it to its journal
 volume, mode 0600, never logged. It creates your account once and
-remains the dashboard's recovery sign-in: guard it like the recovery phrase.
+remains the dashboard's recovery sign-in. On an account with recovery registered,
+it also re-enrols a device when accompanied by proof of the vault key; guard it
+like the recovery phrase.
 Read it from the container:
 
 ```sh
@@ -105,7 +111,7 @@ shows; on iOS, trusting it is a second switch after installing.
 
    ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](docs/assets/settings-server.png)
 
-3. Paste the setup token under **First-time setup**, select **Set up**, and
+3. Paste the setup token under **Setup or recover**, select **Set up or recover**, and
    write down the 24-word recovery phrase.
 
    ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](docs/assets/settings-setup.png)
@@ -129,18 +135,11 @@ shows; on iOS, trusting it is a second switch after installing.
 Trying it on one computer? `http://127.0.0.1:8080` reaches the bare server on
 a desktop; Obsidian on iOS and Android refuses plain HTTP.
 
-Phone screenshots are not in this repository yet; they are taken on the
-maintainer's devices and added when a validation run records them.
+The [same-network guide](docs/same-network.md) includes actual iPhone setup
+screens. Each validation record names the version tested; unreleased desktop
+changes are not presented as phone results.
 
 Every step in full: [Quickstart](docs/quickstart.md).
-
-## Advanced: Cloudflare
-
-The reference deployment has no public hostname: a Cloudflare Tunnel and a
-private route reach the server's network, and each device's Cloudflare One
-client carries the Server URL there. A public hostname behind Cloudflare
-Access, with a service token in **Edge service-token headers** and
-`OBSYNC_EDGE=cloudflare`, also works. Both, step by step: [Cloudflare](docs/cloudflare.md).
 
 ## Other ways to reach your server
 
@@ -158,6 +157,14 @@ Which of these have been proven on real devices, and each one's guide:
 
 What a roaming device needs (route, name, certificate, firewall, iOS local-network
 prompt): [Reaching it from outside your LAN](docs/server.md#reaching-it-from-outside-your-lan).
+
+## Optional: Cloudflare
+
+One tested deployment has no public hostname: a Cloudflare Tunnel and a
+private route reach the server's network, and each device's Cloudflare One
+client carries the Server URL there. A public hostname behind Cloudflare
+Access, with a service token in **Edge service-token headers** and
+`OBSYNC_EDGE=cloudflare`, also works. Both, step by step: [Cloudflare](docs/cloudflare.md).
 
 ## Troubleshooting
 

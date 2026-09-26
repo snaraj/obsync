@@ -1,0 +1,11 @@
+# M301: a note typed where a pulled rename left, then deleted, is never deleted on the other devices
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -648,7 +648,6 @@
+     // tombstone.
+     const context = this.need();
+     context.trashed.delete(path);
+-    for (const mark of context.moved) if (mark.startsWith(`${path}\u0000`)) context.moved.delete(mark);
+     this.deletions.delete(path);
+     this.debounce(path, 0);
+   }

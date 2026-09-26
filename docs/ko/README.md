@@ -72,7 +72,7 @@ Caddy는 처음 시작할 때 스스로 만든 인증 기관으로 서명합니�
 
    ![플러그인의 설정 탭: 예시 호스트 이름이 들어 있는 Server URL 입력란, 엣지 헤더 상자, 그리고 Check와 Open dashboard 버튼이 있는 Connection 줄](../assets/settings-server.png)
 
-3. **First-time setup** 아래에 설정 토큰을 붙여 넣고 **Set up**을 선택한 뒤, 24단어 복구 문구를 받아 적으세요.
+3. **Setup or recover** 아래에 설정 토큰을 붙여 넣고 **Set up or recover**을 선택한 뒤, 24단어 복구 문구를 받아 적으세요.
 
    ![설정 탭의 This device 구역: Pair this device와 Pair a new device가 있는 Pairing 줄, Setup token 입력란과 Set up 버튼이 있는 First-time setup 줄, 그리고 Vault key 줄](../assets/settings-setup.png)
 

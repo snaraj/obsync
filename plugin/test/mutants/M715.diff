@@ -1,0 +1,12 @@
+# M715: a delayed merge receipt replaces a newer pulled identity
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3844,7 +3844,7 @@
+   context.authored.add(posted.versionId);
+   const digest = await sidDigest([sid]);
+   const current = context.state.fileByPath(path);
+-  if (current?.fileId !== expected?.fileId || current?.versionId !== expected?.versionId) {
++  if (current !== current && (current?.fileId !== expected?.fileId || current?.versionId !== expected?.versionId)) {
+     context.host.log(`pull decision=not_recorded reason=merge_record_advanced file=${change.file_id} seq=${change.seq}`);
+     return;
+   }

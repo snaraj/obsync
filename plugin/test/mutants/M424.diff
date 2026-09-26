@@ -1,0 +1,12 @@
+# M424: any Obsidian vault above, with any plugin at all, counts as a synced vault and refuses pairing
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -116,7 +116,7 @@
+  * community installer names after the directory identity. Only the names are
+  * looked at, never what is in them.
+  */
+-const PLUGIN_FOLDER = [".obsidian", "plugins", PAIRING_ACTION];
++const PLUGIN_FOLDER = [".obsidian", "plugins"];
+ 
+ /**
+  * How many folders above the vault root the nested-vault check looks at. A

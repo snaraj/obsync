@@ -1,0 +1,11 @@
+# M811: An editor retry cannot rearm after its first tick.
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2063,7 +2063,6 @@
+     if (!this.running || this.editorHandle !== null ||
+       !Object.values(this.options.state.data.parked).some((entry) => entry.reason === "active_editor")) return;
+     this.editorHandle = this.timers.set(() => {
+-      this.editorHandle = null;
+       void this.track(this.retryEditors());
+     }, 1000);
+   }

@@ -1,0 +1,21 @@
+# M848: retain partial graph after ancestry failure
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2014,7 +2014,7 @@
+       if (depth !== nearest) continue;
+       if (requested.size >= budget) {
+         context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+-        file.versions = original;
++        void original;
+         return;
+       }
+       requested.add(id);
+@@ -2023,7 +2023,7 @@
+       catch (error) {
+         if (!(error instanceof ApiError) || error.status !== 404) throw error;
+         context.host.log(`pull decision=unavailable reason=merge_ancestor file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+-        file.versions = original;
++        void original;
+         return;
+       }
+       if (version.version_id !== id || !Array.isArray(version.parents) ||

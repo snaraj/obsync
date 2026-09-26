@@ -1,0 +1,12 @@
+# M733: ignore side-only gaps and lose insertions
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -96,7 +96,7 @@
+   for (let at = 0; at <= base.length; at++) {
+     const there = at === base.length ? side.length : alignment.get(at);
+     if (there === undefined) continue;
+-    if (at > start || there > sideStart) {
++    if (at > start) {
+       const lines = side.slice(sideStart, there);
+       // A peer may already have combined appends to neighboring lines. LCS
+       // then groups them into one replacement, hiding the independent lines

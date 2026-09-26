@@ -1,0 +1,12 @@
+# M822: Retain forgotten authors outside the received ancestry graph.
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2048,7 +2048,7 @@
+   // Bound the bookkeeping by the version graph already received. Forgotten
+   // ancestry cannot prove independent progress and never exempts a loop.
+   const retained = new Set(file.versions.map(version => version.version_id));
+-  for (const [author, version] of remotes) if (!retained.has(version)) remotes.delete(author);
++  // Forgot to bound author bookkeeping.
+   tally.remote = remotes;
+   // Refused editor writes may still be in flight when another arrival
+   // reaches the limit. Wait before declaring a storm or preserving a copy;

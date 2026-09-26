@@ -1,0 +1,12 @@
+# M180: a refusal after an earlier unanswered attempt claims nothing was sent
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -143,7 +143,7 @@
+   // A connection refused on the only attempt is the one unanswered send that
+   // IS known: nothing reached the server. It is also what a missing or wrong
+   // port looks like, so the message names that (2026-09-24 battery, S08; #137).
+-  if (lost.attempts === 1 && REFUSED.test(lost.reason)) {
++  if (REFUSED.test(lost.reason)) {
+     return (
+       `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
+       "Check the Server URL, port included: it is the port your server publishes HTTPS on."

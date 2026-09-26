@@ -1,0 +1,11 @@
+# M190: a removal the filesystem refuses leaves an empty hidden folder behind
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1217,7 +1217,6 @@
+       // Nothing moved, so nothing is removed and the name is still the
+       // user's. A host that cannot make this move cannot make the promise.
+       this.log("host path_class=file decision=kept reason=move_refused");
+-      await fs.promises.rmdir(folder).catch(() => undefined);
+       await drop();
+       return "unheld";
+     }

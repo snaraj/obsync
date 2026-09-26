@@ -1,0 +1,11 @@
+# M573: Resume creates a redundant backup of its own known ancestor
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2270,7 +2270,6 @@
+     const file = await context.transport.getFile(fileId);
+     const record = context.state.fileByPath(path);
+     for (const head of file.heads) {
+-      if (record !== undefined && reaches(file.versions, record.versionId, head)) continue;
+       const version = file.versions.find((entry) => entry.version_id === head);
+       if (version === undefined) throw new Error("missing_head");
+       const manifest = await decryptRecordManifest(context, { ...version, file_id: fileId, domain_id: file.domain_id });

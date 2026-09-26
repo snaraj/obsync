@@ -76,17 +76,19 @@ export function formatBytes(bytes: number): string {
 
 /**
  * The inverse of `formatBytes` for the settings fields: accepts a plain byte
- * count, a unit form such as `512 MiB`, and the word `unlimited`. Returns
- * `null` for anything it cannot read, so a half-typed value never silently
- * becomes a ceiling of zero.
+ * count, a unit form -- decimal `1 MB` (1,000,000 bytes) or binary `512 MiB`
+ * -- and the word `unlimited`. Returns `null` for anything it cannot read, so
+ * a half-typed value never silently becomes a ceiling of zero; the field says
+ * so when it is left (`ui/settings.ts`). Decimal units used to be unreadable,
+ * and `1 MB` was dropped without a word (issue #150, S31).
  */
 export function parseBytes(text: string): number | null {
   const trimmed = text.trim().toLowerCase();
   if (trimmed === "" ) return null;
   if (trimmed === "unlimited" || trimmed === "0") return 0;
-  const match = /^(\d+(?:\.\d+)?)\s*(b|kib|mib|gib|tib)?$/.exec(trimmed);
+  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)?$/.exec(trimmed);
   if (!match) return null;
-  const scale = { b: 1, kib: 1024, mib: MIB, gib: GIB, tib: 1024 * GIB }[match[2] ?? "b"] ?? 1;
+  const scale = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12, kib: 1024, mib: MIB, gib: GIB, tib: 1024 * GIB }[match[2] ?? "b"] ?? 1;
   return Math.round(Number(match[1]) * scale);
 }
 

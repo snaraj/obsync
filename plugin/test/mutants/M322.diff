@@ -1,0 +1,12 @@
+# M322: a note whose tab Obsidian has not loaded yet counts as an open editor, so its deletion fails or is refused
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1586,7 +1586,7 @@
+     const views = this.plugin.app.workspace
+       .getLeavesOfType("markdown")
+       .map((leaf) => leaf.view)
+-      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
++      .filter((view): view is MarkdownView => (view as MarkdownView).file?.path === path);
+     const file = views[0]?.file;
+     if (!file) return null;
+     const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
