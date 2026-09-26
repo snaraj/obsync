@@ -91,6 +91,38 @@ All 773 current patches pass strict applicability without fuzz. Six pristine
 copies each pass the 1,200-test suite before the new frozen-input campaign.
 That campaign remains running; `MATRIX.md` is historical until completion.
 
+A later Mac restart interrupted six in-flight controls after 61 completed
+sections. The completed logs and interrupted source copies were preserved.
+All frozen inputs still matched the author tree. The six modified source
+files were restored to those hashes, and the campaign resumed from the first
+unfinished control in each lane. This was an environment interruption, not
+a measured mutation outcome. M518 subsequently retains all 21 failure names,
+including its three nested failures: 1,179 pass, 21 fail, zero cancelled or
+skipped, and 1,200 tests measured.
+
+## Repaired phone installation
+
+Both isolated desktop installations now contain the uninstrumented repaired
+bundle. The same bundle was downloaded to the physical phone in a
+credential-free archive and installed in the synthetic two-note vault.
+The plugin is enabled; the scoped rewrite fixture remains disabled.
+
+![The repaired plugin enabled on the phone](../assets/phone-candidate-113/editor-budget-installed.png)
+
+![The phone pairing dialog before any code was entered](../assets/phone-candidate-113/editor-budget-empty-pairing.png)
+
+These captures show the actual setup controls. Deterministic cropping removes
+unrelated settings and the background; metadata removal preserves every
+remaining pixel. No pairing code was captured. Mirroring locked during the
+subsequent UI-only code transfer and no claimant was confirmed. Pairing and
+native acceptance remain incomplete.
+
+Cleanup removed ten inactive QA directories or files, including the old
+server-recovery copies and unused isolated apps and vaults. Their measured
+receipts and screenshots remain available. The active desktop profiles,
+phone artifacts and QA containers are still needed for final acceptance and
+remain pending cleanup. Owner vaults were not involved.
+
 ## Earlier current-bundle desktop rewrite control
 
 Before the editor-budget repair, the `9cda676a…` bundle passed a scoped

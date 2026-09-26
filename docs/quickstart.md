@@ -129,7 +129,7 @@ isolation boundary. Native restart persistence is a separate validation step.
    device** applies it, and it is local, not copied by the pairing code.
    Files keep their relative folder names.
 
-   ![Self Hosted Private Sync installed and enabled on the phone](assets/phone-candidate-113/final-train-installed.png)
+   ![Self Hosted Private Sync installed and enabled on the phone](assets/phone-candidate-113/editor-budget-installed.png)
 
    ![The phone's fresh sync settings, with the Server URL field and Check button](assets/phone-candidate-113/final-train-unpaired.png)
 
@@ -143,7 +143,7 @@ isolation boundary. Native restart persistence is a separate validation step.
    under **Pairing code** and tap **Pair** — or open the link, which is the
    same dialog with the code already in it.
 
-   ![The phone's Pair this device dialog with an empty Pairing code field and Pair button](assets/phone-candidate-113/final-train-empty-pairing.png)
+   ![The phone's Pair this device dialog with an empty Pairing code field and Pair button](assets/phone-candidate-113/editor-budget-empty-pairing.png)
 
    This is the actual phone dialog, captured before entering a code. For
    certificate setup, follow [Add the phone](same-network.md#add-the-phone).
