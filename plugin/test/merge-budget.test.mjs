@@ -53,6 +53,31 @@ test("an ordinary failed write still consumes the merge budget", async () => {
   }
 });
 
+for (const mode of ["typing", "unsaved"]) test(`overlapping editor refusals cannot trip the breaker or create copies (${mode})`, async () => {
+  const r = await fork();
+  const writer = r.host.writer.bind(r.host);
+  let busy = true;
+  r.host.typing = () => busy && mode === "typing";
+  r.host.editing = async () => busy && mode === "unsaved" ? "unsaved" : "saved";
+  r.host.writer = async path => {
+    const pending = await writer(path);
+    return { ...pending, commit: async mtime => {
+      if (path === NOTE && busy) throw new EditorBusy();
+      return pending.commit(mtime);
+    } };
+  };
+  const outcomes = await Promise.allSettled(Array.from({ length: 8 }, () => applyChange(r.context, r.incoming)));
+  assert.ok(outcomes.every(outcome => outcome.status === "rejected" && outcome.reason.reason === "active_editor"));
+  assert.deepEqual([...r.host.files.keys()].filter(path => path.includes("(conflict")), []);
+  assert.equal(r.context.merges.get(r.base.fileId).count, 0, "all refused reservations were refunded");
+  assert.ok(!r.host.logs.some(line => line.includes("reason=merge_storm")));
+  assert.equal(r.host.logs.filter(line => line.includes("decision=waiting reason=active_editor phase=merge_limit")).length, 3);
+  busy = false;
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Desktop: STARTA\nPhone: STARTa");
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+});
+
 for (const reset of [false, true]) test(`a late editor refusal preserves a concurrent resolution's budget (new edit: ${reset})`, async () => {
   const r = await fork();
   const writer = r.host.writer.bind(r.host);

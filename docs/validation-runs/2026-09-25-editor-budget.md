@@ -4,6 +4,8 @@ This continues the [three-device typing campaign](2026-09-25-passive-peer-typing
 Final acceptance remains incomplete. The record below retains a failed
 matched-build run, two passing diagnostic replays, a separately reproduced
 accounting defect, and the resulting repair's automated checks.
+The later same-line desktop retest also failed; its passing adjacent-line
+control and the narrower follow-up repair are recorded below.
 
 ## Matched-build typing failure
 
@@ -78,6 +80,62 @@ zero cancellations, and pass after restoration. Eight inherited controls
 were recut without changing their defects and likewise fail their focused
 witnesses after compilation.
 
+## Native retest of the refund repair
+
+Two isolated desktop profiles ran the uninstrumented `599770e0…` bundle.
+The phone was not part of these measurements. Forty individual native key
+events on adjacent lines took 34.566 seconds, including a midpoint visual
+check. Both main notes held both complete twenty-letter sequences. The
+target's seventeen existing copies and the vault's 99 existing copies did
+not increase. Checksummed journal replay found one head, 309 stored versions
+and no paused note. This is a settled snapshot, not a five-minute quiet run.
+
+![First desktop after adjacent-line typing](../assets/phone-candidate-113/editor-budget-desktop-lan.png)
+
+![Second desktop with the same complete text](../assets/phone-candidate-113/editor-budget-desktop-peer.png)
+
+These are deterministic note-area crops of actual app captures. The word
+“Phone” is the synthetic fixture's line label; both captures are desktops.
+The retained decoded pixels are unchanged and embedded metadata is removed.
+
+The subsequent same-line schedule failed. Forty native key events took
+16.556 seconds. Both main notes retained the complete lowercase sequence,
+but not the uppercase sequence. Three additional copies appeared, including
+one with the full uppercase input. The server held one head and 327 stored
+versions. Preserving that input in a copy does not meet the same-line merge
+requirement. Temporary diagnostics were then installed only in the two QA
+profiles, but native accessibility reads timed out before a failing trace
+could be captured. The causal link below remains unproven.
+
+## Overlapping editor refusals
+
+Eight concurrent attempts exposed another accounting case: five pending
+editor writes occupied the budget before their refusals refunded it. Later
+arrivals declared a storm and created a copy. The follow-up waits when the
+budget is exhausted and the host reports unsaved input or recent typing.
+It does not reserve another attempt or declare a storm while those refused
+writes are still pending. The limit and ordinary error accounting remain
+unchanged; the wait emits a structured decision.
+
+A broader early-wait experiment was rejected because the full suite showed
+that it delayed required rewrite-conflict handling. The final change keeps
+the original co-typing tests and rewrite behavior intact. Two new regressions
+exercise overlapping refusals for unsaved input and recent typing, then
+require complete main-note convergence and one server head after typing ends.
+All 75 focused retry, budget and rewrite tests pass.
+
+The narrower change passed `make check` in 228.931 seconds with unchanged
+source and test hashes: 1,202 plugin tests, 70 dashboard tests, 144 core tests,
+375 server tests, two CLI tests, 767 repository contracts, 94.73% Rust line
+coverage and both secret scans. One core benchmark is intentionally ignored.
+M829–M832 apply, compile and fail behavioral assertions with zero
+cancellations, then pass after restoration. M822 and M823 were recut without
+changing their defects and likewise fail their focused witnesses. Native
+acceptance of this additional repair remains outstanding.
+
+Follow-up bundle SHA-256:
+`8994ae22d80b22b8a9ae49220fe8af0fe1ed92fb3f2dc5fd21bcb187d952201a`.
+
 ## Mutation recording
 
 The preceding 769-control campaign stopped when M518 reported 21 failures
@@ -87,9 +145,11 @@ contains 285 completed sections, with all six source copies restored. It
 is retained as partial evidence, not a complete matrix result.
 
 The runner now retains indented failure lines and the recorder reads them.
-All 773 current patches pass strict applicability without fuzz. Six pristine
+All 773 patches at the refund repair passed strict applicability without fuzz. Six pristine
 copies each pass the 1,200-test suite before the new frozen-input campaign.
-That campaign remains running; `MATRIX.md` is historical until completion.
+That campaign was later paused at 179 completed sections after the native
+same-line failure above, with all six source copies restored. It is partial
+evidence; `MATRIX.md` remains historical until a complete final campaign.
 
 A later Mac restart interrupted six in-flight controls after 61 completed
 sections. The completed logs and interrupted source copies were preserved.
@@ -102,8 +162,8 @@ skipped, and 1,200 tests measured.
 
 ## Repaired phone installation
 
-Both isolated desktop installations now contain the uninstrumented repaired
-bundle. The same bundle was downloaded to the physical phone in a
+Both isolated desktop installations received the uninstrumented refund
+repair before the retest above. The same bundle was downloaded to the physical phone in a
 credential-free archive and installed in the synthetic two-note vault.
 The plugin is enabled; the scoped rewrite fixture remains disabled.
 
@@ -121,7 +181,10 @@ Cleanup removed ten inactive QA directories or files, including the old
 server-recovery copies and unused isolated apps and vaults. Their measured
 receipts and screenshots remain available. The active desktop profiles,
 phone artifacts and QA containers are still needed for final acceptance and
-remain pending cleanup. Owner vaults were not involved.
+remain pending cleanup. A further eighteen inactive rig instances and their
+old QA symlinks were removed after process and mount checks, reclaiming about
+12.7 GiB. Their reports, screenshots and logs were retained. Owner vaults
+were not involved.
 
 ## Earlier current-bundle desktop rewrite control
 

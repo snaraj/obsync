@@ -127,8 +127,8 @@ while another device's version is arriving is never written over, and the
 status bar no longer reads `idle` while a note is still being settled. Incoming
 updates wait while this note has unsaved text or you have typed in it during
 the last ten seconds, then retry automatically. Other notes keep syncing.
-Waiting for an active editor no longer consumes the merge limit or creates
-a conflict copy before a merged write has completed.
+Attempts refused while you type no longer consume the merge limit.
+Overlapping attempts wait at that limit while the editor is busy.
 This prevents Obsidian's own external-change merge from rewriting an editor
 while obsync is reconciling the same text. Delayed
 upload receipts no longer put an older version back into the device's records.

@@ -1,12 +1,12 @@
 # M823: Forget the per-author progress map between resolutions.
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2046,7 +2046,7 @@
+@@ -2049,7 +2049,7 @@
    // ancestry cannot prove independent progress and never exempts a loop.
    const retained = new Set(file.versions.map(version => version.version_id));
    for (const [author, version] of remotes) if (!retained.has(version)) remotes.delete(author);
 -  tally.remote = remotes;
 +  // Forgot to retain progress.
-   tally.count++;
-   context.merges.set(change.file_id, tally);
-   const prior = tally.left;
+   // Refused editor writes may still be in flight when another arrival
+   // reaches the limit. Wait before declaring a storm or preserving a copy;
+   // those reservations will be refunded when their commit checks finish.

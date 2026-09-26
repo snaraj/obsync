@@ -2050,6 +2050,15 @@ async function reconcile(
   const retained = new Set(file.versions.map(version => version.version_id));
   for (const [author, version] of remotes) if (!retained.has(version)) remotes.delete(author);
   tally.remote = remotes;
+  // Refused editor writes may still be in flight when another arrival
+  // reaches the limit. Wait before declaring a storm or preserving a copy;
+  // those reservations will be refunded when their commit checks finish.
+  // Ordinary resolutions and rewrite detection retain their normal path.
+  if (tally.count >= MERGE_STORM_LIMIT &&
+    (await context.host.editing(localPath) === "unsaved" || context.host.typing(localPath))) {
+    context.host.log(`pull decision=waiting reason=active_editor phase=merge_limit file=${change.file_id} seq=${change.seq}`);
+    throw new EditorBusy();
+  }
   tally.count++;
   context.merges.set(change.file_id, tally);
   const prior = tally.left;
