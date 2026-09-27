@@ -370,7 +370,7 @@ no access of any kind.
    past its ten minutes, approved or not) leaves nothing behind: pair again
    with a new code.
 
-<!-- CAPTURE(1.1.4): the approval question with the pairing match code -->
+![Pair a new device on the device that made the code: Approve "Mac WKJN" (Mac, obsync 1.1.4)? Approve only if the new device shows the code 667 151. It will sync vault "rig-C" (0 notes). Approve and Reject below](assets/pair-approve-match-code.png)
 
 ## The plugin says this device is not paired
 
@@ -414,7 +414,7 @@ of those gave the same refusal.
    again.
 4. Keep the token private: anyone holding it can sign in to your dashboard.
 
-<!-- CAPTURE(1.1.4): the Setup or recover row with its masked Setup token field -->
+![The Setup or recover row under Pairing on a new device, its Setup token field masked, beside Set up or recover](assets/settings-new-device.png)
 
 ## Pairing says the code is not valid
 
@@ -800,7 +800,7 @@ untouched.
 4. To add a device, pair it. Copying a vault by hand, or renaming its folder,
    is not a way to add one.
 
-<!-- CAPTURE(1.1.4): Settings on a copied vault: the copy notice with Pair this device and Start fresh -->
+![This device on a copied vault: Pairing reads This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh. Pair this device and Start fresh beside it](assets/settings-copied-vault.png)
 
 ## A file is not syncing
 

@@ -110,7 +110,7 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    The plugin creates the account and this device, and makes the vault key
    on this computer.
 
-   <!-- CAPTURE(1.1.4): the This device section on a new device: Pairing, and the Setup or recover row with its masked Setup token field -->
+   ![The This device section on a new device: Pairing reads Not paired yet, and Setup or recover holds the masked Setup token field beside Set up or recover](assets/settings-new-device.png)
 
 6. It then shows the **recovery phrase**, 24 words, and asks for three of
    them to check you wrote them down. Write it down and keep it off this

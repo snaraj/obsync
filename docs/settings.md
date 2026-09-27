@@ -50,11 +50,11 @@ independently; no re-pairing or state reset is needed.
 
 ## This device
 
-![The This device section on a paired computer: Pairing with its device id covered, Name set to Laptop, both download limits, Save to server, and Leave this server with Leave and Switch server](assets/settings-this-device.png)
+![The This device section on a paired computer: Pairing reads Paired as Mac WKJN (Mac), Name holds that name the plugin made up, both download limits read unlimited, then Save to server, and Leave this server with Leave and Switch server](assets/settings-this-device.png)
 
 On a device that is not paired yet, this section also shows **Setup or recover**.
 
-<!-- CAPTURE(1.1.4): the This device section on a new device, with the Setup or recover row and its masked Setup token field -->
+![The This device section on a new device: Pairing reads Not paired yet, with Pair this device and a greyed Pair a new device, and Setup or recover holds a masked Setup token field beside Set up or recover](assets/settings-new-device.png)
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
