@@ -32,7 +32,8 @@ and the notes below say where a mixed pair behaves differently.
 - **If you copied the Kubernetes guide's TLS front**, give its `proxy_pass`
   name a trailing dot (`obsync.obsidian.svc.cluster.local.`): without it,
   nginx can fail to start where the cluster's search domains are tried
-  first, as in an IPv6-only cluster.
+  first, as in an IPv6-only cluster. In a dual-stack or IPv6-only cluster,
+  also uncomment its `listen [::]:8443 ssl;` line (#226).
 - **Behind a proxy or tunnel**, the server believes forwarding headers only
   from addresses in `OBSYNC_TRUSTED_PROXY_CIDRS` (in `cloudflare` mode, the
   private networks when it is empty). A connector on a public address must be
@@ -339,7 +340,8 @@ effect in about a second,** with **Cancel** beside the file it is stopping
 (#185).
 
 **On Linux without a keyring**, the docs now say that Obsidian keeps obsync's
-keys protected only by your home folder's permissions, and what to do (#217).
+keys unencrypted, protected only by your home folder's permissions, that
+Obsidian says so with a notice from its next start, and what to do (#217).
 
 ### Running a server
 
@@ -394,6 +396,14 @@ link** left at its file name (#202).
 change-feed page with a higher `seq` is normal (#218). The shipped **nginx
 configuration** starts on nginx 1.24 and under systemd (#215).
 
+**The Kubernetes guide says which `listen` lines its TLS front needs.** Its
+example listened on IPv4 alone, so in an IPv6-only cluster the front
+answered a port-forward and nothing else. The guide now shows the IPv6 line
+to uncomment for dual-stack and IPv6-only clusters, says why the example
+ships without it (nginx stops on a node whose kernel has no IPv6), and how
+to tell which cluster you have. CI reaches the front through its Service in
+an IPv4 and an IPv6 cluster (#226).
+
 ### The project
 
 **Speed is measured.** A benchmark harness and a nightly CI run time a
@@ -413,7 +423,9 @@ store, with the `certutil` command CI runs. Android gets a publicly trusted
 certificate over DNS-01 that needs no open port. The same-network guide has
 one table per server system, and the setup and validation pages name every
 route by what it is, say which CI job proves it, and say plainly which
-clients have not been recorded on a real device. The chart no longer puts
+clients have not been recorded on a real device. CI runs real Obsidian on
+Linux with GNOME Keyring and without one, and restarts it on the keys it
+kept. The chart no longer puts
 one deployer's platform annotations on everyone's cluster (#201).
 
 **Troubleshooting grew with this release**: every failure met while testing

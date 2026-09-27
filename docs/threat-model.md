@@ -130,7 +130,8 @@ Native app-restart persistence remains separate acceptance evidence.
    asymmetric surface, and constant-time construction by design; a
    dedicated security review is required before any primitive changes.
 8. On Linux, Obsidian's secret storage is only as private as the desktop's
-   keyring: without one it still keeps the vault key and device secret
-   (Obsidian 1.13.7, issue #217), protected then by the home folder's
+   keyring: without one it still keeps the vault key and device secret,
+   unencrypted (Obsidian 1.13.7, issue #217; from its next start Obsidian
+   shows a notice saying so), protected then by the home folder's
    permissions alone. Obsidian's API does not say which storage it uses, so
    the plugin cannot detect it; `docs/community-plugin.md` tells the user.

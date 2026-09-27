@@ -37,7 +37,7 @@ server again unless the entry says so.
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
-| You use Linux without a keyring, and want to know how obsync's keys are kept | [On Linux, the keys may not be in a keyring](#on-linux-the-keys-may-not-be-in-a-keyring) |
+| On Linux, Obsidian says secrets are stored without encryption, or you use no keyring and want to know how obsync's keys are kept | [On Linux, the keys may not be in a keyring](#on-linux-the-keys-may-not-be-in-a-keyring) |
 
 **Your notes and folders**
 
@@ -490,18 +490,20 @@ device is lost. The server never has it and cannot give it back.
 
 ## On Linux, the keys may not be in a keyring
 
-**What you see.** Nothing. On a Linux desktop with no keyring running, such
-as a minimal window manager or a container, setup and pairing work as they do
-anywhere else, and neither Obsidian nor obsync warns you.
+**What you see.** On a Linux desktop with no keyring running, such as a
+minimal window manager or a container, setup and pairing work as they do
+anywhere else. From the next time Obsidian starts, it shows a notice that
+stays until you dismiss it: "Secrets are stored without encryption because no secret store is available on this system."
 
 **Why it happens.** obsync keeps the vault key and this device's secret in
 Obsidian's secret storage
 ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)).
 On Linux that storage relies on the desktop's keyring, such as GNOME Keyring
-or KWallet. Without one, Obsidian still accepts and keeps the keys (seen with
-Obsidian 1.13.7), and they are then protected only by your home folder's
-permissions. Obsidian does not tell plugins which storage it uses, so obsync
-cannot tell you which case you are in.
+or KWallet. Without one, Obsidian still accepts the keys and keeps them
+unencrypted in its own storage in your home folder (seen with Obsidian
+1.13.7), protected only by that folder's permissions. Obsidian does not tell
+plugins which storage it uses, so obsync cannot tell you which case you are
+in; Obsidian's notice is the sign.
 
 **How to fix it.**
 

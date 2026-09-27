@@ -66,10 +66,11 @@ describes the storage itself.
 
 **On Linux**, that storage is only as strong as your desktop's keyring, such as
 GNOME Keyring or KWallet. Without one, as on a minimal window manager or in a
-container, Obsidian still accepts and keeps the keys (seen with Obsidian
-1.13.7), and nothing warns you. They are then protected only by your home
-folder's permissions. Obsidian does not tell plugins which storage it uses, so
-obsync cannot warn you either:
+container, Obsidian still accepts the keys and keeps them unencrypted (seen
+with Obsidian 1.13.7), protected only by your home folder's permissions.
+Nothing warns you at setup; from its next start Obsidian shows a notice that
+secrets are stored without encryption. Obsidian does not tell plugins which
+storage it uses, so obsync cannot warn you itself:
 [On Linux, the keys may not be in a keyring](troubleshooting.md#on-linux-the-keys-may-not-be-in-a-keyring)
 says what to do.
 
