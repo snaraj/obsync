@@ -100,9 +100,9 @@ doing and why it is not doing more.
 
 ## The device cannot reach the server
 
-**What you see.** The status bar shows the device is offline
-(TODO(1.1.4-text); up to 1.1.3 it reads `obsync: offline — retrying`), and
-nothing syncs in either direction.
+**What you see.** The status bar shows a cloud with a line through it, whose
+words read `obsync: offline — retrying` (up to 1.1.3 the bar shows those words
+themselves), and nothing syncs in either direction.
 
 **Why it happens.** The device cannot reach the server at the **Server URL** in
 settings, or reaches something that is not the server. The plugin keeps trying
@@ -127,6 +127,13 @@ seconds after the server came back.
 6. If you run the server, check it is serving: `https://<your name>/readyz` in
    a browser shows `{"ready":true,...}`. If it shows `not_ready`, the server's
    log names the volume that is the problem ([Storage](storage.md)).
+7. If the Server URL ends in `trycloudflare.com`, it is a Cloudflare quick
+   tunnel. Its address stops working when the tunnel restarts or loses its
+   connection, and the new tunnel gets a different address, so every device
+   stays offline until you paste the new one into **Server URL**. A quick
+   tunnel has no access policy either: it is for a short test with a
+   throwaway vault. For daily use, pick a shape in [Cloudflare](cloudflare.md)
+   or [reach the server another way](server.md#reaching-it-from-outside-your-lan).
 
 ## Obsidian asks for an https address
 

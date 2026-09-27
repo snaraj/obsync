@@ -7,7 +7,7 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.4 - Unreleased
 
-## 1.1.3 - Unreleased
+## 1.1.3 - 2026-09-26
 
 **Turning obsync off and on during an upload no longer loses track of your
 files, or deletes one.** When you turned obsync off and on again in Community
