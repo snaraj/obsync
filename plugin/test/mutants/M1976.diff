@@ -1,0 +1,12 @@
+# M1976: a push whose note went away flashes an error
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1845,7 +1845,7 @@
+       }
+       // Nor is a path that went away while it waited its turn (issue #164):
+       // what happened to it is its own event's to publish.
+-      if (error instanceof PathGone) {
++      if (error instanceof PathGone && path === "") {
+         context.host.log("push path_class=file decision=stood_down reason=path_gone");
+         return;
+       }

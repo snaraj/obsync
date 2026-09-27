@@ -1373,7 +1373,10 @@ async function openEditing(
  * than what failed -- and WHY, in the words that are true here (issue #173):
  * the fork guard keeps a version that is already on the server, where saying
  * it holds changes not uploaded yet sent the user looking for an upload that
- * never happens.
+ * never happens. ONE EVENT, ONE NOTICE (issue #164): the feed and a push's own
+ * reconciliation can each deliver one tombstone, and whichever branch the
+ * second delivery reaches, it says nothing more. A deletion the revive settled
+ * says nothing at all (#178).
  */
 function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string, onServer: boolean): void {
   if (context.refused.has(change.file_id)) return;
@@ -2317,6 +2320,14 @@ async function resolve(
           }
         }
         const text = new TextEncoder().encode(merged.text);
+        // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
+        // first download, or a replay from zero, meets forks that other devices
+        // edited and merged before this one joined, and the person here edited
+        // neither side: the note is announced only when one side is this
+        // device's own version, or holds an edit made here not pushed yet.
+        const recorded = context.state.fileByPath(localPath);
+        const ours = ownHead?.device_id === context.deviceId ||
+          (before !== null && (recorded?.mtime !== before.mtime || recorded.size !== before.size));
         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
         // kept a conflict copy of every version another device sent while
         // someone typed here (issue #135). Merging it in here instead would
@@ -2400,8 +2411,8 @@ async function resolve(
             context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
           }
           await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
-          context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
-          context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
+          if (ours) context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
+          context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
           return "merged";
         });
       }
@@ -3906,10 +3917,40 @@ async function keepBothRecorded(
   change: ChangeRecord,
   manifest: Manifest,
 ): Promise<ApplyResult> {
-  const copy = await keepBothAt(context, change, manifest);
+  const copy = await keepBothAt(context, change, manifest, context.copies === undefined);
   if (copy === null) return "refused";
   await recordAt(context, change, copy.path, copy.stat, manifest.path);
+  // THE NAME IS NOT THIS DEVICE'S TO GIVE (issue #164). The device holding
+  // that file id moves its own note aside under a name it chooses and
+  // publishes the move, which renames this copy a second later: a notice
+  // naming the copy now named a file nobody could find. So it waits for the
+  // name to settle (`announceCopies`).
+  context.copies?.set(change.file_id, { name: manifest.path, at: context.now() });
   return "conflict_copy";
+}
+
+/**
+ * How long a copy's announcement waits for the device that owns its name to
+ * move its own note aside. That move arrives within seconds when it comes at
+ * all; a phone never makes one (`moveAside`), and then the name here is final.
+ */
+export const COPY_SETTLE_MS = 10_000;
+
+/**
+ * Announce the copies whose name has SETTLED -- the note sits at a name of its
+ * own, which is what the owning device's rename leaves -- or has waited
+ * `COPY_SETTLE_MS`, or every one when `now` is set (the engine stopping).
+ * Each is named where it is at that moment, never where it was first written.
+ */
+export function announceCopies(context: SyncContext, now = false): void {
+  for (const [fileId, copy] of context.copies ?? []) {
+    const path = context.state.pathByFileId(fileId);
+    const settled = path === undefined || context.state.fileByPath(path)?.name === undefined;
+    if (!now && !settled && context.now() - copy.at < COPY_SETTLE_MS) continue;
+    context.copies?.delete(fileId);
+    if (path === undefined) continue;
+    context.host.notify(`obsync kept both versions of ${copy.name}. The other device's copy is "${path}".`);
+  }
 }
 
 /**
@@ -3956,11 +3997,12 @@ async function keepBoth(
   return (await keepBothAt(context, change, theirManifest)) === null ? "refused" : "conflict_copy";
 }
 
-/** The same, returning where the copy landed, and what it landed as. */
+/** The same, returning where the copy landed, and what it landed as; `announce` says so now. */
 async function keepBothAt(
   context: SyncContext,
   change: ChangeRecord,
   theirManifest: Manifest,
+  announce = true,
 ): Promise<{ path: string; stat: VaultStat } | null> {
   const copy = await writeCopy(
     context,
@@ -3980,9 +4022,11 @@ async function keepBothAt(
     );
     return null;
   }
-  context.host.notify(
-    `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
-  );
+  if (announce) {
+    context.host.notify(
+      `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
+    );
+  }
   context.host.log(
     `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
   );

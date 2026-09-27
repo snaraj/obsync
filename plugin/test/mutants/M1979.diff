@@ -1,0 +1,12 @@
+# M1979: a copy is named before the device that owns its name has moved it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3984,7 +3984,7 @@
+   change: ChangeRecord,
+   manifest: Manifest,
+ ): Promise<ApplyResult> {
+-  const copy = await keepBothAt(context, change, manifest, context.copies === undefined);
++  const copy = await keepBothAt(context, change, manifest, true);
+   if (copy === null) return "refused";
+   await recordAt(context, change, copy.path, copy.stat, manifest.path);
+   // THE NAME IS NOT THIS DEVICE'S TO GIVE (issue #164). The device holding

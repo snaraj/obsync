@@ -74,9 +74,9 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
 import { publishPause } from "./pause";
-import { pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
+import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
@@ -354,6 +354,13 @@ export interface SyncContext {
    * the pull path runs without an engine behind it.
    */
   readonly signal?: AbortSignal;
+  /**
+   * Conflict copies waiting for their final name before they are announced
+   * (`pull.ts`, `announceCopies`, issue #164): by file id, the name of the note
+   * they sit beside and when. Absent where no engine runs to announce them,
+   * and then a copy is announced as it is made.
+   */
+  readonly copies?: Map<string, { name: string; at: number }>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -769,6 +776,7 @@ export class SyncEngine {
       forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
       signal,
+      copies: new Map(),
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -816,6 +824,9 @@ export class SyncEngine {
    * word comes from `stopAndWait`, once nothing of this engine's runs.
    */
   stop(): void {
+    // A copy still waiting for its final name is announced where it is: a
+    // stop must not swallow the one notice that says it exists.
+    if (this.contextValue !== null) announceCopies(this.contextValue, true);
     this.cancelled = true;
     this.running = false;
     this.halt.abort();
@@ -1883,6 +1894,12 @@ export class SyncEngine {
         context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
         return;
       }
+      // Nor is a path that went away while it waited its turn (issue #164):
+      // what happened to it is its own event's to publish.
+      if (error instanceof PathGone) {
+        context.host.log("push path_class=file decision=stood_down reason=path_gone");
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       context.host.log(`push path_class=file decision=failed reason=${message}`);
       if (error instanceof ApiError && error.code === "domain_mismatch") {
@@ -2492,6 +2509,7 @@ export class SyncEngine {
     }
     context.state.data.lastSeq = page.seq;
     await context.state.save();
+    announceCopies(context);
     // EVERY ANSWERED PAGE, EMPTY OR NOT (issue #158): an `offline` the feed
     // said is taken back by the next answer, not by the next page that
     // happens to carry a change -- which kept every device reading `offline —
@@ -2588,6 +2606,9 @@ export class SyncEngine {
 
   private async scanLocal(): Promise<void> {
     const context = this.need();
+    // A copy whose name no device settled is announced within one scan of
+    // `COPY_SETTLE_MS`, even while the feed brings nothing (issue #164).
+    announceCopies(context);
     try {
       // FIRST, so the listing below sees where they went: a note waiting
       // beside its name for one this device's own user has since freed

@@ -1,0 +1,12 @@
+# M1978: a fresh device announces merges it took no part in
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2478,7 +2478,7 @@
+             context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
+           }
+           await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
+-          if (ours) context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
++          context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
+           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
+           return "merged";
+         });

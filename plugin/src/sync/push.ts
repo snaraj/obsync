@@ -143,6 +143,16 @@ export interface PushOutcome {
 }
 
 /**
+ * The file a push was asked for is no longer there (issue #164). Not a
+ * failure: a note renamed, deleted or moved with its folder between the queue
+ * and the read has an event of its own, and that event decides what is
+ * published. No path in the message, because a name is vault content.
+ */
+export class PathGone extends Error {
+  constructor() { super("push: path_gone"); }
+}
+
+/**
  * Remember a tombstone this device published or applied, for the one case
  * that needs it again: a server restored from a backup that predates it
  * (`restore.ts`, issue #145). The cap's drop is logged, never silent.
@@ -287,7 +297,7 @@ export function reviveFile(context: SyncContext, path: string, tombstone: string
 async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
-  if (!stat) throw new Error(`push: ${path} disappeared`);
+  if (!stat) throw new PathGone();
   const record = context.state.fileByPath(path);
   const fileId = record?.fileId ?? hex(randomBytes(16));
   const domain = context.domainId;
