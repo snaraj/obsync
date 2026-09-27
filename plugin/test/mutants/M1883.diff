@@ -1,0 +1,12 @@
+# M1883: the edge headers are saved on every keystroke again (#183)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -328,7 +328,7 @@
+         setting.addTextArea((area) => {
+           area
+             .setValue(this.draftHeaders ?? headerLines(this.plugin.state.data.edgeHeaders))
+-            .onChange((value) => { this.draftHeaders = value; });
++            .onChange((value) => { this.draftHeaders = value; this.adoptEdgeHeaders(); });
+           // Saved when the field is left, as Server URL is, never per
+           // keystroke: every prefix with a colon in it used to be stored on
+           // the way (issue #183, S69).

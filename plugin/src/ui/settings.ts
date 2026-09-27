@@ -39,7 +39,8 @@ import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
-import type { DeviceRecord } from "../transport";
+import type { EdgeHeader } from "../state";
+import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst, secretText } from "./modals";
 
@@ -114,6 +115,79 @@ export function serverUrlRefusal(url: string, isMobile: boolean): string | null 
     : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
 }
 
+/** The form every edge-header refusal ends with. No provider is named (`PROVIDER NEUTRALITY` above). */
+const HEADER_FORM = "Write one header per line as Name: value, for example X-Access-Id: 1234.";
+const QUOTES = "\"'“”‘’";
+/** What a header copied out of a command line carries around it: `-H`/`--header`, and a trailing `\`. */
+const FLAG = /^(?:-H|--header)(?=[\s=\"'“”‘’])[\s=]*/;
+const CONTINUATION = /\s+\\$/;
+
+/** One character, as a person can find it again in what they typed. */
+function character(char: string): string {
+  const code = `U+${(char.codePointAt(0) as number).toString(16).toUpperCase().padStart(4, "0")}`;
+  if ("“”‘’".includes(char)) return `a curly quote (${char}). Use straight quotes, or none`;
+  if (/[\s\p{C}]/u.test(char)) return `an invisible character (${code}). Delete it and type the line again`;
+  return `"${char}" (${code}), and a header can carry only plain ASCII letters, digits and punctuation. Retype it`;
+}
+
+/**
+ * The edge headers as typed, or the first line that cannot be sent and why
+ * (issue #183). A line copied out of a command line -- `-H "Name: value"`,
+ * `--header='Name: value'`, a trailing `\` -- or wrapped in quotes, straight
+ * or curly, is unwrapped, and `trimmed` says so. Anything else that is not
+ * `Name: value` with an HTTP token for a name and plain printable ASCII for a
+ * value is refused, naming the line and the character: saved as it was, the
+ * platform dropped such a header or sent curly quotes as the value, and the
+ * proxy turned every request away with nothing in obsync pointing here.
+ * Names obsync sets itself are refused too (`ownHeader`).
+ */
+export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed: string[] } | { refusal: string; reason: string } {
+  const headers: EdgeHeader[] = [];
+  const trimmed: string[] = [];
+  const lines = text.split(/\r?\n/);
+  for (const [index, typed] of lines.entries()) {
+    const where = `line ${index + 1}`;
+    let line = typed.trim();
+    if (line === "") continue;
+    let offset = typed.indexOf(line);
+    const cut: string[] = [];
+    const flag = FLAG.exec(line);
+    if (flag !== null) {
+      cut.push(`a pasted ${flag[0].trim().replace(/=$/, "")}`);
+      offset += flag[0].length;
+      line = line.slice(flag[0].length);
+    }
+    if (CONTINUATION.test(line)) {
+      cut.push("a trailing \\");
+      line = line.replace(CONTINUATION, "");
+    }
+    if (line.length >= 2 && QUOTES.includes(line[0] as string) && QUOTES.includes(line[line.length - 1] as string)) {
+      cut.push("quotes");
+      offset += 1;
+      line = line.slice(1, -1);
+    }
+    if (cut.length !== 0) trimmed.push(`Trimmed ${cut.join(" and ")} from ${where}.`);
+    const odd = /[^\t\x20-\x7e]/u.exec(line);
+    if (odd !== null) {
+      const at = Array.from(typed.slice(0, offset + odd.index)).length + 1;
+      return { refusal: `${where}, character ${at}, is ${character(odd[0])}.`, reason: "not_ascii" };
+    }
+    const colon = line.indexOf(":");
+    if (colon < 0) return { refusal: `${where} has no colon. ${HEADER_FORM}`, reason: "no_colon" };
+    const name = line.slice(0, colon).trim(), value = line.slice(colon + 1).trim();
+    if (name === "") return { refusal: `${where} has no header name before the colon. ${HEADER_FORM}`, reason: "no_name" };
+    const bad = Array.from(name).find((char) => !HEADER_NAME.test(char));
+    if (bad !== undefined) {
+      const shown = bad === " " ? "a space" : bad === "\t" ? "a tab" : QUOTES.includes(bad) ? `a quote (${bad})` : `"${bad}"`;
+      return { refusal: `${where}: a header name cannot contain ${shown}. ${HEADER_FORM}`, reason: "bad_name" };
+    }
+    if (ownHeader(name)) return { refusal: `${where}: obsync sets ${name} itself, so it cannot be an edge header. Remove that line.`, reason: "own_header" };
+    if (value === "") return { refusal: `${where} has no value after the colon. ${HEADER_FORM}`, reason: "no_value" };
+    headers.push({ name, value });
+  }
+  return { headers, trimmed };
+}
+
 /**
  * Every refusal of the folder rule, in words. The refusal's code goes to the
  * log and never to the person: "refused: not a vault path (hidden_segment)"
@@ -121,6 +195,10 @@ export function serverUrlRefusal(url: string, isMobile: boolean): string | null 
  */
 const SELECTION_REFUSED =
   "That selection cannot be saved: each line must be a folder inside this vault, such as Notes or Projects/2026. Folders whose names start with a dot are hidden and never synced.";
+
+function headerLines(headers: EdgeHeader[]): string {
+  return headers.map((header) => `${header.name}: ${header.value}`).join("\n");
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -146,6 +224,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private draftUrl: string | null = null;
   /** Stops the Connection row following the status, when the tab closes. */
   private unwatch: (() => void) | null = null;
+  private draftHeaders: string | null = null;
 
   constructor(
     app: App,
@@ -171,6 +250,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   override hide(): void {
     // Closing Settings is leaving the field: what was typed is adopted, not lost.
     this.adoptServerUrl();
+    this.adoptEdgeHeaders();
     super.hide();
     this.unwatch?.();
     this.unwatch = null;
@@ -250,23 +330,39 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private edgeHeaders(): Row {
     return {
       name: "Edge service-token headers",
-      desc: "One header per line, written as name: value, for a deployment with an access-controlled proxy in front of the server. Leave empty otherwise.",
+      desc: "One header per line, written as Name: value, for a deployment with an access-controlled proxy in front of the server. A header pasted from a command line is trimmed to that form. Leave empty otherwise.",
       render: (setting) => {
-        setting.addTextArea((area) => area
-          .setValue(this.plugin.state.data.edgeHeaders.map((header) => `${header.name}: ${header.value}`).join("\n"))
-          .onChange((value) => {
-            this.plugin.state.data.edgeHeaders = value
-              .split("\n")
-              .map((line) => line.trim())
-              .filter((line) => line.includes(":"))
-              .map((line) => ({
-                name: line.slice(0, line.indexOf(":")).trim(),
-                value: line.slice(line.indexOf(":") + 1).trim(),
-              }));
-            void this.plugin.state.save().catch(() => {});
-          }));
+        setting.addTextArea((area) => {
+          area
+            .setValue(this.draftHeaders ?? headerLines(this.plugin.state.data.edgeHeaders))
+            .onChange((value) => { this.draftHeaders = value; });
+          // Saved when the field is left, as Server URL is, never per
+          // keystroke: every prefix with a colon in it used to be stored on
+          // the way (issue #183, S69).
+          area.inputEl.addEventListener("change", () => {
+            if (this.adoptEdgeHeaders()) area.setValue(headerLines(this.plugin.state.data.edgeHeaders));
+          });
+        });
       },
     };
+  }
+
+  /** What was typed into the edge headers, refused out loud or saved once; `true` when saved. */
+  private adoptEdgeHeaders(): boolean {
+    if (this.draftHeaders === null) return false;
+    const parsed = parseEdgeHeaders(this.draftHeaders);
+    this.draftHeaders = null;
+    if ("refusal" in parsed) {
+      this.plugin.log(`edge decision=refused reason=${parsed.reason}`);
+      new Notice(`Edge service-token headers were not saved: ${parsed.refusal}`, 12000);
+      return false;
+    }
+    this.plugin.state.data.edgeHeaders = parsed.headers;
+    this.plugin.log(`edge decision=kept headers=${parsed.headers.length} trimmed=${parsed.trimmed.length}`);
+    if (parsed.trimmed.length !== 0) new Notice(["Edge service-token headers saved.", ...parsed.trimmed].join(" "), 8000);
+    // State reports persistence failure and stops sync through its host hook.
+    void this.plugin.state.save().catch(() => {});
+    return true;
   }
 
   /**

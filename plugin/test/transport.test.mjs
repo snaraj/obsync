@@ -212,6 +212,35 @@ test("edge service-token headers ride on every request", async () => {
   assert.equal(sent[0].headers["X-Service-Secret"], "secret-value");
 });
 
+test("an edge header never replaces obsync's own, and one the platform would drop is refused by name, unsent (#183)", async () => {
+  // Saved before 1.1.4 validated the box: a `Content-Type` or `X-Obsync-*`
+  // line replaced obsync's own header, and `-H "X-Id` was dropped by the
+  // desktop request layer without a word (S69).
+  for (const header of [
+    { name: "Content-Type", value: "text/plain" }, { name: "x-obsync-device", value: "99".repeat(16) },
+    { name: "X-OBSYNC-SIG", value: "forged" }, { name: "host", value: "elsewhere.invalid" }, { name: "Content-Length", value: "0" },
+    { name: '-H "X-Id', value: 'abc"' }, { name: "X-Id", value: "“abc”" }, { name: "X-Id", value: "a\nb" }, { name: "", value: "VALUE SENTINEL" },
+  ]) {
+    const { transport, sent, logged } = harness([{ status: 200, text: "{}" }], {
+      edgeHeaders: [{ name: "X-Service-Id", value: "id-value" }, header],
+    });
+    await assert.rejects(() => transport.postVersion(FILE_ID, VERSION_POST), (error) => {
+      assert.equal(error.message, `The edge header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Edge service-token headers.`);
+      assert.equal(error.message.includes(header.value), false, "a value can be a service token and is never shown");
+      return true;
+    }, JSON.stringify(header));
+    assert.equal(sent.length, 0, `${JSON.stringify(header)} reached the network`);
+    assert.ok(logged.includes(`http /v1/files/${FILE_ID}/versions decision=refused reason=edge_header`), logged.join("\n"));
+  }
+  const { transport, sent } = harness([{ status: 200, text: "{}" }], {
+    edgeHeaders: [{ name: "X-Service-Id", value: "id\tvalue !~" }],
+  });
+  await transport.postVersion(FILE_ID, VERSION_POST);
+  assert.equal(sent[0].headers["Content-Type"], "application/json");
+  assert.equal(sent[0].headers["X-Obsync-Device"], DEVICE_ID);
+  assert.equal(sent[0].headers["X-Service-Id"], "id\tvalue !~", "a tab, a space and punctuation are plain header text");
+});
+
 test("a 4xx is a decision: it is reported and never retried", async () => {
   const { transport, sent, logged } = harness([
     { status: 409, text: JSON.stringify({ error: "missing_chunks", detail: "2 chunks are absent" }) },

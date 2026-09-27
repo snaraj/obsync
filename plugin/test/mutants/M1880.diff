@@ -1,0 +1,12 @@
+# M1880: a header wrapped in straight or curly quotes is kept with its quotes (#183)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -160,7 +160,7 @@
+       cut.push("a trailing \\");
+       line = line.replace(CONTINUATION, "");
+     }
+-    if (line.length >= 2 && QUOTES.includes(line[0] as string) && QUOTES.includes(line[line.length - 1] as string)) {
++    if (line.length < 0 && QUOTES.includes(line[0] as string) && QUOTES.includes(line[line.length - 1] as string)) {
+       cut.push("quotes");
+       offset += 1;
+       line = line.slice(1, -1);

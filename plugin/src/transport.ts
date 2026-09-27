@@ -575,6 +575,21 @@ function toArrayBuffer(bytes: Bytes): ArrayBuffer {
     : bytes.slice().buffer;
 }
 
+/**
+ * The edge-header rule (issue #183), one for the settings row that takes a
+ * header and for the request that sends it. A name is an HTTP token and a
+ * value printable ASCII, which is what Fetch and Node's own HTTP layer
+ * accept. The names obsync sets itself are never an edge header's:
+ * `Content-Type` frames the body, `X-Obsync-*` is the signed identity, and
+ * `Host` and `Content-Length` belong to the platform.
+ */
+export const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+export const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+export function ownHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "content-type" || lower === "content-length" || lower === "host" || lower.startsWith("x-obsync-");
+}
+
 export class Transport {
   // Shared across modal close/reopen. Cancellation discards a late result,
   // but cannot permit a second buffered request before the first settles.
@@ -641,7 +656,18 @@ export class Transport {
       headers["X-Obsync-Device"] = device.id;
       digest = await bodyHash(body);
     }
-    for (const header of this.options.edgeHeaders()) headers[header.name] = header.value;
+    for (const header of this.options.edgeHeaders()) {
+      // AN EDGE HEADER NEVER REPLACES ONE OBSYNC SETS, and one the platform
+      // would drop without a word -- Obsidian's desktop request layer did,
+      // for a name pasted with its `-H` -- is refused by name before anything
+      // is sent (issue #183). Settings refuses both at entry; this holds for
+      // a list saved before it did.
+      if (ownHeader(header.name) || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
+        this.log(`http ${target} decision=refused reason=edge_header`);
+        throw new Error(`The edge header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Edge service-token headers.`);
+      }
+      headers[header.name] = header.value;
+    }
     const deadlineMs = attemptMs(target, (options.binary?.length ?? 0) + (options.bulk === true ? options.cap ?? 0 : 0));
     return { headers, body, bodyText, digest, device, deadlineMs };
   }

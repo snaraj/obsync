@@ -1,0 +1,12 @@
+# M1879: a pasted -H or --header stays in front of the header name (#183)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -118,7 +118,7 @@
+ const HEADER_FORM = "Write one header per line as Name: value, for example X-Access-Id: 1234.";
+ const QUOTES = "\"'“”‘’";
+ /** What a header copied out of a command line carries around it: `-H`/`--header`, and a trailing `\`. */
+-const FLAG = /^(?:-H|--header)(?=[\s=\"'“”‘’])[\s=]*/;
++const FLAG = /^(?!)/;
+ const CONTINUATION = /\s+\\$/;
+ 
+ /** One character, as a person can find it again in what they typed. */
