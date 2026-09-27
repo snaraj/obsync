@@ -1,5 +1,7 @@
 # The dashboard
 
+*For people running an obsync server.*
+
 The server ships its own dashboard: static HTML, CSS and JavaScript served by
 the same binary, with no framework and no remote asset. It is where you see
 every device that can reach your vault, what the volumes are doing, and where

@@ -1,5 +1,7 @@
 # obsync wire protocol v1
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. HTTP/1.1, JSON request and response bodies unless a chunk
 body is named, UTF-8, no cookies on the device API. Every path is prefixed
 `/v1`. Errors are `{"error":"<snake_case_code>","detail":"<human text>"}`

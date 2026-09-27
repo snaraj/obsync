@@ -1,5 +1,7 @@
 # Benchmarks — LiveSync is the reference to beat
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. Every number below names the command that produces it.
 The competitor runs only inside a throwaway container during a benchmark
 run and ships in no artifact (AGENTS.md requirement 5).

@@ -1,5 +1,7 @@
 # Purging a server
 
+*For people running an obsync server.*
+
 Wiping everything a server holds — every ciphertext chunk, every manifest,
 every version — and starting again with the same devices or with new ones.
 

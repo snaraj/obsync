@@ -1,5 +1,7 @@
 # The dashboard's threat model
 
+*For people running an obsync server, and for reviewers.*
+
 Dated 2026-09-20. One page about one surface: what the dashboard is, what it
 holds, how a browser gets in, what defends it, and what is deliberately left
 standing. The whole-system view is [`../threat-model.md`](../threat-model.md);

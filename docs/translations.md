@@ -1,5 +1,7 @@
 # Translations
 
+*Internals, for contributors and reviewers.*
+
 The README and the Cloudflare guide exist in twenty languages besides
 English, under `docs/<code>/` with the same file names as the English pages:
 `docs/<code>/README.md` mirrors the root `README.md`, and

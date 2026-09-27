@@ -1,35 +1,6 @@
 # Validation runs
 
-- [2026-09-26 final native phone acceptance](2026-09-26-phone-final.md): exact
-  candidate desktop/phone co-typing; reactive rewrite hold, Resume and
-  542-second quiet window; automatic fresh-note sync; phone restart;
-  vault rename/move; phone typing through remote deletion; scoped cleanup.
-  Interrupted and imperfect attempts, unmeasured notice behavior, and the
-  partial desktop process-restart scope are retained explicitly.
-
-- [2026-09-26 release preparation](2026-09-26-release-preparation.md): native
-  desktop with an emulated mobile peer over disposable HTTPS; exact phone
-  archive prepared, native phone acceptance still outstanding.
-
-- [2026-09-25 editor refusal and merge budget](2026-09-25-editor-budget.md):
-  retained matched-build typing failure, refused-write accounting repair,
-  1,200-test gate, nested mutation reporting repair and qualified desktop
-  rewrite control; repaired phone acceptance and cleanup remain outstanding.
-
-- [2026-09-25 three-device typing follow-up](2026-09-25-passive-peer-typing.md):
-  adjacent-block and passive-receiver failures, their automated repairs,
-  mixed-build native controls, and the final phone installation checkpoint.
-
-- [2026-09-25 native editor-save follow-up](2026-09-25-native-editor-save.md):
-  retained same-line failures, adjacent-line passes, and the active-editor
-  retry repair with its automated evidence and outstanding native gate.
-
-The 2026-09-24 candidate work has separate records for
-[native desktop checks](2026-09-24-native-1.1.3.md),
-[account recovery](2026-09-24-account-recovery.md),
-[pairing and delete-versus-edit](2026-09-24-pairing-and-deletion.md), and
-[repeated-rewrite recovery](2026-09-24-rewrite-storm.md). Each identifies its
-build and distinguishes observed results from checks still outstanding.
+*Internals, for contributors and reviewers.*
 
 One file per device campaign, named `<date>.md` with the ISO date the run
 STARTED: `2026-09-14.md`. A run record is the evidence behind a readiness
@@ -39,6 +10,80 @@ run; these files are the results and are append-only history. A claim that
 appears in `CHANGELOG.md`, `README.md`, or a pull-request body and is not in a
 run record here has no evidence behind it.
 
+Every recorded device run so far used macOS desktops and an iPhone. No
+Windows, Linux, Android or iPad client has a record yet
+([Your devices](../setup.md#your-devices)).
+
+## The runs
+
+Newest first. Each record identifies its build and separates what was
+observed from what was still outstanding.
+
+- [2026-09-26 final native phone acceptance](2026-09-26-phone-final.md): exact
+  candidate desktop/phone co-typing; reactive rewrite hold, Resume and
+  542-second quiet window; automatic fresh-note sync; phone restart;
+  vault rename/move; phone typing through remote deletion; scoped cleanup.
+  Interrupted and imperfect attempts, unmeasured notice behavior, and the
+  partial desktop process-restart scope are retained explicitly.
+- [2026-09-26 release preparation](2026-09-26-release-preparation.md): native
+  desktop with an emulated mobile peer over disposable HTTPS; exact phone
+  archive prepared, native phone acceptance still outstanding.
+- [2026-09-25 editor refusal and merge budget](2026-09-25-editor-budget.md):
+  retained matched-build typing failure, refused-write accounting repair,
+  1,200-test gate, nested mutation reporting repair and qualified desktop
+  rewrite control; repaired phone acceptance and cleanup remain outstanding.
+- [2026-09-25 three-device typing follow-up](2026-09-25-passive-peer-typing.md):
+  adjacent-block and passive-receiver failures, their automated repairs,
+  mixed-build native controls, and the final phone installation checkpoint.
+- [2026-09-25 native editor-save follow-up](2026-09-25-native-editor-save.md):
+  retained same-line failures, adjacent-line passes, and the active-editor
+  retry repair with its automated evidence and outstanding native gate.
+- [2026-09-24 native desktop checks](2026-09-24-native-1.1.3.md) for the 1.1.3
+  candidate.
+- [2026-09-24 account recovery](2026-09-24-account-recovery.md): setup token
+  plus recovery phrase re-enrollment.
+- [2026-09-24 pairing and delete-versus-edit](2026-09-24-pairing-and-deletion.md).
+- [2026-09-24 delete-versus-edit decision](2026-09-24-delete-edit-research.md):
+  the edit-wins behaviour chosen, and how other tools document it.
+- [2026-09-24 repeated-rewrite recovery](2026-09-24-rewrite-storm.md), with
+  follow-ups for [the Resume copies](2026-09-24-rewrite-storm-resume.md),
+  [a passive open editor](2026-09-24-rewrite-passive-editor.md) and
+  [the typing editor's hold](2026-09-24-rewrite-editor-overlap.md).
+- [2026-09-24 native iPhone acceptance](2026-09-24-phone-candidate.md): current
+  1.1.2 installation, identical first sync, two-way edits, offline restart and
+  automatic recovery.
+- [2026-09-24 phone candidate 1.1.3](2026-09-24-phone-1.1.3.md): separate
+  candidate installation and current native acceptance scope, with its
+  [timing and first-sync follow-up](2026-09-24-phone-timing-followup.md).
+- [2026-09-24 replacement-build device follow-up](2026-09-24-replacement-device-followup.md):
+  exact repaired 1.1.2 desktop with the final 1.1.3 phone, identical offline
+  notes and automatic recovery.
+- [2026-09-24 review regressions](2026-09-24-review-fixes.md): the automated
+  checks behind two review repairs.
+- [2026-09-24 co-typing with delayed receipts](2026-09-24-cotyping-delayed-ack.md):
+  pristine-baseline failure, deterministic reproductions and repair;
+  simulation boundaries stated.
+- [2026-09-24 co-typing publication order](2026-09-24-cotyping-order.md):
+  delayed uploads, loop-budget regressions and retained failed schedules.
+- [2026-09-24 historical catch-up and typing repairs](2026-09-24-history-and-typing.md):
+  bounded history replay, adjacent line edits, same-line appends and preserved
+  safety witnesses.
+- [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md):
+  opaque masks, metadata removal and unchanged visible evidence.
+- [2026-09-24 arrival timing and shared merge bases](2026-09-24-arrival-and-shared-base.md):
+  background Resume roles, continued typing, shared-text duplication and
+  retained failed schedules.
+- [2026-09-24 scenario battery, first sitting](2026-09-24.md): an iPhone and a
+  desktop on one network, plus isolated desktop instances; what bears on 1.1.2.
+- [2026-09-23 same network, a laptop as the server](2026-09-23.md): the Compose
+  route end to end for 1.1.1, the phone's certificate install included.
+- [2026-09-21 user journeys on 1.0.3, then 1.0.4](2026-09-21.md): a day's
+  vault work over a private route, and the in-app plugin update.
+- [2026-09-20 private route](2026-09-20.md): pairing and both edit directions
+  on the 1.0.0 server over a private route to a cluster.
+- [2026-09-14 same network](2026-09-14.md): the 1.0.0 server on the Compose
+  route.
+
 ## Required fields
 
 `docs/validation.md` requires every run to record device models, OS versions,
@@ -47,9 +92,9 @@ plus one row per scenario:
 
 - **Date and operator role.** The ISO date, and the role that ran it
   (`owner`), never a person's name.
-- **Route.** Reference or Compose, per `docs/validation.md` "Routes", and the
+- **Route.** Kubernetes or Compose, per `docs/validation.md` "Routes", and the
   CLASS of TLS terminator in front of the server. The deployment's own tuple
-  (proxy, route, certificate) lives in the platform runbook, not here.
+  (proxy, route, certificate) stays with the person who runs it, not here.
 - **Server.** The released version under test and the exact source commit the
   running image was built from.
 - **Plugin.** The plugin version, and how it arrived: Settings -> Community
@@ -78,18 +123,3 @@ identifier, serial, account name, pairing code, setup token, or recovery
 phrase -- not in the prose, not in pasted command output, not in a capture
 referenced from here. Redact by role. A record that needs a private fact to be
 legible is naming the wrong fact: name the class instead.
-
-- [2026-09-24 native iPhone acceptance](2026-09-24-phone-candidate.md): current 1.1.2 installation, identical first sync, two-way edits, offline restart and automatic recovery.
-- [2026-09-24 phone candidate 1.1.3](2026-09-24-phone-1.1.3.md): separate candidate installation and current native acceptance scope.
-
-- [Co-typing with delayed receipts](2026-09-24-cotyping-delayed-ack.md): pristine-baseline failure, deterministic reproductions and repair; simulation boundaries stated.
-
-- [2026-09-24 replacement-build device follow-up](2026-09-24-replacement-device-followup.md): exact repaired 1.1.2 desktop with the final 1.1.3 phone, identical offline notes and automatic recovery.
-
-- [Co-typing publication order follow-up](2026-09-24-cotyping-order.md): delayed uploads, loop-budget regressions and retained failed schedules.
-
-- [Historical catch-up and typing repairs](2026-09-24-history-and-typing.md): bounded history replay, adjacent line edits, same-line appends and preserved safety witnesses.
-
-- [2026-09-24 screenshot privacy repair](2026-09-24-screenshot-privacy.md): opaque masks, metadata removal and unchanged visible evidence.
-
-- [Arrival timing and shared merge bases](2026-09-24-arrival-and-shared-base.md): background Resume roles, continued typing, shared-text duplication and retained failed schedules.

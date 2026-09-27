@@ -1,5 +1,7 @@
 # Run the server
 
+*For people running an obsync server.*
+
 The server speaks plain HTTP on port 8080 and must sit behind a TLS
 terminator: Obsidian on iOS and Android refuses plain HTTP. Which terminator
 is your choice, and it is the one deployment decision that changes who else

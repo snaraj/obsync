@@ -1,5 +1,7 @@
 # CI map
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-20. What each job runs, what that proves, and the exact contexts
 the owner enters into the branch ruleset. `make check` runs the same battery
 locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever

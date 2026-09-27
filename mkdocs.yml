@@ -44,9 +44,17 @@ site_dir: site
 # directory's index too, so inside `docs/` it collides with `index.md` -- a
 # warning, and under `--strict` a failed build. The site's home page is
 # `index.md`; the GitHub one stays where GitHub looks for it and is left out
-# of the build rather than deleted or renamed.
+# of the build rather than deleted or renamed. The translated READMEs under
+# `docs/<code>/` are left out too: they link to the repository root, which is
+# outside this site. The two READMEs that ARE pages -- the validation-runs
+# index and the screenshot conventions -- are built, as their folders' index
+# pages: a bare `README.md` pattern matched them as well, and left the nav's
+# "Validation runs" and "Screenshot conventions" pointing at nothing.
 exclude_docs: |
-  README.md
+  /README.md
+  /*/README.md
+  !/validation-runs/README.md
+  !/captures/README.md
 
 theme:
   name: material
@@ -112,47 +120,55 @@ validation:
     unrecognized_links: warn
     anchors: warn
 
+#
+# The nav is grouped by WHO a page is written for, and every page opens with
+# the same italic audience line: "Use obsync" is written for the person at
+# the device (task first, plain words, what you see and what to do), "Run a
+# server" for the person operating it, "Trust and privacy" for anyone deciding
+# whether to rely on it, and "Internals" for contributors and reviewers, where
+# the precise wire, storage and release detail lives. A paragraph that only an
+# internal reader needs belongs on an Internals page, linked from the user
+# page rather than written into it.
+#
+# The validation runs are listed once, by their own index page: the dated
+# records are built and searchable, and naming a few of them here made the
+# rest look missing.
 nav:
   - Home: index.md
-  - Start here:
+  - Use obsync:
       - Choose your setup: setup.md
       - Quickstart: quickstart.md
       - Same network, step by step: same-network.md
       - Install the plugin: community-plugin.md
-      - Run the server (Docker and Compose): server.md
-      - Run the server (Kubernetes): kubernetes.md
-      - Chart reference: https://github.com/snaraj/obsync/blob/main/chart/README.md
-  - Using it:
       - Daily use: daily-use.md
-      - The dashboard: dashboard.md
-      - Settings reference: settings.md
+      - Settings: settings.md
       - Conflicts: conflicts.md
       - Troubleshooting: troubleshooting.md
       - Recovery: recovery.md
+  - Run a server:
+      - Docker and Compose: server.md
+      - Kubernetes: kubernetes.md
+      - Chart reference: https://github.com/snaraj/obsync/blob/main/chart/README.md
+      - Cloudflare (optional): cloudflare.md
+      - The dashboard: dashboard.md
+      - Storage and durability: storage.md
       - Purging a server: purge.md
-      - Translations: translations.md
-  - Trust:
+      - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md
+  - Trust and privacy:
       - What this plugin accesses: https://github.com/snaraj/obsync#what-this-plugin-accesses
       - Threat model: threat-model.md
       - The dashboard's threat model: security/dashboard.md
       - Security policy: https://github.com/snaraj/obsync/blob/main/SECURITY.md
-      - Storage and durability: storage.md
-  - Operate:
-      - Device validation: validation.md
-      - Validation runs: validation-runs/README.md
-      - 2026-09-14 run: validation-runs/2026-09-14.md
-      - 2026-09-20 run: validation-runs/2026-09-20.md
-      - 2026-09-21 run: validation-runs/2026-09-21.md
-      - 2026-09-23 run: validation-runs/2026-09-23.md
-      - 2026-09-24 run: validation-runs/2026-09-24.md
-      - Releases: release.md
-      - CI map: ci-map.md
-      - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md
-  - Contribute:
+  - Internals:
       - How to work here: https://github.com/snaraj/obsync/blob/main/CONTRIBUTING.md
       - Agent contract: https://github.com/snaraj/obsync/blob/main/AGENTS.md
       - Architecture: architecture.md
       - Protocol: protocol.md
+      - Releases: release.md
+      - CI map: ci-map.md
+      - Device validation plan: validation.md
+      - Validation runs: validation-runs/README.md
       - Benchmarks: benchmarks.md
       - Platform onboarding: platform-onboarding.md
       - Screenshot conventions: captures/README.md
+      - Translations: translations.md

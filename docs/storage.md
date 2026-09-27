@@ -1,5 +1,7 @@
 # Storage contract
 
+*For people running an obsync server.*
+
 Dated 2026-09-07. The design decisions behind it: one StorageClass per
 storage implementation, a class that other workloads may share, and -- for a
 deployment that accepts the risk -- a single copy without backups. The server
