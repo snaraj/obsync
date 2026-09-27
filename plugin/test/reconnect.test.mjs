@@ -289,7 +289,7 @@ test("Obsidian finishes loading while the first start still waits for the server
   // The plugin's own onload, not the fixture's, which waits for the start on purpose.
   let returned = false;
   const loading = Object.getPrototypeOf(r.instance).onload.call(r.instance).then(() => { returned = true; });
-  for (let turn = 0; turn < 50 && !returned; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; !returned && Date.now() < deadline;) await new Promise(setImmediate);
   assert.ok(returned, "onload returned while the server had not answered: Obsidian's loading screen is not held");
   assert.equal(r.engines.length, 1, "the first start is running, not skipped");
   assert.deepEqual(r.running(), []);

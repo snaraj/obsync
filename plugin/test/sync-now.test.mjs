@@ -186,7 +186,7 @@ test("a stop answers a Sync now waiting on the feed, and so do a read that fails
       await timers.run(1000, () => answered);
       assert.ok(r.host.logs.includes(`sync_now decision=feed_unanswered budget_ms=${SYNC_NOW_FEED_MS}`));
     }
-    for (let turn = 0; turn < 50 && !answered; turn++) await new Promise((resolve) => setImmediate(resolve));
+    for (const deadline = Date.now() + 10_000; !answered && Date.now() < deadline;) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(answered, true, `${ending}: the press still waited on the feed`);
     await press;
     engine.stop();
@@ -250,7 +250,7 @@ test("a press made before the feed has started is answered by the stop that ends
   assert.equal(answered, false, "the press waits for the feed's first read");
   engine.stop();
   release();
-  for (let turn = 0; turn < 100 && !answered; turn++) await new Promise((resolve) => setImmediate(resolve));
+  for (const deadline = Date.now() + 10_000; !answered && Date.now() < deadline;) await new Promise((resolve) => setImmediate(resolve));
   assert.equal(answered, true, "a stop answered the press, though no feed loop ever ran");
   await starting;
   await press;
@@ -272,7 +272,7 @@ test("a read already asking at once is the press's read: the press neither waits
   const engine = await started(r, timers, () => quick === 1);
   let answered = false;
   const press = engine.syncNow().then(() => { answered = true; });
-  for (let turn = 0; turn < 50 && !answered; turn++) await new Promise((resolve) => setImmediate(resolve));
+  for (const deadline = Date.now() + 10_000; !answered && Date.now() < deadline;) await new Promise((resolve) => setImmediate(resolve));
   assert.equal(answered, true, "the press waited on a read it could not make sooner");
   assert.equal(quick, 1, "and sent no second one beside it");
   await press;

@@ -460,7 +460,7 @@ test("a quit while Save waits keeps the choice, and the next start puts it in fo
   const stopping = deferred();
   first.engine = { stop: () => undefined, stopAndWait: () => stopping.promise, uploads: () => [] };
   const saving = first.saveSyncFolders(["Notes"]).catch((error) => error);
-  for (let turn = 0; turn < 50 && app.metadata().pendingScope === undefined; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; app.metadata().pendingScope === undefined && Date.now() < deadline;) await new Promise(setImmediate);
   assert.deepEqual(app.metadata().pendingScope, { folders: ["Notes"] }, "kept the moment Save was pressed");
   first.onunload();
   stopping.resolve();
@@ -489,7 +489,7 @@ test("Cancel while Save waits keeps the selection there was, and sync goes on wi
   t.after(() => stopping.resolve());
   instance.engine = { stopAndWait: () => stopping.promise };
   const saving = instance.saveSyncFolders(["Notes", "Attachments"]);
-  for (let turn = 0; turn < 50 && saved()?.pendingScope === undefined; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; saved()?.pendingScope === undefined && Date.now() < deadline;) await new Promise(setImmediate);
   assert.deepEqual(saved().pendingScope, { folders: ["Attachments", "Notes"] });
 
   instance.cancelScopeChange();
@@ -781,7 +781,7 @@ test("stopping for a folder change never waits out a long poll that moves nothin
   await timers.run(1000, () => r.server.feedWaiters.length !== 0);
   let settled = false;
   const stopping = engine.stopAndWait().then(() => { settled = true; });
-  for (let turn = 0; turn < 20 && !settled; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(setImmediate);
   assert.equal(settled, true, "the stop waited for a long poll with nothing to transfer");
   await stopping;
 

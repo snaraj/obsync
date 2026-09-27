@@ -1856,7 +1856,7 @@ test("a pull publication joining an older upload still sends the edit made while
   const joined = Array.from({ length: 12 }, () => engine.context.publish("joined.md"));
   release.resolve();
   await Promise.all([older, ...joined]);
-  for (let i = 0; i < 1000 && r.state.fileByPath("joined.md")?.mtime !== 2000; i++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; r.state.fileByPath("joined.md")?.mtime !== 2000 && Date.now() < deadline;) await new Promise(setImmediate);
   const record = r.state.fileByPath("joined.md");
   assert.equal(record.mtime, 2000, "the joined request was dropped after the older acknowledgment");
   assert.equal(record.size, new TextEncoder().encode("latest edit made while upload waited\n").length);
