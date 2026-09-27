@@ -1,0 +1,11 @@
+# M2066: a large rename is sent to the background lane
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2762,7 +2762,6 @@
+       context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined) return false;
+     // A rename, or bytes this device already holds: nothing to fetch.
+     const kept = context.state.pathByFileId(change.file_id);
+-    if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
+     const entry = await decodeRecordManifest(context, change).catch(() => null);
+     // Refused by the ordinary apply, which names why.
+     if (entry?.v !== 1) return false;

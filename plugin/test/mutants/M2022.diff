@@ -1,0 +1,12 @@
+# M2022: a phone holds the desktop's window of ciphertext
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -238,7 +238,7 @@
+  * after it, never beside it -- and answers how many were sent.
+  */
+ async function sendChunks(context: SyncContext, path: string, size: number, plan: ManifestChunk[]): Promise<number> {
+-  const limit = context.host.isMobile ? PUSH_WINDOW_MOBILE_BYTES : PUSH_WINDOW_BYTES;
++  const limit = PUSH_WINDOW_BYTES;
+   const signal = context.signal;
+   const landing = new Set<Promise<void>>();
+   const asked = new Set<string>();

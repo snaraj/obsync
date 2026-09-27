@@ -1,11 +1,11 @@
 # M2858: a chunk upload the stop ends before the loop awaits it is an unhandled rejection
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -229,7 +229,6 @@
-     missing.delete(sid);
-     const upload = context.transport.putChunk(sid, ciphertext, { signal });
-     // Observed by `Promise.all` below; a stop can end it before the loop gets there.
--    upload.catch(() => undefined);
-     queue.push(upload);
-     if (queue.length >= context.concurrency) {
-       await Promise.all(queue.splice(0, queue.length));
+@@ -262,7 +262,6 @@
+         landing.delete(upload);
+       });
+       // Observed below; a stop can end it before the loop gets there.
+-      upload.catch(() => undefined);
+       landing.add(upload);
+     }
+   };

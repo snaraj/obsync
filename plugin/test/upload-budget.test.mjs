@@ -2,7 +2,8 @@
  * The V7 retransmission budget (`docs/validation.md`, issue #56).
  *
  * V7 kills Obsidian during a 20 GiB upload, reopens it, and allows fewer than
- * 8 MiB of ciphertext to be re-sent. The measurement in issue #56 charged
+ * `UPLOAD_BUDGET_BYTES` of large chunks, plus `SMALL_INFLIGHT_MAX` of small
+ * ones, to be re-sent. The measurement in issue #56 charged
  * 10,910,020 to 16,743,295 duplicated bytes to four chunk uploads interrupted
  * at once, so the budget is not a property of one upload: it is a property of
  * how many bytes the client is willing to have in flight, how many copies of
@@ -22,14 +23,14 @@ import { KEYS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { pushFile } = require("../build/sync/push.js");
-const { Transport, UPLOAD_BUDGET_BYTES, UPLOAD_INFLIGHT_MAX } = require("../build/transport.js");
+const { Transport, SMALL_INFLIGHT_MAX, UPLOAD_BUDGET_BYTES, UPLOAD_INFLIGHT_MAX } = require("../build/transport.js");
 
 const turn = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 /** Deterministic incompressible-looking bytes: a fixture, never a secret. */
-function noise(size) {
+function noise(size, seed = 0x1234abcd) {
   const data = new Uint8Array(size);
-  let x = 0x1234abcd;
+  let x = seed;
   for (let i = 0; i < size; i++) {
     x ^= (x << 13) >>> 0;
     x >>>= 0;
@@ -47,9 +48,10 @@ function noise(size) {
  * (which is what an interrupted connection to a server that already wrote the
  * chunk looks like), `dropped` sends the bytes nowhere. `holdAfter` hangs
  * every upload past the first N, which is how a process death is modelled:
- * the bytes left the device and nothing will ever acknowledge them.
+ * the bytes left the device and nothing will ever acknowledge them. `turns`
+ * slows every answer by that many 5 ms turns, so bodies pile up on the wire.
  */
-function relay(server, { verdict = () => "ok", holdAfter = Infinity, before = () => undefined } = {}) {
+function relay(server, { verdict = () => "ok", holdAfter = Infinity, before = () => undefined, turns = 1 } = {}) {
   const never = new Promise(() => undefined);
   const w = {
     puts: [],
@@ -81,7 +83,7 @@ function relay(server, { verdict = () => "ok", holdAfter = Infinity, before = ()
     w.peakPerSid = Math.max(w.peakPerSid, live);
     try {
       if (++w.started > holdAfter) await never;
-      await turn();
+      for (let at = 0; at < turns; at++) await turn();
       const decided = verdict(sid, attempt, w);
       if (decided !== "ok") w.failed.push({ sid, bytes, attempt, decided });
       if (decided === "lost") {
@@ -137,16 +139,31 @@ async function quiet(w, ready) {
 
 const summaries = (r) => r.host.logs.filter((line) => line.startsWith("upload decision=summary"));
 
-test("V7: killing an upload and reopening re-sends fewer than 8 MiB", async () => {
+/**
+ * Three large files pushed at once, as the queue's workers push them (#196):
+ * what a kill wastes is the DEVICE's bytes in flight, across every push, and
+ * each push alone holds a window of its own. `lift` takes the large pipe's
+ * ceiling away, which is how each test below shows its bound is reachable.
+ */
+const WIDE = ["Archive/one.bin", "Archive/two.bin", "Archive/three.bin"];
+function seedWide(r) {
+  WIDE.forEach((path, index) => r.host.seed(path, noise(40 << 20, 0x1234abcd + index), 1000));
+}
+function pushWide(context, lift = false) {
+  if (lift) context.transport.pipes.large.max = Infinity;
+  return Promise.all(WIDE.map((path) => pushFile(context, path)));
+}
+const landedBytes = (r) => [...r.server.chunks.values()].reduce((total, chunk) => total + chunk.length, 0);
+
+test("V7: killing uploads and reopening re-sends fewer bytes than the budget", async () => {
   const r = await rig();
-  const path = "Archive/box.bin";
-  r.host.seed(path, noise(28 << 20), 1000);
+  seedWide(r);
 
   // The run that dies: four chunks land, the rest are held mid-body, and the
   // process never comes back to acknowledge them (issue #56's shape).
   const dying = relay(r.server, { holdAfter: 4 });
   const killed = reopen(r, dying.request);
-  void pushFile(killed, path).catch(() => undefined);
+  void pushWide(killed).catch(() => undefined);
   const atRisk = await quiet(dying, () => dying.started > 4);
   const landed = new Set(r.server.chunks.keys());
   assert.equal(landed.size, 4, "the four uploads the relay let through landed");
@@ -155,38 +172,46 @@ test("V7: killing an upload and reopening re-sends fewer than 8 MiB", async () =
   // Reopened: a fresh transport, the same server, the same vault.
   const reading = relay(r.server);
   const restarted = reopen(r, reading.request);
-  await pushFile(restarted, path);
+  await pushWide(restarted);
 
   const wasted = atRisk - [...landed].reduce((total, sid) => total + r.server.chunks.get(sid).length, 0);
   const again = reading.puts.filter((put) => landed.has(put.sid));
   assert.deepEqual(again, [], "a chunk that landed before the kill is never sent again");
   assert.equal(reading.peakPerSid, 1, "and nothing is sent twice on the way back");
   assert.ok(
-    wasted < UPLOAD_BUDGET_BYTES,
-    `V7 allows fewer than ${UPLOAD_BUDGET_BYTES} duplicated bytes; the kill wasted ${wasted}`,
+    wasted < UPLOAD_BUDGET_BYTES + SMALL_INFLIGHT_MAX,
+    `V7 allows fewer than ${UPLOAD_BUDGET_BYTES} + ${SMALL_INFLIGHT_MAX} duplicated bytes; the kill wasted ${wasted}`,
   );
-  // The assertion is reachable: four chunks in flight at once would have
-  // exceeded the budget, which is exactly what issue #56 measured.
-  const widest = Math.max(...dying.puts.map((put) => put.bytes));
-  assert.ok(widest * 4 > UPLOAD_BUDGET_BYTES, `four of these bodies exceed the budget (${widest})`);
-  assert.equal(r.state.fileByPath(path) !== undefined, true, "and the file finished");
+  for (const path of WIDE) assert.equal(r.state.fileByPath(path) !== undefined, true, `and ${path} finished`);
+
+  // The assertion is reachable: the same kill with the ceiling lifted puts
+  // more than the budget on the wire, which is what issue #56 measured.
+  const open = await rig();
+  seedWide(open);
+  const unbounded = relay(open.server, { holdAfter: 4 });
+  void pushWide(reopen(open, unbounded.request), true).catch(() => undefined);
+  const risked = () => unbounded.sent - landedBytes(open);
+  for (let i = 0; i < 2000 && risked() <= UPLOAD_BUDGET_BYTES; i++) await turn();
+  assert.ok(risked() > UPLOAD_BUDGET_BYTES, `without the ceiling the kill wastes ${risked()}`);
 });
 
 test("the bytes in flight stay inside the budget a kill would waste", async () => {
   const r = await rig();
-  const path = "Archive/wide.bin";
-  r.host.seed(path, noise(28 << 20), 1000);
-  const w = relay(r.server);
-  await pushFile(reopen(r, w.request), path);
+  seedWide(r);
+  const w = relay(r.server, { turns: 20 });
+  await pushWide(reopen(r, w.request));
 
-  assert.ok(w.puts.length >= 4, `the fixture is many chunks (${w.puts.length})`);
+  assert.ok(w.puts.length >= 12, `the fixture is many chunks (${w.puts.length})`);
   assert.ok(w.peakInflight > 0, "the measurement saw the wire busy");
   assert.ok(
-    w.peakInflight <= UPLOAD_INFLIGHT_MAX,
-    `${w.peakInflight} bytes were in flight at once, ceiling ${UPLOAD_INFLIGHT_MAX}`,
+    w.peakInflight <= UPLOAD_INFLIGHT_MAX + SMALL_INFLIGHT_MAX,
+    `${w.peakInflight} bytes were in flight at once, ceiling ${UPLOAD_INFLIGHT_MAX} + ${SMALL_INFLIGHT_MAX}`,
   );
-  const widest = Math.max(...w.puts.map((put) => put.bytes));
-  assert.ok(widest * 4 > UPLOAD_INFLIGHT_MAX, "and four at once would have broken it");
+  const open = await rig();
+  seedWide(open);
+  const unbounded = relay(open.server, { turns: 20 });
+  await pushWide(reopen(open, unbounded.request), true);
+  assert.ok(unbounded.peakInflight > UPLOAD_INFLIGHT_MAX, `and without the ceiling ${unbounded.peakInflight} would have been`);
 });
 
 test("a chunk in flight is never uploaded twice concurrently", async () => {
@@ -247,7 +272,7 @@ test("a lost answer asks whether the body landed instead of re-sending it", asyn
   const once = [...bodies.values()].reduce((total, bytes) => total + bytes, 0);
   assert.equal(w.sent, once, "every chunk crossed the wire exactly once");
   assert.equal(context.transport.uploadStats().resent, 0, "so nothing was re-sent");
-  assert.match(summaries(r).at(-1), /^upload decision=summary chunks=\d+ retried=0 budget=8388608 deduped=0 duration_ms=\d+$/);
+  assert.match(summaries(r).at(-1), new RegExp(`^upload decision=summary chunks=\\d+ retried=0 budget=${UPLOAD_BUDGET_BYTES} deduped=0 duration_ms=\\d+$`));
   assert.equal(r.server.chunks.size, bodies.size, "and the server holds the whole file");
 });
 

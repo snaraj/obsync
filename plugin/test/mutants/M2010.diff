@@ -1,0 +1,21 @@
+# M2010: a note-sized body queues behind the large bodies waiting for room
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1174,7 +1174,7 @@
+ 
+   /** Claim room for one body, in arrival order within its pipe. */
+   private async admit(bytes: number): Promise<void> {
+-    const pipe = bytes <= SMALL_BODY_MAX ? this.pipes.small : this.pipes.large;
++    const pipe = this.pipes.large;
+     if (pipe.waiting.length === 0 && this.fits(pipe, bytes)) {
+       pipe.bytes += bytes;
+       return;
+@@ -1189,7 +1189,7 @@
+ 
+   /** Give the room back and hand it to the waiters that now fit. */
+   private release(bytes: number): void {
+-    const pipe = bytes <= SMALL_BODY_MAX ? this.pipes.small : this.pipes.large;
++    const pipe = this.pipes.large;
+     pipe.bytes -= bytes;
+     for (let head = pipe.waiting[0]; head !== undefined && this.fits(pipe, head.bytes); head = pipe.waiting[0]) {
+       pipe.waiting.shift();

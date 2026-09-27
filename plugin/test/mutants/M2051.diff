@@ -1,0 +1,12 @@
+# M2051: a chunk fetch in flight does not hear the stop
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -629,7 +629,7 @@
+   // again at the next start. A manual read -- a restore runs on purpose after
+   // the stop -- answers to its own control instead, and a write a version was
+   // already posted for is not a stop's to end (`stop` null).
+-  const patience = stop === null ? {} : { signal: stop };
++  const patience = {};
+   let index = 0;
+   while (index < manifest.chunks.length) {
+     control?.check();

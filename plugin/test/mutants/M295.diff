@@ -1,13 +1,13 @@
 # M295: a start whose clean-up meets a file it cannot stat never syncs
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -574,8 +574,7 @@
-     // finding 3).
-     this.restoreFolderBarriers();
-     // Cleaning up is never a reason not to sync.
--    await host.sweep?.().catch((error: unknown) =>
--      host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
-+    await host.sweep?.();
-     await this.reconcile();
-     if (this.running) {
-       const context = this.need();
+@@ -3048,8 +3048,7 @@
+     if (!this.swept) {
+       this.swept = true;
+       void this.track(this.exclusive(async () => {
+-        await context.host.sweep?.().catch((error: unknown) =>
+-          context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
++        await context.host.sweep?.();
+       }));
+     }
+     // A copy whose name no device settled is announced within one scan of

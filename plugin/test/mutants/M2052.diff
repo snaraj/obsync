@@ -1,0 +1,12 @@
+# M2052: a conflict copy whose version is posted is not written when sync stops meanwhile
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3063,7 +3063,7 @@
+   if (occupant !== null && (own?.edited || (await alreadyCopied(context, copy, path, occupant)) === null)) return null;
+   const posted = await postManifest(context, fileId, [], sids, copy, copy.size, true);
+   // Posted, so the copy's download is not a stop's to end (`chunkPlaintexts`).
+-  let landed = occupant ?? (await createOnly(context, copy, own?.text, null));
++  let landed = occupant ?? (await createOnly(context, copy, own?.text));
+   if (landed === null) {
+     occupant = await context.host.stat(path);
+     landed = occupant === null || own?.edited ? null : await alreadyCopied(context, copy, path, occupant);

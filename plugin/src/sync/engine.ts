@@ -18,7 +18,9 @@
  * whole answer either -- a copy may stall for longer than one recheck -- so
  * the push re-reads the size when its read ends and abandons a version whose
  * file moved underneath it (`push.ts`). A torn upload is never posted; a slow
- * copy simply takes as long as it takes.
+ * copy simply takes as long as it takes. A note someone is typing in is the
+ * one exception: the editor's save settles after `EDITOR_SETTLE_MS`, at its
+ * first look (issue #195).
  *
  * ECHOES. The engine drops a watcher event whose `(path, mtime, size)`
  * matches a write the pull path just made, drops a delete event for a path
@@ -71,10 +73,10 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, NOT_OBSYNC, Transport } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, FileRecord, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, unwritableText, yieldName } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
@@ -175,8 +177,9 @@ export interface VaultHost {
   scan?(): Promise<VaultStat[] | null>;
   /**
    * Remove the temp files this host's writes left when the device stopped in
-   * the middle of them (issue #159). Called at each start, before anything
-   * lists the vault; a host whose writes leave nothing behind has none.
+   * the middle of them (issue #159). Called once per start, by its first
+   * periodic scan under the pull lock (issue #195); a host whose writes leave
+   * nothing behind has none.
    */
   sweep?(): Promise<void>;
   /**
@@ -374,6 +377,13 @@ export interface SyncContext {
    * and then a copy is announced as it is made.
    */
   readonly copies?: Map<string, { name: string; at: number }>;
+  /**
+   * Large versions the background lane fetched ahead of their apply, by path
+   * and chunk list (`pull.ts`, `stage`, issue #196): uncommitted writers that
+   * `materialise` takes in place of a download. Absent where no engine runs
+   * the lane.
+   */
+  readonly staged?: Map<string, VaultWriter>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -487,6 +497,15 @@ export interface EngineOptions {
 export const DEBOUNCE_MS = 500;
 export const RECHECK_MS = 400;
 /**
+ * The guard for a note the EDITOR is saving (issue #195): someone typed in it
+ * seconds ago, so the change is the editor's own save, written whole, and not
+ * a copy still growing. It settles after this and without a recheck; the
+ * push's own re-read of the size still abandons a torn read (#99). Up to
+ * `EDITOR_SETTLE_MAX_BYTES`, one chunk; any other writer keeps the full guard.
+ */
+export const EDITOR_SETTLE_MS = 150;
+export const EDITOR_SETTLE_MAX_BYTES = CHUNK_MAX;
+/**
  * How long a file that has been SEEN changing must then hold still before it
  * is pushed. One recheck is enough for a file nothing was ever observed
  * writing; it is not enough for a copy, because a copy that stalls for longer
@@ -590,6 +609,15 @@ export const POLL_STALE_MS = 5000;
 export const PARK_RETRY_MS = 60 * 1000;
 export const PARK_RETRY_MAX_MS = 30 * 60 * 1000;
 
+/**
+ * A feed entry larger than this is applied by the background lane (issue
+ * #196): its chunks are fetched ahead of its turn, outside the pull lock, so
+ * the notes behind it keep arriving while it downloads (`lane`).
+ */
+export const LARGE_APPLY_BYTES = 32 << 20;
+/** The parked reason of a record the background lane is downloading: work, not a failure. */
+const DOWNLOADING = "downloading";
+
 // The host's own timers. Obsidian runs the desktop app inside Electron, where
 // the bare globals are Node's and hand back a `Timeout` object rather than the
 // numeric handle every other Obsidian surface expects; `window` is the one
@@ -637,14 +665,14 @@ export class SyncEngine {
   private readonly folderRemovals = new Set<string>();
   /**
    * Queued paths that must reach the server BEFORE anything queued behind
-   * them: the wire order, which a batch under `Promise.all` is not
-   * (`takeBatch`).
+   * them: the wire order, which pushes in flight side by side are not
+   * (`takeNext`).
    */
   private readonly barriers = new Set<string>();
   /**
-   * The barrier path the batch in flight is carrying, so a post that FAILS
-   * can put it back: `takeBatch` takes such a path alone, so there is never
-   * more than one (`pushNow`).
+   * The barrier path a worker is carrying, so a post that FAILS can put it
+   * back: `takeNext` takes such a path alone, so there is never more than one
+   * (`pushNow`).
    */
   private barrierPath: string | null = null;
   /** Failed attempts at one folder record's post, against `FOLDER_POST_TRIES`. */
@@ -666,6 +694,8 @@ export class SyncEngine {
   private draining = false;
   /** The drain in flight, so a second caller waits for it instead of for nothing. */
   private drainWork: Promise<void> | null = null;
+  /** Ends the drain's wait for a push to land, when a path is queued (`drain`). */
+  private wakeDrain: (() => void) | null = null;
   private readonly pushing = new Map<string, Promise<void>>();
   /** Paths asked for while their push was in flight: one follow-up each. */
   private readonly again = new Set<string>();
@@ -706,6 +736,8 @@ export class SyncEngine {
   /** When the burst `vanished` holds began: it grows for at most `BULK_WINDOW_MS`. */
   private burstStarted = 0;
   private bulkNoticeShown = false;
+  /** Whether this start's first scan has swept the temp files an interrupted write left (`scanLocal`). */
+  private swept = false;
   /** Whether this engine has read the feed for its own notes (`ownNotes`); one start per engine. */
   private ownRead = false;
   /** When the repair tick began yielding to a manual history operation. */
@@ -725,6 +757,8 @@ export class SyncEngine {
   private editorHandle: unknown = null;
   /** The feed and a retry pass apply one at a time, never side by side. */
   private pulling: Promise<void> = Promise.resolve();
+  /** Whether the background lane is running: one large download at a time (`lane`). */
+  private laning = false;
   /** The feed's long poll in flight, and how to drop it (`wake`, #195). */
   private poll: { sent: number; drop: AbortController } | null = null;
   /** Ends the feed's pause after a failed read at once (`wake`). */
@@ -844,6 +878,7 @@ export class SyncEngine {
       publish: (path) => this.pushOne(path),
       signal,
       copies: new Map(),
+      staged: new Map(),
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -854,14 +889,16 @@ export class SyncEngine {
     host.log(
       `engine start platform=${host.platform} concurrency=${this.contextValue.concurrency} seq=${state.data.lastSeq}`,
     );
-    await this.heartbeat();
-    if (!this.running) return;
+    // NOTHING WAITS FOR THE HEARTBEAT (issue #195): it reports this device's
+    // version and policy and reads the device names, and nothing the start
+    // does next needs either -- a page from a device not named yet reads the
+    // names itself (`learnNames`). Nor for the temp-file sweep, which the
+    // first periodic scan runs (`scanLocal`).
+    this.swept = false;
+    void this.track(this.heartbeat());
     // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
     // finding 3).
     this.restoreFolderBarriers();
-    // Cleaning up is never a reason not to sync.
-    await host.sweep?.().catch((error: unknown) =>
-      host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
     await this.reconcile();
     if (this.running) {
       const context = this.need();
@@ -1613,9 +1650,9 @@ export class SyncEngine {
     // folds case, so a move that overtakes it is refused there with a notice
     // naming a cause that is not the one, and the receiver re-cases with the
     // pre-move version ids (`docs/protocol.md`; review round 2, finding 2).
-    // Enqueuing it first is not enough -- a batch runs under `Promise.all` and
-    // its journal order is completion order -- so the record's own post is
-    // awaited before anything queued behind it is sent (`takeBatch`). Only
+    // Enqueuing it first is not enough -- pushes in flight side by side are
+    // journaled in completion order -- so the record's own post is awaited
+    // before anything queued behind it is sent (`takeNext`). Only
     // this folder's record needs it: everything beneath it moved with the
     // directory entry, and the receiver carries those records along.
     const barrier = caseOnly(from, to);
@@ -1734,7 +1771,7 @@ export class SyncEngine {
     if (existing) this.timers.clear(existing.handle);
     const handle = this.timers.set(() => {
       void this.track(this.settle(path, tries, seen));
-    }, tries === 0 ? DEBOUNCE_MS : RECHECK_MS);
+    }, tries > 0 ? RECHECK_MS : this.options.host.typing(path) ? EDITOR_SETTLE_MS : DEBOUNCE_MS);
     this.pending.set(path, { handle, tries });
   }
 
@@ -1808,6 +1845,15 @@ export class SyncEngine {
     const record = context.state.fileByPath(path);
     const described = record !== undefined && record.mtime === stat.mtime && record.size === stat.size;
     if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
+    // THE EDITOR'S OWN SAVE IS NOT A COPY (issue #195): a note someone is
+    // typing in settles at its first look, `EDITOR_SETTLE_MS` after the event.
+    if (seen === null && stat.size <= EDITOR_SETTLE_MAX_BYTES && context.host.typing(path)) {
+      context.host.log(`watch path_class=file decision=settled reason=editor_save budget_ms=${EDITOR_SETTLE_MS}`);
+      this.unschedule(path);
+      if (!described) await this.answered(context, stat);
+      this.enqueue(path);
+      return;
+    }
     // `seen` is the stat the previous settle took, one `RECHECK_MS` timer
     // ago: comparing against it is what puts real time between the two
     // observations. The first settle has nothing to compare with, so it
@@ -1869,25 +1915,53 @@ export class SyncEngine {
    * Returning early to a caller that asked for the queue to be flushed is
    * what let "Sync now" report done with the queue still full (issue #121).
    * `draining` is set and cleared synchronously inside the loop, so it, not
-   * the settled promise, decides whether there is something to join.
+   * the settled promise, decides whether there is something to join. A caller
+   * joining it also wakes it, so a path queued now finds a free worker at once
+   * rather than when a push in flight lands (#196).
    */
   private drain(): Promise<void> {
-    if (this.draining && this.drainWork !== null) return this.drainWork;
+    if (this.draining && this.drainWork !== null) {
+      this.wakeDrain?.();
+      return this.drainWork;
+    }
     this.drainWork = this.drainQueue();
     return this.drainWork;
   }
 
+  /**
+   * THE QUEUE'S WORKERS (issue #196). Up to `concurrency` pushes run at once,
+   * and each slot takes the next path it may the moment it frees up. Batches
+   * under `Promise.all` waited for their slowest member, so a note queued
+   * behind a large upload waited out the whole upload; now it takes the next
+   * free slot. What may go when is `takeNext`'s, and a barrier in flight holds
+   * every slot until the server has acknowledged it.
+   */
   private async drainQueue(): Promise<void> {
     this.draining = true;
     try {
       const context = this.need();
-      while (this.queue.length > 0 && this.running) {
-        const batch = this.takeBatch(context.concurrency);
-        this.active = batch.length;
-        this.status(this.resting());
-        await Promise.all(batch.map((path) => this.pushOne(path)));
-        this.active = 0;
+      const running = new Map<string, Promise<void>>();
+      let barrier: string | null = null;
+      const failed: unknown[] = [];
+      for (;;) {
+        let took = false;
+        while (this.running && failed.length === 0 && running.size < context.concurrency && !(barrier !== null && running.has(barrier))) {
+          const path = this.takeNext(running);
+          if (path === null) break;
+          if (this.barrierPath === path) barrier = path;
+          const work: Promise<void> = this.pushOne(path)
+            .catch((error: unknown) => { failed.push(error); })
+            .finally(() => running.delete(path));
+          running.set(path, work);
+          took = true;
+        }
+        this.active = running.size;
+        if (took) this.status(this.resting());
+        if (running.size === 0) break;
+        await Promise.race([new Promise<void>((wake) => { this.wakeDrain = wake; }), ...running.values()]);
+        this.wakeDrain = null;
       }
+      if (failed.length > 0) throw failed[0];
       // Nothing is queued behind anything any more, so no barrier can still
       // mean something. Expiring them here is what keeps one armed for a path
       // that never reached the queue from serialising a later push of that
@@ -1902,33 +1976,40 @@ export class SyncEngine {
   }
 
   /**
-   * The next batch, and the one place the WIRE order is decided.
+   * The next path a free worker may take, or `null`: the one place the WIRE
+   * order is decided.
    *
-   * A batch runs under `Promise.all`, so every path in it is posted
-   * concurrently and the journal's order is completion order. For the folder
-   * record of a rename that changes case alone that is not good enough: it is
-   * the only record entitled to re-case a directory, and a move that reaches
-   * the receiver first is refused there (`docs/protocol.md`). Such a record is
-   * a BARRIER: taken alone, and awaited -- the loop above finishes a batch
-   * before it takes another -- so nothing queued behind it is sent until the
-   * server has acknowledged it. Paths queued BEFORE it still go together: a
-   * barrier orders what follows it, it does not stop the queue.
+   * Pushes in flight side by side are journaled in completion order. For the
+   * folder record of a rename that changes case alone that is not good enough:
+   * it is the only record entitled to re-case a directory, and a move that
+   * reaches the receiver first is refused there (`docs/protocol.md`). Such a
+   * record is a BARRIER: it is taken only at the head of the queue with nothing
+   * in flight, alone, and nothing is taken beside or behind it until the server
+   * has acknowledged it (`drainQueue`). Paths queued BEFORE it go as they
+   * always did: a barrier orders what follows it, it does not stop the queue.
+   *
+   * ONE PUSH PER PATH: a path queued again while its own push is in flight
+   * waits for that push to land, and what is behind it does not wait for it.
    */
-  private takeBatch(concurrency: number): string[] {
-    // Cleared first, so the note of what a batch is carrying can never
-    // outlive the batch that carried it.
+  private takeNext(running: ReadonlyMap<string, unknown>): string | null {
+    // Cleared first, so the note of what a worker is carrying can never
+    // outlive the take that set it.
     this.barrierPath = null;
-    const first = this.queue[0] as string;
-    if (this.barriers.delete(first)) {
-      this.barrierPath = first;
-      return this.queue.splice(0, 1);
+    for (const [at, path] of this.queue.entries()) {
+      if (this.barriers.has(path)) {
+        // Anything before it is in flight, or it would have been taken.
+        if (running.size !== 0) return null;
+        this.barriers.delete(path);
+        this.barrierPath = path;
+        return this.queue.shift() as string;
+      }
+      if (!running.has(path)) return this.queue.splice(at, 1)[0] as string;
     }
-    const behind = this.queue.findIndex((path) => this.barriers.has(path));
-    return this.queue.splice(0, behind === -1 ? concurrency : Math.min(concurrency, behind));
+    return null;
   }
 
   /**
-   * One push per path at a time. The queue drains in batches and the pull
+   * One push per path at a time. The queue's workers and the pull
    * path can ask for a path out of turn (SyncContext.publish), and two pushes
    * of one unpublished file both find no record, both mint a file id, and
    * both post: two files on the server for one note, one of them orphaned by
@@ -1983,7 +2064,7 @@ export class SyncEngine {
       if (recreate !== undefined) {
         this.folderPublishes.delete(path);
         // THE BARRIER IS THIS POST'S, NOT THIS ATTEMPT'S (review round 3,
-        // finding 3). `takeBatch` took it as it took the path, and a post
+        // finding 3). `takeNext` took it as it took the path, and a post
         // that fails here is the one case where letting it go is wrong:
         // everything queued behind it is a move the receiver can only refuse
         // until this record lands.
@@ -2149,7 +2230,7 @@ export class SyncEngine {
   /**
    * A folder record's post FAILED, and what the queue owes it.
    *
-   * `takeBatch` deleted the barrier as it took the path and `pushNow` deleted
+   * `takeNext` deleted the barrier as it took the path and `pushNow` deleted
    * the path from `folderPublishes` before the post, so before this the
    * publication simply ceased to exist: the moves queued behind it went out
    * alone, a folding receiver refused every one of them with a notice naming
@@ -2217,9 +2298,9 @@ export class SyncEngine {
    * Another device wrote first. Pull the file's heads and let the pull path
    * merge or keep both, then the local head is current again.
    */
-  private async reconcileFile(fileId: string): Promise<void> {
+  private async reconcileFile(fileId: string, known?: FileRecord): Promise<void> {
     const context = this.need();
-    const file = await context.transport.getFile(fileId);
+    const file = known ?? await context.transport.getFile(fileId);
     const localPath = context.state.pathByFileId(fileId);
     const localVersion = localPath ? context.state.fileByPath(localPath)?.versionId : undefined;
     for (const head of file.heads) {
@@ -2391,6 +2472,7 @@ export class SyncEngine {
    * has consumed it, and the mark moves past it (`processed`, issue #145).
    */
   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+    if (await this.background(context, change)) return null;
     // Another device's authenticated version arrives before its write can
     // trigger a host plugin. Waiting until applyChange returns can miss a
     // rewrite made by that plugin during the filesystem event itself.
@@ -2474,8 +2556,9 @@ export class SyncEngine {
       if (path === undefined || !this.acting(path)) forked?.delete(fileId);
     }
     const records = Object.values(this.options.state.data.parked);
-    const waiting = (forked?.size ?? 0) + records.filter((entry) => entry.reason === "active_editor").length;
-    const parked = records.filter((entry) => entry.reason !== "active_editor");
+    const working = (entry: { reason: string }): boolean => entry.reason === "active_editor" || entry.reason === DOWNLOADING;
+    const waiting = (forked?.size ?? 0) + records.filter(working).length;
+    const parked = records.filter((entry) => !working(entry));
     const newest = parked[parked.length - 1];
     if (newest !== undefined) {
       const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
@@ -2610,6 +2693,8 @@ export class SyncEngine {
       for (const fileId of Object.keys(context.state.data.parked)) {
         if (!this.running) return;
         if (trigger === "timer" && context.state.data.parked[fileId]?.reason === "active_editor") continue;
+        // The background lane's, and it runs beside this pass (`lane`).
+        if (context.state.data.parked[fileId]?.reason === DOWNLOADING) continue;
         try {
           if (await this.retryOne(context, fileId)) released++;
         } catch (error) {
@@ -2623,6 +2708,7 @@ export class SyncEngine {
         }
       }
       await context.state.save();
+      this.lane();
       context.host.log(
         `feed decision=retried trigger=${trigger} released=${released} ` +
           `parked=${Object.keys(context.state.data.parked).length} retry_ms=${this.parkDelay} ` +
@@ -2645,7 +2731,14 @@ export class SyncEngine {
       return false;
     }
     try {
-      await this.reconcileFile(fileId);
+      const file = await context.transport.getFile(fileId);
+      // A head too large to fetch under the pull lock goes to the lane.
+      if (this.ahead(context, fileId, file) !== null) {
+        context.state.data.parked[fileId] = { path: waiting?.path ?? "", reason: DOWNLOADING };
+        this.lane();
+        return false;
+      }
+      await this.reconcileFile(fileId, file);
     } catch (error) {
       this.park(context, fileId, error);
       return false;
@@ -2654,6 +2747,138 @@ export class SyncEngine {
     this.armParkRetry();
     context.host.log(`feed decision=released file=${fileId} parked=${Object.keys(context.state.data.parked).length}`);
     return true;
+  }
+
+  /**
+   * A LARGE DOWNLOAD NEVER HOLDS UP THE FEED (issue #196). A version of more
+   * than `LARGE_APPLY_BYTES` this device would have to download is parked
+   * `downloading`, which the status counts as work, and applied by the lane,
+   * so the records behind it keep applying. Persisted with the cursor like any
+   * parked record, so a stop or a restart resumes it (`retryParked`); a later
+   * version of the file that the feed applies settles it at once (`receive`).
+   */
+  private async background(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+    if (change.deleted || change.bytes <= LARGE_APPLY_BYTES || change.device_id === context.deviceId ||
+      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined) return false;
+    // A rename, or bytes this device already holds: nothing to fetch.
+    const kept = context.state.pathByFileId(change.file_id);
+    if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
+    const entry = await decodeRecordManifest(context, change).catch(() => null);
+    // Refused by the ordinary apply, which names why.
+    if (entry?.v !== 1) return false;
+    context.state.data.parked[change.file_id] = { path: entry.path, reason: DOWNLOADING };
+    context.host.log(
+      `feed decision=backgrounded reason=large bytes=${change.bytes} budget=${LARGE_APPLY_BYTES} file=${change.file_id} seq=${change.seq}`,
+    );
+    this.lane();
+    return true;
+  }
+
+  /**
+   * THE BACKGROUND LANE (issue #196): the records parked `downloading`, one
+   * at a time, each fetched ahead outside the pull lock and applied under it
+   * (`laneOne`). One run at a time, and a record parked while it runs is
+   * taken by the same run. A failure leaves the record for the next pass
+   * (`armParkRetry`), except one about that file alone, which is parked by
+   * name as the feed parks it.
+   */
+  private lane(): void {
+    if (this.laning || !this.running) return;
+    this.laning = true;
+    void this.track(this.laneRun(this.need()));
+  }
+
+  private async laneRun(context: SyncContext): Promise<void> {
+    const tried = new Map<string, unknown>();
+    try {
+      for (;;) {
+        if (!this.running || this.contextValue !== context) return;
+        const next = Object.entries(context.state.data.parked)
+          .find(([id, entry]) => entry.reason === DOWNLOADING && tried.get(id) !== entry);
+        if (next === undefined) return;
+        const [fileId, entry] = next;
+        tried.set(fileId, entry);
+        const started = context.now();
+        context.host.log(`pull decision=start reason=background file=${fileId} parked=${Object.keys(context.state.data.parked).length}`);
+        let outcome: string;
+        try {
+          outcome = await this.laneOne(context, fileId);
+        } catch (error) {
+          if (stopped(error)) return;
+          outcome = `deferred_${error instanceof ApiError ? error.code : "failed"}`;
+          this.armParkRetry();
+        }
+        context.host.log(`pull decision=summary reason=background file=${fileId} outcome=${outcome} duration_ms=${context.now() - started}`);
+        this.status(this.resting());
+      }
+    } finally {
+      this.laning = false;
+    }
+  }
+
+  /**
+   * One file of the lane: its large head fetched ahead, outside the pull lock
+   * (`stage`), then applied UNDER it like any parked record, against the
+   * file's heads read again there -- so an older version never lands over a
+   * newer one, and a head that moved on to another large version while this
+   * one streamed is fetched ahead in its turn.
+   */
+  private async laneOne(context: SyncContext, fileId: string): Promise<string> {
+    for (;;) {
+      const before = await context.transport.getFile(fileId, { signal: context.signal });
+      const ahead = this.ahead(context, fileId, before);
+      if (ahead !== null) await stage(context, ahead);
+      let outcome = "applied";
+      try {
+        await this.exclusive(async () => {
+          if (!this.running || this.contextValue !== context) {
+            outcome = "stopped";
+            return;
+          }
+          // A later version the feed applied has settled it (`receive`).
+          if (context.state.data.parked[fileId]?.reason !== DOWNLOADING) {
+            outcome = "settled";
+            return;
+          }
+          const file = await context.transport.getFile(fileId, { signal: context.signal });
+          const next = this.ahead(context, fileId, file);
+          if (next !== null && next.version_id !== ahead?.version_id) {
+            outcome = "moved_on";
+            return;
+          }
+          try {
+            await this.reconcileFile(fileId, file);
+          } catch (error) {
+            this.park(context, fileId, error);
+            outcome = "parked";
+            return;
+          }
+          delete context.state.data.parked[fileId];
+          await context.state.save();
+          this.armParkRetry();
+        });
+      } finally {
+        // What the apply did not take -- the heads moved on, a stop -- is dropped.
+        for (const writer of context.staged?.values() ?? []) await writer.abort();
+        context.staged?.clear();
+      }
+      if (outcome !== "moved_on") return outcome;
+    }
+  }
+
+  /**
+   * The one head of `file` worth fetching ahead: a single large version this
+   * device does not hold (`stage` still fetches nothing for bytes it has).
+   * `null` for anything else -- a fork, a deletion, a small version -- which
+   * the ordinary apply settles under the lock.
+   */
+  private ahead(context: SyncContext, fileId: string, file: FileRecord): ChangeRecord | null {
+    const kept = context.state.pathByFileId(fileId);
+    const held = kept === undefined ? undefined : context.state.fileByPath(kept);
+    const head = file.heads.length === 1 ? file.heads[0] : undefined;
+    const version = file.versions.find((candidate) => candidate.version_id === head);
+    if (version === undefined || head === held?.versionId || version.deleted || version.bytes <= LARGE_APPLY_BYTES) return null;
+    return { ...version, file_id: fileId, domain_id: file.domain_id, seq: context.state.data.lastSeq, heads: file.heads, conflicted: false };
   }
 
   /**
@@ -2816,6 +3041,17 @@ export class SyncEngine {
 
   private async scanLocal(): Promise<void> {
     const context = this.need();
+    // The temp files writes left when this device last stopped in the middle
+    // of them (issue #159), once per start. Under the pull lock, so no write
+    // of this start is in the middle of one, and beside this scan rather than
+    // in front of it; cleaning up is never a reason not to sync.
+    if (!this.swept) {
+      this.swept = true;
+      void this.track(this.exclusive(async () => {
+        await context.host.sweep?.().catch((error: unknown) =>
+          context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
+      }));
+    }
     // A copy whose name no device settled is announced within one scan of
     // `COPY_SETTLE_MS`, even while the feed brings nothing (issue #164).
     announceCopies(context);

@@ -716,7 +716,9 @@ long poll and needs its timeout raised.
    reconciliation that compares `(mtime, size)` per path against the local
    state and re-hashes anything that differs. Events are debounced 500 ms
    per path, and the growing-file guard then compares each stat with the one
-   the previous recheck took, 400 ms earlier: a file that has been seen
+   the previous recheck took, 400 ms earlier. A note of at most one chunk
+   that someone typed in within the last 10 s is the editor's own save: it
+   settles 150 ms after its event, with no recheck (issue #195). A file that has been seen
    changing must hold still for 5 s before it is queued, and a push whose
    file moved between the start and the end of its read is abandoned before
    a version exists. A file still growing is retried, never uploaded torn.
@@ -766,11 +768,15 @@ long poll and needs its timeout raised.
    entry. A host that keeps them apart answers nothing for a file that is
    gone, so a deletion beside a genuinely different note whose name differs
    only in case still publishes its tombstone.
-2. **Push.** Read, chunk, encrypt, batch-check existence (`POST
-   /v1/chunks/exists`), upload missing chunks with bounded concurrency
-   (4 on desktop, 2 on mobile) and resume by `sid`, then post the version.
-   A rejected parent set means another device wrote first; the plugin pulls,
-   reconciles, and retries.
+2. **Push.** Read, chunk and encrypt once; batch-check existence (`POST
+   /v1/chunks/exists`) a window of ciphertext at a time (32 MiB on desktop,
+   8 MiB on mobile) and upload what is missing from memory; resume by `sid`;
+   post the version once every chunk has landed. A note's one chunk of at
+   most 1 MiB is uploaded without the check. Pushes run in worker slots (4 on
+   desktop, 2 on mobile), each taking the next queued path as it frees up,
+   and a chunk of 256 KiB or less never waits behind a larger one (issue
+   #196). A rejected parent set means another device wrote first; the plugin
+   pulls, reconciles, and retries.
 3. **Pull.** Follow the change feed; for each version not authored here,
    download missing chunks, decrypt, assemble, verify the plaintext
    `sha256`, and write atomically (temp file plus rename on desktop via the
@@ -968,6 +974,10 @@ long poll and needs its timeout raised.
    one minute after it parks, doubling to half an hour, and at once at the
    next start and on **Sync now**; a later version of it that the feed
    applies settles it at once. A retry pass and the feed apply one at a time.
+   A version of more than 32 MiB is parked the same way as `downloading`
+   and fetched beside the feed, so later notes keep arriving; it is applied
+   under the same one-at-a-time rule, against the file's heads as they are
+   then (issue #196).
    Anything else -- the server out of reach, a refusal about this device, an
    I/O error -- is no fact about one record and keeps the feed's own retry.
    The filesystem causes are recognised on desktop only: the mobile adapter's

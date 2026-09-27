@@ -199,6 +199,7 @@ export function unwritableText(path: string, reason: string): string {
   // A chunk the server lost is nothing wrong with THIS device, so it is not
   // said as if it were (2026-09-24 verification, X2).
   if (reason === "active_editor") return `Waiting for typing to settle in ${path}`;
+  if (reason === "downloading") return `Downloading ${path}`;
   if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
@@ -614,22 +615,30 @@ export async function decryptRecordManifest(
  * total afterwards would be an assertion no input could fail, and it would
  * fail LATER than this one, after the bytes had been written.
  */
-async function* chunkPlaintexts(context: SyncContext, manifest: Manifest, control?: ReadControl): AsyncGenerator<Bytes> {
+async function* chunkPlaintexts(
+  context: SyncContext,
+  manifest: Manifest,
+  control?: ReadControl,
+  stop: AbortSignal | null = control === undefined ? context.signal ?? null : null,
+): AsyncGenerator<Bytes> {
   assertSyncPath(manifest.path, context.state.data.syncFolders);
+  // A stopped engine's download ends at the NEXT CHUNK (issues #157, #185,
+  // #196): the fetch carries the stop, so one in flight ends at once and none
+  // is sent after it; nothing after the chunk in hand is written, and the
+  // writer discards what it held (`materialise`); the feed applies this record
+  // again at the next start. A manual read -- a restore runs on purpose after
+  // the stop -- answers to its own control instead, and a write a version was
+  // already posted for is not a stop's to end (`stop` null).
+  const patience = stop === null ? {} : { signal: stop };
   let index = 0;
   while (index < manifest.chunks.length) {
     control?.check();
-    // A stopped engine's download ends at the next batch, and the writer
-    // discards what it held (`materialise`): the feed applies this record again
-    // at the next start (issues #157, #185). A manual read -- a restore runs on
-    // purpose after the stop -- answers to its own control instead.
-    if (control === undefined && context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
     const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
     index += batch.length;
     const bodies =
       batch.length === 1
-        ? [await context.transport.getChunk((batch[0] as ManifestChunk).sid, control)]
-        : await context.transport.getChunks(batch.map((chunk) => chunk.sid), control);
+        ? [await context.transport.getChunk((batch[0] as ManifestChunk).sid, control, patience)]
+        : await context.transport.getChunks(batch.map((chunk) => chunk.sid), control, patience);
     control?.check();
     for (let i = 0; i < batch.length; i++) {
       const body = bodies[i];
@@ -640,6 +649,7 @@ async function* chunkPlaintexts(context: SyncContext, manifest: Manifest, contro
       const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
       if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
       control?.check();
+      if (stop?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
       yield plaintext;
     }
   }
@@ -754,9 +764,15 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
   // manifest's path was checked at decode, a conflict copy's derived path is
   // checked here, and neither reaches a writer unchecked.
   assertVaultPath(manifest.path);
-  const writer = await context.host.writer(manifest.path);
+  // A large version the background lane already fetched and verified for
+  // exactly these bytes at exactly this path (`stage`); anything else is
+  // downloaded here.
+  const key = stagedKey(manifest);
+  const staged = context.staged?.get(key);
+  context.staged?.delete(key);
+  const writer = staged ?? await context.host.writer(manifest.path);
   try {
-    await writeVerified(context, manifest, writer);
+    if (staged === undefined) await writeVerified(context, manifest, writer);
     const now = over === undefined ? null : await context.host.stat(manifest.path);
     if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
       await writer.abort();
@@ -770,6 +786,49 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
     await writer.abort();
     throw error;
   }
+}
+
+/** A staged download is for one path and one chunk list, and for nothing else. */
+const stagedKey = (manifest: Manifest): string => `${manifest.path}\u0000${manifest.chunks.map((chunk) => chunk.sid).join(",")}`;
+
+/**
+ * FETCH A LARGE VERSION BEFORE ITS TURN (issue #196): every chunk fetched,
+ * decrypted and verified into a writer that is NOT committed, outside the
+ * pull lock, so the feed keeps applying later records while it streams. It
+ * decides nothing. The apply that follows is the ordinary one, under the lock
+ * and against the file's heads as they are then, and `materialise` takes this
+ * writer in place of a download only when it writes exactly these bytes at
+ * exactly this path; the caller aborts it otherwise. False, with nothing
+ * fetched, for a version this device would not write or already holds.
+ */
+export async function stage(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+  let entry: Manifest | FolderManifest | PauseManifest;
+  try {
+    entry = await decodeRecordManifest(context, change);
+  } catch (error) {
+    // Refused where the apply names it, under the lock.
+    if (error instanceof ManifestError || error instanceof VaultPathError) return false;
+    throw error;
+  }
+  if (entry.v !== 1 || entry.deleted || context.state.data.paused[change.file_id] !== undefined) return false;
+  const kept = context.state.pathByFileId(change.file_id);
+  if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
+  if (await context.host.inNestedVault(entry.path)) return false;
+  if (!admit(context.state.data.policy, context.state.localBytes(), entry.size).ok) return false;
+  let writer: VaultWriter | null = null;
+  try {
+    assertVaultPath(entry.path);
+    writer = await context.host.writer(entry.path);
+    await writeVerified(context, entry, writer);
+  } catch (error) {
+    await writer?.abort();
+    if (error instanceof VaultPathError) return false;
+    // A fact about this one file, parked by name as the apply would park it.
+    const reason = unwritable(error);
+    throw reason === null ? error : new Unwritable(entry.path, reason);
+  }
+  context.staged?.set(stagedKey(entry), writer);
+  return true;
 }
 
 /**
@@ -827,22 +886,28 @@ async function unmoved(context: SyncContext, path: string, was: { mtime: number;
 }
 
 /** Content verification shared by pull and create-only restore; no identity or echo bookkeeping. */
-export async function writeVerified(context: SyncContext, manifest: Manifest, writer: VaultWriter, control?: ReadControl): Promise<void> {
+export async function writeVerified(
+  context: SyncContext,
+  manifest: Manifest,
+  writer: VaultWriter,
+  control?: ReadControl,
+  stop?: AbortSignal | null,
+): Promise<void> {
   if (manifest.chunks.length === 1) {
-    const only = await firstChunk(context, manifest, control);
+    const only = await firstChunk(context, manifest, control, stop);
     if (manifest.sha256 !== "" && hex(await sha256(only)) !== manifest.sha256) throw new Error("pull: plaintext hash mismatch");
     control?.check();
     await writer.write(only);
   } else {
-    for await (const part of chunkPlaintexts(context, manifest, control)) {
+    for await (const part of chunkPlaintexts(context, manifest, control, stop)) {
       control?.check();
       await writer.write(part);
     }
   }
 }
 
-async function firstChunk(context: SyncContext, manifest: Manifest, control?: ReadControl): Promise<Bytes> {
-  for await (const part of chunkPlaintexts(context, manifest, control)) return part;
+async function firstChunk(context: SyncContext, manifest: Manifest, control?: ReadControl, stop?: AbortSignal | null): Promise<Bytes> {
+  for await (const part of chunkPlaintexts(context, manifest, control, stop)) return part;
   return new Uint8Array(0);
 }
 
@@ -2997,7 +3062,8 @@ async function keepLost(
   let occupant = await context.host.stat(path);
   if (occupant !== null && (own?.edited || (await alreadyCopied(context, copy, path, occupant)) === null)) return null;
   const posted = await postManifest(context, fileId, [], sids, copy, copy.size, true);
-  let landed = occupant ?? (await createOnly(context, copy, own?.text));
+  // Posted, so the copy's download is not a stop's to end (`chunkPlaintexts`).
+  let landed = occupant ?? (await createOnly(context, copy, own?.text, null));
   if (landed === null) {
     occupant = await context.host.stat(path);
     landed = occupant === null || own?.edited ? null : await alreadyCopied(context, copy, path, occupant);
@@ -3861,7 +3927,7 @@ async function takeVacated(
  * the name is occupied -- by a file this device did not put there -- and the
  * caller must not treat that as a failure; anything else is one.
  */
-async function createOnly(context: SyncContext, manifest: Manifest, fill?: Bytes): Promise<VaultStat | null> {
+async function createOnly(context: SyncContext, manifest: Manifest, fill?: Bytes, stop?: AbortSignal | null): Promise<VaultStat | null> {
   assertVaultPath(manifest.path);
   let writer: VaultWriter;
   try {
@@ -3872,7 +3938,7 @@ async function createOnly(context: SyncContext, manifest: Manifest, fill?: Bytes
   }
   let stat: VaultStat;
   try {
-    if (fill === undefined) await writeVerified(context, manifest, writer);
+    if (fill === undefined) await writeVerified(context, manifest, writer, undefined, stop);
     else await writer.write(fill);
     stat = await writer.commit(manifest.mtime);
   } catch (error) {

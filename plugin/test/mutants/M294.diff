@@ -1,12 +1,17 @@
 # M294: no start removes the temps a quit left
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -574,8 +574,6 @@
-     // finding 3).
-     this.restoreFolderBarriers();
-     // Cleaning up is never a reason not to sync.
--    await host.sweep?.().catch((error: unknown) =>
--      host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
-     await this.reconcile();
-     if (this.running) {
-       const context = this.need();
+@@ -3045,13 +3045,6 @@
+     // of them (issue #159), once per start. Under the pull lock, so no write
+     // of this start is in the middle of one, and beside this scan rather than
+     // in front of it; cleaning up is never a reason not to sync.
+-    if (!this.swept) {
+-      this.swept = true;
+-      void this.track(this.exclusive(async () => {
+-        await context.host.sweep?.().catch((error: unknown) =>
+-          context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
+-      }));
+-    }
+     // A copy whose name no device settled is announced within one scan of
+     // `COPY_SETTLE_MS`, even while the feed brings nothing (issue #164).
+     announceCopies(context);

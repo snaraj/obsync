@@ -44,9 +44,10 @@
  * CHUNK UPLOADS ARE BUDGETED. A chunk body is the only request whose retry
  * costs megabytes, and it is the only one that cannot be resumed, so
  * `putChunk` owns three rules the generic retry cannot express: one upload
- * per sid, a ceiling on the BYTES in flight rather than on their count, and
- * a question — has this body already landed? — before any re-send
- * (`UPLOAD_INFLIGHT_MAX`, `docs/validation.md` V7).
+ * per sid, a ceiling on the BYTES in flight rather than on their count, with
+ * a small allowance of its own for note-sized bodies, and a question — has
+ * this body already landed? — before any re-send (`UPLOAD_INFLIGHT_MAX`,
+ * `SMALL_INFLIGHT_MAX`, `docs/validation.md` V7).
  *
  * PLATFORM. Identical on desktop and mobile. Mobile is HTTPS-only, so a
  * plain-HTTP server URL is rejected at the settings tab, not here.
@@ -464,9 +465,13 @@ const BACKOFF_CEILING_MS = 60000;
 
 /**
  * The retransmission budget `docs/validation.md` V7 sets: killing Obsidian
- * mid-upload and reopening may re-send FEWER than 8 MiB of ciphertext.
+ * mid-upload and reopening may re-send FEWER than 32 MiB of large chunks,
+ * plus the small pipe's `SMALL_INFLIGHT_MAX`. Four maximal chunks: 8 MiB
+ * until 1.1.4, raised by measurement (issue #196), because a budget of one
+ * chunk waited out a round trip per chunk -- 512 MiB went up at 70.8 MiB/s
+ * with 20 ms of round trip and at 133.5 MiB/s with four chunks in flight.
  */
-export const UPLOAD_BUDGET_BYTES = 8 * 1024 * 1024;
+export const UPLOAD_BUDGET_BYTES = 32 * 1024 * 1024;
 
 /**
  * The ceiling on chunk bytes in flight, which is what turns that budget from
@@ -475,19 +480,27 @@ export const UPLOAD_BUDGET_BYTES = 8 * 1024 * 1024;
  * A chunk upload cannot be resumed: `PUT /v1/chunks/{sid}` carries a whole
  * body and the server keeps nothing until the body hashes to the sid
  * (`docs/protocol.md`), so every byte in flight when the process dies is a
- * byte the restart sends again. Bounding the SUM of the bodies in flight
- * rather than their COUNT bounds that loss — four concurrent uploads of up to
- * `CHUNK_CIPHERTEXT_MAX` each put 32 MiB at risk, four times the budget, and
- * issue #56 measured at least 10,910,020 bytes duplicated with four uploads
- * interrupted at once. `- 1` because V7 says "fewer than".
+ * byte the restart sends again. Bounding the SUM of the bodies in flight,
+ * across every push at once, rather than their COUNT bounds that loss: issue
+ * #56 measured at least 10,910,020 bytes duplicated with four uploads
+ * interrupted at once when only their count was bounded. `- 1` because V7
+ * says "fewer than".
  *
- * A body above the ceiling still goes, alone: refusing it would be a file
- * this device could never push. A maximal chunk is therefore the one case an
- * interruption can still exceed the budget, by at most the 16-byte
- * authentication tag, and closing that needs a resumable upload the protocol
- * does not have.
+ * A pipe holding nothing admits any body, so no body can wait for ever; no
+ * chunk is larger than this ceiling, so none goes above it.
  */
 export const UPLOAD_INFLIGHT_MAX = UPLOAD_BUDGET_BYTES - 1;
+
+/**
+ * A NOTE NEVER WAITS BEHIND A LARGE CHUNK (issue #196). A body of at most
+ * `SMALL_BODY_MAX` -- a note, or a large file's short last chunk -- is
+ * admitted against its own `SMALL_INFLIGHT_MAX` rather than behind the large
+ * bodies waiting for room, so an edit made during a video upload goes at
+ * once. What a kill can make a restart send again is therefore the large
+ * budget plus this allowance (`docs/validation.md` V7).
+ */
+export const SMALL_BODY_MAX = 256 * 1024;
+export const SMALL_INFLIGHT_MAX = 1024 * 1024;
 
 type CallOptions = Patience & {
   auth: "device" | "none";
@@ -546,6 +559,13 @@ interface Prepared {
   deadlineMs: number;
 }
 
+/** Chunk bodies in flight through one pipe against its ceiling, and those waiting for room. */
+interface Pipe {
+  bytes: number;
+  readonly max: number;
+  readonly waiting: { bytes: number; resume: () => void }[];
+}
+
 /** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
 function attemptMs(target: string, bytes: number): number {
   const wait = /^\/v1\/changes\?.*\bwait=(\d+)/.exec(target)?.[1];
@@ -596,10 +616,15 @@ export class Transport {
   private manualRead: Promise<Attempt> | null = null;
   /** sid → the one upload of that chunk this client has in flight. */
   private readonly uploading = new Map<string, Promise<void>>();
-  /** Ciphertext bytes claimed by uploads in flight, against the ceiling. */
-  private uploadBytes = 0;
-  /** Uploads waiting for room, oldest first, so a maximal body cannot starve. */
-  private readonly admitting: { bytes: number; resume: () => void }[] = [];
+  /**
+   * The two pipes a chunk body is admitted to (`SMALL_BODY_MAX`): the bytes
+   * each has in flight against its ceiling, and its waiters, oldest first, so
+   * a maximal body cannot starve.
+   */
+  private readonly pipes: { large: Pipe; small: Pipe } = {
+    large: { bytes: 0, max: UPLOAD_INFLIGHT_MAX, waiting: [] },
+    small: { bytes: 0, max: SMALL_INFLIGHT_MAX, waiting: [] },
+  };
   /** What the uploader has done, for the per-run summary its caller logs. */
   private readonly upload = { chunks: 0, resent: 0, deduped: 0 };
   /** Manual history operations currently open, whether or not one is reading. */
@@ -1142,28 +1167,35 @@ export class Transport {
     }
   }
 
-  /** Does this body fit in flight? A pipe holding nothing fits anything. */
-  private fits(bytes: number): boolean {
-    return this.uploadBytes === 0 || this.uploadBytes + bytes <= UPLOAD_INFLIGHT_MAX;
+  /** Does this body fit in flight through its pipe? A pipe holding nothing fits anything. */
+  private fits(pipe: Pipe, bytes: number): boolean {
+    return pipe.bytes === 0 || pipe.bytes + bytes <= pipe.max;
   }
 
-  /** Claim room for one body, in arrival order. */
+  /** Claim room for one body, in arrival order within its pipe. */
   private async admit(bytes: number): Promise<void> {
-    if (this.admitting.length === 0 && this.fits(bytes)) {
-      this.uploadBytes += bytes;
+    const pipe = bytes <= SMALL_BODY_MAX ? this.pipes.small : this.pipes.large;
+    if (pipe.waiting.length === 0 && this.fits(pipe, bytes)) {
+      pipe.bytes += bytes;
       return;
     }
-    await new Promise<void>((resume) => this.admitting.push({ bytes, resume }));
+    // The large pipe waits on every chunk of a big upload, which the run's own
+    // summary covers; the small allowance filling is the new ceiling firing.
+    if (pipe === this.pipes.small) {
+      this.log(`upload decision=waiting lane=small bytes=${bytes} in_flight=${pipe.bytes} budget=${pipe.max}`);
+    }
+    await new Promise<void>((resume) => pipe.waiting.push({ bytes, resume }));
   }
 
   /** Give the room back and hand it to the waiters that now fit. */
   private release(bytes: number): void {
-    this.uploadBytes -= bytes;
-    for (let head = this.admitting[0]; head !== undefined && this.fits(head.bytes); head = this.admitting[0]) {
-      this.admitting.shift();
+    const pipe = bytes <= SMALL_BODY_MAX ? this.pipes.small : this.pipes.large;
+    pipe.bytes -= bytes;
+    for (let head = pipe.waiting[0]; head !== undefined && this.fits(pipe, head.bytes); head = pipe.waiting[0]) {
+      pipe.waiting.shift();
       // Claimed HERE, before the waiter resumes, so the next head measures
       // against a pipe that already holds it.
-      this.uploadBytes += head.bytes;
+      pipe.bytes += head.bytes;
       head.resume();
     }
   }
@@ -1191,11 +1223,11 @@ export class Transport {
     return { ...this.upload };
   }
 
-  async getChunk(sid: string, control?: ReadControl): Promise<Bytes> {
+  async getChunk(sid: string, control?: ReadControl, patience: Patience = {}): Promise<Bytes> {
     const target = `/v1/chunks/${sid}`;
     const response = control
       ? await this.readOnce(target, control, CHUNK_CIPHERTEXT_MAX)
-      : this.capped("GET", target, await this.call("GET", target, { auth: "device", cap: CHUNK_CIPHERTEXT_MAX, bulk: true }), CHUNK_CIPHERTEXT_MAX, true);
+      : this.capped("GET", target, await this.call("GET", target, { auth: "device", cap: CHUNK_CIPHERTEXT_MAX, bulk: true, ...patience }), CHUNK_CIPHERTEXT_MAX, true);
     return new Uint8Array(response.arrayBuffer);
   }
 
@@ -1205,12 +1237,12 @@ export class Transport {
    * latency is made of. A missing sid comes back as a zero-length part with
    * `X-Obsync-Missing: 1` and is returned as `null`.
    */
-  async getChunks(sids: string[], control?: ReadControl): Promise<(Bytes | null)[]> {
+  async getChunks(sids: string[], control?: ReadControl, patience: Patience = {}): Promise<(Bytes | null)[]> {
     const target = "/v1/chunks/get";
     const cap = sids.length * (CHUNK_CIPHERTEXT_MAX + MULTIPART_PART_OVERHEAD) + MULTIPART_PART_OVERHEAD;
     const response = control
       ? await this.readOnce(target, control, 33 * 1024 * 1024, { sids })
-      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids }, cap, bulk: true }), cap, true);
+      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids }, cap, bulk: true, ...patience }), cap, true);
     const contentType = response.headers["content-type"] ?? response.headers["Content-Type"] ?? "";
     const boundary = /boundary=("?)([^";]+)\1/.exec(contentType)?.[2];
     if (!boundary) throw new ApiError(response.status, "bad_multipart", "no multipart boundary");

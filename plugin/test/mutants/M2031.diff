@@ -1,0 +1,12 @@
+# M2031: a single chunk of any size goes without asking
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -408,7 +408,7 @@
+     // verified against its sid there. Bytes the record already names -- a
+     // rename, a re-send over a restored server -- most likely are, so those
+     // are asked about first.
+-    const direct = single.length <= DIRECT_PUT_MAX && record?.sha256 !== digest;
++    const direct = record?.sha256 !== digest;
+     if (direct || (await context.transport.missingChunks(sids, { signal: context.signal })).length > 0) {
+       await context.transport.putChunk(only.sid, single, { signal: context.signal });
+       uploads = 1;

@@ -14,7 +14,7 @@ import { FakeTimers, KEYS, keys, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
-const { SyncEngine, HEARTBEAT_MS } = require("../build/sync/engine.js");
+const { SyncEngine, HEARTBEAT_MS, SCAN_MS } = require("../build/sync/engine.js");
 const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
 const c = require("../build/crypto.js");
@@ -689,6 +689,20 @@ test("a binary conflict is never merged", async () => {
   }
 });
 
+test("a conflict copy whose version is already posted is still written when sync stops meanwhile (#196)", async () => {
+  // The copy's version goes to the server BEFORE its bytes are downloaded
+  // here (`keepLost`), so a stop between the two must not leave a copy every
+  // other device has and this one does not: that download is not a stop's to end.
+  const bytes = (last) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, last]);
+  const { r, head } = await forkOf("image.png", bytes(1), bytes(3), bytes(2), "ours");
+  const halt = new AbortController();
+  halt.abort();
+  assert.equal(await applyChange({ ...r.context, signal: halt.signal }, head), "skipped");
+  const copy = [...r.host.files.keys()].filter((path) => path.startsWith("image (conflict from "));
+  assert.equal(copy.length, 1, JSON.stringify([...r.host.files.keys()]));
+  assert.deepEqual([...r.host.files.get(copy[0]).bytes], [...bytes(2)]);
+});
+
 /**
  * The fake server, wrapped so it spends nonces exactly as obsyncd does and
  * loses one answer. `before` loses the request instead, so the server never
@@ -1127,32 +1141,52 @@ test("a file whose modification time can still move is never read twice", async 
   engine.stop();
 });
 
-test("each start clears an interrupted write's leftovers before it lists the vault, and a failed clean-up stops nothing", async () => {
+test("each start's first scan clears an interrupted write's leftovers under the pull lock, once, and a failed clean-up stops nothing (#159, #195)", async () => {
   const rigged = await rig();
-  const { host } = rigged;
+  const { host, server, state, keys: k } = rigged;
   const order = [];
-  host.sweep = async () => { order.push("sweep"); };
+  let held = null;
+  host.sweep = async () => {
+    order.push("sweep");
+    if (held !== null) await held.promise;
+  };
   const list = host.list.bind(host);
   host.list = async () => {
     order.push("list");
     return await list();
   };
-  const engine = engineOf(rigged, new FakeTimers());
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
   await engine.start();
+  // The start lists and reconciles without the walk (#195).
+  assert.deepEqual(order, ["list"]);
+
+  // THE PULL LOCK: a page that arrives while the sweep walks waits for it.
+  held = deferred();
+  await timers.run(SCAN_MS, () => order.includes("sweep"));
+  await server.publish({ fileId: "5a".repeat(16), path: "Arrived.md", bytes: enc("arrived during the sweep\n"), mtime: 1000, domainKey: k.domainKey, manifestKey: k.manifestKey });
+  await timers.run(100);
+  assert.equal(state.fileByPath("Arrived.md"), undefined, "a page applied beside the sweep");
+  held.resolve();
+  await timers.run(100, () => state.fileByPath("Arrived.md") !== undefined);
+  // Once per start, however many scans follow.
+  await timers.run(SCAN_MS, () => order.filter((step) => step === "list").length >= 3);
+  assert.equal(order.filter((step) => step === "sweep").length, 1, order.join(", "));
   engine.stop();
-  assert.deepEqual(order, ["sweep", "list"]);
 
   // A walk that stops part way -- a file this user cannot stat -- is logged,
-  // and the start goes on.
+  // and the scan goes on.
   host.sweep = async () => {
     order.push("sweep");
     throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
   };
   order.length = 0;
-  const again = engineOf(rigged, new FakeTimers());
+  const againTimers = new FakeTimers();
+  const again = engineOf(rigged, againTimers);
   await again.start();
+  await againTimers.run(SCAN_MS, () => order.includes("sweep") && order.filter((step) => step === "list").length >= 3);
   again.stop();
-  assert.deepEqual(order, ["sweep", "list"]);
+  assert.equal(order.filter((step) => step === "sweep").length, 1, order.join(", "));
   assert.ok(host.logs.includes("host path_class=temp decision=failed reason=sweep code=EACCES"), host.logs.join(" | "));
 });
 
@@ -1662,9 +1696,8 @@ test("a failed rename bookkeeping save is handled and stops the engine", async (
  *
  * `host.read` is the seam both tests below hold: a push that cannot read its
  * file cannot finish, so what the queue holds at every step is a fact rather
- * than a race. The engine takes its first batch in the same turn as the
- * enqueue that starts the drain, so one path is in flight and the rest of the
- * queue waits for the next batch of the SAME drain.
+ * than a race. Each queued path takes a free worker as it is queued (#196), so
+ * both are in flight in the SAME drain, and Sync now joins it.
  */
 function heldReads(host) {
   const gate = deferred();
@@ -1705,7 +1738,7 @@ test("sync now waits for the drain already running, and says which decision it t
   host.seed("Two.md", "the second note\n", 2000);
   engine.changed("One.md");
   engine.changed("Two.md");
-  await timers.run(1000, () => held.reads.length === 1);
+  await timers.run(1000, () => held.reads.length === 2);
   assert.equal(server.journal.length, 0, "the drain is running and has posted nothing yet");
 
   let resolved = false;
@@ -1722,7 +1755,7 @@ test("sync now waits for the drain already running, and says which decision it t
   assert.deepEqual((await postedPaths(server, rigged.keys)).sort(), ["One.md", "Two.md"]);
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=1 follow_up=0")),
+      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=2 follow_up=0")),
     host.logs.join(" | "),
   );
 
@@ -1731,7 +1764,7 @@ test("sync now waits for the drain already running, and says which decision it t
   // even when their metadata has not changed (#179).
   await engine.syncNow();
   assert.ok(
-    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=1 in_flight=1 follow_up=0")),
+    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=2 follow_up=0")),
     host.logs.join(" | "),
   );
   engine.stop();
@@ -1770,7 +1803,7 @@ test("sync now drains again for work queued after the drain it joined took its l
   host.seed("Two.md", "the second note\n", 2000);
   engine.changed("One.md");
   engine.changed("Two.md");
-  await timers.run(1000, () => held.reads.length === 1);
+  await timers.run(1000, () => held.reads.length === 2);
   armed = true;
 
   let movedAtReturn = null;
@@ -1788,7 +1821,7 @@ test("sync now drains again for work queued after the drain it joined took its l
   assert.equal(state.fileByPath("Two.md") !== undefined, true);
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=3 in_flight=1 follow_up=1")),
+      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=3 follow_up=1")),
     host.logs.join(" | "),
   );
   engine.stop();

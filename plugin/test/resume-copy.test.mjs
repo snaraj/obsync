@@ -140,7 +140,7 @@ test("a growing copy whose last recorded bytes already equal the held snapshot r
   const r = await prepared(), posted = await remote(r, HELD);
   r.host.seed(COPY, HELD, 3000);
   r.state.setFile(COPY, { ...r.state.fileByPath(COPY), versionId: posted.version_id, mtime: 3000, size: HELD.length, sha256: await sidDigest(posted.sids) });
-  const make = r.host.writer.bind(r.host), missing = r.transport.missingChunks.bind(r.transport);
+  const make = r.host.writer.bind(r.host), put = r.transport.putChunk.bind(r.transport);
   r.host.writer = async path => {
     const writer = await make(path), commit = writer.commit.bind(writer);
     if (path === COPY) writer.commit = async (...args) => {
@@ -150,9 +150,10 @@ test("a growing copy whose last recorded bytes already equal the held snapshot r
     };
     return writer;
   };
-  r.transport.missingChunks = async (...args) => {
+  // The upload of the copy's one small chunk, which goes without asking (#195).
+  r.transport.putChunk = async (...args) => {
     r.host.seed(COPY, "a copy still growing during upload\n", 10000);
-    return missing(...args);
+    return put(...args);
   };
   await assert.rejects(resumePaused(r.context, r.note.fileId), /resume_copy_publication/);
   assert.equal(r.host.text(NOTE), HELD);

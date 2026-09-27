@@ -1,18 +1,17 @@
 # M82: a batch takes its paths without looking for a barrier
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1103,13 +1103,7 @@
-     // Cleared first, so the note of what a batch is carrying can never
-     // outlive the batch that carried it.
+@@ -1996,13 +1996,6 @@
+     // outlive the take that set it.
      this.barrierPath = null;
--    const first = this.queue[0] as string;
--    if (this.barriers.delete(first)) {
--      this.barrierPath = first;
--      return this.queue.splice(0, 1);
--    }
--    const behind = this.queue.findIndex((path) => this.barriers.has(path));
--    return this.queue.splice(0, behind === -1 ? concurrency : Math.min(concurrency, behind));
-+    return this.queue.splice(0, concurrency);
-   }
- 
-   /**
+     for (const [at, path] of this.queue.entries()) {
+-      if (this.barriers.has(path)) {
+-        // Anything before it is in flight, or it would have been taken.
+-        if (running.size !== 0) return null;
+-        this.barriers.delete(path);
+-        this.barrierPath = path;
+-        return this.queue.shift() as string;
+-      }
+       if (!running.has(path)) return this.queue.splice(at, 1)[0] as string;
+     }
+     return null;

@@ -1,0 +1,11 @@
+# M2068: the lane fetches a version inside a vault of its own
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -813,7 +813,6 @@
+   if (entry.v !== 1 || entry.deleted || context.state.data.paused[change.file_id] !== undefined) return false;
+   const kept = context.state.pathByFileId(change.file_id);
+   if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
+-  if (await context.host.inNestedVault(entry.path)) return false;
+   if (!admit(context.state.data.policy, context.state.localBytes(), entry.size).ok) return false;
+   let writer: VaultWriter | null = null;
+   try {

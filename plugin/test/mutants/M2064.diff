@@ -1,0 +1,12 @@
+# M2064: the apply downloads again what the lane already fetched
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -768,7 +768,7 @@
+   // exactly these bytes at exactly this path (`stage`); anything else is
+   // downloaded here.
+   const key = stagedKey(manifest);
+-  const staged = context.staged?.get(key);
++  const staged: VaultWriter | undefined = undefined;
+   context.staged?.delete(key);
+   const writer = staged ?? await context.host.writer(manifest.path);
+   try {

@@ -142,7 +142,8 @@ test("a chunk upload asleep in its backoff is sent to a newly adopted address wi
   r.host.seed("Big.md", "a note written while the server moved\n", 5000);
   r.engine.changed("Big.md");
   await r.timers.run(STEP_MS, () => asleep.length > 0);
-  assert.deepEqual(sent, ["POST sync.example.invalid"], "the push's first request failed at the old address and sleeps");
+  // A note's one small chunk is its push's first request (#195).
+  assert.deepEqual(sent, ["PUT sync.example.invalid"], "the push's first request failed at the old address and sleeps");
   r.state.data.serverUrl = "https://moved.example.invalid";
   r.transport.wake("address");
   await r.timers.run(STEP_MS, () => r.state.fileByPath("Big.md") !== undefined);

@@ -473,7 +473,8 @@ test("with the server gone, Leave answers in seconds and offers leaving on this 
   const r = await fixture(t, { devices: 2 });
   const s = await syncing(r);
   s.down();
-  r.host.seed("Notes/unsent.md", "UNSENT SENTINEL\n");
+  // Above `DIRECT_PUT_MAX`, so the push asks what the server holds first (#195).
+  r.host.seed("Notes/unsent.md", "UNSENT SENTINEL\n".repeat(70_000));
   s.engine.changed("Notes/unsent.md");
   await s.timers.run(10, () => r.logs.some((line) => line.startsWith("http POST /v1/chunks/exists") && line.includes("decision=retry")));
 

@@ -94,7 +94,8 @@ const retried = (d, prefix) => d.host.logs.some((line) => line.startsWith(prefix
 test("a stop ends a push asleep in its retry and the feed's long poll at once, instead of waiting them out (#157)", async () => {
   // S40: offline with unsent edits, Leave waited 96 s for the push to give up.
   const d = await device({ refuse: (_method, target) => target === "/v1/chunks/exists" });
-  d.host.seed(NOTE, "UNSENT SENTINEL\n", 1000);
+  // Above `DIRECT_PUT_MAX`, so the push asks what the server holds first (#195).
+  d.host.seed(NOTE, "UNSENT SENTINEL\n".repeat(70_000), 1000);
   await d.engine.start();
   await d.timers.run(10, () => retried(d, "http POST /v1/chunks/exists") && d.server.feedWaiters.length === 1);
   const before = d.statuses.length;
@@ -122,7 +123,8 @@ test("the status never says idle while an upload is still stopping (#185)", asyn
   d.host.seed(NOTE, "UNSENT SENTINEL\n", 1000);
   await d.engine.start();
   await entered.promise;
-  assert.deepEqual(d.statuses.at(-1), { kind: "syncing", pending: 1 });
+  // The note and its folder's record, each in a worker of its own (#196).
+  assert.deepEqual(d.statuses.at(-1), { kind: "syncing", pending: 2 });
   const before = d.statuses.length;
 
   let done = false;

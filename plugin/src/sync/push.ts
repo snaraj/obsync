@@ -7,18 +7,17 @@
  * the path lives inside the encrypted manifest, and the only clear fields
  * are opaque ids, sizes and hashes of ciphertext (AGENTS.md requirement 6).
  *
- * TWO PASSES ABOVE ONE CHUNK. A file of at most 8 MiB is one chunk and is
- * handled in a single pass holding its ciphertext. A larger file is streamed
- * TWICE: pass one derives `{sid, cid, len}` per chunk and discards the
- * ciphertext, so one `POST /v1/chunks/exists` can cover thousands of chunks;
- * pass two re-encrypts (deterministically — `encryptChunk` is a pure
- * function of the domain key and the plaintext, so the second pass produces
- * the same bytes) and uploads only the missing ones. Peak memory is
- * `concurrency × 8 MiB`, so a 20 GB archive costs the same as an 8 MiB note.
- * Killing Obsidian mid-upload and reopening resumes by `sid`: the exists
- * check already knows what landed. What the restart must send AGAIN is
- * whatever was in flight when the process died, which is why the transport
- * bounds those bytes rather than the number of requests
+ * ONE PASS, A WINDOW AT A TIME (issue #196). A file of at most 8 MiB is one
+ * chunk, held with its ciphertext; a note's one small chunk is PUT without
+ * asking first (`DIRECT_PUT_MAX`, issue #195). A larger file is read and
+ * encrypted ONCE: each window of ciphertext is asked about in one
+ * `POST /v1/chunks/exists` and what the server lacks is sent while it is still
+ * in memory, and the version is posted only after every chunk has landed.
+ * Peak memory is the window (`PUSH_WINDOW_BYTES`), so a 20 GB archive costs
+ * the same as a 32 MiB file. Killing Obsidian mid-upload and reopening
+ * resumes by `sid`: the exists check knows what landed. What the restart
+ * must send AGAIN is whatever was in flight when the process died, which is
+ * why the transport bounds those bytes rather than the number of requests
  * (`UPLOAD_INFLIGHT_MAX`) and why this module never re-sends a plan it has
  * not re-checked. Every run that chunks a file, and every run that re-sent a
  * byte, says so in one `upload decision=summary` line.
@@ -36,9 +35,10 @@
  * own `data.json` above all — cannot be uploaded even if an event names one
  * (`vaultPath.ts`).
  *
- * PLATFORM. Desktop streams the file through Node's `fs` in 8 MiB windows
- * with concurrency 4; mobile reads the whole file through the vault adapter
- * with concurrency 2, which is why the mobile per-file ceiling exists.
+ * PLATFORM. Desktop streams the file through Node's `fs` in 8 MiB reads and
+ * holds a 32 MiB window; mobile reads the whole file once through the vault
+ * adapter, which is why the mobile per-file ceiling exists, and holds an
+ * 8 MiB window beside it.
  */
 
 import type { SyncContext } from "./engine";
@@ -64,6 +64,22 @@ import {
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
 import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
+
+/**
+ * The ciphertext one push holds between encrypting a chunk and the server
+ * taking it (issue #196): what lets a large file be read and encrypted once
+ * rather than twice. A phone holds less, beside the whole file its adapter
+ * has already read.
+ */
+export const PUSH_WINDOW_BYTES = 32 << 20;
+export const PUSH_WINDOW_MOBILE_BYTES = 8 << 20;
+
+/**
+ * A single chunk this small is PUT without asking first (issue #195): the PUT
+ * is idempotent and the server verifies the body against its sid, so the
+ * question costs a round trip to save at most this many bytes.
+ */
+export const DIRECT_PUT_MAX = 1 << 20;
 
 export interface ManifestChunk {
   sid: string;
@@ -213,42 +229,69 @@ export async function retire(
   }
 }
 
-async function uploadMissing(
-  context: SyncContext,
-  missing: Set<string>,
-  plan: ManifestChunk[],
-  path: string,
-  size: number,
-): Promise<void> {
-  if (missing.size === 0) return;
-  const source = context.host.source(path, size);
-  const queue: Promise<void>[] = [];
+/**
+ * Read, encrypt and send a file of more than one chunk in ONE pass (issue
+ * #196). `plan` fills in file order. Chunks are asked about a window at a
+ * time, and what the server lacks is sent from memory: at most `limit` of
+ * ciphertext is held between encrypting a chunk and the server taking it.
+ * Resolves only once every chunk sent has LANDED -- the version is posted
+ * after it, never beside it -- and answers how many were sent.
+ */
+async function sendChunks(context: SyncContext, path: string, size: number, plan: ManifestChunk[]): Promise<number> {
+  const limit = context.host.isMobile ? PUSH_WINDOW_MOBILE_BYTES : PUSH_WINDOW_BYTES;
   const signal = context.signal;
-  for await (const plaintext of chunkStream(source)) {
+  const landing = new Set<Promise<void>>();
+  const asked = new Set<string>();
+  let window: { sid: string; ciphertext: Bytes }[] = [];
+  let windowBytes = 0;
+  let held = 0;
+  let sent = 0;
+  const ask = async (): Promise<void> => {
+    const chunks = window;
+    window = [];
+    windowBytes = 0;
+    const missing = new Set(await context.transport.missingChunks(chunks.map((chunk) => chunk.sid), { signal }));
+    for (const { sid, ciphertext } of chunks) {
+      if (!missing.has(sid)) {
+        held -= ciphertext.length;
+        continue;
+      }
+      sent++;
+      const upload: Promise<void> = context.transport.putChunk(sid, ciphertext, { signal }).finally(() => {
+        held -= ciphertext.length;
+        landing.delete(upload);
+      });
+      // Observed below; a stop can end it before the loop gets there.
+      upload.catch(() => undefined);
+      landing.add(upload);
+    }
+  };
+  for await (const plaintext of chunkStream(context.host.source(path, size))) {
     // THE CHUNK BOUNDARY IS WHERE A STOP LANDS (issues #157, #185): nothing
     // after it is encrypted or sent, and what already landed is found by its
     // sid when the push runs again, so a folder Save or a Leave never waits
     // for the rest of a large upload.
     if (signal?.aborted === true) {
       // The chunks on the wire end by the same signal, at once.
-      await Promise.allSettled(queue);
+      await Promise.allSettled(landing);
       throw new ApiError(0, "cancelled", "sync stopped on this device");
     }
-    const { sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
-    if (!missing.has(sid)) continue;
-    missing.delete(sid);
-    const upload = context.transport.putChunk(sid, ciphertext, { signal });
-    // Observed by `Promise.all` below; a stop can end it before the loop gets there.
-    upload.catch(() => undefined);
-    queue.push(upload);
-    if (queue.length >= context.concurrency) {
-      await Promise.all(queue.splice(0, queue.length));
-    }
+    const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+    plan.push({ sid, cid: hex(cid), len: plaintext.length });
+    // A chunk a file repeats is asked about and sent once.
+    if (asked.has(sid)) continue;
+    asked.add(sid);
+    // Half the window is asked about at once, so the other half can still be
+    // on its way up while the next is encrypted.
+    if (window.length > 0 && windowBytes + ciphertext.length > limit / 2) await ask();
+    while (held + ciphertext.length > limit && landing.size > 0) await Promise.race(landing);
+    window.push({ sid, ciphertext });
+    windowBytes += ciphertext.length;
+    held += ciphertext.length;
   }
-  await Promise.all(queue);
-  if (missing.size > 0) {
-    throw new Error(`push: ${missing.size} chunk(s) of ${plan.length} vanished mid-upload`);
-  }
+  if (window.length > 0) await ask();
+  await Promise.all(landing);
+  return sent;
 }
 
 /**
@@ -336,6 +379,8 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   const plan: ManifestChunk[] = [];
   let single: Bytes | null = null;
   let plaintextHash = "";
+  let uploads = 0;
+  const before = context.transport.uploadStats();
   if (stat.size <= CHUNK_MAX) {
     const plaintext = await context.host.read(path);
     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
@@ -343,10 +388,7 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     plaintextHash = hex(await sha256(plaintext));
     single = ciphertext;
   } else {
-    for await (const plaintext of chunkStream(context.host.source(path, stat.size))) {
-      const { cid, sid } = await encryptChunk(context.domainKey, plaintext);
-      plan.push({ sid, cid: hex(cid), len: plaintext.length });
-    }
+    uploads = await sendChunks(context, path, stat.size, plan);
   }
 
   const sids = plan.map((chunk) => chunk.sid);
@@ -359,14 +401,18 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     return { status: "unchanged", fileId, versionId: record.versionId };
   }
 
-  const before = context.transport.uploadStats();
-  const missing = new Set(await context.transport.missingChunks(sids, { signal: context.signal }));
-  const uploads = missing.size;
   if (single !== null) {
     const only = plan[0] as ManifestChunk;
-    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single, { signal: context.signal });
-  } else {
-    await uploadMissing(context, missing, plan, path, stat.size);
+    // AN EDIT'S ONE SMALL CHUNK GOES STRAIGHT UP (issue #195): new bytes are
+    // almost never on the server already, and the PUT is idempotent and
+    // verified against its sid there. Bytes the record already names -- a
+    // rename, a re-send over a restored server -- most likely are, so those
+    // are asked about first.
+    const direct = single.length <= DIRECT_PUT_MAX && record?.sha256 !== digest;
+    if (direct || (await context.transport.missingChunks(sids, { signal: context.signal })).length > 0) {
+      await context.transport.putChunk(only.sid, single, { signal: context.signal });
+      uploads = 1;
+    }
   }
 
   // THE GROWING-FILE INVARIANT (issue #99). Everything above describes the
@@ -785,11 +831,13 @@ export async function postManifest(
     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
-    const missing = new Set(await context.transport.missingChunks(sids));
+    // Collected between the check and the post: the file is read once more
+    // and what the server now lacks is sent. A chunk the file no longer holds
+    // is still missing, and the server says so again.
+    const sent = await sendChunks(context, manifest.path, manifest.size, []);
     context.host.log(
-      `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
+      `push decision=retry reason=missing_chunks file=${fileId} chunks=${sent} of=${sids.length}`,
     );
-    await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   }
 }

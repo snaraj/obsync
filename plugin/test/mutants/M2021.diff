@@ -1,0 +1,11 @@
+# M2021: a large push holds every encrypted chunk until the server takes it, with no window
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -284,7 +284,6 @@
+     // Half the window is asked about at once, so the other half can still be
+     // on its way up while the next is encrypted.
+     if (window.length > 0 && windowBytes + ciphertext.length > limit / 2) await ask();
+-    while (held + ciphertext.length > limit && landing.size > 0) await Promise.race(landing);
+     window.push({ sid, ciphertext });
+     windowBytes += ciphertext.length;
+     held += ciphertext.length;

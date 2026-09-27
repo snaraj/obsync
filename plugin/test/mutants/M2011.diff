@@ -1,0 +1,12 @@
+# M2011: the small pipe admits any number of note-sized bodies
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1169,7 +1169,7 @@
+ 
+   /** Does this body fit in flight through its pipe? A pipe holding nothing fits anything. */
+   private fits(pipe: Pipe, bytes: number): boolean {
+-    return pipe.bytes === 0 || pipe.bytes + bytes <= pipe.max;
++    return pipe.bytes === 0 || pipe.bytes + bytes <= pipe.max || pipe === this.pipes.small;
+   }
+ 
+   /** Claim room for one body, in arrival order within its pipe. */
