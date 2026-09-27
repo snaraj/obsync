@@ -866,7 +866,7 @@ test("review: restoring a changed moved file does not overwrite a later save", a
     // now, and this hook fires in the same place the reviewer's did -- after
     // the caller decided on this destination, before the call that takes it.
     link: async (from, to) => {
-      if (!from.includes(".obsync-gone-") || !to.endsWith(NOTE) || laterEdit) return;
+      if (!from.includes(".obsync-gone-") || !to.endsWith(join(NOTE)) || laterEdit) return;
       laterEdit = true;
       writeFileSync(to, LATER, { flag: "wx" });
       utimesSync(to, 12.345, 12.345);
