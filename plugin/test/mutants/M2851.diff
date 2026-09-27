@@ -1,0 +1,12 @@
+# M2851: a start's device list does not hear the stop
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3673,7 +3673,7 @@
+     let devices: { device_id: string; name: string }[];
+     try {
+       // Ended by the stop like every request a start makes (#157).
+-      ({ devices } = await context.transport.devices({ signal: context.signal }));
++      ({ devices } = await context.transport.devices());
+     } catch (error) {
+       context.host.log(
+         `devices decision=${stopped(error) ? "cancelled" : "failed"} reason=${reason} error=${error instanceof ApiError ? error.code : "local_or_lost"} duration_ms=${this.nowFn() - started}`,

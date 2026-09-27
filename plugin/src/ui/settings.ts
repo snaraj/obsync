@@ -184,7 +184,7 @@ export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed
       const shown = bad === " " ? "a space" : bad === "\t" ? "a tab" : QUOTES.includes(bad) ? `a quote (${bad})` : `"${bad}"`;
       return { refusal: `${where}: a header name cannot contain ${shown}. ${HEADER_FORM}`, reason: "bad_name" };
     }
-    if (ownHeader(name)) return { refusal: `${where}: obsync sets ${name} itself, so it cannot be an edge header. Remove that line.`, reason: "own_header" };
+    if (ownHeader(name)) return { refusal: `${where}: obsync sets ${name} itself, so it cannot be a custom request header. Remove that line.`, reason: "own_header" };
     if (value === "") return { refusal: `${where} has no value after the colon. ${HEADER_FORM}`, reason: "no_value" };
     headers.push({ name, value });
   }

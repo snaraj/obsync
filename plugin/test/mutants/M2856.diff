@@ -1,0 +1,12 @@
+# M2856: the plugin says edits can be sent while offline or forgotten
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2816,7 +2816,7 @@
+    * and not once the server has stopped recognising this device.
+    */
+   get sendsNow(): boolean {
+-    return !this.forgottenDevice && this.statusValue.kind !== "offline";
++    return true;
+   }
+ 
+   /**

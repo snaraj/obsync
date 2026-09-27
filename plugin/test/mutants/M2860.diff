@@ -1,0 +1,11 @@
+# M2860: a finished leave leaves the one-leave guard set
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2797,7 +2797,6 @@
+       if (reason === "unfinished") reason = "ok";
+       return { decision: "left", revoked };
+     } finally {
+-      if (owned) this.leaving = false;
+       this.log(
+         `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
+           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,

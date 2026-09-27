@@ -290,7 +290,7 @@ function dialog(t, status) {
   const watchers = new Set(), calls = [];
   const current = { status };
   const plugin = {
-    state: { data: { serverUrl: "https://sync.example.invalid", deviceId: KEYS.deviceId, vrk: KEYS.vrk, parked: {}, paused: {}, files: {}, remoteOnly: {}, lastSeq: 7,
+    state: { data: { serverUrl: "https://sync.example.invalid", deviceId: KEYS.deviceId, vrk: KEYS.vrk, recoveryPhrase: "confirmed", parked: {}, paused: {}, files: {}, remoteOnly: {}, lastSeq: 7,
       policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 } }, localBytes: () => 0 },
     statusText: () => `${current.status.kind} TEXT`,
     currentStatus: () => current.status,

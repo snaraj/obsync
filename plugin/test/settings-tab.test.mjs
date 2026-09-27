@@ -348,10 +348,10 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
     ["X Id: abc", "line 1: a header name cannot contain a space. Write one header per line as Name: value, for example X-Access-Id: 1234.", "bad_name"],
     ['"X-Id: abc', 'line 1: a header name cannot contain a quote ("). Write one header per line as Name: value, for example X-Access-Id: 1234.', "bad_name"],
     ["X-Id(1): abc", 'line 1: a header name cannot contain "(". Write one header per line as Name: value, for example X-Access-Id: 1234.', "bad_name"],
-    ["Content-Type: text/plain", "line 1: obsync sets Content-Type itself, so it cannot be an edge header. Remove that line.", "own_header"],
-    ["x-obsync-device: 00", "line 1: obsync sets x-obsync-device itself, so it cannot be an edge header. Remove that line.", "own_header"],
-    ["HOST: elsewhere", "line 1: obsync sets HOST itself, so it cannot be an edge header. Remove that line.", "own_header"],
-    ["content-length: 0", "line 1: obsync sets content-length itself, so it cannot be an edge header. Remove that line.", "own_header"],
+    ["Content-Type: text/plain", "line 1: obsync sets Content-Type itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["x-obsync-device: 00", "line 1: obsync sets x-obsync-device itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["HOST: elsewhere", "line 1: obsync sets HOST itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["content-length: 0", "line 1: obsync sets content-length itself, so it cannot be a custom request header. Remove that line.", "own_header"],
   ]) {
     const s = open(t);
     s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];

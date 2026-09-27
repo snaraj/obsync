@@ -1,0 +1,12 @@
+# M2867: a heartbeat the stop ended is logged as a failure
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3631,7 +3631,7 @@
+       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
+       else context.host.log("heartbeat decision=reported policy_schema=v1");
+     } catch (error) {
+-      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${error instanceof Error ? error.message : String(error)}`);
++      context.host.log(`heartbeat decision=failed reason=${error instanceof Error ? error.message : String(error)}`);
+     }
+     this.unnamed.clear();
+     await this.readNames(context, "heartbeat");

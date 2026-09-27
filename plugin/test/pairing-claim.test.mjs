@@ -443,6 +443,17 @@ test("an enrolled device whose key never arrived pairs again, and its stranded c
   assert.ok(result.logs.includes("pairing role=claimant decision=revoked reason=stranded_enrolment"));
 });
 
+test("a key from another vault is a phrase this device has not confirmed; the same key keeps its confirmation (#170)", async (t) => {
+  // A phrase restored for one vault, then a pairing into another: the words
+  // this device confirmed are not the new vault's.
+  const other = await claimant(t, approved, { data: { vrk: "99".repeat(32), recoveryPhrase: "confirmed" } });
+  assert.equal(other.saves.at(-1).vrk, KEYS.vrk);
+  assert.equal(other.saves.at(-1).recoveryPhrase, "unconfirmed");
+  const same = await claimant(t, approved, { data: { vrk: KEYS.vrk, recoveryPhrase: "confirmed" } });
+  assert.equal(same.saves.at(-1).vrk, KEYS.vrk);
+  assert.equal(same.saves.at(-1).recoveryPhrase, "confirmed");
+});
+
 // ---- issue #153: a restart resumes a held claim inside its window ----------
 
 /** The plugin as a restart finds it: no dialog, a claim held in its own entry. */

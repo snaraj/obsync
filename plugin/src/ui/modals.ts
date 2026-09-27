@@ -537,6 +537,9 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       const stranded = state.data.vrk === null ? state.data.deviceId : null;
       state.data.deviceId = claim.deviceId;
       state.data.deviceSecret = claim.deviceSecret;
+      // Another vault's key is a phrase this device has not confirmed, as
+      // `adoptVaultKey` has it (issue #170).
+      if (state.data.vrk !== envelope.vrk) state.data.recoveryPhrase = "unconfirmed";
       state.data.vrk = envelope.vrk;
       await state.save();
       assertCurrent();

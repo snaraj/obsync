@@ -1,0 +1,13 @@
+# M2852: a damaged pending selection is dropped instead of refusing to load
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -315,8 +315,7 @@
+   // Judged like the selection it will become, and refused the same way.
+   if (Object.hasOwn(loaded, "pendingScope")) {
+     const pending = loaded["pendingScope"];
+-    if (!isRecord(pending)) throw new Error("obsync: the pending folder selection is damaged; sync is stopped.");
+-    data.pendingScope = Object.hasOwn(pending, "folders") ? { folders: parseSyncFolders(pending["folders"]) } : {};
++    if (isRecord(pending) && (!Object.hasOwn(pending, "folders") || Array.isArray(pending["folders"]))) data.pendingScope = Object.hasOwn(pending, "folders") ? { folders: parseSyncFolders(pending["folders"]) } : {};
+   }
+   data.vrk = typeof loaded["vrk"] === "string" ? loaded["vrk"] : null;
+   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;

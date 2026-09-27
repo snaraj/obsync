@@ -1,0 +1,12 @@
+# M2861: a refused second leave restarts sync under the first
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2806,7 +2806,7 @@
+       // no refusal here may leave the engine stopped. A device that DID
+       // leave starts nothing, because `startEngine` requires `paired`. Not
+       // awaited: see NOTHING HERE WAITS OUT THE SERVER above.
+-      if (owned) void this.startEngine().catch(() => this.log("unpair decision=sync_pending reason=restart_failed"));
++      void this.startEngine().catch(() => this.log("unpair decision=sync_pending reason=restart_failed"));
+     }
+   }
+ 

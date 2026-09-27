@@ -1,0 +1,11 @@
+# M2872: a pairing into another vault keeps the old vault's phrase confirmation
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -539,7 +539,6 @@
+       state.data.deviceSecret = claim.deviceSecret;
+       // Another vault's key is a phrase this device has not confirmed, as
+       // `adoptVaultKey` has it (issue #170).
+-      if (state.data.vrk !== envelope.vrk) state.data.recoveryPhrase = "unconfirmed";
+       state.data.vrk = envelope.vrk;
+       await state.save();
+       assertCurrent();

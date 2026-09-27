@@ -1,0 +1,12 @@
+# M2862: a scope write that finished after unload still reports success
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2491,8 +2491,6 @@
+       state.data.pendingScope = pending;
+       throw error;
+     }
+-    // A session that unloaded meanwhile reports nothing, and a later load reads what was written.
+-    assertActive();
+     this.log(
+       `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
+         `replay=${widened ? "from_zero" : "none"} from_seq=${cursor} trigger=${trigger} duration_ms=${Date.now() - started}`,

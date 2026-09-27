@@ -19,7 +19,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { KEYS, sandbox } from "./fake.mjs";
+import { KEYS, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { State, StateStorageError } = require("../build/state.js");
@@ -72,9 +72,9 @@ test("a reference this vault never held, with no secret behind it, loads as an u
   // Never the device the reference names: its identity, key and every record
   // on the server go; what the person chose for this vault stays.
   assert.deepEqual({ ...state.data }, {
-    vrk: null, deviceId: null, deviceSecret: null, deviceName: null,
+    vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: null,
     serverUrl: "https://sync.example.invalid", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-    retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, feedMark: null, graves: {},
+    retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
   });
   assert.deepEqual(copy.writes, [], "nothing is written until the person acts");
@@ -167,7 +167,7 @@ function plugin(t, metadata, { localStorage = new Map(), secrets = new Map() } =
   instance.saveData = async (value) => { writes.push(clone(value)); data = clone(value); };
   instance.addCommand = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addSettingTab = (tab) => { tabs.push(tab); };
-  instance.addStatusBarItem = () => { const bar = { text: "", setText(value) { bar.text = value; } }; bars.push(bar); return bar; };
+  instance.addStatusBarItem = () => { const bar = statusItem(); bars.push(bar); return bar; };
   instance.app = {
     secretStorage: { getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
     loadLocalStorage: (key) => localStorage.get(key) ?? null,
@@ -197,7 +197,7 @@ test("the compiled plugin gives a copy its status bar and settings tab, says wha
 
   assert.equal(copy.tabs.length, 1, "the settings tab is there");
   assert.equal(copy.bars.length, 1, "and the status bar");
-  assert.equal(copy.bars[0].text, "obsync: not paired");
+  assert.equal(copy.bars[0].label, "obsync: not paired");
   const { COPIED_VAULT } = copy.box.require(join(copy.box.home, "build/ui/settings.js"));
   assert.equal(COPIED_VAULT, "This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh.");
   assert.deepEqual(copy.obsidian.notices, [`obsync: ${COPIED_VAULT} Both are in obsync's settings, under This device.`]);

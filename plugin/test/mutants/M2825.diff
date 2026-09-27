@@ -1,11 +1,11 @@
 # M2825: clicking the status item does nothing
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1891,7 +1891,6 @@
+@@ -2111,7 +2111,6 @@
      this.statusEl = this.addStatusBarItem();
      this.indicator.attach(this.statusEl);
      // The indicator is the way in: a click opens what it cannot say (#156).
 -    this.registerDomEvent(this.statusEl, "click", () => this.showStatus());
      this.setStatus({ kind: "idle" });
      this.addSettingTab(new ObsyncSettingTab(this.app, this));
- 
+     // A COPY GETS A WAY TO START (issue #168). It loaded as a device that

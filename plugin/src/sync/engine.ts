@@ -418,7 +418,7 @@ export const CLOCK_OFF =
 export const SERVER_FULL =
   "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.";
 export const NOT_OBSYNC_ANSWER =
-  "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the edge headers in obsync settings; sync retries by itself.";
+  "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings; sync retries by itself.";
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
 export const PUSH_REFUSED =

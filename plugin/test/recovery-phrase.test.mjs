@@ -14,7 +14,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
+import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
 
@@ -144,6 +144,9 @@ test("Show sync status lists an unconfirmed phrase as a to-do that opens the che
     Object.assign(p.state.data, { serverUrl: "", deviceId: null, parked: {}, paused: {}, files: {}, remoteOnly: {}, lastSeq: 0, policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 } });
     p.state.localBytes = () => 0;
     p.statusText = () => "idle";
+    p.currentStatus = () => ({ kind: "idle" });
+    p.nextRetryAt = () => null;
+    p.onStatusChange = () => () => {};
     const modal = new b.modals.StatusModal({}, p);
     modal.contentEl = element();
     modal.setTitle = () => {};
@@ -173,7 +176,7 @@ async function fixture(t, initial) {
   instance.loadData = async () => structuredClone(metadata);
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: () => {} } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.4" };
   instance.startEngine = async () => {};

@@ -1,11 +1,11 @@
 # M1998: a selection pending when Obsidian closed is not applied at the next start
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2197,7 +2197,6 @@
+@@ -2217,7 +2217,6 @@
        this.placeIndicator();
        listed();
      })).then(async () => {
 -      if (this.state.data.pendingScope !== undefined) await this.finishScopeChange(generation);
        if (this.state.paired) await this.startEngine();
+       else this.resumePairing();
        if (this.isCurrent(generation)) void this.checkForUpdate();
-     });

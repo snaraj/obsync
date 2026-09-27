@@ -1,0 +1,11 @@
+# M2857: the folder Save's Cancel button cancels nothing
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -479,7 +479,6 @@
+             cancel = made;
+             made.setButtonText("Cancel").onClick(() => {
+               made.setDisabled(true);
+-              this.plugin.cancelScopeChange();
+             });
+           });
+           void this.saveScopeDraft().then((told) => {

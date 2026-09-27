@@ -1,0 +1,11 @@
+# M2864: a leave that fails outright leaves the dialog without its buttons
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -511,7 +511,6 @@
+       result = await this.plugin.leaveServer(choice);
+     } catch (error) {
+       fail(error);
+-      if (this.live) this.screen();
+       return;
+     } finally {
+       this.leaving = false;
