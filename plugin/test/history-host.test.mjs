@@ -209,7 +209,7 @@ test("desktop publication pins directory and destination identity and syncs the 
     const r = host(t, { wrap: (p) => ({ ...p,
       lstat: async (name) => {
         const stat = await p.lstat(name);
-        const alter = changed && (phase === "chain" ? name.endsWith("/Notes") : phase === "landed" && name.endsWith("/copy.md"));
+        const alter = changed && (phase === "chain" ? name.endsWith(`${path.sep}Notes`) : phase === "landed" && name.endsWith(`${path.sep}copy.md`));
         return alter ? { ...stat, ino: stat.ino + 1, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
       },
       utimes: async () => assert.fail("path-based timestamp changed an unbound file"),

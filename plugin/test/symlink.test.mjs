@@ -394,7 +394,7 @@ test("a parent swapped around the rename is refused, hard link and all", async (
           // The file landed where it belonged; the parent is swapped only
           // then, and a hard link gives the outside name our own inode, so
           // that comparing inodes alone would be satisfied.
-          const name = to.slice(to.lastIndexOf("/") + 1);
+          const name = nodePath.basename(to);
           if (!swapper.done()) {
             swapper.swap();
             linkSync(join(root, "Notes.aside", name), join(outsideDir, name));

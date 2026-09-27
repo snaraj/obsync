@@ -256,7 +256,7 @@ async function scopedHost(t, mobile) {
   } } };
   const desktop = { base: root, path, fs: { promises: { ...fs, lstat: async (p) => {
     calls.push(["lstat", p]);
-    assert.ok(p === root || p.startsWith(`${root}/Notes`), "excluded filesystem metadata was inspected");
+    assert.ok(p === root || p.startsWith(join(root, "Notes")), "excluded filesystem metadata was inspected");
     return fs.lstat(p);
   } } } };
   return { root, calls, state, host: new ObsidianHost(plugin, mobile ? null : desktop) };
