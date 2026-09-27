@@ -21,7 +21,8 @@ server again unless the entry says so.
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
-| **Check** says nothing answered while the server runs, and a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
+| obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
+| obsync says the server's certificate has expired or is not valid yet | [The certificate has expired or is not valid yet](#the-certificate-has-expired-or-is-not-valid-yet) |
 | A phone says "A server with the specified hostname could not be found" at home | ["A server with the specified hostname could not be found"](#a-server-with-the-specified-hostname-could-not-be-found) |
 | A phone says "A TLS error caused the secure connection to fail" | ["A TLS error caused the secure connection to fail"](#a-tls-error-caused-the-secure-connection-to-fail) |
 | **Check** answers `403` and a message from your proxy | [Your proxy or access service refuses the plugin](#your-proxy-or-access-service-refuses-the-plugin) |
@@ -252,13 +253,17 @@ proves an instance without it is refused.
 
 ## The certificate is for another name
 
-**What you see.** **Check** under **Connection** ends within about ten seconds
-with "Nothing answered at" your Server URL, and the status bar shows the cloud
-with a line through it, although the server is running. A browser on the same
-device, given the same address, says the certificate is not valid for this
-name (Chromium browsers show `NET::ERR_CERT_COMMON_NAME_INVALID`). On a
-computer the plugin's log names it too: `network=net::ERR_CERT_COMMON_NAME_INVALID`.
-Up to 1.1.3, **Check** itself reads
+**What you see.** **Check** under **Connection**, the status bar's words and
+**Show sync status** say:
+
+> This device refused your server's certificate because it was made for another name than the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, "The certificate is for another name".
+
+A browser on the same device, given the same address, says the certificate is
+not valid for this name (Chromium browsers show
+`NET::ERR_CERT_COMMON_NAME_INVALID`). A phone is named this way only when its
+own error says so; otherwise **Check** says nothing answered at your Server URL
+and the status bar shows the cloud with a line through it, although the server
+is running. Up to 1.1.3, **Check** reads
 `0 unreachable: network=net::ERR_CERT_COMMON_NAME_INVALID`.
 
 **Why it happens.** A certificate lists the names it is valid for, and the
@@ -289,6 +294,30 @@ the Server URL is not the name the certificate was made for:
    every device.
 4. Do not turn certificate checks off to get past this. The name check is
    what keeps another machine from answering in your server's place.
+
+## The certificate has expired or is not valid yet
+
+**What you see.** **Check**, the status bar's words and **Show sync status**
+say:
+
+> This device refused your server's certificate because it has expired or is not valid yet. Renew the certificate on your server, or check that this device's date and time are right.
+
+When the certificate expired, every device says it at once. When only one
+device says it, that device's date is usually wrong. Up to 1.1.3, **Check**
+reads `0 unreachable: network=net::ERR_CERT_DATE_INVALID`, and the status bar
+shows the cloud with a line through it.
+
+**Why it happens.** A certificate is valid between two dates. Before the first
+or after the last, by this device's clock, the device refuses it.
+
+**How to fix it.**
+
+1. If every device says it, renew the certificate where it is made: your
+   reverse proxy or certificate tool. Its log says why it did not renew.
+2. If one device says it, set that device's date and time to update
+   automatically.
+3. Sync tries again by itself; **Check** says at once whether it is fixed.
+4. Do not turn certificate checks off to get past this.
 
 ## "A TLS error caused the secure connection to fail"
 
@@ -321,7 +350,10 @@ each one cuts the connection before it is set up:
 
 **What you see.** **Check**, or the status bar's words, say:
 
-> Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings; sync retries by itself.
+> Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.
+
+The status bar adds "Sync resumes by itself."; if Obsidian started while this
+was so, it adds "Once that is fixed, select Sync now." instead.
 
 A proxy that answers in obsync's own format can instead produce "Your server
 refused this request; the obsync log names the reason." Up to 1.1.3, **Check**
@@ -544,7 +576,10 @@ vault.
 **What you see.** The alert icon, the first time the server refuses the
 device, and its words read:
 
-> obsync: error — This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically; sync resumes by itself.
+> obsync: error — This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically. Sync resumes by itself.
+
+If Obsidian started while this was so, it ends "Once that is fixed, select
+Sync now." instead: nothing tries a refused start again by itself.
 
 Up to 1.1.3 it reads `obsync: error — 401 stale_timestamp: timestamp is outside
 the ±300 s window`, and only after Obsidian restarts; before that, edits from
@@ -570,7 +605,10 @@ offline instead, and after a restart shows
 From 1.1.4 the status and **Show sync status** say, and pairing says all but
 the last sentence:
 
-> This server only answers through its access-controlled edge, and this request did not come through it. Check the Server URL and the Custom request headers in obsync settings, and that your route to the server goes through that edge. Sync retries by itself.
+> This server only answers through its access-controlled edge, and this request did not come through it. Check the Server URL and the Custom request headers in obsync settings, and that your route to the server goes through that edge. Sync resumes by itself.
+
+If Obsidian started while this was so, it ends "Once that is fixed, select
+Sync now." instead: nothing tries a refused start again by itself.
 
 **Why it happens.** The server is set up for Cloudflare's edge
 (`OBSYNC_EDGE=cloudflare`), and this request did not come through it, or it
@@ -710,7 +748,10 @@ was restored from a backup older than this pairing.
 
 **What you see.** The alert icon, and its words read:
 
-> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.
+> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota. Sync resumes by itself.
+
+If Obsidian started while this was so, it ends "Once that is fixed, select
+Sync now." instead: nothing tries a refused start again by itself.
 
 A phone also says it once in a notice. New and changed notes stay on the
 device, and the alert clears once the server accepts a change again. Up to

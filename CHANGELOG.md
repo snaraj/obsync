@@ -74,7 +74,9 @@ server answers (#158).
 
 **A refusal says what it is, the first time.** A removed device, a wrong
 clock, a full server or a proxy answering instead of obsync each say what
-happened and what to do, and clear by themselves once fixed. Repair no
+happened and what to do, and clear by themselves once fixed; if Obsidian
+started while one was so, it says to select Sync now once it is fixed,
+because nothing tries a refused start again on its own. Repair no
 longer sends you to check your network, and after a new vault key an unsent
 edit is sent once under the new key with one notice (#155, #160, #177).
 
@@ -87,6 +89,18 @@ certificate, so it refused the connection" and point to the troubleshooting
 entry with each device's steps. Sync keeps retrying and resumes once the
 certificate is trusted. Seen on desktop; phones are matched by their own
 wording for the same failure (#201).
+
+**A certificate for another name, or out of date, is named too.** Check,
+the status, Show sync status, setup and pairing say which it is and what
+to do, instead of "nothing answered" and the struck-through cloud. Sync
+keeps retrying. Seen on desktop; phones are matched by their platforms'
+documented wording, not yet seen on a device (#229).
+
+**A device kept out by your server's edge says so.** Before, only a first
+pairing said why. The status, Show sync status and Check now say the
+request did not come through the edge, and to check the Server URL, the
+Custom request headers and the route to the server, in pairing's own
+words (#228).
 
 **Settings no longer shows an old outage, and your devices are named, not
 numbered.** Each opening of Settings reads the device list itself, and "not
@@ -210,6 +224,18 @@ before obsync gave up: Windows refuses to flush a folder to disk, and obsync
 treated that as a failed copy. It now publishes the copy once and logs that
 the folder could not be flushed; any other failure still stops the copy and
 says why (#222).
+
+**A conflict copy that could not be confirmed is still one copy.** When
+saving a copy failed after it was already in place, obsync wrote it again
+under the next name, up to twenty times. It now keeps the copy when it is
+the right one, or takes it back before trying another name. It never
+removes a file it did not make; when it cannot tell, it leaves the copy and
+tries again later. Desktop and mobile (#225).
+
+**On Windows, obsync no longer takes two files for one.** It tells files
+apart by their id, and Windows ids can be larger than the numbers the
+plugin held exactly; the whole id is compared now. Nothing changes on
+macOS, Linux or phones (#224).
 
 **Restoring a copy and keeping a conflict copy work on a USB stick or SD
 card** formatted FAT32 or exFAT, still never replacing a file already at
