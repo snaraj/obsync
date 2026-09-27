@@ -148,6 +148,31 @@ not slow. If the worker cannot start, obsync says so once in its log
 (`timers decision=fallback`) and works as before. Computers only; phones
 are unchanged (#221).
 
+**Sync now is quick, and Verify all files checks everything.** Sync now read
+and encrypted every file in the vault to find the few that had changed; on a
+phone that meant reading files of up to 512 MiB whole at every press. It now
+sends what is waiting, fetches what the server has, retries what was held
+back, and reads the contents of files up to 8 MiB, the size at which another
+plugin can rewrite a note without changing its size or date. In a test vault
+of 10,000 files with fifty 12 MiB attachments, a press read 20 MB instead of
+1.9 GB. The new command **Verify all files** reads every file, however large,
+sends the ones that changed, and says how many it checked. Desktop and
+mobile (#197).
+
+**A large download on a phone holds the file once, not twice.** A 512 MiB
+download, the most a phone takes by default, held about 1 GiB at its peak by
+the plugin's own count, enough for the phone to close the app; it now holds
+520 MiB. Computers write downloads in pieces and were not affected (#197).
+
+**Restore from history takes far fewer requests.** Each **Load next** made
+twenty requests, and a search that reached a thousand versions back made a
+thousand. Each now reads up to 100 versions in one request, and that search
+takes about a dozen. Works with older servers. Desktop and mobile (#199).
+
+**Small speed-ups you will not see.** Encryption keys are prepared once per
+session, and uploaded pieces are hashed once instead of twice. What is
+encrypted is byte for byte the same (#197).
+
 ### Your notes stay safe
 
 **Two people typing in one note on two devices keep all of each other's

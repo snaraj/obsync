@@ -821,6 +821,25 @@ selection are not synced in either direction.
 
 ![The Sync folders on this device section: Folder selection set to Whole vault, the Selected folders box, and the Save button](assets/settings-sync-folders.png)
 
+## A large file another program changed stays old on your other devices
+
+**What you see.** A file over 8 MiB that another program changed, often while
+Obsidian was closed, still has its old contents on your other devices, and
+**Sync now** says there is nothing to send.
+
+**Why it happens.** obsync notices a changed file by its size and modified
+date, and **Sync now** also reads the contents of files up to 8 MiB. A
+program that rewrites a larger file and keeps both its size and its date
+(some encryption tools, or a copy that preserves dates) leaves nothing for
+those checks to see. Reading every large file at every press would cost a
+phone far more than this rare case is worth.
+
+**How to fix it.**
+
+1. Select **Verify all files** in the command palette. It reads every file,
+   however large, and sends the ones that changed.
+2. It answers with how many files it checked and how many had changed.
+
 ## Changes wait while Obsidian is in the background
 
 **What you see.** On a computer, a note you change while Obsidian's window is
