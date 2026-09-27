@@ -1871,6 +1871,8 @@ export default class ObsyncPlugin extends Plugin {
       reachable: (answered) => {
         if (this.transport === transport) this.reachability(answered);
       },
+      // An attempt nothing answers is abandoned by the renderer's own clock (#195).
+      timers: { set: (fn, ms) => window.setTimeout(fn, ms), clear: (handle) => window.clearTimeout(handle as number) },
     });
     this.transport = transport;
     this.statusEl = this.addStatusBarItem();
@@ -1924,11 +1926,19 @@ export default class ObsyncPlugin extends Plugin {
     this.registerVaultEvents();
     this.host.trackInput(window);
     this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
-    // The device's own word that its network is back is the cheapest signal
-    // there is, and the one a laptop lid or a phone leaving a tunnel produces;
-    // it runs the pending retry now instead of at the timer, and is nothing
-    // otherwise. Identical on desktop and mobile: both renderers raise it.
-    this.registerDomEvent(window, "online", () => this.retryNow("online"));
+    // The device's own word that something changed is the cheapest signal
+    // there is (`wake`): its network is back (`online`, which a laptop lid or
+    // a phone leaving a tunnel raises), or the app is in front of the person
+    // again -- brought to the foreground or unlocked (`visibilitychange`, the
+    // phone's signal), or its window focused (`focus`, the desktop's, and the
+    // only one a VPN connected on an already-online machine is followed by:
+    // it raises no `online`). Both renderers raise all three.
+    this.registerDomEvent(window, "online", () => this.wake("online"));
+    this.registerDomEvent(window, "focus", () => this.wake("focus"));
+    const page = window.document;
+    this.registerDomEvent(page, "visibilitychange", () => {
+      if (page.visibilityState === "visible") this.wake("foreground");
+    });
     // NEVER AWAITED HERE. Obsidian holds its "Loading plugins…" screen until
     // `onload` returns, and a first start talks to the server: with the
     // server out of reach -- a phone away from a LAN-only setup, a laptop
@@ -2191,6 +2201,19 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.takeReconnectTimer()) return;
     this.log(`engine decision=retrying attempt=${this.reconnect?.attempt ?? 0} reason=${reason}`);
     void this.startEngine();
+  }
+
+  /**
+   * Retry now whatever waits on a timer armed before the device said
+   * something changed (#134, #186, #195): requests asleep in the transport's
+   * backoff, the feed's pause and a stale long poll, and a pending reconnect.
+   * Each is at most one early attempt per call, so a storm of events is not a
+   * loop.
+   */
+  wake(reason: string): void {
+    this.transport.wake(reason);
+    this.engine?.wake(reason);
+    this.retryNow(reason);
   }
 
   /** Drop the pending reconnect, timer and count: the next failure opens a new cycle. */
@@ -2662,6 +2685,7 @@ export default class ObsyncPlugin extends Plugin {
     if (refusal !== null) throw new Error(refusal);
     this.state.data.serverUrl = url;
     await this.state.save();
+    this.wake("address");
   }
 
   /**

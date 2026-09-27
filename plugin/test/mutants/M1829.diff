@@ -1,0 +1,11 @@
+# M1829: an address typed into Settings reaches no request already retrying
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -239,7 +239,6 @@
+     // State reports persistence failure and stops sync through its host hook.
+     void this.plugin.state.save().catch(() => {});
+     // A request waiting to retry goes to the new address now, not after its pause (#186).
+-    this.plugin.wake("address");
+   }
+ 
+   private edgeHeaders(): Row {

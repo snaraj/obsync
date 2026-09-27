@@ -1,0 +1,11 @@
+# M1819: a poll dropped by a wake is handled as a failed read: offline and a five-second pause
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1876,7 +1876,6 @@
+         if (!live()) return;
+         // A wake dropped the poll (`wake`): the next read asks at once, and
+         // whatever the dropped one brings later is discarded unread.
+-        if (error instanceof ApiError && error.code === "cancelled") continue;
+         this.feedAnswered = false;
+         if (forgottenCredential(error)) {
+           context.host.log("feed decision=stopped reason=forgotten_device");

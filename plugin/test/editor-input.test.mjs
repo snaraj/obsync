@@ -7,7 +7,8 @@ import { memorySecrets, sandbox } from "./fake.mjs";
 
 function surface() {
   const handlers = new Map();
-  return { handlers, addEventListener(type, fn) {
+  // A window's document, for the one listener the plugin puts there (`visibilitychange`).
+  return { handlers, document: { visibilityState: "visible", addEventListener() {} }, addEventListener(type, fn) {
     const entries = handlers.get(type) ?? []; entries.push(fn); handlers.set(type, entries);
   }, emit(type, target, isTrusted = true) {
     for (const fn of handlers.get(type) ?? []) fn({ type, target, isTrusted });

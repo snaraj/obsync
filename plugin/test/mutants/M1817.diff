@@ -1,0 +1,12 @@
+# M1817: an attempt's deadline passes and nothing happens: a dead connection holds it for ever
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -723,7 +723,7 @@
+     const timers = this.options.timers;
+     if (timers === undefined) return work;
+     return new Promise((resolve, reject) => {
+-      const handle = timers.set(() => reject(TIMED_OUT), ms);
++      const handle = timers.set(() => undefined, ms);
+       work.then(
+         (value) => { timers.clear(handle); resolve(value); },
+         (error: unknown) => { timers.clear(handle); reject(error); },

@@ -109,6 +109,8 @@ module.exports = {
     clearTimeout: (handle) => clearTimeout(handle),
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
+    // Where `visibilitychange` is raised; a test that fires it installs its own window.
+    document: { visibilityState: "visible", addEventListener: () => undefined, removeEventListener: () => undefined },
   };
   return { home, require: createRequire(join(home, "x.js")) };
 }

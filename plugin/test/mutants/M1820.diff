@@ -1,0 +1,11 @@
+# M1820: after a failed read the feed long-polls again instead of asking at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1877,7 +1877,6 @@
+         // A wake dropped the poll (`wake`): the next read asks at once, and
+         // whatever the dropped one brings later is discarded unread.
+         if (error instanceof ApiError && error.code === "cancelled") continue;
+-        this.feedAnswered = false;
+         if (forgottenCredential(error)) {
+           context.host.log("feed decision=stopped reason=forgotten_device");
+           this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });

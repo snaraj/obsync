@@ -66,6 +66,7 @@ function harness(responses, options = {}) {
     maxAttempts: options.maxAttempts ?? 3,
     log: (line) => logged.push(line),
     reachable: options.reachable,
+    timers: options.timers,
   });
   const slept = [];
   const logged = [];
@@ -402,6 +403,79 @@ test("an answer larger than its route can be is refused before it is parsed or k
   await accepted((t) => t.changes(0, 0), { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [], pad: "y".repeat(JSON_ANSWER_MAX) }) });
 });
 
+/** Deadline timers the test fires by hand, recording the deadline each attempt was given. */
+function deadlines() {
+  const armed = new Map();
+  let next = 1;
+  return {
+    set(fn, ms) { const handle = next++; armed.set(handle, { fn, ms }); return handle; },
+    clear(handle) { armed.delete(handle); },
+    /** Every deadline armed and not yet cleared, in milliseconds. */
+    pending: () => [...armed.values()].map((entry) => entry.ms),
+    /** The one deadline armed passes. */
+    expire() {
+      assert.equal(armed.size, 1, `exactly one attempt is waiting, not ${armed.size}`);
+      const [[handle, entry]] = [...armed];
+      armed.delete(handle);
+      entry.fn();
+    },
+  };
+}
+
+test("an attempt nothing answers within its deadline is unanswered: retried and re-signed, or lost; its late answer is dropped (#195)", async () => {
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const first = hangs();
+  const timers = deadlines();
+  const heard = [];
+  const { transport, sent, logged } = harness([() => first.pending, DEVICES], { timers, reachable: (answered) => heard.push(answered) });
+  const read = transport.devices();
+  await turns(() => timers.pending().length === 1);
+  assert.deepEqual(timers.pending(), [30000], "a read waits ATTEMPT_MS");
+  const reading = watch(read);
+  timers.expire();
+  await turns(() => reading.settled);
+  assert.deepEqual(await read, { devices: [] });
+  assert.equal(sent.length, 2);
+  assert.notEqual(sent[0].headers["X-Obsync-Nonce"], sent[1].headers["X-Obsync-Nonce"], "the retry is signed afresh");
+  assert.ok(logged.some((line) => line === "http GET /v1/devices timeout budget_ms=30000 decision=retry attempt=1 backoff_ms=750"), logged.join("|"));
+  first.answer({ status: 200, text: JSON.stringify({ devices: ["LATE"] }) });
+  await turns();
+  assert.deepEqual(heard, [false, true], "the late answer is neither returned nor reported");
+  assert.deepEqual(timers.pending(), [], "a settled attempt leaves no deadline armed");
+
+  // A route that must not be repeated reports the silence as lost.
+  const once = hangs();
+  const onceTimers = deadlines();
+  const posting = harness([() => once.pending], { timers: onceTimers });
+  const post = posting.transport.postVersion(FILE_ID, VERSION_POST);
+  await turns(() => onceTimers.pending().length === 1);
+  const posted = watch(post);
+  onceTimers.expire();
+  await turns(() => posted.settled);
+  const lost = await post;
+  assert.equal(lost.outcome, "lost");
+  assert.equal(lost.reason, "timeout budget_ms=30000");
+  assert.equal(posting.sent.length, 1);
+});
+
+test("each attempt's deadline fits its route: a long poll its wait, a transfer its bytes (#195)", async () => {
+  const given = async (call, answer) => {
+    const timers = deadlines();
+    let seen = null;
+    const { transport } = harness([async () => { await new Promise((resolve) => setImmediate(resolve)); seen = timers.pending(); return answer; }], { timers });
+    await call(transport);
+    return seen;
+  };
+  const page = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  assert.deepEqual(await given((t) => t.changes(0, 55), page), [70000], "the 55 s wait and 15 s of grace");
+  assert.deepEqual(await given((t) => t.changes(0, 0), page), [30000], "a quick read is a read");
+  assert.deepEqual(await given((t) => t.account(), { status: 200, text: "{}" }), [30000]);
+  const body = new Uint8Array(1024 * 1024);
+  assert.deepEqual(await given((t) => t.putChunk(SID, body), { status: 201 }), [30000 + 65536], "a MiB up at the slowest rate");
+  const chunk = 8 * 1024 * 1024 + 16;
+  assert.deepEqual(await given((t) => t.getChunk(SID), { status: 200, body: new ArrayBuffer(1) }), [30000 + Math.ceil(chunk / 16)]);
+});
+
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);
@@ -428,6 +502,8 @@ const INTERNAL = [
   "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt",
   // And the ceiling an answer is measured against (#202).
   "capped",
+  // And the deadline each attempt is abandoned by (#195).
+  "timed",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
@@ -727,6 +803,16 @@ function clock() {
 }
 
 const REFUSED_AT_CONNECT = () => new Error("net::ERR_CONNECTION_REFUSED");
+
+/**
+ * Whether a call has settled yet. A wait on a call a mutant never lets settle
+ * must end in an assertion, not in a test the runner cancels as hung.
+ */
+function watch(promise) {
+  const seen = { settled: false };
+  promise.then(() => { seen.settled = true; }, () => { seen.settled = true; });
+  return seen;
+}
 const DEVICES = { status: 200, text: JSON.stringify({ devices: [] }) };
 
 test("wake retries a request asleep in its backoff at once, once per request however many events arrive (#134)", async () => {
@@ -820,10 +906,12 @@ test("a pressed button's call answers within its budget: two attempts, then unre
   const time = clock();
   const off = () => Array.from({ length: 8 }, REFUSED_AT_CONNECT);
   const pressed = harness(off(), { maxAttempts: 8, sleep: time.sleep, now: time.now });
-  const check = assert.rejects(pressed.transport.account({ interactive: true }), (error) => error.code === "unreachable" && error.status === 0);
+  const call = pressed.transport.account({ interactive: true });
+  const seen = watch(call);
   await turns(() => time.asked().includes(750));
   await time.advance(750);
-  await check;
+  await turns(() => seen.settled);
+  await assert.rejects(call, (error) => error.code === "unreachable" && error.status === 0);
   assert.equal(pressed.sent.length, 2);
   assert.ok(pressed.logged.some((line) => /decision=gave_up attempts=2 budget_ms=10000 duration_ms=750$/.test(line)), pressed.logged.join("|"));
 
@@ -846,6 +934,7 @@ test("a pressed button's call that nothing answers ends at the budget; the late 
   await time.advance(9999);
   assert.equal(settled, false, "not before the budget");
   await time.advance(1);
+  await turns(() => settled);
   await assert.rejects(check, (error) => error.code === "unreachable" && /10 s/.test(error.detail));
   assert.ok(logged.some((line) => /^http GET \/v1\/devices decision=gave_up reason=deadline attempts=1 budget_ms=10000 duration_ms=10000$/.test(line)), logged.join("|"));
   answer(DEVICES);
@@ -859,7 +948,9 @@ test("a signal ends a sleeping retry at once and abandons an attempt in flight, 
   const stop = new AbortController();
   const call = sleeping.transport.devices({ signal: stop.signal });
   await turns(() => time.asked().length === 1);
+  const seen = watch(call);
   stop.abort();
+  await turns(() => seen.settled);
   await assert.rejects(call, (error) => error instanceof ApiError && error.status === 0 && error.code === "cancelled");
   assert.equal(sleeping.sent.length, 1, "nothing more was sent");
   assert.equal(sleeping.transport.retryAt(), null, "and nothing is left asleep");
@@ -870,7 +961,9 @@ test("a signal ends a sleeping retry at once and abandons an attempt in flight, 
   const leave = new AbortController();
   const read = flying.transport.devices({ signal: leave.signal });
   await turns(() => answer !== undefined);
+  const reading = watch(read);
   leave.abort();
+  await turns(() => reading.settled);
   await assert.rejects(read, (error) => error.code === "cancelled");
   answer(DEVICES);
   assert.ok(flying.logged.some((line) => /^http GET \/v1\/devices decision=cancelled phase=in_flight attempts=1 duration_ms=\d+$/.test(line)), flying.logged.join("|"));

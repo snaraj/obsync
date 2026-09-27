@@ -247,7 +247,29 @@ export interface TransportOptions {
    * or without it.
    */
   reachable?: (answered: boolean) => void;
+  /**
+   * The clock an attempt is abandoned by (`attemptMs`, #195). The plugin gives
+   * the renderer's; without it an attempt waits as long as the platform lets
+   * it, which is what a test that does not ask about deadlines wants.
+   */
+  timers?: { set(fn: () => void, ms: number): unknown; clear(handle: unknown): void };
 }
+
+/**
+ * HOW LONG ONE ATTEMPT MAY GO UNANSWERED (#195). `requestUrl` has no timeout
+ * of its own, and a connection that died under a sleeping laptop or a network
+ * change can leave an attempt waiting far longer than any answer takes. Past
+ * its deadline an attempt counts as unanswered: a repeatable route signs
+ * afresh and retries, a route that must not be repeated reports `lost`, and a
+ * late answer is discarded, never applied. A long poll gets its wait and
+ * `LONG_POLL_GRACE_MS`; everything else `ATTEMPT_MS`, and a transfer that
+ * moves chunk bytes one more millisecond for every `SLOWEST_BYTES_PER_MS`
+ * bytes, a floor slow enough that no working link, however poor, is cut off.
+ */
+export const ATTEMPT_MS = 30000;
+export const LONG_POLL_GRACE_MS = 15000;
+export const SLOWEST_BYTES_PER_MS = 16;
+const TIMED_OUT = new Error("no answer within the attempt's deadline");
 
 /**
  * How long a repeatable call may keep its caller waiting, and whether the
@@ -451,8 +473,13 @@ type CallOptions = Patience & {
   auth: "device" | "none";
   json?: unknown;
   binary?: Bytes;
-  /** The largest JSON answer this route can legitimately return (`JSON_ANSWER_MAX` when absent). */
+  /**
+   * The largest answer this route can legitimately return: characters of
+   * JSON (`JSON_ANSWER_MAX` when absent), or bytes of a `bulk` answer.
+   */
   cap?: number;
+  /** The answer is chunk bytes, so `cap` is also what an attempt's deadline grows with. */
+  bulk?: boolean;
 };
 
 /**
@@ -491,6 +518,15 @@ interface Prepared {
   /** `hex(SHA-256(body))`, the signature's last field. Empty when unsigned. */
   digest: string;
   device: { id: string; secret: Bytes } | null;
+  /** How long each attempt may go unanswered (`attemptMs`). */
+  deadlineMs: number;
+}
+
+/** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
+function attemptMs(target: string, bytes: number): number {
+  const wait = /^\/v1\/changes\?.*\bwait=(\d+)/.exec(target)?.[1];
+  if (wait !== undefined) return Math.max(ATTEMPT_MS, Number(wait) * 1000 + LONG_POLL_GRACE_MS);
+  return ATTEMPT_MS + Math.ceil(bytes / SLOWEST_BYTES_PER_MS);
 }
 
 /**
@@ -582,7 +618,8 @@ export class Transport {
       digest = await bodyHash(body);
     }
     for (const header of this.options.edgeHeaders()) headers[header.name] = header.value;
-    return { headers, body, bodyText, digest, device };
+    const deadlineMs = attemptMs(target, (options.binary?.length ?? 0) + (options.bulk === true ? options.cap ?? 0 : 0));
+    return { headers, body, bodyText, digest, device, deadlineMs };
   }
 
   /**
@@ -604,7 +641,7 @@ export class Transport {
     check();
     let outcome: Attempt;
     try {
-      const response = await this.options.request({
+      const response = await this.timed(this.options.request({
         url,
         method,
         headers,
@@ -614,7 +651,7 @@ export class Transport {
             ? { body: toArrayBuffer(sending.body) }
             : {}),
         throw: false,
-      });
+      }), sending.deadlineMs);
       // A 507 is the server's decision that it is full, not its absence:
       // retried eight times, a full server read `offline — retrying` for
       // minutes and never said why (S29, issue #155).
@@ -625,7 +662,9 @@ export class Transport {
       outcome = {
         kind: "unsettled",
         status: 0,
-        reason: `network=${error instanceof Error ? error.message : String(error)}`,
+        reason: error === TIMED_OUT
+          ? `timeout budget_ms=${sending.deadlineMs}`
+          : `network=${error instanceof Error ? error.message : String(error)}`,
       };
     }
     this.options.reachable?.(outcome.kind === "settled");
@@ -676,6 +715,19 @@ export class Transport {
       signal?.addEventListener("abort", aborted, { once: true });
       if (deadline !== Infinity) void this.sleep(Math.max(0, deadline - this.now())).then(() => resolve("deadline"));
       void work.then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));
+    });
+  }
+
+  /** One request, or `TIMED_OUT` once its deadline passes; its late answer is dropped. */
+  private timed<T>(work: Promise<T>, ms: number): Promise<T> {
+    const timers = this.options.timers;
+    if (timers === undefined) return work;
+    return new Promise((resolve, reject) => {
+      const handle = timers.set(() => reject(TIMED_OUT), ms);
+      work.then(
+        (value) => { timers.clear(handle); resolve(value); },
+        (error: unknown) => { timers.clear(handle); reject(error); },
+      );
     });
   }
 
@@ -825,7 +877,8 @@ export class Transport {
       control.check();
       if (this.manualRead !== null) throw new HistoryBusyError();
       const method = json === undefined ? "GET" : "POST";
-      const sending = await this.prepare(target, { auth: "device", json });
+      const metadata = target.startsWith("/v1/changes?") || target.startsWith("/v1/files/");
+      const sending = await this.prepare(target, { auth: "device", json, cap: maxBytes, bulk: !metadata });
       control.check();
       if (this.manualRead !== null) throw new HistoryBusyError();
       const pending = this.attempt(method, target, sending, () => control.check());
@@ -837,7 +890,6 @@ export class Transport {
       control.check();
       if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.");
       const response = outcome.response;
-      const metadata = target.startsWith("/v1/changes?") || target.startsWith("/v1/files/");
       if (response.arrayBuffer.byteLength > maxBytes ||
           (metadata && (response.text.length > maxBytes || utf8(response.text).length > maxBytes))) {
         throw new ApiError(response.status, "response_too_large", "History response exceeds its byte budget.");
@@ -1093,7 +1145,7 @@ export class Transport {
     const target = `/v1/chunks/${sid}`;
     const response = control
       ? await this.readOnce(target, control, CHUNK_CIPHERTEXT_MAX)
-      : this.capped("GET", target, await this.call("GET", target, { auth: "device" }), CHUNK_CIPHERTEXT_MAX, true);
+      : this.capped("GET", target, await this.call("GET", target, { auth: "device", cap: CHUNK_CIPHERTEXT_MAX, bulk: true }), CHUNK_CIPHERTEXT_MAX, true);
     return new Uint8Array(response.arrayBuffer);
   }
 
@@ -1108,7 +1160,7 @@ export class Transport {
     const cap = sids.length * (CHUNK_CIPHERTEXT_MAX + MULTIPART_PART_OVERHEAD) + MULTIPART_PART_OVERHEAD;
     const response = control
       ? await this.readOnce(target, control, 33 * 1024 * 1024, { sids })
-      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids } }), cap, true);
+      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids }, cap, bulk: true }), cap, true);
     const contentType = response.headers["content-type"] ?? response.headers["Content-Type"] ?? "";
     const boundary = /boundary=("?)([^";]+)\1/.exec(contentType)?.[2];
     if (!boundary) throw new ApiError(response.status, "bad_multipart", "no multipart boundary");

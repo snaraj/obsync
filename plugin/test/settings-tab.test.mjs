@@ -72,6 +72,7 @@ function stubPlugin(overrides = {}) {
     openDashboard: async () => { calls.push("openDashboard"); },
     openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
+    wake: (reason) => { calls.push(`wake:${reason}`); },
     logs: [],
     log(line) { this.logs.push(line); },
     ...overrides,
@@ -229,11 +230,13 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
   field().commit("sync.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
-  assert.deepEqual(s.calls, ["state.save"]);
+  // Adopted, and a request waiting to retry is sent to it now (#186).
+  assert.deepEqual(s.calls, ["state.save", "wake:address"]);
 
   s.plugin.isMobile = true;
   field().commit("http://lan.example.test");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org", "refused, not stored");
+  assert.deepEqual(s.calls, ["state.save", "wake:address"], "a refused address wakes nothing");
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
   field().commit("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");

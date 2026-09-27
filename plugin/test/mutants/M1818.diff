@@ -1,0 +1,12 @@
+# M1818: a long poll's deadline ignores its wait, cutting every quiet poll at 30 s
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -525,7 +525,7 @@
+ /** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
+ function attemptMs(target: string, bytes: number): number {
+   const wait = /^\/v1\/changes\?.*\bwait=(\d+)/.exec(target)?.[1];
+-  if (wait !== undefined) return Math.max(ATTEMPT_MS, Number(wait) * 1000 + LONG_POLL_GRACE_MS);
++  if (wait !== undefined) return ATTEMPT_MS;
+   return ATTEMPT_MS + Math.ceil(bytes / SLOWEST_BYTES_PER_MS);
+ }
+ 

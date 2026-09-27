@@ -41,11 +41,19 @@ function fakeWindow() {
   const timers = new Map();
   const listeners = new Map();
   let next = 1;
+  const listen = (type, fn) => { listeners.set(type, [...(listeners.get(type) ?? []), fn]); };
+  const raise = (type) => { for (const fn of listeners.get(type) ?? []) fn(); };
+  const document = { visibilityState: "visible", addEventListener: (type, fn) => listen(`document:${type}`, fn), removeEventListener() {} };
   return {
+    document,
     setTimeout(fn, ms) { const id = next++; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
-    addEventListener(type, fn) { listeners.set(type, [...(listeners.get(type) ?? []), fn]); },
+    addEventListener: listen,
     removeEventListener() {},
+    /** The renderer's window gaining the focus. */
+    focus() { raise("focus"); },
+    /** The app going to the background, or coming back to the foreground. */
+    visibility(state) { document.visibilityState = state; raise("document:visibilitychange"); },
     /** The delays armed right now, oldest first. */
     armed: () => [...timers.values()].map((timer) => timer.ms),
     /** The clock reaching the one armed timer. */
@@ -89,6 +97,7 @@ async function fixture(t) {
     stop() { this.started = false; }
     async stopAndWait() { this.stop(); }
     async syncNow() { this.manual = (this.manual ?? 0) + 1; }
+    wake(reason) { (this.woken ??= []).push(reason); }
   };
   const instance = new Plugin();
   // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
@@ -472,4 +481,34 @@ test("an unpaired device stays not paired, and a transport from an earlier sessi
   await s.instance.leaveServer({ discardUnpushed: false, localOnly: false });
   report(s, false);
   assert.equal(s.instance.statusText(), "not paired");
+});
+
+test("network back, the app in front again, its window focused, or a new address: everything waiting on a timer goes now (#134, #186, #195)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const woken = [];
+  r.instance.transport.wake = (reason) => woken.push(reason);
+  const engine = r.instance.engine;
+  r.win.online();
+  r.win.focus();
+  r.win.visibility("hidden");
+  r.win.visibility("visible");
+  assert.deepEqual(woken, ["online", "focus", "foreground"], "backgrounding wakes nothing");
+  assert.deepEqual(engine.woken, ["online", "focus", "foreground"], "the feed hears the same three");
+  await r.instance.setServerUrl("https://moved.example.invalid");
+  assert.deepEqual(woken.at(-1), "address");
+  assert.equal(engine.woken.at(-1), "address");
+  assert.equal(r.engines.length, 1, "a running engine is woken, not restarted");
+
+  // A start the server could not be reached for: the focus that follows a VPN
+  // connecting -- which raises no `online` -- runs the pending retry now.
+  r.plan(() => { throw r.unreachable(); });
+  await r.instance.restartEngine();
+  assert.deepEqual(r.win.armed(), [5000]);
+  r.plan(() => undefined);
+  r.win.focus();
+  await settle();
+  assert.ok(r.logs.includes("engine decision=retrying attempt=1 reason=focus"), r.logs.join("\n"));
+  assert.deepEqual(r.win.armed(), []);
+  assert.equal(r.instance.engine, r.engines.at(-1));
 });

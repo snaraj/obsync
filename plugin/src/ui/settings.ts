@@ -238,6 +238,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.plugin.state.data.serverUrl = url;
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().catch(() => {});
+    // A request waiting to retry goes to the new address now, not after its pause (#186).
+    this.plugin.wake("address");
   }
 
   private edgeHeaders(): Row {

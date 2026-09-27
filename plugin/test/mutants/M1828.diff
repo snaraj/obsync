@@ -1,0 +1,11 @@
+# M1828: focusing the window wakes nothing: a VPN connected on an online machine waits for the reconnect ceiling
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1934,7 +1934,6 @@
+     // only one a VPN connected on an already-online machine is followed by:
+     // it raises no `online`). Both renderers raise all three.
+     this.registerDomEvent(window, "online", () => this.wake("online"));
+-    this.registerDomEvent(window, "focus", () => this.wake("focus"));
+     const page = window.document;
+     this.registerDomEvent(page, "visibilitychange", () => {
+       if (page.visibilityState === "visible") this.wake("foreground");

@@ -433,6 +433,13 @@ export const SCAN_BUDGET_MS = 5000;
  */
 export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
+/**
+ * How long a long poll must have waited before a wake drops it (#195). One
+ * sent seconds ago rides a connection that is plainly alive; one that waited
+ * longer may ride a socket a network change or a sleeping lid left dead, and
+ * the quick read that replaces it costs one round trip.
+ */
+export const POLL_STALE_MS = 5000;
 
 /**
  * How soon a PARKED record is tried again (issue #144): one minute, doubling
@@ -551,6 +558,16 @@ export class SyncEngine {
   private editorHandle: unknown = null;
   /** The feed and a retry pass apply one at a time, never side by side. */
   private pulling: Promise<void> = Promise.resolve();
+  /** The feed's long poll in flight, and how to drop it (`wake`, #195). */
+  private poll: { sent: number; drop: AbortController } | null = null;
+  /** Ends the feed's pause after a failed read at once (`wake`). */
+  private feedPause: (() => void) | null = null;
+  /**
+   * Whether the feed's latest request was answered. Until one is -- at start,
+   * after a failure, after a wake -- the feed asks without waiting, so an
+   * answer, empty or not, arrives in one round trip (#158, #195).
+   */
+  private feedAnswered = false;
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -1843,14 +1860,24 @@ export class SyncEngine {
         // Answered before the next page, one pull at a time (`recover`).
         if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
         if (!live()) return;
-        const page = await context.transport.changes(context.state.data.lastSeq, 55);
+        const quick = !this.feedAnswered;
+        const drop = new AbortController();
+        this.poll = quick ? null : { sent: this.nowFn(), drop };
+        const page = await context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal });
+        this.poll = null;
         if (!live()) return;
+        this.feedAnswered = true;
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
         if (this.restoreDue !== null) continue;
         await this.track(this.applyPage(context, page));
       } catch (error) {
+        this.poll = null;
         if (!live()) return;
+        // A wake dropped the poll (`wake`): the next read asks at once, and
+        // whatever the dropped one brings later is discarded unread.
+        if (error instanceof ApiError && error.code === "cancelled") continue;
+        this.feedAnswered = false;
         if (forgottenCredential(error)) {
           context.host.log("feed decision=stopped reason=forgotten_device");
           this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
@@ -1866,8 +1893,39 @@ export class SyncEngine {
         const message = error instanceof Error ? error.message : String(error);
         context.host.log(`feed decision=retry reason=${message}`);
         this.status({ kind: "offline" });
-        await new Promise<void>((resolve) => this.timers.set(resolve, FEED_ERROR_BACKOFF_MS));
+        await new Promise<void>((resolve) => {
+          this.feedPause = resolve;
+          this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);
+        });
+        this.feedPause = null;
       }
+    }
+  }
+
+  /**
+   * The device's word that something changed (#134, #195): its network is
+   * back, the app is in front of the person again, the address changed, or
+   * Retry now was pressed. The feed's pause after a failed read ends now, and
+   * a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
+   * address it went to is no longer the address -- is dropped for a read that
+   * asks at once. Requests asleep inside the transport are the transport's to
+   * wake (`Transport.wake`). One line, and only when something was ended.
+   */
+  wake(reason: string): void {
+    if (!this.running) return;
+    const pause = this.feedPause;
+    this.feedPause = null;
+    pause?.();
+    const poll = this.poll;
+    const waited = poll === null ? 0 : this.nowFn() - poll.sent;
+    const dropped = poll !== null && (reason === "address" || waited >= POLL_STALE_MS);
+    if (dropped) {
+      this.poll = null;
+      this.feedAnswered = false;
+      poll.drop.abort();
+    }
+    if (pause !== null || dropped) {
+      this.options.host.log(`feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} waited_ms=${waited}`);
     }
   }
 

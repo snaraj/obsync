@@ -1,0 +1,11 @@
+# M1827: the plugin's wake never reaches the feed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2212,7 +2212,6 @@
+    */
+   wake(reason: string): void {
+     this.transport.wake(reason);
+-    this.engine?.wake(reason);
+     this.retryNow(reason);
+   }
+ 

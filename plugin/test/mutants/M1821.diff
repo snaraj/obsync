@@ -1,0 +1,12 @@
+# M1821: the feed never asks without waiting: every read is a long poll
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1860,7 +1860,7 @@
+         // Answered before the next page, one pull at a time (`recover`).
+         if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
+         if (!live()) return;
+-        const quick = !this.feedAnswered;
++        const quick = false;
+         const drop = new AbortController();
+         this.poll = quick ? null : { sent: this.nowFn(), drop };
+         const page = await context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal });
