@@ -49,6 +49,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Every variable the server gets is listed here. OBSYNC_HOST,
+    # OBSYNC_BIND_ADDRESS and the two port variables are compose's own: the
+    # server refuses any OBSYNC_* name it does not know, so an `env_file:` that
+    # also carries them stops it at start, naming the variable.
     environment:
       OBSYNC_EDGE: none
       OBSYNC_TRUSTED_PROXY_CIDRS: 172.31.255.240/28
