@@ -54,6 +54,7 @@ server again unless the entry says so.
 | After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
+| A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -1223,6 +1224,32 @@ it; the copy under the current name is the one your other devices hold. If a
 pairing asks whether to add notes the server's vault does not hold, choose
 **Cancel**, delete the old-name copy, and pair again: cancelling uploads
 nothing.
+
+## A note became empty on every device
+
+**What you see.** A note or file that another device had just written is
+empty everywhere, including on the device that wrote it. It happened right
+after a phone received many files at once, or while a phone was pairing.
+
+**Why it happens.** On Android, Obsidian sometimes finishes writing a
+downloaded file but leaves it empty. Up to 1.1.3, obsync on the phone took
+that empty file for your edit and sent it to your other devices (issue #242).
+In a test, 4 of 1,600 files a desktop wrote came back empty this way. From
+1.1.4, a phone that finds a download empty right after writing it writes it
+again. If the file stays empty, the status names it:
+
+> Cannot write Notes/Plan.md here: it stayed empty when it was written
+
+The phone tries that file again later and never sends the empty file.
+
+**How to fix it.**
+
+1. On any device, open **Restore from history** in the command palette.
+2. Type part of the note's name, select **Restart search**, then **Load
+   next**. The newest version reads **0 B**; the one below it holds the text.
+3. Select **Restore a copy** beside that version, then copy its text back
+   into the note, or delete the empty note and rename the copy
+   ([Restore a retained version](daily-use.md#restore-a-retained-version)).
 
 ## Two folders that differ only in capitalisation
 

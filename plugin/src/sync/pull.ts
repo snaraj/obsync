@@ -192,6 +192,9 @@ export const UNWRITABLE: Readonly<Record<string, string>> = {
   EDQUOT: "the disk is full",
   ENAMETOOLONG: "its name is too long for this device",
   unknown_chunk: "the server is missing part of it; open a device that has it",
+  // A phone's write that left the file empty however often it was made
+  // (`ObsidianHost.landed`): parked and tried again, never recorded.
+  write_dropped: "it stayed empty when it was written",
 };
 
 /** What the status bar, the notice and Show sync status say about one parked file. */

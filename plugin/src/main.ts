@@ -482,6 +482,13 @@ function parseUrl(value: string, base?: URL): URL | null {
  */
 const TWIN_WATCH_MS = 10_000;
 
+/**
+ * How many times a phone writes a download again when the write left the
+ * file empty (`ObsidianHost.landed`). One rewrite healed every such write
+ * seen live (2 of 1,200 on Android 15, Obsidian 1.13.8).
+ */
+const WRITE_AGAIN = 2;
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
@@ -1122,7 +1129,8 @@ export class ObsidianHost implements VaultHost {
         // folders sync, and `writeBinary` would not say so. Desktop refuses
         // it in `confine`; mobile refuses it here, in the same words, so both
         // platforms answer a file/folder collision identically (issue #104).
-        if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
+        const before = await adapter.stat(path);
+        if (before?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
         await this.assertEditorIdle(path);
         await adapter.writeBinary(path, bytes.buffer, { mtime });
@@ -1131,15 +1139,53 @@ export class ObsidianHost implements VaultHost {
         // only while the name still holds that many bytes -- a save landing
         // between the write and the lookup must not have its metadata
         // recorded as this version's (round 3, finding 2).
-        const stat = await this.stat(path);
+        const stat = await this.landed(path, bytes, mtime, before === null);
         if (stat !== null && stat.size === size) return { path, mtime: stat.mtime, size };
-        if (stat !== null) this.log("host path_class=file decision=write_superseded");
+        if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
         return { path, mtime, size };
       },
       abort: async () => {
         bytes = new Uint8Array(0);
       },
     };
+  }
+
+  /**
+   * What a phone's download left at its name, once the write is known to
+   * have landed.
+   *
+   * ANDROID CAN LEAVE A WRITE EMPTY (live, 2026-09-27). Obsidian's
+   * `writeBinary` resolved over a 993-byte download and the file held
+   * nothing, for good: 4 of 1,600 downloads on the Android emulator while a
+   * desktop wrote 400 files at a time, and 15 of a 2,000-file tree. The
+   * writer took the empty file for a save landing after its write, recorded
+   * the download's size, and the watcher then found an empty note and
+   * published it: the note was empty on every device, its author's too. A
+   * file just written with bytes that reads EMPTY is written again, up to
+   * `WRITE_AGAIN` times. One that stays empty is refused as this one file's
+   * (`write_dropped`: parked, said once, tried again) and never recorded as
+   * written; if this write made the file, it is removed, so no empty note is
+   * left to be taken for a new one. Only emptiness is judged: a file holding
+   * other bytes is a save that landed, as before.
+   */
+  private async landed(path: string, bytes: Uint8Array<ArrayBuffer>, mtime: number, made: boolean): Promise<VaultStat | null> {
+    const adapter = this.plugin.app.vault.adapter;
+    let stat = await this.stat(path);
+    for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+      if (again > WRITE_AGAIN) {
+        if (made) await adapter.remove(path);
+        this.log(`host path_class=file decision=refused reason=write_dropped bytes=${bytes.length} removed=${made} budget_writes=${WRITE_AGAIN + 1}`);
+        throw Object.assign(new Error("The file stayed empty when it was written."), { code: "write_dropped" });
+      }
+      const started = Date.now();
+      await adapter.writeBinary(path, bytes.buffer, { mtime });
+      stat = await this.stat(path);
+      this.log(
+        `host path_class=file decision=written_again reason=empty_after_write attempt=${again} bytes=${bytes.length} ` +
+          `found=${stat?.size ?? "absent"} budget_writes=${WRITE_AGAIN + 1} duration_ms=${Date.now() - started}`,
+      );
+    }
+    return stat;
   }
 
   /** Recovery has no overwrite fallback, on either platform. */

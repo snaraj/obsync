@@ -100,6 +100,78 @@ async function refusals(host) {
   return said;
 }
 
+/**
+ * A phone whose adapter keeps each file's size, and leaves the first `drops`
+ * writes EMPTY, as Obsidian's `writeBinary` did on Android (live,
+ * 2026-09-27): it resolved over 993 bytes and the file held none, for good.
+ * `landing` is the size a save leaves when it lands right after a write.
+ */
+async function dropping(t, drops, { existing = null, landing = null } = {}) {
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const { state } = await fakeState(true);
+  const files = new Map(existing === null ? [] : [["Notes/a.md", existing]]);
+  const writes = [], removed = [], logs = [];
+  let left = drops;
+  const adapter = {
+    stat: async (path) => (files.has(path) ? { type: "file", ...files.get(path) } : null),
+    exists: async () => true,
+    mkdir: async () => undefined,
+    writeBinary: async (path, data, options) => {
+      writes.push(data.byteLength);
+      const size = left > 0 ? (left--, 0) : landing ?? data.byteLength;
+      files.set(path, { size, mtime: options.mtime });
+    },
+    remove: async (path) => { removed.push(path); files.delete(path); },
+  };
+  const plugin = {
+    state,
+    log: (line) => logs.push(line),
+    app: { vault: { adapter }, workspace: { getLeavesOfType: () => [] } },
+    manifest: { version: "1.1.4" },
+  };
+  return { host: new ObsidianHost(plugin, null), writes, removed, logs };
+}
+
+const HELLO = new TextEncoder().encode("hello");
+
+test("a phone writes a download again when the write left the file empty, and records it once it holds the bytes", async (t) => {
+  const { host, writes, removed, logs } = await dropping(t, 1);
+  const writer = await host.writer("Notes/a.md", 5);
+  await writer.write(HELLO);
+  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  assert.deepEqual(writes, [5, 5], "written once more, with the same bytes");
+  assert.deepEqual(removed, []);
+  assert.ok(logs.some((line) => /^host path_class=file decision=written_again reason=empty_after_write attempt=1 bytes=5 found=5 budget_writes=3 duration_ms=\d+$/.test(line)), logs.join(" | "));
+  assert.equal(logs.some((line) => line.includes("write_superseded")), false, "an empty write is not a save that landed");
+});
+
+test("a download a phone keeps leaving empty is refused as that file's, removed if the write made it, and never recorded", async (t) => {
+  for (const existing of [null, { size: 7, mtime: 1 }]) {
+    const { host, writes, removed, logs } = await dropping(t, 99, { existing });
+    const writer = await host.writer("Notes/a.md", 5);
+    await writer.write(HELLO);
+    await assert.rejects(writer.commit(1000), (error) => error.code === "write_dropped", `existing=${JSON.stringify(existing)}`);
+    assert.deepEqual(writes, [5, 5, 5], "three writes, then no more");
+    assert.deepEqual(removed, existing === null ? ["Notes/a.md"] : [], "only the empty file this write made is removed");
+    assert.ok(logs.includes(`host path_class=file decision=refused reason=write_dropped bytes=5 removed=${existing === null} budget_writes=3`), logs.join(" | "));
+  }
+});
+
+test("an empty download is written once, and a file holding other bytes is a save that landed, not written again", async (t) => {
+  const empty = await dropping(t, 0);
+  const none = await empty.host.writer("Notes/empty.md", 0);
+  assert.deepEqual(await none.commit(1000), { path: "Notes/empty.md", mtime: 1000, size: 0 });
+  assert.deepEqual(empty.writes, [0]);
+  const saved = await dropping(t, 0, { landing: 9 });
+  const writer = await saved.host.writer("Notes/a.md", 5);
+  await writer.write(HELLO);
+  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  assert.deepEqual(saved.writes, [5]);
+  assert.ok(saved.logs.includes("host path_class=file decision=write_superseded size=5 found=9"), saved.logs.join(" | "));
+});
+
 test("the test host holds a declared size in the phone's words, so a caller declaring the wrong one fails every suite (#197)", async (t) => {
   const { host } = await phone(t);
   const fake = new FakeHost();

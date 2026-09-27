@@ -1,9 +1,9 @@
 # M798: Mobile writes beneath an active native editor.
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1040,7 +1040,6 @@
-         // platforms answer a file/folder collision identically (issue #104).
-         if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
+@@ -1132,7 +1132,6 @@
+         const before = await adapter.stat(path);
+         if (before?.type === "folder") throw new VaultPathError("not_a_file");
          if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
 -        await this.assertEditorIdle(path);
          await adapter.writeBinary(path, bytes.buffer, { mtime });

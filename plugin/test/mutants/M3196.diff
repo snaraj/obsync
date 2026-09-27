@@ -1,0 +1,11 @@
+# M3196: the empty file a dropped write made is left behind, to be taken for a new note
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1173,7 +1173,6 @@
+     let stat = await this.stat(path);
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+       if (again > WRITE_AGAIN) {
+-        if (made) await adapter.remove(path);
+         this.log(`host path_class=file decision=refused reason=write_dropped bytes=${bytes.length} removed=${made} budget_writes=${WRITE_AGAIN + 1}`);
+         throw Object.assign(new Error("The file stayed empty when it was written."), { code: "write_dropped" });
+       }

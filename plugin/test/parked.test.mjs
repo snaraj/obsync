@@ -424,6 +424,7 @@ test("every refusal a disk can make is parked in plain words; any other failure 
     ["ENOSPC", "the disk is full"],
     ["EDQUOT", "the disk is full"],
     ["ENAMETOOLONG", "its name is too long for this device"],
+    ["write_dropped", "it stayed empty when it was written"],
   ]) {
     const r = await rig();
     refuse(r.host, () => true, code, "commit");

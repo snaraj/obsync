@@ -1,0 +1,11 @@
+# M3200: a dropped write is not parked as that file's, so it stops the feed
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -194,7 +194,6 @@
+   unknown_chunk: "the server is missing part of it; open a device that has it",
+   // A phone's write that left the file empty however often it was made
+   // (`ObsidianHost.landed`): parked and tried again, never recorded.
+-  write_dropped: "it stayed empty when it was written",
+ };
+ 
+ /** What the status bar, the notice and Show sync status say about one parked file. */

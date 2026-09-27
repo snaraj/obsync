@@ -849,6 +849,19 @@ long poll and needs its timeout raised.
    byte count handed to the adapter -- never a fresh look at the name, which
    after an in-place save describes another file under the same inode.
 
+   A PHONE'S WRITE IS CHECKED FOR BYTES (plugin 1.1.4). On Android, Obsidian's
+   `writeBinary` can resolve and leave the file empty for good: 4 of 1,600
+   downloads on the Android emulator while a desktop wrote 400 files at a
+   time. The empty file was taken for a save landing after the write, and
+   the watcher published it, so the note was empty on every device. A phone
+   now looks at a file it has just written with bytes: an empty one is
+   written again, up to twice more, each logged (`decision=written_again`);
+   one that stays empty is refused as that one file's (`write_dropped`),
+   parked and tried again like any other, never recorded as written, and
+   removed if the write had made it. Only emptiness is judged; a file holding
+   other bytes is still a save that landed (`decision=write_superseded`,
+   which names both sizes).
+
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a
    second name with `link`, so the inode outlives whatever the vault's
@@ -984,8 +997,9 @@ long poll and needs its timeout raised.
 
    ONE RECORD THIS DEVICE CANNOT WRITE NEVER HOLDS UP THE REST (issue #144).
    A write the host's filesystem refuses for that one file (`EPERM`, `EBUSY`,
-   `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENAMETOOLONG`), or a chunk the
-   server does not hold (`404 unknown_chunk`, or a missing part of a batch),
+   `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENAMETOOLONG`), a phone's write
+   that stays empty however often it is made (`write_dropped`, below), or a
+   chunk the server does not hold (`404 unknown_chunk`, or a missing part of a batch),
    PARKS the record: its file id, path and reason are persisted with the
    cursor that moves past it, the status and one notice name the file and the
    reason, and every later change keeps arriving. A parked file is retried

@@ -1,0 +1,12 @@
+# M3195: a phone writes an empty-landing download once more than its budget
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1172,7 +1172,7 @@
+     const adapter = this.plugin.app.vault.adapter;
+     let stat = await this.stat(path);
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+-      if (again > WRITE_AGAIN) {
++      if (again > WRITE_AGAIN + 1) {
+         if (made) await adapter.remove(path);
+         this.log(`host path_class=file decision=refused reason=write_dropped bytes=${bytes.length} removed=${made} budget_writes=${WRITE_AGAIN + 1}`);
+         throw Object.assign(new Error("The file stayed empty when it was written."), { code: "write_dropped" });
