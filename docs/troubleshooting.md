@@ -51,7 +51,7 @@ server again unless the entry says so.
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
 | A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
 | **Restore a copy** fails on a USB stick or memory card | [Restoring a copy fails on a USB stick or memory card](#restoring-a-copy-fails-on-a-usb-stick-or-memory-card) |
-| I copied or renamed my vault, and obsync says it is a copy (up to 1.1.3: that credential storage could not be verified) | [A copied or renamed vault says it is a copy](#a-copied-or-renamed-vault-shows-a-storage-error) |
+| I copied or renamed my vault, and obsync says it is a copy (up to 1.1.3: that credential storage could not be verified) | [A copied or renamed vault says it is a copy](#a-copied-or-renamed-vault-says-it-is-a-copy) |
 
 **Sync stopped**
 

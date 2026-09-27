@@ -75,7 +75,7 @@ error, and nothing is sent or changed. Then:
 A copied vault, or one whose folder was renamed outside Obsidian, is not an
 error: it opens unpaired, says so, and offers **Pair this device** and
 **Start fresh**
-([what to do](troubleshooting.md#a-copied-or-renamed-vault-shows-a-storage-error)).
+([what to do](troubleshooting.md#a-copied-or-renamed-vault-says-it-is-a-copy)).
 
 A pairing waiting for approval finishes even if its dialog was closed, and
 after Obsidian restarts, as long as it is approved within the code's ten
