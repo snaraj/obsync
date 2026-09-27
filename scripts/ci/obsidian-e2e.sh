@@ -17,6 +17,14 @@
 #     authority, and nothing else on the host trusts it.
 #   - The name: Chromium's `--host-resolver-rules` maps it to the address the
 #     proxy is published on, so no hosts file is edited.
+#   - The keyring, one of the two cases the docs name for obsync's keys on
+#     Linux (#217). `OBSYNC_E2E_KEYRING=none`, the default, is the runner as it
+#     comes: no session bus, no keyring, no desktop. `gnome-keyring` (after
+#     scripts/ci/install-keyring.sh) starts every instance through
+#     scripts/ci/obsidian-session.sh: a session bus, GNOME Keyring and a GNOME
+#     desktop of the instance's own, as each device has. Either way the driver
+#     restarts both instances and holds what Obsidian's secret storage did
+#     with the keys.
 #
 # THE SANDBOX. The instances run with `--no-sandbox`: an unpacked AppImage has
 # no setuid sandbox helper and Ubuntu 24.04 restricts the unprivileged user
@@ -35,6 +43,12 @@ set -euo pipefail
 readonly OBSIDIAN_VERSION=1.13.7
 readonly APPIMAGE_AMD64="Obsidian-${OBSIDIAN_VERSION}.AppImage e0d8e0a611624de8c9c7dcd8a9e648279fb0a0d552faa1312b7e4f3a5fa72663"
 readonly APPIMAGE_ARM64="Obsidian-${OBSIDIAN_VERSION}-arm64.AppImage e286fd2bb2a5d346a35a577bd764c73fd5537dddec2b99a1a3e5e35974085203"
+
+keyring="${OBSYNC_E2E_KEYRING:-none}"
+case "${keyring}" in
+  none | gnome-keyring) ;;
+  *) printf 'obsidian-e2e: OBSYNC_E2E_KEYRING must be none or gnome-keyring, not %s\n' "${keyring}" >&2; exit 2 ;;
+esac
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "${here}/../.." && pwd)"
@@ -73,8 +87,8 @@ case "$(uname -m)" in
   aarch64 | arm64) read -r asset sha <<<"${APPIMAGE_ARM64}" ;;
   *) deny "no Obsidian AppImage for $(uname -m)" ;;
 esac
-printf 'obsidian-e2e: START obsidian=%s asset=%s url=https://%s:%s address=%s\n' \
-  "${OBSIDIAN_VERSION}" "${asset}" "${OBSYNC_E2E_HOST}" "${OBSYNC_E2E_PORT}" "${address}"
+printf 'obsidian-e2e: START obsidian=%s asset=%s url=https://%s:%s address=%s keyring=%s\n' \
+  "${OBSIDIAN_VERSION}" "${asset}" "${OBSYNC_E2E_HOST}" "${OBSYNC_E2E_PORT}" "${address}" "${keyring}"
 
 # Obsidian, by digest, unpacked. `OBSYNC_E2E_APPIMAGE` names a copy already on
 # disk; it is held to the same pin.
@@ -123,9 +137,25 @@ for name in a b; do
   certutil -d "sql:${nssdb}" -A -t 'C,,' -n 'obsync e2e throwaway CA' -i "${OBSYNC_E2E_CACERT}"
 done
 
+# The keyring case: every instance starts in a session of its own
+# (scripts/ci/obsidian-session.sh), its keyring unlocked with one password
+# nobody keeps, from a 0600 file in this run's scratch. The none case: no bus
+# and no desktop named, whatever the caller's environment holds.
+launcher=''
+if [ "${keyring}" = gnome-keyring ]; then
+  for tool in dbus-run-session dbus-send gnome-keyring-daemon openssl; do
+    command -v "${tool}" >/dev/null 2>&1 || deny "${tool} is not installed (scripts/ci/install-keyring.sh)"
+  done
+  (umask 077 && openssl rand -hex 16 | tr -d '\n' >"${scratch}/keyring-password")
+  export OBSYNC_E2E_KEYRING_PASSWORD="${scratch}/keyring-password"
+  launcher="${here}/obsidian-session.sh"
+else
+  unset DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP
+fi
+
 OBSIDIAN_BIN="${binary}" OBSYNC_E2E_WORK="${work}" OBSYNC_E2E_PLUGIN="${plugin}" \
   OBSYNC_E2E_URL="https://${OBSYNC_E2E_HOST}:${OBSYNC_E2E_PORT}" \
-  OBSYNC_E2E_HOMES=1 \
+  OBSYNC_E2E_HOMES=1 OBSYNC_E2E_SECRET_STORE="${keyring}" OBSYNC_E2E_LAUNCHER="${launcher}" \
   OBSYNC_E2E_ARGS="[\"--no-sandbox\",\"--disable-gpu\",\"--host-resolver-rules=MAP ${OBSYNC_E2E_HOST} ${address}\"]" \
   node "${here}/obsidian-drive.mjs" || deny 'the Obsidian instances did not complete the journeys'
-printf 'obsidian-e2e: SUMMARY obsidian=%s decision=pass\n' "${OBSIDIAN_VERSION}"
+printf 'obsidian-e2e: SUMMARY obsidian=%s keyring=%s decision=pass\n' "${OBSIDIAN_VERSION}" "${keyring}"

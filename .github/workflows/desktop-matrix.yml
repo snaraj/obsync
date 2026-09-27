@@ -11,6 +11,10 @@ name: Desktop matrix
 #                     pairing, notes both ways, a rename and folders, against
 #                     the server behind Caddy; a third instance that trusts
 #                     nothing must be refused (scripts/ci/obsidian-e2e.sh).
+#                     Twice: with no keyring, the runner as it comes, and
+#                     with GNOME Keyring unlocked; in each, both instances are
+#                     restarted and must sync again from the keys Obsidian
+#                     kept, and what its secret storage did is held (#217).
 #   obsidian-macos    the same journeys with the official dmg and the server
 #                     built natively (scripts/ci/obsidian-host.sh).
 #   obsidian-windows  the same journeys with the official installer, the
@@ -50,12 +54,18 @@ concurrency:
 
 jobs:
   obsidian-linux:
+    name: obsidian-linux (${{ matrix.keyring }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        keyring: [none, gnome-keyring]
     env:
-      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux-${{ matrix.keyring }}
+      OBSYNC_E2E_KEYRING: ${{ matrix.keyring }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -80,6 +90,9 @@ jobs:
           printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
       - name: Build the shipped image
         run: docker build --tag "obsync-desktop-e2e:${GITHUB_SHA}" .
+      - name: Install the pinned GNOME Keyring
+        if: matrix.keyring == 'gnome-keyring'
+        run: scripts/ci/install-keyring.sh
       - name: Two Obsidian instances through the Caddy leg
         run: scripts/ci/proxy-e2e.sh "obsync-desktop-e2e:${GITHUB_SHA}" caddy --then scripts/ci/obsidian-e2e.sh
       - name: Remove anything the run left behind

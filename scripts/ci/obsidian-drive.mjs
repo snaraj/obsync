@@ -35,6 +35,10 @@
 //   OBSYNC_E2E_ARGS        optional JSON array of extra Chromium switches
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
+//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring" or "none" (Linux): what holds the keys; both
+//                          instances are restarted after the journeys and must sync again
+//   OBSYNC_E2E_LAUNCHER    optional command each instance is started through, the
+//                          Obsidian executable as its first argument
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -235,6 +239,28 @@ function notices() {
   return [...document.querySelectorAll(".notice")].map((n) => n.textContent.trim());
 }
 
+/**
+ * What Obsidian's secret storage did with the keys, read in the vault window:
+ * whether it could encrypt, with which backend, and whether the one stored
+ * entry is readable as plain JSON. Values never leave the window; only these
+ * facts do.
+ */
+function secretStore() {
+  const raw = app.loadLocalStorage("secrets-encrypted");
+  let plain = false;
+  try {
+    plain = typeof raw === "string" && typeof JSON.parse(raw) === "object";
+  } catch {
+    plain = false;
+  }
+  return {
+    encrypted: app.secretStorage.isEncryptionAvailable(),
+    backend: app.secretStorage.adapter?.getSelectedStorageBackend?.() ?? "none reported",
+    stored: typeof raw === "string" && raw.length > 0,
+    plain,
+  };
+}
+
 /** What is on screen, by label only: never an input's value, never the phrase or the code. */
 function describe() {
   const pick = (root) => root && {
@@ -295,11 +321,13 @@ class Instance {
   }
 
   launch(binary, port, extra, homes) {
-    const log = fs.openSync(path.join(this.root, "obsidian.log"), "w");
+    const log = fs.openSync(path.join(this.root, "obsidian.log"), "a");
     const environment = { ...process.env };
     if (homes) environment.HOME = this.home;
     this.port = port;
-    this.child = spawn(binary, [`--user-data-dir=${this.data}`, `--remote-debugging-port=${port}`, ...extra], {
+    const launcher = process.env.OBSYNC_E2E_LAUNCHER;
+    const argv = [`--user-data-dir=${this.data}`, `--remote-debugging-port=${port}`, ...extra];
+    this.child = spawn(launcher || binary, launcher ? [binary, ...argv] : argv, {
       env: environment,
       stdio: ["ignore", log, log],
       detached: process.platform !== "win32",
@@ -355,6 +383,21 @@ class Instance {
 
   pluginLog() {
     return [...this.pages.values()].flatMap((page) => page.console);
+  }
+
+  /**
+   * Quit as a person does, through Electron's own `app.quit()`, and wait until
+   * the process has gone, so a relaunch on the same directories cannot meet
+   * it. A signal to the whole process group is nearer a crash than a
+   * restart, and a restart is what this proves.
+   */
+  async halt() {
+    const child = this.child;
+    const main = await this.main();
+    await main.run(() => { setTimeout(() => window.electron.remote.app.quit(), 0); return true; });
+    await until(`${this.name}: Obsidian quit`, () => child.exitCode !== null || child.signalCode !== null, 30_000);
+    for (const page of this.pages.values()) page.close();
+    this.pages.clear();
   }
 
   stop() {
@@ -441,6 +484,8 @@ async function main() {
   const extra = JSON.parse(process.env.OBSYNC_E2E_ARGS || "[]");
   const homes = process.env.OBSYNC_E2E_HOMES === "1";
   const ntfs = process.env.OBSYNC_E2E_NTFS === "1";
+  const store = process.env.OBSYNC_E2E_SECRET_STORE || "";
+  if (store && !STORES[store]) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
   const token = fs.readFileSync(tokenFile, "utf8").trim();
   fs.rmSync(tokenFile, { force: true });
   secrets.push(token);
@@ -522,6 +567,7 @@ async function main() {
     prove(`B2 end to end: ${rounds} edits written on the first device reached the second's disk, p50 ${pick(0.5)} ms, p95 ${pick(0.95)} ms, max ${sorted.at(-1)} ms`);
 
     if (ntfs) await windowsJourneys(a, b);
+    if (store) await restarted(a, b, { binary, extra, homes, store });
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
     console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass`);
   } catch (error) {
@@ -544,6 +590,69 @@ async function main() {
     a.stop();
     b.stop();
   }
+}
+
+/**
+ * The two Linux cases the docs name for where the keys are kept (#217): what
+ * Obsidian's secret storage must report in each, and a warning it must not
+ * show. The warning Obsidian 1.13 raises when it cannot encrypt is recorded,
+ * never assumed, in the case without a keyring.
+ */
+const STORES = {
+  "gnome-keyring": { encrypted: true, backend: "gnome_libsecret", plain: false },
+  none: { encrypted: false, plain: true },
+};
+const UNENCRYPTED = "Secrets are stored without encryption";
+
+function holds(instance, found, store, when) {
+  const want = STORES[store];
+  const wrong = Object.entries(want).filter(([key, value]) => found[key] !== value);
+  if (!found.stored || wrong.length) {
+    throw new Denied(`${instance.name} ${when}: Obsidian's secret storage reports ${JSON.stringify(found)}, `
+      + `and with ${store} it must report ${JSON.stringify({ stored: true, ...want })}`);
+  }
+}
+
+/**
+ * The keys, across a restart: both instances stopped and started again on the
+ * same directories must come back paired from what their secret storage kept,
+ * and a note must still cross, which needs the vault key and the device
+ * secret both.
+ */
+async function restarted(a, b, { binary, extra, homes, store }) {
+  for (const instance of [a, b]) holds(instance, await inVault(instance, secretStore), store, "before the restart");
+  await Promise.all([a.halt(), b.halt()]);
+  a.launch(binary, 19222, extra, homes);
+  b.launch(binary, 19223, extra, homes);
+  await Promise.all([reopen(a), reopen(b)]);
+  await until("a: paired again, from its secret storage", () => paired(a));
+  await until("b: paired again, from its secret storage", () => paired(b));
+  const text = `after the restart ${randomBytes(6).toString("hex")}\n`;
+  await inVault(b, async (body) => { await app.vault.create("e2e/after-restart.md", body); return true; }, text);
+  const ms = await arrives(a, "e2e/after-restart.md", Buffer.from(text), "a note after the restart");
+  const [found] = await Promise.all([a, b].map(async (instance) => {
+    const seen = await inVault(instance, secretStore);
+    holds(instance, seen, store, "after the restart");
+    return seen;
+  }));
+  const warned = [...(await a.all(notices)), ...(await b.all(notices))].flat().filter((line) => line.startsWith(UNENCRYPTED));
+  if (store === "gnome-keyring" && warned.length) {
+    throw new Denied(`with an unlocked keyring Obsidian still says "${warned[0]}"`);
+  }
+  prove(`the keys with ${store}: backend ${found.backend}, encrypted=${found.encrypted}, stored as plain JSON=${found.plain}; `
+    + `both instances restarted, paired again from their secret storage, and a note crossed in ${ms} ms; `
+    + `after the restart Obsidian ${warned.length ? `says "${warned[0]}" (${warned.length} windows)` : "shows no warning about it"}`);
+}
+
+/** A relaunched instance: the vault opens where it was, and the plugin loads from what it kept. */
+async function reopen(instance) {
+  const main = await instance.main();
+  await until(`${instance.name}: Obsidian's workspace ready again`, () =>
+    main.run(() => !!(window.app && app.workspace && app.workspace.layoutReady)));
+  await until(`${instance.name}: the plugin loaded again`, async () => {
+    await instance.anywhere(click, LABELS.trust);
+    return main.run(pluginState, PLUGIN_ID);
+  });
 }
 
 /**
