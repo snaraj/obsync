@@ -73,6 +73,24 @@ Obsidian's installer downloads only the three individual files and ignores
 the ZIP and the evidence manifest; both remain required by the inventory
 below and by the read-only audit.
 
+**The static server, from 1.1.4.** The same job exports the Dockerfile's
+`server-dist` stage once per production platform -- the binary the image
+runs, the dashboard and plugin files it serves, `deploy/systemd/obsyncd.service`
+and the licence, copied from the same `server` and `bundle` stages the image
+copies -- and `release_contract.py server-archive` packs each into
+`obsync-server-X.Y.Z-linux-amd64.tar.gz` and `…-linux-arm64.tar.gz`: sorted
+entries, one fixed time, owner root, no extended headers, gzip without a name
+or time, so a re-run reproduces the bytes it uploaded. The evidence manifest
+records each archive's name, digest and size under `server_archives`, and the
+contract reads an archive as untrusted input before recording it: bounded
+before and after decompression, every entry a plain file or directory under
+its one top directory, owned by root and writable by no one else, carrying an
+executable for its own platform (the ELF machine) and plugin files identical
+to the released plugin's. Both archives join the build-provenance attestation
+below and the Release, as `application/gzip`, making seven assets. Releases
+before 1.1.4 keep their five-asset inventory, evidence and notes byte for
+byte; the boundary is the version, never the presence of a file.
+
 **The Release body.** From 1.0.1 the notes lead with that version's own
 `CHANGELOG.md` section, read out of the SOURCE COMMIT rather than out of a
 working tree, then the one line that installs or updates the plugin and the one
@@ -83,12 +101,21 @@ re-derives the notes from the sealed manifest and compares them, so a format
 change that reached backwards would fail against a release nobody can edit.
 `scripts/ci/test_community_release.py` pins both shapes and the boundary
 between them. The publisher
-requires the exact five-asset inventory and reads every uploaded byte back
-before immutable publication. It scans source and final image for
+requires the exact asset inventory for the version (five assets, seven from
+1.1.4) and reads every uploaded byte back before immutable publication. It scans source and final image for
 high/critical findings, and publishes one immutable Release.
 
 From 0.1.15, the publisher also creates GitHub Actions SLSA v1 build
-provenance for `main.js`, `manifest.json` and `styles.css`. The dispatch
+provenance for `main.js`, `manifest.json` and `styles.css`, and from 1.1.4 for
+both server archives. A reader verifies an archive before unpacking it with
+the same identity the verifier below uses:
+
+```sh
+gh attestation verify obsync-server-X.Y.Z-linux-amd64.tar.gz --repo snaraj/obsync \
+  --cert-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+```
+ The dispatch
 workflow SHA must equal the authorized source SHA before any publication
 write, because GitHub's provenance derives that identity from the workflow.
 The orchestrator dispatches against `main`; if `main` advances before that

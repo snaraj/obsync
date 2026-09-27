@@ -176,8 +176,11 @@ Two jobs, and the split is enforced by permissions rather than convention:
   HIGH/CRITICAL before signing it**, signs image and OCI chart keyless,
   substitutes the resolved digest into the chart values before packaging,
   exports the plugin bundle from the same Dockerfile stage the image copies,
-  and publishes one immutable Release carrying the deterministic evidence
-  manifest and the bundle.
+  exports the `server-dist` stage once per platform and packs the two static
+  server tarballs deterministically (from 1.1.4), attests the plugin files and
+  both tarballs with build provenance, and publishes one immutable Release
+  carrying the deterministic evidence manifest, the bundle, the plugin files
+  and the tarballs.
 
 Position is the contract in two places: the vulnerability gate sits between
 digest resolution and `cosign sign`, so a failing digest never receives this
@@ -190,7 +193,8 @@ publish step's package read the identical tree.
 Re-binds the newest immutable Release: the manifest bytes, the notes, the
 Release record, the successful run, the annotated tag, both registry aliases
 still resolving to the recorded digests, both cosign signatures, the plugin
-bundle's SHA-256, and a fresh HIGH/CRITICAL scan of the shipped image against
+bundle's SHA-256, from 1.1.4 both server tarballs (bytes against the evidence,
+and their build provenance), and a fresh HIGH/CRITICAL scan of the shipped image against
 today's vulnerability database. It holds no write permission anywhere.
 
 ## `docs-site.yml` — pull requests, pushes to `main`, manual dispatch

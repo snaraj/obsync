@@ -36,7 +36,7 @@ second copy here.
 | `crates/obsync-core` | Homegrown primitives: SHA-256, HMAC, HKDF, CRC32, encodings, JSON, HTTP/1.1 |
 | `crates/obsyncd` | The server: storage engine, journal, sync API, dashboard, CLI |
 | `plugin/` | The Obsidian plugin (TypeScript, WebCrypto, no runtime dependencies) |
-| `dashboard/` | Static dashboard assets embedded into the server |
+| `dashboard/` | Static dashboard assets the server serves from `OBSYNC_DASHBOARD_DIR` |
 | `chart/` | Helm chart |
 | `bench/` | Benchmark harness; LiveSync is the reference to beat |
 | `docs/` | Architecture, protocol, storage, threat model, validation, onboarding |

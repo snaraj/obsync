@@ -317,6 +317,46 @@ Copy `obsync-root.crt` to each device and install it:
   `deploy/compose/Caddyfile` -- a real domain, ports 80 and 443 reachable,
   and a certificate every device already trusts. Nothing else changes.
 
+## Without a container: the static binary
+
+From 1.1.4 every Release also carries `obsync-server-X.Y.Z-linux-amd64.tar.gz`
+and `obsync-server-X.Y.Z-linux-arm64.tar.gz`: the static binary the image
+runs, the dashboard and plugin files it serves, a hardened systemd unit, and
+the licence. Verify the one for your machine before you unpack it:
+
+```sh
+gh attestation verify obsync-server-X.Y.Z-linux-amd64.tar.gz --repo snaraj/obsync \
+  --cert-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Then, as root: a user of its own, the files owned by root so the server cannot
+rewrite its own program, the two capacities, and the unit.
+
+```sh
+useradd --system --no-create-home --shell /usr/sbin/nologin obsync
+install -d -m 0755 /opt/obsync
+tar -xzf obsync-server-X.Y.Z-linux-amd64.tar.gz -C /opt/obsync --strip-components=1
+install -d -m 0700 /etc/obsync
+install -m 0600 /dev/null /etc/obsync/obsyncd.env
+printf 'OBSYNC_BLOBS_CAPACITY=100GiB\nOBSYNC_JOURNAL_CAPACITY=4GiB\n' > /etc/obsync/obsyncd.env
+cp /opt/obsync/obsyncd.service /etc/systemd/system/obsyncd.service
+systemctl daemon-reload
+systemctl enable --now obsyncd
+```
+
+Set the two capacities to the space you set aside on that disk, never more:
+free space is capacity minus what the server wrote, and the server does not
+start without them. The unit creates `/var/lib/obsync/blobs` and
+`/var/lib/obsync/journal`, mode 0700, owned by `obsync`; those are the two
+volumes to back up below, and the setup token is
+`/var/lib/obsync/journal/v1/setup-token`. The server listens on
+`127.0.0.1:8080` only and believes forwarded addresses only from loopback, so
+the TLS terminator runs on the same host and proxies to that address
+(`reverse_proxy 127.0.0.1:8080` in a Caddyfile). To upgrade, verify the new
+archive, stop the service, replace `/opt/obsync` with its contents, and start
+it again; the volumes are untouched.
+
 ## Back up the two volumes
 
 Two volumes hold everything: `obsync-blobs` is every encrypted chunk, and

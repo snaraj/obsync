@@ -129,6 +129,23 @@ FROM server AS datadirs
 RUN install -d -m 0700 /skeleton/data /skeleton/data/blobs /skeleton/data/journal
 
 # ---------------------------------------------------------------------------
+# server-dist -- the same server for a host without a container runtime: the
+# binary the image runs, the dashboard and plugin files it serves, a hardened
+# systemd unit, and the licence. Per target architecture, from the SAME
+# `server` and `bundle` stages the image copies, so the release tarball and
+# the image cannot carry different bytes. The publisher exports this stage
+# with `docker buildx build --target server-dist --output type=local` and
+# `scripts/ci/release_contract.py server-archive` packs it deterministically.
+# Never part of the image.
+# ---------------------------------------------------------------------------
+FROM scratch AS server-dist
+COPY --from=server /out/obsyncd /obsyncd
+COPY --from=bundle / /plugin/
+COPY dashboard/ /dashboard/
+COPY deploy/systemd/obsyncd.service /obsyncd.service
+COPY LICENSE /LICENSE
+
+# ---------------------------------------------------------------------------
 # The shipped image: one static binary, the dashboard it serves, and the plugin
 # bundle it hands to devices. No package manager, no source tree, no compiler,
 # no shell -- so requirement 5's "the container runs as non-root with a
