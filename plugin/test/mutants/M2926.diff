@@ -1,12 +1,12 @@
 # M2926: fake fidelity: the Android fake's case-sensitive exists answers for the exact name
 --- a/plugin/test/phone.mjs
 +++ b/plugin/test/phone.mjs
-@@ -55,7 +55,7 @@
+@@ -76,7 +76,7 @@
      this.adapter = {
-       // The flag is not an answer on Android (fact 2); a phone that keeps the
+       // The flag is not an answer on Android; a phone that keeps the
        // spellings apart answers for the exact name whatever it is passed.
--      exists: async (path) => vault.real(path) !== null,
-+      exists: async (path, sensitive) => sensitive === true ? vault.disk.has(path) : vault.real(path) !== null,
-       stat: async (path) => {
+-      exists: (path) => vault.queue(async () => vault.real(path) !== null),
++      exists: (path, sensitive) => vault.queue(async () => sensitive === true ? vault.disk.has(path) : vault.real(path) !== null),
+       stat: (path) => vault.queue(async () => {
          const at = vault.real(path);
          if (at === null) return null;

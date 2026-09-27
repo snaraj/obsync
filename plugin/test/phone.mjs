@@ -3,8 +3,10 @@
  * below them, for the real `ObsidianHost` to run on (issue #219).
  *
  * `folds: true` is Android, as measured on an Android 15 emulator with
- * Obsidian 1.13.8. Its shared storage folds capitals the way a Mac does, and
- * everything above it answers for the folded name:
+ * Obsidian 1.13.8 and as its mobile adapter's own code reads there. The
+ * shared storage folds capitals the way a Mac does, while the adapter
+ * believes it does not (`insensitive` is false), so everything above the
+ * storage answers for the folded name:
  *
  *  - `adapter.exists("X/probe.md", true)` is true while only `X/Probe.md`
  *    exists -- the case-sensitive flag answers nothing there;
@@ -12,17 +14,33 @@
  *  - the adapter's rename AND the vault's refuse a destination that exists
  *    folded, the source's own other spelling included, with "Destination
  *    file already exists!";
- *  - two vault renames through a hidden name re-case a file or a folder, the
- *    hidden name staying in the index while it exists, and report exactly two
- *    `rename` events and nothing else;
- *  - the same two steps through the ADAPTER re-case the disk and leave the
- *    old spelling in the index beside the new one: a rename into a hidden
- *    name keeps its source indexed, and one out of a hidden name the index
- *    never held indexes its destination.
+ *  - every adapter call that touches the storage runs in ONE queue, in the
+ *    order it was made;
+ *  - a rename moves the index entry of the name it was given, and reports a
+ *    `rename` for that entry and for every entry under it, a folder's
+ *    children included;
+ *  - the native watcher reports each name a change touched on the storage,
+ *    a turn later, and each report is reconciled in that queue: a name the
+ *    storage answers for and the index lacks is indexed UNDER THE NAME
+ *    REPORTED, with a `create` -- which, for the old spelling of an entry
+ *    re-cased since, is a second index entry for one file (the GHOST); a
+ *    name it does not answer for leaves the index 100 ms later, and a hidden
+ *    name the index holds leaves it the same way;
+ *  - a removal of any spelling removes the entry the storage folds it to,
+ *    and the index entry of the name asked for; the watcher's report of the
+ *    real name removes that one 100 ms later.
+ *
+ * So two renames made back to back through a hidden name leave the ghost
+ * whenever the watcher's reconcile of the old name runs after the second
+ * (6 of 20 on the emulator; always here), and none when a turn and the
+ * queue ahead are let run between them (0 of 20).
  *
  * `folds: false` is an iPhone or an iPad, whose "On My iPhone" storage keeps
  * `Probe` and `probe` as two entries. Obsidian indexes no hidden name when it
- * starts (`restart`).
+ * starts (`restart`). `watcher: false` is a watcher that reports nothing,
+ * `pause` one whose reports come late, as a busy device's can -- after the
+ * wait between the two steps -- and `indexApi: false` an adapter without the
+ * private `reconcileDeletion`.
  *
  * Hand-written, stdlib only, and in memory: the same answers on every CI host,
  * whatever its own filesystem folds.
@@ -33,10 +51,13 @@ const parentOf = (path) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const hidden = (path) => path.split("/").some((part) => part.startsWith("."));
 
 export class PhoneVault {
-  constructor(obsidian, { folds = true, delivery = "immediate" } = {}) {
+  constructor(obsidian, { folds = true, delivery = "immediate", watcher = true, indexApi = true } = {}) {
     this.obsidian = obsidian;
     this.folds = folds;
     this.delivery = delivery;
+    this.watching = watcher;
+    /** The reports held back while paused (`pause`), or `null`. */
+    this.paused = null;
     /** The storage: every entry under the name it keeps, `{ bytes, mtime }` for a file and `null` for a folder. */
     this.disk = new Map();
     /** Obsidian's index, by exact path. */
@@ -46,24 +67,26 @@ export class PhoneVault {
     this.events = [];
     /** Every `vault.rename` asked for, as `[from, to]`, refused ones included. */
     this.renames = [];
-    /** `(from, to, n) => boolean`: refuse the n-th `vault.rename` (1-based) with an error, before it changes anything. */
+    /** `(from, to, n) => boolean`: refuse a rename, the adapter's or the vault's (`n` vault renames so far), before it changes anything. */
     this.fault = null;
-    /** Whether the adapter's own rename updates the index at all (`false`: an adapter that leaves it to a restart). */
-    this.adapterIndexes = true;
+    /** The adapter's one queue (`queue`). */
+    this.chain = Promise.resolve();
     this.clock = 1757200000000;
     const vault = this;
     this.adapter = {
-      // The flag is not an answer on Android (fact 2); a phone that keeps the
+      // The flag is not an answer on Android; a phone that keeps the
       // spellings apart answers for the exact name whatever it is passed.
-      exists: async (path) => vault.real(path) !== null,
-      stat: async (path) => {
+      exists: (path) => vault.queue(async () => vault.real(path) !== null),
+      stat: (path) => vault.queue(async () => {
         const at = vault.real(path);
         if (at === null) return null;
         const file = vault.disk.get(at);
         return file === null ? { type: "folder", ctime: 0, mtime: 0, size: 0 }
           : { type: "file", ctime: file.mtime, mtime: file.mtime, size: file.bytes.length };
-      },
+      }),
+      // Real I/O: the listing answers a turn later.
       list: async (path) => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const at = vault.real(path === "/" ? "" : path);
         if (at === null || vault.disk.get(at) !== null && at !== "") throw new Error(`ENOENT: ${path}`);
         const out = { files: [], folders: [] };
@@ -73,20 +96,35 @@ export class PhoneVault {
         }
         return out;
       },
-      rename: async (from, to) => vault.adapterRename(from, to),
-      mkdir: async (path) => vault.mkdirs(path, true),
+      rename: (from, to) => vault.queue(async () => vault.adapterRename(from, to)),
+      mkdir: (path) => vault.queue(async () => vault.mkdirs(path, true)),
       readBinary: async (path) => {
         const file = vault.disk.get(vault.real(path) ?? "");
         if (!file) throw new Error(`ENOENT: ${path}`);
         return file.bytes.slice().buffer;
       },
-      writeBinary: async (path, data, options) => vault.write(path, new Uint8Array(data), options?.mtime ?? vault.clock, true),
-      remove: async (path) => vault.drop(path),
-      trashLocal: async (path) => vault.drop(path),
-      trashSystem: async (path) => { vault.drop(path); return true; },
-      rmdir: async (path) => vault.drop(path),
+      writeBinary: (path, data, options) => vault.queue(async () => vault.write(path, new Uint8Array(data), options?.mtime ?? vault.clock, true)),
+      remove: (path) => vault.queue(async () => vault.drop(path)),
+      trashLocal: (path) => vault.queue(async () => vault.drop(path)),
+      trashSystem: (path) => vault.queue(async () => { vault.drop(path); return true; }),
+      rmdir: (path) => vault.queue(async () => vault.drop(path)),
+      // PRIVATE in Obsidian: drop a name from the index, touching nothing on the storage.
+      ...(indexApi ? { reconcileDeletion: async (_realPath, path, now = true) => { if (now) vault.unindex(path); } } : {}),
     };
-    this.fileManager = { trashFile: async (file) => vault.drop(file.path) };
+    this.fileManager = { trashFile: (file) => vault.adapter.trashLocal(file.path) };
+  }
+
+  /** The adapter's queue: every call runs after the ones made before it, failed ones included. */
+  queue(fn) {
+    const next = this.chain.then(fn, fn);
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  /** Let a turn pass and everything queued in it run: what a test waits on before asserting on the index. */
+  async settle(ms = 0) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    await this.queue(async () => undefined);
   }
 
   // --- the storage -------------------------------------------------------
@@ -148,16 +186,20 @@ export class PhoneVault {
     } else if (this.index.has(at)) this.emit("modify", this.index.get(at));
   }
 
+  /**
+   * A removal by any spelling: the entry the storage folds it to goes, the
+   * index entry of the name asked for goes with it, and the watcher reports
+   * the real name.
+   */
   drop(path) {
     const at = this.real(path);
     if (at === null) return;
     for (const key of [...this.disk.keys()]) if (key === at || key.startsWith(`${at}/`)) this.disk.delete(key);
-    const entry = this.index.get(at);
-    for (const key of [...this.index.keys()]) if (key === at || key.startsWith(`${at}/`)) this.index.delete(key);
-    if (entry) this.emit("delete", entry);
+    this.report(at);
+    this.unindex(path);
   }
 
-  /** Move an entry and everything under it; the index is the caller's. */
+  /** Move an entry and everything under it on the storage. */
   relocate(at, to) {
     for (const [key, value] of [...this.disk]) {
       if (key !== at && !key.startsWith(`${at}/`)) continue;
@@ -166,36 +208,86 @@ export class PhoneVault {
     }
   }
 
-  /** Re-path an index entry and everything under it. */
-  reindex(from, to) {
-    for (const [key, entry] of [...this.index]) {
-      if (key !== from && !key.startsWith(`${from}/`)) continue;
-      this.index.delete(key);
-      entry.path = to + key.slice(from.length);
-      this.index.set(entry.path, entry);
-    }
-  }
-
+  /**
+   * The adapter's rename: refused for a destination the storage answers for,
+   * the source's own other spelling included; the storage moves; the index
+   * entry of the name given moves, with a `rename` for it and for each entry
+   * under it; and the watcher reports both real names.
+   */
   adapterRename(from, to) {
+    if (this.fault?.(from, to, this.renames.length)) throw new Error("rename interrupted");
     const at = this.real(from);
     if (at === null) throw new Error(`ENOENT: ${from}`);
     if (this.real(to) !== null) throw new Error("Destination file already exists!");
     const landed = this.landing(to);
-    const folder = this.disk.get(at) === null;
     this.relocate(at, landed);
-    if (!this.adapterIndexes) return;
-    const entry = this.index.get(at);
-    if (entry !== undefined && !hidden(landed)) {
-      this.reindex(at, landed);
-      this.emit("rename", entry, at);
-    } else if (entry === undefined && !hidden(landed)) {
-      for (const key of this.disk.keys()) {
-        if (key === landed || key.startsWith(`${landed}/`)) this.index.set(key, this.entry(key, this.disk.get(key) === null));
-      }
-      this.emit("create", this.index.get(landed));
+    this.report(at);
+    this.report(landed);
+    if (!this.index.has(from)) return;
+    for (const key of [from, ...[...this.index.keys()].filter((key) => key.startsWith(`${from}/`))]) {
+      const entry = this.index.get(key);
+      this.index.delete(key);
+      entry.path = to + key.slice(from.length);
+      this.index.set(entry.path, entry);
+      this.emit("rename", entry, key);
     }
-    // An indexed source renamed INTO a hidden name stays indexed: the ghost.
-    return folder;
+  }
+
+  // --- the watcher -------------------------------------------------------
+
+  /** The native watcher: one report per real name a change touched, reconciled a turn later, in the queue. */
+  report(path) {
+    if (this.paused !== null) this.paused.push(path);
+    else if (this.watching) setTimeout(() => this.queue(async () => this.reconcile(path, false)), 0);
+  }
+
+  /** Hold the watcher's reports until `resume`, which makes them in the order they came. */
+  pause() { this.paused = []; }
+
+  resume() {
+    const late = this.paused ?? [];
+    this.paused = null;
+    for (const path of late) this.report(path);
+  }
+
+  /**
+   * One reported name against the storage, with the adapter's own belief
+   * that it does not fold capitals: a lookup that answers is taken as that
+   * very name.
+   */
+  reconcile(path, now) {
+    const at = hidden(path) ? null : this.real(path);
+    if (at === null) {
+      if (!this.index.has(path)) return;
+      if (now) this.unindex(path);
+      else setTimeout(() => this.queue(async () => this.reconcile(path, true)), 100);
+      return;
+    }
+    if (!this.index.has(path)) this.indexAt(path, at);
+  }
+
+  /** Index `path` -- and, for a folder, everything the storage holds under it -- as the entry at `at`. */
+  indexAt(path, at) {
+    const folder = this.disk.get(at) === null;
+    const entry = this.entry(path, folder);
+    this.index.set(path, entry);
+    this.emit("create", entry);
+    if (!folder) return;
+    for (const name of this.names(at)) {
+      const child = `${path}/${name}`;
+      if (!hidden(child) && !this.index.has(child)) this.indexAt(child, `${at}/${name}`);
+    }
+  }
+
+  /** Drop `path` and everything under it from the index, children first, one `delete` each. */
+  unindex(path) {
+    const keys = [...this.index.keys()].filter((key) => key.startsWith(`${path}/`));
+    if (this.index.has(path)) keys.push(path);
+    for (const key of keys) {
+      const entry = this.index.get(key);
+      this.index.delete(key);
+      this.emit("delete", entry);
+    }
   }
 
   // --- Obsidian's index and events ---------------------------------------
@@ -220,7 +312,7 @@ export class PhoneVault {
     return entry;
   }
 
-  /** Obsidian starting over this storage: every entry indexed, no hidden name. */
+  /** Obsidian starting over this storage: every entry indexed under its real name, no hidden name. */
   restart() {
     this.index.clear();
     for (const [path, value] of this.disk) if (!hidden(path)) this.index.set(path, this.entry(path, value === null));
@@ -232,9 +324,9 @@ export class PhoneVault {
   }
 
   /**
-   * `immediate` is what the vault's own rename does; `deferred` is a report
-   * that arrives a turn later -- naming the path the entry had when it was
-   * reported, as `EventVault`'s do, not wherever a later rename has taken it.
+   * `immediate` is what Obsidian does; `deferred` is a report that arrives a
+   * turn later -- naming the path the entry had when it was reported, as
+   * `EventVault`'s do, not wherever a later rename has taken it.
    */
   emit(name, entry, oldPath) {
     this.events.push([name, entry.path, oldPath]);
@@ -254,28 +346,18 @@ export class PhoneVault {
   getConfig() { return undefined; }
   async read(file) { return new TextDecoder().decode(this.disk.get(this.real(file.path) ?? "")?.bytes ?? new Uint8Array()); }
 
-  async createBinary(path, data, options) {
-    if (this.real(path) !== null) throw new Error("File already exists.");
-    this.write(path, new Uint8Array(data), options?.mtime ?? this.clock, true);
-    return this.index.get(this.real(path));
+  createBinary(path, data, options) {
+    return this.queue(async () => {
+      if (this.real(path) !== null) throw new Error("File already exists.");
+      this.write(path, new Uint8Array(data), options?.mtime ?? this.clock, true);
+      return this.index.get(this.real(path));
+    });
   }
 
-  /**
-   * `Vault.rename`: refused when the destination exists in the index or on
-   * the storage -- folded, on Android -- and otherwise the entry, its
-   * children and its index entries move, and ONE event says so.
-   */
+  /** `Vault.rename`: the adapter's, for the name the entry has in the index. */
   async rename(entry, to) {
     this.renames.push([entry.path, to]);
-    if (this.fault?.(entry.path, to, this.renames.length)) throw new Error("vault rename interrupted");
-    const at = this.real(entry.path);
-    if (at === null) throw new Error(`ENOENT: ${entry.path}`);
-    if (this.index.has(to) || this.real(to) !== null) throw new Error("Destination file already exists!");
-    const landed = this.landing(to);
-    const from = entry.path;
-    this.relocate(at, landed);
-    this.reindex(from, landed);
-    this.emit("rename", entry, from);
+    await this.adapter.rename(entry.path, to);
   }
 
   // --- what the user sees ------------------------------------------------

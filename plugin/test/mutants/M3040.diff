@@ -1,0 +1,11 @@
+# M3040: the second step follows the first at once, before Obsidian's watcher has reconciled the old name
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1713,7 +1713,6 @@
+     // note, the second a ghost whose deletion deletes the note (6 of 20
+     // back-to-back re-cases on Android 15 left one, 0 of 20 with this wait).
+     // A report later still indexes it all the same, with a `create` (`ghost`).
+-    await this.caughtUp(temp);
+     try {
+       await vault.rename(entry, to);
+     } catch {

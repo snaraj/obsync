@@ -1373,6 +1373,15 @@ export class SyncEngine {
   }
 
   /**
+   * The host held deletions and asked about them in its own words (`main.ts`,
+   * `holdTwin`, issue #219): a pass that finds them still missing holds them
+   * without asking a second time.
+   */
+  heldAsked(): void {
+    this.bulkNoticeShown = true;
+  }
+
+  /**
    * Hold a burst the user deleted (issue #162) beside anything already held,
    * and ask once: one notice for the burst, with both answers on it.
    */
@@ -3734,6 +3743,10 @@ export class SyncEngine {
     // them (`settleVanished`).
     if (tombstones) {
       for (const folder of Object.keys(context.state.data.folders)) {
+        // A folder whose notes' deletions are held waits with them, as it
+        // does in the watcher's burst (`heldFolders`): the person may yet put
+        // them back (issues #162, #219).
+        if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
         if (!this.running) return;
         if (present.has(folder) || casedFolders.has(folder)) continue;
         if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }

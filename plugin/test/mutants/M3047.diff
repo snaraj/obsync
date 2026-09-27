@@ -1,0 +1,12 @@
+# M3047: a deletion through another spelling is held while the note is still on the storage
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1859,7 +1859,7 @@
+     try {
+       await this.caughtUp(twin);
+       const stat = await this.plugin.app.vault.adapter.stat(twin);
+-      if (stat !== null && (stat.type === "folder") === folder) {
++      if (false) {
+         this.twinGuards.delete(twin);
+         return;
+       }

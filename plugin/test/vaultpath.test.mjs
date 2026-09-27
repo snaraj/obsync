@@ -127,7 +127,7 @@ function desktopHost({ files = [] } = {}) {
   };
   const known = new Map(files.map((file) => [file.path, file]));
   const plugin = {
-    state: { data: {} },
+    state: { data: { files: {} } },
     app: {
       workspace: { getLeavesOfType: () => [] },
       // The real one applies the user's "Deleted files" preference; what is

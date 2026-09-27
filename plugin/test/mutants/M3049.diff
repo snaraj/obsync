@@ -1,0 +1,11 @@
+# M3049: a folder's rename is taken again from each report of an entry under it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2953,7 +2953,6 @@
+         // found the echo marks of a re-case this device only APPLIED spent by
+         // the folder's, and published its moves and its subfolders' records
+         // back as this device's own: a second head per note (#219, live run).
+-        if (this.renamedFolders.some(([before, after]) => oldPath.startsWith(`${before}/`) && path === after + oldPath.slice(before.length))) return;
+         if (file instanceof TFile) {
+           this.engine?.renamed(oldPath, path);
+         } else if (file instanceof TFolder) {

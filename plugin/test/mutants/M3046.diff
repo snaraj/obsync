@@ -1,0 +1,14 @@
+# M3046: the note's own delete, after its ghost's, is taken as the person's
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1834,10 +1834,6 @@
+     const now = Date.now();
+     for (const [root, guard] of this.twinGuards) {
+       if (guard.until < now) this.twinGuards.delete(root);
+-      else if (path === root || path.startsWith(`${root}/`)) {
+-        this.holdTwin(root, guard.via);
+-        return true;
+-      }
+     }
+     const { files, folders } = this.plugin.state.data;
+     if ((folder ? folders : files)[path] !== undefined) return false;

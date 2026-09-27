@@ -1,10 +1,10 @@
 # M2919: a re-case put back where Obsidian's index does not show it is let go
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1717,7 +1717,6 @@
-         else await vault.adapter.rename(temp, from);
+@@ -1978,7 +1978,6 @@
          returned = true;
        }
+       if (at !== null) await this.caughtUp(at);
 -      if (failed === null && at !== null && vault.getAbstractFileByPath(at) === null) failed = "not_indexed";
      } catch {
        failed = "rename";

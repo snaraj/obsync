@@ -99,12 +99,12 @@ async function phone(t, r, fresh = false) {
 }
 
 /** A Mac-like desktop, the Android device beside it, one server, one clock. */
-async function rig(t, { folds = true, delivery = "immediate" } = {}) {
+async function rig(t, options = {}) {
   const { server, timers, a, keys } = await pair(t, "immediate", { caseSensitiveA: false });
   server.addDevice(PHONE, PHONE_SECRET, "android", "android");
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
-  const vault = new PhoneVault(box.require("obsidian"), { folds, delivery });
+  const vault = new PhoneVault(box.require("obsidian"), options);
   const r = { server, timers, a, keys, box, vault, store: { data: null, secrets: memorySecrets() } };
   r.b = await phone(t, r, true);
   return r;
@@ -126,7 +126,8 @@ const story = (r) => [
   `phone_disk=${JSON.stringify(r.vault.entries())}`,
   `phone_index=${JSON.stringify(r.vault.indexed())}`,
   `phone_records=${JSON.stringify(r.b.state.data.files)}`,
-  `phone_log=${JSON.stringify(r.b.logs.filter((line) => /^(vault|pull|watch|push|reconcile|feed)/.test(line)))}`,
+  `phone_log=${JSON.stringify(r.b.logs.filter((line) => /^(vault|pull|watch|push|reconcile|feed|folder|scope)/.test(line)))}`,
+  `phone_folders=${JSON.stringify(Object.keys(r.b.state.data.folders))}`,
 ].join(" ");
 
 test("the Android fake answers as the emulator did, and the iPhone fake keeps two spellings apart", async () => {
@@ -141,27 +142,55 @@ test("the Android fake answers as the emulator did, and the iPhone fake keeps tw
     await assert.rejects(android.adapter.rename("X/Probe.md", "X/probe.md"), { message: "Destination file already exists!" });
     await assert.rejects(android.rename(android.getAbstractFileByPath("X/Folder"), "X/folder"), { message: "Destination file already exists!" });
     await assert.rejects(android.rename(android.getAbstractFileByPath("X/Probe.md"), "X/probe.md"), { message: "Destination file already exists!" });
-    // Two vault renames through a hidden name: re-cased, two events, a clean index.
+    // Two vault renames through a hidden name, BACK TO BACK: re-cased, two
+    // renames reported, and the watcher's late reconcile of the old name
+    // indexes it again -- a second entry for one file (6 of 20 live).
     const file = android.getAbstractFileByPath("X/Probe.md");
     await android.rename(file, "X/.obsync-recase-x.md");
-    assert.ok(android.getAbstractFileByPath("X/.obsync-recase-x.md"), "the hidden name left the index");
     await android.rename(file, "X/probe.md");
-    const folder = android.getAbstractFileByPath("X/Folder");
-    await android.rename(folder, "X/.obsync-recase-y");
-    await android.rename(folder, "X/folder");
-    assert.deepEqual(android.events.map(([name, path, old]) => `${name} ${old} -> ${path}`), [
-      "rename X/Probe.md -> X/.obsync-recase-x.md", "rename X/.obsync-recase-x.md -> X/probe.md",
-      "rename X/Folder -> X/.obsync-recase-y", "rename X/.obsync-recase-y -> X/folder",
-    ]);
-    assert.deepEqual(android.indexed(), ["X", "X/folder", "X/folder/a.md", "X/probe.md"]);
-    // Two ADAPTER renames: the disk is re-cased and the old spelling stays in the index.
-    await android.adapter.rename("X/probe.md", "X/.t");
-    await android.adapter.rename("X/.t", "X/PROBE.md");
-    assert.deepEqual(android.entries(), ["X", "X/PROBE.md", "X/folder", "X/folder/a.md"]);
-    assert.deepEqual(android.indexed(), ["X", "X/PROBE.md", "X/folder", "X/folder/a.md", "X/probe.md"]);
+    await android.settle();
+    assert.deepEqual(android.entries(), ["X", "X/Folder", "X/Folder/a.md", "X/probe.md"]);
+    assert.deepEqual(android.indexed(), ["X", "X/Folder", "X/Folder/a.md", "X/Probe.md", "X/probe.md"], "no ghost where the emulator left one");
+    assert.notEqual(android.getAbstractFileByPath("X/Probe.md"), file, "the ghost is a second entry, not the renamed one");
+    assert.equal(await android.adapter.exists("X/Probe.md", true), true);
+    await android.adapter.reconcileDeletion("X/Probe.md", "X/Probe.md", true);
+    // The same with a turn and the queue let run between the steps: clean (0 of 20 live).
+    await android.rename(file, "X/.obsync-recase-z.md");
+    await android.settle();
+    assert.ok(android.getAbstractFileByPath("X/.obsync-recase-z.md"), "the hidden name left the index before 100 ms");
+    await android.rename(file, "X/PROBE.md");
+    await android.settle(150);
+    assert.deepEqual(android.indexed(), ["X", "X/Folder", "X/Folder/a.md", "X/PROBE.md"]);
+    // A folder's rename reports the folder and every entry under it.
+    const before = android.events.length;
+    await android.rename(android.getAbstractFileByPath("X/Folder"), "X/Other");
+    assert.deepEqual(android.events.slice(before).map(([name, path, old]) => `${name} ${old} -> ${path}`),
+      ["rename X/Folder -> X/Other", "rename X/Folder/a.md -> X/Other/a.md"]);
+    // A hidden name the index holds leaves it 100 ms after the watcher sees it.
+    await android.rename(file, "X/.obsync-recase-w.md");
+    await android.settle(150);
+    assert.equal(android.getAbstractFileByPath("X/.obsync-recase-w.md"), null);
+    await android.adapter.rename("X/.obsync-recase-w.md", "X/probe.md");
+    await android.settle();
+    assert.deepEqual(android.indexed(), ["X", "X/Other", "X/Other/a.md", "X/probe.md"], "the watcher did not index the name the adapter's rename left out");
+    // Deleting a ghost deletes the note: the ghost's `delete`, then the note's, 100 ms later.
+    await android.adapter.rename("X/probe.md", "X/.v");
+    await android.adapter.rename("X/.v", "X/Probe.md");
+    await android.settle();
+    const ghost = android.getAbstractFileByPath("X/probe.md");
+    assert.ok(ghost && android.getAbstractFileByPath("X/Probe.md"));
+    const deletes = android.events.length;
+    await android.fileManager.trashFile(ghost);
+    assert.deepEqual(android.entries(), ["X", "X/Other", "X/Other/a.md"], "a removal of the ghost left the note");
+    await android.settle(150);
+    assert.deepEqual(android.events.slice(deletes).map(([name, path]) => `${name} ${path}`), ["delete X/probe.md", "delete X/Probe.md"]);
     android.write("X/.hidden", new TextEncoder().encode(CLASH), 1, false);
+    android.seed("X/Kept.md", BODY);
+    android.index.set("X/KEPT.md", android.entry("X/KEPT.md", false));
     android.restart();
-    assert.deepEqual(android.indexed(), ["X", "X/PROBE.md", "X/folder", "X/folder/a.md"], "a restart indexed a hidden name or kept a ghost");
+    assert.deepEqual(android.indexed(), ["X", "X/Kept.md", "X/Other", "X/Other/a.md"], "a restart indexed a hidden name or kept a ghost");
+    const blind = new PhoneVault(box.require("obsidian"), { indexApi: false });
+    assert.equal(blind.adapter.reconcileDeletion, undefined);
 
     const iphone = new PhoneVault(box.require("obsidian"), { folds: false });
     iphone.seed("X/Probe.md", BODY);
@@ -214,27 +243,30 @@ for (const delivery of ["immediate", "deferred"]) {
 }
 
 test("Android receives a capitals-only FOLDER rename: the folder and the notes under it take the new spelling, nothing sent", async (t) => {
-  const r = await seeded(t, { "Team docs/One.md": BODY, "Team docs/Two.md": OTHER });
+  const r = await seeded(t, { "Team docs/One.md": BODY, "Team docs/Two.md": OTHER, "Team docs/Sub/Three.md": CLASH });
   const before = r.vault.events.length;
+  const three = ["team docs/One.md", "team docs/Two.md", "team docs/Sub/Three.md"];
 
   r.a.host.renameFolder("Team docs", "team docs");
-  await r.timers.run(STEP_MS, () => ["team docs/One.md", "team docs/Two.md"].every((path) => settled(r.b, path)) &&
-    r.vault.entries().includes("team docs"));
+  await r.timers.run(STEP_MS, () => three.every((path) => settled(r.b, path)) && r.vault.entries().includes("team docs"));
   await r.timers.run(STEP_MS);
   await r.b.engine.syncNow();
   await r.timers.run(STEP_MS);
 
-  assert.deepEqual(r.vault.entries(), ["team docs", "team docs/One.md", "team docs/Two.md"], story(r));
-  assert.deepEqual(r.vault.indexed(), ["team docs", "team docs/One.md", "team docs/Two.md"], `the index is not clean: ${story(r)}`);
-  assert.deepEqual(Object.keys(r.b.state.data.files).sort(), ["team docs/One.md", "team docs/Two.md"]);
-  assert.deepEqual(["team docs/One.md", "team docs/Two.md"].map((path) => r.b.state.fileByPath(path).fileId),
-    [r.ids["Team docs/One.md"], r.ids["Team docs/Two.md"]]);
-  assert.deepEqual(Object.keys(r.b.state.data.folders), ["team docs"], story(r));
+  assert.deepEqual(r.vault.entries(), ["team docs", "team docs/One.md", "team docs/Sub", "team docs/Sub/Three.md", "team docs/Two.md"], story(r));
+  assert.deepEqual(r.vault.indexed(), ["team docs", "team docs/One.md", "team docs/Sub", "team docs/Sub/Three.md", "team docs/Two.md"], `the index is not clean: ${story(r)}`);
+  assert.deepEqual(Object.keys(r.b.state.data.files).sort(), [...three].sort());
+  assert.deepEqual(three.map((path) => r.b.state.fileByPath(path).fileId),
+    [r.ids["Team docs/One.md"], r.ids["Team docs/Two.md"], r.ids["Team docs/Sub/Three.md"]]);
+  assert.deepEqual(Object.keys(r.b.state.data.folders).sort(), ["team docs", "team docs/Sub"], story(r));
+  // The live run's echo: Obsidian reports every entry under the folder too,
+  // and each report taken again published the moves and a subfolder's
+  // records back as the phone's own.
   assert.deepEqual(await phonePosts(r), [], `the phone published a rename it only applied: ${story(r)}`);
-  assert.equal((await r.server.noteFiles(r.keys.manifestKey)).length, 2);
+  assert.equal((await r.server.noteFiles(r.keys.manifestKey)).length, 3);
   assert.ok(r.b.logs.some((line) => /^vault path_class=folder decision=recased via=temp /.test(line)), story(r));
-  assert.ok(r.b.logs.some((line) => line.startsWith("folder path_class=folder decision=case_renamed files=2")), story(r));
-  assert.deepEqual(r.vault.events.slice(before).map(([name]) => name), ["rename", "rename"], JSON.stringify(r.vault.events.slice(before)));
+  assert.ok(r.b.logs.some((line) => line.startsWith("folder path_class=folder decision=case_renamed files=3")), story(r));
+  assert.deepEqual(r.vault.events.slice(before).map(([name]) => name), Array(10).fill("rename"), JSON.stringify(r.vault.events.slice(before)));
   assert.deepEqual(r.b.notices, []);
 });
 
@@ -330,8 +362,9 @@ test("a re-case stopped between its renames is put back after Obsidian restarts,
 test("a re-case that cannot be put back is kept and said once, and no pass deletes it until it can", async (t) => {
   const r = await interrupted(t);
   r.vault.restart();
-  // An adapter whose rename leaves the index to the next restart.
-  r.vault.adapterIndexes = false;
+  // A watcher that reports nothing: the adapter's rename of a name the index
+  // does not hold leaves the index to the next restart.
+  r.vault.watching = false;
   const again = await phone(t, r);
   await again.engine.start();
   await r.timers.run(STEP_MS);
@@ -350,7 +383,7 @@ test("a re-case that cannot be put back is kept and said once, and no pass delet
   // asked for again, lets the re-case go, and is made.
   again.engine.stop();
   r.vault.restart();
-  r.vault.adapterIndexes = true;
+  r.vault.watching = true;
   const third = await phone(t, r);
   await third.engine.start();
   await converged(r, third);
@@ -426,6 +459,9 @@ test("a FOLDER re-case stopped between its renames holds the folder records unde
   assert.deepEqual(r.vault.indexed(), ["team docs", "team docs/One.md", "team docs/Sub", "team docs/Sub/Three.md"], story({ ...r, b: again }));
   assert.deepEqual(Object.keys(again.state.data.folders).sort(), ["team docs", "team docs/Sub"], story({ ...r, b: again }));
   assert.deepEqual(await phonePosts(r), [], `the phone published what it only applied: ${story({ ...r, b: again })}`);
+  // Nor did it try: a post the server answers with a version it already
+  // holds writes no frame, so the phone's own log is the witness.
+  assert.deepEqual([...r.b.logs, ...again.logs].filter((line) => /decision=(published|pushed)\b/.test(line)), [], story({ ...r, b: again }));
 });
 
 test("a saved pending re-case is read back only as two spellings of one name and a hidden name of its own shape beside them", () => {
@@ -479,9 +515,11 @@ for (const tracked of [false, true]) {
       await r.timers.run(STEP_MS, () => settled(r.b, "Notes/Probe.md"));
       r.b.engine.stop();
     }
-    // Two adapter renames: the disk is re-cased, the index keeps both.
+    // Two adapter renames, back to back: the disk is re-cased, and the
+    // watcher's late reconcile of the old name indexes it again.
     await r.vault.adapter.rename("Notes/Probe.md", "Notes/.probe");
     await r.vault.adapter.rename("Notes/.probe", "Notes/probe.md");
+    await r.vault.settle();
     assert.deepEqual(r.vault.indexed(), ["Notes", "Notes/Probe.md", "Notes/probe.md"], "the fake no longer leaves the ghost it must");
     assert.deepEqual(r.vault.entries(), ["Notes", "Notes/probe.md"]);
     const again = tracked ? await phone(t, r) : r.b;
@@ -526,4 +564,149 @@ test("a re-case Android could not make is refused, said once, and never publishe
   assert.equal(r.b.state.data.pendingRecase, undefined);
   assert.deepEqual(await phonePosts(r), [], `the phone published the note again: ${story(r)}`);
   assert.equal((await r.server.noteFiles(r.keys.manifestKey)).length, 1);
+});
+
+/**
+ * Re-cases whose watcher reports arrive after both steps, as a busy device's
+ * can: Obsidian indexes each old name again once its re-case is made.
+ */
+async function lateReport(t, notes, renames, options) {
+  const r = await seeded(t, notes, options);
+  const before = r.vault.events.length;
+  r.vault.pause();
+  for (const [from, to] of renames) (notes[from] === undefined ? r.a.host.renameFolder : r.a.host.rename).call(r.a.host, from, to);
+  const recorded = Object.keys(r.b.state.data.files).length;
+  await r.timers.run(STEP_MS, () => renames.every(([from, to]) => r.vault.entries().includes(to)
+    && !Object.keys(r.b.state.data.files).some((path) => path === from || path.startsWith(`${from}/`)))
+    && Object.keys(r.b.state.data.files).length === recorded && r.b.state.data.lastSeq === r.server.journal.at(-1).seq);
+  r.vault.resume();
+  await r.vault.settle();
+  return { ...r, before };
+}
+
+const TWO = { "CaseMove/Rename me.md": BODY, "CaseMove/Other.md": OTHER };
+const RENAMED = ["CaseMove/Rename me.md", "CaseMove/rename me.md"];
+const GHOSTED = ["CaseMove", "CaseMove/Other.md", "CaseMove/Rename me.md", "CaseMove/rename me.md"];
+
+test("a report that arrives after the re-case indexes the old name again, and the host takes it out at once, sending nothing", async (t) => {
+  const r = await lateReport(t, TWO, [RENAMED]);
+  await r.timers.run(STEP_MS, () => r.b.logs.includes("vault path_class=file decision=unindexed reason=ghost"));
+  await r.b.engine.syncNow();
+  await r.timers.run(STEP_MS);
+
+  assert.deepEqual(r.vault.events.slice(r.before).filter(([name]) => name !== "rename").map(([name, path]) => `${name} ${path}`),
+    ["create CaseMove/Rename me.md", "delete CaseMove/Rename me.md"], "no ghost was made: this test proves nothing");
+  assert.deepEqual(r.vault.indexed(), ["CaseMove", "CaseMove/Other.md", "CaseMove/rename me.md"], `the ghost stayed: ${story(r)}`);
+  assert.equal(r.vault.text("CaseMove/rename me.md"), BODY);
+  assert.deepEqual(Object.keys(r.b.state.data.files).sort(), ["CaseMove/Other.md", "CaseMove/rename me.md"], story(r));
+  assert.deepEqual(await phonePosts(r), [], `the phone published the ghost or its removal: ${story(r)}`);
+  assert.equal(r.b.logs.filter((line) => /reason=(ghost|no_index_api|unghost)\b/.test(line)).length, 1, story(r));
+  // The engine heard of neither: the removal's `delete`, taken for the
+  // person's, sent it looking for a note it found under the ghost's name.
+  assert.deepEqual(r.b.logs.filter((line) => /^push |reason=vanished/.test(line)), [], story(r));
+  assert.deepEqual(r.b.notices, []);
+});
+
+test("a FOLDER's late report indexes its old name again with everything under it, and the host takes it out once, holding nothing", async (t) => {
+  const r = await lateReport(t, { "Team docs/One.md": BODY, "Team docs/Sub/Three.md": OTHER }, [["Team docs", "team docs"]]);
+  await r.timers.run(STEP_MS, () => r.b.logs.includes("vault path_class=folder decision=unindexed reason=ghost"));
+  await r.timers.run(STEP_MS);
+  await r.b.engine.syncNow();
+  await r.timers.run(STEP_MS);
+
+  assert.deepEqual(r.vault.events.slice(r.before).filter(([name]) => name === "create").map(([, path]) => path).sort(),
+    ["Team docs", "Team docs/One.md", "Team docs/Sub", "Team docs/Sub/Three.md"], "no ghost was made: this test proves nothing");
+  const clean = ["team docs", "team docs/One.md", "team docs/Sub", "team docs/Sub/Three.md"];
+  assert.deepEqual(r.vault.indexed(), clean, `the ghost stayed: ${story(r)}`);
+  assert.deepEqual(r.vault.entries(), clean);
+  assert.deepEqual(Object.keys(r.b.state.data.folders).sort(), ["team docs", "team docs/Sub"], story(r));
+  assert.deepEqual(await phonePosts(r), [], `the phone published the ghost or its removal: ${story(r)}`);
+  assert.deepEqual(r.b.logs.filter((line) => /reason=(ghost|no_index_api|unghost|case_twin_deleted)\b/.test(line)),
+    ["vault path_class=folder decision=unindexed reason=ghost"], story(r));
+  assert.deepEqual(r.b.logs.filter((line) => /^push |reason=vanished/.test(line)), [], story(r));
+  assert.deepEqual(r.b.state.data.heldDeletions, []);
+  assert.deepEqual(r.b.notices, []);
+});
+
+test("without Obsidian's own index call the ghost stays as before 1.1.4, that is said once, and nothing is sent", async (t) => {
+  const r = await lateReport(t, TWO, [RENAMED, ["CaseMove/Other.md", "CaseMove/other.md"]], { indexApi: false });
+  await r.timers.run(STEP_MS);
+  await r.b.engine.syncNow();
+  await r.timers.run(STEP_MS);
+
+  assert.deepEqual(r.vault.indexed(), ["CaseMove", "CaseMove/Other.md", "CaseMove/Rename me.md", "CaseMove/other.md", "CaseMove/rename me.md"], story(r));
+  assert.deepEqual(r.b.logs.filter((line) => /reason=(ghost|no_index_api|unghost)\b/.test(line)),
+    ["vault path_class=file decision=fallback reason=no_index_api kept=ghost"], story(r));
+  assert.deepEqual(Object.keys(r.b.state.data.files).sort(), ["CaseMove/other.md", "CaseMove/rename me.md"], story(r));
+  assert.deepEqual(await phonePosts(r), [], `the phone published a ghost: ${story(r)}`);
+  assert.deepEqual(r.b.notices, []);
+});
+
+for (const { kind, notes, ghost, root, left } of [
+  { kind: "note", notes: TWO, ghost: "CaseMove/Rename me.md", root: "CaseMove/rename me.md", left: ["CaseMove", "CaseMove/Other.md"] },
+  { kind: "folder", notes: { "Team docs/One.md": BODY, "Team docs/Sub/Three.md": OTHER, "Kept.md": THEIRS }, ghost: "Team docs", root: "team docs", left: ["Kept.md"] },
+]) {
+  test(`a ${kind} deleted through its ghost is held back from the other devices, asked about once, and Restore here puts it back`, async (t) => {
+    const r = await lateReport(t, notes, [[ghost, root]], { indexApi: false });
+    await r.timers.run(STEP_MS, () => r.vault.getAbstractFileByPath(ghost) !== null);
+    await r.vault.settle();
+    const whole = r.vault.entries();
+    const shown = r.vault.indexed();
+    assert.ok(shown.length > whole.length && shown.includes(ghost), `no ghost to delete: ${story(r)}`);
+    const under = (path) => path === root || path.startsWith(`${root}/`);
+    const held = Object.keys(r.b.state.data.files).filter(under);
+    const deletes = r.vault.events.length;
+
+    // The person deletes what Obsidian shows as a second copy.
+    await r.vault.fileManager.trashFile(r.vault.getAbstractFileByPath(ghost));
+    assert.deepEqual(r.vault.entries(), left, "the fake no longer deletes the entry with its ghost");
+    await r.vault.settle(150);
+    await r.timers.run(STEP_MS, () => r.b.state.data.heldDeletions.length > 0);
+    await r.timers.run(STEP_MS);
+    await r.b.engine.syncNow();
+    await r.timers.run(STEP_MS);
+
+    // The ghost's own deletes first, the entry's a moment later.
+    const reported = r.vault.events.slice(deletes).filter(([name]) => name === "delete").map(([, path]) => path);
+    assert.deepEqual([...reported].sort(), shown.filter((path) => !left.includes(path)),
+      `the fake no longer reports both deletions: ${JSON.stringify(r.vault.events.slice(deletes))} ${story(r)}`);
+    assert.ok(!under(reported[0]), reported.join(" | "));
+    const sent = await sentPaths(r.server, r.keys.manifestKey);
+    assert.deepEqual(sent.filter((frame) => frame.deleted && frame.device === PHONE), [], `deleted everywhere through its ghost: ${story(r)}`);
+    for (const path of held) assert.equal(r.a.host.text(path), notes[ghost + path.slice(root.length)], `the desktop lost ${path}`);
+    assert.deepEqual(r.b.state.data.heldDeletions, held, story(r));
+    assert.deepEqual(r.b.logs.filter((line) => line.includes("reason=case_twin_deleted")),
+      [`watch path_class=${kind === "note" ? "file" : "folder"} decision=held reason=case_twin_deleted files=${held.length} held=${held.length}`], story(r));
+    // Asked once; the pass after it holds the deletion without asking again,
+    // and Sync now answers for what it did not send, as it always does (#172).
+    assert.deepEqual(r.b.notices, [
+      `obsync did not delete "${root}" from your other devices: it was deleted on this device through "${ghost}", ` +
+        `a second name Obsidian showed for the same ${kind}. Put it back here with Restore here, or delete it everywhere.`,
+      `obsync is still holding back ${held.length} deletions: Sync now does not send them. Put the notes back, or, if you really ` +
+        'deleted them, confirm it under Settings, obsync, "Deletions held back".',
+    ], story(r));
+
+    await r.b.plugin.restoreHeldDeletions();
+    await r.timers.run(STEP_MS, () => held.every((path) => r.vault.text(path) !== null));
+    await r.timers.run(STEP_MS);
+    assert.deepEqual(r.vault.entries(), whole, story(r));
+    assert.deepEqual(r.vault.indexed(), whole, story(r));
+    assert.deepEqual(r.b.state.data.heldDeletions, []);
+    assert.deepEqual(await phonePosts(r), [], `the phone published the ${kind} or its deletion: ${story(r)}`);
+  });
+}
+
+test("a removal through a name the vault shows as a DIFFERENT recorded note is refused, and that note stays", async (t) => {
+  const r = await seeded(t, { "Notes/probe.md": BODY });
+  r.b.engine.stop();
+  // A duplicate an older version published for a ghost, recorded under the
+  // ghost's spelling: a tombstone for it asks for exactly this removal.
+  r.b.state.data.files["Notes/Probe.md"] = { ...r.b.state.data.files["Notes/probe.md"], fileId: "ab".repeat(16) };
+  assert.equal(await r.b.host.trash("Notes/Probe.md"), "kept");
+  assert.equal(r.vault.text("Notes/probe.md"), BODY, "the removal took the other note");
+  assert.deepEqual(r.b.logs.filter((line) => line.includes("reason=case_twin")), ["host path_class=file decision=kept reason=case_twin"]);
+  // With no other note in the way, a removal is made as ever.
+  delete r.b.state.data.files["Notes/Probe.md"];
+  assert.equal(await r.b.host.trash("Notes/probe.md"), "removed");
+  assert.equal(r.vault.text("Notes/probe.md"), null);
 });

@@ -467,6 +467,13 @@ function parseUrl(value: string, base?: URL): URL | null {
   }
 }
 
+/**
+ * How long a note whose other spelling was deleted here is watched for its
+ * own deletion (`ObsidianHost.twinDeleted`). Obsidian reports it about 100 ms
+ * after the first (measured on Android 15, Obsidian 1.13.8).
+ */
+const TWIN_WATCH_MS = 10_000;
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
@@ -482,13 +489,22 @@ export class ObsidianHost implements VaultHost {
   private readonly linked = new Set<string>();
   /**
    * Every hidden name a re-case has passed an entry through this session, to
-   * the name it left (`recase`, `recased`). Kept for the session, because the
-   * vault may report a rename after the call that made it returns, and a name
-   * with sixteen random hex digits in it is never reused.
+   * the two names of that entry (`recase`, `recased`, `ghost`). Kept for the
+   * session, because the vault may report a rename after the call that made
+   * it returns, and a name with sixteen random hex digits in it is never
+   * reused.
    */
-  private readonly recasing = new Map<string, string>();
+  private readonly recasing = new Map<string, { from: string; to: string }>();
   /** A re-case that could not be put back has been told about, once (`settleRecase`). */
   private recaseTold = false;
+  /** Old spellings being taken out of Obsidian's index now: their `delete` events are that removal's own (`unghost`). */
+  private readonly unghosting = new Set<string>();
+  /** Entries being put back under their own names now: their `create` events are that put-back's own (`settleRecase`). */
+  private readonly returning = new Set<string>();
+  /** Obsidian's index could not be corrected here, said once (`unghost`). */
+  private ghostKeptTold = false;
+  /** Tracked notes whose other spelling was just deleted here, to that spelling and the end of the watch (`twinDeleted`). */
+  private readonly twinGuards = new Map<string, { via: string; until: number }>();
   private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
   private readonly composing = new WeakMap<MarkdownView, string>();
   private readonly inputWindows = new WeakSet<Window>();
@@ -1730,7 +1746,7 @@ export class ObsidianHost implements VaultHost {
     if (temp === null) return refuse("temp_taken");
     state.data.pendingRecase = { from, temp, to };
     await state.save();
-    this.recasing.set(temp, from);
+    this.recasing.set(temp, { from, to });
     const settle = async (): Promise<void> => {
       delete state.data.pendingRecase;
       await state.save();
@@ -1742,6 +1758,15 @@ export class ObsidianHost implements VaultHost {
       await settle();
       return refuse("temp_step");
     }
+    // THE OLD NAME IS RECONCILED BEFORE THE NEW ONE EXISTS. Obsidian's
+    // watcher reconciles every name the first step touched a turn after it,
+    // and its adapter believes Android's storage keeps capitals apart: run
+    // after the second step, that reconcile of `from` finds the entry under
+    // `to` and indexes it AGAIN under `from` -- two index entries for one
+    // note, the second a ghost whose deletion deletes the note (6 of 20
+    // back-to-back re-cases on Android 15 left one, 0 of 20 with this wait).
+    // A report later still indexes it all the same, with a `create` (`ghost`).
+    await this.caughtUp(temp);
     try {
       await vault.rename(entry, to);
     } catch {
@@ -1759,6 +1784,173 @@ export class ObsidianHost implements VaultHost {
     await settle();
     this.log(`vault path_class=${kind} decision=recased via=temp duration_ms=${Date.now() - started}`);
     return "moved";
+  }
+
+  /**
+   * Let Obsidian's own watcher catch up with the storage: it reports a
+   * change a turn after it lands and reconciles each name in the adapter's
+   * one queue, so a queued call made after that turn returns once they have
+   * run.
+   */
+  private async caughtUp(path: string): Promise<void> {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await this.plugin.app.vault.adapter.exists(path);
+  }
+
+  /**
+   * Take the GHOST of a re-case out of Obsidian's index (issue #219): an
+   * index entry under `from` while the entry is `to` and the folder's own
+   * listing has no `from`. It reads, writes and deletes the note under `to`
+   * on storage that folds capitals, so a person who deletes "the extra copy"
+   * deletes the note.
+   *
+   * No public API removes an index entry without acting on the storage, and
+   * every public removal of `from` removes the note. The adapter's own
+   * `reconcileDeletion` drops the entry and touches nothing else; it is not
+   * part of Obsidian's published API, so it is asked for by name and, where
+   * absent, the ghost stays -- exactly as before this -- and that is said once.
+   * Its `delete` events are its own (`unindexed`). One at a time: a folder's
+   * ghost is reported with every entry under it.
+   */
+  private async unghost(from: string, to: string): Promise<void> {
+    const vault = this.plugin.app.vault;
+    const kind = vault.getAbstractFileByPath(to) instanceof TFolder ? "folder" : "file";
+    if (this.unghosting.has(from)) return;
+    this.unghosting.add(from);
+    try {
+      await this.caughtUp(to);
+      if (vault.getAbstractFileByPath(from) === null || vault.getAbstractFileByPath(to) === null) return;
+      const cut = from.lastIndexOf("/");
+      const listed = await vault.adapter.list(cut === -1 ? "/" : from.slice(0, cut));
+      if ([...listed.files, ...listed.folders].some((child) => child.slice(child.lastIndexOf("/") + 1) === from.slice(cut + 1))) return;
+      const adapter = vault.adapter as typeof vault.adapter & { reconcileDeletion?: (realPath: string, path: string, now?: boolean) => Promise<void> };
+      if (typeof adapter.reconcileDeletion !== "function") {
+        if (!this.ghostKeptTold) this.log(`vault path_class=${kind} decision=fallback reason=no_index_api kept=ghost`);
+        this.ghostKeptTold = true;
+        return;
+      }
+      await adapter.reconcileDeletion(from, from, true);
+      this.log(`vault path_class=${kind} decision=unindexed reason=ghost`);
+    } catch {
+      this.log(`vault path_class=${kind} decision=failed reason=unghost`);
+    } finally {
+      this.unghosting.delete(from);
+    }
+  }
+
+  /**
+   * A `create` for the old name of an entry this session re-cased, while the
+   * index still holds it under the new one: a late report of the re-case,
+   * never a note of its own. It is taken out of the index (`unghost`) and the
+   * engine never hears of it. Nor of the `create` a put-back raises for the
+   * name the entry's records already hold (`settleRecase`).
+   */
+  ghost(path: string): boolean {
+    for (const root of this.returning) if (path === root || path.startsWith(`${root}/`)) return true;
+    for (const { from, to } of this.recasing.values()) {
+      if (path !== from && !path.startsWith(`${from}/`)) continue;
+      if (this.plugin.app.vault.getAbstractFileByPath(to + path.slice(from.length)) === null) continue;
+      void this.unghost(from, to);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is this `delete` one that taking a ghost out of the index raised
+   * (`unghost`)? Never a deletion: on storage that folds capitals the engine
+   * would find the note under the ghost's name and take it for a new one.
+   */
+  unindexed(path: string): boolean {
+    for (const from of this.unghosting) if (path === from || path.startsWith(`${from}/`)) return true;
+    return false;
+  }
+
+  /**
+   * A DELETION THROUGH A NOTE'S OTHER SPELLING TAKES THE NOTE (issue #219).
+   * On storage that folds capitals, Obsidian's index can list one note under
+   * a second spelling -- a ghost -- and deleting that entry deletes the file
+   * under both: the ghost's `delete` comes first, the note's own a moment
+   * later, once Obsidian notices the file is gone. Published, the second
+   * deletes the note on every device, for an entry the person took for a
+   * copy.
+   *
+   * So a `delete` for a name nothing records, whose other spelling IS a
+   * recorded note or folder, starts a watch on that note: if the storage no
+   * longer has it, the deletion is held back from the other devices and the
+   * person is asked, with Restore here and Delete everywhere (`holdTwin`),
+   * and its own `delete` never reaches the engine. A storage that keeps the
+   * spellings apart still has the note, and the watch ends there. Answers
+   * whether the event is one the watch holds.
+   */
+  twinDeleted(path: string, folder: boolean): boolean {
+    const now = Date.now();
+    for (const [root, guard] of this.twinGuards) {
+      if (guard.until < now) this.twinGuards.delete(root);
+      else if (path === root || path.startsWith(`${root}/`)) {
+        this.holdTwin(root, guard.via);
+        return true;
+      }
+    }
+    const { files, folders } = this.plugin.state.data;
+    if ((folder ? folders : files)[path] !== undefined) return false;
+    const records = Object.keys(files);
+    const tracked = (candidate: string): boolean => folder
+      ? folders[candidate] !== undefined || records.some((recorded) => recorded.startsWith(`${candidate}/`))
+      : files[candidate] !== undefined;
+    if (folder && tracked(path)) return false;
+    const twin = (folder ? [...Object.keys(folders), ...records.map((recorded) => recorded.slice(0, path.length))] : records)
+      .find((candidate) => caseOnly(candidate, path) && tracked(candidate));
+    if (twin === undefined) return false;
+    this.twinGuards.set(twin, { via: path, until: now + TWIN_WATCH_MS });
+    void this.checkTwin(twin, path, folder);
+    return false;
+  }
+
+  /** Is the recorded twin still on the storage? If not, its deletion is held (`twinDeleted`). */
+  private async checkTwin(twin: string, via: string, folder: boolean): Promise<void> {
+    try {
+      await this.caughtUp(twin);
+      const stat = await this.plugin.app.vault.adapter.stat(twin);
+      if (stat !== null && (stat.type === "folder") === folder) {
+        this.twinGuards.delete(twin);
+        return;
+      }
+    } catch {
+      // Unreadable is not present: the deletion is held, never published.
+    }
+    this.holdTwin(twin, via);
+  }
+
+  /**
+   * Hold the deletion of `twin` and everything recorded under it, and ask:
+   * the same held set, and the same two answers, as a bulk deletion
+   * (`engine.ts`, `holdBurst`), so Restore here puts the note back from the
+   * version this device recorded and nothing leaves until the person says.
+   *
+   * A FOLDER IS ONE QUESTION. Obsidian reports a folder's deletion entry by
+   * entry, its notes first, all before any watch has looked, so a note is
+   * held and asked about as part of the widest watched folder above it.
+   */
+  private holdTwin(twin: string, via: string): void {
+    for (const [root, guard] of this.twinGuards) {
+      if (twin.startsWith(`${root}/`) && guard.until >= Date.now()) [twin, via] = [root, guard.via];
+    }
+    const state = this.plugin.state;
+    const fresh = Object.keys(state.data.files)
+      .filter((recorded) => (recorded === twin || recorded.startsWith(`${twin}/`)) && !state.data.heldDeletions.includes(recorded));
+    if (fresh.length === 0) return;
+    state.data.heldDeletions = [...state.data.heldDeletions, ...fresh];
+    void state.save().catch(() => this.log("watch decision=failed reason=state_not_saved"));
+    const folder = state.data.files[twin] === undefined;
+    this.log(`watch path_class=${folder ? "folder" : "file"} decision=held reason=case_twin_deleted files=${fresh.length} held=${state.data.heldDeletions.length}`);
+    this.plugin.engine?.heldAsked();
+    this.notify(
+      `obsync did not delete "${twin}" from your other devices: it was deleted on this device through "${via}", a ` +
+        `second name Obsidian showed for the same ${folder ? "folder" : "note"}. Put it back here with Restore here, or ` +
+        "delete it everywhere.",
+      [{ kind: "delete_everywhere" }, { kind: "restore_here" }],
+    );
   }
 
   /**
@@ -1821,7 +2013,7 @@ export class ObsidianHost implements VaultHost {
     const vault = this.plugin.app.vault;
     const { from, temp, to } = pending;
     const kind = ((await vault.adapter.stat(temp)) ?? (await vault.adapter.stat(from)))?.type === "folder" ? "folder" : "file";
-    this.recasing.set(temp, from);
+    this.recasing.set(temp, { from, to });
     let returned = false;
     let failed: string | null = null;
     try {
@@ -1829,15 +2021,21 @@ export class ObsidianHost implements VaultHost {
       if (!(await vault.adapter.exists(temp))) at = await this.spelling(from);
       else if (await vault.adapter.exists(from)) failed = "occupied";
       else {
+        // The watcher indexes a name the adapter's rename did not, a turn
+        // later, and says so with a `create`: the entry's own name, back
+        // where its records are, never a new note or folder (`ghost`).
+        this.returning.add(from);
         const entry = vault.getAbstractFileByPath(temp);
         if (entry !== null) await vault.rename(entry, from);
         else await vault.adapter.rename(temp, from);
         returned = true;
       }
+      if (at !== null) await this.caughtUp(at);
       if (failed === null && at !== null && vault.getAbstractFileByPath(at) === null) failed = "not_indexed";
     } catch {
       failed = "rename";
     }
+    this.returning.delete(from);
     const took = Date.now() - started;
     if (failed !== null) {
       this.log(`vault path_class=${kind} decision=failed reason=${failed} via=temp duration_ms=${took}`);
@@ -1867,7 +2065,7 @@ export class ObsidianHost implements VaultHost {
    * rename as it came.
    */
   recased(from: string, to: string): [string, string] | null {
-    for (const [temp, source] of this.recasing) {
+    for (const [temp, { from: source }] of this.recasing) {
       const under = (path: string): string | null => path === temp ? "" : path.startsWith(`${temp}/`) ? path.slice(temp.length) : null;
       if (under(to) !== null) return null;
       const rest = under(from);
@@ -1914,9 +2112,16 @@ export class ObsidianHost implements VaultHost {
    * Mobile has no second name to give, and a filesystem can refuse either
    * primitive. Those devices remove NOTHING and answer `unheld`, which is
    * what `decision=kept reason=unheld` in the log says.
+   *
+   * AND NOTHING IS REMOVED THROUGH ANOTHER NOTE'S SPELLING (issue #219). On
+   * storage that folds capitals a name answers through the entry it folds
+   * to, so a removal of `path` where the vault shows that entry as a
+   * DIFFERENT recorded note removes that note. It is refused and answered
+   * `kept`: the caller keeps its record, and the note stays.
    */
   async trash(path: string, expect?: VaultStat): Promise<TrashResult> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
+    if (await this.otherNote(path)) return "kept";
     const desktop = this.desktop;
     let found: WalkResult | null = null;
     if (desktop !== null) {
@@ -1939,6 +2144,21 @@ export class ObsidianHost implements VaultHost {
       return "unheld";
     }
     return await this.removeHeld(desktop, found, hold, expect, path);
+  }
+
+  /**
+   * Does the vault show `path` as a different recorded note (`trash`)? Asked
+   * only when a record differs from `path` by capitals alone, so a removal
+   * with no such twin costs no lookup.
+   */
+  private async otherNote(path: string): Promise<boolean> {
+    const files = this.plugin.state.data.files;
+    const own = files[path]?.fileId;
+    if (!Object.keys(files).some((recorded) => caseOnly(recorded, path) && files[recorded]?.fileId !== own)) return false;
+    const shown = await this.spelling(path).catch(() => null);
+    if (shown === null || shown === path || files[shown] === undefined || files[shown]?.fileId === own) return false;
+    this.log("host path_class=file decision=kept reason=case_twin");
+    return true;
   }
 
   /**
@@ -2470,6 +2690,8 @@ export default class ObsyncPlugin extends Plugin {
   /** A leave is running: a second press, or a second dialog, is refused (S22). */
   private leaving = false;
   private readonly manualFetches = new Set<Promise<string>>();
+  /** The folder renames handled this turn, before and after: their entries' own reports are theirs (`registerVaultEvents`). */
+  private renamedFolders: [string, string][] = [];
   private readonly histories = new Set<HistoryBrowser>();
   private restoring: HistoryOperation | null = null;
   private manualRestore: Promise<{ path: string; syncRequested: boolean }> | null = null;
@@ -2744,6 +2966,8 @@ export default class ObsyncPlugin extends Plugin {
     const vault = this.app.vault;
     this.registerEvent(
       vault.on("create", (file: TAbstractFile) => {
+        // The old spelling of a re-cased entry, indexed again (issue #219).
+        if (this.host?.ghost(file.path)) return;
         if (file instanceof TFile) this.engine?.changed(file.path);
         else if (file instanceof TFolder) this.engine?.folderCreated(file.path);
       }),
@@ -2755,6 +2979,11 @@ export default class ObsyncPlugin extends Plugin {
     );
     this.registerEvent(
       vault.on("delete", (file: TAbstractFile) => {
+        // A note deleted through its ghost is not a deletion the other
+        // devices hear of until the person says, and a ghost taken out of
+        // the index is not one at all (issue #219). The watch comes first, so
+        // it holds the note whatever raised the event.
+        if (this.host?.twinDeleted(file.path, file instanceof TFolder) || this.host?.unindexed(file.path)) return;
         if (file instanceof TFile) this.engine?.deleted(file.path);
         else if (file instanceof TFolder) {
           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);
@@ -2776,9 +3005,20 @@ export default class ObsyncPlugin extends Plugin {
           : this.host.recased(renamedFrom, file.path);
         if (moved === null) return;
         const [oldPath, path] = moved;
+        // ONE FOLDER RENAME, ONE RENAME HERE. Obsidian reports a `rename` for
+        // the folder and then one for every entry under it (read off Android
+        // Obsidian 1.13.8), and the folder's own is already carried to them all
+        // (`renamedFolder`, `folderRenamed`). Taken again, the entries' reports
+        // found the echo marks of a re-case this device only APPLIED spent by
+        // the folder's, and published its moves and its subfolders' records
+        // back as this device's own: a second head per note (#219, live run).
+        if (this.renamedFolders.some(([before, after]) => oldPath.startsWith(`${before}/`) && path === after + oldPath.slice(before.length))) return;
         if (file instanceof TFile) {
           this.engine?.renamed(oldPath, path);
         } else if (file instanceof TFolder) {
+          // Its entries' reports follow in the same turn (`renamedFolders`).
+          if (this.renamedFolders.length === 0) window.setTimeout(() => { this.renamedFolders = []; }, 0);
+          this.renamedFolders.push([oldPath, path]);
           // ORDER IS PART OF THE WIRE CONTRACT (issue #124, `docs/protocol.md`).
           // A folder renamed by capitalisation ALONE is one directory entry on
           // a host that folds case, and the receiving device can re-case that

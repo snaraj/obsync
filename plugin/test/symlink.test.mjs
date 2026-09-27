@@ -80,7 +80,7 @@ async function vault({ fs: injected } = {}) {
     rmdir: async (path) => rmdirSync(join(root, path)),
   };
   const plugin = {
-    state: { data: {} },
+    state: { data: { files: {} } },
     app: {
       vault: {
         adapter,

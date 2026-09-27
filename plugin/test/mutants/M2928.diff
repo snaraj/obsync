@@ -1,12 +1,12 @@
-# M2928: fake fidelity: the Android fake's adapter rename into a hidden name leaves no ghost in the index
+# M2928: fake fidelity: a hidden name the Android fake's index holds never leaves it
 --- a/plugin/test/phone.mjs
 +++ b/plugin/test/phone.mjs
-@@ -185,7 +185,7 @@
-     this.relocate(at, landed);
-     if (!this.adapterIndexes) return;
-     const entry = this.index.get(at);
--    if (entry !== undefined && !hidden(landed)) {
-+    if (entry !== undefined) {
-       this.reindex(at, landed);
-       this.emit("rename", entry, at);
-     } else if (entry === undefined && !hidden(landed)) {
+@@ -256,7 +256,7 @@
+    * very name.
+    */
+   reconcile(path, now) {
+-    const at = hidden(path) ? null : this.real(path);
++    const at = this.real(path);
+     if (at === null) {
+       if (!this.index.has(path)) return;
+       if (now) this.unindex(path);
