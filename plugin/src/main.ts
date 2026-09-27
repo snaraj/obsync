@@ -71,7 +71,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, isNewer, lostMessage } from "./transport";
-import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -2416,7 +2416,7 @@ export default class ObsyncPlugin extends Plugin {
    * one (`null` while that start is running). Absent whenever the engine
    * runs, and whenever it stopped for a reason a later start cannot fix.
    */
-  private reconnect: { attempt: number; handle: number | null; at: number } | null = null;
+  private reconnect: { attempt: number; handle: unknown; timers: Timers; at: number } | null = null;
   /** The timers the transport and the engine run on, on desktop: a hidden window does not slow them (#221). */
   private clock: Clock | null = null;
 
@@ -2896,7 +2896,11 @@ export default class ObsyncPlugin extends Plugin {
    */
   private scheduleReconnect(attempt: number, status: number): void {
     const delay = Math.min(RECONNECT_CAP_MS, RECONNECT_START_MS * 2 ** (attempt - 1));
-    this.reconnect = { attempt, handle: window.setTimeout(() => this.retryNow("timer"), delay), at: Date.now() + delay };
+    // On the plugin's clock, which a hidden desktop window does not slow
+    // (issue #221): a reconnect a minute late is a minute of edits held back.
+    // Kept beside the handle, so the clock that armed it disarms it.
+    const timers = this.clock ?? pageTimers;
+    this.reconnect = { attempt, handle: timers.set(() => this.retryNow("timer"), delay), timers, at: Date.now() + delay };
     this.log(`engine decision=retry_scheduled attempt=${attempt} delay_ms=${delay} status=${status}`);
   }
 
@@ -2904,7 +2908,7 @@ export default class ObsyncPlugin extends Plugin {
   private takeReconnectTimer(): boolean {
     const pending = this.reconnect;
     if (pending === null || pending.handle === null) return false;
-    window.clearTimeout(pending.handle);
+    pending.timers.clear(pending.handle);
     pending.handle = null;
     return true;
   }

@@ -269,6 +269,18 @@ test("on desktop the transport and every engine run on one worker clock, and unl
   assert.equal(r.workers[1].terminated, true, "unload left the worker running");
 });
 
+test("on desktop the reconnect after a refused start runs on the worker clock, and is disarmed there", async (t) => {
+  const r = await loaded(t);
+  const worker = r.workers[0];
+  const before = worker.posted.length;
+  r.instance.scheduleReconnect(1, 0);
+  const armed = worker.posted.slice(before);
+  assert.equal(armed.length, 1, "the reconnect was not armed on the worker clock");
+  assert.equal(armed[0].ms, 5000, "the first reconnect waits RECONNECT_START_MS");
+  assert.equal(r.instance.takeReconnectTimer(), true);
+  assert.deepEqual(worker.posted.at(-1), { id: armed[0].id }, "the reconnect was disarmed on another clock");
+});
+
 test("a desktop whose window cannot make a worker runs on the page's clock, and says so once, at warn", async (t) => {
   const r = await loaded(t, { worker: false });
   const timers = r.engines[0].options.timers;
