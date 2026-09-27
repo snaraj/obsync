@@ -1,0 +1,11 @@
+# M3140: Leave does not wait for a start under way before it revokes
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3856,7 +3856,6 @@
+       // is waited for, so nothing it sent is still out when the revoke goes.
+       if (starting.length > 0) {
+         const waited = Date.now();
+-        await Promise.allSettled(starting);
+         this.log(`unpair decision=waited reason=start_under_way starts=${starting.length} duration_ms=${Date.now() - waited}`);
+       }
+       assertCurrent();

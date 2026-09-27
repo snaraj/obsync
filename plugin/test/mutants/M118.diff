@@ -1,8 +1,8 @@
 # M118: leaving the server leaves the reconnect armed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2164,8 +2164,6 @@
-       await this.engine?.stopAndWait();
+@@ -3861,8 +3861,6 @@
+       }
        assertCurrent();
        this.engine = null;
 -      // No timer may start an engine while the credential is being given up.

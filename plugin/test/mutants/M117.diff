@@ -1,12 +1,12 @@
 # M117: a resume leaves the status bar saying offline
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2207,7 +2207,7 @@
+@@ -3197,7 +3197,7 @@
        // A quiet start emits nothing of its own, so the engine is asked; what
        // the new engine already said is its own, and stands.
        const earlier = this.statusValue.kind;
--      if (this.engine === engine && (earlier === "error" || earlier === "offline")) this.setStatus(engine.current());
-+      if (this.engine === engine && earlier === "error") this.setStatus(engine.current());
-       if (this.engine === engine) await this.registerAccountRecovery();
+-      if (earlier === "error" || earlier === "offline") this.setStatus(engine.current());
++      if (earlier === "error") this.setStatus(engine.current());
+       await this.registerAccountRecovery();
      } catch (error) {
        if (this.engine !== engine) { engine.stop(); return; }

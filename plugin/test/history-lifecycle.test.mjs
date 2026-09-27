@@ -111,6 +111,27 @@ test("engine drain is required even with no older Fetch, and detached browsers c
   assert.ok((await restoring).path.includes("restored-"));
 });
 
+test("a start still waiting on the old engine when a restore begins makes no engine under it (#233)", async (t) => {
+  const r = await plugin(t);
+  const made = [];
+  r.box.require(join(r.box.home, "build/sync/engine.js")).SyncEngine = class {
+    constructor() { made.push(this); }
+    async start() {}
+    stop() {}
+    async stopAndWait() {}
+    current() { return { kind: "idle" }; }
+  };
+  const stopped = deferred();
+  r.instance.engine.stopAndWait = () => stopped.promise;
+  const start = r.Plugin.prototype.startEngine.call(r.instance);
+  const restoring = r.instance.restoreHistory(r.instance.openHistory(), r.entry);
+  stopped.resolve();
+  await start;
+  assert.deepEqual(made, [], "the restore owns the device until it ends");
+  assert.ok((await restoring).path.includes("restored-"));
+  assert.equal(r.restarts(), 1, "and the restore's own restart is the one that runs");
+});
+
 test("unload during a pending history read detaches restoration and never restarts or writes", async (t) => {
   const r = await plugin(t);
   const issued = deferred(), response = deferred();

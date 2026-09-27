@@ -1,0 +1,14 @@
+# M3148: the server this device left announces an update after the leave
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4175,10 +4175,6 @@
+       const remote = await this.transport.pluginManifest();
+       if (!this.isCurrent(generation)) return;
+       // A server this device left while it answered has nothing to announce here (#233).
+-      if (this.state.data.serverUrl !== serverUrl) {
+-        this.log("update decision=dropped reason=session_ended");
+-        return;
+-      }
+       if (!isNewer(remote.version, this.manifest.version)) return;
+       this.updateAvailable = remote.version;
+       // ONE notice per session. The settings row says the same thing for as

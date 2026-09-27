@@ -1,0 +1,11 @@
+# M3142: a start does not ask again after its vault check, and starts the engine a leave stopped
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3180,7 +3180,6 @@
+       // status says why until the person acts, and no timer retries it. The
+       // notice comes once, as the status turns to it.
+       const nested = await this.nestedRefusal("engine");
+-      if (!wanted(engine)) return superseded();
+       if (nested !== null) {
+         if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+         throw new Error(nested);

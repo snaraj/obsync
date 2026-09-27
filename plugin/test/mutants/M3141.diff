@@ -1,0 +1,11 @@
+# M3141: a start is not kept while it runs, so a leave finds none to settle
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3136,7 +3136,6 @@
+   /** Start sync, or start it again; kept while it runs, so a leave can settle it first (#233). */
+   startEngine(): Promise<void> {
+     const start = this.startEngineOwned();
+-    this.starts.add(start);
+     const settled = (): void => { this.starts.delete(start); };
+     void start.then(settled, settled);
+     return start;

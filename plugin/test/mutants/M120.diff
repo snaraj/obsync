@@ -1,9 +1,9 @@
 # M120: a start that succeeded does not close the reconnect cycle
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2199,7 +2199,6 @@
-       await engine.start();
-       if (this.engine === engine && this.reconnect !== null) {
+@@ -3189,7 +3189,6 @@
+       if (!wanted(engine)) return superseded();
+       if (this.reconnect !== null) {
          this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
 -        this.reconnect = null;
        }

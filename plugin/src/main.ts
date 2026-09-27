@@ -2684,6 +2684,8 @@ export default class ObsyncPlugin extends Plugin {
   private stateLoad: Promise<State | null> | null = null;
   /** Retain stopped writers even after the active engine reference is cleared. */
   private readonly engineTeardowns = new Set<Promise<void>>();
+  /** Every start under way (`startEngine`): what a leave settles before it revokes (#233). */
+  private readonly starts = new Set<Promise<void>>();
   private changingScope = false;
   /** Ends the wait of the folder Save in progress: its Cancel (issue #185). */
   private scopeCancel: AbortController | null = null;
@@ -3131,9 +3133,30 @@ export default class ObsyncPlugin extends Plugin {
       "Open the outer vault instead, or use Selected folders there.";
   }
 
-  async startEngine(): Promise<void> {
+  /** Start sync, or start it again; kept while it runs, so a leave can settle it first (#233). */
+  startEngine(): Promise<void> {
+    const start = this.startEngineOwned();
+    this.starts.add(start);
+    const settled = (): void => { this.starts.delete(start); };
+    void start.then(settled, settled);
+    return start;
+  }
+
+  private async startEngineOwned(): Promise<void> {
     const generation = this.lifecycle;
     if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
+    const started = Date.now();
+    // STILL WANTED AFTER EVERY WAIT, NOT ONLY BEFORE THE FIRST (#233). A
+    // leave, a folder change, a restore, a revoke or an unload that began
+    // while this start waited stopped the engine it found -- or found none
+    // yet -- and an engine this start made or started after that outlived
+    // it: requests under a revoked credential, a feed retrying every 5 s with
+    // no server. So each step asks again whether this start is wanted and
+    // `engine` is still the one; one that is not goes no further, and says so
+    // in one line. What it made, whoever superseded it has stopped.
+    const wanted = (engine: SyncEngine | null): boolean =>
+      this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && this.engine === engine;
+    const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
     // and the start below either closes the cycle or continues it.
@@ -3141,7 +3164,7 @@ export default class ObsyncPlugin extends Plugin {
     this.cancelHistories();
     const previous = this.engine;
     await previous?.stopAndWait();
-    if (!this.isCurrent(generation) || this.changingScope || this.restoring !== null || this.engine !== previous) return;
+    if (!wanted(previous)) return superseded();
     const engine: SyncEngine = new SyncEngine({
       state: this.state,
       transport: this.transport,
@@ -3157,12 +3180,14 @@ export default class ObsyncPlugin extends Plugin {
       // status says why until the person acts, and no timer retries it. The
       // notice comes once, as the status turns to it.
       const nested = await this.nestedRefusal("engine");
+      if (!wanted(engine)) return superseded();
       if (nested !== null) {
         if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
         throw new Error(nested);
       }
       await engine.start();
-      if (this.engine === engine && this.reconnect !== null) {
+      if (!wanted(engine)) return superseded();
+      if (this.reconnect !== null) {
         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
         this.reconnect = null;
       }
@@ -3172,8 +3197,8 @@ export default class ObsyncPlugin extends Plugin {
       // A quiet start emits nothing of its own, so the engine is asked; what
       // the new engine already said is its own, and stands.
       const earlier = this.statusValue.kind;
-      if (this.engine === engine && (earlier === "error" || earlier === "offline")) this.setStatus(engine.current());
-      if (this.engine === engine) await this.registerAccountRecovery();
+      if (earlier === "error" || earlier === "offline") this.setStatus(engine.current());
+      await this.registerAccountRecovery();
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
       const attempt = (this.reconnect?.attempt ?? 0) + 1;
@@ -3683,7 +3708,9 @@ export default class ObsyncPlugin extends Plugin {
     if (deviceId === this.state.data.deviceId) {
       await this.engine?.stopAndWait();
       this.engine = null;
-      this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      // Not this device's own leave, which forgets the pairing next and says
+      // what happened itself: a phone put this up after every Leave (#233).
+      if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
     }
   }
 
@@ -3776,7 +3803,9 @@ export default class ObsyncPlugin extends Plugin {
    * device is touched on any path; only this device's id is ever sent.
    *
    * NOTHING HERE WAITS OUT THE SERVER. The stop cancels the long poll and
-   * every retry and cuts an upload at its chunk boundary (`SyncEngine.stop`);
+   * every retry and cuts an upload at its chunk boundary (`SyncEngine.stop`),
+   * so a start under way is waited for only to its next step: at most the one
+   * attempt of a recovery registration it has already sent (#233);
    * the revoke and the read that settles a lost one have a person's budget,
    * two attempts inside ten seconds; and the start after a refusal runs on
    * its own, because a start retries a server that is gone for a minute and
@@ -3815,10 +3844,21 @@ export default class ObsyncPlugin extends Plugin {
         throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");
       }
       this.leaving = owned = true;
+      const starting = [...this.starts];
       // Quiesce first, so the count below is a fact rather than a guess and
       // no push, fetch or restore is still running against the credential
       // this is about to give up.
       await this.engine?.stopAndWait();
+      // AND A START UNDER WAY IS SETTLED BEFORE ANYTHING ELSE (#233): one
+      // begun as Obsidian opened, a reconnect, a Sync now. The stop above
+      // ended its requests; from here it makes no engine and starts none
+      // (`startEngineOwned` asks at every step whether a leave began), and it
+      // is waited for, so nothing it sent is still out when the revoke goes.
+      if (starting.length > 0) {
+        const waited = Date.now();
+        await Promise.allSettled(starting);
+        this.log(`unpair decision=waited reason=start_under_way starts=${starting.length} duration_ms=${Date.now() - waited}`);
+      }
       assertCurrent();
       this.engine = null;
       // No timer may start an engine while the credential is being given up.
@@ -4042,6 +4082,7 @@ export default class ObsyncPlugin extends Plugin {
 
   /** Register once a successful engine start has opened this vault's map. */
   async registerAccountRecovery(): Promise<void> {
+    const deviceId = this.state.data.deviceId;
     try {
       const { state, transport, assertCurrent } = this.captureSession();
       const vrk = state.data.vrk;
@@ -4053,11 +4094,15 @@ export default class ObsyncPlugin extends Plugin {
       assertCurrent();
       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
     } catch (error) {
+      // A refusal of a credential this device has since given up -- a leave
+      // revoked it while the registration was out -- is that credential's,
+      // logged and never said: it read "removed" over a device that left (#233).
+      const ended = this.state.data.deviceId !== deviceId;
       const refused = refusalStatus(error);
-      if (refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
+      if (!ended && refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
       // Old servers do not implement this route. Sync can continue, and their
       // last-device refusal remains in force until server and client upgrade.
-      this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);
+      this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}${ended ? " session=ended" : ""}`);
     }
   }
 
@@ -4124,10 +4169,16 @@ export default class ObsyncPlugin extends Plugin {
    */
   async checkForUpdate(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || this.state.data.serverUrl === "") return;
+    const serverUrl = this.isCurrent(generation) ? this.state.data.serverUrl : "";
+    if (serverUrl === "") return;
     try {
       const remote = await this.transport.pluginManifest();
       if (!this.isCurrent(generation)) return;
+      // A server this device left while it answered has nothing to announce here (#233).
+      if (this.state.data.serverUrl !== serverUrl) {
+        this.log("update decision=dropped reason=session_ended");
+        return;
+      }
       if (!isNewer(remote.version, this.manifest.version)) return;
       this.updateAvailable = remote.version;
       // ONE notice per session. The settings row says the same thing for as

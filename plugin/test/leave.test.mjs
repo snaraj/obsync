@@ -27,6 +27,7 @@ import {
   SETUP_DEVICE,
   SETUP_SECRET,
   SETUP_TOKEN,
+  keys,
   memorySecrets,
   sandbox,
   statusItem,
@@ -607,4 +608,151 @@ test("the Leave dialog's Sync now advice follows what this device can reach (#15
   assert.equal(r.instance.sendsNow, true);
   r.instance.forgottenDevice = true;
   assert.equal(r.instance.sendsNow, false, "not once the server no longer accepts this device");
+});
+
+// ---- issue #233: Leave while obsync is still starting ---------------------
+
+/** Until `condition` holds, on a wall clock and never a number of turns (`FakeTimers.run` says why). */
+async function until(condition, what) {
+  for (const deadline = Date.now() + 10_000; !condition();) {
+    if (Date.now() >= deadline) assert.fail(`this never happened: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+/**
+ * The fixture's device on a PHONE, where a refusal that needs the person is
+ * said in a notice (#209), starting for real: its own `startEngine` over the
+ * real engine, whose instances are kept, against a server that holds the
+ * vault's map. `hold(test)` keeps the first request `test` accepts, and
+ * `gate.wait()` any step, until `gate.release()`.
+ */
+async function phone(t) {
+  const r = await fixture(t, { devices: 2 });
+  r.obsidian.Platform.isMobile = true;
+  t.after(() => { r.obsidian.Platform.isMobile = false; });
+  const engines = r.box.require(join(r.box.home, "build/sync/engine.js"));
+  const made = [];
+  const Engine = engines.SyncEngine;
+  engines.SyncEngine = class extends Engine { constructor(options) { super(options); made.push(this); } };
+  t.after(() => { for (const engine of made) engine.stop(); });
+  await r.old.seedDomainMap((await keys()).map, KEYS.domainId);
+  r.instance.state.data.lastSeq = r.old.seq;
+  delete r.instance.startEngine;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const gate = { asked: false, release: () => release(), wait: () => { gate.asked = true; return held; } };
+  let match = () => false;
+  const route = r.instance.transport.options.request;
+  r.instance.transport.options.request = async (request) => {
+    if (!gate.asked && match(request.url.replace(/^https?:\/\/[^/]+/, ""))) await gate.wait();
+    return route(request);
+  };
+  r.obsidian.notices.length = 0;
+  return { ...r, made, gate, hold: (test) => { match = test; }, sent: () => r.old.requests.map((request) => `${request.method} ${request.target}`) };
+}
+
+for (const [stage, where, made, superseded] of [
+  ["before it has made its engine", null, 0, 1],
+  ["while it asks whether this vault sits inside another", "vault", 1, 1],
+  ["while its engine reads the vault's map", "map", 1, 1],
+  ["while it registers account recovery", "recovery", 1, 0],
+]) test(`Leave while obsync is still starting, ${stage}: no engine outlives it, nothing goes out after its revoke, and nothing is said (#233)`, async (t) => {
+  // The rig, 8216bbb: enable the plugin and leave at once, and requests went
+  // on under the revoked credential, a feed retried every 5 s with no server,
+  // and a phone said "This server no longer recognises this device".
+  const r = await phone(t);
+  if (where === "vault") r.host.enclosingVault = async () => { await r.gate.wait(); return null; };
+  if (where === "map") r.hold((target) => target === `/v1/files/${r.old.mapFileId}`);
+  if (where === "recovery") r.hold((target) => target === "/v1/account/recovery");
+  let settled = false;
+  const start = r.instance.startEngine().then(() => { settled = true; });
+  if (where !== null) await until(() => r.gate.asked, `the start reached ${where}`);
+  const began = r.sent().length;
+
+  const leaving = r.instance.leaveServer({ discardUnpushed: true, localOnly: false });
+  // What was held is answered once the leave has stopped the engine, and the
+  // leave asks nothing of the server until then; the map read is not
+  // answered, because that stop abandoned it.
+  if (where === "vault" || where === "recovery") {
+    await until(() => r.host.logs.includes("engine stop"), "the leave stopped the engine");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.deepEqual(r.revokes(), [], "the leave waits for the start's step before it revokes");
+    r.gate.release();
+  }
+  assert.deepEqual(await leaving, { decision: "left", revoked: true });
+  assert.equal(settled, true, "the leave waited for the start under way");
+  await start;
+
+  assert.equal(r.instance.engine, null);
+  assert.equal(r.made.length, made, "a start the leave reached first made no engine");
+  assert.deepEqual(r.made.filter((engine) => engine.started), [], "no engine outlived the leave");
+  const sent = r.sent(), revoke = `POST /v1/devices/${KEYS.deviceId}/revoke`, at = sent.indexOf(revoke);
+  assert.deepEqual(sent.slice(at + 1), [], "nothing went out after the revoke");
+  // A running engine's own work may still land before the revoke; the start's registration must.
+  if (where === "recovery") assert.ok(sent.slice(0, at).includes("POST /v1/account/recovery"), "the start's registration was answered first");
+  else assert.deepEqual(sent.slice(began), [revoke], "once the leave began, the start sent nothing");
+  assert.equal(r.instance.statusText(), "not paired");
+  assert.equal(r.instance.forgottenDevice, false);
+  assert.deepEqual(r.obsidian.notices, [], "a phone says nothing after a successful leave");
+  assert.equal(r.logs.filter((line) => /^unpair decision=waited reason=start_under_way starts=1 duration_ms=\d+$/.test(line)).length, 1);
+  assert.equal(r.logs.filter((line) => /^engine decision=stopped reason=superseded duration_ms=\d+$/.test(line)).length, superseded);
+});
+
+test("a folder Save while obsync is still starting leaves one engine running, the Save's own (#233)", async (t) => {
+  // A leave's order holds for a Save too: it stops the engine the start made,
+  // and the start, answered after that, must not start that engine again.
+  const r = await phone(t);
+  r.host.enclosingVault = async () => { if (!r.gate.asked) await r.gate.wait(); return null; };
+  const start = r.instance.startEngine();
+  await until(() => r.gate.asked, "the start is checking the vault");
+  // A Fetch still finishing holds the Save between its stop and its restart.
+  let fetched;
+  r.instance.manualFetches.add(new Promise((resolve) => { fetched = resolve; }));
+  const saving = r.instance.saveSyncFolders(["Notes"]);
+  await until(() => r.host.logs.includes("engine stop"), "the Save stopped the engine");
+  r.gate.release();
+  await start;
+  fetched();
+
+  assert.equal(await saving, "saved");
+  assert.equal(r.made.length, 2);
+  assert.deepEqual(r.made.filter((engine) => engine.started), [r.instance.engine], "one engine runs, the one the Save started");
+  assert.equal(r.logs.filter((line) => line.startsWith("engine decision=stopped reason=superseded ")).length, 1);
+});
+
+test("a recovery registration the server refuses after Leave changes nothing on screen (#233)", async (t) => {
+  const r = await phone(t);
+  r.hold((target) => target === "/v1/account/recovery");
+  const registering = r.instance.registerAccountRecovery();
+  await until(() => r.gate.asked, "the registration is out");
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: true, localOnly: false }), { decision: "left", revoked: true });
+
+  r.gate.release();
+  await registering;
+
+  assert.ok(r.logs.includes("recovery decision=unavailable reason=device_revoked session=ended"), r.logs.join("\n"));
+  assert.equal(r.instance.statusText(), "not paired");
+  assert.equal(r.instance.forgottenDevice, false);
+  assert.deepEqual(r.obsidian.notices, []);
+  // Not a phone that says nothing at all: a refusal this device's own session meets is said.
+  r.instance.setStatus({ kind: "error", code: "clock", message: "CLOCK SENTINEL" });
+  assert.deepEqual(r.obsidian.notices, ["obsync: CLOCK SENTINEL"]);
+});
+
+test("a newer version the server this device left announces after it left is not announced (#233)", async (t) => {
+  const r = await phone(t);
+  delete r.instance.checkForUpdate;
+  r.instance.manifest.version = "0.0.1";
+  r.hold((target) => target === "/v1/plugin/manifest");
+  const probing = r.instance.checkForUpdate();
+  await until(() => r.gate.asked, "the update probe is out");
+  await r.instance.leaveServer({ discardUnpushed: true, localOnly: false });
+
+  r.gate.release();
+  await probing;
+
+  assert.ok(r.logs.includes("update decision=dropped reason=session_ended"), r.logs.join("\n"));
+  assert.equal(r.instance.updateLine(), null);
+  assert.deepEqual(r.obsidian.notices, []);
 });

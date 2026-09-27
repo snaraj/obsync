@@ -1,0 +1,12 @@
+# M3149: a superseded start stops without a word in the log
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3156,7 +3156,7 @@
+     // in one line. What it made, whoever superseded it has stopped.
+     const wanted = (engine: SyncEngine | null): boolean =>
+       this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && this.engine === engine;
+-    const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
++    const superseded = (): void => undefined;
+     // Whoever asked for this start owns it: a reconnect still pending would
+     // be a second engine, so its timer is taken here and its count carried,
+     // and the start below either closes the cycle or continues it.

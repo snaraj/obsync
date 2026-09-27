@@ -1,11 +1,11 @@
 # M582: omit automatic registration
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2208,7 +2208,7 @@
+@@ -3198,7 +3198,7 @@
        // the new engine already said is its own, and stands.
        const earlier = this.statusValue.kind;
-       if (this.engine === engine && (earlier === "error" || earlier === "offline")) this.setStatus(engine.current());
--      if (this.engine === engine) await this.registerAccountRecovery();
+       if (earlier === "error" || earlier === "offline") this.setStatus(engine.current());
+-      await this.registerAccountRecovery();
 +      if (false) await this.registerAccountRecovery();
      } catch (error) {
        if (this.engine !== engine) { engine.stop(); return; }
