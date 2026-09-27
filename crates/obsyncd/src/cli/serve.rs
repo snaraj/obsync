@@ -14,7 +14,7 @@ use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant};
 
 use obsync_core::hex;
-use obsync_core::http::{Limits, Server};
+use obsync_core::http::{Limits, Report, Server};
 
 use crate::api::auth::SystemClock;
 use crate::api::{self, App};
@@ -113,9 +113,7 @@ pub fn run() -> i32 {
         }
     };
     let sink_log = log.clone();
-    server.set_error_sink(Arc::new(move |_| {
-        sink_log.warn("http_refused", &[("decision", Val::word("parser_refusal"))]);
-    }));
+    server.set_error_sink(Arc::new(move |report| log_http(&sink_log, report)));
 
     let dashboard = Dashboard::load(&cfg.dashboard_dir, &log);
     let plugin = PluginDist::load(&cfg.plugin_dir, &log);
@@ -204,6 +202,28 @@ fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
     fields.extend(error_fields(e));
     log.error(event, &fields);
     1
+}
+
+/// One line for what the HTTP layer could not put into a response, named for
+/// what it was. A peer closing or resetting its connection is ordinary --
+/// proxies reset idle keep-alives as a matter of course -- and is logged at
+/// debug; a request refused before any handler ran, or a failure of the
+/// server's own, is a warning, and a handler panic an error (#212).
+fn log_http(log: &Log, report: Report) {
+    let mut fields = vec![("decision", Val::word(report.decision))];
+    if let Some(status) = report.status {
+        fields.push(("status", Val::status(status)));
+    }
+    if let Some(kind) = report.io {
+        fields.push(("io", Val::io_kind(kind)));
+    }
+    if report.ordinary() {
+        log.debug("http_closed", &fields);
+    } else if report.decision == "handler_panic" {
+        log.error("http_refused", &fields);
+    } else {
+        log.warn("http_refused", &fields);
+    }
 }
 
 /// Start the four background threads: collection, scrub, sweep, and snapshot.
@@ -471,6 +491,41 @@ mod tests {
                 "{other}"
             );
         }
+    }
+
+    /// #212: behind a proxy that resets idle keep-alives, those resets are
+    /// debug lines and never `parser_refusal`; a real parser refusal is a
+    /// warning that names its status.
+    #[test]
+    fn http_reports_are_logged_for_what_they_are() {
+        let reset = Report {
+            decision: "peer_closed",
+            status: None,
+            io: Some(io::ErrorKind::ConnectionReset),
+        };
+        let refused = Report {
+            decision: "parser_refusal",
+            status: Some(400),
+            io: None,
+        };
+
+        let quiet = Log::buffered(LogLevel::Info);
+        log_http(&quiet, reset);
+        assert!(quiet.captured().is_empty(), "{}", quiet.captured());
+
+        let log = Log::buffered(LogLevel::Debug);
+        log_http(&log, reset);
+        log_http(&log, refused);
+        let lines = log.captured();
+        assert!(
+            lines.contains("level=debug event=http_closed decision=peer_closed io=ConnectionReset"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("level=warn event=http_refused decision=parser_refusal status=400"),
+            "{lines}"
+        );
+        assert_eq!(lines.matches("parser_refusal").count(), 1, "{lines}");
     }
 
     /// The start sequence up to the token, as `run` performs it.

@@ -100,6 +100,19 @@ CASES = [
      "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
     ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
      "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
+    ("reset-is-ordinary", CORE, HTTP,
+     "        Report::io(if closed { \"peer_closed\" } else { decision }, err)",
+     "        Report::io(decision, err)", "a_connection_failure_is_ordinary_only_when_the_peer_ended_it"),
+    ("idle-failure-classified", CORE, HTTP,
+     "                    (*sink)(Report::connection(\"connection_failed\", &err));",
+     "                    (*sink)(Report::io(\"connection_failed\", &err));",
+     "a_peer_resetting_an_idle_keep_alive_is_an_ordinary_close"),
+    ("parser-refusal-reported", CORE, HTTP,
+     "                (*sink)(Report {\n                    status: Some(status),\n"
+     "                    ..Report::new(\"parser_refusal\")\n                });\n", "",
+     "a_malformed_request_is_reported_as_a_parser_refusal"),
+    ("ordinary-close-at-debug", SERVER, SERVE, "    if report.ordinary() {", "    if false {",
+     "http_reports_are_logged_for_what_they_are"),
 ]
 
 
