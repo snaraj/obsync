@@ -44,6 +44,7 @@ server again unless the entry says so.
 | A note came back as a conflict copy | [A conflict copy appeared](#a-conflict-copy-appeared) |
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
+| A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
@@ -718,19 +719,23 @@ accident. Ordinary syncing works on these drives; only these copies fail.
 
 ## A photo or PDF from my phone never arrives on my other devices
 
-**Symptom.** On a phone with a weak connection, a photo, a PDF or another
+**What you see.** On a phone with a weak connection, a photo, a PDF or another
 large file stays unsynced and keeps retrying. Short notes still sync.
 
-**Cause.** Before 1.1.4 the server gave each piece of a large file a fixed
-time to arrive. On a slow upload link (below roughly half a megabit per
+**Why it happens.** Before 1.1.4 the server gave each piece of a large file a
+fixed time to arrive. On a slow upload link (below roughly half a megabit per
 second: weak mobile data, a busy hotspot) a big piece never made it in time,
 so every retry failed the same way. The server's answer blamed its storage,
 but nothing was wrong with it: the connection was simply too slow, and from
 1.1.4 the answer says so (`slow_body`).
 
-**Fix.** Update your server to 1.1.4 or later. Then give it time on a slow
-link: a large file sends more slowly, but it arrives. If it still does not,
-try Wi-Fi.
+**How to fix it.**
+
+1. Update your server to 1.1.4 or later.
+2. Give it time on a slow link: a large file sends more slowly, but it
+   arrives.
+3. If it still does not arrive, move the phone to Wi-Fi or a stronger
+   connection.
 
 ## A conflict copy appeared
 
