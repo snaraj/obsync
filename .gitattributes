@@ -1,0 +1,5 @@
+# Every file is checked out as the bytes that were committed, on every
+# platform. Tests pin vendored files by SHA-256 (the Obsidian API declaration,
+# the BIP-0039 wordlist), and a Windows checkout's default `core.autocrlf`
+# rewrote their line endings, so the pins failed on a file nobody had changed.
+* -text
