@@ -1025,47 +1025,49 @@ export class ObsidianHost implements VaultHost {
    * can never leave a torn or empty note (issue #202). Mobile buffers and
    * calls `writeBinary` once, which is the strongest primitive the adapter
    * has; it exposes no fsync.
+   *
+   * ONE BUFFER ON A PHONE, of exactly `size` bytes, each part copied into
+   * place as it arrives (issue #197), as `createWriter` does: the parts and
+   * then a joined copy of them held a 512 MiB download twice, 1 GiB, which is
+   * enough to end the app. A part past `size`, or a commit short of it, is
+   * refused.
    */
-  async writer(path: string): Promise<VaultWriter> {
+  async writer(path: string, size: number): Promise<VaultWriter> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop !== null) return this.desktopWriter(desktop, path);
     const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
-    const parts: Bytes[] = [];
+    let bytes = new Uint8Array(size);
+    let at = 0;
     const adapter = this.plugin.app.vault.adapter;
     return {
-      write: async (bytes) => {
-        parts.push(bytes);
+      write: async (part) => {
+        if (at + part.length > bytes.length) throw new Error("A download exceeded its declared size.");
+        bytes.set(part, at);
+        at += part.length;
       },
       commit: async (mtime) => {
+        if (at !== size) throw new Error("A download ended short of its declared size.");
         // A folder can stand where a remote manifest names a file now that
         // folders sync, and `writeBinary` would not say so. Desktop refuses
         // it in `confine`; mobile refuses it here, in the same words, so both
         // platforms answer a file/folder collision identically (issue #104).
         if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
-        let total = 0;
-        for (const part of parts) total += part.length;
-        const joined = new Uint8Array(total);
-        let at = 0;
-        for (const part of parts) {
-          joined.set(part, at);
-          at += part.length;
-        }
         await this.assertEditorIdle(path);
-        await adapter.writeBinary(path, joined.buffer, { mtime });
+        await adapter.writeBinary(path, bytes.buffer, { mtime });
         // The SIZE is ours: the bytes handed to the adapter, not what a look
         // at the name says a moment later. The mtime is taken from the name
         // only while the name still holds that many bytes -- a save landing
         // between the write and the lookup must not have its metadata
         // recorded as this version's (round 3, finding 2).
         const stat = await this.stat(path);
-        if (stat !== null && stat.size === total) return { path, mtime: stat.mtime, size: total };
+        if (stat !== null && stat.size === size) return { path, mtime: stat.mtime, size };
         if (stat !== null) this.log("host path_class=file decision=write_superseded");
-        return { path, mtime, size: total };
+        return { path, mtime, size };
       },
       abort: async () => {
-        parts.length = 0;
+        bytes = new Uint8Array(0);
       },
     };
   }
@@ -2506,6 +2508,7 @@ export default class ObsyncPlugin extends Plugin {
     }
 
     this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
+    this.addCommand({ id: "verify-all", name: "Verify all files (obsync)", callback: () => void this.syncNow(true) });
     this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
@@ -2949,8 +2952,12 @@ export default class ObsyncPlugin extends Plugin {
    * answering is said at once, and the retry goes on in the background;
    * otherwise the press answers when its work is done -- what it sent, that
    * nothing needed sending, or what stopped it.
+   *
+   * `everything` is "Verify all files" (#197): the same press, reading every
+   * file's contents however large, and answered with how many files it read
+   * and what it found.
    */
-  async syncNow(): Promise<void> {
+  async syncNow(everything = false): Promise<void> {
     if (this.changingScope || this.restoring !== null) return;
     const away = this.shown().kind === "offline";
     if (away) {
@@ -2958,12 +2965,17 @@ export default class ObsyncPlugin extends Plugin {
       new Notice(`obsync: ${NOT_ANSWERING}`);
     }
     let sent = 0;
-    if (!this.engine) await this.startEngine();
-    else sent = (await this.engine.syncNow()) ?? 0;
+    let checked = 0;
+    const running = this.engine;
+    if (!running) await this.startEngine();
+    if (everything && this.engine) ({ checked, sent } = await this.engine.verifyAll());
+    else if (running) sent = (await running.syncNow()) ?? 0;
     if (away) return;
     const status = this.shown();
+    const files = `${checked} file${checked === 1 ? "" : "s"}`;
     new Notice(status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
       : status.kind === "error" ? `obsync: ${status.message}`
+      : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
       : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.` : "obsync: nothing to send; this device is up to date.");
   }
 
@@ -3528,6 +3540,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       assertCurrent();
       state.forgetPairing();
+      this.transport.forgetDevice();
       await state.save();
       cleared = true;
       // Past this point the captured session can no longer be asserted: the
@@ -3754,6 +3767,7 @@ export default class ObsyncPlugin extends Plugin {
     this.engine = null;
     const { serverUrl, edgeHeaders } = state.data;
     state.forgetPairing();
+    this.transport.forgetDevice();
     state.data.serverUrl = serverUrl;
     state.data.edgeHeaders = edgeHeaders;
     await state.save();

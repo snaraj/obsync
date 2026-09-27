@@ -112,7 +112,7 @@ a revoked device is paired again as a new device.
 
 ## Commands, not settings
 
-`Sync now`, `Show sync status`, `Pair a new device`, `Show recovery phrase`,
+`Sync now`, `Verify all files`, `Show sync status`, `Pair a new device`, `Show recovery phrase`,
 `Restore from history`, `Show remote-only files`, `Open dashboard`,
 `Leave this server` and `Switch server` live in the command palette under
 **Self Hosted Private Sync**, and the README describes what each one does.

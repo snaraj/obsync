@@ -1,0 +1,11 @@
+# M2220: the mobile writer takes a part past the declared size
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1028,7 +1028,6 @@
+     const adapter = this.plugin.app.vault.adapter;
+     return {
+       write: async (part) => {
+-        if (at + part.length > bytes.length) throw new Error("A download exceeded its declared size.");
+         bytes.set(part, at);
+         at += part.length;
+       },

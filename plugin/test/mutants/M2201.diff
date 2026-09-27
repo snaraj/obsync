@@ -1,0 +1,12 @@
+# M2201: Sync now reads every file again, however large (the old full check)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4020,7 +4020,7 @@
+    * when nothing is left, which is why one is enough.
+    */
+   async syncNow(): Promise<number> {
+-    return (await this.press("sync_now", SYNC_NOW_VERIFY_MAX)).sent;
++    return (await this.press("sync_now", Number.POSITIVE_INFINITY)).sent;
+   }
+ 
+   /** "Verify all files" (#197): Sync now, reading every file's contents however large. */

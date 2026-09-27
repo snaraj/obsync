@@ -907,7 +907,7 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
   const key = stagedKey(manifest);
   const staged = context.staged?.get(key);
   context.staged?.delete(key);
-  const writer = staged ?? await context.host.writer(manifest.path);
+  const writer = staged ?? await context.host.writer(manifest.path, manifest.size);
   try {
     if (staged === undefined) await writeVerified(context, manifest, writer);
     const now = over === undefined ? null : await context.host.stat(manifest.path);
@@ -955,7 +955,7 @@ export async function stage(context: SyncContext, change: ChangeRecord): Promise
   let writer: VaultWriter | null = null;
   try {
     assertVaultPath(entry.path);
-    writer = await context.host.writer(entry.path);
+    writer = await context.host.writer(entry.path, entry.size);
     await writeVerified(context, entry, writer);
   } catch (error) {
     await writer?.abort();
@@ -2735,7 +2735,7 @@ async function resolve(
         // merged text is written where it is published.
         const target = settledName(context, change, baseManifest.path, here, theirManifest.path);
         localPath = await takeName(context, change, localPath, target);
-        const writer = await context.host.writer(localPath);
+        const writer = await context.host.writer(localPath, text.length);
         await writer.write(text);
         // A new background rewrite may still be waiting for the watcher's
         // debounce. Judge the actual merge input before our write replaces
@@ -3020,7 +3020,7 @@ async function keepResumed(
     if (head === undefined) return fail("missing_head");
     const current = await decryptRecordManifest(context, { ...head, file_id: id, domain_id: file.domain_id });
     if (current.deleted || current.path !== path || !known(await sidDigest(current.chunks.map((chunk) => chunk.sid)))) return fail("remote_edit");
-    const writer = await context.host.writer(path);
+    const writer = await context.host.writer(path, mine.length);
     try {
       await writer.write(mine);
       if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
@@ -3120,7 +3120,7 @@ async function converge(
   } else {
     const held = context.state.fileByPath(localPath);
     const edited = held === undefined || held.mtime !== before.mtime || held.size !== before.size;
-    const writer = await context.host.writer(localPath);
+    const writer = await context.host.writer(localPath, theirManifest.size);
     try {
       await writeVerified(context, theirManifest, writer);
       // THE CLAIM. The feed and a push's own reconciliation settle one fork

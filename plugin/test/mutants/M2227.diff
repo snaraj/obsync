@@ -1,0 +1,12 @@
+# M2227: a merge that keeps their version declares its writer one byte over it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3120,7 +3120,7 @@
+   } else {
+     const held = context.state.fileByPath(localPath);
+     const edited = held === undefined || held.mtime !== before.mtime || held.size !== before.size;
+-    const writer = await context.host.writer(localPath, theirManifest.size);
++    const writer = await context.host.writer(localPath, theirManifest.size + 1);
+     try {
+       await writeVerified(context, theirManifest, writer);
+       // THE CLAIM. The feed and a push's own reconciliation settle one fork

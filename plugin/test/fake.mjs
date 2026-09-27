@@ -352,14 +352,25 @@ export class FakeHost {
     };
   }
 
-  async writer(path) {
+  /**
+   * A declared `size` is held to, as the phone's writer holds it (`main.ts`,
+   * one buffer of that size, issue #197): a part past it and a commit short of
+   * it are refused in its words, so a caller declaring the wrong size fails
+   * here and not only on a phone. A test's own wrapper that drops the size
+   * gets the unchecked writer.
+   */
+  async writer(path, size) {
     const parts = [];
     const host = this;
+    let held = 0;
     return {
       async write(bytes) {
+        if (size !== undefined && held + bytes.length > size) throw new Error("A download exceeded its declared size.");
+        held += bytes.length;
         parts.push(bytes);
       },
       async commit(mtime) {
+        if (size !== undefined && held !== size) throw new Error("A download ended short of its declared size.");
         let total = 0;
         for (const part of parts) total += part.length;
         const joined = new Uint8Array(total);
@@ -374,6 +385,7 @@ export class FakeHost {
       },
       async abort() {
         parts.length = 0;
+        held = 0;
       },
     };
   }
@@ -1447,8 +1459,8 @@ export class EventVault extends FakeHost {
     return kept;
   }
 
-  async writer(path) {
-    const writer = await super.writer(path);
+  async writer(path, size) {
+    const writer = await super.writer(path, size);
     return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
   }
 

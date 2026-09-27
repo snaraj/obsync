@@ -53,7 +53,7 @@
  * plain-HTTP server URL is rejected at the settings tab, not here.
  */
 
-import { Bytes, bodyHash, hex, randomBytes, signRequest, unhex, utf8 } from "./crypto";
+import { Bytes, bodyHash, hex, hmacKey, randomBytes, sealedSid, signRequest, unhex, utf8 } from "./crypto";
 import { CHUNK_CIPHERTEXT_MAX } from "./chunker";
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
@@ -515,6 +515,8 @@ type CallOptions = Patience & {
   cap?: number;
   /** The answer is chunk bytes, so `cap` is also what an attempt's deadline grows with. */
   bulk?: boolean;
+  /** `hex(SHA-256(binary))`, when the caller holds it as a fact (`uploadChunk`); otherwise it is computed. */
+  digest?: string;
 };
 
 /**
@@ -633,6 +635,15 @@ export class Transport {
   private manualSessions = 0;
   /** Every request asleep in its backoff: when it wakes by itself, and how to wake it now. */
   private readonly sleepers = new Set<{ at: number; wake: () => void }>();
+  /**
+   * The non-extractable HMAC handle requests sign with, imported once per
+   * device id (issue #197). The server mints a device id with its secret and
+   * never gives that id another (`crates/obsyncd/src/api/devices.rs`,
+   * `enrol`), so a new id -- a re-pair, a claim waiting for its key -- is a
+   * new credential. The raw secret is still read per request and held no
+   * longer than that request; `forgetDevice` drops the handle on a leave.
+   */
+  private signing: { id: string; key: Promise<CryptoKey> } | null = null;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
@@ -646,6 +657,11 @@ export class Transport {
     this.random = options.random ?? (() => Math.random());
     this.log = options.log ?? (() => undefined);
     this.maxAttempts = options.maxAttempts ?? 8;
+  }
+
+  /** This device gave up its credential: the handle it signed with goes too. */
+  forgetDevice(): void {
+    this.signing = null;
   }
 
   /** Half-fixed, half-random exponential backoff, capped at 60 s. */
@@ -681,7 +697,7 @@ export class Transport {
       device = this.options.device();
       if (!device) throw new ApiError(0, "not_paired", "this device is not paired");
       headers["X-Obsync-Device"] = device.id;
-      digest = await bodyHash(body);
+      digest = options.digest ?? await bodyHash(body);
     }
     for (const header of this.options.edgeHeaders()) {
       // AN EDGE HEADER NEVER REPLACES ONE OBSYNC SETS, and one the platform
@@ -713,7 +729,9 @@ export class Transport {
       const nonce = hex(randomBytes(16));
       headers["X-Obsync-Ts"] = String(ts);
       headers["X-Obsync-Nonce"] = nonce;
-      headers["X-Obsync-Sig"] = await signRequest(sending.device.secret, method, target, ts, nonce, sending.digest);
+      const { id, secret } = sending.device;
+      const signing = this.signing?.id === id ? this.signing : (this.signing = { id, key: hmacKey(secret) });
+      headers["X-Obsync-Sig"] = await signRequest(await signing.key, method, target, ts, nonce, sending.digest);
     }
     check();
     let outcome: Attempt;
@@ -1144,7 +1162,11 @@ export class Transport {
     const target = `/v1/chunks/${sid}`;
     await this.admit(ciphertext.length);
     try {
-      const sending = await this.prepare(target, { auth: "device", binary: ciphertext });
+      // THE SID IS THE BODY'S HASH where `encryptChunk` made this very body
+      // (`sealedSid`, issue #197), so it is the signature's body term and the
+      // body is not hashed again. Any other body is hashed like every body.
+      const digest = sealedSid(ciphertext) === sid ? sid : undefined;
+      const sending = await this.prepare(target, { auth: "device", binary: ciphertext, digest });
       const started = this.now();
       const budget = this.budget(patience, started);
       for (let attempt = 1; ; attempt++) {

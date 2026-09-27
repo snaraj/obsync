@@ -451,3 +451,84 @@ test("manifest decryption survives a full encrypt/decrypt cycle", async () => {
   ]);
   assert.equal(opened.toString("utf8"), json);
 });
+
+/** Every key WebCrypto imports while `work` runs. */
+async function imports(work) {
+  const subtle = globalThis.crypto.subtle;
+  const importKey = subtle.importKey;
+  const made = [];
+  subtle.importKey = async (...args) => {
+    const key = await importKey.apply(subtle, args);
+    made.push(key);
+    return key;
+  };
+  try { await work(); } finally { delete subtle.importKey; }
+  assert.equal(subtle.importKey, importKey, "the spy is gone");
+  return made;
+}
+
+test("a session key is imported once per use, never extractable, and seals the fixtures byte for byte (#197)", async () => {
+  const vrk = bytes(fixtures.vrk);
+  const domainKey = await c.deriveDomainKey(vrk, d0.domain_id);
+  const manifestKey = await c.deriveManifestKey(domainKey, d0.domain_id);
+  assert.equal(c.hex(domainKey), d0.domain_key);
+  assert.equal(c.hex(manifestKey), d0.manifest_key);
+  const vector = fixtures.chunks.find((chunk) => chunk.ciphertext_hex !== null);
+  const plaintext = bytes(vector.plaintext_hex);
+  const f = fixtures.manifest;
+  const warm = await imports(async () => {
+    await c.encryptChunk(domainKey, plaintext);
+    await c.decryptManifest(manifestKey, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex));
+    await c.folderFileId(manifestKey, "Notes");
+  });
+  const handles = [];
+  const again = await imports(async () => {
+    for (let i = 0; i < 3; i++) {
+      const sealed = await c.encryptChunk(domainKey, plaintext);
+      assert.equal(sealed.sid, vector.sid, "the sid is unchanged");
+      assert.equal(c.hex(sealed.ciphertext), vector.ciphertext_hex, "and so is every ciphertext byte");
+      assert.deepEqual(await c.decryptChunk(domainKey, bytes(vector.cid), sealed.ciphertext), plaintext);
+      assert.equal(await c.decryptManifest(manifestKey, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex)), f.json);
+      assert.equal(await c.folderFileId(manifestKey, "Notes"), await c.folderFileId(bytes(d0.manifest_key), "Notes"));
+    }
+  });
+  // Each chunk still derives, and so imports, its own key: twice to seal and
+  // twice to open. Nothing of `K_d` or `K_m,d` is imported again.
+  const perChunk = 4;
+  const plainFolderId = 1;
+  assert.equal(again.length, 3 * (perChunk + plainFolderId), `imports after the first use (${again.length})`);
+  handles.push(...warm, ...again);
+  assert.ok(warm.length >= 4, "the first use imported the session handles");
+  for (const key of handles) {
+    assert.equal(key.extractable, false, `${key.algorithm.name} handle is extractable`);
+    await assert.rejects(globalThis.crypto.subtle.exportKey("raw", key), undefined, "an exportable handle");
+  }
+});
+
+test("a different key, or the same key derived again, never reaches another key's handles (#197)", async () => {
+  const vrk = bytes(fixtures.vrk);
+  const plaintext = utf8("KEY CHANGE SENTINEL\n");
+  const first = await c.deriveDomainKey(vrk, d0.domain_id);
+  const other = await c.deriveDomainKey(vrk, d1.domain_id);
+  const a = await c.encryptChunk(first, plaintext);
+  const b = await c.encryptChunk(other, plaintext);
+  // A copy of the same bytes is no session key: imported per operation, as before.
+  assert.equal(b.sid, (await c.encryptChunk(Uint8Array.from(other), plaintext)).sid, "the other key seals with its own handles");
+  assert.notEqual(a.sid, b.sid);
+  const renewed = await c.deriveDomainKey(vrk, d0.domain_id);
+  assert.notEqual(renewed, first, "a new start derives a new object");
+  assert.equal((await c.encryptChunk(renewed, plaintext)).sid, a.sid);
+  const m0 = await c.deriveManifestKey(first, d0.domain_id);
+  const m1 = await c.deriveManifestKey(other, d1.domain_id);
+  const f = fixtures.manifest;
+  assert.equal(await c.decryptManifest(m0, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex)), f.json);
+  await assert.rejects(c.decryptManifest(m1, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex)));
+});
+
+test("encryptChunk remembers the sid of exactly the body it made, and of nothing else (#197)", async () => {
+  const domainKey = bytes(d0.domain_key);
+  const sealed = await c.encryptChunk(domainKey, utf8("SEALED SENTINEL\n"));
+  assert.equal(c.sealedSid(sealed.ciphertext), sealed.sid);
+  assert.equal(sealed.sid, createHash("sha256").update(sealed.ciphertext).digest("hex"));
+  assert.equal(c.sealedSid(Uint8Array.from(sealed.ciphertext)), undefined, "a copy is not the body it made");
+});

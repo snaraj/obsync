@@ -407,7 +407,9 @@ test("a retry pass waits for the feed page in flight: the two never apply side b
   await d.timers.run(100);
   assert.equal(r.host.text("Notes/n17.md"), null, "the retry did not run beside the feed's write");
   open();
-  await d.timers.run(100, () => r.state.data.lastSeq === slow.seq && Object.keys(r.state.data.parked).length === 0);
+  // At or past it: Sync now's pass runs after the feed and the retry (#197),
+  // so it can publish the record the folder they filled owes, a later entry.
+  await d.timers.run(100, () => r.state.data.lastSeq >= slow.seq && Object.keys(r.state.data.parked).length === 0);
   await syncing;
   assert.equal(r.host.text("Notes/n17.md"), "n17, parked and then unlocked\n");
   assert.equal(r.host.text("Notes/slow.md"), "a record the feed is still writing\n");

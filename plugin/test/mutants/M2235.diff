@@ -1,0 +1,11 @@
+# M2235: leaving the server does not drop the signing handle
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3500,7 +3500,6 @@
+       }
+       assertCurrent();
+       state.forgetPairing();
+-      this.transport.forgetDevice();
+       await state.save();
+       cleared = true;
+       // Past this point the captured session can no longer be asserted: the

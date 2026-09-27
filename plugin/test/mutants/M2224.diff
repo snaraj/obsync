@@ -1,0 +1,12 @@
+# M2224: the background lane's staged download declares one byte under the entry's size
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -955,7 +955,7 @@
+   let writer: VaultWriter | null = null;
+   try {
+     assertVaultPath(entry.path);
+-    writer = await context.host.writer(entry.path, entry.size);
++    writer = await context.host.writer(entry.path, entry.size - 1);
+     await writeVerified(context, entry, writer);
+   } catch (error) {
+     await writer?.abort();

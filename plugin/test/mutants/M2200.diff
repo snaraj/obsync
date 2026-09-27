@@ -1,0 +1,12 @@
+# M2200: Sync now skips a file of exactly the 8 MiB ceiling
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3425,7 +3425,7 @@
+       if (!this.tracked(file.path, label)) { skipped++; continue; }
+       seen.add(file.path);
+       if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) {
+-        if (verifyUpTo > 0 && file.size <= verifyUpTo) verify.push(file);
++        if (verifyUpTo > 0 && file.size < verifyUpTo) verify.push(file);
+         else if (verifyUpTo > 0) unread++;
+         continue;
+       }

@@ -454,8 +454,9 @@ test("a normal restart over history retention pruned sends one probe and publish
   hold = new Promise((resolve) => { open = resolve; });
   await publish(G, "Notes/G.md", "G two\n", LATER, [g1.version_id]);
   await timers.run(STEP_MS, () => sent().filter((request) => request.target.includes("&wait=55&")).length >= 2);
-  await engine.syncNow();
-  assert.ok(r.host.logs.some((line) => /^repair decision=lost reason=unknown_version verdict=suspected /.test(line)), r.host.logs.join(" | "));
+  // The repair pass's own tick, not Sync now: a press reads the feed at once
+  // (#197), and would apply the page this race holds back.
+  await timers.run(STEP_MS, () => r.host.logs.some((line) => /^repair decision=lost reason=unknown_version verdict=suspected /.test(line)));
   open();
   await timers.run(STEP_MS, () => r.host.logs.some((line) => line.startsWith("restore decision=summary")) && r.host.text("Notes/G.md") === "G two\n");
 

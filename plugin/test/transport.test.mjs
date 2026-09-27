@@ -547,6 +547,8 @@ const INTERNAL = [
   "capped",
   // And the deadline each attempt is abandoned by (#195).
   "timed",
+  // And the signing handle a leave drops (#197), which reaches no route.
+  "forgetDevice",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
@@ -1017,4 +1019,73 @@ test("a signal ends a sleeping retry at once and abandons an attempt in flight, 
   await assert.rejects(early.transport.devices({ signal: ended.signal }), (error) => error.code === "cancelled");
   await assert.rejects(early.transport.putChunk(SID, Uint8Array.from([1]), { signal: ended.signal }), (error) => error.code === "cancelled");
   assert.equal(early.sent.length, 0, "an ended call sends nothing");
+});
+
+/** Every key WebCrypto imports while `work` runs, by algorithm. */
+async function imported(work) {
+  const subtle = globalThis.crypto.subtle;
+  const importKey = subtle.importKey;
+  const made = [];
+  subtle.importKey = async (...args) => {
+    const key = await importKey.apply(subtle, args);
+    made.push(key.algorithm.name);
+    return key;
+  };
+  try { await work(); } finally { delete subtle.importKey; }
+  return made;
+}
+
+test("requests sign with a handle imported once per device id; a new id or a leave takes a new one (#197)", async () => {
+  const { FakeServer, DEVICE_B, SECRET_B } = await import("./fake.mjs");
+  const server = new FakeServer();
+  const credential = (id, secretHex) => ({ id, secret: Uint8Array.from(Buffer.from(secretHex, "hex")) });
+  let current = credential(DEVICE_ID, DEVICE_SECRET_HEX);
+  const transport = new Transport({
+    request: server.request, serverUrl: () => SERVER, device: () => current, edgeHeaders: () => [],
+    now: () => 1757200000000, sleep: async () => undefined, maxAttempts: 2,
+  });
+  const signing = await imported(async () => {
+    for (let i = 0; i < 3; i++) await transport.devices();
+  });
+  assert.deepEqual(signing, ["HMAC"], "three signed requests, one import of the device secret");
+  // A re-pair is a new device id with its own secret.
+  server.addDevice(DEVICE_B, SECRET_B, "iPhone");
+  current = credential(DEVICE_B, SECRET_B);
+  await transport.devices();
+  // A leave drops the handle. Only a test can then hand the SAME id another
+  // secret, and only a dropped handle signs for it.
+  transport.forgetDevice();
+  server.secrets.set(DEVICE_B, Buffer.from("5d".repeat(32), "hex"));
+  current = credential(DEVICE_B, "5d".repeat(32));
+  await transport.devices();
+  assert.equal(server.requests.filter((request) => request.target === "/v1/devices").length, 5);
+});
+
+test("a chunk PUT signs the sid as its body digest only for the body encryptChunk made (#197)", async () => {
+  const { FakeServer } = await import("./fake.mjs");
+  const server = new FakeServer();
+  const transport = new Transport({
+    request: server.request, serverUrl: () => SERVER,
+    device: () => ({ id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) }),
+    edgeHeaders: () => [], now: () => 1757200000000, sleep: async () => undefined, maxAttempts: 2,
+  });
+  const domainKey = Uint8Array.from(Buffer.from("11".repeat(32), "hex"));
+  const one = await c.encryptChunk(domainKey, c.utf8("FIRST CHUNK SENTINEL\n"));
+  const two = await c.encryptChunk(domainKey, c.utf8("SECOND CHUNK SENTINEL\n"));
+  const subtle = globalThis.crypto.subtle;
+  const digest = subtle.digest;
+  const hashed = [];
+  subtle.digest = async (algorithm, data) => { hashed.push(data.byteLength); return digest.call(subtle, algorithm, data); };
+  try {
+    await transport.putChunk(one.sid, one.ciphertext);
+    assert.equal(hashed.filter((length) => length === one.ciphertext.length).length, 0, "the sealed body was not hashed again");
+    const copy = Uint8Array.from(two.ciphertext);
+    await transport.putChunk(two.sid, copy);
+    assert.equal(hashed.filter((length) => length === copy.length).length, 1, "a body encryptChunk did not make is hashed");
+  } finally { delete subtle.digest; }
+  assert.ok(server.chunks.has(one.sid) && server.chunks.has(two.sid), "both landed, each under a valid signature");
+  // A sid that is NOT this body's hash: the signature still covers the body
+  // really sent, so the server can refuse the pair for what it is.
+  const three = await c.encryptChunk(domainKey, c.utf8("THIRD CHUNK SENTINEL\n"));
+  await assert.rejects(transport.putChunk(one.sid, three.ciphertext), (error) => error.code === "sid_mismatch");
 });

@@ -1,0 +1,12 @@
+# M2206: Sync now asks for the feed read and does not wait for it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4087,6 +4087,8 @@
+    */
+   private readFeed(): Promise<void> {
+     if (!this.running || this.reading) return Promise.resolve();
++    this.wake("sync_now");
++    return Promise.resolve();
+     return new Promise<void>((answer) => {
+       const budget = this.timers.set(() => {
+         this.options.host.log(`sync_now decision=feed_unanswered budget_ms=${SYNC_NOW_FEED_MS}`);

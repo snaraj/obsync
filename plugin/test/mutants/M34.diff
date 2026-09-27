@@ -1,11 +1,11 @@
 # M34: 121: sync now never drains again for work queued behind it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3180,7 +3180,6 @@
-     const written = this.written;
+@@ -4069,7 +4069,6 @@
+   private async flush(): Promise<boolean> {
      await this.drain();
-     const followUp = this.queue.length > 0 || this.draining;
--    if (followUp) await this.drain();
-     this.options.host.log(
-       `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
-         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
+     const again = this.queue.length > 0 || this.draining;
+-    if (again) await this.drain();
+     return again;
+   }
+ 

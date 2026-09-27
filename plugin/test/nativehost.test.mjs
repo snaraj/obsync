@@ -260,8 +260,8 @@ for (const mobile of [false, true]) {
         r.openEditor(NOTE, buffered);
         if (late) {
           const writer = r.host.writer.bind(r.host);
-          r.host.writer = async (path) => {
-            const pending = await writer(path);
+          r.host.writer = async (path, size) => {
+            const pending = await writer(path, size);
             return { ...pending, write: async (bytes) => {
               await pending.write(bytes);
               if (path === NOTE) buffered.value = disk + "B";

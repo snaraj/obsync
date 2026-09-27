@@ -155,12 +155,14 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   const Plugin = b.require(join(b.home, "build/main.js")).default;
   const { ApiError } = b.require(join(b.home, "build/transport.js"));
   let sent = 0;
+  let verified = { checked: 0, sent: 0 };
   b.require(join(b.home, "build/sync/engine.js")).SyncEngine = class {
     constructor(options) { this.options = options; }
     async start() {}
     stop() {}
     async stopAndWait() {}
     async syncNow() { return sent; }
+    async verifyAll() { return verified; }
     wake() {}
     current() { return { kind: "idle" }; }
   };
@@ -184,7 +186,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   instance.log = () => {};
   t.after(() => instance.onunload());
   await instance.onload();
-  return { ...b, instance, commands, hooks, item, views, ApiError, sending: (count) => { sent = count; } };
+  return { ...b, instance, commands, hooks, item, views, ApiError, sending: (count) => { sent = count; }, verifying: (found) => { verified = found; } };
 }
 
 /** A view whose header takes actions, as `ItemView.addAction` does. */
@@ -211,7 +213,7 @@ test("clicking the indicator opens Show sync status (#156)", async (t) => {
 
 test("the palette finds every command under 'obsync', and their ids have not changed (#156)", async (t) => {
   const p = await plugin(t);
-  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
+  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
     "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server"]);
   for (const command of p.commands) assert.match(command.name, /obsync/, command.name);
   assert.equal(p.commands.find((command) => command.id === "status").name, "Show sync status (obsync)");
@@ -260,6 +262,28 @@ test("Sync now always answers once: sent, nothing to send, or the server not ans
   p.instance.transport.options.reachable(false);
   const before = notices().length;
   await p.instance.syncNow();
+  assert.deepEqual(notices().slice(before), ["obsync: Your server is not answering. Sync resumes by itself when it is back."]);
+});
+
+test("Verify all files is its own command and answers once with what it checked and found (#197)", async (t) => {
+  const p = await plugin(t);
+  const notices = () => p.obsidian.notices.filter((notice) => notice.startsWith("obsync:"));
+  const verify = p.commands.find((command) => command.id === "verify-all");
+  assert.equal(verify.name, "Verify all files (obsync)");
+  p.sending(9);
+  p.verifying({ checked: 3, sent: 0 });
+  await verify.callback();
+  await new Promise(setImmediate);
+  assert.deepEqual(notices(), ["obsync: checked 3 files; none had changed."], "the command ran the full check, not Sync now");
+  p.verifying({ checked: 1, sent: 1 });
+  await p.instance.syncNow(true);
+  assert.equal(notices().at(-1), "obsync: checked 1 file; 1 had changed and was sent.");
+  p.verifying({ checked: 4, sent: 2 });
+  await p.instance.syncNow(true);
+  assert.equal(notices().at(-1), "obsync: checked 4 files; 2 had changed and were sent.");
+  p.instance.transport.options.reachable(false);
+  const before = notices().length;
+  await p.instance.syncNow(true);
   assert.deepEqual(notices().slice(before), ["obsync: Your server is not answering. Sync resumes by itself when it is back."]);
 });
 

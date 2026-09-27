@@ -73,7 +73,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, CERT_UNTRUSTED, ChangeRecord, ChangesPage, FileRecord, NOT_OBSYNC, Transport, untrustedCertificate } from "../transport";
+import { ApiError, CERT_UNTRUSTED, ChangeRecord, ChangesPage, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, untrustedCertificate } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -211,7 +211,8 @@ export interface VaultHost {
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
-  writer(path: string): Promise<VaultWriter>;
+  /** `size` is the whole content's: a phone writes into one buffer of exactly that many bytes. */
+  writer(path: string, size: number): Promise<VaultWriter>;
   /** Publish a new file only; an occupied destination must never be replaced. */
   createWriter(path: string, size: number, check: () => void): Promise<VaultWriter>;
   /**
@@ -663,6 +664,24 @@ export const FEED_ERROR_BACKOFF_MS = 5000;
 export const POLL_STALE_MS = 5000;
 
 /**
+ * The largest file whose contents Sync now reads again (issue #197): one
+ * chunk, which is where a plugin rewrites a note keeping its size and date
+ * (#179), and what the arrival window reads for the same reason. A larger
+ * file is judged by `(mtime, size)`, as every other pass judges it; "Verify
+ * all files" reads every file, however large. Reading them all made a press
+ * minutes long on a large vault, and on a phone read 512 MiB files whole.
+ */
+export const SYNC_NOW_VERIFY_MAX = CHUNK_MAX;
+
+/**
+ * How long Sync now waits for its read of the feed (issue #197): the patience
+ * the transport gives any request a person is waiting on (`INTERACTIVE_MS`).
+ * A server that has not answered by then is the status's to say; the read
+ * goes on, and what it brings is applied when it comes.
+ */
+export const SYNC_NOW_FEED_MS = INTERACTIVE_MS;
+
+/**
  * How soon a PARKED record is tried again (issue #144): one minute, doubling
  * to half an hour for as long as anything stays parked. A retry of a file the
  * disk had no room for downloads it again, so a five-second loop moved 5.5 GB
@@ -863,6 +882,18 @@ export class SyncEngine {
   private pulls = 0;
   /** Versions the server has taken from this device since it started: what a Sync now press reports (#182). */
   private written = 0;
+  /** Files a press's pass queued to have their contents read, since this engine started: what Verify all files reports (#197). */
+  private examined = 0;
+  /**
+   * Sync now's asks for a feed read (`readFeed`, #197), each with the count
+   * of reads the feed had sent when it asked: answered by the first read sent
+   * after it, once that read is applied or has failed, and by a stop.
+   */
+  private readonly feedAsks: { after: number; answer: () => void }[] = [];
+  /** Reads the feed has sent since this engine was made. */
+  private feedReads = 0;
+  /** Whether the feed's read in flight asks without waiting: it is the read a Sync now wants. */
+  private reading = false;
   /** Paths already sent again under a new vault key (`rekeyed`): once each. */
   private readonly republished = new Set<string>();
   private rekeyNoticeShown = false;
@@ -1011,7 +1042,7 @@ export class SyncEngine {
       // Not tracked: only the pages it applies are (`feedLoop`).
       void this.feedLoop().catch((error: unknown) => {
         host.log(`feed decision=failed reason=${error instanceof Error ? error.name : "unknown"}`);
-      });
+      }).finally(() => this.answerFeed(Number.POSITIVE_INFINITY));
     }
   }
 
@@ -1031,6 +1062,7 @@ export class SyncEngine {
     this.cancelled = true;
     this.running = false;
     this.halt.abort();
+    this.answerFeed(Number.POSITIVE_INFINITY);
     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
     this.pending.clear();
     if (this.heartbeatHandle !== null) this.timers.clear(this.heartbeatHandle);
@@ -2465,15 +2497,19 @@ export class SyncEngine {
         // Answered before the next page, one pull at a time (`recover`).
         if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
         if (!live()) return;
-        const quick = !this.feedAnswered;
+        // A Sync now waiting on the feed is asked for at once too (`readFeed`).
+        const quick = !this.feedAnswered || this.feedAsks.length > 0;
         const drop = new AbortController();
         this.poll = quick ? null : { sent: this.nowFn(), drop };
+        this.reading = quick;
+        const sent = ++this.feedReads;
         // Ended by the stop, not waited out: a stopped engine's poll is one more
         // request against a credential that may be about to be given up (#157).
         // A wake drops it too (`wake`), so either ends this one request.
         const page = await untilStopped(context.signal, drop, () =>
           context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
         this.poll = null;
+        this.reading = false;
         if (!live()) return;
         this.feedAnswered = true;
         this.absent = false;
@@ -2482,12 +2518,17 @@ export class SyncEngine {
         // before anything the read brought is applied.
         if (this.restoreDue !== null) continue;
         await this.track(this.applyPage(context, page));
+        this.answerFeed(sent);
       } catch (error) {
         this.poll = null;
+        this.reading = false;
         if (!live()) return;
         // A wake dropped the poll (`wake`): the next read asks at once, and
         // whatever the dropped one brings later is discarded unread.
         if (error instanceof ApiError && error.code === "cancelled") continue;
+        // A failed read is the answer a waiting Sync now gets: it says what
+        // the status says, and the retry goes on without it.
+        this.answerFeed(Number.POSITIVE_INFINITY);
         this.feedAnswered = false;
         // What the failure means, said on the FIRST one (#155): a refusal names
         // itself and stands until the server answers again; only absence reads
@@ -2526,9 +2567,10 @@ export class SyncEngine {
    * back, the app is in front of the person again, the address changed, or
    * Retry now was pressed. The feed's pause after a failed read ends now, and
    * a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
-   * address it went to is no longer the address -- is dropped for a read that
-   * asks at once. Requests asleep inside the transport are the transport's to
-   * wake (`Transport.wake`). One line, and only when something was ended.
+   * address it went to is no longer the address, or Sync now waits for a
+   * read (`readFeed`) -- is dropped for a read that asks at once. Requests
+   * asleep inside the transport are the transport's to wake
+   * (`Transport.wake`). One line, and only when something was ended.
    */
   wake(reason: string): void {
     if (!this.running) return;
@@ -2537,7 +2579,7 @@ export class SyncEngine {
     pause?.();
     const poll = this.poll;
     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
-    const dropped = poll !== null && (reason === "address" || waited >= POLL_STALE_MS);
+    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
     if (dropped) {
       this.poll = null;
       this.feedAnswered = false;
@@ -3213,13 +3255,13 @@ export class SyncEngine {
    * recorded path the vault no longer has. This is what makes an edit made
    * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
-  reconcile(verifyContent = false): Promise<void> {
-    return this.track(this.reconcileLocal(verifyContent));
+  reconcile(verifyUpTo = 0): Promise<void> {
+    return this.track(this.reconcileLocal(verifyUpTo));
   }
 
-  private async reconcileLocal(verifyContent: boolean): Promise<void> {
+  private async reconcileLocal(verifyUpTo: number): Promise<void> {
     const host = this.need().host;
-    await this.inPass(host, async () => this.survey(await host.list(), true, "reconcile", verifyContent));
+    await this.inPass(host, async () => this.survey(await host.list(), true, "reconcile", verifyUpTo));
   }
 
   /** `work` as one pass of the host's (`VaultHost.pass`), closed however it ends. */
@@ -3316,7 +3358,7 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyContent = false): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
@@ -3386,15 +3428,25 @@ export class SyncEngine {
         folderQueued++;
       }
     }
+    // Sync now reads a recorded file's contents again only up to its ceiling
+    // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted.
+    let unread = 0;
     for (const file of files) {
       if (!this.running) return;
       if (!this.tracked(file.path, label)) { skipped++; continue; }
       seen.add(file.path);
       if (isPushed(context.state.fileByPath(file.path), file.mtime, file.size)) {
-        if (verifyContent) verify.push(file);
+        if (verifyUpTo > 0 && file.size <= verifyUpTo) verify.push(file);
+        else if (verifyUpTo > 0) unread++;
         continue;
       }
       fresh.push(file);
+    }
+    if (verifyUpTo > 0) {
+      context.host.log(
+        `${label} decision=verify files=${verify.length} over_ceiling=${unread} ` +
+          `ceiling_bytes=${Number.isFinite(verifyUpTo) ? verifyUpTo : "none"}`,
+      );
     }
     // The listing by folded name, built once: a vault of ten thousand files
     // and a folder of a hundred deletions must not cost a million
@@ -3636,6 +3688,7 @@ export class SyncEngine {
       this.enqueue(file.path);
       queued++;
     }
+    if (verifyUpTo > 0) this.examined += queued;
     if (own !== null) {
       context.host.log(
         `${label} decision=held since=${own.since} untracked=${untracked.length} adopted=${adopted} ` +
@@ -3963,7 +4016,13 @@ export class SyncEngine {
   }
 
   /**
-   * Everything the user's "Sync now" command does.
+   * Everything the user's "Sync now" command does (issue #197), in order:
+   * what is queued here goes; one read of the feed, asked at once, brings
+   * what waits on the server (`readFeed`); parked records and paused notes
+   * are tried again; and the reconcile pass finds what the watcher missed,
+   * reading again the contents of every file of at most
+   * `SYNC_NOW_VERIFY_MAX` bytes -- a plugin's rewrite that kept both a note's
+   * size and its date (#179). What that pass queues goes too.
    *
    * It resolves only once the queue it was asked to flush is empty. Joining
    * the running drain is not enough on its own: a path queued after that
@@ -3972,15 +4031,29 @@ export class SyncEngine {
    * when nothing is left, which is why one is enough.
    */
   async syncNow(): Promise<number> {
+    return (await this.press("sync_now", SYNC_NOW_VERIFY_MAX)).sent;
+  }
+
+  /** "Verify all files" (#197): Sync now, reading every file's contents however large. */
+  verifyAll(): Promise<{ checked: number; sent: number }> {
+    return this.press("verify_all", Number.POSITIVE_INFINITY);
+  }
+
+  private async press(trigger: string, verifyUpTo: number): Promise<{ checked: number; sent: number }> {
     const started = this.nowFn();
     const joined = this.draining;
+    const queued = this.queue.length;
+    const inFlight = this.active;
+    const written = this.written;
+    const examined = this.examined;
     const held = (): number => this.options.state.data.heldDeletions.length;
     const pending = held() > 0;
-    // A paused note first, so what it holds is in the pass below (issue #179).
-    await this.resume();
-    // An explicit repair command verifies content even when a fixed-width
-    // plugin rewrite retained both recorded metadata fields (#179).
-    await this.reconcile(true);
+    let followUp = await this.flush();
+    await this.readFeed();
+    await this.retryParked(trigger);
+    // A paused note before the pass, so what it holds is in it (issue #179).
+    await this.resume(undefined, trigger);
+    await this.reconcile(verifyUpTo);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
     if (pending && held() > 0) {
@@ -3990,22 +4063,54 @@ export class SyncEngine {
         HELD_ACTIONS,
       );
     }
-    const queued = this.queue.length;
-    const inFlight = this.active;
-    const written = this.written;
-    await this.drain();
-    const followUp = this.queue.length > 0 || this.draining;
-    if (followUp) await this.drain();
+    followUp = (await this.flush()) || followUp;
     this.options.host.log(
-      `sync_now decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
-        `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} duration_ms=${this.nowFn() - started}`,
+      `${trigger} decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
+        `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} examined=${this.examined - examined} ` +
+        `duration_ms=${this.nowFn() - started}`,
     );
-    await this.retryParked("sync_now");
     await this.repairTick();
     // What this press sent, for the one notice it answers with (`main.ts`,
     // #182): versions the server took, not paths looked at -- the press
-    // re-reads every note, and most are unchanged.
-    return this.written - written;
+    // re-reads many notes, and most are unchanged.
+    return { checked: this.examined - examined, sent: this.written - written };
+  }
+
+  /** Drain, and once more when a path was queued after the joined drain took its last batch. */
+  private async flush(): Promise<boolean> {
+    await this.drain();
+    const again = this.queue.length > 0 || this.draining;
+    if (again) await this.drain();
+    return again;
+  }
+
+  /**
+   * One read of the feed, sent at once and applied, for Sync now (issue #197).
+   * The feed has ONE reader, its loop, so this asks the loop for its next read
+   * instead of reading beside it -- two readers from one cursor would apply
+   * the same records twice. The long poll in flight is dropped (`wake`), and
+   * whatever it brings later is discarded unread, as every dropped poll's is.
+   * Answered once a read sent after the ask is applied, or fails, or a stop
+   * (`answerFeed`) -- or after `SYNC_NOW_FEED_MS`, when the press goes on and
+   * the read goes on without it. A read already in flight that asks without
+   * waiting -- a start's first, one after a failure -- is the read this would
+   * send, and brings what it brings without the press waiting on it.
+   */
+  private readFeed(): Promise<void> {
+    if (!this.running || this.reading) return Promise.resolve();
+    return new Promise<void>((answer) => {
+      const budget = this.timers.set(() => {
+        this.options.host.log(`sync_now decision=feed_unanswered budget_ms=${SYNC_NOW_FEED_MS}`);
+        answer();
+      }, SYNC_NOW_FEED_MS);
+      this.feedAsks.push({ after: this.feedReads, answer: () => { this.timers.clear(budget); answer(); } });
+      this.wake("sync_now");
+    });
+  }
+
+  /** Answer every `readFeed` ask made before read number `through` was sent. */
+  private answerFeed(through: number): void {
+    while (this.feedAsks.length > 0 && (this.feedAsks[0] as { after: number }).after < through) this.feedAsks.shift()?.answer();
   }
 
   /** One worker shared by the timer and Sync now; dispatched writes are drained on stop. */

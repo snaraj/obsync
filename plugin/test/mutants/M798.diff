@@ -1,11 +1,11 @@
 # M798: Mobile writes beneath an active native editor.
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -851,7 +851,6 @@
-           joined.set(part, at);
-           at += part.length;
-         }
+@@ -1040,7 +1040,6 @@
+         // platforms answer a file/folder collision identically (issue #104).
+         if ((await adapter.stat(path))?.type === "folder") throw new VaultPathError("not_a_file");
+         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
 -        await this.assertEditorIdle(path);
-         await adapter.writeBinary(path, joined.buffer, { mtime });
+         await adapter.writeBinary(path, bytes.buffer, { mtime });
          // The SIZE is ours: the bytes handed to the adapter, not what a look
          // at the name says a moment later. The mtime is taken from the name

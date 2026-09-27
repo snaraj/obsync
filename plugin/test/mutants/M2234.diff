@@ -1,0 +1,11 @@
+# M2234: a leave keeps the signing handle
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -661,7 +661,6 @@
+ 
+   /** This device gave up its credential: the handle it signed with goes too. */
+   forgetDevice(): void {
+-    this.signing = null;
+   }
+ 
+   /** Half-fixed, half-random exponential backoff, capped at 60 s. */

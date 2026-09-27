@@ -102,7 +102,11 @@ test("forgotten credentials show recovery and reset metadata without touching no
   const tab = new ObsyncSettingTab(r.instance.app, r.instance);
   const row = tab.getSettingDefinitions().flatMap((g) => g.items).find((item) => item.name === "Setup or recover");
   assert.ok(row.visible(), "the rejected non-null ID must not hide recovery");
+  // The handle requests signed with goes with the credential (#197).
+  let forgotten = 0;
+  r.instance.transport.forgetDevice = () => { forgotten++; };
   await r.instance.resetForgottenEnrollment();
+  assert.equal(forgotten, 1, "the signing handle was dropped with the credential");
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
   assert.equal(r.instance.state.data.serverUrl, "https://sync.example.invalid");
   assert.deepEqual(r.instance.state.data.edgeHeaders, [{ name: "X-Edge", value: "TEST" }]);

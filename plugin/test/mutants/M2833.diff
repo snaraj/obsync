@@ -1,12 +1,12 @@
 # M2833: Sync now answers nothing when the server answered
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2300,7 +2300,7 @@
-     let sent = 0;
-     if (!this.engine) await this.startEngine();
-     else sent = (await this.engine.syncNow()) ?? 0;
+@@ -2930,7 +2930,7 @@
+     if (!running) await this.startEngine();
+     if (everything && this.engine) ({ checked, sent } = await this.engine.verifyAll());
+     else if (running) sent = (await running.syncNow()) ?? 0;
 -    if (away) return;
 +    if (away || sent >= 0) return;
      const status = this.shown();
+     const files = `${checked} file${checked === 1 ? "" : "s"}`;
      new Notice(status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
-       : status.kind === "error" ? `obsync: ${status.message}`

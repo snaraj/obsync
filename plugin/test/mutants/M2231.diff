@@ -1,0 +1,11 @@
+# M2231: derived session keys are not cached: imported per operation again
+--- a/plugin/src/crypto.ts
++++ b/plugin/src/crypto.ts
+@@ -220,7 +220,6 @@
+ const kept = new WeakMap<Bytes, Map<string, Promise<CryptoKey>>>();
+ 
+ function session(key: Bytes): Bytes {
+-  kept.set(key, new Map());
+   return key;
+ }
+ 

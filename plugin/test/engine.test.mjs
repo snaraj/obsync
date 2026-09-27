@@ -1756,9 +1756,10 @@ test("sync now waits for the drain already running, and says which decision it t
   assert.equal(state.fileByPath("One.md") !== undefined, true, "the first queued path was pushed");
   assert.equal(state.fileByPath("Two.md") !== undefined, true, "and so was the second");
   assert.deepEqual((await postedPaths(server, rigged.keys)).sort(), ["One.md", "Two.md"]);
+  // What the press FOUND (#197): both pushes in flight, nothing queued.
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=2 follow_up=0")),
+      line.startsWith("sync_now decision=joined_running_drain queued=0 in_flight=2 follow_up=0")),
     host.logs.join(" | "),
   );
 
@@ -1767,7 +1768,7 @@ test("sync now waits for the drain already running, and says which decision it t
   // even when their metadata has not changed (#179).
   await engine.syncNow();
   assert.ok(
-    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=2 follow_up=0")),
+    host.logs.some((line) => line.startsWith("sync_now decision=drained queued=0 in_flight=0 follow_up=0 examined=2 ")),
     host.logs.join(" | "),
   );
   engine.stop();
@@ -1824,7 +1825,7 @@ test("sync now drains again for work queued after the drain it joined took its l
   assert.equal(state.fileByPath("Two.md") !== undefined, true);
   assert.ok(
     host.logs.some((line) =>
-      line.startsWith("sync_now decision=joined_running_drain queued=2 in_flight=3 follow_up=1")),
+      line.startsWith("sync_now decision=joined_running_drain queued=0 in_flight=2 follow_up=1")),
     host.logs.join(" | "),
   );
   engine.stop();

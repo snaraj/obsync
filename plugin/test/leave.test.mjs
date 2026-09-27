@@ -125,8 +125,13 @@ function vault(host) {
 test("leaving with another device revokes THIS device before anything local is cleared", async (t) => {
   const r = await fixture(t, { devices: 2 });
   const before = vault(r.host);
+  // The handle requests signed with goes with the credential (#197).
+  const forget = r.instance.transport.forgetDevice.bind(r.instance.transport);
+  let forgotten = "never";
+  r.instance.transport.forgetDevice = () => { forgotten = r.state().deviceId; forget(); };
 
   const result = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  assert.equal(forgotten, null, "the signing handle was dropped, once the credential was");
 
   assert.deepEqual(result, { decision: "left", revoked: true });
   // The revoke is signed with the credential, so it MUST precede the clear.

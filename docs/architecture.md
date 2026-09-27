@@ -733,10 +733,15 @@ long poll and needs its timeout raised.
    five seconds old: a plugin answering a sync can keep both numbers, a
    fixed-width stamp the size and a kept modified time the other (issue #179).
    Startup and periodic scans retain their metadata shortcut. Explicit
-   **Sync now** re-chunks every admitted local file; unchanged digests publish
-   nothing, and a silent same-metadata rewrite is uploaded even long after
-   the arrival window expired. It uses the ordinary bounded streaming push
-   and device budget policy rather than buffering the whole vault.
+   **Sync now** sends what is queued, reads the feed once without waiting,
+   retries parked and paused files, then runs the startup pass re-chunking
+   every admitted local file of at most one chunk (8 MiB): unchanged digests
+   publish nothing, and a silent same-metadata rewrite is uploaded even long
+   after the arrival window expired. **Verify all files** re-chunks every
+   admitted file, however large. Both use the ordinary bounded streaming push
+   and device budget policy rather than buffering the whole vault, and
+   neither keeps a plaintext hash to go faster: one in `data.json` would
+   confirm a guessed note to anyone who can read it (issue #197).
    The engine also compares its own listing of the vault against the local
    state: every 30 s on mobile, from Obsidian's index; on desktop from the
    filesystem, read directly, every five minutes, at each start and whenever

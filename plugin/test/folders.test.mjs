@@ -759,7 +759,7 @@ test("the mobile host refuses to write a file where a folder stands", async (t) 
   const { host, files, folders } = await mobileHost(t);
   await host.createFolder("Notes");
 
-  const writer = await host.writer("Notes");
+  const writer = await host.writer("Notes", 3);
   await writer.write(new Uint8Array([1, 2, 3]));
   await assert.rejects(writer.commit(1000), /not a vault path \(not_a_file\)/);
 

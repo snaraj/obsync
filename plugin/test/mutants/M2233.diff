@@ -1,0 +1,12 @@
+# M2233: the transport keeps signing with the first device's handle after a re-pair
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -730,7 +730,7 @@
+       headers["X-Obsync-Ts"] = String(ts);
+       headers["X-Obsync-Nonce"] = nonce;
+       const { id, secret } = sending.device;
+-      const signing = this.signing?.id === id ? this.signing : (this.signing = { id, key: hmacKey(secret) });
++      const signing = this.signing ?? (this.signing = { id, key: hmacKey(secret) });
+       headers["X-Obsync-Sig"] = await signRequest(await signing.key, method, target, ts, nonce, sending.digest);
+     }
+     check();

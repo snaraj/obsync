@@ -1,8 +1,8 @@
 # M243: Sync now with deletions held back says nothing about them
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3413,13 +3413,6 @@
-     await this.reconcile(true);
+@@ -4045,13 +4045,6 @@
+     await this.reconcile(verifyUpTo);
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).
 -    if (pending && held() > 0) {
@@ -12,6 +12,6 @@
 -        HELD_ACTIONS,
 -      );
 -    }
-     const queued = this.queue.length;
-     const inFlight = this.active;
-     const written = this.written;
+     followUp = (await this.flush()) || followUp;
+     this.options.host.log(
+       `${trigger} decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
