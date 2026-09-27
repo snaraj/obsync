@@ -22,7 +22,7 @@ device can change it for you.
 
 ## Server
 
-<!-- CAPTURE(1.1.4): the Server section: Server URL, Custom request headers and the Connection row, host masked -->
+![The Server section: Server URL holding a demo host name, Custom request headers empty, and the Connection row with Check and Open dashboard](assets/settings-server.png)
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
@@ -90,7 +90,7 @@ active remotely and the dialog explains the upgrade requirement. Pairing again i
 server's current note at the same path stays one note, and one that differs
 keeps both versions for you to review ([`conflicts.md`](conflicts.md)).
 
-<!-- CAPTURE(1.1.4): the Leave this server dialog, naming what is kept and what is lost -->
+![The Leave this server dialog: every note stays, the 24 words still open the same vault, and what is lost is this device's sync identity, with Cancel and Leave](assets/settings-leave.png)
 
 ## Devices
 
@@ -103,9 +103,7 @@ a revoked device is paired again as a new device.
 
 ## Vault key
 
-![The Vault key section: the Recovery phrase row with Show and Restore or create](assets/settings-vault-key.png)
-
-<!-- CAPTURE(1.1.4): the Recovery phrase row when the phrase has not been confirmed yet -->
+![The Vault key section: the Recovery phrase row reading Not confirmed, with Show and confirm and Restore or create](assets/settings-vault-key.png)
 
 | Setting | What it does |
 | --- | --- |

@@ -90,7 +90,7 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    plain `http://127.0.0.1:8080` for a server on that same machine; Obsidian
    on iOS and Android refuses plain HTTP.
 
-   ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
+   ![The plugin's settings tab: the Server URL field holding a demo host name, the Custom request headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
 
 4. Under **Sync folders on this device**, choose **Selected folders only**
    if the vault also contains code or files you do not want shared, and
@@ -120,7 +120,8 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    If you closed the dialog without the check,
    [write the phrase down now](troubleshooting.md#you-closed-the-recovery-phrase-without-checking-it).
 
-   <!-- CAPTURE(1.1.4): the recovery phrase check, with every word hidden and the three answer fields empty -->
+   ![The recovery phrase dialog: 24 numbered words, every one hidden here, and three answer fields for words 3, 11 and 20, empty](assets/recovery-check.png)
+
 7. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
@@ -208,8 +209,6 @@ server with its own certificate authority, see
    an `obsidian://obsync-private-sync/pair?code=...` link you can send yourself.
 
    ![The Pair a new device dialog on the first device, its code obscured, with Copy code and Copy link buttons and the line Waiting for the new device](assets/pair-new-device.png)
-
-   <!-- CAPTURE(1.1.4): the Pair a new device dialog with its code hidden, as 1.1.4 draws it -->
 
 3. On the phone, open **Pair this device** in the settings tab, paste the code
    under **Pairing code** and tap **Pair** — or open the link, which is the

@@ -486,7 +486,7 @@ device is lost. The server never has it and cannot give it back.
 3. Check them word by word. Never type them into a screenshot, a chat or an
    issue.
 
-<!-- CAPTURE(1.1.4): the Recovery phrase row saying the phrase is not confirmed yet -->
+![The Recovery phrase row reading Not confirmed, with Show and confirm and Restore or create](assets/settings-vault-key.png)
 
 ## On Linux, the keys may not be in a keyring
 
