@@ -96,7 +96,8 @@ devices.
 | --- | --- |
 | macOS | In every recorded run |
 | iPhone and iPad | iPhone is in every recorded run. Trust the certificate once, in [two steps](server.md#trust-the-certificate-authority-once-per-device) |
-| Windows and Linux | Not yet in a recorded device run. CI runs the plugin inside the official Obsidian app on both, and on macOS, nightly and on plugin changes (`desktop-matrix.yml`): setup, pairing, notes both ways, a rename and folders, and on Windows a case-only rename, the trash and a file another program holds open. On Linux, trust the certificate in Obsidian's own store ([how](server.md#trust-the-certificate-authority-once-per-device)) |
+| Windows | Recorded on Windows 11 (ARM64) on [2026-09-27](validation-runs/2026-09-27-windows-11-vm.md): notes, folder renames, case-only renames, the trash, a linked folder, a restore and a conflict. Renaming a folder that is itself one of your **Sync folders on this device** leaves an empty folder with the old name on your other devices until 1.1.5 ([issue #240](https://github.com/snaraj/obsync/issues/240)); delete it on a device that syncs the whole vault. CI also runs the plugin inside the official Obsidian app on Windows (`desktop-matrix.yml`) |
+| Linux | Not yet in a recorded device run. CI runs the plugin inside the official Obsidian app on Linux, as on Windows and macOS, nightly and on plugin changes (`desktop-matrix.yml`): setup, pairing, notes both ways, a rename and folders. Trust the certificate in Obsidian's own store ([how](server.md#trust-the-certificate-authority-once-per-device)) |
 | Android | Not yet in a recorded run, and no CI job runs it. Android apps may decline certificates you install yourself. If Obsidian refuses to connect, use a publicly trusted certificate; issued over DNS-01, it needs no open port and no public address ([how](server.md#trust-the-certificate-authority-once-per-device)) |
 
 ## When a device is away from the server

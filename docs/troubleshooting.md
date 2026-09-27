@@ -51,6 +51,8 @@ server again unless the entry says so.
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
 | A note you deleted is back on one device after you changed Sync folders | [A deleted note came back after changing Sync folders](#a-deleted-note-came-back-after-changing-sync-folders) |
+| After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
+| A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -1162,6 +1164,43 @@ you deleted it (issue #237).
    reaches your other devices, like any edit to a note deleted elsewhere.
 3. Reading the history again downloads such a note once more and moves it to
    the trash again, so this device's trash may hold one more copy.
+
+## A renamed Sync folder left an empty folder behind
+
+**What you see.** On a device that syncs only some folders (Settings, obsync,
+**Sync folders on this device**), you renamed one of those folders. Its notes
+moved on every device, and this device's selection names the folder's new
+name. But your other devices still show an empty folder with the old name.
+
+**Why it happens.** Renaming one of the selected folders updates the selection
+first. The removal of the old folder is then checked against the new
+selection, where the old name no longer belongs, so it is never sent (issue
+#240, fixed in 1.1.5). Nothing is lost: only the empty folder is left over.
+
+**How to fix it.** On a device that syncs the whole vault, delete the empty
+folder with the old name. That device sends the folder's removal, and your
+other devices remove it too, within seconds. obsync never removes a folder
+that still holds a file, so check it is empty before you delete it.
+
+## A note moved out of Sync folders is missing after syncing the whole vault again
+
+**What you see.** On a device that syncs only some folders, you moved a note
+out of them. obsync said nothing was deleted, and your other devices kept the
+note under its old name. Later you set that device back to the whole vault.
+Your other devices now hold the note twice, under its old name and where you
+moved it, but this device has only the copy you moved, and its status shows
+the check mark.
+
+**Why it happens.** The device still counts the note's old name as synced, so
+reading your vault's history again skips it and never fetches the file (issue
+#239, fixed in 1.1.5). Nothing is lost: the note is on your other devices
+under its old name.
+
+**How to fix it.** Copy what you need from the note on another device. If you
+want this device to hold exactly what your other devices hold, leave the
+server on it (Settings, obsync, **Leave**) and pair it again: pairing again
+downloads the note under its old name. Then delete whichever of the two copies
+you do not want, on any device.
 
 ## Two folders that differ only in capitalisation
 
