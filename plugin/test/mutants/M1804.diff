@@ -1,0 +1,11 @@
+# M1804: the interactive wall clock is ignored: a hung attempt holds a pressed button for ever
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -648,7 +648,6 @@
+     return new Promise((resolve, reject) => {
+       const aborted = (): void => resolve("cancelled");
+       signal?.addEventListener("abort", aborted, { once: true });
+-      if (deadline !== Infinity) void this.sleep(Math.max(0, deadline - this.now())).then(() => resolve("deadline"));
+       void work.then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));
+     });
+   }

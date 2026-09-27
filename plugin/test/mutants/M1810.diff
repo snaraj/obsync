@@ -1,0 +1,12 @@
+# M1810: putChunk drops its caller's patience
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -957,7 +957,7 @@
+       await running;
+       return;
+     }
+-    const upload = this.uploadChunk(sid, ciphertext, patience);
++    const upload = this.uploadChunk(sid, ciphertext, {});
+     this.uploading.set(sid, upload);
+     try {
+       await upload;

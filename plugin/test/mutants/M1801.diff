@@ -1,0 +1,12 @@
+# M1801: the address is fixed at a call's first attempt and reused for every retry
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -566,7 +566,7 @@
+    * manufactured itself.
+    */
+   private async attempt(method: string, target: string, sending: Prepared, check = (): void => undefined): Promise<Attempt> {
+-    const url = this.base() + target;
++    const url = ((sending as unknown as { url?: string }).url ??= this.base() + target);
+     const headers = { ...sending.headers };
+     if (sending.device) {
+       const ts = Math.floor(this.now() / 1000);

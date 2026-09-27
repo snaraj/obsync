@@ -1,0 +1,12 @@
+# M1803: interactive is ignored: a pressed button waits out the whole background budget
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -632,7 +632,7 @@
+   }
+ 
+   private budget(patience: Patience, started: number): Budget {
+-    return patience.interactive === true
++    return patience.interactive === true && false
+       ? { attempts: Math.min(INTERACTIVE_ATTEMPTS, this.maxAttempts), deadline: started + INTERACTIVE_MS, interactive: true }
+       : { attempts: this.maxAttempts, deadline: Infinity, interactive: false };
+   }

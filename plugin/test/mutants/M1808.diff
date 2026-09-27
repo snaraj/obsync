@@ -1,0 +1,12 @@
+# M1808: a page that is not JSON escapes as a bare SyntaxError instead of the edge refusal
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1137,7 +1137,7 @@
+     return JSON.parse(response.text) as T;
+   } catch {
+     // An answer obsync never gives: a sign-in page, a portal, a proxy's own.
+-    throw new ApiError(response.status, NOT_OBSYNC, "the answer is not obsync's");
++    return JSON.parse(response.text) as T;
+   }
+ }
+ 

@@ -31,7 +31,15 @@
  * BACKOFF. A repeatable route retries on a network error or a 5xx with
  * exponential backoff and jitter, 1 s doubling to a 60 s ceiling, half fixed
  * and half random so a fleet of devices does not resynchronise on the same
- * second. 4xx never retries: a refusal is a decision.
+ * second. 4xx never retries: a refusal is a decision, and so is `507`, the
+ * one 5xx the server answers on purpose (requirement 8). A pause is not a
+ * promise to wait it out: `wake` ends every pause at once when the device's
+ * network is back, the app returns to the foreground, or the address changes,
+ * and every attempt reads the server address afresh (issues #134, #186).
+ *
+ * PATIENCE. Background work has the whole budget; a person who pressed a
+ * button gets `interactive` -- two attempts inside ten seconds -- and a
+ * caller may end a call with an `AbortSignal` (`Patience`, issue #182).
  *
  * CHUNK UPLOADS ARE BUDGETED. A chunk body is the only request whose retry
  * costs megabytes, and it is the only one that cannot be resumed, so
@@ -233,12 +241,39 @@ export interface TransportOptions {
   log?: (line: string) => void;
   maxAttempts?: number;
   /**
-   * Told after every attempt whether the server answered it (any status
-   * below 500). It reports and decides nothing: the retries, and what a
-   * request finally returns or throws, are the same with or without it.
+   * Told after every attempt whether the server answered it (any status it
+   * settles on: below 500, or 507). It reports and decides nothing: the
+   * retries, and what a request finally returns or throws, are the same with
+   * or without it.
    */
   reachable?: (answered: boolean) => void;
 }
+
+/**
+ * How long a repeatable call may keep its caller waiting, and whether the
+ * caller may end it (issue #182).
+ *
+ * BACKGROUND IS THE DEFAULT: the feed, a push and a repair have the whole
+ * budget, eight attempts over about a minute and a half, because nobody is
+ * watching them and giving up early only costs a later start. A person who
+ * pressed a button IS watching, and "Check" sat silent for 103 s against a
+ * server that was off (S70). `interactive` gives such a call at most
+ * `INTERACTIVE_ATTEMPTS` attempts inside `INTERACTIVE_MS` of wall clock, then
+ * it throws `unreachable` like any other call that ran out.
+ *
+ * `signal` ends the call: a retry asleep in its backoff rejects at once, and
+ * an attempt in flight is abandoned -- `requestUrl` cannot be aborted, so its
+ * late answer is discarded -- with `ApiError(0, "cancelled")`. Either way one
+ * line is logged. A route that must not be repeated takes no patience: its one
+ * attempt is the whole call already.
+ */
+export interface Patience {
+  interactive?: boolean;
+  signal?: AbortSignal;
+}
+
+export const INTERACTIVE_MS = 10000;
+export const INTERACTIVE_ATTEMPTS = 2;
 
 export interface ChangeRecord {
   seq: number;
@@ -412,15 +447,18 @@ export const UPLOAD_BUDGET_BYTES = 8 * 1024 * 1024;
  */
 export const UPLOAD_INFLIGHT_MAX = UPLOAD_BUDGET_BYTES - 1;
 
-type CallOptions = {
+type CallOptions = Patience & {
   auth: "device" | "none";
   json?: unknown;
   binary?: Bytes;
 };
 
-/** Everything one attempt needs except its signature, which is per attempt. */
+/**
+ * Everything one attempt needs except its signature and its address, which
+ * are both per attempt: an address adopted while a request waits is the one
+ * its next attempt goes to (issue #186).
+ */
 interface Prepared {
-  url: string;
   headers: Record<string, string>;
   body: Bytes;
   bodyText?: string;
@@ -437,6 +475,13 @@ interface Prepared {
 type Attempt =
   | { kind: "settled"; response: HttpResponse }
   | { kind: "unsettled"; status: number; reason: string };
+
+/** The attempts and the wall clock one call may spend (`Patience`). */
+interface Budget {
+  attempts: number;
+  deadline: number;
+  interactive: boolean;
+}
 
 function toArrayBuffer(bytes: Bytes): ArrayBuffer {
   return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
@@ -458,6 +503,8 @@ export class Transport {
   private readonly upload = { chunks: 0, resent: 0, deduped: 0 };
   /** Manual history operations currently open, whether or not one is reading. */
   private manualSessions = 0;
+  /** Every request asleep in its backoff: when it wakes by itself, and how to wake it now. */
+  private readonly sleepers = new Set<{ at: number; wake: () => void }>();
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
@@ -479,9 +526,16 @@ export class Transport {
     return Math.round(base / 2 + this.random() * (base / 2));
   }
 
-  private async prepare(target: string, options: CallOptions): Promise<Prepared> {
+  /** The server address as it stands NOW, read by every attempt. */
+  private base(): string {
     const base = this.options.serverUrl().replace(/\/+$/, "");
     if (base === "") throw new ApiError(0, "no_server_url", "no server URL is configured");
+    return base;
+  }
+
+  private async prepare(target: string, options: CallOptions): Promise<Prepared> {
+    // Refused before anything is hashed or signed; each attempt asks again.
+    this.base();
     const headers: Record<string, string> = {};
     let body: Bytes = new Uint8Array(0);
     let bodyText: string | undefined;
@@ -502,7 +556,7 @@ export class Transport {
       digest = await bodyHash(body);
     }
     for (const header of this.options.edgeHeaders()) headers[header.name] = header.value;
-    return { url: base + target, headers, body, bodyText, digest, device };
+    return { headers, body, bodyText, digest, device };
   }
 
   /**
@@ -512,6 +566,7 @@ export class Transport {
    * manufactured itself.
    */
   private async attempt(method: string, target: string, sending: Prepared, check = (): void => undefined): Promise<Attempt> {
+    const url = this.base() + target;
     const headers = { ...sending.headers };
     if (sending.device) {
       const ts = Math.floor(this.now() / 1000);
@@ -524,7 +579,7 @@ export class Transport {
     let outcome: Attempt;
     try {
       const response = await this.options.request({
-        url: sending.url,
+        url,
         method,
         headers,
         ...(sending.bodyText !== undefined
@@ -534,7 +589,10 @@ export class Transport {
             : {}),
         throw: false,
       });
-      outcome = response.status < 500
+      // A 507 is the server's decision that it is full, not its absence:
+      // retried eight times, a full server read `offline — retrying` for
+      // minutes and never said why (S29, issue #155).
+      outcome = response.status < 500 || response.status === 507
         ? { kind: "settled", response }
         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
     } catch (error) {
@@ -559,21 +617,127 @@ export class Transport {
     return response;
   }
 
-  /** A repeatable route (`ROUTES`): retried until it settles or runs out. */
+  /** A repeatable route (`ROUTES`): retried until it settles, runs out, or is ended. */
   private async call(method: string, target: string, options: CallOptions): Promise<HttpResponse> {
     const sending = await this.prepare(target, options);
     const started = this.now();
+    const budget = this.budget(options, started);
     for (let attempt = 1; ; attempt++) {
-      const outcome = await this.attempt(method, target, sending);
+      if (options.signal?.aborted) throw this.ended(method, target, "cancelled", "waiting", attempt - 1, started);
+      const outcome = await this.until(this.attempt(method, target, sending), options.signal, budget.deadline);
+      if (outcome === "cancelled" || outcome === "deadline") throw this.ended(method, target, outcome, "in_flight", attempt, started);
       if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started);
-      if (attempt >= this.maxAttempts) {
-        this.log(`http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt} duration_ms=${this.now() - started}`);
-        throw new ApiError(outcome.status, "unreachable", outcome.reason);
-      }
-      const delay = this.backoffMs(attempt);
-      this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
-      await this.sleep(delay);
+      await this.pause(method, target, outcome, attempt, budget, started, options.signal);
     }
+  }
+
+  private budget(patience: Patience, started: number): Budget {
+    return patience.interactive === true
+      ? { attempts: Math.min(INTERACTIVE_ATTEMPTS, this.maxAttempts), deadline: started + INTERACTIVE_MS, interactive: true }
+      : { attempts: this.maxAttempts, deadline: Infinity, interactive: false };
+  }
+
+  /**
+   * An attempt, or the moment its caller stops waiting for it: the signal, or
+   * the end of an interactive budget. The attempt itself runs on -- nothing
+   * can abort `requestUrl` -- and its late answer is discarded here, though it
+   * is still reported to `reachable`: it is a fact about the server.
+   */
+  private until(work: Promise<Attempt>, signal: AbortSignal | undefined, deadline: number): Promise<Attempt | "cancelled" | "deadline"> {
+    if (signal === undefined && deadline === Infinity) return work;
+    return new Promise((resolve, reject) => {
+      const aborted = (): void => resolve("cancelled");
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (deadline !== Infinity) void this.sleep(Math.max(0, deadline - this.now())).then(() => resolve("deadline"));
+      void work.then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));
+    });
+  }
+
+  /**
+   * Nothing settled the attempt: give up, or pause for the backoff and say
+   * so. The pause is the one `wake` ends early and the signal ends at once.
+   */
+  private async pause(
+    method: string,
+    target: string,
+    outcome: { status: number; reason: string },
+    attempt: number,
+    budget: Budget,
+    started: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const left = budget.deadline - this.now();
+    if (attempt >= budget.attempts || left <= 0) {
+      this.log(
+        `http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt}` +
+          `${budget.interactive ? ` budget_ms=${INTERACTIVE_MS}` : ""} duration_ms=${this.now() - started}`,
+      );
+      throw new ApiError(outcome.status, "unreachable", outcome.reason);
+    }
+    const delay = Math.min(this.backoffMs(attempt), left);
+    this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
+    if (!(await this.nap(delay, signal))) throw this.ended(method, target, "cancelled", "sleeping", attempt, started);
+  }
+
+  /** A call its caller ended, or whose interactive budget ran out, with its one line. */
+  private ended(method: string, target: string, why: "cancelled" | "deadline", phase: string, attempts: number, started: number): ApiError {
+    const duration = this.now() - started;
+    if (why === "cancelled") {
+      this.log(`http ${method} ${target} decision=cancelled phase=${phase} attempts=${attempts} duration_ms=${duration}`);
+      return new ApiError(0, "cancelled", "the caller ended this request");
+    }
+    this.log(`http ${method} ${target} decision=gave_up reason=deadline attempts=${attempts} budget_ms=${INTERACTIVE_MS} duration_ms=${duration}`);
+    return new ApiError(0, "unreachable", `no answer within ${INTERACTIVE_MS / 1000} s`);
+  }
+
+  /**
+   * One backoff pause. True when it ended by itself or by `wake`; false, at
+   * once, when the signal ends the call. The injected `sleep` may still fire
+   * after a wake: settling twice is a no-op, and the sleeper is gone.
+   */
+  private nap(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+    if (signal?.aborted === true) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const sleeper = { at: this.now() + ms, wake: (): void => done(true) };
+      const aborted = (): void => done(false);
+      const done = (awake: boolean): void => {
+        this.sleepers.delete(sleeper);
+        signal?.removeEventListener("abort", aborted);
+        resolve(awake);
+      };
+      this.sleepers.add(sleeper);
+      signal?.addEventListener("abort", aborted, { once: true });
+      void this.sleep(ms).then(() => done(true));
+    });
+  }
+
+  /**
+   * Retry now whatever is asleep in its backoff (issues #134, #186).
+   *
+   * The device's own word that something changed -- its network is back
+   * (`online`), the app is in front of the person again, a new server address
+   * was adopted, Retry now was pressed -- is worth more than a timer that was
+   * armed before it. A request asleep for up to a minute therefore makes its
+   * next attempt now, at the address that stands now, and the cycle goes on
+   * exactly as before: an answer ends it, a refusal is never retried, and the
+   * attempt counts against the same budget, so the pause stays bounded.
+   *
+   * ONE EARLY ATTEMPT PER REQUEST PER CALL. A woken request leaves the set
+   * and joins it again only when its next pause begins, after that attempt
+   * has ended, so a storm of `online` events cannot turn a pause into a loop.
+   */
+  wake(reason: string): void {
+    const asleep = [...this.sleepers];
+    this.sleepers.clear();
+    for (const sleeper of asleep) sleeper.wake();
+    if (asleep.length > 0) this.log(`http decision=woken reason=${reason} requests=${asleep.length}`);
+  }
+
+  /** When the soonest request asleep in its backoff tries again by itself, or `null`. */
+  retryAt(): number | null {
+    let soonest: number | null = null;
+    for (const { at } of this.sleepers) soonest = soonest === null ? at : Math.min(soonest, at);
+    return soonest;
   }
 
   /**
@@ -694,8 +858,8 @@ export class Transport {
     return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: verifier } });
   }
 
-  account(): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {
-    return this.json("GET", "/v1/account", { auth: "device" });
+  account(patience: Patience = {}): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {
+    return this.json("GET", "/v1/account", { auth: "device", ...patience });
   }
 
   // --- pairing -----------------------------------------------------------
@@ -715,8 +879,8 @@ export class Transport {
     });
   }
 
-  pairingStatus(pairingId: string): Promise<PairingStatus> {
-    return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device" });
+  pairingStatus(pairingId: string, patience: Patience = {}): Promise<PairingStatus> {
+    return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device", ...patience });
   }
 
   pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<Sent<void>> {
@@ -737,8 +901,8 @@ export class Transport {
 
   // --- devices -----------------------------------------------------------
 
-  devices(): Promise<{ devices: DeviceRecord[] }> {
-    return this.json("GET", "/v1/devices", { auth: "device" });
+  devices(patience: Patience = {}): Promise<{ devices: DeviceRecord[] }> {
+    return this.json("GET", "/v1/devices", { auth: "device", ...patience });
   }
 
   patchDevice(deviceId: string, patch: { name?: string; policy?: Policy }): Promise<Sent<DeviceRecord>> {
@@ -761,12 +925,13 @@ export class Transport {
 
   // --- chunks ------------------------------------------------------------
 
-  async missingChunks(sids: string[]): Promise<string[]> {
+  async missingChunks(sids: string[], patience: Patience = {}): Promise<string[]> {
     const missing: string[] = [];
     for (let i = 0; i < sids.length; i += 4096) {
       const page = await this.json<{ missing: string[] }>("POST", "/v1/chunks/exists", {
         auth: "device",
         json: { sids: sids.slice(i, i + 4096) },
+        ...patience,
       });
       missing.push(...page.missing);
     }
@@ -785,14 +950,14 @@ export class Transport {
    * already sending: it awaits that upload instead of putting a second copy
    * of up to 8 MiB on the wire beside it.
    */
-  async putChunk(sid: string, ciphertext: Bytes): Promise<void> {
+  async putChunk(sid: string, ciphertext: Bytes, patience: Patience = {}): Promise<void> {
     const running = this.uploading.get(sid);
     if (running) {
       this.upload.deduped += 1;
       await running;
       return;
     }
-    const upload = this.uploadChunk(sid, ciphertext);
+    const upload = this.uploadChunk(sid, ciphertext, patience);
     this.uploading.set(sid, upload);
     try {
       await upload;
@@ -808,26 +973,23 @@ export class Transport {
    * lost. `/v1/chunks/exists` settles that for a few hundred bytes instead of
    * up to 8 MiB, and a probe that does not settle answers "no", which sends.
    */
-  private async uploadChunk(sid: string, ciphertext: Bytes): Promise<void> {
+  private async uploadChunk(sid: string, ciphertext: Bytes, patience: Patience): Promise<void> {
     const target = `/v1/chunks/${sid}`;
     await this.admit(ciphertext.length);
     try {
       const sending = await this.prepare(target, { auth: "device", binary: ciphertext });
       const started = this.now();
+      const budget = this.budget(patience, started);
       for (let attempt = 1; ; attempt++) {
-        const outcome = await this.attempt("PUT", target, sending);
+        if (patience.signal?.aborted) throw this.ended("PUT", target, "cancelled", "waiting", attempt - 1, started);
+        const outcome = await this.until(this.attempt("PUT", target, sending), patience.signal, budget.deadline);
+        if (outcome === "cancelled" || outcome === "deadline") throw this.ended("PUT", target, outcome, "in_flight", attempt, started);
         if (outcome.kind === "settled") {
           this.settle("PUT", target, outcome.response, attempt, started);
           this.upload.chunks += 1;
           return;
         }
-        if (attempt >= this.maxAttempts) {
-          this.log(`http PUT ${target} ${outcome.reason} decision=gave_up attempts=${attempt} duration_ms=${this.now() - started}`);
-          throw new ApiError(outcome.status, "unreachable", outcome.reason);
-        }
-        const delay = this.backoffMs(attempt);
-        this.log(`http PUT ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
-        await this.sleep(delay);
+        await this.pause("PUT", target, outcome, attempt, budget, started, patience.signal);
         if (await this.landed(sid)) {
           this.log(`upload decision=landed bytes=${ciphertext.length} attempts=${attempt} duration_ms=${this.now() - started}`);
           this.upload.chunks += 1;
@@ -921,27 +1083,25 @@ export class Transport {
     return this.once("POST", `/v1/files/${fileId}/versions`, { auth: "device", json: version });
   }
 
-  getFile(fileId: string): Promise<FileRecord> {
-    return this.json("GET", `/v1/files/${fileId}`, { auth: "device" });
+  getFile(fileId: string, patience: Patience = {}): Promise<FileRecord> {
+    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", ...patience });
   }
 
   /** One version, or `404 unknown_version` when the server does not hold it. */
-  getVersion(fileId: string, versionId: string): Promise<VersionRecord> {
-    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device" });
+  getVersion(fileId: string, versionId: string, patience: Patience = {}): Promise<VersionRecord> {
+    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device", ...patience });
   }
 
   /** The file listing (`docs/protocol.md`), at most 1000 per page. */
-  listFiles(after: string | null): Promise<FilesPage> {
-    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device" });
+  listFiles(after: string | null, patience: Patience = {}): Promise<FilesPage> {
+    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device", ...patience });
   }
 
   // --- change feed -------------------------------------------------------
 
-  changes(since: number, wait: number, limit = 1000): Promise<ChangesPage> {
+  changes(since: number, wait: number, limit = 1000, patience: Patience = {}): Promise<ChangesPage> {
     const seconds = Math.min(Math.max(0, Math.floor(wait)), MAX_WAIT_SECONDS);
-    return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, {
-      auth: "device",
-    });
+    return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, { auth: "device", ...patience });
   }
 
   // --- dashboard and plugin distribution ---------------------------------
@@ -957,29 +1117,42 @@ export class Transport {
    * the dashboard's Install page, which shows hashes to compare against the
    * GitHub Release.
    */
-  pluginManifest(): Promise<PluginManifest> {
-    return this.json("GET", "/v1/plugin/manifest", { auth: "none" });
+  pluginManifest(patience: Patience = {}): Promise<PluginManifest> {
+    return this.json("GET", "/v1/plugin/manifest", { auth: "none", ...patience });
   }
 }
 
+/**
+ * The code for an answer that is not obsync's: a proxy, an access policy or a
+ * sign-in page in front of the server answered in its place (issue #155). It
+ * is a refusal of its own, because what fixes it -- the address, the edge
+ * headers, the proxy -- is not what fixes an absent server or a refusal the
+ * server itself made.
+ */
+export const NOT_OBSYNC = "not_obsync";
+
 function decode<T>(response: HttpResponse): T {
-  return (response.text === "" ? {} : JSON.parse(response.text)) as T;
+  if (response.text === "") return {} as T;
+  try {
+    return JSON.parse(response.text) as T;
+  } catch {
+    // An answer obsync never gives: a sign-in page, a portal, a proxy's own.
+    throw new ApiError(response.status, NOT_OBSYNC, "the answer is not obsync's");
+  }
 }
 
+/** obsync refuses with `{"error": code, "detail": text}`; anything else is the edge's. */
 function parseError(text: string): { code: string; detail: string } {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null) {
+    if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
       const record = parsed as Record<string, unknown>;
-      return {
-        code: typeof record["error"] === "string" ? record["error"] : "error",
-        detail: typeof record["detail"] === "string" ? record["detail"] : "",
-      };
+      return { code: record["error"] as string, detail: typeof record["detail"] === "string" ? record["detail"] : "" };
     }
   } catch {
-    // A non-JSON error body is the edge's, not the server's.
+    // Not JSON at all: certainly not obsync's.
   }
-  return { code: "error", detail: text.slice(0, 200) };
+  return { code: NOT_OBSYNC, detail: text.slice(0, 200) };
 }
 
 export interface MultipartPart {

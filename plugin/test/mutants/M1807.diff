@@ -1,0 +1,12 @@
+# M1807: an answer without obsync's shape collapses back into the generic code
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1152,7 +1152,7 @@
+   } catch {
+     // Not JSON at all: certainly not obsync's.
+   }
+-  return { code: NOT_OBSYNC, detail: text.slice(0, 200) };
++  return { code: "error", detail: text.slice(0, 200) };
+ }
+ 
+ export interface MultipartPart {

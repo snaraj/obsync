@@ -56,12 +56,12 @@ function harness(responses, options = {}) {
         arrayBuffer: next.body ?? new ArrayBuffer(0),
       };
     },
-    serverUrl: () => options.serverUrl ?? SERVER,
+    serverUrl: () => options.address?.() ?? options.serverUrl ?? SERVER,
     device: () =>
       options.unpaired ? null : { id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) },
     edgeHeaders: () => options.edgeHeaders ?? [],
-    now: () => 1757200000000,
-    sleep: async (ms) => void slept.push(ms),
+    now: options.now ?? (() => 1757200000000),
+    sleep: options.sleep ?? (async (ms) => void slept.push(ms)),
     random: () => 0.5,
     maxAttempts: options.maxAttempts ?? 3,
     log: (line) => logged.push(line),
@@ -229,14 +229,28 @@ test("a 4xx is a decision: it is reported and never retried", async () => {
   assert.equal(logged.some((line) => line.includes("decision=refused") && line.includes("code=missing_chunks")), true);
 });
 
-test("a non-JSON refusal from an edge is still reported, not swallowed", async () => {
-  const { transport } = harness([{ status: 403, text: "<html>denied</html>" }]);
-  await assert.rejects(() => transport.account(), (error) => {
-    assert.equal(error.status, 403);
-    assert.equal(error.code, "error");
-    assert.ok(error.detail.includes("denied"));
-    return true;
-  });
+test("an answer without obsync's shape is its own refusal: something in front of the server gave it (#155)", async () => {
+  // A proxy's page, a JSON body that is not obsync's, a bare status, and a
+  // sign-in page answered with 200: none of them is obsync speaking.
+  for (const answer of [
+    { status: 403, text: "<html>denied SENTINEL</html>" },
+    { status: 401, text: JSON.stringify({ message: "not obsync's shape" }) },
+    { status: 400, text: "" },
+    { status: 200, text: "<html>sign in first</html>" },
+  ]) {
+    const { transport, sent, logged } = harness([answer]);
+    await assert.rejects(() => transport.account(), (error) => {
+      assert.ok(error instanceof ApiError, JSON.stringify(answer));
+      assert.equal(error.status, answer.status);
+      assert.equal(error.code, "not_obsync", JSON.stringify(answer));
+      return true;
+    });
+    assert.equal(sent.length, 1, "answered, so never retried");
+    if (answer.status >= 400) assert.ok(logged.some((line) => line.includes("decision=refused code=not_obsync")), logged.join("|"));
+  }
+  // obsync's own shape keeps its own code, detail or not.
+  const { transport } = harness([{ status: 403, text: JSON.stringify({ error: "device_revoked" }) }]);
+  await assert.rejects(() => transport.account(), (error) => error.code === "device_revoked" && error.detail === "");
 });
 
 test("5xx and network failures retry with capped, jittered backoff", async () => {
@@ -358,6 +372,9 @@ const INTERNAL = [
   // says whether a history operation holds the one outstanding manual read,
   // so the repair tick can yield to it instead of colliding (issue #103).
   "manualBusy", "openManual", "closeManual",
+  // And the retry machinery: the address read per attempt, the patience a
+  // call is given, the pause `wake` ends early (issues #134, #182, #186).
+  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
@@ -624,4 +641,189 @@ test("a connection refused on the only attempt says nothing was sent and names t
     { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_TIMED_OUT" },
     { outcome: "lost", attempts: 2, reason: "network=net::ERR_CONNECTION_REFUSED" },
   ]) assert.match(lostMessage("x", lost), /cannot say whether it happened/, JSON.stringify(lost));
+});
+
+// --- patience: wake, the address per attempt, budgets, refusals ------------
+
+/** Let the transport's continuations run until `ready()` holds. */
+async function turns(ready = () => true) {
+  for (let turn = 0; turn < 1000 && !ready(); turn++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(ready(), "the transport never reached the state the test waits for");
+}
+
+/**
+ * Virtual time: every pause waits until the test moves the clock past it, so
+ * a backoff, a wake and an interactive budget are all decided by the test.
+ */
+function clock() {
+  let now = 1757200000000;
+  const timers = [];
+  return {
+    now: () => now,
+    sleep: (ms) => new Promise((resolve) => timers.push({ at: now + ms, ms, resolve })),
+    /** The pauses asked for so far, in milliseconds. */
+    asked: () => timers.map((timer) => timer.ms),
+    async advance(ms) {
+      now += ms;
+      for (const timer of timers) if (timer.at <= now) timer.resolve();
+      for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+}
+
+const REFUSED_AT_CONNECT = () => new Error("net::ERR_CONNECTION_REFUSED");
+const DEVICES = { status: 200, text: JSON.stringify({ devices: [] }) };
+
+test("wake retries a request asleep in its backoff at once, once per request however many events arrive (#134)", async () => {
+  const time = clock();
+  const { transport, sent, logged } = harness([REFUSED_AT_CONNECT(), REFUSED_AT_CONNECT(), DEVICES], { maxAttempts: 8, sleep: time.sleep, now: time.now });
+  transport.wake("online");
+  assert.equal(logged.some((line) => line.includes("decision=woken")), false, "nothing asleep, nothing woken, nothing said");
+  const call = transport.devices();
+  await turns(() => time.asked().length === 1);
+  assert.equal(sent.length, 1);
+  assert.equal(transport.retryAt(), time.now() + 750, "when the pause ends by itself, for Show sync status");
+  // A storm: three events in one turn are one early attempt, not three.
+  transport.wake("online");
+  transport.wake("online");
+  transport.wake("online");
+  await turns(() => time.asked().length === 2);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(logged.filter((line) => line.startsWith("http decision=woken")), ["http decision=woken reason=online requests=1"]);
+  // The early attempt counted: the next pause is the next step, not the first again.
+  assert.deepEqual(time.asked(), [750, 1500]);
+  transport.wake("foreground");
+  assert.deepEqual(await call, { devices: [] });
+  assert.equal(sent.length, 3);
+  assert.equal(transport.retryAt(), null, "nothing is asleep any more");
+});
+
+test("without a wake the pause runs out by itself, exactly as long as before", async () => {
+  const time = clock();
+  const { transport, sent } = harness([REFUSED_AT_CONNECT(), DEVICES], { maxAttempts: 8, sleep: time.sleep, now: time.now });
+  const call = transport.devices();
+  await turns(() => time.asked().length === 1);
+  await time.advance(749);
+  assert.equal(sent.length, 1, "not a millisecond early");
+  await time.advance(1);
+  assert.deepEqual(await call, { devices: [] });
+  assert.equal(sent.length, 2);
+});
+
+test("every attempt goes to the address that stands when it is sent, signed over the path alone (#186)", async () => {
+  const time = clock();
+  let address = "https://old.example.invalid";
+  const { transport, sent } = harness([REFUSED_AT_CONNECT(), DEVICES], { maxAttempts: 8, sleep: time.sleep, now: time.now, address: () => address });
+  const call = transport.devices();
+  await turns(() => time.asked().length === 1);
+  address = "https://new.example.invalid";
+  transport.wake("address");
+  await call;
+  assert.deepEqual(sent.map((request) => request.url), ["https://old.example.invalid/v1/devices", "https://new.example.invalid/v1/devices"]);
+  assert.equal(sent[1].headers["X-Obsync-Sig"], expectedSignature(sent[1], "GET", "/v1/devices", Buffer.alloc(0)));
+});
+
+test("a chunk upload asleep in its backoff goes on at the new address, asking first whether the body landed (#186)", async () => {
+  const time = clock();
+  let address = "https://old.example.invalid";
+  const { transport, sent } = harness(
+    [REFUSED_AT_CONNECT(), { status: 200, text: JSON.stringify({ missing: [SID] }) }, { status: 201 }],
+    { maxAttempts: 8, sleep: time.sleep, now: time.now, address: () => address },
+  );
+  const upload = transport.putChunk(SID, Uint8Array.from([1, 2, 3]));
+  await turns(() => time.asked().length === 1);
+  address = "https://new.example.invalid";
+  transport.wake("address");
+  await upload;
+  assert.deepEqual(sent.map((request) => `${request.method} ${request.url}`), [
+    `PUT https://old.example.invalid/v1/chunks/${SID}`,
+    "POST https://new.example.invalid/v1/chunks/exists",
+    `PUT https://new.example.invalid/v1/chunks/${SID}`,
+  ]);
+});
+
+test("a full server's 507 is its refusal on the first answer; 500, 502, 503 and 504 are still absence (#155)", async () => {
+  for (const code of ["volume_full", "journal_full", "quota_exceeded"]) {
+    const heard = [];
+    const { transport, sent, slept } = harness(
+      [{ status: 507, text: JSON.stringify({ error: code, detail: "free space is below the watermark" }) }],
+      { reachable: (answered) => heard.push(answered) },
+    );
+    await assert.rejects(transport.putChunk(SID, Uint8Array.from([1])), (error) => error.status === 507 && error.code === code);
+    assert.equal(sent.length, 1, `${code}: answered once, never retried as if the server were gone`);
+    assert.deepEqual(slept, []);
+    assert.deepEqual(heard, [true], "a full server is a server that answered");
+  }
+  for (const status of [500, 502, 503, 504]) {
+    const { transport, sent } = harness([{ status }, { status }, { status }]);
+    await assert.rejects(transport.account(), (error) => error.code === "unreachable" && error.status === status);
+    assert.equal(sent.length, 3, `${status} is retried`);
+  }
+});
+
+test("a pressed button's call answers within its budget: two attempts, then unreachable, and the background keeps its eight (#182)", async () => {
+  const time = clock();
+  const off = () => Array.from({ length: 8 }, REFUSED_AT_CONNECT);
+  const pressed = harness(off(), { maxAttempts: 8, sleep: time.sleep, now: time.now });
+  const check = assert.rejects(pressed.transport.account({ interactive: true }), (error) => error.code === "unreachable" && error.status === 0);
+  await turns(() => time.asked().includes(750));
+  await time.advance(750);
+  await check;
+  assert.equal(pressed.sent.length, 2);
+  assert.ok(pressed.logged.some((line) => /decision=gave_up attempts=2 budget_ms=10000 duration_ms=750$/.test(line)), pressed.logged.join("|"));
+
+  const background = harness(off(), { maxAttempts: 8 });
+  await assert.rejects(background.transport.account(), (error) => error.code === "unreachable");
+  assert.equal(background.sent.length, 8);
+});
+
+test("a pressed button's call that nothing answers ends at the budget; the late answer is discarded (#182)", async () => {
+  const time = clock();
+  let answer;
+  const heard = [];
+  const { transport, logged } = harness([() => new Promise((resolve) => { answer = resolve; })], {
+    maxAttempts: 8, sleep: time.sleep, now: time.now, reachable: (answered) => heard.push(answered),
+  });
+  let settled = false;
+  const check = transport.devices({ interactive: true });
+  void check.catch(() => undefined).finally(() => { settled = true; });
+  await turns(() => answer !== undefined);
+  await time.advance(9999);
+  assert.equal(settled, false, "not before the budget");
+  await time.advance(1);
+  await assert.rejects(check, (error) => error.code === "unreachable" && /10 s/.test(error.detail));
+  assert.ok(logged.some((line) => /^http GET \/v1\/devices decision=gave_up reason=deadline attempts=1 budget_ms=10000 duration_ms=10000$/.test(line)), logged.join("|"));
+  answer(DEVICES);
+  await turns(() => heard.length === 1);
+  assert.deepEqual(heard, [true], "the late answer still says the server is there");
+});
+
+test("a signal ends a sleeping retry at once and abandons an attempt in flight, one line each (#157, #182)", async () => {
+  const time = clock();
+  const sleeping = harness([REFUSED_AT_CONNECT(), DEVICES], { maxAttempts: 8, sleep: time.sleep, now: time.now });
+  const stop = new AbortController();
+  const call = sleeping.transport.devices({ signal: stop.signal });
+  await turns(() => time.asked().length === 1);
+  stop.abort();
+  await assert.rejects(call, (error) => error instanceof ApiError && error.status === 0 && error.code === "cancelled");
+  assert.equal(sleeping.sent.length, 1, "nothing more was sent");
+  assert.equal(sleeping.transport.retryAt(), null, "and nothing is left asleep");
+  assert.ok(sleeping.logged.some((line) => /^http GET \/v1\/devices decision=cancelled phase=sleeping attempts=1 duration_ms=\d+$/.test(line)), sleeping.logged.join("|"));
+
+  let answer;
+  const flying = harness([() => new Promise((resolve) => { answer = resolve; })]);
+  const leave = new AbortController();
+  const read = flying.transport.devices({ signal: leave.signal });
+  await turns(() => answer !== undefined);
+  leave.abort();
+  await assert.rejects(read, (error) => error.code === "cancelled");
+  answer(DEVICES);
+  assert.ok(flying.logged.some((line) => /^http GET \/v1\/devices decision=cancelled phase=in_flight attempts=1 duration_ms=\d+$/.test(line)), flying.logged.join("|"));
+
+  const ended = new AbortController();
+  ended.abort();
+  const early = harness([DEVICES]);
+  await assert.rejects(early.transport.devices({ signal: ended.signal }), (error) => error.code === "cancelled");
+  await assert.rejects(early.transport.putChunk(SID, Uint8Array.from([1]), { signal: ended.signal }), (error) => error.code === "cancelled");
+  assert.equal(early.sent.length, 0, "an ended call sends nothing");
 });

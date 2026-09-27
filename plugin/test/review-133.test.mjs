@@ -94,7 +94,7 @@ test("a real transport 507 during chunk repair remains a visible storage refusal
   r.server.chunks.delete(sid);
   try {
     await engine.syncNow();
-    assert.equal(refused, 2, "both real transport attempts must receive 507");
+    assert.equal(refused, 1, "the first 507 is the server's answer, never retried as absence (#155)");
     assert.equal(r.server.chunks.has(sid), false);
     assert.ok(statuses.some(s => s.kind === "error" && /could not verify/.test(s.message)), JSON.stringify(statuses));
     assert.ok(r.host.logs.some(s => /repair decision=deferred reason=read_or_write_failed/.test(s)), r.host.logs.join("\n"));
