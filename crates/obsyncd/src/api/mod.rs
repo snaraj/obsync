@@ -641,19 +641,24 @@ impl App {
     /// and what the accepted requests since the last sweep cost the journal
     /// volume in durable nonce records.
     ///
-    /// A pairing that expired while claimed but unapproved leaves a device
-    /// nobody ever approved. That device is deleted here, secret and all, so
-    /// a claim can never outlive the ten minutes that granted it
-    /// (`docs/architecture.md` 4.2). Each deletion is one log line
-    /// (requirement 12).
+    /// A pairing that expired before its claimant collected the key --
+    /// claimed and unapproved, or approved and never fetched -- leaves a
+    /// device with no vault key, still pending because collection is what
+    /// activates. That device is deleted here, secret and all, so a claim can
+    /// never outlive the ten minutes that granted it (`docs/architecture.md`
+    /// 4.2; issue #153). Each deletion is one log line naming the state the
+    /// pairing ended in (requirement 12).
     pub fn sweep(&self, now: u64) -> (usize, u64, usize, usize) {
         let (nonces, nonce_appends) = {
             let mut cache = self.nonces.lock().expect("nonce cache");
             (cache.sweep(now), cache.appends())
         };
         let swept = self.pairings.lock().expect("pairings").sweep(now);
-        for device in &swept.orphans {
-            let mut fields = vec![("device", Val::device(device))];
+        for (device, ended) in &swept.orphans {
+            let mut fields = vec![
+                ("device", Val::device(device)),
+                ("state", Val::word(ended.as_str())),
+            ];
             match self.store.delete_device(device) {
                 Ok(()) => fields.push(("decision", Val::word("deleted"))),
                 Err(e) => {
