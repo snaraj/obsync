@@ -57,6 +57,10 @@ case "$(uname -s)" in
   *) printf 'obsidian-host: DENY %s is neither macOS nor Windows\n' "$(uname -s)" >&2; exit 2 ;;
 esac
 run_id="$(printf '%s' "${OBSYNC_E2E_RUN_ID:-$$-${RANDOM}}" | tr -c '[:alnum:]_-' '-')"
+# The Windows shell (MSYS) rewrites an argument that starts with `/` into a
+# Windows path before a native program sees it, and a certificate subject is
+# not a path: without this, openssl was handed `C:/Program Files/.../CN=...`.
+export MSYS2_ARG_CONV_EXCL='/CN='
 readonly DISTRO="obsync-e2e-${run_id}"
 # The authority's name carries the run id, so teardown -- here and in the
 # workflow's always() step -- removes this run's trust and nobody else's.
@@ -81,7 +85,7 @@ wslpath_of() {
 
 deny() {
   printf 'obsidian-host: DENY %s\n' "$1" >&2
-  for log in server caddy; do
+  for log in openssl server caddy; do
     [ -f "${scratch}/${log}.log" ] && { printf 'obsidian-host: --- %s ---\n' "${log}" >&2; tail -n 30 "${scratch}/${log}.log" >&2; }
   done
   # Before the trap is armed nothing else removes the scratch directory.
@@ -149,12 +153,14 @@ trap cleanup EXIT
 # (1) A throwaway authority and a leaf, RSA so every TLS stack here reads it.
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout "${scratch}/ca.key" -out "${scratch}/ca.crt" \
   -subj "/CN=${CA_NAME}" -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign' \
-  >/dev/null 2>&1 || deny 'openssl could not make the authority'
+  >"${scratch}/openssl.log" 2>&1 || deny 'openssl could not make the authority'
 openssl req -newkey rsa:2048 -nodes -keyout "${scratch}/tls.key" -out "${scratch}/leaf.csr" -subj "/CN=${HOST}" \
-  >/dev/null 2>&1 || deny 'openssl could not make the leaf key'
+  >"${scratch}/openssl.log" 2>&1 || deny 'openssl could not make the leaf key'
 printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${HOST}" > "${scratch}/leaf.ext"
 openssl x509 -req -in "${scratch}/leaf.csr" -CA "${scratch}/ca.crt" -CAkey "${scratch}/ca.key" -CAcreateserial \
-  -days 1 -extfile "${scratch}/leaf.ext" -out "${scratch}/tls.crt" >/dev/null 2>&1 || deny 'openssl could not sign the leaf'
+  -days 1 -extfile "${scratch}/leaf.ext" -out "${scratch}/tls.crt" >"${scratch}/openssl.log" 2>&1 \
+  || deny 'openssl could not sign the leaf'
+rm -f -- "${scratch}/openssl.log"
 if [ "${os}" = macos ]; then
   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "${scratch}/ca.crt" \
     || deny 'the System keychain would not trust the authority'
