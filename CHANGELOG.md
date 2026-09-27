@@ -385,6 +385,17 @@ whole width (#210).
 the server cannot remove this device, the dialog offers **Leave on this
 device only** (#157).
 
+**Leaving the server just after Obsidian opens leaves nothing running
+behind.** **Leave this server** chosen while obsync was still starting, just
+after Obsidian opened or the plugin was turned on, left the device unpaired
+with sync still running: requests went on under the access it had just given
+up, and it retried a server it no longer had every five seconds. Leave now
+lets a start under way stop first, so once Leave says the device has left,
+nothing of the old pairing runs or sends anything, and a late refusal from
+the server you left no longer turns the status to an error. A folder
+selection saved while obsync was still starting no longer leaves two copies
+of sync running. The same on computers and phones (#233).
+
 **Saving a folder selection during a big upload keeps your choice and takes
 effect in about a second,** with **Cancel** beside the file it is stopping
 (#185).
