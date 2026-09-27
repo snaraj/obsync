@@ -53,6 +53,7 @@ server again unless the entry says so.
 | A note you deleted is back on one device after you changed Sync folders | [A deleted note came back after changing Sync folders](#a-deleted-note-came-back-after-changing-sync-folders) |
 | After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
+| After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -1201,6 +1202,27 @@ want this device to hold exactly what your other devices hold, leave the
 server on it (Settings, obsync, **Leave**) and pair it again: pairing again
 downloads the note under its old name. Then delete whichever of the two copies
 you do not want, on any device.
+
+## A renamed note came back under its old name after pairing again
+
+**What you see.** You paired a device again after **Leave**, or paired a
+device that already held a copy of the vault. Afterwards a note that was once
+renamed or moved is on that device twice: under its current name and under
+its old one, with the same text. On a computer you may see conflict copies of
+such notes instead. The next pairing may ask whether to add "1 note the
+server's vault does not" hold.
+
+**Why it happens.** Pairing reads your vault's history from the start. A
+renamed note's first version is written under its old name before the rename
+arrives, and the rename then meets the copy this device already kept under
+the new name (issue #241, fixed in 1.1.5). Nothing is lost: both copies hold
+the note's text.
+
+**How to fix it.** Delete the copy under the old name on the device that shows
+it; the copy under the current name is the one your other devices hold. If a
+pairing asks whether to add notes the server's vault does not hold, choose
+**Cancel**, delete the old-name copy, and pair again: cancelling uploads
+nothing.
 
 ## Two folders that differ only in capitalisation
 
