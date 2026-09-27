@@ -451,7 +451,33 @@ type CallOptions = Patience & {
   auth: "device" | "none";
   json?: unknown;
   binary?: Bytes;
+  /** The largest JSON answer this route can legitimately return (`JSON_ANSWER_MAX` when absent). */
+  cap?: number;
 };
+
+/**
+ * THE LARGEST ANSWER A ROUTE MAY BRING (#202, security item 10).
+ *
+ * `requestUrl` hands this client a whole answer or nothing: no cap here can
+ * stop a broken or hostile terminator making the platform read a body. What a
+ * cap does stop is this client parsing, decoding, copying and keeping it --
+ * the part that is this code's -- and it turns such an answer into a named
+ * refusal instead of a stall. Each is sized well above the largest answer
+ * the route can legitimately give:
+ *
+ * - `JSON_ANSWER_MAX` for the small answers: the account, the device list,
+ *   pairing, an acknowledgement, and the largest of them, an existence answer
+ *   for 4096 sids, which is about 270 KB.
+ * - `METADATA_ANSWER_MAX` for a file's versions and a listing page, which grow
+ *   with a file's chunk count and so with its size.
+ * - A chunk: its ciphertext ceiling; a batch: that per sid, plus its framing.
+ * - The feed page: none yet. It is bounded by records, not bytes, until the
+ *   server caps pages by bytes.
+ */
+export const JSON_ANSWER_MAX = 4 * 1024 * 1024;
+export const METADATA_ANSWER_MAX = 64 * 1024 * 1024;
+/** One part's headers and delimiters in a batched chunk answer, generously. */
+const MULTIPART_PART_OVERHEAD = 1024;
 
 /**
  * Everything one attempt needs except its signature and its address, which
@@ -758,7 +784,19 @@ export class Transport {
   }
 
   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {
-    return decode<T>(await this.call(method, target, options));
+    return decode<T>(this.capped(method, target, await this.call(method, target, options), options.cap ?? JSON_ANSWER_MAX));
+  }
+
+  /**
+   * An answer larger than its route can legitimately be is refused, never
+   * parsed, decoded or kept (#202). Chunk bytes are measured as bytes, JSON as
+   * the text this client would parse.
+   */
+  private capped(method: string, target: string, response: HttpResponse, cap: number, bulk = false): HttpResponse {
+    const size = bulk ? response.arrayBuffer.byteLength : response.text.length;
+    if (size <= cap) return response;
+    this.log(`http ${method} ${target} status=${response.status} decision=refused reason=too_large size=${size} budget=${cap}`);
+    throw new ApiError(response.status, "response_too_large", "the answer is larger than this request can be");
   }
 
   /** One attempt, one outstanding manual request, and a post-buffer ceiling. */
@@ -830,7 +868,7 @@ export class Transport {
   /** The same, for a route that must not be repeated. */
   private async once<T>(method: string, target: string, options: CallOptions): Promise<Sent<T>> {
     const sent = await this.send(method, target, options);
-    return sent.outcome === "ok" ? { outcome: "ok", value: decode<T>(sent.value) } : sent;
+    return sent.outcome === "ok" ? { outcome: "ok", value: decode<T>(this.capped(method, target, sent.value, JSON_ANSWER_MAX)) } : sent;
   }
 
   // --- setup and account -------------------------------------------------
@@ -1055,7 +1093,7 @@ export class Transport {
     const target = `/v1/chunks/${sid}`;
     const response = control
       ? await this.readOnce(target, control, CHUNK_CIPHERTEXT_MAX)
-      : await this.call("GET", target, { auth: "device" });
+      : this.capped("GET", target, await this.call("GET", target, { auth: "device" }), CHUNK_CIPHERTEXT_MAX, true);
     return new Uint8Array(response.arrayBuffer);
   }
 
@@ -1066,14 +1104,27 @@ export class Transport {
    * `X-Obsync-Missing: 1` and is returned as `null`.
    */
   async getChunks(sids: string[], control?: ReadControl): Promise<(Bytes | null)[]> {
-    const response = control ? await this.readOnce("/v1/chunks/get", control, 33 * 1024 * 1024, { sids }) : await this.call("POST", "/v1/chunks/get", {
-      auth: "device",
-      json: { sids },
-    });
+    const target = "/v1/chunks/get";
+    const cap = sids.length * (CHUNK_CIPHERTEXT_MAX + MULTIPART_PART_OVERHEAD) + MULTIPART_PART_OVERHEAD;
+    const response = control
+      ? await this.readOnce(target, control, 33 * 1024 * 1024, { sids })
+      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids } }), cap, true);
     const contentType = response.headers["content-type"] ?? response.headers["Content-Type"] ?? "";
     const boundary = /boundary=("?)([^";]+)\1/.exec(contentType)?.[2];
     if (!boundary) throw new ApiError(response.status, "bad_multipart", "no multipart boundary");
     const parts = parseMultipart(new Uint8Array(response.arrayBuffer), boundary);
+    // EVERY PART NAMES THE CHUNK IT CARRIES, in the order asked (#202). Matched
+    // by position alone, a part reordered or dropped on the way -- a proxy's
+    // doing, never the server's -- failed the content check downstream and
+    // stalled the feed on that record as if the server were gone. Refused
+    // here, by name, it is the refusal it is.
+    const count = Math.max(parts.length, sids.length);
+    let wrong = 0;
+    while (wrong < count && parts[wrong]?.sid === sids[wrong]) wrong++;
+    if (wrong < count) {
+      this.log(`http POST ${target} decision=refused reason=part_mismatch part=${wrong} parts=${parts.length} asked=${sids.length}`);
+      throw new ApiError(response.status, "part_mismatch", `part ${wrong} is not the chunk asked for`);
+    }
     return parts.map((part) => (part.missing ? null : part.body));
   }
 
@@ -1084,24 +1135,25 @@ export class Transport {
   }
 
   getFile(fileId: string, patience: Patience = {}): Promise<FileRecord> {
-    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", ...patience });
+    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", cap: METADATA_ANSWER_MAX, ...patience });
   }
 
   /** One version, or `404 unknown_version` when the server does not hold it. */
   getVersion(fileId: string, versionId: string, patience: Patience = {}): Promise<VersionRecord> {
-    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device", ...patience });
+    return this.json("GET", `/v1/files/${fileId}/versions/${versionId}`, { auth: "device", cap: METADATA_ANSWER_MAX, ...patience });
   }
 
   /** The file listing (`docs/protocol.md`), at most 1000 per page. */
   listFiles(after: string | null, patience: Patience = {}): Promise<FilesPage> {
-    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device", ...patience });
+    return this.json("GET", `/v1/files?${after === null ? "" : `after=${after}&`}limit=1000`, { auth: "device", cap: METADATA_ANSWER_MAX, ...patience });
   }
 
   // --- change feed -------------------------------------------------------
 
+  /** Uncapped: a page is bounded by its records, not its bytes, until pages are capped by bytes (#202). */
   changes(since: number, wait: number, limit = 1000, patience: Patience = {}): Promise<ChangesPage> {
     const seconds = Math.min(Math.max(0, Math.floor(wait)), MAX_WAIT_SECONDS);
-    return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, { auth: "device", ...patience });
+    return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, { auth: "device", cap: Infinity, ...patience });
   }
 
   // --- dashboard and plugin distribution ---------------------------------

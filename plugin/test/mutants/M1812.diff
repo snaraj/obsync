@@ -1,0 +1,12 @@
+# M1812: an answer to a request that is sent once is parsed at any size
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -868,7 +868,7 @@
+   /** The same, for a route that must not be repeated. */
+   private async once<T>(method: string, target: string, options: CallOptions): Promise<Sent<T>> {
+     const sent = await this.send(method, target, options);
+-    return sent.outcome === "ok" ? { outcome: "ok", value: decode<T>(this.capped(method, target, sent.value, JSON_ANSWER_MAX)) } : sent;
++    return sent.outcome === "ok" ? { outcome: "ok", value: decode<T>(sent.value) } : sent;
+   }
+ 
+   // --- setup and account -------------------------------------------------

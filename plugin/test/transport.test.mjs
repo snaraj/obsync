@@ -321,9 +321,9 @@ test("a batched chunk fetch maps parts back to nulls for missing sids", async ()
   const boundary = "b0undary";
   const first = Buffer.from([1, 2, 3, 4]);
   const document = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Length: ${first.length}\r\n\r\n`),
+    Buffer.from(`--${boundary}\r\nX-Obsync-Sid: ${"11".repeat(32)}\r\nContent-Length: ${first.length}\r\n\r\n`),
     first,
-    Buffer.from(`\r\n--${boundary}\r\nX-Obsync-Missing: 1\r\nContent-Length: 0\r\n\r\n`),
+    Buffer.from(`\r\n--${boundary}\r\nX-Obsync-Sid: ${"22".repeat(32)}\r\nX-Obsync-Missing: 1\r\nContent-Length: 0\r\n\r\n`),
     Buffer.from(`\r\n--${boundary}--`),
   ]);
   const { transport } = harness([
@@ -351,6 +351,57 @@ test("controlled chunk reads accept the existing tag and reject one extra cipher
   assert.equal(sent.length, 2, "the refused read was not retried");
 });
 
+test("a batched part that is not the chunk asked for is refused by name, never matched by position (#202)", async () => {
+  const [a, b, c] = ["11".repeat(32), "22".repeat(32), "33".repeat(32)];
+  const answer = (named) => {
+    const document = Buffer.concat([
+      ...named.map((sid) => Buffer.from(`--b\r\nX-Obsync-Sid: ${sid}\r\nContent-Length: 1\r\n\r\nx\r\n`)),
+      Buffer.from("--b--\r\n"),
+    ]);
+    return { status: 200, headers: { "content-type": "multipart/mixed; boundary=b" }, body: document.buffer.slice(document.byteOffset, document.byteOffset + document.byteLength) };
+  };
+  // Swapped, dropped, and one the request never named.
+  for (const [named, part] of [[[b, a, c], 0], [[a, c], 1], [[a, b, "44".repeat(32)], 2], [[a, b, c, a], 3]]) {
+    const { transport, sent, logged } = harness([answer(named)]);
+    await assert.rejects(transport.getChunks([a, b, c]), (error) => error instanceof ApiError && error.code === "part_mismatch", named.join(","));
+    assert.equal(sent.length, 1, "an answered batch is not retried");
+    assert.ok(logged.some((line) => line === `http POST /v1/chunks/get decision=refused reason=part_mismatch part=${part} parts=${named.length} asked=3`), logged.join("|"));
+  }
+  const { transport } = harness([answer([a, b, c])]);
+  assert.equal((await transport.getChunks([a, b, c])).length, 3, "the parts in the order asked are accepted");
+});
+
+test("an answer larger than its route can be is refused before it is parsed or kept (#202)", async () => {
+  const { JSON_ANSWER_MAX, METADATA_ANSWER_MAX } = require("../build/transport.js");
+  const text = (length) => `{"x":"${"y".repeat(length - 8)}"}`;
+  const refused = async (call, answer, budget) => {
+    const { transport, sent, logged } = harness([answer]);
+    await assert.rejects(call(transport), (error) => error instanceof ApiError && error.code === "response_too_large");
+    assert.equal(sent.length, 1, "an answered request is not retried");
+    assert.ok(logged.some((line) => line.includes("decision=refused reason=too_large") && line.endsWith(`budget=${budget}`)), logged.join("|"));
+  };
+  const accepted = async (call, answer) => {
+    const { transport } = harness([answer]);
+    await call(transport);
+  };
+  // The small answers, repeatable and not.
+  await refused((t) => t.account(), { status: 200, text: text(JSON_ANSWER_MAX + 1) }, JSON_ANSWER_MAX);
+  await refused((t) => t.devices(), { status: 200, text: text(JSON_ANSWER_MAX + 1) }, JSON_ANSWER_MAX);
+  await refused((t) => t.postVersion(FILE_ID, VERSION_POST), { status: 201, text: text(JSON_ANSWER_MAX + 1) }, JSON_ANSWER_MAX);
+  await accepted((t) => t.account(), { status: 200, text: text(JSON_ANSWER_MAX) });
+  // A file's history is allowed more, and still bounded.
+  await accepted((t) => t.getFile(FILE_ID), { status: 200, text: text(JSON_ANSWER_MAX + 1) });
+  await refused((t) => t.getFile(FILE_ID), { status: 200, text: text(METADATA_ANSWER_MAX + 1) }, METADATA_ANSWER_MAX);
+  // A chunk is its ciphertext ceiling, measured in bytes.
+  const maximum = 8 * 1024 * 1024 + 16;
+  await accepted((t) => t.getChunk(SID), { status: 200, body: new ArrayBuffer(maximum) });
+  await refused((t) => t.getChunk(SID), { status: 200, body: new ArrayBuffer(maximum + 1) }, maximum);
+  const batch = 2 * (maximum + 1024) + 1024;
+  await refused((t) => t.getChunks([SID, SID]), { status: 200, headers: { "content-type": "multipart/mixed; boundary=b" }, body: new ArrayBuffer(batch + 1) }, batch);
+  // The feed page is bounded by its records until the server caps it by bytes.
+  await accepted((t) => t.changes(0, 0), { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [], pad: "y".repeat(JSON_ANSWER_MAX) }) });
+});
+
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);
@@ -375,6 +426,8 @@ const INTERNAL = [
   // And the retry machinery: the address read per attempt, the patience a
   // call is given, the pause `wake` ends early (issues #134, #182, #186).
   "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt",
+  // And the ceiling an answer is measured against (#202).
+  "capped",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
 
@@ -411,6 +464,8 @@ const CALLS = [
 /** One fake that answers every method: each reads only the fields it needs. */
 function always(status, text) {
   const sent = [];
+  // One part naming the one sid `CALLS` asks for, so the batch reader accepts it.
+  const part = Buffer.from(`--b\r\nX-Obsync-Sid: ${SID}\r\nX-Obsync-Missing: 1\r\nContent-Length: 0\r\n\r\n\r\n--b--\r\n`);
   const transport = new Transport({
     request: async (request) => {
       sent.push(request);
@@ -418,7 +473,7 @@ function always(status, text) {
         status,
         headers: { "content-type": 'multipart/mixed; boundary="b"' },
         text,
-        arrayBuffer: new ArrayBuffer(0),
+        arrayBuffer: part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength),
       };
     },
     serverUrl: () => SERVER,

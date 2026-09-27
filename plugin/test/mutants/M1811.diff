@@ -1,0 +1,12 @@
+# M1811: a repeatable JSON answer of any size is parsed and kept
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -784,7 +784,7 @@
+   }
+ 
+   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {
+-    return decode<T>(this.capped(method, target, await this.call(method, target, options), options.cap ?? JSON_ANSWER_MAX));
++    return decode<T>(await this.call(method, target, options));
+   }
+ 
+   /**
