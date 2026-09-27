@@ -182,6 +182,12 @@ deny() {
       printf 'helm-e2e: --- terminator ---\n' >&2
       kubectl get pods --namespace "${INGRESS_NAMESPACE}" >&2 2>&1 || true
       kubectl logs --namespace "${INGRESS_NAMESPACE}" "deploy/${FRONT}" --tail 40 >&2 2>&1 || true
+      # The front finds the server by its Service name, so a front that
+      # cannot is a fact about the cluster's DNS and service routing.
+      printf 'helm-e2e: --- cluster DNS and service routing ---\n' >&2
+      kubectl get pods,services,endpointslices --namespace kube-system --output wide >&2 2>&1 || true
+      kubectl logs --namespace kube-system --selector k8s-app=kube-dns --tail 20 >&2 2>&1 || true
+      kubectl logs --namespace kube-system --selector k8s-app=kube-proxy --tail 20 >&2 2>&1 || true
     fi
   fi
   rm -rf -- "${scratch}"
