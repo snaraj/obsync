@@ -312,6 +312,16 @@ rename on another device, or to a different name first (#219).
 
 ### Pairing, setup and settings
 
+**A computer shut down right after pairing no longer stops obsync for
+good.** Obsidian keeps obsync's keys in storage that can reach the disk
+after obsync's own settings file. A crash, forced quit or power cut in
+between left the plugin refusing to load, with nothing to press. It now
+starts unpaired, says so once at start, in Settings and in Show sync
+status, and offers **Pair this device**. The keys it was saving are gone
+and are never guessed; nothing on the device or the server is deleted.
+The entry the device had stays in the Devices list for you to revoke once
+it syncs again. The same on computers and phones (#230).
+
 **The approval prompt tells your devices apart, and shows a code to check.**
 A device names itself by what it is plus a short tag it makes itself, such
 as "Mac 7KQ4", never by its computer name. The prompt shows six digits the
