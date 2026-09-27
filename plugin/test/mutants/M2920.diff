@@ -1,0 +1,11 @@
+# M2920: the way back is taken over whatever took the name meanwhile
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1710,7 +1710,6 @@
+     try {
+       let at: string | null = from;
+       if (!(await vault.adapter.exists(temp))) at = await this.spelling(from);
+-      else if (await vault.adapter.exists(from)) failed = "occupied";
+       else {
+         const entry = vault.getAbstractFileByPath(temp);
+         if (entry !== null) await vault.rename(entry, from);

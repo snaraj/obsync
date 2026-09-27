@@ -862,12 +862,20 @@ the note or folder again on any one device and let it sync.
 capitals, `team docs` with your current notes and `Team docs` with copies that
 no longer change, while another device shows one.
 
-**Why it happens.** A Mac or a Windows computer normally treats `Team docs`
-and `team docs` as ONE folder; Linux, Android, an iPhone and an iPad keep them
-as two. A version before 1.1.0 could send a capitals-only rename as NEW notes
-instead of a rename, so a device that keeps the two apart kept both. From
-1.1.0 a capitals-only rename is sent as a rename, and devices that fold
-capitals rename the folder itself.
+**Why it happens.** A Mac, a Windows computer and an Android phone or tablet
+normally treat `Team docs` and `team docs` as ONE folder; Linux, an iPhone and
+an iPad keep them as two. A version before 1.1.0 could send a capitals-only
+rename as NEW notes instead of a rename, so a device that keeps the two apart
+kept both. From 1.1.0 a capitals-only rename is sent as a rename, and devices
+that fold capitals rename the folder itself.
+
+**Renaming by capitals alone on Android.** Obsidian on Android cannot rename a
+note or folder by capitals alone: it answers "Destination file already
+exists". Rename it on another device, or rename it here to a different name
+first and then to the one you want; obsync carries the rename everywhere. From
+1.1.4 an Android device RECEIVES such a rename from your other devices. If it
+ever cannot, it says "obsync could not change the capitals of ..." and keeps
+the old name; the same two renames on that device fix it.
 
 **If the other device is still on 1.0.x,** this device refuses the moves it
 asks for and tells you once per folder; nothing of yours is written over,

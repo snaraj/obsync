@@ -1,0 +1,11 @@
+# M2905: the vault's step INTO the hidden name reaches the engine
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1752,7 +1752,6 @@
+   recased(from: string, to: string): [string, string] | null {
+     for (const [temp, source] of this.recasing) {
+       const under = (path: string): string | null => path === temp ? "" : path.startsWith(`${temp}/`) ? path.slice(temp.length) : null;
+-      if (under(to) !== null) return null;
+       const rest = under(from);
+       if (rest !== null) return source + rest === to ? null : [source + rest, to];
+     }

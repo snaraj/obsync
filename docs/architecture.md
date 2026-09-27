@@ -798,9 +798,14 @@ long poll and needs its timeout raised.
    same-name rule settles as a collision at the old spelling for good
    (issue #124). The host renames the entry instead, refusing when a
    DIFFERENT file wears the destination's exact name -- proved by inode on
-   desktop and by the adapter's case-sensitive existence check on mobile --
-   and that refusal is the real collision, which takes the same-name rule as
-   before. A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
+   desktop and by the folder's own listing on mobile -- and that refusal is
+   the real collision, which takes the same-name rule as before. Android's
+   storage folds capitals and Obsidian there refuses a capitals-only rename
+   outright, so the phone renames through a hidden name in the same folder,
+   two of Obsidian's own renames reported to the engine as one; a stop
+   between them is put back at the next start and held until the rename is
+   asked for again, so no pass reads it as a deletion (issue #219). A
+   DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
    an entry rename cannot do: `rename(2)` resolves the directory components
    of its destination, so a per-file rename whose difference lies above the
    last component renames nothing and reports success. The FOLDER record

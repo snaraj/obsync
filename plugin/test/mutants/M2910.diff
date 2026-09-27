@@ -1,0 +1,11 @@
+# M2910: folder records held by a re-case in flight are not listed, so the start's pass deletes them
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2133,7 +2133,6 @@
+     // records say, neither fewer nor more (`holds`).
+     if (this.plugin.state.data.pendingRecase !== undefined) {
+       for (const path of Object.keys(this.plugin.state.data.folders)) {
+-        if (this.holds(path) && inFolderScope(path, folders)) out.push(path);
+       }
+     }
+     return out;

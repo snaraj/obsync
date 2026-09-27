@@ -1,0 +1,11 @@
+# M2900: the listing check reverts to exists(to, true), which folds on Android
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1554,6 +1554,7 @@
+     await this.settleRecase(true);
+     if (this.holds(from) || this.holds(to)) throw new Error("a capitals-only rename of this entry is still being put back");
+     const adapter = this.plugin.app.vault.adapter;
++    if (await adapter.exists(to, true)) return "occupied";
+     const cut = to.lastIndexOf("/");
+     const parent = to.slice(0, Math.max(0, cut));
+     const name = to.slice(cut + 1);

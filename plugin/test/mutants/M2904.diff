@@ -1,0 +1,20 @@
+# M2904: the two steps go through the adapter, below Obsidian's index
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1619,14 +1619,14 @@
+       await state.save();
+     };
+     try {
+-      await vault.rename(entry, temp);
++      await vault.adapter.rename(from, temp);
+     } catch {
+       // Nothing moved: the entry still wears the name its records hold.
+       await settle();
+       return refuse("temp_step");
+     }
+     try {
+-      await vault.rename(entry, to);
++      await vault.adapter.rename(temp, to);
+     } catch {
+       try {
+         await vault.rename(entry, from);

@@ -19,9 +19,12 @@
  */
 
 import { Policy, defaultPolicy } from "./policy";
-import { isVaultPath } from "./vaultPath";
+import { caseOnly, isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
 import { hex, isHex, randomBytes } from "./crypto";
+
+/** The hidden name a re-case passes through, beside its entry (`main.ts`, `recase`). */
+export const RECASE_TEMP = /^\.obsync-recase-[0-9a-f]{16}(\.[^/]+)?$/;
 
 /** The supported native API surface; deliberately no enumeration method. */
 export interface SecretStore {
@@ -260,6 +263,15 @@ export interface ObsyncData {
    */
   pendingScope?: { folders?: string[] };
   /**
+   * A capitals-only rename this device was making through a hidden name in
+   * the same folder when it stopped (issue #219; `main.ts`, `recase`).
+   * Written BEFORE the first of its two renames and removed after the
+   * second, so a stop in between leaves the entry under `temp` with this
+   * saying so: the next start puts it back, and until then nothing reads it
+   * as a deletion. A version before 1.1.4 ignores it.
+   */
+  pendingRecase?: { from: string; temp: string; to: string };
+  /**
    * Whether the 24 words were confirmed ON THIS DEVICE, by the three-word
    * check or by restoring them (issue #170). `skipped` is a check closed
    * unanswered: the next start says so once and sets it back to
@@ -459,6 +471,16 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       if (!isVaultPath(path) || data.heldDeletions.includes(path)) continue;
       data.heldDeletions.push(path);
     }
+  }
+  // Input like every path in this file, and narrower: two spellings of one
+  // name, and a hidden name of the one shape `recase` makes, in their folder.
+  // Anything else names a rename nothing here would make, and is dropped.
+  const recase = loaded["pendingRecase"];
+  if (isRecord(recase)) {
+    const { from, temp, to } = recase;
+    const cut = typeof from === "string" ? from.lastIndexOf("/") + 1 : 0;
+    if (isVaultPath(from) && isVaultPath(to) && caseOnly(from, to) && typeof temp === "string" &&
+      temp.slice(0, cut) === from.slice(0, cut) && RECASE_TEMP.test(temp.slice(cut))) data.pendingRecase = { from, temp, to };
   }
   const parked = loaded["parked"];
   if (isRecord(parked)) {

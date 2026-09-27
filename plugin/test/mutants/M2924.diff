@@ -1,0 +1,12 @@
+# M2924: a saved pending re-case may name two different notes
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -466,7 +466,7 @@
+   if (isRecord(recase)) {
+     const { from, temp, to } = recase;
+     const cut = typeof from === "string" ? from.lastIndexOf("/") + 1 : 0;
+-    if (isVaultPath(from) && isVaultPath(to) && caseOnly(from, to) && typeof temp === "string" &&
++    if (isVaultPath(from) && isVaultPath(to) && typeof temp === "string" &&
+       temp.slice(0, cut) === from.slice(0, cut) && RECASE_TEMP.test(temp.slice(cut))) data.pendingRecase = { from, temp, to };
+   }
+   const parked = loaded["parked"];

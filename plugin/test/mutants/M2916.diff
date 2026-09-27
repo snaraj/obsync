@@ -1,0 +1,11 @@
+# M2916: the listing keeps every spelling Obsidian's index holds for one entry
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -717,7 +717,6 @@
+       if (twins.length < 2) continue;
+       for (const path of twins) {
+         const shown = await this.spelling(path).catch(() => null);
+-        if (shown !== null && shown !== path && twins.includes(shown)) ghosts.add(path);
+       }
+     }
+     if (ghosts.size === 0) return files;

@@ -1950,6 +1950,26 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       `pull path_class=file decision=case_move_${outcome} file=${change.file_id} seq=${change.seq}`,
     );
     if (outcome !== "moved") context.moved.delete(echo);
+    // ONE ENTRY THE HOST COULD NOT RE-CASE (issue #219). `occupied` where the
+    // vault shows the new spelling as this very note is not two notes wearing
+    // one name: the same-name rule below would publish the note again as a
+    // second one and settle it beside its own name, for good. Refused, as a
+    // folder's capitals are, and said once, before the decision is logged.
+    if (outcome === "occupied" && (await context.host.spelling(manifest.path)) === localPath) {
+      const told = `recase\u0000${change.file_id}`;
+      if (!context.refused.has(told)) {
+        context.refused.add(told);
+        context.host.notify(
+          `obsync could not change the capitals of "${localPath}" to "${manifest.path}" on this device, so it keeps ` +
+            "its old name here. Nothing was deleted. To match your other devices, rename it here to a different " +
+            `name first, then to "${manifest.path.slice(manifest.path.lastIndexOf("/") + 1)}".`,
+        );
+      }
+      context.host.log(
+        `pull path_class=file decision=case_move_refused reason=recase_failed file=${change.file_id} seq=${change.seq}`,
+      );
+      return "refused";
+    }
     if (outcome === "moved") {
       const record = context.state.fileByPath(localPath);
       if (record !== undefined) {

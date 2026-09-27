@@ -432,6 +432,15 @@ export class ObsidianHost implements VaultHost {
   private folderSyncRefused = false;
   /** The linked folders this host has already told the user about, once each (issue #167). */
   private readonly linked = new Set<string>();
+  /**
+   * Every hidden name a re-case has passed an entry through this session, to
+   * the name it left (`recase`, `recased`). Kept for the session, because the
+   * vault may report a rename after the call that made it returns, and a name
+   * with sixteen random hex digits in it is never reused.
+   */
+  private readonly recasing = new Map<string, string>();
+  /** A re-case that could not be put back has been told about, once (`settleRecase`). */
+  private recaseTold = false;
   private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
   private readonly composing = new WeakMap<MarkdownView, string>();
   private readonly inputWindows = new WeakSet<Window>();
@@ -491,6 +500,10 @@ export class ObsidianHost implements VaultHost {
     // is a folder this device publishes a record for (`syncScope.ts`). It
     // carries the string rule, so what is left to ask is the filesystem's.
     if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
+    if (kind === "file" && this.holds(path)) {
+      this.log("host path_class=file decision=not_synced reason=recase_pending");
+      return false;
+    }
     const desktop = this.desktop;
     try {
       if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
@@ -699,12 +712,59 @@ export class ObsidianHost implements VaultHost {
         const entry = this.plugin.app.vault.getAbstractFileByPath(folder);
         if (entry instanceof TFolder) await visit(entry);
       }
-      return files;
+      return await this.unghosted(files);
     }
     const synced = await this.inventory();
     const skipped = this.plugin.app.vault.getFiles().length - synced.length;
     if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
-    return synced;
+    return await this.unghosted(synced);
+  }
+
+  /**
+   * ONE ENTRY IS LISTED ONCE, however many spellings Obsidian's index keeps
+   * for it (issue #219). A rename made below the index -- another app, or
+   * two adapter-level renames -- leaves the index holding the old spelling
+   * beside the new one for a single file on a phone whose storage folds
+   * capitals, and a first upload published that file under two file ids.
+   * Where the listing holds names that differ only in capitals, each is asked
+   * what the vault really shows, and one the vault shows under ANOTHER listed
+   * name is dropped. A note with no such twin costs no lookup, and two real
+   * files -- on storage that keeps the spellings apart -- each answer with
+   * their own name and are both kept.
+   */
+  private async unghosted(files: VaultStat[]): Promise<VaultStat[]> {
+    const folded = new Map<string, string[]>();
+    for (const { path } of files) {
+      const twins = folded.get(path.toLowerCase());
+      if (twins === undefined) folded.set(path.toLowerCase(), [path]);
+      else twins.push(path);
+    }
+    const ghosts = new Set<string>();
+    for (const twins of folded.values()) {
+      if (twins.length < 2) continue;
+      for (const path of twins) {
+        const shown = await this.spelling(path).catch(() => null);
+        if (shown !== null && shown !== path && twins.includes(shown)) ghosts.add(path);
+      }
+    }
+    if (ghosts.size === 0) return files;
+    this.log(`list decision=skipped reason=index_ghost files=${ghosts.size}`);
+    return files.filter((file) => !ghosts.has(file.path));
+  }
+
+  /**
+   * IS THIS PATH HELD BY A RE-CASE STILL IN FLIGHT (issue #219, `recase`)?
+   * Between its two renames the entry wears a hidden name no listing shows,
+   * so every record at either of its names, or under them, reads as a note
+   * or folder that vanished -- and the start's pass publishes a vanished
+   * record as a deletion. A held file is not synced (`syncable`), which that
+   * pass asks before it tombstones anything, and held folders are listed as
+   * their records stand (`listFolders`), until the rename is asked for again
+   * (`settleRecase`).
+   */
+  private holds(path: string): boolean {
+    const pending = this.plugin.state.data.pendingRecase;
+    return pending !== undefined && [pending.from, pending.to].some((root) => path === root || path.startsWith(`${root}/`));
   }
 
   /**
@@ -772,8 +832,13 @@ export class ObsidianHost implements VaultHost {
    * leaves it. What they held came from the server and is fetched again. A
    * temp a writer of this host holds open is not a leftover. The walk is the
    * scan's, over the selected folders, which is where every write lands.
+   *
+   * FIRST, ON EVERY PLATFORM, a re-case this device stopped between its two
+   * renames is put back (`settleRecase`): the engine calls this before its
+   * first pass, and that pass is the one that publishes deletions.
    */
   async sweep(): Promise<void> {
+    await this.settleRecase(false);
     const desktop = this.desktop;
     if (desktop === null) return;
     const started = Date.now();
@@ -1334,12 +1399,9 @@ export class ObsidianHost implements VaultHost {
    * that does not, and no comparison of the two strings can tell which host
    * this is. Desktop asks the kernel: one no-follow stat per name, and the
    * destination is occupied only when it is a DIFFERENT inode. Mobile has no
-   * inode to ask for and asks the adapter's own case-SENSITIVE existence
-   * check instead, which answers for the exact spelling and nothing else.
-   * An Obsidian older than 1.7.2 ignores that argument and answers for the
-   * folded name, so the rename is REFUSED there rather than risked: the
-   * caller keeps both files, which is what every version before this one
-   * did with a case-only rename anyway.
+   * inode to ask for and reads the destination folder's listing instead
+   * (`landing`), which gives the real names on every phone; a phone whose
+   * storage folds capitals re-cases through a hidden name (`recase`).
    *
    * The destination folder is created when it is missing, because the device
    * that keeps the two spellings apart has no folder under the new one yet.
@@ -1353,10 +1415,18 @@ export class ObsidianHost implements VaultHost {
     const folder = to.slice(0, Math.max(0, to.lastIndexOf("/")));
     if (desktop === null) {
       const adapter = this.plugin.app.vault.adapter;
-      if (await adapter.exists(to, true)) return "occupied";
+      const landing = await this.landing(from, to);
+      if (landing !== "free" && landing !== "recase") return landing;
       if ((await this.stat(from)) === null) return "missing";
       if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
-      await adapter.rename(from, to);
+      try {
+        await adapter.rename(from, to);
+      } catch (error) {
+        // Refused for the entry's own other spelling: storage that folds
+        // capitals, where only a hidden name in between re-cases it.
+        if (landing !== "recase") throw error;
+        return await this.recase(from, to, "file");
+      }
       return "moved";
     }
     const source = await this.confine(desktop, from, ["absent", "file"]);
@@ -1436,11 +1506,11 @@ export class ObsidianHost implements VaultHost {
    *
    * The same shape as `move` one kind over: the destination is occupied only
    * when a DIFFERENT directory -- a different inode on desktop, a different
-   * exact name on mobile -- wears it, because the folded twin of the source
-   * IS the source and re-casing it is the whole operation. Nothing is created
-   * above the destination: a folder renamed in place keeps the parents it
-   * already had, and a destination whose parents are missing is a move this
-   * version does not make.
+   * entry in its folder's listing on mobile -- wears it, because the folded
+   * twin of the source IS the source and re-casing it is the whole operation.
+   * Nothing is created above the destination: a folder renamed in place keeps
+   * the parents it already had, and a destination whose parents are missing
+   * is a move this version does not make.
    */
   async moveFolder(from: string, to: string): Promise<MoveResult> {
     // BOTH NAMES BY THE FOLDER RULE, and its case tolerance is what makes a
@@ -1452,12 +1522,16 @@ export class ObsidianHost implements VaultHost {
     const desktop = this.desktop;
     if (desktop === null) {
       const adapter = this.plugin.app.vault.adapter;
-      // The case-SENSITIVE existence check, and an Obsidian older than 1.7.2
-      // that ignores the argument answers for the folded name -- which
-      // refuses this rename rather than risking it, exactly as `move` does.
-      if (await adapter.exists(to, true)) return "occupied";
+      // The folder's listing and the re-case, exactly as `move` has them.
+      const landing = await this.landing(from, to);
+      if (landing !== "free" && landing !== "recase") return landing;
       if ((await adapter.stat(from))?.type !== "folder") return "missing";
-      await adapter.rename(from, to);
+      try {
+        await adapter.rename(from, to);
+      } catch (error) {
+        if (landing !== "recase") throw error;
+        return await this.recase(from, to, "folder");
+      }
       return "moved";
     }
     const source = await this.confine(desktop, from, ["absent", "directory"]);
@@ -1477,6 +1551,239 @@ export class ObsidianHost implements VaultHost {
       await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
     return "moved";
+  }
+
+  /**
+   * Where `from` may go on a phone (issue #219): `free` for the rename as it
+   * always was, `recase` for one entry changing its capitals on storage that
+   * folds them -- renamed as always where the host allows that, through a
+   * hidden name where it refuses (`recase`) -- or the answer itself.
+   *
+   * THE FOLDER'S LISTING, NOT `exists(to, true)`. Android's shared storage
+   * folds capitals as a Mac does, and there Obsidian's case-sensitive
+   * existence check answers for the folded name too: every capitals-only
+   * rename sent to an Android device was answered `occupied`, waited beside
+   * its name for good, and the device kept the old capitals with nothing said
+   * (measured on Android 15, Obsidian 1.13.8). The listing gives the real
+   * names on every phone. The destination is taken when an entry there wears
+   * EXACTLY its name, or when the name answers through an entry that folds to
+   * it and is not the source; the source under other capitals is the entry
+   * being renamed, never an obstacle. An entry already wearing the new name,
+   * with the old one answering only through it, is a re-case made before
+   * whose record is behind: nothing is left to do. A phone that keeps the
+   * spellings apart answers nothing for a name no entry wears exactly, so it
+   * renames as it always did.
+   */
+  private async landing(from: string, to: string): Promise<MoveResult | "free" | "recase"> {
+    // An entry still under a hidden name is neither where the records say
+    // nor where this rename wants it: answered, the caller would download a
+    // second copy of it. It waits, as a change that cannot be applied yet.
+    await this.settleRecase(true);
+    if (this.holds(from) || this.holds(to)) throw new Error("a capitals-only rename of this entry is still being put back");
+    const adapter = this.plugin.app.vault.adapter;
+    const cut = to.lastIndexOf("/");
+    const parent = to.slice(0, Math.max(0, cut));
+    const name = to.slice(cut + 1);
+    const own = from.slice(0, Math.max(0, from.lastIndexOf("/"))) === parent ? from.slice(from.lastIndexOf("/") + 1) : null;
+    const listed = parent === "" || (await adapter.exists(parent)) ? await adapter.list(parent === "" ? "/" : parent) : { files: [], folders: [] };
+    const names = [...listed.files, ...listed.folders].map((child) => child.slice(child.lastIndexOf("/") + 1));
+    if (names.includes(name)) {
+      return own !== null && caseOnly(own, name) && !names.includes(own) && (await adapter.exists(from)) ? "moved" : "occupied";
+    }
+    if (!(await adapter.exists(to))) return "free";
+    const twins = names.filter((candidate) => caseOnly(candidate, name));
+    return twins.length === 1 && twins[0] === own ? "recase" : "occupied";
+  }
+
+  /**
+   * Re-case ONE entry on a phone whose storage folds capitals (issue #219):
+   * two of Obsidian's own renames, through a hidden name in the same folder.
+   *
+   * WHY TWO, AND WHY OBSIDIAN'S. The direct rename, which the caller tried
+   * first, is refused there -- `Probe.md` to `probe.md` is "Destination file
+   * already exists!" from the adapter and the vault alike, so on Android a
+   * name's capitals can only be RECEIVED -- while two renames through a name
+   * that folds to nothing else succeed, for a file and for a folder whose
+   * children follow. The VAULT's rename is the one that keeps Obsidian's
+   * index true: the same two steps through the adapter re-case the disk and
+   * leave the index listing both spellings of one file, which a first upload
+   * published under two file ids (measured on Android 15, Obsidian 1.13.8).
+   *
+   * ONE RENAME TO EVERYTHING ELSE. The vault reports two renames, and the
+   * first names a hidden path no sync rule admits: it is swallowed, and the
+   * second is reported as the one rename `from -> to` (`recased`), so the
+   * echo marks, the folder record's order and every record move see what a
+   * single native rename produces. Nothing is published, tombstoned or
+   * recorded under the hidden name.
+   *
+   * A STOP IN BETWEEN LEAVES THE ENTRY UNDER A HIDDEN NAME, so the re-case is
+   * saved BEFORE the first rename and cleared after the second
+   * (`pendingRecase`): the next start puts it back (`settleRecase`), and until
+   * then nothing reads its records as deleted (`holds`). A second step that
+   * fails is undone at once through the same API, and the answer is
+   * `occupied`: the caller keeps the entry under the name it has.
+   */
+  private async recase(from: string, to: string, kind: "file" | "folder"): Promise<MoveResult> {
+    const started = Date.now();
+    const state = this.plugin.state;
+    const vault = this.plugin.app.vault;
+    const refuse = (reason: string): MoveResult => {
+      this.log(`vault path_class=${kind} decision=refused reason=${reason} via=temp duration_ms=${Date.now() - started}`);
+      return "occupied";
+    };
+    // Obsidian's rename moves what its index holds, and nothing else.
+    const entry = vault.getAbstractFileByPath(from);
+    if (entry === null || (kind === "file") !== (entry instanceof TFile)) return refuse("not_indexed");
+    // One at a time: a second would overwrite the record of the first.
+    if (state.data.pendingRecase !== undefined) return refuse("recase_pending");
+    const temp = await this.recaseTemp(from, kind);
+    if (temp === null) return refuse("temp_taken");
+    state.data.pendingRecase = { from, temp, to };
+    await state.save();
+    this.recasing.set(temp, from);
+    const settle = async (): Promise<void> => {
+      delete state.data.pendingRecase;
+      await state.save();
+    };
+    try {
+      await vault.rename(entry, temp);
+    } catch {
+      // Nothing moved: the entry still wears the name its records hold.
+      await settle();
+      return refuse("temp_step");
+    }
+    try {
+      await vault.rename(entry, to);
+    } catch {
+      try {
+        await vault.rename(entry, from);
+      } catch (error) {
+        // Left saved for the next start (`settleRecase`), and the caller
+        // fails: whatever asked for this rename asks again.
+        this.log(`vault path_class=${kind} decision=failed reason=put_back via=temp duration_ms=${Date.now() - started}`);
+        throw error;
+      }
+      await settle();
+      return refuse("second_step");
+    }
+    await settle();
+    this.log(`vault path_class=${kind} decision=recased via=temp duration_ms=${Date.now() - started}`);
+    return "moved";
+  }
+
+  /**
+   * A hidden name beside `from` that nothing wears, folded or not: random,
+   * absent from the disk and from the index, and ending in the file's own
+   * extension so Obsidian keeps it the same kind of file.
+   */
+  private async recaseTemp(from: string, kind: "file" | "folder"): Promise<string | null> {
+    const vault = this.plugin.app.vault;
+    const cut = from.lastIndexOf("/") + 1;
+    const dot = from.lastIndexOf(".");
+    const extension = kind === "file" && dot > cut ? from.slice(dot) : "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const temp = `${from.slice(0, cut)}.obsync-recase-${hex(randomBytes(8))}${extension}`;
+      if (vault.getAbstractFileByPath(temp) === null && !(await vault.adapter.exists(temp))) return temp;
+    }
+    return null;
+  }
+
+  /**
+   * Put back a re-case this device stopped between its two renames (issue
+   * #219): at the start, before the pass that publishes deletions (`sweep`),
+   * and before any rename (`landing`), where it is also let go.
+   *
+   * BACK, NOT FORWARD. Every re-case is the pull applying another device's
+   * rename, and whatever asked for it asks again -- the feed does not move
+   * past a change it could not apply, and a note waiting beside its name is
+   * tried at every scan -- so the entry goes back under the name its records
+   * still hold, and the rename is then made the ordinary way, its records
+   * moved by the pull that asked. Finished here instead, the start's pass
+   * would pair the record with the renamed entry by `(mtime, size)` and
+   * publish the rename as this device's own, and a rename is never
+   * deduplicated (`push.ts`): a second head beside the version it came from.
+   * On storage that folds capitals the two names are one, so there is no
+   * forward when the way back is taken.
+   *
+   * AND HELD UNTIL IT IS ASKED FOR AGAIN (`holds`). A folder put back after
+   * the old spelling's tombstone had retired its record is a folder with no
+   * record, which the start's pass would publish as new -- and a tombstone
+   * for that stale spelling later removes the re-cased folder, empty, on a
+   * device that folds capitals. Only the next rename lets it go (`clear`),
+   * because that rename is what makes the records right.
+   *
+   * OBSIDIAN'S INDEX ENDS SHOWING THE ENTRY. While the index still holds the
+   * hidden name -- a reload of the plugin -- the vault's own rename moves it,
+   * as `recase` did. After Obsidian restarts it does not, because hidden
+   * names are not indexed, and the adapter's rename is the only one left; it
+   * cannot leave the old spelling behind in the index, because nothing
+   * indexed the name it leaves. Either way the index is then asked for the
+   * name the entry wears, and one it does not show is not let go.
+   *
+   * ONE THAT CANNOT BE PUT BACK IS KEPT, never deleted: it stays held, one
+   * notice says what to do, and every later start and rename tries again.
+   */
+  private async settleRecase(clear: boolean): Promise<void> {
+    const state = this.plugin.state;
+    const pending = state.data.pendingRecase;
+    if (pending === undefined) return;
+    const started = Date.now();
+    const vault = this.plugin.app.vault;
+    const { from, temp, to } = pending;
+    const kind = ((await vault.adapter.stat(temp)) ?? (await vault.adapter.stat(from)))?.type === "folder" ? "folder" : "file";
+    this.recasing.set(temp, from);
+    let returned = false;
+    let failed: string | null = null;
+    try {
+      let at: string | null = from;
+      if (!(await vault.adapter.exists(temp))) at = await this.spelling(from);
+      else if (await vault.adapter.exists(from)) failed = "occupied";
+      else {
+        const entry = vault.getAbstractFileByPath(temp);
+        if (entry !== null) await vault.rename(entry, from);
+        else await vault.adapter.rename(temp, from);
+        returned = true;
+      }
+      if (failed === null && at !== null && vault.getAbstractFileByPath(at) === null) failed = "not_indexed";
+    } catch {
+      failed = "rename";
+    }
+    const took = Date.now() - started;
+    if (failed !== null) {
+      this.log(`vault path_class=${kind} decision=failed reason=${failed} via=temp duration_ms=${took}`);
+      if (this.recaseTold) return;
+      this.recaseTold = true;
+      this.notify(
+        `obsync could not finish renaming "${from}" to "${to}" on this device. Nothing was deleted` +
+          (failed === "occupied"
+            ? `: something else there took that name first, so the ${kind === "folder" ? "folder" : "note"} is kept in the ` +
+              `same folder as "${temp.slice(temp.lastIndexOf("/") + 1)}", which Obsidian does not show. Rename the other ` +
+              "one, then restart Obsidian to finish."
+            : ". Restart Obsidian to finish."),
+      );
+      return;
+    }
+    if (returned) this.log(`vault path_class=${kind} decision=returned via=temp duration_ms=${took}`);
+    if (!clear) return;
+    delete state.data.pendingRecase;
+    await state.save();
+    if (!returned) this.log(`vault path_class=${kind} decision=recovered via=temp duration_ms=${took}`);
+  }
+
+  /**
+   * A vault rename as the engine must see it (`recase`): `null` for the step
+   * INTO a hidden name, the one rename `from -> to` for the step out of it,
+   * nothing at all for a step back to the name it left, and every other
+   * rename as it came.
+   */
+  recased(from: string, to: string): [string, string] | null {
+    for (const [temp, source] of this.recasing) {
+      const under = (path: string): string | null => path === temp ? "" : path.startsWith(`${temp}/`) ? path.slice(temp.length) : null;
+      if (under(to) !== null) return null;
+      const rest = under(from);
+      if (rest !== null) return source + rest === to ? null : [source + rest, to];
+    }
+    return [from, to];
   }
 
   /**
@@ -1836,7 +2143,7 @@ export class ObsidianHost implements VaultHost {
       // folder outside the selection are both out, in one check -- and the
       // SELECTED folder itself is in, because a folder record is what carries
       // its creation, its removal and its own rename (`syncScope.ts`).
-      if (!inFolderScope(entry.path, folders)) continue;
+      if (!inFolderScope(entry.path, folders) || this.holds(entry.path)) continue;
       if (this.desktop !== null) {
         try {
           await this.confine(this.desktop, entry.path, ["directory"]);
@@ -1848,6 +2155,13 @@ export class ObsidianHost implements VaultHost {
         }
       }
       out.push(entry.path);
+    }
+    // Where a re-case in flight holds them, the folders are what their
+    // records say, neither fewer nor more (`holds`).
+    if (this.plugin.state.data.pendingRecase !== undefined) {
+      for (const path of Object.keys(this.plugin.state.data.folders)) {
+        if (this.holds(path) && inFolderScope(path, folders)) out.push(path);
+      }
     }
     return out;
   }
@@ -2348,9 +2662,17 @@ export default class ObsyncPlugin extends Plugin {
       }),
     );
     this.registerEvent(
-      vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+      vault.on("rename", (file: TAbstractFile, renamedFrom: string) => {
+        // A RE-CASE THROUGH A HIDDEN NAME IS ONE RENAME (issue #219): its step
+        // into that name is nothing, and its step out is `from -> to`
+        // (`ObsidianHost.recase`), so nothing below ever sees the hidden name.
+        const moved: [string, string] | null = this.host === undefined
+          ? [renamedFrom, file.path]
+          : this.host.recased(renamedFrom, file.path);
+        if (moved === null) return;
+        const [oldPath, path] = moved;
         if (file instanceof TFile) {
-          this.engine?.renamed(oldPath, file.path);
+          this.engine?.renamed(oldPath, path);
         } else if (file instanceof TFolder) {
           // ORDER IS PART OF THE WIRE CONTRACT (issue #124, `docs/protocol.md`).
           // A folder renamed by capitalisation ALONE is one directory entry on
@@ -2382,12 +2704,12 @@ export default class ObsyncPlugin extends Plugin {
           // 1). Capturing it here is what makes the two orders below differ in
           // what they SEND and not in what they judge (`sync/engine.ts`).
           const before = this.state.data.syncFolders;
-          if (caseOnly(oldPath, file.path)) {
-            this.engine?.folderRenamed(oldPath, file.path, before);
-            this.engine?.renamedFolder(oldPath, file.path, before);
+          if (caseOnly(oldPath, path)) {
+            this.engine?.folderRenamed(oldPath, path, before);
+            this.engine?.renamedFolder(oldPath, path, before);
           } else {
-            this.engine?.renamedFolder(oldPath, file.path, before);
-            this.engine?.folderRenamed(oldPath, file.path, before);
+            this.engine?.renamedFolder(oldPath, path, before);
+            this.engine?.folderRenamed(oldPath, path, before);
           }
         }
       }),

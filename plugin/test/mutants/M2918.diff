@@ -1,0 +1,11 @@
+# M2918: a rename of an entry still under a hidden name goes ahead
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1552,7 +1552,6 @@
+     // nor where this rename wants it: answered, the caller would download a
+     // second copy of it. It waits, as a change that cannot be applied yet.
+     await this.settleRecase(true);
+-    if (this.holds(from) || this.holds(to)) throw new Error("a capitals-only rename of this entry is still being put back");
+     const adapter = this.plugin.app.vault.adapter;
+     const cut = to.lastIndexOf("/");
+     const parent = to.slice(0, Math.max(0, cut));

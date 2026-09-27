@@ -1,0 +1,12 @@
+# M2906: the vault's step OUT of the hidden name reaches the engine untranslated
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1754,7 +1754,7 @@
+       const under = (path: string): string | null => path === temp ? "" : path.startsWith(`${temp}/`) ? path.slice(temp.length) : null;
+       if (under(to) !== null) return null;
+       const rest = under(from);
+-      if (rest !== null) return source + rest === to ? null : [source + rest, to];
++      if (rest !== null) return [from, to];
+     }
+     return [from, to];
+   }

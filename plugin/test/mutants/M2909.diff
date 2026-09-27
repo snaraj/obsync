@@ -1,0 +1,14 @@
+# M2909: a file held by a re-case in flight is synced, so the start's pass can delete it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -497,10 +497,6 @@
+     // is a folder this device publishes a record for (`syncScope.ts`). It
+     // carries the string rule, so what is left to ask is the filesystem's.
+     if (!(kind === "folder" ? inFolderScope(path, folders) : inSyncScope(path, folders))) return false;
+-    if (kind === "file" && this.holds(path)) {
+-      this.log("host path_class=file decision=not_synced reason=recase_pending");
+-      return false;
+-    }
+     const desktop = this.desktop;
+     try {
+       if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);

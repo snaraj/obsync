@@ -1,0 +1,12 @@
+# M2925: a capitals-only rename Android refuses is not made through a hidden name
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1397,7 +1397,7 @@
+       } catch (error) {
+         // Refused for the entry's own other spelling: storage that folds
+         // capitals, where only a hidden name in between re-cases it.
+-        if (landing !== "recase") throw error;
++        throw error;
+         return await this.recase(from, to, "file");
+       }
+       return "moved";

@@ -1,0 +1,12 @@
+# M2902: any folded twin of the destination counts as the source's own other spelling
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1565,7 +1565,7 @@
+     }
+     if (!(await adapter.exists(to))) return "free";
+     const twins = names.filter((candidate) => caseOnly(candidate, name));
+-    return twins.length === 1 && twins[0] === own ? "recase" : "occupied";
++    return twins.length > 0 ? "recase" : "occupied";
+   }
+ 
+   /**
