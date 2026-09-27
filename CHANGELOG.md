@@ -232,6 +232,18 @@ from your server could not be read" while the server answered every request.
 The deletion is now settled as done, the way a computer already settled it,
 and sync goes on. iPhone, iPad and Android (#234).
 
+**A note you deleted stays deleted when you add a folder to Sync folders.**
+Adding a folder under **Sync folders on this device**, or going back to the
+whole vault, makes the device read your vault's history again from the start.
+A note another device wrote and this device then deleted came back on this
+device alone, with the text it had before, while your other devices kept it
+deleted; a folder deleted the same way came back too. Now the device finishes
+its own deletion as the history reaches it, and sends nothing. The history is
+still read in full, so such a note is downloaded once more and moved to the
+trash again. A note that came back before you updated goes the next time you
+add a folder; if you edited it meanwhile, your edit is kept everywhere.
+Desktop and mobile (#237).
+
 **A file you fetched past the download ceiling is never trashed when it
 changes.** obsync keeps the copy you have, lists it under **Show remote-only
 files** as "a newer version is on the server", and says so once with a

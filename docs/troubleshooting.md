@@ -50,6 +50,7 @@ server again unless the entry says so.
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
+| A note you deleted is back on one device after you changed Sync folders | [A deleted note came back after changing Sync folders](#a-deleted-note-came-back-after-changing-sync-folders) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -1134,6 +1135,33 @@ name are kept. Nothing is copied or deleted.
 
 **How to fix it.** Nothing needs fixing. If you prefer the other name, rename
 the note or folder again on any one device and let it sync.
+
+## A deleted note came back after changing Sync folders
+
+**What you see.** You added a folder under Settings, obsync, **Sync folders on
+this device**, or went back to syncing the whole vault. Afterwards a note or
+folder you had deleted on this device is back, here only: your other devices
+still have it deleted, and it may show older text than you last saw. Or the
+note is missing from the file list while **Leave** says this device has edits
+it has not sent, and the status shows the check mark.
+
+**Why it happens.** Adding a folder makes the device read your vault's history
+again from the start, to fetch what the new folder holds. Up to 1.1.3 it wrote
+back each note another device had written, then skipped its own deletion of
+that note as already done, so the note stood here again at the version before
+you deleted it (issue #237).
+
+**How to fix it.**
+
+1. Update obsync on this device to 1.1.4 or later. From then on the device
+   deletes such a note again as the history reaches your deletion, and sends
+   nothing.
+2. For a note that came back before you updated, delete it again, or add a
+   folder under **Sync folders on this device** and save: the next read of
+   the history removes it. If you edited it meanwhile, your edit is kept and
+   reaches your other devices, like any edit to a note deleted elsewhere.
+3. Reading the history again downloads such a note once more and moves it to
+   the trash again, so this device's trash may hold one more copy.
 
 ## Two folders that differ only in capitalisation
 
