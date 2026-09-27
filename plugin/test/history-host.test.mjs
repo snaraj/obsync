@@ -51,7 +51,9 @@ for (const mobile of [false, true]) test(`create-only ${mobile ? "mobile" : "des
   assert.equal(readFileSync(join(root, "Notes/original.md"), "utf8"), "UNSYNCED ORIGINAL");
   assert.equal(readFileSync(join(root, "Admin/deploy.sh"), "utf8"), "EXCLUDED SENTINEL");
   assert.deepEqual(readdirSync(join(root, "Notes")).sort(), ["copy.md", "original.md"]);
-  if (!mobile) assert.equal(lstatSync(join(root, stat.path)).mode & 0o777, 0o600);
+  // Windows keeps no POSIX mode (Node reports 0o666 for any writable file):
+  // there a copy has the access the vault folder's ACL gives every note.
+  if (!mobile && process.platform !== "win32") assert.equal(lstatSync(join(root, stat.path)).mode & 0o777, 0o600);
   const competing = await h.createWriter("Notes/collision.md", bytes.length, () => {});
   await competing.write(bytes);
   writeFileSync(join(root, "Notes/collision.md"), "COMPETING SENTINEL");
@@ -263,7 +265,7 @@ for (const code of ["ENOTSUP", "EPERM", "EISDIR", "EXDEV"]) test(`a volume that 
   assert.equal(stat.path, "Notes/copy.md");
   assert.equal(stat.size, bytes.length);
   assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
-  assert.equal(lstatSync(join(r.root, "Notes/copy.md")).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(lstatSync(join(r.root, "Notes/copy.md")).mode & 0o777, 0o600);
   assert.equal(Math.round(lstatSync(join(r.root, "Notes/copy.md")).mtimeMs), 1757200000000, "the copy carries the version's time");
   assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "the temp outlived the fallback");
   assert.ok(
