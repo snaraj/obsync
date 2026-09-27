@@ -94,6 +94,20 @@ do exactly this.
 The image is built for 64-bit Linux, `linux/amd64` and `linux/arm64`. There is
 no 32-bit ARM build: on a Raspberry Pi, run the 64-bit Raspberry Pi OS.
 
+### How much memory it needs
+
+Memory follows how many versions of your notes the server keeps, not how big
+your vault is. The server keeps a short record of each kept version in memory,
+about 1.3 KiB for a note, and never the notes themselves. 64 MiB is enough for
+about 45,000 kept versions, for example 4,500 notes with ten versions each,
+and 300 MiB for about 200,000. A restart needs about what the server uses at
+rest. Retention decides how many versions are kept
+(`OBSYNC_RETENTION_VERSIONS` and `OBSYNC_RETENTION_DAYS`), so a long history
+costs memory only while retention keeps it. The Kubernetes chart requests
+128 MiB and allows up to 1 GiB. If you cap a container's memory, give it at
+least what your history needs; the measurements are in
+[storage](storage.md#memory).
+
 ### Volume ownership
 
 The server takes ownership of nothing: each volume must be presented owned by

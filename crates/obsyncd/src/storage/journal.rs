@@ -11,6 +11,7 @@
 //! encodes or decodes a frame.
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -957,16 +958,9 @@ impl Journal {
     pub(crate) fn load_snapshot(&self) -> Result<(Option<(Index, u64)>, u64), StoreError> {
         let mut skipped = 0;
         for (_, path) in self.snapshots()?.into_iter().rev() {
-            let (mut file, total) = open_frames(&path)?;
-            match read_frame(&mut file, 0, total)? {
-                FrameRead::Frame { payload, .. } => match json::parse(&payload) {
-                    Ok(value) => match index_from_value(&value) {
-                        Ok(index) => return Ok((Some((index, total)), skipped)),
-                        Err(_) => skipped += 1,
-                    },
-                    Err(_) => skipped += 1,
-                },
-                _ => skipped += 1,
+            match read_snapshot(&path)? {
+                Some(loaded) => return Ok((Some(loaded), skipped)),
+                None => skipped += 1,
             }
         }
         Ok((None, skipped))
@@ -1142,6 +1136,227 @@ fn read_up_to(file: &mut impl Read, buf: &mut [u8]) -> Result<usize, StoreError>
         }
     }
     Ok(filled)
+}
+
+/// Load one snapshot file a file object at a time.
+///
+/// The same frame, the same bytes and the same CRC check as reading the
+/// payload whole, but neither the whole payload nor a tree of all of it is
+/// ever in memory: only the index being rebuilt, one file's history as a
+/// tree, and a buffer. Parsed whole, a snapshot needed about four times the
+/// index it held, all at once, at every start.
+///
+/// `Ok(None)` is a snapshot this server cannot load -- torn, a CRC that
+/// does not match, or bytes it did not write -- for the caller to skip,
+/// exactly as a whole payload that failed its CRC or its parse was skipped.
+fn read_snapshot(path: &Path) -> Result<Option<(Index, u64)>, StoreError> {
+    let mut file = File::open(path)?;
+    let total = file.metadata()?.len();
+    let mut header = [0u8; HEADER];
+    if read_up_to(&mut file, &mut header)? < HEADER {
+        return Ok(None);
+    }
+    let len = u64::from(u32::from_le_bytes([
+        header[0], header[1], header[2], header[3],
+    ]));
+    let crc = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    if HEADER as u64 + len > total {
+        return Ok(None);
+    }
+    let mut payload = Payload::new(file, len);
+    match payload.index() {
+        Ok(index) => Ok((payload.crc.finalize() == crc).then_some((index, total))),
+        Err(e @ StoreError::Io(_)) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// A snapshot payload as it streams off the volume: bounded by the length
+/// its header states, and CRC'd as it is read, so the check covers exactly
+/// the bytes the header describes.
+struct Payload<R> {
+    inner: R,
+    crc: Crc32,
+    /// Payload bytes not yet read off the volume.
+    left: u64,
+    buf: Box<[u8]>,
+    pos: usize,
+    end: usize,
+}
+
+impl<R: Read> Payload<R> {
+    fn new(inner: R, len: u64) -> Self {
+        Payload {
+            inner,
+            crc: Crc32::new(),
+            left: len,
+            buf: vec![0u8; IO_BUFFER].into_boxed_slice(),
+            pos: 0,
+            end: 0,
+        }
+    }
+
+    /// The snapshot object: every member but `files` parsed as it is, and
+    /// `files` one element at a time into the index. Nothing may follow it.
+    fn index(&mut self) -> Result<Index, StoreError> {
+        let mut members: Vec<(String, Value)> = Vec::new();
+        let mut files = None;
+        let mut element = Vec::new();
+        if self.skip_ws()? != b'{' {
+            return Err(unreadable());
+        }
+        let mut next = self.skip_ws()?;
+        while next != b'}' {
+            element.clear();
+            element.push(next);
+            if next != b'"' {
+                return Err(unreadable());
+            }
+            self.string_rest(&mut element)?;
+            let Ok(Value::Str(key)) = json::parse(&element) else {
+                return Err(unreadable());
+            };
+            if self.skip_ws()? != b':' {
+                return Err(unreadable());
+            }
+            let first = self.skip_ws()?;
+            let after = if key == "files" {
+                if files.is_some() {
+                    return Err(unreadable());
+                }
+                let (listed, after) = self.files(first, &mut element)?;
+                files = Some(listed);
+                after
+            } else {
+                let after = self.value(first, &mut element)?;
+                if members.iter().any(|(k, _)| *k == key) {
+                    return Err(unreadable());
+                }
+                members.push((key, json::parse(&element).map_err(|_| unreadable())?));
+                after
+            };
+            next = match after {
+                b',' => self.skip_ws()?,
+                b'}' => b'}',
+                _ => return Err(unreadable()),
+            };
+        }
+        while self.pos < self.end || self.left > 0 {
+            if !matches!(self.byte()?, b' ' | b'\t' | b'\n' | b'\r') {
+                return Err(unreadable());
+            }
+        }
+        index_from(&Value::Object(members), files.ok_or_else(unreadable)?)
+    }
+
+    /// The `files` array from its first byte, each element parsed and
+    /// converted before the next is read. Returns the byte after the array.
+    fn files(
+        &mut self,
+        first: u8,
+        element: &mut Vec<u8>,
+    ) -> Result<(BTreeMap<FileId, FileEntry>, u8), StoreError> {
+        let mut files = BTreeMap::new();
+        if first != b'[' {
+            return Err(unreadable());
+        }
+        let mut next = self.skip_ws()?;
+        if next == b']' {
+            return Ok((files, self.skip_ws()?));
+        }
+        loop {
+            let after = self.value(next, element)?;
+            let file = json::parse(element).map_err(|_| unreadable())?;
+            let (file_id, entry) = file_from(&file)?;
+            files.insert(file_id, entry);
+            match after {
+                b',' => next = self.skip_ws()?,
+                b']' => return Ok((files, self.skip_ws()?)),
+                _ => return Err(unreadable()),
+            }
+        }
+    }
+
+    /// Copy one JSON value, from its first byte, into `out`, and return the
+    /// first byte after it that is not whitespace. Strings and brackets are
+    /// followed only far enough to find where the value ends; `json::parse`
+    /// judges the rest.
+    fn value(&mut self, first: u8, out: &mut Vec<u8>) -> Result<u8, StoreError> {
+        out.clear();
+        out.push(first);
+        match first {
+            b'"' => self.string_rest(out)?,
+            b'{' | b'[' => {
+                let mut depth = 1usize;
+                while depth > 0 {
+                    let b = self.byte()?;
+                    out.push(b);
+                    match b {
+                        b'"' => self.string_rest(out)?,
+                        b'{' | b'[' => depth += 1,
+                        b'}' | b']' => depth -= 1,
+                        _ => {}
+                    }
+                }
+            }
+            _ => loop {
+                match self.byte()? {
+                    b @ (b',' | b'}' | b']') => return Ok(b),
+                    b' ' | b'\t' | b'\n' | b'\r' => return self.skip_ws(),
+                    b => out.push(b),
+                }
+            },
+        }
+        self.skip_ws()
+    }
+
+    /// The rest of a string whose opening quote is already in `out`.
+    fn string_rest(&mut self, out: &mut Vec<u8>) -> Result<(), StoreError> {
+        loop {
+            let b = self.byte()?;
+            out.push(b);
+            match b {
+                b'\\' => out.push(self.byte()?),
+                b'"' => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+
+    fn skip_ws(&mut self) -> Result<u8, StoreError> {
+        loop {
+            let b = self.byte()?;
+            if !matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                return Ok(b);
+            }
+        }
+    }
+
+    fn byte(&mut self) -> Result<u8, StoreError> {
+        if self.pos == self.end {
+            let want = usize::try_from(self.left.min(self.buf.len() as u64))
+                .expect("no more than the buffer");
+            if want == 0 {
+                return Err(unreadable());
+            }
+            let got = read_up_to(&mut self.inner, &mut self.buf[..want])?;
+            if got == 0 {
+                return Err(unreadable());
+            }
+            self.crc.update(&self.buf[..got]);
+            self.left -= got as u64;
+            self.pos = 0;
+            self.end = got;
+        }
+        let b = self.buf[self.pos];
+        self.pos += 1;
+        Ok(b)
+    }
+}
+
+/// Bytes that are not a snapshot this server wrote.
+fn unreadable() -> StoreError {
+    StoreError::Corrupt("not a readable snapshot".to_string())
 }
 
 fn clean_quarantine_temps(dir: &Path) -> Result<u64, StoreError> {
@@ -1717,7 +1932,20 @@ fn recovery_verifier(value: &Value) -> Result<Option<String>, StoreError> {
     }
 }
 
-fn index_from_value(value: &Value) -> Result<Index, StoreError> {
+/// One file of a snapshot: its id, and its entry in the index.
+fn file_from(file: &Value) -> Result<(FileId, FileEntry), StoreError> {
+    let heads: Vec<VersionId> = field_list(file, "heads", id_of)?;
+    let entry = FileEntry {
+        domain_id: field_id(file, "domain")?,
+        conflicted: heads.len() > 1,
+        heads,
+        versions: field_list(file, "versions", |v| version_from(v).map(Arc::new))?,
+    };
+    Ok((field_id(file, "id")?, entry))
+}
+
+/// A snapshot's index from its members other than `files`, and its files.
+fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index, StoreError> {
     if field_str(value, "t")? != "snapshot" {
         return Err(StoreError::Corrupt("not a snapshot frame".to_string()));
     }
@@ -1756,26 +1984,12 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
             },
         );
     }
-    for file in field(value, "files")?
-        .as_array()
-        .ok_or_else(|| StoreError::Corrupt("files is not an array".to_string()))?
-    {
-        let file_id: FileId = field_id(file, "id")?;
-        let heads: Vec<VersionId> = field_list(file, "heads", id_of)?;
-        let versions = field_list(file, "versions", |v| version_from(v).map(Arc::new))?;
-        for version in &versions {
-            index.feed.push((version.seq, file_id, version.version_id));
+    for (file_id, entry) in &files {
+        for version in &entry.versions {
+            index.feed.push((version.seq, *file_id, version.version_id));
         }
-        index.files.insert(
-            file_id,
-            FileEntry {
-                domain_id: field_id(file, "domain")?,
-                conflicted: heads.len() > 1,
-                heads,
-                versions,
-            },
-        );
     }
+    index.files = files;
     index.feed.sort_by_key(|(seq, _, _)| *seq);
     if let Some(summary) = value.get("gc").filter(|v| !v.is_null()) {
         index.last_gc = Some(gc_from(summary)?);
@@ -1857,9 +2071,11 @@ mod tests {
             );
             let snapshot =
                 format!(r#"{{"t":"snapshot","s":1,"account":{account},"devices":[],"files":[]}}"#);
-            let parsed = json::parse(snapshot.as_bytes()).unwrap();
+            json::parse(snapshot.as_bytes()).expect("well-formed JSON");
             assert!(
-                index_from_value(&parsed).is_err(),
+                Payload::new(snapshot.as_bytes(), snapshot.len() as u64)
+                    .index()
+                    .is_err(),
                 "invalid snapshot: {bad}"
             );
         }
@@ -3115,8 +3331,33 @@ mod tests {
         // Streaming it a file at a time must write exactly those bytes.
         let dir = TempDir::new("journal-snapshot-stream");
         let mut journal = open_journal(&dir);
+        let index = snapshot_fixture();
+        journal.snapshot(&index).expect("snapshot");
+
+        let whole = snapshot_value(&index).to_json().into_bytes();
+        let on_disk = fs::read(
+            dir.path()
+                .join(format!("journal/v1/index/{}.snap", index.seq.0)),
+        )
+        .expect("the snapshot");
+        assert_eq!(&on_disk[HEADER..], &whole[..], "the payload, byte for byte");
+        assert_eq!(on_disk[..4], (whole.len() as u32).to_le_bytes());
+        assert_eq!(on_disk[4..HEADER], crc32(&whole).to_le_bytes());
+        let (loaded, _) = journal.load_snapshot().expect("load");
+        let (loaded, size) = loaded.expect("a snapshot exists");
+        assert_eq!(size, on_disk.len() as u64, "the size a restart remembers");
+        assert_eq!(snapshot_value(&loaded).to_json().into_bytes(), whole);
+    }
+
+    /// An index with an account, a device whose name holds every character
+    /// a payload splitter could trip on, a conflicted file, a second file
+    /// and a scrub summary.
+    fn snapshot_fixture() -> Index {
         let mut index = Index::default();
-        let device = device_record();
+        let mut device = device_record();
+        // One quote, unpaired: a reader that misses its escape ends the
+        // string there and reads the brackets after it as structure.
+        device.name = "a \"quote ]}, [{ \\ name\twith \u{1} and é".to_string();
         let device_id = device.device_id;
         let frames = [
             account_frame(),
@@ -3167,21 +3408,65 @@ mod tests {
             index.apply(&record(n as u64 + 1, frame));
         }
         assert!(index.files[&FileId::new([2u8; 16])].conflicted);
-        journal.snapshot(&index).expect("snapshot");
+        index
+    }
 
-        let whole = snapshot_value(&index).to_json().into_bytes();
-        let on_disk = fs::read(
-            dir.path()
-                .join(format!("journal/v1/index/{}.snap", index.seq.0)),
-        )
-        .expect("the snapshot");
-        assert_eq!(&on_disk[HEADER..], &whole[..], "the payload, byte for byte");
-        assert_eq!(on_disk[..4], (whole.len() as u32).to_le_bytes());
-        assert_eq!(on_disk[4..HEADER], crc32(&whole).to_le_bytes());
-        let (loaded, _) = journal.load_snapshot().expect("load");
-        let (loaded, size) = loaded.expect("a snapshot exists");
-        assert_eq!(size, on_disk.len() as u64, "the size a restart remembers");
-        assert_eq!(snapshot_value(&loaded).to_json().into_bytes(), whole);
+    /// The streamed reader loads what a whole-payload parse loaded, from any
+    /// JSON that parse accepted, and refuses what it refused: whitespace
+    /// anywhere JSON allows it is read; anything after the object, a member
+    /// twice, a missing `files` and a cut-off object are not a snapshot, and
+    /// neither is a payload whose CRC does not match.
+    #[test]
+    fn a_snapshot_is_read_a_file_at_a_time_to_the_index_it_was_written_from() {
+        let whole = String::from_utf8(snapshot_value(&snapshot_fixture()).to_json().into_bytes())
+            .expect("canonical JSON is UTF-8");
+        let read = |payload: &str| {
+            Payload::new(payload.as_bytes(), payload.len() as u64)
+                .index()
+                .map(|index| snapshot_value(&index).to_json())
+        };
+        assert_eq!(read(&whole).expect("canonical"), whole);
+        let spaced = whole
+            .replacen('{', "\n{ ", 1)
+            .replace(",\"files\":[", " ,\t\"files\" : [ ")
+            .replace("}],\"gc\"", "} ]\r\n, \"gc\"")
+            + " \n";
+        assert_ne!(spaced, whole);
+        assert_eq!(read(&spaced).expect("whitespace"), whole);
+        for broken in [
+            format!("{whole} x"),
+            whole.replacen(",\"files\":[", ",\"files\":[],\"files\":[", 1),
+            whole.replacen(
+                "\"t\":\"snapshot\"",
+                "\"t\":\"snapshot\",\"t\":\"snapshot\"",
+                1,
+            ),
+            whole.replacen("\"files\":", "\"filez\":", 1),
+            whole[..whole.len() - 1].to_string(),
+        ] {
+            assert_ne!(broken, whole);
+            assert!(read(&broken).is_err(), "{broken}");
+        }
+
+        // A byte changed inside a file's history that still parses: only the
+        // CRC can tell, and the snapshot is skipped for the one before it.
+        let dir = TempDir::new("journal-snapshot-crc");
+        let mut journal = open_journal(&dir);
+        let mut older = snapshot_fixture();
+        older.seq = Seq(1);
+        journal.snapshot(&older).expect("older snapshot");
+        let index = snapshot_fixture();
+        journal.snapshot(&index).expect("newest snapshot");
+        let path = dir
+            .path()
+            .join(format!("journal/v1/index/{}.snap", index.seq.0));
+        let mut bytes = fs::read(&path).expect("the snapshot");
+        let at = HEADER + whole.find("\"bytes\":").expect("a version's size") + "\"bytes\":".len();
+        bytes[at] = if bytes[at] == b'1' { b'2' } else { b'1' };
+        fs::write(&path, &bytes).expect("rewrite the snapshot");
+        let (loaded, skipped) = journal.load_snapshot().expect("load");
+        assert_eq!(skipped, 1, "the CRC refused it");
+        assert_eq!(loaded.expect("the older snapshot").0.seq, Seq(1));
     }
 
     #[test]

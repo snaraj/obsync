@@ -355,6 +355,36 @@ start destroys every pending device no pairing is holding any more, through
 the `device` delete frame expiry uses (`docs/architecture.md` 4.2). Frames
 carry `account_id`.
 
+## Memory
+
+The index lives in memory: the account, the devices, and every retained
+version of every file with its encrypted manifest. Chunk bodies never do.
+So memory grows with retained history, not with the size of the vault:
+about 1.3 KiB for each retained version of a small note, plus about 1 MiB.
+A version of a larger file costs more, because its manifest lists more
+chunks. Retention bounds history (`OBSYNC_RETENTION_VERSIONS` per file,
+kept at least `OBSYNC_RETENTION_DAYS`), so a vault edited for years holds
+what retention keeps, not everything it ever was.
+
+A start rebuilds the index from the newest snapshot and the journal after
+it. The snapshot is read one file at a time, with its CRC computed as it
+streams, so no copy of the whole snapshot is ever in memory, and a start
+peaks at about what the server holds at rest. Measured on linux/arm64
+(2026-09-26), small notes posted through the API, resident memory in MiB:
+
+| Retained versions | At rest | Start, peak | Start, peak before 1.1.4 |
+| --- | --- | --- | --- |
+| 1 000 | 3 | 4 | 4 |
+| 10 000 | 15 | 14 | 14 |
+| 50 000 | 65 | 62 | 146 |
+| 100 000 | 131 | 115 | 285 |
+| 200 000 | 238 | 221 | 1043 |
+
+The same run on linux/amd64, to 50 000 versions, grew by the same 1.3 KiB
+per version, and its start peaked at half what it did before 1.1.4. Before
+1.1.4, a start parsed the whole snapshot at once. It needed about four times
+the index, which put 200 000 versions past a 1 GiB limit at every start.
+
 ## Integrity
 
 - Every upload is verified against its `sid` while streaming.

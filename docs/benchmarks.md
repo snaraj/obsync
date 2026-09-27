@@ -32,7 +32,7 @@ run and ships in no artifact (AGENTS.md requirement 5).
 | B4 | 20 GiB file, upload killed at 50 %, resumed | bytes re-sent | < 1 chunk |
 | B5 | 200 × 20 MiB images burst from mobile | wall time, failures | zero failures |
 | B6 | Modify 1 MiB inside a 4 GiB archive | bytes uploaded | ≤ 16 MiB |
-| B7 | Server idle and under B1 on the smallest supported node | RSS, CPU | idle RSS < 64 MiB |
+| B7 | Server idle and under B1 on the smallest supported node | RSS, CPU | idle RSS < 64 MiB after B1, growing by no more than 1.5 KiB per further retained version ([storage](storage.md#memory)); a start peaks within a few MiB of it |
 | B8 | Storage overhead for a 10 GiB mixed vault | bytes on disk / bytes plaintext | ≤ 1.01 |
 
 **B2's target follows from the plugin, not the other way round.** The

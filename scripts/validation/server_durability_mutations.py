@@ -24,6 +24,7 @@ GROUP = "concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own"
 PENDING = "a_nonce_in_flight_is_already_a_replay_and_the_check_does_not_wait_for_the_volume"
 REFUSED = "a_refused_batch_answers_every_member_and_leaves_every_nonce_unspent"
 PANIC = "a_flush_that_panics_answers_every_member_and_blocks_nobody"
+READ = "a_snapshot_is_read_a_file_at_a_time_to_the_index_it_was_written_from"
 FSYNC = "a_writer_s_fsync_holds_the_journal_and_never_the_index_and_nothing_is_applied_before_it"
 GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_snapshot"
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
@@ -138,6 +139,27 @@ CASES = [
         "        frame.put(b\"],\")?;\n",
         "        frame.put(b\"]\")?;\n",
     )], "a_streamed_snapshot_is_the_one_frame_the_whole_object_makes_byte_for_byte"),
+    # --- a snapshot read a file at a time (#205) ------------------------------
+    ("snapshot-read-checks-the-crc", JOURNAL, [(
+        "Ok(index) => Ok((payload.crc.finalize() == crc).then_some((index, total))),",
+        "Ok(index) => Ok(Some((index, total))),",
+    )], READ),
+    ("snapshot-read-follows-escapes", JOURNAL, [(
+        "                b'\\\\' => out.push(self.byte()?),\n", "",
+    )], READ),
+    ("snapshot-read-follows-nesting", JOURNAL, [(
+        "                        b'{' | b'[' => depth += 1,\n", "",
+    )], READ),
+    ("snapshot-read-nothing-after", JOURNAL, [(
+        "            if !matches!(self.byte()?, b' ' | b'\\t' | b'\\n' | b'\\r') {",
+        "            if self.byte()? == 0 {",
+    )], READ),
+    ("snapshot-read-member-once", JOURNAL, [(
+        "                if members.iter().any(|(k, _)| *k == key) {", "                if false {",
+    )], READ),
+    ("snapshot-read-files-once", JOURNAL, [(
+        "                if files.is_some() {", "                if false {",
+    )], READ),
     # --- collection (#192) ---------------------------------------------------
     ("gc-reupload-check", STORE, [(
         "            if self.index().chunks.contains_key(sid) {\n                reuploaded += 1;\n"
