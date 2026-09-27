@@ -166,7 +166,7 @@ const quarantine = [
 const volumes = [
   {
     role: 'blobs',
-    path_class: 'local-pie-ssd',
+    path_class: 'local-ssd',
     bytes_total: 250 * GiB,
     bytes_used: 171 * GiB,
     bytes_free: 79 * GiB,
@@ -175,7 +175,7 @@ const volumes = [
   },
   {
     role: 'journal',
-    path_class: 'local-pie-ssd',
+    path_class: 'local-ssd',
     bytes_total: 4 * GiB,
     bytes_used: 3.82 * GiB,
     bytes_free: 0.18 * GiB,

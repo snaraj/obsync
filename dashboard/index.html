@@ -5,6 +5,7 @@
 <meta name="referrer" content="same-origin">
 <title>obsync</title>
 <link rel="stylesheet" href="/app.css">
+<link rel="modulepreload" href="/lib.js">
 <script type="module" src="/app.js"></script>
 
 <a class="skip" href="#main">Skip to content</a>
@@ -220,10 +221,11 @@
       <h2>This deployment sits behind a managed edge</h2>
       <p>
         Edge mode is <code id="edge-mode" class="mono"></code>. Every request to
-        <code>/v1/*</code> must carry the edge's connecting-address and request-id headers, and the
-        edge's access policy in front of the API is a service-token policy. Issue a service token
-        there and configure it on the device before pairing, or the server refuses the request with
-        <code>421 edge_required</code> and pairing never starts.
+        <code>/v1/*</code> must arrive through the edge, carrying its connecting-address and
+        request-id headers from an address the server trusts. If the edge's access policy asks
+        for credentials on the API, add them to the device's custom request headers before
+        pairing, or the request is refused with <code>421 edge_required</code> and pairing never
+        starts.
       </p>
     </div>
   </section>
@@ -293,21 +295,22 @@
 
   <section id="page-install" class="page" hidden aria-labelledby="install-h">
     <h1 id="install-h">Install</h1>
-    <p>Install Obsync inside Obsidian on each computer, phone, or tablet.</p>
+    <p>Install the plugin inside Obsidian on each computer, phone, or tablet.</p>
     <ol class="prose">
       <li>Open your vault and go to Settings → Community plugins.</li>
-      <li>Allow community plugins, select Browse, search for <strong>Obsync</strong>,
-        then select Install and Enable.</li>
-      <li>Open Obsync settings, enter your server's HTTPS address, and save the folders
+      <li>Allow community plugins, select Browse, search for
+        <strong>Self Hosted Private Sync</strong>, then select Install and Enable.</li>
+      <li>Open its settings, enter your server's HTTPS address, and save the folders
         you want this device to sync.</li>
-      <li>For your first device, complete First-time setup and keep the recovery phrase safe.
+      <li>For your first device, use Setup or recover and keep the recovery phrase safe.
         For another device, use Pair a new device on a paired device, enter its pairing
         code here, then approve the new device there.</li>
     </ol>
-    <p class="note">If Obsync is not in Browse, its directory listing is not yet available.
+    <p class="note">If the plugin is not in Browse, its directory listing is not yet available.
       Installation does not require copying plugin folders manually.</p>
     <h2>Updates</h2>
-    <p>In Settings → Community plugins, select Check for updates and update Obsync.
+    <p>In Settings → Community plugins, select Check for updates and update
+      Self Hosted Private Sync.
       Your vault and pairing stay in place. Each device manages its own plugin updates.</p>
     <p>Server plugin <span id="plugin-version" class="mono skel">&nbsp;</span>.</p>
     <h2>Connection</h2>
