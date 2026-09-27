@@ -347,7 +347,15 @@ class HelmRefusalsPreserveWhatTheyRefuseAbout(unittest.TestCase):
 class TheScriptsBindTeardownToWhatTheyCreated(unittest.TestCase):
     """Order and ownership, read off the source the cases above executed."""
 
-    SCRIPTS = ("compose-e2e.sh", "helm-e2e.sh")
+    # Every script that creates named objects on a runner. The two tests that
+    # read a script's cleanup verb and creating command stay with the first
+    # two, whose shapes they were written against; these all share the order
+    # and naming rules below.
+    SCRIPTS = (
+        "compose-e2e.sh",
+        "helm-e2e.sh",
+        "bench.sh",
+    )
 
     def source(self, name: str) -> str:
         return (HERE / name).read_text(encoding="utf-8")
@@ -503,7 +511,7 @@ class TheWorkflowCleanupsNameTheSameRun(unittest.TestCase):
                     continue
                 steps = [s for s in job.get("steps", []) if isinstance(s, dict)]
                 runs = "\n".join(s["run"] for s in steps if isinstance(s.get("run"), str))
-                if "scripts/ci/compose-e2e.sh" in runs or "scripts/ci/helm-e2e.sh" in runs:
+                if any(f"scripts/ci/{script}" in runs for script in TheScriptsBindTeardownToWhatTheyCreated.SCRIPTS):
                     found.append((path.name, name, job, runs))
         return found
 

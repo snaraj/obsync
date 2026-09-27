@@ -139,7 +139,12 @@ FORBIDDEN_LITERALS = {
 }
 
 # Rule 7: the scripts whose workflows must clean up after themselves.
-DISPOSABLE = ("compose-e2e.sh", "helm-e2e.sh", "distro-smoke.sh")
+DISPOSABLE = (
+    "compose-e2e.sh",
+    "helm-e2e.sh",
+    "distro-smoke.sh",
+    "bench.sh",
+)
 
 
 def scripts() -> dict[str, str]:

@@ -1,0 +1,95 @@
+name: Benchmarks
+
+# The numbers docs/benchmarks.md names -- B1 (10,000 small notes pushed), B2
+# (an edit reaching the other device), B3 (2 GiB up and down), B7 (idle
+# memory) -- plus the server's fsync calls and bytes written, measured against
+# the Compose deployment with the image this commit builds, on both
+# architectures. `scripts/ci/bench.sh` says how the server's own counters are
+# read.
+#
+# NOTHING IS COMMITTED. The results are this run's artifact, kept 90 days; CI
+# never writes to the repository. A number that belongs in the docs is copied
+# there by a person, with the run that produced it.
+#
+# WHEN IT RUNS. Nightly at full scale, and by hand. A pull request that changes
+# the harness itself runs it at smoke scale, so a broken harness is found
+# before it merges rather than the night after; no other pull request waits on
+# it. It is not a regression gate: shared runners are too noisy for a
+# threshold, so the numbers are recorded, not judged.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/bench.yml'
+      - 'scripts/ci/bench.sh'
+      - 'scripts/ci/api_flow.py'
+
+permissions: {}
+
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target.architecture }}
+      # Full scale on the schedule and by hand; smoke scale on a pull request.
+      OBSYNC_BENCH_SCALE: ${{ github.event_name == 'pull_request' && 'smoke' || 'full' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the shipped image
+        run: docker build --tag "obsync-bench:${GITHUB_SHA}" .
+      - name: Measure
+        run: |
+          set -euo pipefail
+          scripts/ci/bench.sh "obsync-bench:${GITHUB_SHA}" "${RUNNER_TEMP}/bench-results"
+          {
+            printf '## obsync bench (%s, %s scale)\n\n' "$(uname -m)" "${OBSYNC_BENCH_SCALE}"
+            cat "${RUNNER_TEMP}/bench-results/bench.md"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Keep the results with the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-${{ matrix.target.architecture }}
+          path: ${{ runner.temp }}/bench-results
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          project="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          docker ps --all --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker rm --force
+          docker volume ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker volume rm --force
+          docker network ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker network rm
+          docker image rm --force "${project}-probe" >/dev/null 2>&1 || true
+          exit 0

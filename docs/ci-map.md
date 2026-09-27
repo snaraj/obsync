@@ -277,6 +277,15 @@ chart gets wrong — the three peer labels, the upstream Service, and the body
 ceiling. An
 `if: always()` step deletes the cluster whatever happened to the script.
 
+## `bench.yml` — nightly, manual dispatch, and pull requests that change the harness
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `bench` (amd64, arm64) | `docker build`, then `scripts/ci/bench.sh` | Nothing: it MEASURES. [Benchmarks](benchmarks.md) B1, B2 (wire), B3 and B7 against the Compose deployment, with the server's CPU, memory, bytes written and fsync calls read from its own `/proc` entry; full scale on the schedule, smoke scale on a pull request. The results are the run's artifact for 90 days and the step summary; nothing is committed |
+
+It is not in the release chain, for the reason `docs-site.yml` gives, and it
+is not a required check unless the owner enters it into `Protect-Main`.
+
 ## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch
 
 | Job | Command | What it proves |
@@ -342,11 +351,13 @@ missing is only the ruleset's refusal to merge around a red one.
 
 Top-level `permissions: {}` with narrow per-job grants; `persist-credentials:
 false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`, and
-`ubuntu-24.04-arm` for the architecture matrix, both free for public
+`ubuntu-24.04-arm` for the architecture matrix and the benchmarks, both free for public
 repositories; every third-party action pinned to a full commit SHA with a
 version comment; every third-party tool installed only through a
 checksum-verifying installer (`scripts/ci/install-tools.sh`, and
-`scripts/ci/install-kind.sh` for the one job that creates a cluster). `scripts/ci/test_workflow_integrity.py` refuses
+`scripts/ci/install-kind.sh` for the one job that creates a cluster), and
+strace for the benchmarks refused by `scripts/ci/bench.sh` unless its SHA-256
+matches the pin beside it. `scripts/ci/test_workflow_integrity.py` refuses
 any workflow that breaks the pinning, permissions, `pull_request_target`, or
 `persist-credentials` rules, and its allowlist ratchets shut rather than
 accumulating excuses. The `container` job builds and never publishes: no
