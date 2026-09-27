@@ -1,0 +1,11 @@
+# M2801: a standing refusal no longer leads the status: the next idle hides it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2171,7 +2171,6 @@
+    * than left reading `syncing` for good.
+    */
+   private resting(): EngineStatus {
+-    if (this.refused !== null) return this.refused;
+     const forked = this.contextValue?.forked;
+     for (const fileId of forked ?? []) {
+       const path = this.options.state.pathByFileId(fileId);

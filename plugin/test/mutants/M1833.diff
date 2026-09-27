@@ -1,0 +1,12 @@
+# M1833: an answer from something in front of the server is not named
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -400,7 +400,7 @@
+     return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+   }
+   if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: CLOCK_OFF };
+-  if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
++  if (error.code === "never") {
+     return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
+   }
+   return null;

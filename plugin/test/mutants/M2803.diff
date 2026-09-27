@@ -1,0 +1,11 @@
+# M2803: a refused old-vault edit is sent again without forgetting its record: the old file again
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1821,7 +1821,6 @@
+    */
+   private async rekeyed(context: SyncContext, path: string): Promise<void> {
+     const record = context.state.fileByPath(path);
+-    if (record !== undefined) context.state.forgetPath(path);
+     const again = !this.republished.has(path) && (await context.host.stat(path)) !== null;
+     this.republished.add(path);
+     context.host.log(`push path_class=file decision=${again ? "republish" : "dropped"} reason=domain_mismatch file=${record?.fileId ?? "untracked"}`);

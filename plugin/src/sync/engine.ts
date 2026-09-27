@@ -71,7 +71,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, Transport } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
@@ -359,6 +359,53 @@ export type EngineStatus =
   | { kind: "error"; message: string; code?: string }
   | { kind: "paused"; message: string };
 
+/**
+ * What a refusal about this device's whole sync says, in plain words, with the
+ * one thing to do next (issue #155). Codes stay in the log lines.
+ */
+export const REVOKED_DEVICE =
+  "This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.";
+export const CLOCK_OFF =
+  "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically; sync resumes by itself.";
+export const SERVER_FULL =
+  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.";
+export const NOT_OBSYNC_ANSWER =
+  "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the edge headers in obsync settings; sync retries by itself.";
+export const FEED_FAILED =
+  "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
+export const PUSH_REFUSED =
+  "Your server refused a change from this device. It is sent again when the note next changes, or within a minute; if this stays, check your server's log.";
+export const VERIFY_FAILED =
+  "Server repair could not verify a file this device keeps: the file could not be read here, or the server's copy did not check out. It tries again within five minutes; if this stays, check the server's scrub report.";
+
+/**
+ * ONE MAPPING FROM A FAILURE TO WHAT THE PERSON READS (issues #155, #160),
+ * shared by the feed, a push, a folder post, an editor retry, repair, the
+ * engine's start and Check. It answers only for failures that say something
+ * about THIS DEVICE'S whole sync -- the server's absence, who this device is,
+ * its clock, the server's room, what answers in front of the server -- and
+ * `null` for everything else, which each caller words for what it was doing.
+ *
+ * A REFUSAL IS NOT ABSENCE. Every one of these used to read `offline —
+ * retrying`, which sends a person to their Wi-Fi about a revoked device, a
+ * wrong clock or a full disk; only absence says offline here.
+ */
+export function refusalStatus(error: unknown): EngineStatus | null {
+  if (!(error instanceof ApiError)) return null;
+  // First: a full server is never absence, whatever carried its answer.
+  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
+  if (error.code === "unreachable") return { kind: "offline" };
+  // Not narrowed by the predicate: every branch below is an `ApiError` too.
+  if (forgottenCredential(error as unknown)) {
+    return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+  }
+  if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: CLOCK_OFF };
+  if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
+    return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
+  }
+  return null;
+}
+
 export interface Timers {
   set(fn: () => void, ms: number): unknown;
   clear(handle: unknown): void;
@@ -568,6 +615,16 @@ export class SyncEngine {
    * answer, empty or not, arrives in one round trip (#158, #195).
    */
   private feedAnswered = false;
+  /**
+   * A refusal about this device's whole sync -- its clock, a full server,
+   * something in front of the server, a feed that cannot be read -- that
+   * stands until the server next accepts what it refused (`accepted`, #155).
+   * It is what the status says first, and it clears itself.
+   */
+  private refused: EngineStatus | null = null;
+  /** Paths already sent again under a new vault key (`rekeyed`): once each. */
+  private readonly republished = new Set<string>();
+  private rekeyNoticeShown = false;
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -724,8 +781,41 @@ export class SyncEngine {
     return this.running;
   }
 
+  /** What the status says now, derived as every status this engine emits is (`resting`). */
+  current(): EngineStatus {
+    return this.resting();
+  }
+
   private status(status: EngineStatus): void {
     this.onStatus(status);
+  }
+
+  /**
+   * Say what a failure means (`refusalStatus`, or the caller's own words for
+   * one about its piece of work). Absence and a forgotten device are said as
+   * they are; a refusal with a code STANDS -- it is what `resting` says until
+   * the server accepts again -- and a failure with none is said once.
+   */
+  private report(status: EngineStatus): void {
+    if (status.kind === "error" && status.code !== undefined && status.code !== "forgotten_device") {
+      this.refused = status;
+      this.status(this.resting());
+      return;
+    }
+    this.status(status);
+  }
+
+  /**
+   * The server answered a read (`write` false) or took a change (`write`
+   * true): a refusal it no longer makes clears (#155). A full server still
+   * answers reads, so only a change it takes clears that one.
+   */
+  private accepted(write: boolean): void {
+    const refused = this.refused;
+    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
+    this.refused = null;
+    this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
+    this.status(this.resting());
   }
 
   private need(): SyncContext {
@@ -1631,7 +1721,10 @@ export class SyncEngine {
         this.barrierPath = null;
         try {
           const versionId = await pushFolder(context, path);
-          if (versionId !== null) context.authored.add(versionId);
+          if (versionId !== null) {
+            context.authored.add(versionId);
+            this.accepted(true);
+          }
           this.folderRetries.delete(path);
           // ACKNOWLEDGED, AND ONLY NOW IS THE HOLD OVER. The path left
           // `folderPublishes` above so the drain cannot post it twice, but
@@ -1677,6 +1770,7 @@ export class SyncEngine {
         return;
       }
       context.authored.add(outcome.versionId);
+      this.accepted(true);
       // Re-inserted, so the map stays oldest first and the trim stops at the
       // first entry the window can still read.
       const now = context.now();
@@ -1704,8 +1798,42 @@ export class SyncEngine {
       }
       const message = error instanceof Error ? error.message : String(error);
       context.host.log(`push path_class=file decision=failed reason=${message}`);
-      this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
+      if (error instanceof ApiError && error.code === "domain_mismatch") {
+        await this.rekeyed(context, path);
+        return;
+      }
+      // A local fault is worded where it was raised; a refusal the server gave
+      // is said in plain words, its code left in the line above.
+      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
     }
+  }
+
+  /**
+   * A CHANGE SEALED FOR A VAULT THIS DEVICE'S KEY NO LONGER OPENS (#177).
+   *
+   * After "Create a new vault key", a file this device recorded before the
+   * change is a file of the vault it left: the server holds its versions under
+   * the old domain and answers every later post to it `409 domain_mismatch`,
+   * which no retry changes -- and the periodic scan used to re-queue the same
+   * edit every 30 s for ever. So the answer is final for that version. The
+   * record is forgotten, and a note still on disk is sent once more as a new
+   * note under the new key; one notice says so. Nothing on this device changes.
+   */
+  private async rekeyed(context: SyncContext, path: string): Promise<void> {
+    const record = context.state.fileByPath(path);
+    if (record !== undefined) context.state.forgetPath(path);
+    const again = !this.republished.has(path) && (await context.host.stat(path)) !== null;
+    this.republished.add(path);
+    context.host.log(`push path_class=file decision=${again ? "republish" : "dropped"} reason=domain_mismatch file=${record?.fileId ?? "untracked"}`);
+    if (!this.rekeyNoticeShown) {
+      this.rekeyNoticeShown = true;
+      context.host.notify(
+        "obsync: edits made on this device before its vault key changed could not be sent to the old vault. " +
+          "They are still here, and obsync sends them under the new key.",
+      );
+    }
+    await context.state.save();
+    if (again) this.enqueue(path);
   }
 
   /**
@@ -1776,7 +1904,7 @@ export class SyncEngine {
       context.host.log(
         `push path_class=folder decision=expired reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
       );
-      this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
+      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
       if (!this.folderPostNoticeShown) {
         this.folderPostNoticeShown = true;
         context.host.notify(
@@ -1867,6 +1995,7 @@ export class SyncEngine {
         this.poll = null;
         if (!live()) return;
         this.feedAnswered = true;
+        this.accepted(false);
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
         if (this.restoreDue !== null) continue;
@@ -1878,9 +2007,13 @@ export class SyncEngine {
         // whatever the dropped one brings later is discarded unread.
         if (error instanceof ApiError && error.code === "cancelled") continue;
         this.feedAnswered = false;
-        if (forgottenCredential(error)) {
+        // What the failure means, said on the FIRST one (#155): a refusal names
+        // itself and stands until the server answers again; only absence reads
+        // offline; anything else is a read that failed, said as that.
+        const refused = refusalStatus(error) ?? { kind: "error", code: "feed", message: FEED_FAILED };
+        if (refused.kind === "error" && refused.code === "forgotten_device") {
           context.host.log("feed decision=stopped reason=forgotten_device");
-          this.status({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+          this.status(refused);
           this.stop();
           return;
         }
@@ -1891,8 +2024,8 @@ export class SyncEngine {
         }
         verify = true;
         const message = error instanceof Error ? error.message : String(error);
-        context.host.log(`feed decision=retry reason=${message}`);
-        this.status({ kind: "offline" });
+        context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+        this.report(refused);
         await new Promise<void>((resolve) => {
           this.feedPause = resolve;
           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);
@@ -2038,6 +2171,7 @@ export class SyncEngine {
    * than left reading `syncing` for good.
    */
   private resting(): EngineStatus {
+    if (this.refused !== null) return this.refused;
     const forked = this.contextValue?.forked;
     for (const fileId of forked ?? []) {
       const path = this.options.state.pathByFileId(fileId);
@@ -2139,8 +2273,7 @@ export class SyncEngine {
         this.status(this.resting());
       } catch (error) {
         context.host.log(`pull decision=editor_retry_failed reason=${error instanceof ApiError ? `http_${error.status}` : "failed"} retry_ms=1000`);
-        this.status(error instanceof ApiError && error.code === "unreachable"
-          ? { kind: "offline" } : { kind: "error", message: "An editor update could not finish. It will be retried automatically." });
+        this.report(refusalStatus(error) ?? { kind: "error", message: "An editor update could not finish. It will be retried automatically." });
       } finally {
         this.armEditorRetry();
       }
@@ -3077,19 +3210,18 @@ export class SyncEngine {
         // down: the dialog took the slot between the check above and this
         // step's own read. It is never an error status (issue #103).
         const busy = error instanceof Error && error.name === "HistoryBusyError";
-        // A server that is simply not there is absence, not a repair problem:
-        // the status bar already reads `offline — retrying` from the first
-        // unanswered attempt, and an error sending an offline person to the
-        // server's scrub report is a false alarm (the 2026-09-23 run).
-        const absent = error instanceof ApiError && error.code === "unreachable" && error.status !== 507;
-        host.log(`repair decision=deferred reason=${busy ? "busy" : absent ? "unreachable" : "read_or_write_failed"} ${budget()}`);
-        if (absent) delay = REPAIR_SCAN_MS;
-        else if (!busy) {
-          this.status({
-            kind: "error",
-            message: "Server repair could not verify a retained file: this device could not read it or the server would not take it. " +
-              "It retries within five minutes; check connectivity and the server scrub report.",
-          });
+        // EACH CAUSE ITS OWN WORDS (#160). A server that is simply not there is
+        // absence, which the status bar already reads from the first unanswered
+        // attempt; a refusal about this device -- its clock, a full server,
+        // something in front of the server, a revoked device -- is the same
+        // refusal the feed or a push would name. Only a file that could not be
+        // read here, or a copy that did not check out, is a repair failure, and
+        // it no longer sends a person to their network.
+        const refused = busy ? null : refusalStatus(error);
+        const reason = busy ? "busy" : refused?.kind === "offline" ? "unreachable" : refused?.kind === "error" ? refused.code : "read_or_write_failed";
+        host.log(`repair decision=deferred reason=${reason} ${budget()}`);
+        if (!busy) {
+          this.report(refused ?? { kind: "error", message: VERIFY_FAILED });
           delay = REPAIR_SCAN_MS;
         }
       }

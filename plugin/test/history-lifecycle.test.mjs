@@ -54,6 +54,7 @@ function reloadHarness(r) {
     async start() { starts++; this.started = true; }
     stop() { this.started = false; }
     async stopAndWait() { this.stop(); }
+    current() { return { kind: "idle" }; }
   };
   instance.startEngine = () => r.Plugin.prototype.startEngine.call(instance);
   return { loads: () => loads, starts: () => starts };

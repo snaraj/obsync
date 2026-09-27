@@ -98,6 +98,7 @@ async function fixture(t) {
     async stopAndWait() { this.stop(); }
     async syncNow() { this.manual = (this.manual ?? 0) + 1; }
     wake(reason) { (this.woken ??= []).push(reason); }
+    current() { return { kind: "idle" }; }
   };
   const instance = new Plugin();
   // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
@@ -511,4 +512,20 @@ test("network back, the app in front again, its window focused, or a new address
   assert.ok(r.logs.includes("engine decision=retrying attempt=1 reason=focus"), r.logs.join("\n"));
   assert.deepEqual(r.win.armed(), []);
   assert.equal(r.instance.engine, r.engines.at(-1));
+});
+
+test("a refused start says why in words, and a start that gets through clears whatever an earlier one said (#155)", async (t) => {
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(403, "device_pending", "SENTINEL"); });
+  await r.instance.onload();
+  assert.match(r.instance.statusText(), /^error — Your server refused to start sync with this device\. Check the Server URL/);
+  assert.doesNotMatch(r.instance.statusText(), /device_pending|SENTINEL|403/, "no raw code reaches the person");
+  r.plan(() => { throw new r.ApiError(401, "stale_timestamp", "SENTINEL"); });
+  await r.instance.restartEngine();
+  assert.match(r.instance.statusText(), /clock is more than five minutes off/);
+  assert.deepEqual(r.win.armed(), [], "a refusal is never knocked on by a timer");
+  // The clock is fixed and the person presses Retry: the error goes with the start that gets through.
+  r.plan(() => undefined);
+  await r.instance.restartEngine();
+  assert.equal(r.instance.statusText(), "idle");
 });

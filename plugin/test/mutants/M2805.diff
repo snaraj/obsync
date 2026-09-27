@@ -1,0 +1,12 @@
+# M2805: repair collapses every cause into the one verification error
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3217,7 +3217,7 @@
+         // refusal the feed or a push would name. Only a file that could not be
+         // read here, or a copy that did not check out, is a repair failure, and
+         // it no longer sends a person to their network.
+-        const refused = busy ? null : refusalStatus(error);
++        const refused = busy ? null : null as ReturnType<typeof refusalStatus>;
+         const reason = busy ? "busy" : refused?.kind === "offline" ? "unreachable" : refused?.kind === "error" ? refused.code : "read_or_write_failed";
+         host.log(`repair decision=deferred reason=${reason} ${budget()}`);
+         if (!busy) {

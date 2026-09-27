@@ -70,7 +70,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
-import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter } from "./sync/engine";
+import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
@@ -239,6 +239,10 @@ const RECONNECT_CAP_MS = 5 * 60 * 1000;
 function unreachable(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "unreachable" && error.status !== 507;
 }
+
+/** A start the server refused for a reason no row of `refusalStatus` names. */
+const START_REFUSED =
+  "Your server refused to start sync with this device. Check the Server URL in obsync settings; the obsync log names the reason.";
 
 /** What Obsidian's plugin manager calls this plugin, as `manifest.json` names it. */
 const PLUGIN_NAME = "Self Hosted Private Sync";
@@ -2149,12 +2153,14 @@ export default class ObsyncPlugin extends Plugin {
       if (this.engine === engine && this.reconnect !== null) {
         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
         this.reconnect = null;
-        // A quiet start emits no status of its own -- the drain speaks only
-        // when there is work -- so the `offline` this cycle set is cleared
-        // here, and only that: a `syncing` the new engine already raised is
-        // its own to keep.
-        if (this.statusValue.kind === "offline") this.setStatus({ kind: "idle" });
       }
+      // A START THAT GOT THROUGH ENDS WHATEVER AN EARLIER ONE SAID (#155): the
+      // cycle's `offline`, and an error a relaunch after a revoke, a rebuilt
+      // server or a wrong address left standing for as long as nothing spoke.
+      // A quiet start emits nothing of its own, so the engine is asked; what
+      // the new engine already said is its own, and stands.
+      const earlier = this.statusValue.kind;
+      if (this.engine === engine && (earlier === "error" || earlier === "offline")) this.setStatus(engine.current());
       if (this.engine === engine) await this.registerAccountRecovery();
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
@@ -2165,9 +2171,13 @@ export default class ObsyncPlugin extends Plugin {
         // never knocked on again by a timer (issue #129).
         const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
         this.log(`engine decision=stopped reason=start_failed code=${code}`);
-        this.setStatus(forgottenCredential(error)
-          ? { kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE }
-          : { kind: "error", message: error instanceof Error ? error.message : String(error) });
+        // The one mapping the running engine uses (#155); a local fault is
+        // worded where it was raised, and a refusal no row names is said in
+        // words, its code left in the line above.
+        this.setStatus(refusalStatus(error) ?? {
+          kind: "error",
+          message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
+        });
         return;
       }
       this.scheduleReconnect(attempt, error.status);
@@ -2817,7 +2827,8 @@ export default class ObsyncPlugin extends Plugin {
       assertCurrent();
       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
     } catch (error) {
-      if (forgottenCredential(error)) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      const refused = refusalStatus(error);
+      if (refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
       // Old servers do not implement this route. Sync can continue, and their
       // last-device refusal remains in force until server and client upgrade.
       this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}`);

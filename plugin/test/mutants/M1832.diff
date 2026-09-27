@@ -1,0 +1,11 @@
+# M1832: a full server is not named: it falls to the generic words
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -393,7 +393,6 @@
+ export function refusalStatus(error: unknown): EngineStatus | null {
+   if (!(error instanceof ApiError)) return null;
+   // First: a full server is never absence, whatever carried its answer.
+-  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
+   if (error.code === "unreachable") return { kind: "offline" };
+   // Not narrowed by the predicate: every branch below is an `ApiError` too.
+   if (forgottenCredential(error as unknown)) {

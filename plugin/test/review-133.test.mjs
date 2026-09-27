@@ -96,8 +96,9 @@ test("a real transport 507 during chunk repair remains a visible storage refusal
     await engine.syncNow();
     assert.equal(refused, 1, "the first 507 is the server's answer, never retried as absence (#155)");
     assert.equal(r.server.chunks.has(sid), false);
-    assert.ok(statuses.some(s => s.kind === "error" && /could not verify/.test(s.message)), JSON.stringify(statuses));
-    assert.ok(r.host.logs.some(s => /repair decision=deferred reason=read_or_write_failed/.test(s)), r.host.logs.join("\n"));
+    // Named for what it is: a full server, not a file repair could not verify (#155, #160).
+    assert.ok(statuses.some(s => s.kind === "error" && s.code === "storage" && /out of storage/.test(s.message)), JSON.stringify(statuses));
+    assert.ok(r.host.logs.some(s => /repair decision=deferred reason=storage/.test(s)), r.host.logs.join("\n"));
   } finally {
     await timers.run(0, () => r.server.feedWaiters.length > 0);
     engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();

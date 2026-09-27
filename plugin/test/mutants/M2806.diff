@@ -1,0 +1,12 @@
+# M2806: a record sealed under the key this device left fails repair again
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -109,7 +109,7 @@
+           // new vault key after it recorded the file, so the record belongs to
+           // the vault it left and there is nothing here to repair it with
+           // (#160, #177). Not a failure, and not the person's to act on.
+-          if (!(error instanceof ManifestError && error.reason === "undecryptable")) throw error;
++          throw error;
+           this.context.host.log(`repair decision=skipped reason=other_key file=${record.fileId}`);
+           return { kind: "skipped" };
+         }

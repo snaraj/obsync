@@ -7,6 +7,7 @@ import { assertSyncPath, inSyncScope } from "../syncScope";
 import { SyncContext } from "./engine";
 import { HistoryCancelled, HistoryOperation, historyManifest } from "./history";
 import { Manifest } from "./push";
+import { ManifestError } from "./pull";
 
 export const REPAIR_BATCH_SIDS = 64;
 export const REPAIR_TICK_MS = 1000;
@@ -100,12 +101,28 @@ export class ChunkRepair {
           });
         if (version === null) return { kind: "lost", fileId: record.fileId, ...(record.ts === undefined ? {} : { ts: record.ts }) };
         this.check(path, record);
-        const manifest = await historyManifest(this.context, record.fileId, this.context.domainId, record.versionId, version);
+        let manifest: Manifest;
+        try {
+          manifest = await historyManifest(this.context, record.fileId, this.context.domainId, record.versionId, version);
+        } catch (error) {
+          // SEALED UNDER A KEY THIS DEVICE NO LONGER HOLDS: this device made a
+          // new vault key after it recorded the file, so the record belongs to
+          // the vault it left and there is nothing here to repair it with
+          // (#160, #177). Not a failure, and not the person's to act on.
+          if (!(error instanceof ManifestError && error.reason === "undecryptable")) throw error;
+          this.context.host.log(`repair decision=skipped reason=other_key file=${record.fileId}`);
+          return { kind: "skipped" };
+        }
         this.check(path, record);
-        // A note beside its name holds the version that names the name it
-        // waits for (`pull.ts`, `settleBeside`; issue #149).
-        if (manifest.deleted || manifest.path !== (record.name ?? path) || manifest.size !== record.size) {
-          throw new Error("Repair version does not match the remembered local file.");
+        // THE NAME IS NOT PART OF WHAT IS REPAIRED (#160). Chunk presence is a
+        // fact about the version, whatever this device calls the note -- a
+        // folder typed in another case, a name the two devices disagree on, a
+        // note beside its name (`pull.ts`, `settleBeside`, #149) -- so a
+        // different path is verified by the version. A version that is not the
+        // remembered file at all is skipped, and said.
+        if (manifest.deleted || manifest.size !== record.size) {
+          this.context.host.log(`repair decision=skipped reason=version_mismatch file=${record.fileId}`);
+          return { kind: "skipped" };
         }
         this.candidate = { path, record, manifest, index: 0, offset: 0 };
       }

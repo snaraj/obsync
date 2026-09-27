@@ -573,11 +573,11 @@ moves until it is resolved.
 **Why it happens.** The plugin stops rather than guessing. The reason names
 it, and **Show sync status** repeats it.
 
-A device that was already running when the server began refusing (a full
-volume, a revoked device, a clock too far off) currently reads
-`obsync: offline — retrying` instead of the reason (issue #155). When the
-refusal is about the device itself -- revoked, or its clock too far off --
-restarting Obsidian on it shows the reason below.
+A running device names a refusal the first time the server makes it -- a
+full volume, a revoked device, a clock too far off, something in front of the
+server answering instead of it -- in words, and the words clear themselves
+once the server accepts again (issue #155). Only a server that does not answer
+reads `offline — retrying`. The code below is in the obsync log line.
 
 **How to fix it,** by what the reason says:
 
@@ -585,6 +585,7 @@ restarting Obsidian on it shows the reason below.
 | --- | --- | --- |
 | `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write | free space on that volume, or grow it and the claim together |
 | `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
+| `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the edge service-token headers in obsync settings |
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
 | `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | do not delete the credential or repeat setup; see [Where your keys are kept](community-plugin.md#where-your-keys-are-kept), or, for a copied or renamed vault, [the entry below](#a-copied-or-renamed-vault-shows-a-storage-error) |
