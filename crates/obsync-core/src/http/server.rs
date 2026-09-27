@@ -147,7 +147,12 @@ impl Server {
             sink,
         } = self;
         let stopped = Arc::new(AtomicBool::new(false));
-        let waker = wake_on_shutdown(addr, Arc::clone(&shutdown), Arc::clone(&stopped));
+        let waker = wake_on_shutdown(
+            addr,
+            Arc::clone(&shutdown),
+            Arc::clone(&stopped),
+            Arc::clone(&sink),
+        );
         if let Err(err) = &waker {
             (*sink)(Report::io("no_waker_thread", err));
         }
@@ -211,29 +216,60 @@ impl Server {
 /// Once `shutdown` is set, connect to the listener until the accept loop
 /// says it has `stopped`: a blocked accept returns only for a connection.
 /// Retried rather than tried once, because one lost connect would leave the
-/// process unable to stop.
+/// process unable to stop. A round in which no address took the connection
+/// is reported, once: that is a stop only a `SIGKILL` will end.
 fn wake_on_shutdown(
     addr: SocketAddr,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    sink: ErrorSink,
 ) -> io::Result<thread::JoinHandle<()>> {
-    let mut target = addr;
-    if target.ip().is_unspecified() {
-        target.set_ip(match addr {
-            SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-            SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-        });
-    }
+    let targets = wake_targets(addr);
     thread::Builder::new()
         .name("obsync-http-waker".to_string())
         .spawn(move || {
+            let mut reported = false;
             while !stopped.load(Ordering::SeqCst) {
                 if shutdown.load(Ordering::Relaxed) {
-                    let _ = TcpStream::connect_timeout(&target, SHUTDOWN_POLL);
+                    let mut refused = None;
+                    for target in &targets {
+                        match TcpStream::connect_timeout(target, SHUTDOWN_POLL) {
+                            Ok(_) => {
+                                refused = None;
+                                break;
+                            }
+                            Err(err) => refused = Some(err),
+                        }
+                    }
+                    if let Some(err) = refused
+                        && !std::mem::replace(&mut reported, true)
+                    {
+                        (*sink)(Report::io("waker_unreachable", &err));
+                    }
                 }
                 thread::sleep(SHUTDOWN_POLL);
             }
         })
+}
+
+/// The addresses the waker tries, in order, to reach a listener on `addr`:
+/// the address itself, or loopback for a wildcard. The IPv6 wildcard gets
+/// both loopbacks. A dual-stack socket still binds where IPv6 is disabled
+/// -- Docker's default bridge network does exactly that -- and there it
+/// takes 127.0.0.1 and refuses `::1`, so trying `::1` alone left a stop
+/// waiting for its `SIGKILL`.
+fn wake_targets(addr: SocketAddr) -> Vec<SocketAddr> {
+    let port = addr.port();
+    match addr {
+        SocketAddr::V6(v6) if v6.ip().is_unspecified() => vec![
+            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        ],
+        SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
+            vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))]
+        }
+        _ => vec![addr],
+    }
 }
 
 /// Holds one connection slot for as long as the connection lives, including
@@ -649,6 +685,47 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(join.is_finished(), "the listener was never woken");
+    }
+
+    /// Where IPv6 is disabled a dual-stack wildcard still binds and takes
+    /// IPv4 only, so the waker has to reach it on 127.0.0.1 too; ::1 alone
+    /// left every stop in a default Docker network waiting for its SIGKILL.
+    #[test]
+    fn a_wildcard_listener_is_woken_on_every_loopback_it_may_answer() {
+        let v6 = |ip: Ipv6Addr| SocketAddr::from((ip, 8080));
+        let v4 = |ip: Ipv4Addr| SocketAddr::from((ip, 8080));
+        assert_eq!(
+            wake_targets(v6(Ipv6Addr::UNSPECIFIED)),
+            [v6(Ipv6Addr::LOCALHOST), v4(Ipv4Addr::LOCALHOST)]
+        );
+        assert_eq!(
+            wake_targets(v4(Ipv4Addr::UNSPECIFIED)),
+            [v4(Ipv4Addr::LOCALHOST)]
+        );
+        let named = v4(Ipv4Addr::new(192, 0, 2, 7));
+        assert_eq!(wake_targets(named), [named]);
+    }
+
+    /// A stop the waker cannot deliver says so, once.
+    #[test]
+    fn a_waker_that_reaches_no_listener_is_reported_once() {
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = closed.local_addr().expect("addr");
+        drop(closed);
+        let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: ErrorSink = {
+            let reports = Arc::clone(&reports);
+            Arc::new(move |report| reports.lock().expect("reports").push(report))
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let waker = wake_on_shutdown(addr, shutdown, Arc::clone(&stopped), sink).expect("spawn");
+        thread::sleep(SHUTDOWN_POLL * 4);
+        stopped.store(true, Ordering::SeqCst);
+        waker.join().expect("the waker stops");
+        let reports = reports.lock().expect("reports");
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports[0].decision, "waker_unreachable");
     }
 
     #[test]
