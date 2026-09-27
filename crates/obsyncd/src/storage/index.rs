@@ -6,9 +6,9 @@
 //! under the SID lock and rebuilt by the startup scan, not by scrub summaries.
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound;
+use std::sync::Arc;
 
 use crate::storage::journal::{Frame, Record};
 use crate::storage::types::{
@@ -57,12 +57,16 @@ pub(crate) struct DeviceEntry {
 /// that version is the only thing that can say which domain the file is in
 /// (`docs/architecture.md` 5.1 item 4). A default-constructed entry would
 /// have to invent one.
+///
+/// A stored version never changes, so it is shared rather than owned: the
+/// copy a snapshot is written from costs a pointer per version, not the
+/// version again.
 #[derive(Clone, Debug)]
 pub(crate) struct FileEntry {
     pub(crate) domain_id: DomainId,
     pub(crate) heads: Vec<VersionId>,
     pub(crate) conflicted: bool,
-    pub(crate) versions: Vec<VersionRecord>,
+    pub(crate) versions: Vec<Arc<VersionRecord>>,
 }
 
 /// What the store knows about one stored chunk.
@@ -89,8 +93,6 @@ pub(crate) struct Index {
     pub(crate) used_bytes: u64,
     pub(crate) last_gc: Option<GcSummary>,
     pub(crate) last_scrub: Option<ScrubSummary>,
-    /// Start of the current scrub pass: chunks verified before it are pending.
-    pub(crate) scrub_cursor: UnixMs,
 }
 
 impl Index {
@@ -199,9 +201,7 @@ impl Index {
                 pruned,
                 summary,
             } => {
-                for (file_id, version_id) in pruned {
-                    self.prune_version(file_id, version_id);
-                }
+                self.prune_versions(pruned);
                 // The chunks go from the index with the frame that records
                 // them, so a replay reaches the same state as the run did
                 // even though chunks are otherwise learnt from the volume.
@@ -252,7 +252,7 @@ impl Index {
         entry.conflicted = entry.heads.len() > 1;
         self.feed
             .push((version.seq, version.file_id, version.version_id));
-        entry.versions.push(version);
+        entry.versions.push(Arc::new(version));
     }
 
     /// How many heads this file would hold if a version naming `parents`
@@ -314,23 +314,51 @@ impl Index {
             .map(|v| (v.seq, v.version_id))
     }
 
-    /// Drop one version, and the file when its last version goes.
-    fn prune_version(&mut self, file_id: &FileId, version_id: &VersionId) {
-        let empty = match self.files.get_mut(file_id) {
-            Some(entry) => {
-                entry.versions.retain(|v| v.version_id != *version_id);
-                entry.heads.retain(|head| head != version_id);
-                entry.conflicted = entry.heads.len() > 1;
-                entry.versions.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            self.files.remove(file_id);
+    /// Drop versions, and each file whose last version goes.
+    ///
+    /// As one set: each touched file is visited once and the feed is walked
+    /// once, rather than once per pruned version, which made a mass deletion
+    /// quadratic -- at collection and again at every replay of its frame.
+    fn prune_versions(&mut self, pruned: &[(FileId, VersionId)]) {
+        if pruned.is_empty() {
+            return;
         }
-        self.feed.retain(|(_, feed_file, feed_version)| {
-            feed_file != file_id || feed_version != version_id
+        let mut by_file: BTreeMap<FileId, BTreeSet<VersionId>> = BTreeMap::new();
+        for (file_id, version_id) in pruned {
+            by_file.entry(*file_id).or_default().insert(*version_id);
+        }
+        for (file_id, gone) in &by_file {
+            let Some(entry) = self.files.get_mut(file_id) else {
+                continue;
+            };
+            entry.versions.retain(|v| !gone.contains(&v.version_id));
+            entry.heads.retain(|head| !gone.contains(head));
+            entry.conflicted = entry.heads.len() > 1;
+            if entry.versions.is_empty() {
+                self.files.remove(file_id);
+            }
+        }
+        self.feed.retain(|(_, file_id, version_id)| {
+            by_file
+                .get(file_id)
+                .is_none_or(|gone| !gone.contains(version_id))
         });
+    }
+
+    /// The part of the index a snapshot records, copied so that it can be
+    /// encoded and written with no guard held. Chunk inventory and the feed
+    /// are left out: the first is learnt from the blob volume at every start,
+    /// and the second is rebuilt from the versions.
+    pub(crate) fn snapshot_copy(&self) -> Index {
+        Index {
+            account: self.account.clone(),
+            devices: self.devices.clone(),
+            files: self.files.clone(),
+            seq: self.seq,
+            last_gc: self.last_gc.clone(),
+            last_scrub: self.last_scrub.clone(),
+            ..Index::default()
+        }
     }
 
     /// Record a chunk that exists on the volume.
@@ -381,7 +409,8 @@ impl Index {
     /// A file with its versions newest first, capped at `keep` plus every head.
     pub(crate) fn file(&self, file_id: &FileId, keep: usize) -> Option<FileRecord> {
         let entry = self.files.get(file_id)?;
-        let mut versions: Vec<VersionRecord> = entry.versions.iter().rev().cloned().collect();
+        let mut versions: Vec<VersionRecord> =
+            entry.versions.iter().rev().map(|v| (**v).clone()).collect();
         if versions.len() > keep {
             let heads = &entry.heads;
             versions = versions
@@ -411,7 +440,7 @@ impl Index {
             .versions
             .iter()
             .find(|v| v.version_id == *version_id)
-            .cloned()
+            .map(|v| (**v).clone())
     }
 
     /// One page of the file listing, ordered by file id. The walk starts AT
@@ -473,7 +502,7 @@ impl Index {
             }
             bytes += cost;
             changes.push(Change {
-                version: version.clone(),
+                version: (**version).clone(),
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
             });
@@ -878,6 +907,66 @@ mod tests {
             "activation must never bring a revoked device back"
         );
         assert_eq!(index.devices[&id].wrapped, [0u8; 32]);
+    }
+
+    #[test]
+    fn one_collection_frame_prunes_versions_across_files_and_the_feed_follows() {
+        let mut index = Index::default();
+        let mut seq = 0;
+        for f in 1..=3u8 {
+            for n in 1..=3u8 {
+                seq += 1;
+                let id = VersionId::new([f * 10 + n; 32]);
+                let parents = if n == 1 {
+                    vec![]
+                } else {
+                    vec![VersionId::new([f * 10 + n - 1; 32])]
+                };
+                index.apply(&record(
+                    seq,
+                    Frame::Version(version_record(file(f), id, &parents, Seq(seq))),
+                ));
+            }
+        }
+        let v = |f: u8, n: u8| (file(f), VersionId::new([f * 10 + n; 32]));
+        // File 4 is conflicted: two roots, both heads.
+        for n in 1..=2u8 {
+            seq += 1;
+            index.apply(&record(
+                seq,
+                Frame::Version(version_record(file(4), v(4, n).1, &[], Seq(seq))),
+            ));
+        }
+        assert!(index.file(&file(4), 10).expect("file 4").conflicted);
+        // File 1 loses its two oldest, file 2 loses everything, file 3 none,
+        // and file 4 one of its heads.
+        index.apply(&record(
+            seq + 1,
+            Frame::Gc {
+                sids: Vec::new(),
+                pruned: vec![v(1, 1), v(2, 1), v(1, 2), v(4, 1), v(2, 2), v(2, 3)],
+                summary: GcSummary {
+                    started: UnixMs(0),
+                    duration_ms: 0,
+                    chunks_collected: 0,
+                    bytes_collected: 0,
+                    chunks_retained: 0,
+                },
+            },
+        ));
+        let one = index.file(&file(1), 10).expect("file 1 stays");
+        assert_eq!(one.versions.len(), 1);
+        assert_eq!(one.heads, vec![v(1, 3).1]);
+        assert!(index.file(&file(2), 10).is_none(), "an emptied file goes");
+        assert_eq!(
+            index.file(&file(3), 10).expect("untouched").versions.len(),
+            3
+        );
+        let four = index.file(&file(4), 10).expect("file 4 stays");
+        assert_eq!(four.heads, vec![v(4, 2).1], "a pruned head is no head");
+        assert!(!four.conflicted, "and one head is no conflict");
+        let fed: Vec<(FileId, VersionId)> = index.feed.iter().map(|(_, f, v)| (*f, *v)).collect();
+        assert_eq!(fed, vec![v(1, 3), v(3, 1), v(3, 2), v(3, 3), v(4, 2)]);
     }
 
     #[test]

@@ -40,6 +40,10 @@ services:
     # never written in this file.
     image: ${OBSYNC_IMAGE}
     restart: unless-stopped
+    # A stop lets requests in flight finish for up to 20 s and then writes a
+    # snapshot; Docker's default of 10 s would kill a drain a large upload is
+    # still using. 30 s is the chart's grace period too (docs/server.md).
+    stop_grace_period: 30s
     # AGENTS.md, "Security invariants": non-root, read-only root filesystem, no
     # capabilities. 65532 is the uid the image's own /data directories are
     # owned by; the chart's securityContext says the same thing in YAML.

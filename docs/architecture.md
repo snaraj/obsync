@@ -676,7 +676,7 @@ authorization work, and none of it exists yet.
 
 An append-only **journal** of frames (`docs/storage.md`) is the source of
 truth; an in-memory **index** (files, versions, devices, chunk refcounts)
-is rebuilt from it at start and snapshotted periodically. Every accepted
+is rebuilt from it at start and snapshotted as the journal grows. Every accepted
 write is journaled and fsynced before its response.
 
 Each version append is checked against the file's current heads: if the

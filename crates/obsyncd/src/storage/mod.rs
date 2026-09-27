@@ -9,9 +9,12 @@
 //! Concurrency: one mutex over the journal writer, one over the index, and a
 //! condition variable on the index for the long-poll change feed. Writes take
 //! the journal first and then the index, always in that order; reads take the
-//! index alone. A fixed table of SID locks serializes chunk mutation before
-//! either lock; GC takes the table in order. Streaming and hashing hold only
-//! a SID lock, so a slow upload never blocks the feed.
+//! index alone. A write holds the journal for its whole life -- validate,
+//! append, fsync, apply -- and the index only to validate and to apply, never
+//! across the volume, so one writer's fsync stalls the next writer and no
+//! reader. A fixed table of SID locks serializes chunk mutation before either
+//! lock; GC takes the table in order. Streaming and hashing hold only a SID
+//! lock, so a slow upload never blocks the feed.
 //!
 //! Free space: the standard library exposes no `statvfs`, and running `df`
 //! from library code would make the server depend on a shell. The watermark
@@ -39,8 +42,9 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use obsync_core::hex;
 use obsync_core::hkdf::hkdf_sha256;
@@ -83,6 +87,12 @@ pub(crate) enum Fault {
     ChunkBeforeRename,
     /// Die part way through appending a journal frame.
     JournalMidAppend,
+    /// Die with the frames durable and not yet applied: the moment between
+    /// the fsync and the answer.
+    JournalCrashAfterSync,
+    /// Die part way through writing a snapshot: half of it is in the
+    /// temporary file, and nothing after that runs.
+    SnapshotTorn,
     /// Write the final journal frame with a corrupt payload.
     JournalTornFrame,
     /// A real filesystem errno at the journal append. The process does NOT
@@ -188,8 +198,32 @@ pub struct Store {
     journal: Mutex<Journal>,
     index: Mutex<Index>,
     changed: Condvar,
+    /// Set once the server is stopping: every long-poll answers at once
+    /// rather than holding the drain for the rest of its wait.
+    stopping: AtomicBool,
+    /// Journal bytes no snapshot covers yet: the tail the next start
+    /// replays. Moved under the index guard, with the frames it counts.
+    grown: AtomicU64,
+    /// The size of the newest snapshot: the one this start loaded, then each
+    /// one it writes. A restart must not forget it, or its first snapshot
+    /// would come due on the floor alone, however large the index.
+    snapshot_bytes: AtomicU64,
+    /// One snapshot at a time; nothing else takes it.
+    snapshotting: Mutex<()>,
+    /// Where the scrub is in its pass.
+    scrub: Mutex<scrub::Pass>,
+    /// When the store opened: the origin of the two write proofs below.
+    opened: Instant,
+    /// When a real write last became durable on the blob volumes and on the
+    /// journal volume, as milliseconds after `opened` plus one; zero until
+    /// one does, and zero again the moment one is refused.
+    blobs_proof: AtomicU64,
+    journal_proof: AtomicU64,
     #[cfg(test)]
     before_scrub_summary: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// Called between a collection's durable frame and its first unlink.
+    #[cfg(test)]
+    before_gc_unlink: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Store {
@@ -219,17 +253,13 @@ impl Store {
         let mut journal = Journal::open(cfg, log.clone())?;
         let (snapshot, skipped) = journal.load_snapshot()?;
         let from_snapshot = snapshot.is_some();
-        let mut index = snapshot.unwrap_or_default();
+        let (mut index, snapshot_bytes) = snapshot.unwrap_or_default();
         let replay = journal.replay(index.seq, &mut |record| index.apply(record))?;
         let (chunks, strays) = blobs.scan()?;
         let chunk_count = chunks.len() as u64;
         for (sid, len, first_seen) in chunks {
             index.add_chunk(sid, len, first_seen);
         }
-        // Every chunk is pending verification when the process starts: a
-        // scrub pass that only ever runs against this process's memory would
-        // never re-check anything after a restart.
-        index.scrub_cursor = UnixMs::now();
 
         started.summary(
             &log,
@@ -263,8 +293,23 @@ impl Store {
             journal: Mutex::new(journal),
             index: Mutex::new(index),
             changed: Condvar::new(),
+            stopping: AtomicBool::new(false),
+            // The tail this start replayed is a tail the next start replays
+            // too, until a snapshot covers it.
+            grown: AtomicU64::new(replay.bytes),
+            snapshot_bytes: AtomicU64::new(snapshot_bytes),
+            snapshotting: Mutex::new(()),
+            // Every chunk is pending verification when the process starts: a
+            // scrub pass that only ever runs against this process's memory
+            // would never re-check anything after a restart.
+            scrub: Mutex::new(scrub::Pass::new(UnixMs::now())),
+            opened: Instant::now(),
+            blobs_proof: AtomicU64::new(0),
+            journal_proof: AtomicU64::new(0),
             #[cfg(test)]
             before_scrub_summary: Mutex::new(None),
+            #[cfg(test)]
+            before_gc_unlink: Mutex::new(None),
         })
     }
 
@@ -435,7 +480,9 @@ impl Store {
                 }
             }
         }
-        self.blobs.write(sid, declared_len, body)?;
+        let written = self.blobs.write(sid, declared_len, body);
+        self.prove(&self.blobs_proof, written.as_ref().map(|_| ()));
+        written?;
         self.index().add_chunk(*sid, declared_len, UnixMs::now());
         Ok(PutOutcome::Created)
     }
@@ -448,7 +495,24 @@ impl Store {
     /// recomputation before anything else is trusted, so a client cannot name
     /// a version whose content it did not supply.
     pub fn append_version(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
-        self.append(v, false)
+        self.append(v, false, None)
+    }
+
+    /// A device's version post: the version, and the `edit` activity event
+    /// an accepted post records, made durable by ONE fsync.
+    ///
+    /// Both frames are the ones a post has always journalled, in the same
+    /// order at consecutive seqs, so every server that replays this journal
+    /// derives the same device activity from it; only the second fsync is
+    /// gone. A post answered with a version the store already held writes
+    /// neither.
+    pub fn post_version(
+        &self,
+        v: NewVersion,
+        accept_existing: bool,
+        edit: SeenEvent,
+    ) -> Result<AppendOutcome, StoreError> {
+        self.append(v, accept_existing, Some(edit))
     }
 
     /// The same, for a caller that will store the version id the answer
@@ -463,10 +527,15 @@ impl Store {
     /// would remember a version this store never held and reconcile its
     /// next edit against nothing.
     pub fn append_version_idempotent(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
-        self.append(v, true)
+        self.append(v, true, None)
     }
 
-    fn append(&self, v: NewVersion, accept_existing: bool) -> Result<AppendOutcome, StoreError> {
+    fn append(
+        &self,
+        v: NewVersion,
+        accept_existing: bool,
+        edit: Option<SeenEvent>,
+    ) -> Result<AppendOutcome, StoreError> {
         let timed = self.log.timed("version_append");
         let mut fields = vec![
             ("file", Val::file(&v.file_id)),
@@ -475,7 +544,7 @@ impl Store {
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
         ];
-        match self.append_version_inner(v, accept_existing) {
+        match self.append_version_inner(v, accept_existing, edit) {
             Ok(outcome) => {
                 fields.push(("seq", Val::seq(outcome.seq)));
                 fields.push(("conflicted", Val::flag(outcome.conflicted)));
@@ -501,6 +570,7 @@ impl Store {
         &self,
         v: NewVersion,
         accept_existing: bool,
+        edit: Option<SeenEvent>,
     ) -> Result<AppendOutcome, StoreError> {
         let expected = version_id_of(&v.file_id, &v.parents, &v.manifest_ct, &v.sids);
         if expected != v.version_id {
@@ -510,7 +580,7 @@ impl Store {
             });
         }
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         match index.account_id() {
             Some(id) if id == v.account_id => {}
             _ => return Err(StoreError::NotSetUp),
@@ -595,22 +665,26 @@ impl Store {
         let now = UnixMs::now();
         let file_id = v.file_id;
         let version_id = v.version_id;
-        let seq = append(&mut journal, &mut index, |seq| {
-            Frame::Version(VersionRecord {
+        let device_id = v.device_id;
+        let seq = self.commit(&mut journal, index, |seq| {
+            let mut frames = vec![Frame::Version(VersionRecord {
                 file_id: v.file_id,
                 domain_id: v.domain_id,
                 version_id: v.version_id,
-                parents: v.parents.clone(),
-                sids: v.sids.clone(),
+                parents: v.parents,
+                sids: v.sids,
                 bytes: v.bytes,
-                manifest_ct: v.manifest_ct.clone(),
+                manifest_ct: v.manifest_ct,
                 manifest_nonce: v.manifest_nonce,
-                device_id: v.device_id,
+                device_id,
                 ts: now,
                 deleted: v.deleted,
                 seq,
-            })
+            })];
+            frames.extend(edit.map(|event| Frame::Seen { device_id, event }));
+            frames
         })?;
+        let index = self.index();
         let entry = index.files.get(&file_id).expect("the version's file");
         let outcome = AppendOutcome {
             seq,
@@ -620,6 +694,7 @@ impl Store {
             decision: AppendDecision::Appended,
         };
         drop(index);
+        drop(journal);
         self.changed.notify_all();
         Ok(outcome)
     }
@@ -668,17 +743,27 @@ impl Store {
         (index.feed.len() as u64, index.files.len() as u64)
     }
 
-    /// Block until the head passes `since`, or until `timeout` elapses.
+    /// Block until the head passes `since`, until `timeout` elapses, or until
+    /// the server is stopping.
     pub fn wait_for_change(&self, since: Seq, timeout: Duration) -> Seq {
         let index = self.index();
-        if index.seq > since {
-            return index.seq;
-        }
         let (index, _) = self
             .changed
-            .wait_timeout_while(index, timeout, |index| index.seq <= since)
+            .wait_timeout_while(index, timeout, |index| {
+                index.seq <= since && !self.stopping.load(Ordering::SeqCst)
+            })
             .expect("index lock");
         index.seq
+    }
+
+    /// Answer every long-poll now, and every later one at once: the server
+    /// is stopping, and a poll left waiting holds the drain for the rest of
+    /// its 55 s. The flag is set before the index guard is taken, so a poll
+    /// either sees it or is already waiting when the wake arrives.
+    pub fn release_waiters(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        drop(self.index());
+        self.changed.notify_all();
     }
 
     // -- account and devices ----------------------------------------------
@@ -698,17 +783,19 @@ impl Store {
         recovery_verifier: Option<String>,
     ) -> Result<AccountId, StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         if index.account.is_some() {
             return Err(StoreError::AlreadySetUp);
         }
         let account_id = AccountId::new(random_bytes::<16>()?);
-        append(&mut journal, &mut index, |_| Frame::Account {
-            account_id,
-            name: name.to_string(),
-            created: UnixMs::now(),
-            quota_bytes: None,
-            recovery_verifier,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Account {
+                account_id,
+                name: name.to_string(),
+                created: UnixMs::now(),
+                quota_bytes: None,
+                recovery_verifier,
+            }]
         })?;
         self.log
             .info("setup", &[("account", Val::account(&account_id))]);
@@ -721,7 +808,7 @@ impl Store {
     /// An absent account or a refused journal append.
     pub fn register_recovery(&self, verifier: &str) -> Result<bool, StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
         if let Some(existing) = account.recovery_verifier {
             return Ok(obsync_core::ct::eq(
@@ -729,12 +816,14 @@ impl Store {
                 verifier.as_bytes(),
             ));
         }
-        append(&mut journal, &mut index, |_| Frame::Account {
-            account_id: account.account_id,
-            name: account.name,
-            created: account.created,
-            quota_bytes: account.quota_bytes,
-            recovery_verifier: Some(verifier.to_string()),
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Account {
+                account_id: account.account_id,
+                name: account.name,
+                created: account.created,
+                quota_bytes: account.quota_bytes,
+                recovery_verifier: Some(verifier.to_string()),
+            }]
         })?;
         Ok(true)
     }
@@ -747,7 +836,7 @@ impl Store {
     /// Pair a device. The secret is wrapped before it reaches the journal.
     pub fn create_device(&self, d: NewDevice) -> Result<DeviceRecord, StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         match index.account_id() {
             Some(id) if id == d.account_id => {}
             _ => return Err(StoreError::NotSetUp),
@@ -770,9 +859,11 @@ impl Store {
         };
         let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
         let stored = record.clone();
-        append(&mut journal, &mut index, |_| Frame::Device {
-            record: stored,
-            wrapped,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Device {
+                record: stored,
+                wrapped,
+            }]
         })?;
         self.log.info(
             "device_created",
@@ -820,17 +911,19 @@ impl Store {
         app_version: Option<String>,
     ) -> Result<DeviceRecord, StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         if !index.devices.contains_key(id) {
             return Err(StoreError::UnknownDevice);
         }
-        append(&mut journal, &mut index, |_| Frame::DeviceUpdate {
-            device_id: *id,
-            name,
-            policy,
-            app_version,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceUpdate {
+                device_id: *id,
+                name,
+                policy,
+                app_version,
+            }]
         })?;
-        Ok(index.devices[id].record.clone())
+        Ok(self.index().devices[id].record.clone())
     }
 
     /// Activate a pending device: the pairing's creator approved it
@@ -843,7 +936,7 @@ impl Store {
     /// brings it back.
     pub fn activate_device(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         let state = index
             .devices
             .get(id)
@@ -854,8 +947,8 @@ impl Store {
             DeviceState::Revoked => return Err(StoreError::DeviceRevoked),
             DeviceState::Pending => {}
         }
-        append(&mut journal, &mut index, |_| Frame::DeviceActivate {
-            device_id: *id,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceActivate { device_id: *id }]
         })?;
         self.log.info(
             "device_activated",
@@ -890,7 +983,7 @@ impl Store {
     /// it is the only active one.
     pub fn revoke_device_unless_last(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         let target_is_active = index
             .devices
             .get(id)
@@ -907,8 +1000,8 @@ impl Store {
         {
             return Err(StoreError::LastActiveDevice);
         }
-        append(&mut journal, &mut index, |_| Frame::DeviceRevoke {
-            device_id: *id,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceRevoke { device_id: *id }]
         })?;
         self.log.info(
             "device_revoked",
@@ -939,7 +1032,7 @@ impl Store {
     /// it is active or revoked.
     pub fn delete_device(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         let state = index
             .devices
             .get(id)
@@ -948,8 +1041,8 @@ impl Store {
         if state != DeviceState::Pending {
             return Err(StoreError::DeviceNotPending);
         }
-        append(&mut journal, &mut index, |_| Frame::DeviceDelete {
-            device_id: *id,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceDelete { device_id: *id }]
         })?;
         self.log.info(
             "device_deleted",
@@ -964,13 +1057,15 @@ impl Store {
     /// Record a device sign-in, edit or heartbeat.
     pub fn record_seen(&self, id: &DeviceId, ev: SeenEvent) -> Result<(), StoreError> {
         let mut journal = self.journal();
-        let mut index = self.index();
+        let index = self.index();
         if !index.devices.contains_key(id) {
             return Err(StoreError::UnknownDevice);
         }
-        append(&mut journal, &mut index, |_| Frame::Seen {
-            device_id: *id,
-            event: ev,
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Seen {
+                device_id: *id,
+                event: ev,
+            }]
         })?;
         Ok(())
     }
@@ -1058,51 +1153,70 @@ impl Store {
 
     /// Collect chunks no retained version references (docs/storage.md).
     ///
-    /// The plan is decided, journalled and applied under the same locks, so a
-    /// version that lands first is always respected; the deletions follow
-    /// under the index lock, so a chunk cannot be re-registered by a
-    /// concurrent upload between the decision and the unlink.
+    /// The plan is decided, journalled and applied while every SID stripe,
+    /// the journal and the index are held, so a version that lands first is
+    /// always respected and no upload can be told a doomed chunk exists.
+    /// Then everything is released and each chunk is unlinked under its own
+    /// stripe alone, so the volume work stalls nobody but an upload of that
+    /// same chunk. That unlink is decided again under the stripe: a chunk
+    /// the index holds once more was re-uploaded after the frame forgot it,
+    /// and the file standing under its name is that upload, not garbage.
     pub fn gc_run(&self, now: UnixMs) -> GcSummary {
         // Budget zero: collection is bounded by what retention releases, not
         // by bytes, and the SUMMARY line carries the duration it took.
         let started = self.log.start("gc", 0);
-        let Some(_chunks) = self.try_all_chunks() else {
-            self.log
-                .info("gc_skipped", &[("decision", Val::word("chunks_busy"))]);
-            return GcSummary {
-                started: now,
-                duration_ms: started.elapsed_ms(),
-                chunks_collected: 0,
-                bytes_collected: 0,
-                chunks_retained: self.index().chunks.len() as u64,
-            };
-        };
-        let mut journal = self.journal();
-        let mut index = self.index();
-        let plan = gc::plan(&index, &self.cfg, now);
         let mut summary = GcSummary {
             started: now,
             duration_ms: 0,
-            chunks_collected: plan.collect.len() as u64,
-            bytes_collected: plan.bytes,
-            chunks_retained: plan.retained_chunks,
+            chunks_collected: 0,
+            bytes_collected: 0,
+            chunks_retained: 0,
         };
-        let frame_summary = summary.clone();
-        let collect = plan.collect.clone();
-        if let Err(e) = append(&mut journal, &mut index, |_| Frame::Gc {
-            sids: plan.collect,
-            pruned: plan.pruned,
-            summary: frame_summary,
-        }) {
-            let mut fields = vec![("decision", Val::word(e.code()))];
-            fields.extend(error_fields(&e));
-            self.log.error("gc_failed", &fields);
-            summary.chunks_collected = 0;
-            summary.bytes_collected = 0;
-            return summary;
+        let collect = {
+            let Some(_chunks) = self.try_all_chunks() else {
+                self.log
+                    .info("gc_skipped", &[("decision", Val::word("chunks_busy"))]);
+                summary.duration_ms = started.elapsed_ms();
+                summary.chunks_retained = self.index().chunks.len() as u64;
+                return summary;
+            };
+            let mut journal = self.journal();
+            let index = self.index();
+            let plan = gc::plan(&index, &self.cfg, now);
+            summary.chunks_retained = plan.retained_chunks;
+            let frame_summary = GcSummary {
+                chunks_collected: plan.collect.len() as u64,
+                bytes_collected: plan.bytes,
+                ..summary.clone()
+            };
+            let collect = plan.collect.clone();
+            if let Err(e) = self.commit(&mut journal, index, |_| {
+                vec![Frame::Gc {
+                    sids: plan.collect,
+                    pruned: plan.pruned,
+                    summary: frame_summary.clone(),
+                }]
+            }) {
+                let mut fields = vec![("decision", Val::word(e.code()))];
+                fields.extend(error_fields(&e));
+                self.log.error("gc_failed", &fields);
+                return summary;
+            }
+            summary = frame_summary;
+            collect
+        };
+        #[cfg(test)]
+        if let Some(hook) = self.before_gc_unlink.lock().expect("gc hook").clone() {
+            hook();
         }
         let mut failed = 0;
+        let mut reuploaded = 0;
         for sid in &collect {
+            let _chunk = self.chunk_guard(sid);
+            if self.index().chunks.contains_key(sid) {
+                reuploaded += 1;
+                continue;
+            }
             if let Err(e) = self.blobs.remove(sid) {
                 failed += 1;
                 let mut fields = vec![("sid", Val::sid(sid)), ("decision", Val::word(e.code()))];
@@ -1110,8 +1224,6 @@ impl Store {
                 self.log.warn("gc_unlink_failed", &fields);
             }
         }
-        drop(index);
-        drop(journal);
         summary.duration_ms = started.elapsed_ms();
         started.summary(
             &self.log,
@@ -1120,20 +1232,45 @@ impl Store {
                 ("bytes", Val::bytes(summary.bytes_collected)),
                 ("retained", Val::count(summary.chunks_retained)),
                 ("unlink_failed", Val::count(failed)),
+                ("reuploaded", Val::count(reuploaded)),
             ],
         );
         summary
     }
 
-    /// Re-hash up to `budget_bytes` of chunks, oldest-verified first.
+    /// Re-hash up to `budget_bytes` of pending chunks, resuming the pass
+    /// where the last step left it.
     ///
     /// A chunk whose content no longer matches its sid is repaired from a
     /// mirror when one holds a good copy, and quarantined when none does. The
     /// hashing holds only the SID lock, never the journal or index lock.
+    ///
+    /// A step is journalled only when it found something -- a mismatch and
+    /// what became of it -- or completed the pass; everything else is the
+    /// walk's one START and one SUMMARY line. A completed pass rests until
+    /// `scrub::PASS_INTERVAL_MS` after it began, or until one is asked for
+    /// ([`Store::request_scrub`]); a resting step reads nothing.
     pub fn scrub_step(&self, budget_bytes: u64) -> ScrubSummary {
-        let started = self.log.start("scrub", budget_bytes);
+        let at = Instant::now();
         let now = UnixMs::now();
-        let candidates = scrub::candidates(&self.index(), budget_bytes);
+        let mut pass = self.scrub.lock().expect("scrub pass");
+        let mut summary = ScrubSummary {
+            started: now,
+            duration_ms: 0,
+            chunks_verified: 0,
+            bytes_verified: 0,
+            mismatches: 0,
+            quarantined: Vec::new(),
+            complete_pass: false,
+        };
+        if pass.rests(now) {
+            return summary;
+        }
+        if pass.run.is_none() {
+            let inventory = self.index().used_bytes;
+            pass.run = Some((self.log.start("scrub", inventory), scrub::Totals::default()));
+        }
+        let (candidates, walked) = scrub::candidates(&self.index(), &pass, budget_bytes);
 
         let mut verified = 0;
         let mut bytes = 0;
@@ -1142,6 +1279,7 @@ impl Store {
         let mut failed = false;
         let mut quarantined = Vec::new();
         for (sid, _) in candidates {
+            pass.after = Some(sid);
             let _chunk = self.chunk_guard(&sid);
             if !self.index().chunks.contains_key(&sid) {
                 continue;
@@ -1206,46 +1344,67 @@ impl Store {
             hook();
         }
 
-        let mut summary = ScrubSummary {
-            started: now,
-            duration_ms: 0,
-            chunks_verified: verified + repaired,
-            bytes_verified: bytes,
-            mismatches,
-            quarantined: quarantined.clone(),
-            complete_pass: false,
-        };
+        summary.chunks_verified = verified + repaired;
+        summary.bytes_verified = bytes;
+        summary.mismatches = mismatches;
+        summary.quarantined = quarantined;
+        pass.failed |= failed;
         let mut journal = self.journal();
-        let mut index = self.index();
-        summary.complete_pass = !failed
-            && journal.unverified().is_none()
-            && scrub::candidates(&index, budget_bytes).is_empty();
-        if summary.complete_pass {
-            index.scrub_cursor = UnixMs::now();
+        summary.complete_pass = walked && !pass.failed && journal.unverified().is_none();
+        summary.duration_ms = u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if summary.complete_pass || summary.mismatches > 0 {
+            let frame = summary.clone();
+            let index = self.index();
+            if let Err(e) = self.commit(&mut journal, index, |_| {
+                vec![Frame::Scrub { summary: frame }]
+            }) {
+                let mut fields = vec![("decision", Val::word(e.code()))];
+                fields.extend(error_fields(&e));
+                self.log.error("scrub_failed", &fields);
+            }
         }
-        summary.duration_ms = started.elapsed_ms();
-        let frame = summary.clone();
-        if let Err(e) = append(&mut journal, &mut index, |_| Frame::Scrub {
-            summary: frame,
-        }) {
-            let mut fields = vec![("decision", Val::word(e.code()))];
-            fields.extend(error_fields(&e));
-            self.log.error("scrub_failed", &fields);
-        }
-        drop(index);
         drop(journal);
-        started.summary(
-            &self.log,
-            &[
-                ("chunks", Val::count(summary.chunks_verified)),
-                ("bytes", Val::bytes(summary.bytes_verified)),
-                ("mismatches", Val::count(summary.mismatches)),
-                ("quarantined", Val::count(quarantined.len() as u64)),
-                ("repaired", Val::count(repaired)),
-                ("complete", Val::flag(summary.complete_pass)),
-            ],
-        );
+
+        let (run, totals) = pass.run.as_mut().expect("a walk has its START");
+        totals.steps += 1;
+        totals.chunks += summary.chunks_verified;
+        totals.bytes += summary.bytes_verified;
+        totals.mismatches += summary.mismatches;
+        totals.quarantined += summary.quarantined.len() as u64;
+        totals.repaired += repaired;
+        if walked {
+            run.summary(
+                &self.log,
+                &[
+                    ("steps", Val::count(totals.steps)),
+                    ("chunks", Val::count(totals.chunks)),
+                    ("bytes", Val::bytes(totals.bytes)),
+                    ("mismatches", Val::count(totals.mismatches)),
+                    ("quarantined", Val::count(totals.quarantined)),
+                    ("repaired", Val::count(totals.repaired)),
+                    ("complete", Val::flag(summary.complete_pass)),
+                ],
+            );
+            pass.run = None;
+            // A complete pass rests. An incomplete one walks again over what
+            // is still pending -- the chunks it could not verify -- under the
+            // same start, so nothing it did verify is hashed twice.
+            if summary.complete_pass {
+                pass.resting = true;
+                pass.asked = false;
+            } else {
+                pass.after = None;
+                pass.failed = false;
+            }
+        }
         summary
+    }
+
+    /// Ask for a scrub pass now: a resting scrub begins one at its next step
+    /// rather than waiting out the interval. A pass already running
+    /// satisfies the request.
+    pub fn request_scrub(&self) {
+        self.scrub.lock().expect("scrub pass").asked = true;
     }
 
     /// Called while the SID lock still excludes a replacement upload.
@@ -1296,17 +1455,80 @@ impl Store {
     }
 
     /// Write an index snapshot so the next start replays less.
+    ///
+    /// The index is copied under its guard and nothing else -- a copy that
+    /// shares every version rather than repeating it -- and the copy is
+    /// encoded, written, fsynced and renamed with no guard held, so writers,
+    /// readers and the feed go on while it lands. The journal guard is taken
+    /// twice and briefly: to start counting the snapshot's bytes toward the
+    /// volume as they land, and to drop what it supersedes afterwards.
     pub fn snapshot(&self) -> Result<(), StoreError> {
+        let _one = self.snapshotting.lock().expect("snapshot");
         // Budget zero: a snapshot is as large as the index is.
         let started = self.log.start("snapshot", 0);
-        let mut journal = self.journal();
-        let index = self.index();
-        journal.snapshot(&index)?;
-        let seq = index.seq;
-        drop(index);
-        drop(journal);
-        started.summary(&self.log, &[("seq", Val::seq(seq))]);
+        let (copy, covered) = {
+            let index = self.index();
+            (index.snapshot_copy(), self.grown.load(Ordering::SeqCst))
+        };
+        let slot = self.journal().admit_snapshot();
+        let written = slot.write(&copy);
+        let bytes = self.journal().finish_snapshot(copy.seq, written)?;
+        self.grown.fetch_sub(covered, Ordering::SeqCst);
+        self.snapshot_bytes.store(bytes, Ordering::SeqCst);
+        started.summary(
+            &self.log,
+            &[
+                ("seq", Val::seq(copy.seq)),
+                ("bytes", Val::bytes(bytes)),
+                ("covered", Val::bytes(covered)),
+            ],
+        );
         Ok(())
+    }
+
+    /// Journal bytes no snapshot covers yet: what the next start replays.
+    pub fn journal_growth(&self) -> u64 {
+        self.grown.load(Ordering::SeqCst)
+    }
+
+    /// Whether the journal has grown enough since the last snapshot to be
+    /// worth a new one: by `floor` bytes, and by at least as much as the
+    /// last snapshot weighed, so writing snapshots never costs more than
+    /// the journal they replace and a start never replays more than about
+    /// twice the index.
+    pub fn snapshot_due(&self, floor: u64) -> bool {
+        self.journal_growth() >= floor.max(self.snapshot_bytes.load(Ordering::SeqCst))
+    }
+
+    /// Record the outcome of a real write on the volume `proof` stands for.
+    /// Only the volume's own refusal takes a proof away; a body that did not
+    /// hash to its sid says nothing about the disk.
+    fn prove(&self, proof: &AtomicU64, written: Result<(), &StoreError>) {
+        match written {
+            Ok(()) => {
+                let since = u64::try_from(self.opened.elapsed().as_millis()).unwrap_or(u64::MAX);
+                proof.store(since.saturating_add(1), Ordering::SeqCst);
+            }
+            Err(StoreError::Io(_)) => proof.store(0, Ordering::SeqCst),
+            Err(_) => {}
+        }
+    }
+
+    /// Whether a real write became durable on the blob volumes, and on the
+    /// journal volume, within `window`, with no refusal since.
+    ///
+    /// Readiness asks whether the volumes take a write (AGENTS.md
+    /// requirement 7). A request that just made one durable answered that
+    /// with the data path itself, so the synthetic probe need not repeat it;
+    /// the moment a real write is refused, the probe is back.
+    pub fn written_within(&self, window: Duration) -> (bool, bool) {
+        let window = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+        let now = u64::try_from(self.opened.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let fresh = |proof: &AtomicU64| match proof.load(Ordering::SeqCst) {
+            0 => false,
+            at => now.saturating_add(1).saturating_sub(at) < window,
+        };
+        (fresh(&self.blobs_proof), fresh(&self.journal_proof))
     }
 
     /// The last collection run.
@@ -1449,25 +1671,52 @@ impl Store {
     }
 }
 
-/// Append a frame at the next sequence and apply it to the index.
-///
-/// Journalled metadata changes only after the record is durable
-/// (docs/storage.md, durability rule 6). Chunk inventory separately follows
-/// durable primary-volume operations and the startup scan.
-fn append(
-    journal: &mut Journal,
-    index: &mut Index,
-    frame: impl FnOnce(Seq) -> Frame,
-) -> Result<Seq, StoreError> {
-    let seq = index.seq.next();
-    let record = Record {
-        seq,
-        account_id: index.account_id(),
-        frame: frame(seq),
-    };
-    journal.append(&record)?;
-    index.apply(&record);
-    Ok(seq)
+impl Store {
+    /// Append frames at the next sequences, make them durable, then apply
+    /// them. Returns the first frame's seq; a caller that reads the result
+    /// back takes the index again while it still holds the journal guard, so
+    /// what it reads is what these frames left.
+    ///
+    /// The caller holds the journal guard for the whole call, and every
+    /// journalled change is made under that guard, so the seqs allocated
+    /// here are the next ones the journal writes and the next ones the index
+    /// applies: seq order, append order and apply order are one order. The
+    /// index guard the caller validated under is released for the write and
+    /// the fsync and taken again to apply, so a slow volume stalls the next
+    /// writer and nothing else -- readers, the feed and authentication go on
+    /// answering from the index as it stood. Journalled metadata changes only
+    /// after the record is durable (docs/storage.md, durability rule 6), and
+    /// what a writer validated cannot change meanwhile: nothing it reads is
+    /// written without the journal guard. Chunk inventory is the exception,
+    /// and follows the blob volume as it always has.
+    fn commit(
+        &self,
+        journal: &mut Journal,
+        index: MutexGuard<'_, Index>,
+        frames: impl FnOnce(Seq) -> Vec<Frame>,
+    ) -> Result<Seq, StoreError> {
+        let first = index.seq.next();
+        let account_id = index.account_id();
+        let records: Vec<Record> = frames(first)
+            .into_iter()
+            .zip(first.0..)
+            .map(|(frame, seq)| Record {
+                seq: Seq(seq),
+                account_id,
+                frame,
+            })
+            .collect();
+        drop(index);
+        let written = journal.append_all(&records);
+        self.prove(&self.journal_proof, written.as_ref().map(|_| ()));
+        let bytes = written?;
+        let mut index = self.index();
+        for record in &records {
+            index.apply(record);
+        }
+        self.grown.fetch_add(bytes, Ordering::SeqCst);
+        Ok(first)
+    }
 }
 
 /// `version_id = SHA-256(file_id || sorted parents || manifest_ct || sids)`

@@ -50,8 +50,14 @@ pub const GC_PERIOD: Duration = Duration::from_secs(3600);
 pub const GC_BUDGET: Duration = Duration::from_secs(600);
 /// One scrub step re-hashes at most this many bytes before sleeping.
 pub const SCRUB_STEP_BYTES: u64 = 16 * 1024 * 1024;
-/// The index snapshot period.
-pub const SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
+/// A snapshot is written once the journal has grown this much since the
+/// last one, and by at least the last one's own size (`Store::snapshot_due`):
+/// an idle journal is never snapshotted again, and a busy one never spends
+/// more writing snapshots than it spends writing frames. A start replays at
+/// most this or about one snapshot's worth of frames.
+pub const SNAPSHOT_AFTER_BYTES: u64 = 16 * 1024 * 1024;
+/// How long a refused snapshot waits before it is tried again.
+pub const SNAPSHOT_RETRY: Duration = Duration::from_secs(600);
 /// The nonce, pairing, and session sweep period.
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
 /// How often a background thread wakes to check for shutdown or a request.
@@ -148,8 +154,14 @@ pub fn run() -> i32 {
     for worker in workers {
         let _ = worker.join();
     }
-    match app.store.snapshot() {
-        Ok(()) => log.info("shutdown_snapshot", &[("decision", Val::word("ok"))]),
+    match stop_snapshot(&app.store) {
+        Ok(decision) => log.info(
+            "shutdown_snapshot",
+            &[
+                ("decision", Val::word(decision)),
+                ("replay_bytes", Val::bytes(app.store.journal_growth())),
+            ],
+        ),
         Err(e) => {
             let mut fields = vec![("decision", Val::word(e.code()))];
             fields.extend(error_fields(&e));
@@ -158,6 +170,16 @@ pub fn run() -> i32 {
     }
     log.info("serve_stop", &[("decision", Val::word("clean"))]);
     0
+}
+
+/// The snapshot a stop writes: only one the running rule says is due. A
+/// stop never waits on a write of the whole index to spare the next start a
+/// tail it replays as it would after a crash, which the rule already bounds.
+fn stop_snapshot(store: &Store) -> Result<&'static str, StoreError> {
+    if !store.snapshot_due(SNAPSHOT_AFTER_BYTES) {
+        return Ok("not_due");
+    }
+    store.snapshot().map(|()| "ok")
 }
 
 /// Bind the configured listener. `[::]`, the default, is dual-stack wherever
@@ -313,24 +335,33 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
         spawn(
             app,
             "snapshot",
-            SNAPSHOT_PERIOD,
-            |_| false,
+            Duration::MAX,
+            |app| app.store.snapshot_due(SNAPSHOT_AFTER_BYTES),
             |app| {
                 if let Err(e) = app.store.snapshot() {
                     let mut fields = vec![
-                        ("decision", Val::word("retry_next_period")),
+                        ("decision", Val::word("retry_later")),
                         ("refusal", Val::word(e.code())),
+                        ("retry_ms", Val::ms(SNAPSHOT_RETRY.as_millis() as u64)),
                     ];
                     fields.extend(error_fields(&e));
                     app.log.error("snapshot_failed", &fields);
+                    // Still due, so without a pause a volume that refuses
+                    // would be asked again every tick.
+                    nap(app, SNAPSHOT_RETRY);
                 }
             },
         ),
     ]
 }
 
-/// A thread that runs `job` every `period`, or as soon as `asked` says the
-/// dashboard requested it, and stops within one tick of a shutdown.
+/// A thread that runs `job` every `period`, or as soon as `asked` says it is
+/// due, and stops within one tick of a shutdown.
+///
+/// On its way out it answers every open long-poll: the listener drains the
+/// connections in flight before `run` can finish, and a poll left waiting
+/// would hold that drain for the rest of its 55 s. Whichever thread notices
+/// the shutdown first does it; the rest find it done.
 fn spawn(
     app: &Arc<App>,
     name: &'static str,
@@ -351,6 +382,7 @@ fn spawn(
                 last = Instant::now();
                 job(&app);
             }
+            app.store.release_waiters();
         })
         .expect("spawn background thread")
 }
@@ -804,6 +836,70 @@ mod tests {
         let captured = log.captured();
         assert!(captured.contains("refusal=journal_locked"), "{captured}");
         assert!(!captured.contains(" io="), "{captured}");
+    }
+
+    /// Rig finding and #203: with a device's long-poll open, a stop waited
+    /// out the whole drain, because nothing but a new version wakes a poll.
+    #[test]
+    fn a_shutdown_answers_every_open_long_poll_within_a_tick() {
+        use std::sync::atomic::AtomicBool;
+
+        use crate::api::auth::SystemClock;
+        use crate::dashboard::Dashboard;
+        use crate::plugin_dist::PluginDist;
+
+        let dir = TempDir::new("serve-release-polls");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let app = Arc::new(
+            App::new(
+                cfg,
+                store,
+                Dashboard::unavailable(),
+                PluginDist::unavailable(),
+                Arc::clone(&shutdown),
+                None,
+                Arc::new(SystemClock),
+            )
+            .expect("the application state opens"),
+        );
+        let workers = background(&app);
+        let head = app.store.head_seq();
+        let poll = {
+            let app = Arc::clone(&app);
+            std::thread::spawn(move || {
+                let at = Instant::now();
+                app.store.wait_for_change(head, Duration::from_secs(10));
+                at.elapsed()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        shutdown.store(true, Ordering::SeqCst);
+        let waited = poll.join().expect("the poll returns");
+        for worker in workers {
+            worker.join().expect("a background thread stops");
+        }
+        assert!(
+            waited < Duration::from_secs(3),
+            "the open poll held the stop for {waited:?}"
+        );
+    }
+
+    /// #203: a stop that rewrote the whole index for any tail at all took
+    /// seconds on a large store. It writes only a snapshot that is due.
+    #[test]
+    fn a_stop_writes_only_a_snapshot_that_is_due() {
+        let dir = TempDir::new("serve-stop-snapshot");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        store.setup("sentinel account").expect("setup");
+        let tail = store.journal_growth();
+        assert!(tail > 0 && tail < SNAPSHOT_AFTER_BYTES);
+        assert_eq!(stop_snapshot(&store).expect("stop"), "not_due");
+        assert_eq!(store.journal_growth(), tail, "no snapshot covered it");
     }
 
     #[test]

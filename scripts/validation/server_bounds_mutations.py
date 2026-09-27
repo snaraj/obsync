@@ -79,7 +79,7 @@ CASES = [
     ("nonce-share", SERVER, AUTH, "        if held >= self.share {", "        if false {", SHARE),
     ("nonce-share-reloaded", SERVER, AUTH, "            *held.entry(device.clone()).or_default() += 1;", "",
      "a_share_still_refuses_after_a_reload"),
-    ("nonce-share-counted", SERVER, AUTH, "        *self.held.entry(entry.0.clone()).or_default() += 1;", "",
+    ("nonce-share-counted", SERVER, AUTH, "            *self.held.entry(device).or_default() += 1;", "",
      SHARE),
     ("nonce-share-freed", SERVER, AUTH, "                *count -= 1;", "", SHARE),
     ("probe-removes-by-name", SERVER, API, PROBE_BODY,

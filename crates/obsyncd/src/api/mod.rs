@@ -35,7 +35,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use obsync_core::http::{Handler, Request, Response, ResponseBody};
 use obsync_core::json::obj;
@@ -417,7 +417,7 @@ pub struct App {
     pub shutdown: Arc<AtomicBool>,
     /// First-boot setup token, also the dashboard recovery login.
     pub setup_token: Option<String>,
-    nonces: Mutex<auth::NonceCache>,
+    nonces: auth::NonceCache,
     pairings: Mutex<PairingTable>,
     sessions: Mutex<admin::SessionTable>,
     seen: Mutex<HashMap<String, u64>>,
@@ -481,7 +481,7 @@ impl App {
             plugin,
             shutdown,
             setup_token,
-            nonces: Mutex::new(nonces),
+            nonces,
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
             seen: Mutex::new(HashMap::new()),
@@ -574,8 +574,9 @@ impl App {
         self.gc_requested.swap(false, Ordering::SeqCst)
     }
 
-    /// Ask the scrubber to start a pass now.
+    /// Ask the scrubber to start a pass now, even one resting between passes.
     pub fn request_scrub(&self) {
+        self.store.request_scrub();
         self.scrub_requested.store(true, Ordering::SeqCst);
     }
 
@@ -651,10 +652,7 @@ impl App {
     /// 4.2; issue #153). Each deletion is one log line naming the state the
     /// pairing ended in (requirement 12).
     pub fn sweep(&self, now: u64) -> (usize, u64, usize, usize) {
-        let (nonces, nonce_appends) = {
-            let mut cache = self.nonces.lock().expect("nonce cache");
-            (cache.sweep(now), cache.appends())
-        };
+        let (nonces, nonce_appends) = (self.nonces.sweep(now), self.nonces.appends());
         let swept = self.pairings.lock().expect("pairings").sweep(now);
         for (device, ended) in &swept.orphans {
             let mut fields = vec![
@@ -730,28 +728,38 @@ impl App {
                 io: Some(kind),
             });
         }
-        if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
-            self.not_ready("blobs", &e);
-            return Err(NotReady {
-                reason: "blobs volume is not writable",
-                io: None,
-            });
+        // A real write made durable inside the verdict's own lifetime already
+        // proved its volumes take a write, and the synthetic probe is skipped
+        // for them; the first real write a volume refuses takes that proof
+        // away. A chunk write lands on the primary and on every mirror, so it
+        // proves all of them.
+        let (blobs_proven, journal_proven) = self
+            .store
+            .written_within(Duration::from_secs(READY_CACHE_SECS));
+        if !blobs_proven {
+            if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
+                self.not_ready("blobs", &e);
+                return Err(NotReady {
+                    reason: "blobs volume is not writable",
+                    io: None,
+                });
+            }
+            for m in &self.cfg.blobs_mirrors {
+                if let Err(e) = probe_writable(&m.path) {
+                    self.not_ready("mirror", &e);
+                    return Err(NotReady {
+                        reason: "a mirror volume is not writable",
+                        io: None,
+                    });
+                }
+            }
         }
-        if let Err(e) = probe_writable(&self.cfg.journal_dir) {
+        if !journal_proven && let Err(e) = probe_writable(&self.cfg.journal_dir) {
             self.not_ready("journal", &e);
             return Err(NotReady {
                 reason: "journal volume is not writable",
                 io: None,
             });
-        }
-        for m in &self.cfg.blobs_mirrors {
-            if let Err(e) = probe_writable(&m.path) {
-                self.not_ready("mirror", &e);
-                return Err(NotReady {
-                    reason: "a mirror volume is not writable",
-                    io: None,
-                });
-            }
         }
         Ok(())
     }

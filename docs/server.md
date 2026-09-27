@@ -387,6 +387,14 @@ Restoring is the same copy in reverse, into a server that is stopped, and the
 volume must arrive owned by uid 65532 — see "Volume ownership" above, which is
 the one rule a restored deployment gets wrong.
 
+A stop answers every open change-feed poll at once and lets requests still in
+flight finish for up to 20 seconds. With devices merely connected that takes
+about a second. The Compose file allows 30 seconds (`stop_grace_period`), the
+chart's grace period as well, because Docker's default of 10 would kill a stop
+that a large upload is still using; give `docker stop -t 30 obsync` the same. A
+stop cut short loses nothing acknowledged: every answered write is already in
+the journal.
+
 ## Upgrade by digest
 
 An upgrade is one number. Read the new release's digest off its Release page,

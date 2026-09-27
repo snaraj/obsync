@@ -633,6 +633,48 @@ fn the_readiness_probe_never_writes_through_a_planted_link() {
 }
 
 #[test]
+fn a_real_write_stands_in_for_the_readiness_probe_until_one_is_refused() {
+    let h = Harness::start("readyz-proof");
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"ciphertext-proof");
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+
+    // The blob volume stops taking writes, the way the truth test above
+    // breaks it. The chunk just made durable there already proved the
+    // volume, inside the verdict's own lifetime, so no probe runs...
+    let blobs = h.dir.join("blobs");
+    let stashed = h.dir.join("blobs-stashed");
+    std::fs::rename(&blobs, &stashed).expect("stash the volume");
+    std::fs::write(&blobs, b"not a directory\n").expect("occupy the mount point");
+    let later = NOW + crate::api::READY_CACHE_SECS + 1;
+    h.clock.set(later);
+    let proven = Req::get("/readyz").send(h.addr);
+    // ...until a real write is refused, which takes that proof away at once.
+    let (body, sid) = chunk(b"ciphertext-refused");
+    let refused_put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, later, &nonce(), &sid)
+        .send(h.addr);
+    h.clock.set(later + crate::api::READY_CACHE_SECS + 1);
+    let refused = Req::get("/readyz").send(h.addr);
+    std::fs::remove_file(&blobs).expect("free the mount point");
+    std::fs::rename(&stashed, &blobs).expect("restore");
+
+    assert_eq!(proven.status, 200, "{}", proven.text());
+    assert_eq!(refused_put.status, 500, "{}", refused_put.text());
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(
+        refused.json().get("detail").and_then(Value::as_str),
+        Some("blobs volume is not writable"),
+        "the probe ran again and found the volume it no longer had proof for"
+    );
+}
+
+#[test]
 fn a_journal_whose_usage_is_unverified_answers_readyz_and_recovers_without_a_write() {
     // The other half of the accounting refusal, over the wire. A journal that
     // could not re-read its own usage refuses every write, so readiness must

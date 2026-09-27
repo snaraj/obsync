@@ -12,13 +12,13 @@
 #![forbid(unsafe_code)]
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use obsync_core::crc32::crc32;
+use obsync_core::crc32::{Crc32, crc32};
 use obsync_core::hex;
 use obsync_core::json::{self, Value};
 
@@ -45,6 +45,8 @@ const FILE_MODE: u32 = 0o600;
 const DIR_MODE: u32 = 0o700;
 /// Frame header: length and CRC.
 const HEADER: usize = 8;
+/// How much of a segment or snapshot one read or write moves.
+const IO_BUFFER: usize = 64 * 1024;
 /// The nonce log and its compaction temporary, both on the journal volume
 /// and both owned by the API lane's own accounting rather than by the survey
 /// below (`api/nonce_log.rs`). Named here so the two cannot drift apart.
@@ -113,6 +115,8 @@ pub(crate) struct ReplayReport {
     pub(crate) segments: u64,
     /// Frames applied.
     pub(crate) frames: u64,
+    /// Bytes those frames occupy: the tail no snapshot covers.
+    pub(crate) bytes: u64,
     /// Bytes cut from a torn tail.
     pub(crate) truncated_bytes: u64,
 }
@@ -152,6 +156,11 @@ pub(crate) struct Journal {
     /// this is an atomic and not a field: taking the journal's own mutex per
     /// request would serialise the API against the writer it protects.
     nonce_bytes: Arc<AtomicU64>,
+    /// Bytes of a snapshot being written with the journal guard released, as
+    /// its writer lands them: counted from the first byte until the survey
+    /// that follows the snapshot, so an append admitted meanwhile is measured
+    /// against them.
+    snapshot_bytes: Arc<AtomicU64>,
     /// Declared journal capacity (`OBSYNC_JOURNAL_CAPACITY`).
     capacity: u64,
     /// The refusal threshold for this volume.
@@ -170,6 +179,116 @@ pub(crate) struct Journal {
     log: Log,
     #[cfg(test)]
     fault: Arc<Mutex<Fault>>,
+    /// Called inside the append's fsync, on the writer's own thread: a test
+    /// looks at the store from the moment the frames are written and not yet
+    /// durable, which is the only way to prove what that moment holds.
+    #[cfg(test)]
+    mid_sync: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Called part way through writing a snapshot, with no guard held.
+    #[cfg(test)]
+    mid_snapshot: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// Where an admitted snapshot is written, with no guard held.
+pub(crate) struct SnapshotSlot {
+    dir: PathBuf,
+    log: Log,
+    /// The journal's count of this snapshot's bytes.
+    written: Arc<AtomicU64>,
+    #[cfg(test)]
+    fault: Arc<Mutex<Fault>>,
+    #[cfg(test)]
+    mid_write: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// A frame streamed to its file: the payload's CRC and length accumulate as
+/// it is written, for the header that leads it.
+struct FrameWriter<'a> {
+    out: BufWriter<File>,
+    crc: Crc32,
+    len: u64,
+    written: &'a AtomicU64,
+}
+
+impl FrameWriter<'_> {
+    fn put(&mut self, piece: &[u8]) -> io::Result<()> {
+        self.crc.update(piece);
+        self.len += piece.len() as u64;
+        self.out.write_all(piece)?;
+        self.written
+            .store(HEADER as u64 + self.len, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl SnapshotSlot {
+    /// Durability rule 5: written to a temporary name, fsynced, renamed onto
+    /// `<seq>.snap`, and the directory fsynced. A crash leaves the snapshots
+    /// that were there and at most a `.tmp`, which no start ever loads.
+    ///
+    /// The payload is the one frame a snapshot has always been, byte for
+    /// byte, but it is encoded one file at a time straight into the file:
+    /// no tree of the whole index is ever built, so writing a snapshot costs
+    /// one file's worth of memory. The header, which leads with the
+    /// payload's length and CRC, is written last over a placeholder. A
+    /// payload one frame cannot describe is refused rather than written
+    /// with a length that wraps. Returns the frame's size.
+    pub(crate) fn write(&self, index: &Index) -> Result<u64, StoreError> {
+        let tmp = self.dir.join(format!("{}.tmp", index.seq.0));
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(FILE_MODE)
+            .open(&tmp)?;
+        let mut out = BufWriter::with_capacity(IO_BUFFER, file);
+        out.write_all(&[0u8; HEADER])?;
+        let mut frame = FrameWriter {
+            out,
+            crc: Crc32::new(),
+            len: 0,
+            written: &self.written,
+        };
+        // The canonical object, split where the files go: the head without
+        // its closing brace, each file, then the tail without its opening one.
+        let head = snapshot_head(index).to_json();
+        frame.put(&head.as_bytes()[..head.len() - 1])?;
+        frame.put(b",\"files\":[")?;
+        #[cfg(test)]
+        {
+            frame.out.flush()?;
+            if let Some(hook) = &self.mid_write {
+                hook();
+            }
+            if *self.fault.lock().expect("fault lock") == Fault::SnapshotTorn {
+                return Err(StoreError::Io(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "injected crash",
+                )));
+            }
+        }
+        for (n, (file_id, entry)) in index.files.iter().enumerate() {
+            if n > 0 {
+                frame.put(b",")?;
+            }
+            frame.put(file_value(file_id, entry).to_json().as_bytes())?;
+        }
+        let tail = snapshot_tail(index).to_json();
+        frame.put(b"],")?;
+        frame.put(&tail.as_bytes()[1..])?;
+        let len = usize::try_from(frame.len).unwrap_or(usize::MAX);
+        let mut header = [0u8; HEADER];
+        header[..4].copy_from_slice(&frame_field(&self.log, len, "snapshot")?);
+        header[4..].copy_from_slice(&frame.crc.finalize().to_le_bytes());
+        let mut file = frame.out.into_inner().map_err(|e| e.into_error())?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, self.dir.join(format!("{}.snap", index.seq.0)))?;
+        fsync_dir(&self.dir)?;
+        Ok(HEADER as u64 + frame.len)
+    }
 }
 
 impl Journal {
@@ -193,6 +312,7 @@ impl Journal {
             other_bytes: 0,
             quarantine_bytes: 0,
             nonce_bytes: Arc::new(AtomicU64::new(0)),
+            snapshot_bytes: Arc::new(AtomicU64::new(0)),
             capacity: cfg.journal_capacity,
             watermark: cfg.free_watermark.bytes_for(cfg.journal_capacity),
             faulted: None,
@@ -200,6 +320,10 @@ impl Journal {
             log,
             #[cfg(test)]
             fault: Arc::new(Mutex::new(Fault::None)),
+            #[cfg(test)]
+            mid_sync: Mutex::new(None),
+            #[cfg(test)]
+            mid_snapshot: Mutex::new(None),
         };
         journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
         journal.measure_volume("open")?;
@@ -232,6 +356,7 @@ impl Journal {
             .saturating_add(self.segment_len)
             .saturating_add(self.quarantine_bytes)
             .saturating_add(self.nonce_bytes.load(Ordering::Acquire))
+            .saturating_add(self.snapshot_bytes.load(Ordering::Acquire))
     }
 
     /// The handle the nonce log reports its own size through.
@@ -416,20 +541,28 @@ impl Journal {
         Ok(numbers)
     }
 
-    /// Append one record and fsync it. The caller may acknowledge afterwards,
-    /// never before (docs/storage.md, durability rule 6).
+    /// Append one record and fsync it: the shape every journal test drives.
+    #[cfg(test)]
+    pub(crate) fn append(&mut self, record: &Record) -> Result<(), StoreError> {
+        self.append_all(std::slice::from_ref(record)).map(|_| ())
+    }
+
+    /// Append records as consecutive frames and fsync them once. The caller
+    /// may acknowledge afterwards, never before (docs/storage.md, durability
+    /// rule 6). Returns the bytes written.
     ///
     /// Three refusals happen before anything reaches the volume: a journal
     /// already faulted, a journal whose usage could not be re-surveyed and
-    /// cannot be now either, and a frame that would take the journal volume
+    /// cannot be now either, and frames that would take the journal volume
     /// below its watermark. Afterwards the write and its fsync are wrapped:
     /// any failure rolls the segment back to the length the journal believes is
     /// durable, so the next frame starts clean and nothing that was never
     /// acknowledged survives to a replay. Segments are `O_APPEND`, so
     /// WITHOUT that rollback the next successful frame would land after a
     /// torn one and replay would truncate at the torn frame, discarding
-    /// every write acknowledged after the failure.
-    pub(crate) fn append(&mut self, record: &Record) -> Result<(), StoreError> {
+    /// every write acknowledged after the failure. The records land together
+    /// or not at all: one rollback covers every one of them.
+    pub(crate) fn append_all(&mut self, records: &[Record]) -> Result<u64, StoreError> {
         if let Some(f) = self.faulted {
             return Err(StoreError::JournalFaulted {
                 io: f.io,
@@ -449,11 +582,13 @@ impl Journal {
                     io: self.unverified.expect("a refused survey records its kind"),
                 })?;
         }
-        let payload = record.to_value().to_json().into_bytes();
-        let mut bytes = Vec::with_capacity(HEADER + payload.len());
-        bytes.extend_from_slice(&self.frame_len(payload.len(), "append")?);
-        bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
-        bytes.extend_from_slice(&payload);
+        let mut bytes = Vec::new();
+        for record in records {
+            let payload = record.to_value().to_json().into_bytes();
+            bytes.extend_from_slice(&frame_field(&self.log, payload.len(), "append")?);
+            bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
+            bytes.extend_from_slice(&payload);
+        }
 
         // The journal volume's own watermark, symmetric with the blob one
         // (docs/storage.md, "Free-space watermark and quota"). Measured on
@@ -500,39 +635,18 @@ impl Journal {
         match self.write_frame(&bytes).and_then(|()| self.sync_frame()) {
             Ok(()) => {
                 self.segment_len = durable + bytes.len() as u64;
-                Ok(())
+                // A crash, not a refusal: the frames are durable and the
+                // process dies before anything is applied or answered.
+                #[cfg(test)]
+                if self.armed(Fault::JournalCrashAfterSync) {
+                    return Err(StoreError::Io(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "injected crash",
+                    )));
+                }
+                Ok(bytes.len() as u64)
             }
             Err(e) => Err(self.recover(durable, e)),
-        }
-    }
-
-    /// The length field of a frame header, or a refusal and its line.
-    ///
-    /// The field is 32 bits, and it is the format every 1.x server replays,
-    /// so a payload that does not fit is refused rather than written with a
-    /// length that wraps: a wrapped journal frame reads back as a torn tail
-    /// and cuts every frame after it, a wrapped snapshot as unreadable. The
-    /// refusal loses nothing. A refused snapshot leaves the segments it would
-    /// have pruned where they are, and the next start replays them.
-    fn frame_len(&self, len: usize, at: &'static str) -> Result<[u8; 4], StoreError> {
-        match frame_len(len) {
-            Some(field) => Ok(field),
-            None => {
-                self.log.error(
-                    "journal_frame",
-                    &[
-                        ("decision", Val::word("refused")),
-                        ("reason", Val::word("over_frame_length")),
-                        ("at", Val::word(at)),
-                        ("bytes", Val::bytes(len as u64)),
-                        ("budget", Val::bytes(u64::from(u32::MAX))),
-                    ],
-                );
-                Err(StoreError::Io(io::Error::new(
-                    io::ErrorKind::FileTooLarge,
-                    "a frame payload over the 32-bit length field",
-                )))
-            }
         }
     }
 
@@ -559,6 +673,10 @@ impl Journal {
         #[cfg(test)]
         if let Some(e) = self.errno_at(AppendPhase::Sync) {
             return Err(e);
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.mid_sync.lock().expect("sync hook").clone() {
+            hook();
         }
         self.segment.as_ref().expect("a segment is open").sync_all()
     }
@@ -678,15 +796,16 @@ impl Journal {
         for (position, number) in numbers.iter().enumerate() {
             report.segments += 1;
             let path = self.segment_path(*number);
-            let mut file = File::open(&path)?;
+            let (mut file, total) = open_frames(&path)?;
             let mut offset: u64 = 0;
             loop {
-                match read_frame(&mut file)? {
+                match read_frame(&mut file, offset, total)? {
                     FrameRead::Frame { payload, size } => {
                         let record = Record::decode(&payload)?;
                         if record.seq > after {
                             apply(&record);
                             report.frames += 1;
+                            report.bytes += size;
                         }
                         offset += size;
                     }
@@ -718,8 +837,39 @@ impl Journal {
         Ok(report)
     }
 
-    /// Write a snapshot of `index`, then drop what it supersedes.
+    /// Write a snapshot of `index`, then drop what it supersedes, all under
+    /// this journal's guard. The store splits the same three steps so that
+    /// only the first and last hold it.
+    #[cfg(test)]
     pub(crate) fn snapshot(&mut self, index: &Index) -> Result<(), StoreError> {
+        let written = self.admit_snapshot().write(index);
+        self.finish_snapshot(index.seq, written).map(|_| ())
+    }
+
+    /// Say where a snapshot is written, and count its bytes toward this
+    /// volume as they land. [`Journal::finish_snapshot`] releases the count,
+    /// whatever the write did.
+    pub(crate) fn admit_snapshot(&mut self) -> SnapshotSlot {
+        self.snapshot_bytes.store(0, Ordering::Release);
+        SnapshotSlot {
+            dir: self.root.join("index"),
+            log: self.log.clone(),
+            written: Arc::clone(&self.snapshot_bytes),
+            #[cfg(test)]
+            fault: Arc::clone(&self.fault),
+            #[cfg(test)]
+            mid_write: self.mid_snapshot.lock().expect("snapshot hook").clone(),
+        }
+    }
+
+    /// Account for a snapshot's write, then drop what it supersedes. Returns
+    /// the snapshot's size.
+    pub(crate) fn finish_snapshot(
+        &mut self,
+        seq: Seq,
+        written: Result<u64, StoreError>,
+    ) -> Result<u64, StoreError> {
+        self.snapshot_bytes.store(0, Ordering::Release);
         // Every exit accounts for what is REALLY on the volume, the failing
         // ones included. A snapshot that dies part way leaves a `.tmp` that
         // nothing later removes, and returning early past the survey left
@@ -733,41 +883,17 @@ impl Journal {
         // the journal unverified, which closes admission until one succeeds.
         // Discarding a return value is safe exactly when the fact it carried
         // has been stored somewhere the next decision will read.
-        let outcome = self.snapshot_inner(index);
+        let outcome = written.and_then(|bytes| self.prune(seq).map(|()| bytes));
         if outcome.is_err() {
             let _ = self.measure_volume("snapshot");
         }
         outcome
     }
 
-    fn snapshot_inner(&mut self, index: &Index) -> Result<(), StoreError> {
-        let seq = index.seq;
-        let payload = snapshot_value(index).to_json().into_bytes();
-        let mut bytes = Vec::with_capacity(HEADER + payload.len());
-        bytes.extend_from_slice(&self.frame_len(payload.len(), "snapshot")?);
-        bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
-        bytes.extend_from_slice(&payload);
-
-        let dir = self.root.join("index");
-        let tmp = dir.join(format!("{}.tmp", seq.0));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(FILE_MODE)
-            .open(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp, dir.join(format!("{}.snap", seq.0)))?;
-        fsync_dir(&dir)?;
-        self.prune(seq)
-    }
-
     /// Delete superseded snapshots and the segments they cover.
     ///
     /// A removal that succeeded before one that failed already changed the
-    /// volume, and that failing exit is surveyed too — by [`Journal::snapshot`],
+    /// volume, and that failing exit is surveyed too — by [`Journal::finish_snapshot`],
     /// which is this function's only caller and wraps the whole of it. One
     /// accounting point at the public boundary rather than two nested ones:
     /// a second wrapper here could never be the one that ran.
@@ -798,8 +924,8 @@ impl Journal {
 
     /// The sequence of the first frame in a segment.
     fn first_seq(&self, number: u32) -> Result<Option<Seq>, StoreError> {
-        let mut file = File::open(self.segment_path(number))?;
-        match read_frame(&mut file)? {
+        let (mut file, total) = open_frames(&self.segment_path(number))?;
+        match read_frame(&mut file, 0, total)? {
             FrameRead::Frame { payload, .. } => Ok(Some(Record::decode(&payload)?.seq)),
             _ => Ok(None),
         }
@@ -825,16 +951,17 @@ impl Journal {
 
     /// Load the newest snapshot that reads cleanly, newest first.
     ///
-    /// Returns the index it held and how many snapshots were unreadable, so
-    /// the startup line can say a snapshot was skipped rather than hiding it.
-    pub(crate) fn load_snapshot(&self) -> Result<(Option<Index>, u64), StoreError> {
+    /// Returns the index it held with the snapshot's size, and how many
+    /// snapshots were unreadable, so the startup line can say a snapshot was
+    /// skipped rather than hiding it.
+    pub(crate) fn load_snapshot(&self) -> Result<(Option<(Index, u64)>, u64), StoreError> {
         let mut skipped = 0;
         for (_, path) in self.snapshots()?.into_iter().rev() {
-            let mut file = File::open(&path)?;
-            match read_frame(&mut file)? {
+            let (mut file, total) = open_frames(&path)?;
+            match read_frame(&mut file, 0, total)? {
                 FrameRead::Frame { payload, .. } => match json::parse(&payload) {
                     Ok(value) => match index_from_value(&value) {
-                        Ok(index) => return Ok((Some(index), skipped)),
+                        Ok(index) => return Ok((Some((index, total)), skipped)),
                         Err(_) => skipped += 1,
                     },
                     Err(_) => skipped += 1,
@@ -852,13 +979,17 @@ impl Journal {
         let mut segments = 0;
         for number in self.segments()? {
             segments += 1;
-            let mut file = File::open(self.segment_path(number))?;
+            let (mut file, total) = open_frames(&self.segment_path(number))?;
+            let mut offset = 0;
             loop {
-                match read_frame(&mut file)? {
-                    FrameRead::Frame { payload, .. } => match Record::decode(&payload) {
-                        Ok(_) => frames += 1,
-                        Err(_) => bad += 1,
-                    },
+                match read_frame(&mut file, offset, total)? {
+                    FrameRead::Frame { payload, size } => {
+                        offset += size;
+                        match Record::decode(&payload) {
+                            Ok(_) => frames += 1,
+                            Err(_) => bad += 1,
+                        }
+                    }
                     FrameRead::End => break,
                     FrameRead::Torn { .. } => {
                         bad += 1;
@@ -874,6 +1005,18 @@ impl Journal {
     #[cfg(test)]
     pub(crate) fn set_fault(&self, fault: Fault) {
         *self.fault.lock().expect("fault lock") = fault;
+    }
+
+    /// Install the hook an append's fsync calls. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_mid_sync(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.mid_sync.lock().expect("sync hook") = Some(hook);
+    }
+
+    /// Install the hook a snapshot's write calls part way. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_mid_snapshot(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.mid_snapshot.lock().expect("snapshot hook") = Some(hook);
     }
 
     #[cfg(test)]
@@ -914,6 +1057,34 @@ fn frame_len(len: usize) -> Option<[u8; 4]> {
     u32::try_from(len).ok().map(u32::to_le_bytes)
 }
 
+/// The length field of a frame header, or a refusal and its line: the one
+/// check every frame passes, a journal frame and a snapshot alike.
+///
+/// The field is 32 bits, and it is the format every 1.x server replays,
+/// so a payload that does not fit is refused rather than written with a
+/// length that wraps: a wrapped journal frame reads back as a torn tail
+/// and cuts every frame after it, a wrapped snapshot as unreadable. The
+/// refusal loses nothing. A refused snapshot leaves the segments it would
+/// have pruned where they are, and the next start replays them.
+fn frame_field(log: &Log, len: usize, at: &'static str) -> Result<[u8; 4], StoreError> {
+    frame_len(len).ok_or_else(|| {
+        log.error(
+            "journal_frame",
+            &[
+                ("decision", Val::word("refused")),
+                ("reason", Val::word("over_frame_length")),
+                ("at", Val::word(at)),
+                ("bytes", Val::bytes(len as u64)),
+                ("budget", Val::bytes(u64::from(u32::MAX))),
+            ],
+        );
+        StoreError::Io(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "a frame payload over the 32-bit length field",
+        ))
+    })
+}
+
 /// What one read at the current offset found.
 enum FrameRead {
     Frame { payload: Vec<u8>, size: u64 },
@@ -921,30 +1092,37 @@ enum FrameRead {
     Torn { remaining: u64 },
 }
 
-fn read_frame(file: &mut File) -> Result<FrameRead, StoreError> {
-    let start = file.stream_position()?;
+/// A file of frames, buffered, with its length. Replay reads every frame of
+/// every segment, and unbuffered that was four reads a frame; the length is
+/// read once, so a header can be checked against it before anything is
+/// allocated.
+fn open_frames(path: &Path) -> Result<(BufReader<File>, u64), StoreError> {
+    let file = File::open(path)?;
     let total = file.metadata()?.len();
+    Ok((BufReader::with_capacity(IO_BUFFER, file), total))
+}
+
+/// Read the frame at `offset` of a file `total` bytes long.
+fn read_frame(file: &mut impl Read, offset: u64, total: u64) -> Result<FrameRead, StoreError> {
+    let torn = FrameRead::Torn {
+        remaining: total - offset,
+    };
     let mut header = [0u8; HEADER];
-    match read_exact_or_end(file, &mut header)? {
-        Some(()) => {}
-        None => {
-            return Ok(if file.stream_position()? == start {
-                FrameRead::End
-            } else {
-                FrameRead::Torn {
-                    remaining: total - start,
-                }
-            });
-        }
+    match read_up_to(file, &mut header)? {
+        0 => return Ok(FrameRead::End),
+        HEADER => {}
+        _ => return Ok(torn),
     }
     let len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
     let crc = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    // A length the file cannot hold is a torn header, refused before a
+    // buffer that size is asked for.
+    if (HEADER + len) as u64 > total - offset {
+        return Ok(torn);
+    }
     let mut payload = vec![0u8; len];
-    if read_exact_or_end(file, &mut payload)?.is_none() || crc32(&payload) != crc {
-        file.seek(SeekFrom::Start(start))?;
-        return Ok(FrameRead::Torn {
-            remaining: total - start,
-        });
+    if read_up_to(file, &mut payload)? < len || crc32(&payload) != crc {
+        return Ok(torn);
     }
     Ok(FrameRead::Frame {
         payload,
@@ -952,18 +1130,18 @@ fn read_frame(file: &mut File) -> Result<FrameRead, StoreError> {
     })
 }
 
-/// `read_exact`, but a short read at the end of the file is not an error.
-fn read_exact_or_end(file: &mut File, buf: &mut [u8]) -> Result<Option<()>, StoreError> {
+/// Fill `buf` as far as the file goes, returning how much was read.
+fn read_up_to(file: &mut impl Read, buf: &mut [u8]) -> Result<usize, StoreError> {
     let mut filled = 0;
     while filled < buf.len() {
         match file.read(&mut buf[filled..]) {
-            Ok(0) => return Ok(None),
+            Ok(0) => break,
             Ok(n) => filled += n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(StoreError::Io(e)),
         }
     }
-    Ok(Some(()))
+    Ok(filled)
 }
 
 fn clean_quarantine_temps(dir: &Path) -> Result<u64, StoreError> {
@@ -1441,8 +1619,55 @@ impl Frame {
     }
 }
 
-/// A snapshot is one frame holding the whole index.
+/// A snapshot is one frame holding the whole index: the members before the
+/// files, the files, and the members after them, in that order.
+/// [`SnapshotSlot::write`] streams the three; this is the same object built
+/// whole, which the tests hold the stream to byte for byte.
+#[cfg(test)]
 fn snapshot_value(index: &Index) -> Value {
+    let (Value::Object(mut members), Value::Object(tail)) =
+        (snapshot_head(index), snapshot_tail(index))
+    else {
+        unreachable!("both halves are objects");
+    };
+    let files = index.files.iter().map(|(id, e)| file_value(id, e));
+    members.push(("files".to_string(), Value::Array(files.collect())));
+    members.extend(tail);
+    Value::Object(members)
+}
+
+/// One file of a snapshot: its domain, its heads, and its versions.
+fn file_value(file_id: &FileId, entry: &FileEntry) -> Value {
+    json::obj(vec![
+        ("id", text(*file_id)),
+        ("domain", text(entry.domain_id)),
+        ("heads", list(&entry.heads, |h| text(*h))),
+        ("versions", list(&entry.versions, |v| version_value(v))),
+    ])
+}
+
+/// The members of a snapshot after its files.
+fn snapshot_tail(index: &Index) -> Value {
+    json::obj(vec![
+        (
+            "gc",
+            match &index.last_gc {
+                Some(summary) => gc_value(summary),
+                None => Value::Null,
+            },
+        ),
+        (
+            "scrub",
+            match &index.last_scrub {
+                Some(summary) => scrub_value(summary),
+                None => Value::Null,
+            },
+        ),
+    ])
+}
+
+/// The members of a snapshot before its files.
+fn snapshot_head(index: &Index) -> Value {
     let account = match &index.account {
         Some(account) => json::obj(vec![
             ("id", text(account.account_id)),
@@ -1469,40 +1694,11 @@ fn snapshot_value(index: &Index) -> Value {
             })
             .collect(),
     );
-    let files = Value::Array(
-        index
-            .files
-            .iter()
-            .map(|(file_id, entry)| {
-                json::obj(vec![
-                    ("id", text(*file_id)),
-                    ("domain", text(entry.domain_id)),
-                    ("heads", list(&entry.heads, |h| text(*h))),
-                    ("versions", list(&entry.versions, version_value)),
-                ])
-            })
-            .collect(),
-    );
     json::obj(vec![
         ("t", text("snapshot")),
         ("s", num(index.seq.0)),
         ("account", account),
         ("devices", devices),
-        ("files", files),
-        (
-            "gc",
-            match &index.last_gc {
-                Some(summary) => gc_value(summary),
-                None => Value::Null,
-            },
-        ),
-        (
-            "scrub",
-            match &index.last_scrub {
-                Some(summary) => scrub_value(summary),
-                None => Value::Null,
-            },
-        ),
     ])
 }
 
@@ -1566,7 +1762,7 @@ fn index_from_value(value: &Value) -> Result<Index, StoreError> {
     {
         let file_id: FileId = field_id(file, "id")?;
         let heads: Vec<VersionId> = field_list(file, "heads", id_of)?;
-        let versions = field_list(file, "versions", version_from)?;
+        let versions = field_list(file, "versions", |v| version_from(v).map(Arc::new))?;
         for version in &versions {
             index.feed.push((version.seq, file_id, version.version_id));
         }
@@ -2860,10 +3056,8 @@ mod tests {
         assert_eq!(frame_len(max + 1), None, "4 GiB wraps to a zero length");
         assert_eq!(frame_len(max + 9), None);
 
-        let dir = TempDir::new("journal-frame-length");
         let log = Log::buffered(LogLevel::Debug);
-        let journal = open_logged(&dir, log.clone());
-        let e = journal.frame_len(max + 1, "snapshot").expect_err("refused");
+        let e = frame_field(&log, max + 1, "snapshot").expect_err("refused");
         assert!(
             matches!(&e, StoreError::Io(io) if io.kind() == io::ErrorKind::FileTooLarge),
             "{e}"
@@ -2900,7 +3094,7 @@ mod tests {
 
         let reopened = open_journal(&dir);
         let (loaded, skipped) = reopened.load_snapshot().expect("load");
-        let mut loaded = loaded.expect("a snapshot exists");
+        let (mut loaded, _) = loaded.expect("a snapshot exists");
         assert_eq!(skipped, 0);
         assert_eq!(loaded.seq, Seq(1));
         assert_eq!(loaded.account.as_ref().expect("account").name, "sentinel");
@@ -2912,6 +3106,82 @@ mod tests {
         assert_eq!(report.frames, 1, "only the frames after the snapshot");
         assert_eq!(loaded.seq, Seq(2));
         assert_eq!(loaded.files.len(), 1, "the post-snapshot version landed");
+    }
+
+    #[test]
+    fn a_streamed_snapshot_is_the_one_frame_the_whole_object_makes_byte_for_byte() {
+        // The compatibility contract: the snapshot a 1.1.x server loads is one
+        // frame whose payload is the whole index as one canonical object.
+        // Streaming it a file at a time must write exactly those bytes.
+        let dir = TempDir::new("journal-snapshot-stream");
+        let mut journal = open_journal(&dir);
+        let mut index = Index::default();
+        let device = device_record();
+        let device_id = device.device_id;
+        let frames = [
+            account_frame(),
+            Frame::Device {
+                record: device,
+                wrapped: [9u8; 32],
+            },
+            Frame::Seen {
+                device_id,
+                event: SeenEvent {
+                    ts: UnixMs(5),
+                    kind: SeenKind::Edit,
+                    address: Some("192.0.2.9".to_string()),
+                    country: None,
+                },
+            },
+            Frame::Version(version_record(
+                FileId::new([2u8; 16]),
+                VersionId::new([3u8; 32]),
+                &[],
+                Seq(4),
+            )),
+            Frame::Version(version_record(
+                FileId::new([2u8; 16]),
+                VersionId::new([4u8; 32]),
+                &[],
+                Seq(5),
+            )),
+            Frame::Version(version_record(
+                FileId::new([7u8; 16]),
+                VersionId::new([8u8; 32]),
+                &[],
+                Seq(6),
+            )),
+            Frame::Scrub {
+                summary: ScrubSummary {
+                    started: UnixMs(7),
+                    duration_ms: 1,
+                    chunks_verified: 2,
+                    bytes_verified: 3,
+                    mismatches: 0,
+                    quarantined: Vec::new(),
+                    complete_pass: true,
+                },
+            },
+        ];
+        for (n, frame) in frames.into_iter().enumerate() {
+            index.apply(&record(n as u64 + 1, frame));
+        }
+        assert!(index.files[&FileId::new([2u8; 16])].conflicted);
+        journal.snapshot(&index).expect("snapshot");
+
+        let whole = snapshot_value(&index).to_json().into_bytes();
+        let on_disk = fs::read(
+            dir.path()
+                .join(format!("journal/v1/index/{}.snap", index.seq.0)),
+        )
+        .expect("the snapshot");
+        assert_eq!(&on_disk[HEADER..], &whole[..], "the payload, byte for byte");
+        assert_eq!(on_disk[..4], (whole.len() as u32).to_le_bytes());
+        assert_eq!(on_disk[4..HEADER], crc32(&whole).to_le_bytes());
+        let (loaded, _) = journal.load_snapshot().expect("load");
+        let (loaded, size) = loaded.expect("a snapshot exists");
+        assert_eq!(size, on_disk.len() as u64, "the size a restart remembers");
+        assert_eq!(snapshot_value(&loaded).to_json().into_bytes(), whole);
     }
 
     #[test]
@@ -2930,7 +3200,7 @@ mod tests {
 
         let (loaded, skipped) = journal.load_snapshot().expect("load");
         assert_eq!(skipped, 1, "the corrupt snapshot is counted, not hidden");
-        assert_eq!(loaded.expect("older snapshot").seq, Seq(1));
+        assert_eq!(loaded.expect("older snapshot").0.seq, Seq(1));
     }
 
     #[test]

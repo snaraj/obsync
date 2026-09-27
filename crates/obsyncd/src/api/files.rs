@@ -10,7 +10,7 @@ use obsync_core::base64;
 use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
-use crate::storage::types::NewVersion;
+use crate::storage::types::{NewVersion, SeenKind};
 use crate::types::{FileId, Sid, VersionId};
 
 use super::edge::ClientInfo;
@@ -104,15 +104,10 @@ pub fn post_version(
         deleted,
         device_id: authed.id,
     };
-    let outcome = if accept_existing {
-        app.store.append_version_idempotent(new)
-    } else {
-        app.store.append_version(new)
-    }?;
-
-    if outcome.decision.wrote() {
-        auth::record_edit(app, &authed.id, client);
-    }
+    // The edit event rides the version's own fsync; a post answered with a
+    // version the store already held writes neither.
+    let edit = auth::seen_event(app, client, SeenKind::Edit);
+    let outcome = app.store.post_version(new, accept_existing, edit)?;
     let status = if outcome.decision.wrote() { 201 } else { 200 };
     Ok(Response::json(
         status,
