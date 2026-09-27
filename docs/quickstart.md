@@ -184,7 +184,7 @@ device has a recorded sync run yet ([Your devices](setup.md#your-devices)).
 
    ![Obsidian's Settings on Android, with Self Hosted Private Sync under Community plugins](assets/android/14-settings-plugin-entry.png)
 
-   <!-- CAPTURE(1.1.4): the plugin's settings on Android: Server URL, folders, and pairing -->
+   ![The plugin's settings on Android: Server URL, Custom request headers, Connection with Check, and the start of Sync folders on this device](assets/android/15-plugin-settings-server.png)
 
 Android keeps certificates you install yourself apart from the built-in ones,
 and an app may ignore them. If Obsidian on Android will not connect to a
@@ -228,9 +228,9 @@ server with its own certificate authority, see
    approve within the code's ten minutes; after that, pair again with a new
    code.
 
-   ![The computer names the phone vault and its note count before approval](assets/phone-candidate-113/final-train-approval.png)
+   ![Pair a new device on the computer: Approve "Android ASXT" (Android, obsync 1.1.4)? Approve only if the new device shows the code 791 131. It will sync vault "lab-android" (23 notes). Approve and Reject below](assets/pair-approve-phone.png)
 
-   <!-- CAPTURE(1.1.4): the approval question with the pairing match code, on the computer and on the phone -->
+   ![Pair this device on an Android phone, its code field cleared: Waiting for approval on the other device. Its prompt shows the code 791 131: if it shows another, choose Reject there](assets/android/17-pairing-waiting.png)
 
    If the phone holds notes the server does not have, it asks before adding
    them. **Pair and upload** shares those notes with your other paired
@@ -239,6 +239,8 @@ server with its own certificate authority, see
    screenshot.
 
    ![The phone asks before uploading notes that are new to this server](assets/phone-candidate-113/final-train-vault-confirm.png)
+
+   ![Once paired, This device on an Android phone: Paired as Android ASXT, Pair this device and Pair a new device, the Name, and the phone's download ceilings, 512 MiB and 50 GiB](assets/android/16-plugin-settings-device.png)
 
 5. Edit a note on the phone. It appears on the computer within seconds, and
    the other way round. That is the whole loop.
