@@ -169,7 +169,13 @@ impl Harness {
             .expect("the application state opens"),
         );
 
-        let server = Server::bind("127.0.0.1:0", Limits::default()).expect("bind");
+        // The body-rate floor `serve` ships, so the tests that trickle a body
+        // measure the production number rather than a default beside it.
+        let limits = Limits {
+            min_body_rate_bytes_per_sec: crate::cli::serve::MIN_BODY_RATE,
+            ..Limits::default()
+        };
+        let server = Server::bind("127.0.0.1:0", limits).expect("bind");
         let addr = server.local_addr();
         let serve_app = Arc::clone(&app);
         let serve_shutdown = Arc::clone(&shutdown);
@@ -1952,6 +1958,82 @@ fn a_batch_streams_and_names_a_lost_chunk_missing() {
     let text = String::from_utf8_lossy(&res.body);
     assert_eq!(text.matches("X-Obsync-Missing: 1").count(), 1, "one part");
     assert!(text.contains(&format!("X-Obsync-Sid: {}\r\nX-Obsync-Missing: 1", sids[3])));
+}
+
+/// Send a chunk upload's head, then its body at `rate` bytes a second in
+/// 1 KiB slices, and return the answer. The sender stops when the server
+/// stops listening.
+fn trickle_put(h: &Harness, cred: &Cred, body: &[u8], rate: u64) -> Res {
+    let (_, sid) = chunk(body);
+    let req = Req::new("PUT", &format!("/v1/chunks/{sid}")).sign_with(cred, NOW, &nonce(), &sid);
+    let mut head = format!("PUT {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in &req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(600)))
+        .expect("timeout");
+    let mut writer = stream.try_clone().expect("writer");
+    let body = body.to_vec();
+    let pause = Duration::from_secs_f64(1024.0 / rate as f64);
+    let sender = std::thread::spawn(move || -> std::io::Result<()> {
+        writer.write_all(head.as_bytes())?;
+        for slice in body.chunks(1024) {
+            std::thread::sleep(pause);
+            writer.write_all(slice)?;
+        }
+        Ok(())
+    });
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw) {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    let _ = sender.join().expect("sender joined");
+    Res::parse(&raw)
+}
+
+/// The slowloris floor (`cli::serve::MIN_BODY_RATE`): a body trickled at a
+/// quarter of it is refused once its allowance runs out -- about 1.3 s,
+/// whatever the floor is -- the refusal is one line naming the timeout, and
+/// nothing is stored. A floor of zero would take the whole minute this body
+/// needs at 1 KiB/s, and store it.
+#[test]
+fn a_chunk_body_trickled_below_the_rate_floor_is_refused() {
+    let h = Harness::start_with(
+        "trickle",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let body = vec![0x57; 64 * 1024];
+    let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
+    let started = std::time::Instant::now();
+    let refused = trickle_put(&h, &cred, &body, rate);
+    assert_eq!(refused.status, 500, "{}", refused.text());
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "refused on the floor, not the idle timeout: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        h.captured().lines().any(|l| l.contains("event=chunk_put")
+            && l.contains("decision=io_error")
+            && l.contains("io=TimedOut")),
+        "{}",
+        h.captured()
+    );
+    let (_, sid) = chunk(&body);
+    let absent = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(absent.status, 404, "nothing of the trickle was stored");
 }
 
 #[test]
