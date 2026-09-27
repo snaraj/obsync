@@ -3745,21 +3745,39 @@ export default class ObsyncPlugin extends Plugin {
     const state = this.state;
     const unpushed: string[] = [];
     const seen = new Set<string>();
-    for (const file of await this.host.list()) {
-      if (!(await this.tracked(file.path))) continue;
-      seen.add(file.path);
-      if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
-    }
-    for (const path of Object.keys(state.data.files)) {
-      if (seen.has(path) || !(await this.tracked(path))) continue;
-      unpushed.push(path);
-    }
+    await this.inHostPass(async () => {
+      for (const file of await this.host.list()) {
+        if (!(await this.tracked(file.path))) continue;
+        seen.add(file.path);
+        if (!isPushed(state.fileByPath(file.path), file.mtime, file.size)) unpushed.push(file.path);
+      }
+      for (const path of Object.keys(state.data.files)) {
+        if (seen.has(path) || !(await this.tracked(path))) continue;
+        unpushed.push(path);
+      }
+    });
     return unpushed.sort();
   }
 
   /** A path this device syncs: the engine's own rule (`engine.ts`, `tracked`). */
   private async tracked(path: string): Promise<boolean> {
     return vaultPathRefusal(path) === null && inSyncScope(path, this.state.data.syncFolders) && (await this.host.syncable(path));
+  }
+
+  /**
+   * `work` as one pass of the host's (`VaultHost.pass`, issue #198), closed
+   * however it ends, as the engine's own walks are: a walk over every file
+   * asks each folder's nested-vault question once instead of once per file.
+   * On a phone that question is a bridge call a level; 300 files four levels
+   * deep took 33.6 s outside a pass and 2.5 s inside one (Android emulator).
+   */
+  private async inHostPass<T>(work: () => Promise<T>): Promise<T> {
+    this.host.pass?.(true);
+    try {
+      return await work();
+    } finally {
+      this.host.pass?.(false);
+    }
   }
 
   /**
@@ -3779,14 +3797,16 @@ export default class ObsyncPlugin extends Plugin {
       : await heldNotes(this.transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId));
     let local = 0;
     let unknown = 0;
-    for (const file of await this.host.list()) {
-      if (!(await this.tracked(file.path))) continue;
-      local++;
-      const there = held?.get(file.path);
-      const same = there !== undefined && there.size === file.size &&
-        (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
-      if (!same) unknown++;
-    }
+    await this.inHostPass(async () => {
+      for (const file of await this.host.list()) {
+        if (!(await this.tracked(file.path))) continue;
+        local++;
+        const there = held?.get(file.path);
+        const same = there !== undefined && there.size === file.size &&
+          (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
+        if (!same) unknown++;
+      }
+    });
     this.log(
       `pairing role=claimant decision=surveyed local=${local} unknown=${unknown} held=${held?.size ?? 0} duration_ms=${Date.now() - started}`,
     );

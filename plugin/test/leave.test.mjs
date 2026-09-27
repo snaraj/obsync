@@ -298,6 +298,29 @@ test("what this device would never push is not an unpushed edit", async (t) => {
   assert.deepEqual(vault(r.host).length, 4, "and every one of them is still in the vault");
 });
 
+// On a phone each folder's nested-vault question is a bridge call a level:
+// outside a pass, a count over 2,000 files kept Leave waiting minutes (#198).
+test("the count Leave makes walks the vault in one host pass, closed however it ends", async (t) => {
+  const r = await fixture(t, { devices: 2 });
+  r.host.seed("Notes/deep/deeper/a.md", "WALKED SENTINEL\n");
+  let open = 0;
+  let opened = 0;
+  const inside = [];
+  r.host.pass = (on) => { if (on) { open++; opened++; } else open--; };
+  const syncable = r.host.syncable.bind(r.host);
+  r.host.syncable = async (path) => { inside.push(open > 0); return syncable(path); };
+
+  await r.instance.unpushedEdits();
+  assert.ok(inside.length > 0, "the count asked the host");
+  assert.ok(inside.every(Boolean), "every question inside the pass");
+  assert.equal(opened, 1, "one pass for the whole walk");
+  assert.equal(open, 0, "and it is closed");
+
+  r.host.syncable = async () => { throw new Error("HOST SENTINEL"); };
+  await assert.rejects(r.instance.unpushedEdits(), /HOST SENTINEL/);
+  assert.equal(open, 0, "closed when the walk throws too");
+});
+
 test("a revoke whose answer never arrived leaves this device paired, and offers the local leave", async (t) => {
   const r = await fixture(t, { devices: 2 });
   const route = r.instance.transport.options.request;

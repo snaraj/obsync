@@ -350,7 +350,16 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   copy.seed("Notes/a.md", "alpha\n");
   copy.seed("Attachments/scan.pdf", large);
   const p = await plugin(t, { server, host: copy, metadata: { vrk: null } });
+  // One host pass for the whole survey (#198): a phone asks each folder once, not once per note.
+  let open = 0;
+  let opened = 0;
+  const inside = [];
+  copy.pass = (on) => { if (on) { open++; opened++; } else open--; };
+  const syncable = copy.syncable.bind(copy);
+  copy.syncable = async (path) => { inside.push(open > 0); return syncable(path); };
   assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 0);
+  assert.ok(inside.length === 2 && inside.every(Boolean), `every question inside the pass: ${JSON.stringify(inside)}`);
+  assert.deepEqual([opened, open], [1, 0], "one pass, closed");
 
   // Another vault: same name other bytes, a name the server lacks, a name it deleted.
   const other = new FakeHost();

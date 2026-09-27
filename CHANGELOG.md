@@ -368,7 +368,11 @@ before (#152).
 already holds with your server's vault before it syncs, which on a phone with
 thousands of files took a minute, and all that time its dialog still read
 "Waiting for approval on the other device". It now says it was approved and
-is comparing, and that a large vault takes a minute. All platforms (#236).
+is comparing, and that a large vault takes a minute. That comparison, and
+the count **Leave** makes of edits not yet sent, now ask about each folder
+once instead of once per file: on an Android emulator 300 files took 2.5 s
+instead of 33.6 s, so a phone holding thousands of files no longer waits
+minutes to leave a server. All platforms (#236, #198).
 
 **A pairing that fails or is abandoned no longer says "paired" or leaves a
 device without a key on your account.** A new device becomes active only
