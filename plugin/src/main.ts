@@ -2525,7 +2525,8 @@ export default class ObsyncPlugin extends Plugin {
         return;
       }
       this.scheduleReconnect(attempt, error.status);
-      this.setStatus({ kind: "offline" });
+      // Retried like absence, and said as what it is (`refusalStatus`).
+      this.setStatus(refusalStatus(error) ?? { kind: "offline" });
     }
   }
 
@@ -3348,7 +3349,7 @@ export default class ObsyncPlugin extends Plugin {
               ? `This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost, so these words cannot re-enrol this device: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
               : code === "bad_recovery_proof"
                 ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
-                : refusalFor(code);
+                : refusalText(error);
       new Notice(`obsync: ${text}`, 12000);
     } finally {
       this.enrolling = false;

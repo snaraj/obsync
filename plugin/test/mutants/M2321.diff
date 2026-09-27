@@ -1,0 +1,12 @@
+# M2321: a server refusal naming the certificate error is taken for the device's own (certificate wording)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1321,7 +1321,7 @@
+   "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
+ 
+ export function untrustedCertificate(error: unknown): boolean {
+-  return error instanceof ApiError && error.code === "unreachable" && UNTRUSTED_AUTHORITY.test(error.detail);
++  return error instanceof ApiError && UNTRUSTED_AUTHORITY.test(error.detail);
+ }
+ 
+ function decode<T>(response: HttpResponse): T {

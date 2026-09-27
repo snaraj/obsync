@@ -138,6 +138,15 @@ test("wrong token, wrong vault key and an unregistered legacy account never enro
   }
 });
 
+test("setup against a certificate this device does not trust says so, never 'the server refused this step'", async (t) => {
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
+  const { ApiError, CERT_UNTRUSTED } = r.box.require(join(r.box.home, "build/transport.js"));
+  r.instance.transport.setup = async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); };
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(r.instance.state.data.deviceId, null);
+  assert.deepEqual(r.notices, [`obsync: ${CERT_UNTRUSTED}`]);
+});
+
 test("a lost first setup response retains its pre-request key for an explicit recovery attempt", async (t) => {
   const server = new FakeServer({ claimed: false });
   const r = await plugin(t, { server, metadata: { ...unpaired, vrk: null } });

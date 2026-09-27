@@ -145,6 +145,39 @@ test("every setup and pairing refusal reads as what happened and what to do, nev
   }
 });
 
+/*
+ * A CERTIFICATE THIS DEVICE DOES NOT TRUST (the #201 CI lane: Check read
+ * `0 unreachable: network=net::ERR_CERT_AUTHORITY_INVALID` after 85 s). Each
+ * platform's own words for an unknown authority are that one failure, said
+ * the same way by the status, Check, setup and pairing; absence, a wrong name
+ * and an expired certificate are not it, and nothing but absence is offline.
+ */
+test("a certificate from an authority this device does not trust is said as that, on every path and platform", () => {
+  const { ApiError, CERT_UNTRUSTED, untrustedCertificate } = require("../build/transport.js");
+  const { refusalStatus, refusalText } = require("../build/sync/engine.js");
+  assert.equal(CERT_UNTRUSTED, "This device does not trust your server's certificate, so it refused the connection. " +
+    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+  const untrusted = [
+    "network=net::ERR_CERT_AUTHORITY_INVALID",
+    "network=The certificate for this server was signed by an unknown certifying authority.",
+    "network=java.security.cert.CertPathValidatorException: Trust anchor for certification path not found.",
+  ];
+  for (const reason of untrusted) {
+    const error = new ApiError(0, "unreachable", reason);
+    assert.equal(untrustedCertificate(error), true, reason);
+    assert.deepEqual(refusalStatus(error), { kind: "error", code: "certificate", message: CERT_UNTRUSTED }, reason);
+    assert.equal(refusalText(error), CERT_UNTRUSTED, reason);
+    assert.equal(pairing.refusalText(error), CERT_UNTRUSTED, reason);
+  }
+  for (const reason of ["network=net::ERR_CONNECTION_REFUSED", "network=net::ERR_CERT_DATE_INVALID",
+    "network=net::ERR_CERT_COMMON_NAME_INVALID", "timeout budget_ms=10000"]) {
+    assert.deepEqual(refusalStatus(new ApiError(0, "unreachable", reason)), { kind: "offline" }, reason);
+  }
+  // Only the transport's own verdict: a server's refusal naming it is the server's refusal.
+  assert.equal(untrustedCertificate(new ApiError(400, "bad_request", "ERR_CERT_AUTHORITY_INVALID")), false);
+  assert.equal(untrustedCertificate(new Error("network=net::ERR_CERT_AUTHORITY_INVALID")), false);
+});
+
 test("a held claim is read back exactly, and anything else is no claim (#153)", () => {
   const claim = { pairingId: PAIRING_ID, pairingSecret: "10".repeat(16), deviceId: "aa".repeat(16),
     deviceSecret: "0f".repeat(32), serverUrl: "https://sync.example.invalid", claimedAt: 1757200000000 };

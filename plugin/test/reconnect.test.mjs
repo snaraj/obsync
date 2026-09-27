@@ -158,6 +158,20 @@ test("a start the server could not be reached for is retried, and the next one t
   assert.equal(r.logs.filter((line) => line.startsWith("engine decision=resumed")).length, 1);
 });
 
+test("a start refused by a certificate this device does not trust says so, is retried, and a start that gets through clears it", async (t) => {
+  const r = await fixture(t);
+  const said = "error — This device does not trust your server's certificate, so it refused the connection. Trust that " +
+    "certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".";
+  r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); });
+  await r.instance.onload();
+  assert.deepEqual(r.win.armed(), [5000], "retried like absence: trusting the certificate needs no press here");
+  assert.equal(r.instance.statusText(), said, "the settings row and Show sync status read this");
+  assert.equal(r.bar.at(-1), `obsync: ${said}`);
+  r.win.fire();
+  await settle();
+  assert.equal(r.instance.statusText(), "idle", "a start that gets through clears it");
+});
+
 test("the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts", async (t) => {
   const r = await fixture(t);
   r.plan(() => { throw r.unreachable(); });

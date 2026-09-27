@@ -1,0 +1,12 @@
+# M2323: Apple's words for an unknown authority are not matched (certificate wording)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1313,7 +1313,7 @@
+  * Android's on a phone. A name mismatch or an expired certificate is not
+  * this, and is not matched.
+  */
+-const UNTRUSTED_AUTHORITY = /ERR_CERT_AUTHORITY_INVALID|unknown certifying authority|trust anchor for certification path/i;
++const UNTRUSTED_AUTHORITY = /ERR_CERT_AUTHORITY_INVALID|trust anchor for certification path/i;
+ 
+ /** What an untrusted certificate says, with the one thing to do (troubleshooting, same heading). */
+ export const CERT_UNTRUSTED =

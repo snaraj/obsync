@@ -1,0 +1,12 @@
+# M2320: an untrusted certificate is never recognised (certificate wording)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1321,7 +1321,7 @@
+   "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
+ 
+ export function untrustedCertificate(error: unknown): boolean {
+-  return error instanceof ApiError && error.code === "unreachable" && UNTRUSTED_AUTHORITY.test(error.detail);
++  return false;
+ }
+ 
+ function decode<T>(response: HttpResponse): T {

@@ -1341,6 +1341,27 @@ export class Transport {
  */
 export const NOT_OBSYNC = "not_obsync";
 
+/**
+ * A CERTIFICATE THIS DEVICE DOES NOT TRUST IS NOT ABSENCE. Something answered,
+ * and the device's own TLS refused the certificate it showed: signed by an
+ * authority this device was never told to trust. No retry changes that, and
+ * "not answering" sent people to their network. Matched on each platform's
+ * own words for exactly that failure, which the transport keeps in the
+ * `network=` reason: Chromium's on desktop (seen, #201), Apple's and
+ * Android's on a phone. A name mismatch or an expired certificate is not
+ * this, and is not matched.
+ */
+const UNTRUSTED_AUTHORITY = /ERR_CERT_AUTHORITY_INVALID|unknown certifying authority|trust anchor for certification path/i;
+
+/** What an untrusted certificate says, with the one thing to do (troubleshooting, same heading). */
+export const CERT_UNTRUSTED =
+  "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device " +
+  "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
+
+export function untrustedCertificate(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "unreachable" && UNTRUSTED_AUTHORITY.test(error.detail);
+}
+
 function decode<T>(response: HttpResponse): T {
   if (response.text === "") return {} as T;
   try {

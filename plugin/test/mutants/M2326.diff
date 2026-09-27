@@ -1,0 +1,12 @@
+# M2326: a start refused by the certificate reads offline (certificate wording)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2499,7 +2499,7 @@
+       }
+       this.scheduleReconnect(attempt, error.status);
+       // Retried like absence, and said as what it is (`refusalStatus`).
+-      this.setStatus(refusalStatus(error) ?? { kind: "offline" });
++      this.setStatus({ kind: "offline" });
+     }
+   }
+ 

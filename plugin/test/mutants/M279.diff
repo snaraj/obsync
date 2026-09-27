@@ -1,10 +1,10 @@
 # M279: First-time setup on a server that holds a vault shows the raw server code instead of 'one server holds one vault'
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2841,7 +2841,8 @@
+@@ -3323,7 +3323,8 @@
                : code === "bad_recovery_proof"
                  ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
-                 : refusalFor(code);
+                 : refusalText(error);
 -      new Notice(`obsync: ${text}`, 12000);
 +      void text;
 +      new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 12000);

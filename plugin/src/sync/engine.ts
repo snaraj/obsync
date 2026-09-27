@@ -73,7 +73,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, FileRecord, NOT_OBSYNC, Transport } from "../transport";
+import { ApiError, CERT_UNTRUSTED, ChangeRecord, ChangesPage, FileRecord, NOT_OBSYNC, Transport, untrustedCertificate } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -477,6 +477,7 @@ export function refusalStatus(error: unknown): EngineStatus | null {
   if (!(error instanceof ApiError)) return null;
   // First: a full server is never absence, whatever carried its answer.
   if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
+  if (untrustedCertificate(error)) return { kind: "error", code: "certificate", message: CERT_UNTRUSTED };
   if (error.code === "unreachable") return { kind: "offline" };
   // Not narrowed by the predicate: every branch below is an `ApiError` too.
   if (forgottenCredential(error as unknown)) {

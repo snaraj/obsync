@@ -402,6 +402,18 @@ test("Check asks the server without a credential before setup, and says to type 
   assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
 });
 
+test("Check against a certificate this device does not trust says so and where to trust it, never 'nothing answered'", async (t) => {
+  let ApiError;
+  const s = open(t, { transport: { account: async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); } } });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  s.plugin.state.paired = true;
+  s.button(s.render("Connection").made, "Check").click();
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1), "This device does not trust your server's certificate, so it refused the connection. " +
+    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+});
+
 test("Check reads 'Checking…' at once, asks with a person's patience, and answers in words, never a code (#182)", async (t) => {
   let answer;
   const asked = [];

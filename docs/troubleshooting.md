@@ -203,9 +203,13 @@ Nothing in obsync or the server needs to change for this.
 
 ## The certificate is not trusted on this device
 
-**What you see.** One device connects and another does not. **Check** on the
-failing device ends with `net::ERR_CERT_AUTHORITY_INVALID`
-(TODO(1.1.4-text)), or a browser on it warns about the certificate.
+**What you see.** One device connects and another does not. **Check**, the
+status and **Show sync status** on the failing device say:
+
+> This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device -- see Troubleshooting, "The certificate is not trusted on this device".
+
+Up to 1.1.3, **Check** ended with `net::ERR_CERT_AUTHORITY_INVALID` instead. A
+browser on that device warns about the certificate too.
 
 **Why it happens.** The server uses its own certificate authority, and this
 device has never been told to trust it. Trust is set once per device, and on
