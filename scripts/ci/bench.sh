@@ -117,21 +117,26 @@ docker image inspect "${image}" >/dev/null 2>&1 || deny "no local image ${image}
 mkdir -p "${results}"
 trap cleanup EXIT
 
-# The probe image: Python, plus strace from its pinned Debian packages.
+# The probe image: Python, plus strace from its pinned Debian packages. Every
+# package is verified before any is installed, and all go to one `dpkg -i`:
+# the amd64 strace depends on libunwind8, and installed alone first it was
+# refused. The build's own words are kept for a refusal (requirement 12).
 created='probe'
-docker build --quiet --tag "${PROBE_IMAGE}" - >/dev/null <<DOCKERFILE || deny 'the probe image would not build'
+docker build --progress=plain --tag "${PROBE_IMAGE}" - >"${scratch}/probe.log" 2>&1 <<DOCKERFILE \
+  || { tail -n 40 "${scratch}/probe.log" >&2; deny 'the probe image would not build'; }
 FROM ${PYTHON_IMAGE}
-RUN set -eu; cd /tmp; \
+RUN set -eu; mkdir /tmp/pins; cd /tmp/pins; \
     case "\$(dpkg --print-architecture)" in \
       amd64) pins="${STRACE_AMD64};${LIBUNWIND_AMD64}" ;; \
       arm64) pins="${STRACE_ARM64}" ;; \
       *) echo "no strace pin for \$(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac; \
     echo "\${pins}" | tr ';' '\n' | while read -r path sha; do \
-      python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "${DEBIAN}/\${path}" pkg.deb; \
-      echo "\${sha}  pkg.deb" | sha256sum -c - ; \
-      dpkg -i pkg.deb; rm pkg.deb; \
+      name="\${path##*/}"; \
+      python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "${DEBIAN}/\${path}" "\${name}"; \
+      echo "\${sha}  \${name}" | sha256sum -c - ; \
     done; \
+    dpkg -i ./*.deb; cd /; rm -rf /tmp/pins; \
     strace -V | head -n 1
 DOCKERFILE
 
