@@ -137,7 +137,37 @@ test("unsupported publication and post-link directory-sync failures do not fall 
     await writer.abort();
     assert.equal(existsSync(join(r.root, "Notes/copy.md")), phase === "directory_sync");
     if (phase === "directory_sync") assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+    // The refusal says why by its code alone; a message names a path on disk.
+    assert.deepEqual(r.logs, ["host path_class=file decision=refused reason=copy_unconfirmed code=none"]);
   }
+});
+
+/**
+ * A HOST WITH NO FOLDER SYNC (Windows). Node opens a directory there for
+ * reading only, and the sync is refused `EPERM` for every folder, every time;
+ * a host that will not open a directory at all says `EISDIR`. The copy's bytes
+ * were synced before it had a name, so it is published and the skip is said
+ * once -- where every restored copy on Windows was called a failure after it
+ * had landed. Any other folder-sync failure still refuses it (above).
+ */
+for (const [code, at] of [["EPERM", "sync"], ["EISDIR", "open"]]) test(`a host with no folder sync (${code} at ${at}) publishes the copy once, and says so`, async (t) => {
+  const refused = () => Object.assign(new Error(`${code} SENTINEL`), { code });
+  const r = host(t, { wrap: (p) => ({ ...p,
+    open: async (...args) => {
+      if (args[1] !== "r" || !(await p.lstat(args[0])).isDirectory()) return p.open(...args);
+      if (at === "open") throw refused();
+      const h = await p.open(...args);
+      return { sync: async () => { throw refused(); }, close: () => h.close() };
+    },
+  }) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  const stat = await writer.commit(1000);
+  await writer.abort();
+  assert.equal(stat.path, "Notes/copy.md");
+  assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+  assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "one copy, and no temp beside it");
+  assert.deepEqual(r.logs, [`host path_class=folder decision=skipped reason=directory_fsync code=${code}`]);
 });
 
 test("desktop refuses symlinked selected folders and only cleans its own temporary inode", async (t) => {

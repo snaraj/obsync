@@ -756,7 +756,7 @@ test("the copy's writer is released on success as well as on failure", async () 
  * against the real `ObsidianHost` over a throwaway vault on a real
  * filesystem, where the residue is a directory entry a test can read.
  */
-function desktopVault(t, r) {
+function desktopVault(t, r, promises = fsp) {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-copy-host-"));
   t.after(() => {
@@ -773,7 +773,7 @@ function desktopVault(t, r) {
   } };
   const host = new ObsidianHost(
     { state: r.state, app: { vault }, log: (line) => logs.push(line) },
-    { base: root, path: nodePath, fs: { promises: fsp } },
+    { base: root, path: nodePath, fs: { promises } },
   );
   return { root, host, logs, context: { ...r.context, host } };
 }
@@ -796,6 +796,31 @@ test("a conflict copy through the real desktop host leaves no temporary behind",
     folder(root), [basename(NOTE), basename(copy)].sort(),
     "a second, hidden name for the copy's plaintext was left in the vault",
   );
+});
+
+/**
+ * THE SAME COPY ON A HOST WITH NO FOLDER SYNC (Windows: `EPERM` for every
+ * folder). The copy was refused after it had landed, so the pull wrote the
+ * note again under the next name, and the next -- twenty copies of one note,
+ * then "refused". It is one copy, and the skip is said once.
+ */
+test("a conflict copy on a host that cannot sync a folder lands once", async (t) => {
+  const r = await rig();
+  const windows = { ...fsp, open: async (path, flags, mode) => {
+    const handle = await fsp.open(path, flags, mode);
+    if (!(await handle.stat()).isDirectory()) return handle;
+    return { sync: async () => { throw Object.assign(new Error("EPERM SENTINEL"), { code: "EPERM" }); }, close: () => handle.close() };
+  } };
+  const { root, context, logs } = desktopVault(t, r, windows);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(context, frame), "conflict_copy");
+
+  const copy = copyName(r, NOTE, 1);
+  assert.equal(readFileSync(join(root, copy), "utf8"), THEIRS, "the copy did not land");
+  assert.deepEqual(folder(root), [basename(NOTE), basename(copy)].sort(), "the note was copied more than once");
+  assert.ok(logs.includes("host path_class=folder decision=skipped reason=directory_fsync code=EPERM"), logs.join(" | "));
 });
 
 test("a failed conflict copy through the real desktop host leaves neither copy nor temporary", async (t) => {

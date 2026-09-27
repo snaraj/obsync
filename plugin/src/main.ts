@@ -125,6 +125,15 @@ const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
  */
 const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
 
+/**
+ * What a folder sync answers on a host that has none. Node opens a directory
+ * on Windows for reading only, and `FlushFileBuffers` needs write access, so
+ * the sync is refused `EPERM` there, for every folder, every time; a host that
+ * will not open a directory at all says `EISDIR`. No POSIX `open(2)` of a
+ * directory for reading, and no `fsync(2)`, answers either.
+ */
+const NO_FOLDER_SYNC = new Set(["EPERM", "EISDIR"]);
+
 /** The words on a notice's buttons (`VaultHost.notify`). */
 const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
   delete_everywhere: "Delete everywhere",
@@ -1187,8 +1196,7 @@ export class ObsidianHost implements VaultHost {
             );
           }
           // From here on, failure/cancellation preserves the published copy.
-          const directory = await fs.promises.open(parent, "r");
-          try { await directory.sync(); } finally { await directory.close(); }
+          await this.syncFolder(fs, parent, true);
           const refusal = await chainRefusal(found.chain, walker(fs));
           const landed = await walker(fs).lstat(found.target);
           if (refusal !== null || !sameFile(published, landed)) throw new Error("Restore publication identity changed.");
@@ -1197,7 +1205,12 @@ export class ObsidianHost implements VaultHost {
             this.log("host path_class=file decision=write_superseded");
           }
           return { path, mtime: Math.round(made.mtimeMs), size: made.size };
-        } catch { throw new CopyPublicationError(path); }
+        } catch (error) {
+          // The cause by its code alone, because its message names a path on
+          // this disk: a refusal that said nothing hid every Windows copy.
+          this.log(`host path_class=file decision=refused reason=copy_unconfirmed code=${(error as { code?: string }).code ?? "none"}`);
+          throw new CopyPublicationError(path);
+        }
       },
       abort: discard,
     };
@@ -1208,15 +1221,24 @@ export class ObsidianHost implements VaultHost {
    * host that cannot -- Windows opens no directory for syncing -- still has
    * the note's bytes on disk, synced before the rename, so it is said once in
    * the log and never fails the write it follows.
+   *
+   * A `strict` caller -- a copy's publication, which says "may exist" rather
+   * than claim a copy it cannot vouch for -- is spared only the host with no
+   * folder sync at all (`NO_FOLDER_SYNC`); any other failure is thrown to it.
+   * Before this, every restored copy and conflict copy on Windows was refused
+   * after it had landed, and a conflict went on to write the note again under
+   * the next name, up to twenty times (the Windows runner, 2026-09-27).
    */
-  private async syncFolder(fs: NodeFs, folder: string): Promise<void> {
+  private async syncFolder(fs: NodeFs, folder: string, strict = false): Promise<void> {
     try {
       const directory = await fs.promises.open(folder, "r");
       try { await directory.sync(); } finally { await directory.close(); }
     } catch (error) {
+      const code = (error as { code?: string }).code ?? "none";
+      if (strict && !NO_FOLDER_SYNC.has(code)) throw error;
       if (this.folderSyncRefused) return;
       this.folderSyncRefused = true;
-      this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${(error as { code?: string }).code ?? "none"}`);
+      this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${code}`);
     }
   }
 
