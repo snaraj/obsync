@@ -15,6 +15,7 @@ import sys
 CORE = "obsync-core"
 SERVER = "obsyncd"
 HTTP = "crates/obsync-core/src/http/server.rs"
+BODY = "crates/obsync-core/src/http/body.rs"
 API = "crates/obsyncd/src/api/mod.rs"
 AUTH = "crates/obsyncd/src/api/auth.rs"
 CHUNKS = "crates/obsyncd/src/api/chunks.rs"
@@ -114,6 +115,8 @@ CASES = [
      "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
     ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
      "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
+    ("rate-clock-at-first-read", SERVER, BODY, "            started: None,\n",
+     "            started: Some(Instant::now()),\n", "a_slow_nonce_fsync_is_not_charged_to_the_chunk_body_behind_it"),
     ("incomplete-is-not-too-large", SERVER, RENDER,
      "        Err(e) => Err(incomplete_body(app, &req.body, &e)),",
      "        Err(_) => Err(ApiError::new(413, \"body_too_large\", \"request body exceeds the limit\")),",

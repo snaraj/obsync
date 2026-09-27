@@ -40,13 +40,20 @@ const MAX_TRAILER_BYTES: usize = 8192;
 /// The rate is enforced as an allowance: at any moment the body may have taken
 /// `bytes / rate` seconds plus one second of burst, which is the same floor as
 /// a per-8-KiB deadline without cutting off a connection that stalls once.
+///
+/// The clock starts at the server's FIRST READ of the body, not when the
+/// headers were parsed. A chunk upload is read only after its request has
+/// authenticated, and authentication waits for the nonce log's fsync; on a
+/// slow disk that wait alone outlasted the grace, and the body was refused as
+/// `slow_body` before a byte of it was asked for -- the server's storage,
+/// blamed on the sender's link (`docs/protocol.md` promises the opposite).
 pub struct Body {
     reader: Option<ConnReader>,
     framing: Framing,
     remaining: u64,
     chunk_remaining: u64,
     finished: bool,
-    started: Instant,
+    started: Option<Instant>,
     read_total: u64,
     min_rate: u64,
     set_timeout: Option<TimeoutSetter>,
@@ -91,7 +98,7 @@ impl Body {
             },
             chunk_remaining: 0,
             finished: false,
-            started: Instant::now(),
+            started: None,
             read_total: 0,
             min_rate,
             set_timeout,
@@ -175,7 +182,7 @@ impl Body {
             return Ok(());
         }
         let allowance = self.allowance();
-        let elapsed = self.started.elapsed();
+        let elapsed = self.started.get_or_insert_with(Instant::now).elapsed();
         if elapsed >= allowance {
             return Err(too_slow());
         }
@@ -186,7 +193,11 @@ impl Body {
     }
 
     fn check_rate(&self) -> io::Result<()> {
-        if self.min_rate == 0 || self.started.elapsed() <= self.allowance() {
+        if self.min_rate == 0
+            || self
+                .started
+                .is_none_or(|at| at.elapsed() <= self.allowance())
+        {
             return Ok(());
         }
         Err(too_slow())
@@ -517,9 +528,9 @@ mod tests {
         let mut body = connection(b"0123456789", Framing::Length(10));
         body.min_rate = 1024 * 1024;
         // Nothing read yet, so the allowance is the grace period alone.
-        body.started = Instant::now() - Duration::from_millis(500);
+        body.started = Some(Instant::now() - Duration::from_millis(500));
         assert!(body.check_rate().is_ok());
-        body.started = Instant::now() - Duration::from_millis(1500);
+        body.started = Some(Instant::now() - Duration::from_millis(1500));
         assert_eq!(
             body.check_rate().map_err(|err| err.kind()),
             Err(io::ErrorKind::TimedOut)
@@ -532,6 +543,16 @@ mod tests {
         assert_eq!(body.rate_budget(), Some(Duration::from_secs(2)));
         body.min_rate = 0;
         assert_eq!(body.rate_budget(), None, "no floor, no budget");
+    }
+
+    #[test]
+    fn the_rate_clock_starts_at_the_first_read_not_at_the_headers() {
+        let reader = BufReader::with_capacity(BUFFER_BYTES, boxed(b"data".to_vec()));
+        let mut body = Body::new(Some(reader), Framing::Length(4), 1024, None);
+        // The server's own wait before it asks for the body: longer than the
+        // grace, and none of it the sender's.
+        std::thread::sleep(RATE_GRACE + Duration::from_millis(100));
+        assert_eq!(read_all(&mut body).ok(), Some(b"data".to_vec()));
     }
 
     #[test]

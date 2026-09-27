@@ -2352,6 +2352,38 @@ fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
     assert_slow_body(&h, &refused);
 }
 
+/// The floor measures the SENDER, from the server's first read of the body.
+/// A chunk's body is read only after its request authenticated, and that
+/// waits for the nonce log's fsync: on a slow volume the wait alone outlasted
+/// the one-second grace, and a chunk sent at full speed was refused `503
+/// slow_body` before a byte of it was read -- the server's own disk, blamed
+/// on the device's link.
+#[test]
+fn a_slow_nonce_fsync_is_not_charged_to_the_chunk_body_behind_it() {
+    let h = Harness::start_with(
+        "slow-nonce-then-body",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SlowSync { ms: 1_500 });
+    let (body, sid) = chunk(&vec![0x5a; 64 * 1024]);
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+    assert!(
+        !h.captured().contains("reason=slow_body"),
+        "{}",
+        h.captured()
+    );
+}
+
 /// Send `head` and `body`, end the request's half of the connection, and
 /// read the answer: the server sees a body end wherever `body` does.
 fn send_and_hang_up(h: &Harness, head: &str, body: &[u8]) -> Res {

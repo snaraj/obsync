@@ -266,7 +266,7 @@ impl NonceCache {
 
     /// Arm the durable log's crash point. Tests only.
     #[cfg(test)]
-    fn set_fault(&self, fault: super::nonce_log::NonceFault) {
+    pub(super) fn set_fault(&self, fault: super::nonce_log::NonceFault) {
         self.with_durable(|file| file.set_fault(fault));
     }
 
