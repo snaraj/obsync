@@ -158,8 +158,14 @@ fi
 trap cleanup EXIT
 
 # (1) A throwaway authority and a leaf, RSA so every TLS stack here reads it.
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout "${scratch}/ca.key" -out "${scratch}/ca.crt" \
-  -subj "/CN=${CA_NAME}" -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign' \
+# The authority's extensions come from this file and nothing else. `-addext`
+# over the platform's openssl.cnf is not the same on every openssl: 1.1.1 (the
+# macOS runner's) appends it to the file's own `v3_ca` section, the authority
+# carried `basicConstraints` twice, and curl would not chain a leaf to it.
+printf '[req]\ndistinguished_name = name\nprompt = no\nx509_extensions = authority\n[name]\nCN = %s\n[authority]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign\nsubjectKeyIdentifier = hash\n' \
+  "${CA_NAME}" > "${scratch}/ca.cnf"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -config "${scratch}/ca.cnf" \
+  -keyout "${scratch}/ca.key" -out "${scratch}/ca.crt" \
   >"${scratch}/openssl.log" 2>&1 || deny 'openssl could not make the authority'
 openssl req -newkey rsa:2048 -nodes -keyout "${scratch}/tls.key" -out "${scratch}/leaf.csr" -subj "/CN=${HOST}" \
   >"${scratch}/openssl.log" 2>&1 || deny 'openssl could not make the leaf key'
