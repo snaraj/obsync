@@ -1108,9 +1108,25 @@ pub fn is_hex(v: &str, n: usize) -> bool {
 }
 
 /// Write, fsync, and remove a probe file: proof the volume takes a write now.
+///
+/// Whatever stands at the name -- a probe a crash left, or a link a restored
+/// volume brought -- is removed by name, which never follows a link, and the
+/// probe is then created exclusively: `O_EXCL` refuses an existing name of
+/// any kind, so the probe can never truncate or write the file a planted
+/// link points at (the compaction in `api/nonce_log.rs` does the same).
 fn probe_writable(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let path = dir.join(".obsync-readyz");
-    let mut f = std::fs::File::create(&path)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
     f.write_all(b"obsync readyz probe\n")?;
     f.sync_all()?;
     drop(f);

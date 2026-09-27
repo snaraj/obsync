@@ -574,6 +574,53 @@ fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
     );
 }
 
+/// Security item 4: a link planted at the probe's name, the shape a restored
+/// volume can arrive in. The probe removes the link and writes its own file;
+/// it never opens the name through the link, so the file the link points at
+/// keeps every byte. Something the probe cannot remove refuses readiness.
+#[test]
+fn the_readiness_probe_never_writes_through_a_planted_link() {
+    let h = Harness::start_with(
+        "readyz-link",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let probe = h.dir.join("blobs").join(".obsync-readyz");
+    let victim = h.dir.join("victim");
+    std::fs::write(&victim, b"sentinel\n").expect("the victim");
+    std::os::unix::fs::symlink(&victim, &probe).expect("the link is planted");
+
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(
+        std::fs::read(&victim).expect("still there"),
+        b"sentinel\n",
+        "nothing was truncated or written through the link"
+    );
+    assert!(
+        std::fs::symlink_metadata(&probe).is_err(),
+        "the link is gone and the probe cleaned up after itself"
+    );
+
+    // A directory at the name cannot be removed as a file: the volume is not
+    // in a state the probe can prove, and readiness says so.
+    std::fs::create_dir(&probe).expect("a directory at the probe's name");
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    let refused = Req::get("/readyz").send(h.addr);
+    std::fs::remove_dir(&probe).expect("cleared");
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "not_ready");
+    assert!(
+        h.captured()
+            .contains("event=readiness decision=not_ready volume=blobs"),
+        "{}",
+        h.captured()
+    );
+}
+
 #[test]
 fn a_journal_whose_usage_is_unverified_answers_readyz_and_recovers_without_a_write() {
     // The other half of the accounting refusal, over the wire. A journal that

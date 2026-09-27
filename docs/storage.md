@@ -512,7 +512,7 @@ reporting it.
   server implements no AES and never could write plaintext
   (`docs/architecture.md` 3 and 5.1). Its payload assembles a selected newest
   head; retained-version metadata in the manifest is not a backup of every
-  historical payload. Its accepted `--key` argument does not decrypt content.
+  historical payload. The key it accepts (`--key-file`) does not decrypt content.
   Both export and check are offline recovery tools, not a full restore proof.
 
 ### Offline check and recovery verdicts
