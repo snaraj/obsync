@@ -1,11 +1,11 @@
 # M107: the folder record's hold is not restored at the next start
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -898,7 +898,6 @@
+@@ -989,7 +989,6 @@
      void this.track(this.heartbeat());
      // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
      // finding 3).
 -    this.restoreFolderBarriers();
-     await this.reconcile();
-     if (this.running) {
-       const context = this.need();
+     // And before that pass: a note left under a re-case's hidden name would
+     // read to it as deleted (issue #219).
+     await host.settle?.().catch((error: unknown) =>

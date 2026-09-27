@@ -183,6 +183,13 @@ export interface VaultHost {
    */
   sweep?(): Promise<void>;
   /**
+   * Finish, or put back, what this host left half-done that the start pass
+   * must see as it was: a re-case stopped between its two renames (issue
+   * #219). Awaited before that pass, which is the one that publishes
+   * deletions; a host that leaves nothing half-done has none.
+   */
+  settle?(): Promise<void>;
+  /**
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
    * only the host can see the filesystem (`vaultPath.ts`).
@@ -983,6 +990,10 @@ export class SyncEngine {
     // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
     // finding 3).
     this.restoreFolderBarriers();
+    // And before that pass: a note left under a re-case's hidden name would
+    // read to it as deleted (issue #219).
+    await host.settle?.().catch((error: unknown) =>
+      host.log(`host path_class=file decision=failed reason=settle code=${(error as { code?: string }).code ?? "none"}`));
     await this.reconcile();
     if (this.running) {
       const context = this.need();

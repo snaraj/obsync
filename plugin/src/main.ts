@@ -832,13 +832,8 @@ export class ObsidianHost implements VaultHost {
    * leaves it. What they held came from the server and is fetched again. A
    * temp a writer of this host holds open is not a leftover. The walk is the
    * scan's, over the selected folders, which is where every write lands.
-   *
-   * FIRST, ON EVERY PLATFORM, a re-case this device stopped between its two
-   * renames is put back (`settleRecase`): the engine calls this before its
-   * first pass, and that pass is the one that publishes deletions.
    */
   async sweep(): Promise<void> {
-    await this.settleRecase(false);
     const desktop = this.desktop;
     if (desktop === null) return;
     const started = Date.now();
@@ -855,6 +850,15 @@ export class ObsidianHost implements VaultHost {
       `host path_class=temp decision=removed reason=interrupted_write files=${removed} kept=${kept} ` +
         `duration_ms=${Date.now() - started}`,
     );
+  }
+
+  /**
+   * On every platform, a re-case this device stopped between its two renames
+   * is put back (`settleRecase`), at each engine start and before its first
+   * pass (`VaultHost.settle`): that pass is the one that publishes deletions.
+   */
+  async settle(): Promise<void> {
+    await this.settleRecase(false);
   }
 
   /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */
