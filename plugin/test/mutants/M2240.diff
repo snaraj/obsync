@@ -1,0 +1,12 @@
+# M2240: history asks for one record a request again
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -146,7 +146,7 @@
+    */
+   private async read(since: number, limit: number): Promise<{ seq: number; changes: Record<string, unknown>[] }> {
+     this.operation.check();
+-    const page = object(await this.context.transport.historyChanges(since, this.operation, limit));
++    const page = object(await this.context.transport.historyChanges(since, this.operation, 1));
+     this.operation.check();
+     const seq = page["seq"], head = page["head_seq"], changes = page["changes"];
+     if (!number(seq) || !number(head) || seq < since || seq > head ||

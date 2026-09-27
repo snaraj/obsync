@@ -7,7 +7,15 @@ import { SyncContext, VaultStat } from "./engine";
 import { decryptRecordManifest, writeVerified } from "./pull";
 import { Manifest } from "./push";
 
-export const HISTORY_SCAN_RECORDS = 20;
+/**
+ * How many retained versions one step reads and checks (issue #199): ONE page
+ * of the journal, where each version was a request of its own -- twenty round
+ * trips a click, and a thousand for a search that went a thousand versions
+ * back. A 1.1.4 server ends a page at 8 MiB whatever this asks
+ * (`historyChanges`), so a step is one request, and two only for pages of
+ * unusually large records.
+ */
+export const HISTORY_SCAN_RECORDS = 100;
 export const HISTORY_SCAN_MS = 5000;
 /**
  * How long ONE user action keeps stepping when a filename filter is set.
@@ -80,10 +88,10 @@ export async function historyManifest(context: SyncContext, fileId: string, doma
 
 export interface HistoryPage {
   entries: HistoryEntry[];
-  /** Journal positions this call consumed: the per-step bound, per call. */
+  /** Journal records this call read: the per-step bound, per call. */
   scanned: number;
   refused: number;
-  /** Journal positions consumed since this browser opened. */
+  /** Journal records read since this browser opened. */
   checked: number;
   /** About how many the journal holds, from the head this browser captured. */
   about: number;
@@ -99,15 +107,15 @@ export interface HistoryOrder {
 /**
  * The retained journal, walked in bounded steps.
  *
- * NEWEST FIRST OVER A FORWARD-ONLY CURSOR. `GET /v1/changes?since=N&limit=1`
- * is the only read there is: it answers "the first record after N", so there
- * is no way to ask for the record BEFORE one. Newest-first is therefore a
- * descending walk over WINDOWS: a window of `HISTORY_SCAN_RECORDS` sequence
- * numbers can hold at most that many records, so scanning one window forward
- * costs one step's bound and yields one step's rows, which are then shown in
- * reverse. Each window ends where the last one began, so nothing is skipped
- * and nothing is read twice. A sparse window costs one request and no rows,
- * and the automatic search simply moves on to the next.
+ * NEWEST FIRST OVER A FORWARD-ONLY CURSOR. `GET /v1/changes?since=N` is the
+ * only read there is: it answers "the records after N", so there is no way to
+ * ask for the record BEFORE one. Newest-first is therefore a descending walk
+ * over WINDOWS: a window of `HISTORY_SCAN_RECORDS` sequence numbers can hold
+ * at most that many records, so one page read forward from its start covers
+ * it and yields one step's rows, which are then shown in reverse. Each window
+ * ends where the last one began, so nothing is skipped and nothing is shown
+ * twice; what a sparse window's page brings from above it is discarded, and
+ * the automatic search simply moves on to the next.
  */
 export class HistoryBrowser {
   /** Oldest-first: the exclusive LOWER bound already shown. */
@@ -118,7 +126,7 @@ export class HistoryBrowser {
   private readonly now: () => number;
   readonly newestFirst: boolean;
   done = false;
-  /** Journal positions consumed since this browser opened. */
+  /** Journal records read since this browser opened. */
   checked = 0;
   constructor(readonly context: SyncContext, readonly operation: HistoryOperation, order: HistoryOrder = {}) {
     this.newestFirst = order.newestFirst ?? true;
@@ -131,28 +139,31 @@ export class HistoryBrowser {
   }
 
   /**
-   * One `limit=1` page, with every cursor claim checked before it is used.
-   * The server chooses `seq` and `head_seq`; neither may move a cursor
-   * backwards, past the head, or past the boundary this browser captured.
+   * One page of at most `limit` records, with every cursor claim checked
+   * before it is used. The server chooses `seq` and `head_seq`; neither may
+   * move a cursor backwards, past the head, or past the boundary this browser
+   * captured, and each record lies after the one before it, up to `seq`.
    */
-  private async read(since: number): Promise<{ seq: number; change: Record<string, unknown> | null }> {
+  private async read(since: number, limit: number): Promise<{ seq: number; changes: Record<string, unknown>[] }> {
     this.operation.check();
-    const page = object(await this.context.transport.historyChanges(since, this.operation));
+    const page = object(await this.context.transport.historyChanges(since, this.operation, limit));
     this.operation.check();
-    this.checked++;
     const seq = page["seq"], head = page["head_seq"], changes = page["changes"];
     if (!number(seq) || !number(head) || seq < since || seq > head ||
-        !Array.isArray(changes) || changes.length > 1 ||
+        !Array.isArray(changes) || changes.length > limit ||
         (this.boundary !== null && head < this.boundary) ||
         (seq === since && seq < head)) throw new Error("History cursor did not progress safely.");
     if (this.boundary === null) this.boundary = head;
-    const first = (changes as unknown[])[0];
-    if (first === undefined) return { seq, change: null };
-    const record = object(first);
-    if (!number(record["seq"]) || record["seq"] <= since || record["seq"] > seq) {
-      throw new Error("Invalid history sequence.");
-    }
-    return { seq, change: record };
+    let after = since;
+    const records = (changes as unknown[]).map((change) => {
+      const record = object(change);
+      if (!number(record["seq"]) || record["seq"] <= after || record["seq"] > seq) {
+        throw new Error("Invalid history sequence.");
+      }
+      after = record["seq"];
+      return record;
+    });
+    return { seq, changes: records };
   }
 
   /** Decrypt one record and keep it when it matches, or count the refusal. */
@@ -179,16 +190,17 @@ export class HistoryBrowser {
     }
   }
 
-  /** Oldest first: at most 20 records/requests, for up to 5 seconds. */
+  /** Oldest first: at most `HISTORY_SCAN_RECORDS` records, a page at a time, for up to 5 seconds. */
   private async stepUp(filter: string, out: HistoryEntry[], counts: { scanned: number; refused: number }): Promise<void> {
     const started = this.now();
     let taken = 0;
     while (!this.done && taken < HISTORY_SCAN_RECORDS && (taken === 0 || this.now() - started < HISTORY_SCAN_MS)) {
-      const { seq, change } = await this.read(this.cursor);
-      taken++;
-      counts.scanned++;
+      const { seq, changes } = await this.read(this.cursor, HISTORY_SCAN_RECORDS - taken);
+      // An empty page still spends one: every request is bounded, not only every record.
+      taken += Math.max(1, changes.length);
+      counts.scanned += changes.length;
       const boundary = this.boundary as number;
-      if (change !== null && (change["seq"] as number) <= boundary) await this.take(change, filter, out, counts);
+      for (const change of changes) if ((change["seq"] as number) <= boundary) await this.take(change, filter, out, counts);
       this.cursor = Math.min(seq, boundary);
       this.done = seq >= boundary;
     }
@@ -200,8 +212,7 @@ export class HistoryBrowser {
       // One request to learn the head the whole walk is measured against. Its
       // record is the OLDEST one and belongs to the last window, so it is
       // counted and discarded rather than decrypted out of order.
-      await this.read(0);
-      counts.scanned++;
+      counts.scanned += (await this.read(0, 1)).changes.length;
     }
     const boundary = this.boundary as number;
     if (this.floor === null) this.floor = boundary + 1;
@@ -209,12 +220,12 @@ export class HistoryBrowser {
     const window: Record<string, unknown>[] = [];
     let cursor = from;
     while (cursor < this.floor - 1) {
-      const { seq, change } = await this.read(cursor);
-      counts.scanned++;
-      if (change !== null && (change["seq"] as number) < this.floor) window.push(change);
+      const { seq, changes } = await this.read(cursor, HISTORY_SCAN_RECORDS);
+      for (const change of changes) if ((change["seq"] as number) < this.floor) window.push(change);
       cursor = seq;
-      if (change === null) break;
+      if (changes.length === 0) break;
     }
+    counts.scanned += window.length;
     this.floor = from + 1;
     this.done = from === 0;
     for (const record of window.reverse()) await this.take(record, filter, out, counts);
@@ -255,6 +266,7 @@ export class HistoryBrowser {
       if (entries.length === 0) throw failure;
       error = failure instanceof Error ? failure.message : String(failure);
     } finally {
+      this.checked += counts.scanned;
       this.context.host.log(
         `history decision=summary scanned=${counts.scanned} matches=${entries.length} refused=${counts.refused} ` +
           `checked=${this.checked} about=${this.about} budget_ms=${budget} budget_records=${HISTORY_SCAN_RECORDS} ` +

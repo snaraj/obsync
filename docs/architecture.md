@@ -1427,10 +1427,13 @@ same selection; the existing platform filesystem and memory limits remain.
 
 **Restore from history** reads the retained change feed with its own cursor,
 never `State.lastSeq`, and never calls the feed application path. Each
-click performs at most 20 serial, single-attempt requests with `wait=0` and
-`limit=1`, stopping after five seconds plus the current request. One
-contract-conforming response is under 6 MiB (at most 120 MiB cumulatively
-per click); only one full response and 20 compact row descriptors are held.
+click reads at most 100 records in single-attempt requests with `wait=0`,
+normally one page of `limit=100` (a newest-first walk's first click adds one
+`limit=1` read that fixes its head), stopping after five seconds plus the
+current request. A 1.1.4 server ends a page at 8 MiB, inside the 16 MiB
+answer cap; a larger page from an older server is asked again at half the
+limit, down to one record under 6 MiB. Only one full response and 100
+compact row descriptors are held.
 The first response fixes the scan's head. Cursor progress is validated and
 later records above that boundary are discarded. GC removes pruned versions
 from the feed; retained content of deleted files remains browseable.

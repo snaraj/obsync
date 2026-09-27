@@ -1004,8 +1004,23 @@ export class Transport {
     }
   }
 
-  async historyChanges(since: number, control: ReadControl): Promise<unknown> {
-    return decode<unknown>(await this.readOnce(`/v1/changes?since=${since}&wait=0&limit=1`, control, HISTORY_RESPONSE_BYTES));
+  /**
+   * Up to `limit` retained records after `since`, for a manual read (issue
+   * #199). A 1.1.4 server stops a page at 8 MiB whatever the limit
+   * (`crates/obsyncd/src/storage/index.rs`, `CHANGES_PAGE_BYTES`), inside
+   * `CHANGES_ANSWER_MAX`; a larger page from an older server is asked again
+   * smaller, down to the one record `HISTORY_RESPONSE_BYTES` bounds.
+   */
+  async historyChanges(since: number, control: ReadControl, limit = 1): Promise<unknown> {
+    for (let asked = limit; ; asked = Math.max(1, Math.floor(asked / 2))) {
+      const target = `/v1/changes?since=${since}&wait=0&limit=${asked}`;
+      try {
+        return decode<unknown>(await this.readOnce(target, control, asked === 1 ? HISTORY_RESPONSE_BYTES : CHANGES_ANSWER_MAX));
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
+        this.log(`history_http GET ${target} decision=refused reason=over_cap retry limit=${Math.max(1, Math.floor(asked / 2))}`);
+      }
+    }
   }
 
   async historyVersion(fileId: string, versionId: string, control: ReadControl): Promise<unknown> {

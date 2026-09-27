@@ -1,0 +1,12 @@
+# M2243: a history page over its cap is refused instead of asked again smaller
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1017,7 +1017,7 @@
+       try {
+         return decode<unknown>(await this.readOnce(target, control, asked === 1 ? HISTORY_RESPONSE_BYTES : CHANGES_ANSWER_MAX));
+       } catch (error) {
+-        if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
++        throw error;
+         this.log(`history_http GET ${target} decision=refused reason=over_cap retry limit=${Math.max(1, Math.floor(asked / 2))}`);
+       }
+     }

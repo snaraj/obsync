@@ -141,7 +141,7 @@ native observations from automated coverage.
 2. Optionally type part of a file name and select **Restart search**, then
    **Load next**. Versions appear newest first, including notes that have
    since been deleted; turn on **Oldest first** to start from the other end.
-   Each **Load next** checks at most 20 entries, so an empty page can still
+   Each **Load next** checks at most 100 entries, so an empty page can still
    have more history after it: select **Load next** again.
 3. Select **Restore a copy** beside the version you want. obsync creates a
    copy with a new, unique name beside the original, inside the folders this

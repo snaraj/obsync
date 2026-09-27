@@ -1,0 +1,11 @@
+# M2244: a history page's records are not checked to follow each other
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -160,7 +160,6 @@
+       if (!number(record["seq"]) || record["seq"] <= after || record["seq"] > seq) {
+         throw new Error("Invalid history sequence.");
+       }
+-      after = record["seq"];
+       return record;
+     });
+     return { seq, changes: records };

@@ -1,0 +1,12 @@
+# M2242: a Load next checks 200 entries, twice the documented budget
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -15,7 +15,7 @@
+  * (`historyChanges`), so a step is one request, and two only for pages of
+  * unusually large records.
+  */
+-export const HISTORY_SCAN_RECORDS = 100;
++export const HISTORY_SCAN_RECORDS = 200;
+ export const HISTORY_SCAN_MS = 5000;
+ /**
+  * How long ONE user action keeps stepping when a filename filter is set.
