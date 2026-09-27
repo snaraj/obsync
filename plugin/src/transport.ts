@@ -497,12 +497,16 @@ type CallOptions = Patience & {
  *   for 4096 sids, which is about 270 KB.
  * - `METADATA_ANSWER_MAX` for a file's versions and a listing page, which grow
  *   with a file's chunk count and so with its size.
- * - A chunk: its ciphertext ceiling; a batch: that per sid, plus its framing.
- * - The feed page: none yet. It is bounded by records, not bytes, until the
- *   server caps pages by bytes.
+ * - A chunk: its ciphertext ceiling; a batch: that per sid, plus its framing,
+ *   for the sids actually asked.
+ * - `CHANGES_ANSWER_MAX` for a feed page: twice the 8 MiB a 1.1.4 server caps
+ *   its pages at, so a page from it is never refused, and room for a single
+ *   entry larger than that cap; a larger page from an older server is asked
+ *   again smaller (`changes`).
  */
 export const JSON_ANSWER_MAX = 4 * 1024 * 1024;
 export const METADATA_ANSWER_MAX = 64 * 1024 * 1024;
+export const CHANGES_ANSWER_MAX = 16 * 1024 * 1024;
 /** One part's headers and delimiters in a batched chunk answer, generously. */
 const MULTIPART_PART_OVERHEAD = 1024;
 
@@ -1202,10 +1206,26 @@ export class Transport {
 
   // --- change feed -------------------------------------------------------
 
-  /** Uncapped: a page is bounded by its records, not its bytes, until pages are capped by bytes (#202). */
-  changes(since: number, wait: number, limit = 1000, patience: Patience = {}): Promise<ChangesPage> {
+  /**
+   * One page of the feed, and a page over its ceiling is asked again SMALLER
+   * (#202). A 1.1.4 server caps its pages by bytes; a 1.1.3 server bounds them
+   * only by `limit`, and a page of large manifests can legitimately pass any
+   * ceiling there. So an over-ceiling page is asked again from the same cursor
+   * at half the limit, down to one entry, each step one line; only a single
+   * entry over the ceiling is a refusal.
+   */
+  async changes(since: number, wait: number, limit = 1000, patience: Patience = {}): Promise<ChangesPage> {
     const seconds = Math.min(Math.max(0, Math.floor(wait)), MAX_WAIT_SECONDS);
-    return this.json("GET", `/v1/changes?since=${since}&wait=${seconds}&limit=${limit}`, { auth: "device", cap: Infinity, ...patience });
+    for (let asked = limit; ;) {
+      const target = `/v1/changes?since=${since}&wait=${seconds}&limit=${asked}`;
+      try {
+        return await this.json<ChangesPage>("GET", target, { auth: "device", cap: CHANGES_ANSWER_MAX, ...patience });
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
+        asked = Math.max(1, Math.floor(asked / 2));
+        this.log(`http GET ${target} decision=refused reason=over_cap retry limit=${asked}`);
+      }
+    }
   }
 
   // --- dashboard and plugin distribution ---------------------------------

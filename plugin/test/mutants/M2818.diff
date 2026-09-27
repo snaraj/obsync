@@ -1,0 +1,12 @@
+# M2818: a feed page over its ceiling fails at once instead of being asked again smaller
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1221,7 +1221,7 @@
+       try {
+         return await this.json<ChangesPage>("GET", target, { auth: "device", cap: CHANGES_ANSWER_MAX, ...patience });
+       } catch (error) {
+-        if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
++        if (!(error instanceof ApiError && error.code === "response_too_large") || asked >= 1) throw error;
+         asked = Math.max(1, Math.floor(asked / 2));
+         this.log(`http GET ${target} decision=refused reason=over_cap retry limit=${asked}`);
+       }

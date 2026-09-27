@@ -1,0 +1,12 @@
+# M2819: an over-ceiling page drops straight to one entry per page
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1222,7 +1222,7 @@
+         return await this.json<ChangesPage>("GET", target, { auth: "device", cap: CHANGES_ANSWER_MAX, ...patience });
+       } catch (error) {
+         if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
+-        asked = Math.max(1, Math.floor(asked / 2));
++        asked = 1;
+         this.log(`http GET ${target} decision=refused reason=over_cap retry limit=${asked}`);
+       }
+     }

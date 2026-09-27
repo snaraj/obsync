@@ -476,6 +476,20 @@ test("each attempt's deadline fits its route: a long poll its wait, a transfer i
   assert.deepEqual(await given((t) => t.getChunk(SID), { status: 200, body: new ArrayBuffer(1) }), [30000 + Math.ceil(chunk / 16)]);
 });
 
+test("a feed page over its ceiling is asked again smaller from the same cursor; only one entry over it is a refusal (#202)", async () => {
+  const { CHANGES_ANSWER_MAX } = require("../build/transport.js");
+  const huge = { status: 200, text: `{"pad":"${"y".repeat(CHANGES_ANSWER_MAX)}"}` };
+  const page = { status: 200, text: JSON.stringify({ seq: 9, head_seq: 12, changes: [] }) };
+  const { transport, sent, logged } = harness([huge, page]);
+  assert.deepEqual(await transport.changes(7, 0), { seq: 9, head_seq: 12, changes: [] });
+  assert.deepEqual(sent.map((request) => request.url.replace(SERVER, "")), ["/v1/changes?since=7&wait=0&limit=1000", "/v1/changes?since=7&wait=0&limit=500"]);
+  assert.ok(logged.includes("http GET /v1/changes?since=7&wait=0&limit=1000 decision=refused reason=over_cap retry limit=500"), logged.join("|"));
+  // One entry over the ceiling cannot be asked for any smaller.
+  const single = harness([huge, huge]);
+  await assert.rejects(single.transport.changes(7, 0, 2), (error) => error.code === "response_too_large");
+  assert.deepEqual(single.sent.map((request) => /limit=(\d+)/.exec(request.url)[1]), ["2", "1"]);
+});
+
 test("a multipart response without a boundary is refused", async () => {
   const { transport } = harness([{ status: 200, headers: { "content-type": "application/json" }, text: "{}" }]);
   await assert.rejects(() => transport.getChunks(["11".repeat(32)]), /bad_multipart/);

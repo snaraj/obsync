@@ -243,6 +243,26 @@ test("after a new vault key, an edit the server refuses for the old vault is sen
   await stopped(r);
 });
 
+test("the feed converges on an older server whose large pages pass the ceiling, asking smaller (#202)", async () => {
+  const { CHANGES_ANSWER_MAX } = require("../build/transport.js");
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // A 1.1.3 server bounds a page by entries only: anything above 250 here is too big to keep.
+  const huge = { status: 200, headers: {}, text: `{"pad":"${"y".repeat(CHANGES_ANSWER_MAX)}"}`, arrayBuffer: new ArrayBuffer(0) };
+  const asked = [];
+  refuse(r, (sent) => {
+    const limit = /\/v1\/changes\?.*limit=(\d+)/.exec(sent.url)?.[1];
+    if (limit !== undefined) asked.push(Number(limit));
+    return limit !== undefined && Number(limit) > 250;
+  }, () => huge);
+  await arriving(r, 3);
+  await r.timers.run(STEP_MS, () => r.host.text("In/2.md") !== null && r.state.data.lastSeq === r.server.seq);
+  assert.ok(asked.includes(1000) && asked.includes(500) && asked.includes(250), `${asked}`);
+  assert.ok(r.host.logs.some((line) => line.endsWith("decision=refused reason=over_cap retry limit=250")), r.host.logs.join("\n"));
+  assert.ok(!r.statuses.some((status) => status.kind === "offline" || status.kind === "error"), "not a failure, and not offline");
+  await stopped(r);
+});
+
 // --- the status is derived from facts (#158) -------------------------------
 
 /** Land notes on the server without the waiting poll hearing of them, then answer it. */

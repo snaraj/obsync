@@ -1,0 +1,12 @@
+# M2820: a feed page of any size is parsed and kept
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1219,7 +1219,7 @@
+     for (let asked = limit; ;) {
+       const target = `/v1/changes?since=${since}&wait=${seconds}&limit=${asked}`;
+       try {
+-        return await this.json<ChangesPage>("GET", target, { auth: "device", cap: CHANGES_ANSWER_MAX, ...patience });
++        return await this.json<ChangesPage>("GET", target, { auth: "device", cap: Infinity, ...patience });
+       } catch (error) {
+         if (!(error instanceof ApiError && error.code === "response_too_large") || asked <= 1) throw error;
+         asked = Math.max(1, Math.floor(asked / 2));
