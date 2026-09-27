@@ -2,13 +2,15 @@
 
 # Cloudflare
 
+*Para quem executa um servidor obsync.*
+
 Duas maneiras de colocar a Cloudflare entre os seus dispositivos e o seu
-servidor, e qual delas a instalação de referência utiliza. Nenhuma é
-obrigatória: o servidor não conhece nenhum fornecedor pelo nome, e
-[Executar o servidor](../server.md) não precisa de conta em lado nenhum. Esta
-página é para si se quiser chegar ao servidor fora de casa sem abrir uma porta
-no router, ou se quiser um nome de anfitrião publicado com uma política de
-acesso à frente.
+servidor. A Cloudflare é uma escolha opcional entre muitas: qualquer proxy
+inverso, VPN ou túnel em que confie faz o mesmo trabalho, o servidor não
+conhece nenhum fornecedor pelo nome, e [Executar o servidor](../server.md) não
+precisa de conta em lado nenhum. Esta página é para si se já usa a Cloudflare
+e quer chegar ao servidor fora de casa sem abrir uma porta no router, ou se
+quer um nome de anfitrião publicado com uma política de acesso à frente.
 
 Os menus da Cloudflare e as condições dos seus planos mudam. Cada passo
 abaixo indica o caminho de menu tal como a documentação da Cloudflare o dava
@@ -19,10 +21,10 @@ preço.
 
 | Variante | O que os dispositivos veem | O que a internet vê | Primeira sincronização grande |
 | --- | --- | --- | --- |
-| **Rota privada** (a instalação de referência) | o seu próprio endereço privado e o seu nome, através do cliente Cloudflare One | nada: nem nome de anfitrião nem porta aberta | tráfego de rede privada, sem passar por um nome de anfitrião público |
+| **Rota privada** | o seu próprio endereço privado e o seu nome, através do cliente Cloudflare One | nada: nem nome de anfitrião nem porta aberta | tráfego de rede privada, sem passar por um nome de anfitrião público |
 | **Nome de anfitrião público com Access** | um nome público, uma política de Access, um token de serviço no plugin | o nome de anfitrião, atrás do Access | encaminhado pela Cloudflare, nas condições do fornecedor para ficheiros grandes |
 
-A rota privada é a referência porque o servidor permanece invisível e porque
+A rota privada é a preferível, porque o servidor permanece invisível e porque
 a própria documentação da Cloudflare envia as transferências grandes por
 aí: uma rota por nome de anfitrião público faz passar o tráfego pela
 Cloudflare, e nos planos Free, Pro e Business as condições específicas do
@@ -107,9 +109,11 @@ Compromissos:
 O servidor recebe um nome de anfitrião num domínio que tem na Cloudflare. O
 túnel publica esse nome para o endereço privado do servidor, e o Cloudflare
 Access fica à frente: uma política de identidade para o painel e um token de
-serviço para as chamadas à API do plugin. É a variante que a
-[integração na plataforma](../platform-onboarding.md) descreve para o cluster
-de referência, e a que a instalação de referência não adotou.
+serviço para as chamadas à API do plugin. É a forma Cloudflare do caminho por
+nome de anfitrião publicado que a
+[integração na plataforma](../platform-onboarding.md) descreve; o seu próprio
+proxy inverso com a sua própria autenticação é a forma sem fornecedor do mesmo
+caminho.
 
 1. **Publique o nome de anfitrião.** Na configuração do túnel, adicione uma
    rota de aplicação publicada do seu nome de anfitrião (`sync.example.com`
@@ -125,7 +129,7 @@ de referência, e a que a instalação de referência não adotou.
    um e copie o Client ID e o Client Secret; o segredo só é mostrado uma
    vez. Adicione à aplicação uma política **Service Auth** que inclua esse
    token, para os caminhos que o plugin usa (`/v1/*`).
-4. **Cole o token no plugin.** Em **Edge service-token headers**, um por
+4. **Cole o token no plugin.** Em **Custom request headers**, um por
    linha, exatamente como a Cloudflare lhes chama:
 
    ```text
@@ -139,6 +143,11 @@ de referência, e a que a instalação de referência não adotou.
    cabeçalhos da edge com o endereço de ligação e o identificador do pedido,
    e um pedido que chegue a contornar a edge é recusado com
    `421 edge_required` ([resolução de problemas](../troubleshooting.md#edge_required)).
+   O servidor só acredita nesses cabeçalhos quando vêm de
+   `OBSYNC_TRUSTED_PROXY_CIDRS`. Neste modo, o valor predefinido abrange as
+   redes privadas a partir das quais um conector no mesmo anfitrião, na mesma
+   rede de contentores ou no mesmo cluster chega a ele; defina-o com a rede do
+   próprio conector para o restringir ainda mais.
 6. **Verifique.** Abra o nome de anfitrião num navegador e espere o início de
    sessão do Access, depois o painel. No plugin, escolha **Check** em
    **Connection**.
@@ -158,21 +167,21 @@ Compromissos:
 
 ## O que foi provado
 
-A rota privada é a rota da instalação de referência. A
+A rota privada tem sessões com dispositivos registadas: a
 [sessão de 2026-09-14](../validation-runs/2026-09-14.md) regista que nesse
 dia não foi exercitada, e porquê; a
 [sessão de 2026-09-20](../validation-runs/2026-09-20.md) regista uma sessão
-com dispositivos na rota de referência com as verificações de conectividade
-e de TLS aprovadas. A variante com nome de anfitrião público não foi
-exercitada por nenhuma sessão registada.
+com dispositivos na rota privada até um cluster, com as verificações de
+conectividade e de TLS aprovadas, em macOS e iPhone. A variante com nome de
+anfitrião público não foi exercitada por nenhuma sessão registada: ainda não
+está provada.
 
 ## A seguir
 
 - [Executar o servidor](../server.md): o terminador, os volumes, o token de
   configuração.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): o chart que a instalação de
-  referência utiliza.
-- [Integração na plataforma](../platform-onboarding.md): o que o cluster de
-  referência acrescentaria para um nome de anfitrião publicado.
+- [Kubernetes](../kubernetes.md): o chart, os seus volumes e a sua frente TLS.
+- [Integração na plataforma](../platform-onboarding.md): o que uma plataforma
+  GitOps acrescenta para um nome de anfitrião publicado.
 - [Resolução de problemas](../troubleshooting.md): `edge_required`,
   `offline` e o certificado.

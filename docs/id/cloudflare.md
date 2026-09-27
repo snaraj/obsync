@@ -2,13 +2,16 @@
 
 # Cloudflare
 
-Dua cara menempatkan Cloudflare di antara perangkat Anda dan server Anda,
-serta cara mana yang dipakai oleh penyiapan acuan. Keduanya tidak wajib:
-server tidak mengenal penyedia mana pun berdasarkan nama, dan
-[Menjalankan server](../server.md) tidak memerlukan akun di mana pun.
-Halaman ini untuk Anda jika ingin menjangkau server dari luar rumah tanpa
-membuka port di router, atau jika ingin nama host yang dipublikasikan dengan
-kebijakan akses di depannya.
+*Untuk Anda yang menjalankan server obsync.*
+
+Dua cara menempatkan Cloudflare di antara perangkat Anda dan server Anda.
+Cloudflare hanyalah satu pilihan opsional di antara banyak pilihan: reverse
+proxy, VPN, atau tunnel apa pun yang Anda percayai bisa melakukan tugas yang
+sama, server tidak mengenal penyedia mana pun berdasarkan nama, dan
+[Menjalankan server](../server.md) tidak memerlukan akun di mana pun. Halaman
+ini untuk Anda yang sudah memakai Cloudflare dan ingin menjangkau server dari
+luar rumah tanpa membuka port di router, atau ingin nama host yang
+dipublikasikan dengan kebijakan akses di depannya.
 
 Menu Cloudflare dan ketentuan paketnya berubah. Setiap langkah di bawah
 menyebutkan jalur menu sebagaimana diberikan dokumentasi Cloudflare pada
@@ -19,10 +22,10 @@ harga.
 
 | Pilihan | Yang dilihat perangkat | Yang dilihat internet | Sinkronisasi pertama yang besar |
 | --- | --- | --- | --- |
-| **Rute privat** (penyiapan acuan) | alamat privat dan nama Anda sendiri, lewat klien Cloudflare One | tidak ada: tanpa nama host, tanpa port terbuka | lalu lintas jaringan privat, tidak diproksi lewat nama host publik |
+| **Rute privat** | alamat privat dan nama Anda sendiri, lewat klien Cloudflare One | tidak ada: tanpa nama host, tanpa port terbuka | lalu lintas jaringan privat, tidak diproksi lewat nama host publik |
 | **Nama host publik dengan Access** | nama publik, kebijakan Access, token layanan di plugin | nama host, di belakang Access | diproksi lewat Cloudflare, dengan ketentuan penyedia untuk berkas besar |
 
-Rute privat menjadi acuan karena server tetap tak terlihat dan karena
+Rute privat lebih disarankan, karena server tetap tak terlihat dan karena
 dokumentasi Cloudflare sendiri mengarahkan transfer besar ke sana: rute nama
 host publik memproksi lalu lintas lewat Cloudflare, dan pada paket Free, Pro,
 dan Business ketentuan khusus layanan mewajibkan layanan berbayar untuk video
@@ -106,9 +109,10 @@ Pertimbangan:
 Server mendapat nama host pada domain yang Anda miliki di Cloudflare. Tunnel
 mempublikasikan nama host itu ke alamat privat server, dan Cloudflare Access
 berada di depannya: kebijakan identitas untuk dasbor, dan token layanan untuk
-panggilan API plugin. Inilah pilihan yang dijelaskan
-[penyambungan platform](../platform-onboarding.md) untuk klaster acuan, dan
-yang tidak diambil oleh penyiapan acuan.
+panggilan API plugin. Inilah bentuk Cloudflare dari jalur nama host
+terpublikasi yang dijelaskan [penyambungan platform](../platform-onboarding.md);
+reverse proxy Anda sendiri dengan autentikasinya sendiri adalah bentuk tanpa
+penyedia dari jalur yang sama.
 
 1. **Publikasikan nama host.** Di konfigurasi tunnel, tambahkan rute aplikasi
    terpublikasi dari nama host Anda (`sync.example.com` mewakili milik Anda)
@@ -123,8 +127,8 @@ yang tidak diambil oleh penyiapan acuan.
    salin Client ID dan Client Secret; secret hanya ditampilkan sekali.
    Tambahkan kebijakan **Service Auth** ke aplikasi yang memuat token ini,
    untuk jalur yang dipakai plugin (`/v1/*`).
-4. **Tempel token ke plugin.** Di bawah **Edge service-token headers**, satu
-   per baris, persis seperti penamaan Cloudflare:
+4. **Tempel token ke plugin.** Di bawah **Custom request headers**, satu per
+   baris, persis seperti penamaan Cloudflare:
 
    ```text
    CF-Access-Client-Id: <the client id>
@@ -137,7 +141,12 @@ yang tidak diambil oleh penyiapan acuan.
    `OBSYNC_EDGE=cloudflare`. Pada mode itu setiap permintaan harus membawa
    header edge berisi alamat penghubung dan ID permintaan, dan permintaan
    yang datang melewati edge ditolak dengan `421 edge_required`
-   ([pemecahan masalah](../troubleshooting.md#edge_required)).
+   ([pemecahan masalah](../troubleshooting.md#edge_required)). Server hanya
+   memercayai header itu bila datang dari `OBSYNC_TRUSTED_PROXY_CIDRS`. Pada
+   mode ini, nilai bawaannya adalah jaringan privat tempat konektor di host
+   yang sama, jaringan kontainer yang sama, atau klaster yang sama
+   menjangkaunya; setel ke jaringan milik konektor itu sendiri untuk
+   mempersempitnya lagi.
 6. **Verifikasi.** Buka nama host di peramban dan harapkan halaman masuk
    Access, lalu dasbor. Di plugin, pilih **Check** di bawah **Connection**.
 
@@ -156,18 +165,19 @@ Pertimbangan:
 
 ## Yang sudah dibuktikan
 
-Rute privat adalah rute penyiapan acuan.
-[Sesi 2026-09-14](../validation-runs/2026-09-14.md) mencatat bahwa hari itu
+Rute privat punya sesi perangkat yang tercatat:
+[sesi 2026-09-14](../validation-runs/2026-09-14.md) mencatat bahwa hari itu
 rute tersebut tidak diuji, dan alasannya;
 [sesi 2026-09-20](../validation-runs/2026-09-20.md) mencatat sesi perangkat
-pada rute acuan dengan pemeriksaan konektivitas dan TLS yang lolos. Pilihan
-nama host publik belum pernah diuji dalam sesi mana pun yang tercatat.
+lewat rute privat ke sebuah klaster, dengan pemeriksaan konektivitas dan TLS
+yang lolos, di macOS dan iPhone. Pilihan nama host publik belum pernah diuji
+dalam sesi mana pun yang tercatat: pilihan itu belum terbukti.
 
 ## Selanjutnya
 
 - [Menjalankan server](../server.md): terminator, volume, token penyiapan.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart yang dipakai penyiapan acuan.
-- [Penyambungan platform](../platform-onboarding.md): apa yang akan
-  ditambahkan klaster acuan untuk nama host yang dipublikasikan.
+- [Kubernetes](../kubernetes.md): chart, volume-nya, dan ujung depan TLS-nya.
+- [Penyambungan platform](../platform-onboarding.md): apa yang ditambahkan
+  platform GitOps untuk nama host yang dipublikasikan.
 - [Pemecahan masalah](../troubleshooting.md): `edge_required`, `offline`,
   dan sertifikat.

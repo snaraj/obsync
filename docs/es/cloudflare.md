@@ -2,12 +2,15 @@
 
 # Cloudflare
 
-Dos maneras de poner Cloudflare entre tus dispositivos y tu servidor, y cuál
-de ellas usa la instalación de referencia. Ninguna es obligatoria: el servidor
-no conoce a ningún proveedor por su nombre, y [Ejecutar el servidor](../server.md)
-no necesita cuenta con nadie. Esta página es para cuando quieres llegar al
-servidor fuera de casa sin abrir un puerto en el router, o cuando quieres un
-nombre de host publicado con una política de acceso delante.
+*Para quien ejecuta un servidor obsync.*
+
+Dos maneras de poner Cloudflare entre tus dispositivos y tu servidor.
+Cloudflare es una opción entre muchas, y opcional: cualquier proxy inverso,
+VPN o túnel en el que confíes hace el mismo trabajo, el servidor no conoce a
+ningún proveedor por su nombre, y [Ejecutar el servidor](../server.md) no
+necesita cuenta con nadie. Esta página es para cuando ya usas Cloudflare y
+quieres llegar al servidor fuera de casa sin abrir un puerto en el router, o
+quieres un nombre de host publicado con una política de acceso delante.
 
 Los menús de Cloudflare y las condiciones de sus planes cambian. Cada paso de
 abajo nombra la ruta de menú tal como la daba la documentación de Cloudflare
@@ -18,10 +21,10 @@ un precio.
 
 | Variante | Qué ven los dispositivos | Qué ve internet | Primera sincronización grande |
 | --- | --- | --- | --- |
-| **Ruta privada** (la instalación de referencia) | tu propia dirección privada y tu nombre, a través del cliente Cloudflare One | nada: ni nombre de host ni puerto abierto | tráfico de red privada, no pasa por un nombre de host público |
+| **Ruta privada** | tu propia dirección privada y tu nombre, a través del cliente Cloudflare One | nada: ni nombre de host ni puerto abierto | tráfico de red privada, no pasa por un nombre de host público |
 | **Nombre de host público con Access** | un nombre público, una política de Access, un token de servicio en el plugin | el nombre de host, detrás de Access | pasa por Cloudflare, bajo las condiciones del proveedor para archivos grandes |
 
-La ruta privada es la de referencia porque el servidor permanece invisible y
+La ruta privada es la preferible, porque el servidor permanece invisible y
 porque la propia documentación de Cloudflare envía las transferencias grandes
 por ahí: una ruta con nombre de host público hace pasar el tráfico por
 Cloudflare, y en los planes Free, Pro y Business las condiciones específicas
@@ -107,10 +110,11 @@ Contrapartidas:
 El servidor recibe un nombre de host en un dominio que tienes en Cloudflare.
 El túnel publica ese nombre hacia la dirección privada del servidor, y
 Cloudflare Access se sitúa delante: una política de identidad para el panel y
-un token de servicio para las llamadas a la API del plugin. Es la variante
-que [incorporación a la plataforma](../platform-onboarding.md) describe para
-el clúster de referencia, y la que la instalación de referencia no ha
-adoptado.
+un token de servicio para las llamadas a la API del plugin. Es la forma
+Cloudflare del camino con nombre de host publicado que describe
+[incorporación a la plataforma](../platform-onboarding.md); tu propio proxy
+inverso con su propia autenticación es la forma sin proveedor del mismo
+camino.
 
 1. **Publica el nombre de host.** En la configuración del túnel, añade una
    ruta de aplicación publicada desde tu nombre de host (`sync.example.com`
@@ -125,7 +129,7 @@ adoptado.
    uno y copia el Client ID y el Client Secret; el secreto se muestra una sola
    vez. Añade a la aplicación una política **Service Auth** que incluya ese
    token, para las rutas que usa el plugin (`/v1/*`).
-4. **Pega el token en el plugin.** En **Edge service-token headers**, uno por
+4. **Pega el token en el plugin.** En **Custom request headers**, uno por
    línea, exactamente como los nombra Cloudflare:
 
    ```text
@@ -139,6 +143,11 @@ adoptado.
    cabeceras del borde con la dirección de conexión y el identificador de
    petición, y una petición que llega esquivando el borde se rechaza con
    `421 edge_required` ([resolución de problemas](../troubleshooting.md#edge_required)).
+   El servidor solo cree esas cabeceras si vienen de
+   `OBSYNC_TRUSTED_PROXY_CIDRS`, cuyo valor por defecto en este modo son las
+   redes privadas desde las que lo alcanza un conector en el mismo host, la
+   misma red de contenedores o el mismo clúster; ponle la red del propio
+   conector para acotarlo más.
 6. **Comprueba.** Abre el nombre de host en un navegador y espera el inicio de
    sesión de Access, y luego el panel. En el plugin, pulsa **Check** en
    **Connection**.
@@ -159,21 +168,21 @@ Contrapartidas:
 
 ## Qué se ha comprobado
 
-La ruta privada es la ruta de la instalación de referencia. La
+La ruta privada tiene ejecuciones con dispositivos registradas: la
 [ejecución del 2026-09-14](../validation-runs/2026-09-14.md) deja constancia
 de que ese día no se ejercitó, y de por qué; la
 [ejecución del 2026-09-20](../validation-runs/2026-09-20.md) registra una
-ejecución con dispositivos en la ruta de referencia con las comprobaciones de
-conectividad y TLS superadas. La variante con nombre de host público no ha
-sido ejercitada por ninguna ejecución registrada.
+ejecución con dispositivos en la ruta privada hacia un clúster, con las
+comprobaciones de conectividad y TLS superadas, en macOS e iPhone. La variante
+con nombre de host público no ha sido ejercitada por ninguna ejecución
+registrada: todavía no está probada.
 
 ## Siguiente
 
 - [Ejecutar el servidor](../server.md): el terminador, los volúmenes, el
   token de configuración.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): el chart que usa la instalación de
-  referencia.
-- [Incorporación a la plataforma](../platform-onboarding.md): qué añadiría el
-  clúster de referencia para un nombre de host publicado.
+- [Kubernetes](../kubernetes.md): el chart, sus volúmenes y su frontal TLS.
+- [Incorporación a la plataforma](../platform-onboarding.md): qué añade una
+  plataforma GitOps para un nombre de host publicado.
 - [Resolución de problemas](../troubleshooting.md): `edge_required`,
   `offline` y el certificado.

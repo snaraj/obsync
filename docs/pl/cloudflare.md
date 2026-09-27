@@ -2,13 +2,15 @@
 
 # Cloudflare
 
+*Dla osób, które prowadzą serwer obsync.*
+
 Dwa sposoby na umieszczenie Cloudflare między Twoimi urządzeniami a Twoim
-serwerem oraz informacja, którego z nich używa instalacja referencyjna. Żaden
-nie jest wymagany: serwer nie zna żadnego dostawcy z nazwy, a
-[Uruchamianie serwera](../server.md) nie wymaga konta u nikogo. Ta strona jest
-dla Ciebie, jeśli chcesz sięgać do serwera poza domem bez otwierania portu na
-routerze albo jeśli chcesz opublikowaną nazwę hosta z polityką dostępu przed
-nią.
+serwerem. Cloudflare to jeden z wielu opcjonalnych wyborów: każde reverse
+proxy, VPN czy tunel, któremu ufasz, wykona tę samą pracę, serwer nie zna
+żadnego dostawcy z nazwy, a [Uruchamianie serwera](../server.md) nie wymaga
+konta u nikogo. Ta strona jest dla Ciebie, jeśli już korzystasz z Cloudflare i
+chcesz sięgać do serwera poza domem bez otwierania portu na routerze albo
+chcesz opublikowaną nazwę hosta z polityką dostępu przed nią.
 
 Menu Cloudflare i warunki planów się zmieniają. Każdy krok poniżej podaje
 ścieżkę menu tak, jak podawała ją dokumentacja Cloudflare 2026-09-22; sprawdź
@@ -18,10 +20,10 @@ aktualną stronę, zanim polegasz na limicie lub cenie.
 
 | Wariant | Co widzą urządzenia | Co widzi internet | Duża pierwsza synchronizacja |
 | --- | --- | --- | --- |
-| **Trasa prywatna** (instalacja referencyjna) | Twój własny prywatny adres i nazwę, przez klienta Cloudflare One | nic: ani nazwy hosta, ani otwartego portu | ruch w sieci prywatnej, nie przechodzi przez publiczną nazwę hosta |
+| **Trasa prywatna** | Twój własny prywatny adres i nazwę, przez klienta Cloudflare One | nic: ani nazwy hosta, ani otwartego portu | ruch w sieci prywatnej, nie przechodzi przez publiczną nazwę hosta |
 | **Publiczna nazwa hosta z Access** | publiczną nazwę, politykę Access, token usługi we wtyczce | nazwę hosta, za Access | przechodzi przez Cloudflare, na warunkach dostawcy dla dużych plików |
 
-Trasa prywatna jest wariantem referencyjnym, bo serwer pozostaje niewidoczny
+Trasa prywatna jest wariantem zalecanym, bo serwer pozostaje niewidoczny
 i bo sama dokumentacja Cloudflare kieruje tamtędy duże transfery: trasa przez
 publiczną nazwę hosta przepuszcza ruch przez Cloudflare, a w planach Free, Pro
 i Business warunki właściwe dla usługi wymagają płatnej usługi dla wideo i
@@ -105,9 +107,10 @@ Kompromisy:
 Serwer dostaje nazwę hosta w domenie, którą masz w Cloudflare. Tunel
 publikuje tę nazwę na prywatny adres serwera, a przed nią stoi Cloudflare
 Access: polityka tożsamości dla panelu i token usługi dla wywołań API
-wtyczki. To wariant, który
-[wdrożenie platformy](../platform-onboarding.md) opisuje dla klastra
-referencyjnego, i ten, którego instalacja referencyjna nie wybrała.
+wtyczki. To droga przez opublikowaną nazwę hosta, opisana we
+[wdrożeniu platformy](../platform-onboarding.md), w wersji z Cloudflare; Twoje
+własne reverse proxy z własnym uwierzytelnianiem to ta sama droga w wersji bez
+żadnego dostawcy.
 
 1. **Opublikuj nazwę hosta.** W konfiguracji tunelu dodaj trasę
    opublikowanej aplikacji ze swojej nazwy hosta (`sync.example.com` zastępuje
@@ -122,7 +125,7 @@ referencyjnego, i ten, którego instalacja referencyjna nie wybrała.
    skopiuj Client ID oraz Client Secret; sekret jest pokazywany tylko raz.
    Dodaj do aplikacji politykę **Service Auth** obejmującą ten token dla
    ścieżek używanych przez wtyczkę (`/v1/*`).
-4. **Wklej token do wtyczki.** W **Edge service-token headers**, po jednym w
+4. **Wklej token do wtyczki.** W **Custom request headers**, po jednym w
    wierszu, dokładnie tak, jak nazywa je Cloudflare:
 
    ```text
@@ -135,7 +138,12 @@ referencyjnego, i ten, którego instalacja referencyjna nie wybrała.
    `OBSYNC_EDGE=cloudflare`. W tym trybie każde żądanie musi nieść nagłówki
    brzegu z adresem łączącym i identyfikatorem żądania, a żądanie, które
    dociera z pominięciem brzegu, jest odrzucane z `421 edge_required`
-   ([rozwiązywanie problemów](../troubleshooting.md#edge_required)).
+   ([rozwiązywanie problemów](../troubleshooting.md#edge_required)). Serwer
+   wierzy tym nagłówkom tylko wtedy, gdy przychodzą z
+   `OBSYNC_TRUSTED_PROXY_CIDRS`. W tym trybie domyślnie są to sieci prywatne,
+   z których dociera do niego łącznik na tym samym hoście, w tej samej sieci
+   kontenerów lub w tym samym klastrze; ustaw tu własną sieć łącznika, aby
+   zawęzić to jeszcze bardziej.
 6. **Sprawdź.** Otwórz nazwę hosta w przeglądarce i spodziewaj się logowania
    Access, a potem panelu. We wtyczce wybierz **Check** w sekcji
    **Connection**.
@@ -155,21 +163,21 @@ Kompromisy:
 
 ## Co zostało dowiedzione
 
-Trasa prywatna to trasa instalacji referencyjnej.
-[Przebieg z 2026-09-14](../validation-runs/2026-09-14.md) odnotowuje, że
+Trasa prywatna ma odnotowane przebiegi na urządzeniach:
+[przebieg z 2026-09-14](../validation-runs/2026-09-14.md) odnotowuje, że
 tego dnia nie została sprawdzona, i dlaczego;
 [przebieg z 2026-09-20](../validation-runs/2026-09-20.md) odnotowuje
-przebieg na urządzeniach na trasie referencyjnej z zaliczonymi kontrolami
-łączności i TLS. Wariant z publiczną nazwą hosta nie został sprawdzony w
-żadnym odnotowanym przebiegu.
+przebieg na urządzeniach po trasie prywatnej do klastra, z zaliczonymi
+kontrolami łączności i TLS, na macOS i iPhonie. Wariant z publiczną nazwą
+hosta nie został sprawdzony w żadnym odnotowanym przebiegu: nie jest jeszcze
+dowiedziony.
 
 ## Dalej
 
 - [Uruchamianie serwera](../server.md): terminator, wolumeny, token
   konfiguracji.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart używany przez instalację
-  referencyjną.
-- [Wdrożenie platformy](../platform-onboarding.md): co klaster referencyjny
-  dodałby dla opublikowanej nazwy hosta.
+- [Kubernetes](../kubernetes.md): chart, jego wolumeny i jego front TLS.
+- [Wdrożenie platformy](../platform-onboarding.md): co platforma GitOps
+  dodaje dla opublikowanej nazwy hosta.
 - [Rozwiązywanie problemów](../troubleshooting.md): `edge_required`,
   `offline` i certyfikat.

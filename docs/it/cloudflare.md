@@ -2,13 +2,15 @@
 
 # Cloudflare
 
-Due modi per mettere Cloudflare fra i tuoi dispositivi e il tuo server, e
-quale dei due usa l'installazione di riferimento. Nessuno è obbligatorio: il
-server non conosce alcun provider per nome, e
-[Avviare il server](../server.md) non richiede un account presso nessuno.
-Questa pagina fa per te se vuoi raggiungere il server fuori casa senza aprire
-una porta sul router, o se vuoi un nome host pubblicato con una policy di
-accesso davanti.
+*Per chi gestisce un server obsync.*
+
+Due modi per mettere Cloudflare fra i tuoi dispositivi e il tuo server.
+Cloudflare è una scelta facoltativa fra tante: qualsiasi reverse proxy, VPN o
+tunnel di cui ti fidi fa lo stesso lavoro, il server non conosce alcun
+provider per nome, e [Avviare il server](../server.md) non richiede un
+account presso nessuno. Questa pagina fa per te se usi già Cloudflare e vuoi
+raggiungere il server fuori casa senza aprire una porta sul router, o se vuoi
+un nome host pubblicato con una policy di accesso davanti.
 
 I menu di Cloudflare e le condizioni dei suoi piani cambiano. Ogni passo qui
 sotto indica il percorso di menu come lo riportava la documentazione
@@ -19,10 +21,10 @@ affidamento su un limite o su un prezzo.
 
 | Variante | Cosa vedono i dispositivi | Cosa vede internet | Prima sincronizzazione voluminosa |
 | --- | --- | --- | --- |
-| **Rotta privata** (l'installazione di riferimento) | il tuo indirizzo privato e il tuo nome, tramite il client Cloudflare One | nulla: nessun nome host, nessuna porta aperta | traffico di rete privata, non instradato attraverso un nome host pubblico |
+| **Rotta privata** | il tuo indirizzo privato e il tuo nome, tramite il client Cloudflare One | nulla: nessun nome host, nessuna porta aperta | traffico di rete privata, non instradato attraverso un nome host pubblico |
 | **Nome host pubblico con Access** | un nome pubblico, una policy di Access, un token di servizio nel plugin | il nome host, dietro Access | passa da Cloudflare, alle condizioni del provider per i file grandi |
 
-La rotta privata è quella di riferimento perché il server resta invisibile e
+La rotta privata è quella da preferire, perché il server resta invisibile e
 perché la stessa documentazione di Cloudflare manda per quella strada i
 trasferimenti grandi: una rotta con nome host pubblico fa passare il traffico
 da Cloudflare, e sui piani Free, Pro e Business le condizioni specifiche del
@@ -108,10 +110,11 @@ Compromessi:
 Il server riceve un nome host su un dominio che hai su Cloudflare. Il tunnel
 pubblica quel nome verso l'indirizzo privato del server, e Cloudflare Access
 gli sta davanti: una policy di identità per la dashboard e un token di
-servizio per le chiamate API del plugin. È la variante che
-[l'onboarding della piattaforma](../platform-onboarding.md) descrive per il
-cluster di riferimento, e quella che l'installazione di riferimento non ha
-adottato.
+servizio per le chiamate API del plugin. È la forma Cloudflare del percorso
+con nome host pubblicato che descrive
+[l'onboarding della piattaforma](../platform-onboarding.md); il tuo reverse
+proxy con la sua autenticazione è la forma senza provider dello stesso
+percorso.
 
 1. **Pubblica il nome host.** Nella configurazione del tunnel aggiungi una
    rotta di applicazione pubblicata dal tuo nome host (`sync.example.com` sta
@@ -126,8 +129,8 @@ adottato.
    uno e copia il Client ID e il Client Secret; il secret viene mostrato una
    sola volta. Aggiungi all'applicazione una policy **Service Auth** che
    includa questo token, per i percorsi usati dal plugin (`/v1/*`).
-4. **Incolla il token nel plugin.** Sotto **Edge service-token headers**, uno
-   per riga, esattamente come li chiama Cloudflare:
+4. **Incolla il token nel plugin.** Sotto **Custom request headers**, uno per
+   riga, esattamente come li chiama Cloudflare:
 
    ```text
    CF-Access-Client-Id: <the client id>
@@ -140,6 +143,11 @@ adottato.
    intestazioni dell'edge con l'indirizzo di connessione e l'ID della
    richiesta, e una richiesta che arriva aggirando l'edge viene rifiutata con
    `421 edge_required` ([risoluzione dei problemi](../troubleshooting.md#edge_required)).
+   Il server crede a quelle intestazioni solo se arrivano da
+   `OBSYNC_TRUSTED_PROXY_CIDRS`. In questa modalità il suo valore predefinito
+   copre le reti private da cui lo raggiunge un connettore sullo stesso host,
+   sulla stessa rete di container o nello stesso cluster; impostalo sulla rete
+   del connettore per restringerlo ancora.
 6. **Verifica.** Apri il nome host in un browser e aspettati l'accesso di
    Access, poi la dashboard. Nel plugin scegli **Check** sotto **Connection**.
 
@@ -159,21 +167,21 @@ Compromessi:
 
 ## Cosa è stato provato
 
-La rotta privata è la rotta dell'installazione di riferimento. La
+La rotta privata ha sessioni con dispositivi registrate: la
 [sessione del 2026-09-14](../validation-runs/2026-09-14.md) registra che quel
 giorno non è stata esercitata, e perché; la
 [sessione del 2026-09-20](../validation-runs/2026-09-20.md) registra una
-sessione con dispositivi sulla rotta di riferimento con i controlli di
-connettività e TLS superati. La variante con nome host pubblico non è stata
-esercitata da alcuna sessione registrata.
+sessione con dispositivi sulla rotta privata verso un cluster, con i controlli
+di connettività e TLS superati, su macOS e iPhone. La variante con nome host
+pubblico non è stata esercitata da alcuna sessione registrata: non è ancora
+provata.
 
 ## Poi
 
 - [Avviare il server](../server.md): il terminatore, i volumi, il token di
   configurazione.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): il chart usato dall'installazione di
-  riferimento.
-- [Onboarding della piattaforma](../platform-onboarding.md): cosa
-  aggiungerebbe il cluster di riferimento per un nome host pubblicato.
+- [Kubernetes](../kubernetes.md): il chart, i suoi volumi e il suo fronte TLS.
+- [Onboarding della piattaforma](../platform-onboarding.md): cosa aggiunge
+  una piattaforma GitOps per un nome host pubblicato.
 - [Risoluzione dei problemi](../troubleshooting.md): `edge_required`,
   `offline` e il certificato.
