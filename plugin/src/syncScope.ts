@@ -1,5 +1,5 @@
 /** Device-local folder selection. Never part of pairing, the domain map or device policy. */
-import { VaultPathError, assertVaultPath, caseOnlyLastComponent, isVaultPath } from "./vaultPath";
+import { VaultPathError, assertVaultPath, caseOnlyLastComponent, isVaultPath, osJunk } from "./vaultPath";
 
 /** Missing means the existing whole-vault mode; an explicit empty list syncs no files. */
 export type SyncFolders = readonly string[] | undefined;
@@ -17,9 +17,14 @@ export function parseSyncFolders(value: unknown): string[] {
   return folders.filter((folder) => !folders.some((parent) => parent !== folder && folder.startsWith(`${parent}/`))).sort();
 }
 
-/** A selected folder is a directory, never a file with that exact name. */
+/**
+ * A selected folder is a directory, never a file with that exact name. And a
+ * file the operating system writes by itself is no note (`vaultPath.ts`,
+ * `osJunk`; issue #184), in either direction.
+ */
 export function inSyncScope(path: unknown, folders: SyncFolders): path is string {
-  return isVaultPath(path) && (folders === undefined || folders.some((folder) => path.startsWith(`${folder}/`)));
+  return isVaultPath(path) && !osJunk(path.slice(path.lastIndexOf("/") + 1)) &&
+    (folders === undefined || folders.some((folder) => path.startsWith(`${folder}/`)));
 }
 
 export function assertSyncPath(path: unknown, folders: SyncFolders): string {

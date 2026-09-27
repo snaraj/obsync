@@ -90,6 +90,7 @@ import {
   caseOnly,
   chainRefusal,
   isVaultPath,
+  osJunk,
   sameFile,
   vaultTarget,
   vaultPathRefusal,
@@ -1822,34 +1823,57 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
-   * Remove an EMPTY folder, through the same "Deleted files" preference a
-   * file delete honours. `false`, having removed nothing, when the folder
-   * still holds anything at all.
+   * Remove a folder, through the same "Deleted files" preference a file
+   * delete honours, when nothing keeps it. The answer is how many entries
+   * keep it: `0` once it is gone, and for a folder that was never here.
    *
    * The emptiness question is asked of the FILESYSTEM, not of the vault's
    * synced inventory: a folder holding a hidden file, a file this device does
    * not sync, or another plugin's data still holds something, and
    * `trashFile` on a folder takes everything under it. Desktop reads the
    * directory; mobile asks the adapter, which is all it has.
+   *
+   * WHAT THE OPERATING SYSTEM WRITES BY ITSELF KEEPS NOTHING (issue #184).
+   * Finder leaves `.DS_Store` in every folder it has shown and Explorer leaves
+   * `Thumbs.db`, so a folder another device deleted stayed here for good,
+   * empty in Obsidian's file list and holding only that. Those names (one
+   * list, `vaultPath.ts`, `osJunk`), and only as regular files, go WITH the
+   * folder: into the bin with it when Obsidian knows the folder, removed
+   * first when the adapter's own non-recursive removal is what is left.
    */
-  async trashFolder(path: string): Promise<boolean> {
+  async trashFolder(path: string): Promise<number> {
     assertFolderScope(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
+    const adapter = this.plugin.app.vault.adapter;
     let found: WalkResult | null = null;
+    const junk: string[] = [];
+    let kept = 0;
     if (desktop !== null) {
       found = await this.confine(desktop, path, ["absent", "directory"]);
-      if (found.final === "absent") return true;
-      if ((await desktop.fs.promises.readdir(found.target)).length > 0) return false;
+      if (found.final === "absent") return 0;
+      for (const name of await desktop.fs.promises.readdir(found.target)) {
+        const entry = desktop.path.resolve(found.target, name);
+        if (osJunk(name) && (await walker(desktop.fs).lstat(entry))?.isFile() === true) junk.push(entry);
+        else kept++;
+      }
     } else {
-      const adapter = this.plugin.app.vault.adapter;
-      if ((await adapter.stat(path))?.type !== "folder") return true;
+      if ((await adapter.stat(path))?.type !== "folder") return 0;
       const listed = await adapter.list(path);
-      if (listed.files.length > 0 || listed.folders.length > 0) return false;
+      for (const file of listed.files) {
+        if (osJunk(file.slice(file.lastIndexOf("/") + 1))) junk.push(file);
+        else kept++;
+      }
+      kept += listed.folders.length;
     }
+    if (kept > 0) return kept;
     const folder = this.plugin.app.vault.getFolderByPath(path);
     if (folder) await this.plugin.app.fileManager.trashFile(folder);
-    else await this.plugin.app.vault.adapter.rmdir(path, false);
-    if (desktop === null || found === null) return true;
+    else {
+      for (const file of junk) await (desktop !== null ? desktop.fs.promises.unlink(file) : adapter.remove(file));
+      await adapter.rmdir(path, false);
+    }
+    if (junk.length > 0) this.log(`host path_class=folder decision=cleared reason=os_junk files=${junk.length}`);
+    if (desktop === null || found === null) return 0;
     // The same proof `trash` takes, one link shorter: the walk's last link IS
     // the folder just removed, so the chain checked here is the parents, and
     // the folder itself must no longer be the directory that was walked.
@@ -1859,7 +1883,7 @@ export class ObsidianHost implements VaultHost {
     if (after !== null && after.isDirectory() && after.dev === found.stat?.dev && after.ino === found.stat?.ino) {
       throw new VaultPathError("target_identity");
     }
-    return true;
+    return 0;
   }
 
   private async assertEditorIdle(path: string): Promise<void> {

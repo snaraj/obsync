@@ -1,0 +1,12 @@
+# M1937: a file the operating system wrote keeps a folder on the mobile host
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1695,7 +1695,7 @@
+       if ((await adapter.stat(path))?.type !== "folder") return 0;
+       const listed = await adapter.list(path);
+       for (const file of listed.files) {
+-        if (osJunk(file.slice(file.lastIndexOf("/") + 1))) junk.push(file);
++        if (osJunk(file.slice(file.lastIndexOf("/") + 1)) && file === "") junk.push(file);
+         else kept++;
+       }
+       kept += listed.folders.length;

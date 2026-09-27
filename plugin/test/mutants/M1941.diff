@@ -1,0 +1,12 @@
+# M1941: the files the operating system wrote are left in a folder the adapter is then asked to remove
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1704,7 +1704,7 @@
+     const folder = this.plugin.app.vault.getFolderByPath(path);
+     if (folder) await this.plugin.app.fileManager.trashFile(folder);
+     else {
+-      for (const file of junk) await (desktop !== null ? desktop.fs.promises.unlink(file) : adapter.remove(file));
++      for (const file of junk) void file;
+       await adapter.rmdir(path, false);
+     }
+     if (junk.length > 0) this.log(`host path_class=folder decision=cleared reason=os_junk files=${junk.length}`);

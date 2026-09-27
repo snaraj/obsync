@@ -1,0 +1,11 @@
+# M1938: a folder a tombstone kept is kept in silence
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1019,7 +1019,6 @@
+       // only that walk knows; this is the one the receiver has always logged.
+       if (removed !== "vault_spelling") {
+         context.host.log(`folder path_class=folder decision=kept reason=not_empty items=${removed} seq=${change.seq}`);
+-        notifyKeptFolder(context, change, path, removed);
+       }
+       return "skipped";
+     }

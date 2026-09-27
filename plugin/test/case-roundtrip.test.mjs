@@ -432,8 +432,9 @@ test("a folder a tombstone kept is published again once the feed has caught up, 
 
   // And a folder one capitalisation off it is a second folder again.
   await folderRecord(server, keys, "team docs");
-  await timers.run(STEP_MS, () => b.host.notices.length > 0).catch(() => undefined);
+  const twin = (notice) => notice.includes("differ only in capitalisation");
+  await timers.run(STEP_MS, () => b.host.notices.some(twin)).catch(() => undefined);
   assert.deepEqual(b.state.data.syncFolders, ["Team docs"], `a case-twin moved the selection: ${story(server, a, b)}`);
   assert.equal(b.host.hasFolder("Team docs"), true, story(server, a, b));
-  assert.equal(b.host.notices.filter((notice) => notice.includes("differ only in capitalisation")).length, 1, b.host.notices.join(" | "));
+  assert.equal(b.host.notices.filter(twin).length, 1, b.host.notices.join(" | "));
 });

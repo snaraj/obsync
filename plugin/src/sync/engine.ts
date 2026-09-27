@@ -272,12 +272,15 @@ export interface VaultHost {
   /** Make this folder and anything missing above it; refuse if a FILE is there. */
   createFolder(path: string): Promise<void>;
   /**
-   * Remove this folder through the user's own delete preference. `false`,
-   * having done nothing, when it still holds ANYTHING — including a file this
-   * device does not sync, which is the whole reason the host answers this and
-   * not the engine: only the host can see the filesystem.
+   * Remove this folder through the user's own delete preference, and answer
+   * how many entries keep it: `0` once it is gone; otherwise it holds
+   * ANYTHING -- including a file this device does not sync, which is the
+   * whole reason the host answers this and not the engine: only the host can
+   * see the filesystem -- and nothing was done. What an operating system
+   * writes by itself keeps nothing and goes with it (`vaultPath.ts`,
+   * `osJunk`; issue #184).
    */
-  trashFolder(path: string): Promise<boolean>;
+  trashFolder(path: string): Promise<number>;
   /**
    * Is `path` open in an editor here (issue #146)? `unsaved` when an editor
    * showing it holds text its file does not -- keystrokes inside the editor's

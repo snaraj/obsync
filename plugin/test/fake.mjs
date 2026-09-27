@@ -508,15 +508,18 @@ export class FakeHost {
     this.folderChecks.push(path);
     const entry = this.resolveFolder(path);
     // Nothing here to remove, and so nothing here to keep either: the real
-    // host answers `true` for an absent folder.
-    if (entry === undefined) return true;
+    // host answers `0` for an absent folder.
+    if (entry === undefined) return 0;
     const prefix = `${entry}/`;
-    const holds = [...this.files.keys(), ...this.explicitFolders]
-      .some((candidate) => candidate.startsWith(prefix));
-    if (holds) return false;
+    // What keeps it is counted the way a directory listing counts it: its
+    // own entries, a folder holding files being one of them.
+    const holds = new Set([...this.files.keys(), ...this.explicitFolders]
+      .filter((candidate) => candidate.startsWith(prefix))
+      .map((candidate) => candidate.slice(prefix.length).split("/")[0]));
+    if (holds.size > 0) return holds.size;
     this.explicitFolders.delete(entry);
     this.trashed.push(entry);
-    return true;
+    return 0;
   }
 
   inputAt = new Map();
@@ -1414,9 +1417,9 @@ export class EventVault extends FakeHost {
   }
 
   async trashFolder(path) {
-    const removed = await super.trashFolder(path);
-    if (removed && !this.silent.has(path)) this.emit("delete", this.entry(path, true));
-    return removed;
+    const kept = await super.trashFolder(path);
+    if (kept === 0 && !this.silent.has(path)) this.emit("delete", this.entry(path, true));
+    return kept;
   }
 
   async writer(path) {

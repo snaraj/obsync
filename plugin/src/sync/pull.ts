@@ -673,9 +673,9 @@ export function ancestors(path: string): string[] {
  * running, and an unmarked echo becomes a folder tombstone this device
  * publishes for a folder the remote side already owns.
  *
- * `not_empty` means the host found something still in it and did nothing, so
- * the mark is taken back: a suppression owed to an event that will never
- * arrive would swallow the user's own next deletion of that folder.
+ * A count is how many entries the host found still in it, having done
+ * nothing, so the mark is taken back: a suppression owed to an event that
+ * will never arrive would swallow the user's own next deletion of that folder.
  *
  * AND NOTHING IS REMOVED BY A NAME THE VAULT SPELLS ANOTHER WAY (review round
  * 3, finding 2). A removal names a path; the walk that resolves it on a host
@@ -692,15 +692,15 @@ async function removeFolder(
   context: SyncContext,
   path: string,
   shown: string | null,
-): Promise<"removed" | "not_empty" | "vault_spelling"> {
+): Promise<"removed" | "vault_spelling" | number> {
   if (shown !== null && shown !== path) {
     context.host.log("folder path_class=folder decision=kept reason=vault_spelling");
     return "vault_spelling";
   }
   context.trashed.add(path);
-  const removed = await context.host.trashFolder(path);
-  if (!removed) context.trashed.delete(path);
-  return removed ? "removed" : "not_empty";
+  const kept = await context.host.trashFolder(path);
+  if (kept > 0) context.trashed.delete(path);
+  return kept > 0 ? kept : "removed";
 }
 
 /**
@@ -1022,8 +1022,9 @@ async function applyFolder(
     if (removed !== "removed") {
       // `vault_spelling` said so at the point of decision, with the reason
       // only that walk knows; this is the one the receiver has always logged.
-      if (removed === "not_empty") {
-        context.host.log(`folder path_class=folder decision=kept reason=not_empty seq=${change.seq}`);
+      if (removed !== "vault_spelling") {
+        context.host.log(`folder path_class=folder decision=kept reason=not_empty items=${removed} seq=${change.seq}`);
+        notifyKeptFolder(context, change, path, removed);
       }
       return "skipped";
     }
@@ -1062,6 +1063,33 @@ async function applyFolder(
   await context.state.save();
   context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
   return "applied";
+}
+
+/**
+ * A folder another device deleted and this one KEPT, said once per folder
+ * (issue #184): it still holds something, and #104's rule -- a folder is
+ * removed only when it is empty -- is what keeps another plugin's data or a
+ * note not sent yet from going with it. Kept in silence, it stood in the file
+ * list for good with nothing saying why.
+ *
+ * Not while a note this device syncs is still recorded under it: that note's
+ * own deletion can reach the feed after the folder's, and the empty-parent
+ * walk takes the folder when it does (`pruneEmptyParents`); a note kept by
+ * delete-versus-edit says so in its own notice.
+ */
+function notifyKeptFolder(context: SyncContext, change: ChangeRecord, path: string, items: number): void {
+  const prefix = `${path}/`;
+  const recorded = (paths: string[]): boolean => paths.some((candidate) => candidate.startsWith(prefix));
+  if (recorded(Object.keys(context.state.data.files)) || recorded(Object.keys(context.state.data.folders))) return;
+  const key = `kept\u0000${path}`;
+  if (context.refused.has(key)) return;
+  context.refused.add(key);
+  context.host.notify(
+    `obsync kept the folder "${path}" here although ${context.deviceNameFor(change.device_id)} deleted it: it ` +
+      `still holds ${items} item${items === 1 ? "" : "s"} that ${items === 1 ? "is" : "are"} not a synced note -- ` +
+      "a hidden file, another app's data, or a note not sent yet -- and a folder is only removed when it is " +
+      "empty. Nothing in it was deleted. Delete the folder here if you no longer need what is in it.",
+  );
 }
 
 /**

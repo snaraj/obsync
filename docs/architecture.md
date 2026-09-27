@@ -1189,7 +1189,13 @@ START line and its counts as a SUMMARY (requirement 12).
 **Removal, and the rule that governs it.** A folder is removed only when it is
 EMPTY on this device, and emptiness is asked of the FILESYSTEM, not of the
 synced inventory: a hidden file, an unsynced note, another plugin's data all
-keep it, and the file is never taken to make the folder go. Beyond that:
+keep it, and the file is never taken to make the folder go. The one exception
+is what an operating system writes into a folder by itself -- `.DS_Store`,
+`Icon\r` and `._` files on macOS, `Thumbs.db` and `desktop.ini` on Windows --
+which is never synced and goes with the folder instead of keeping it (one
+list, `vaultPath.ts`, `osJunk`; issue #184). A folder a TOMBSTONE finds
+occupied by anything else is kept and the user is told once, with the folder
+and how many items keep it. Beyond that:
 
 - a folder WITH a record is removed by its own tombstone and by nothing else,
   so an empty folder a user keeps does not vanish when its last note is

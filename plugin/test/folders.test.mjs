@@ -744,13 +744,15 @@ test("the mobile host keeps a folder that holds anything and removes an empty on
   await host.createFolder("Shared/Inner");
   files.set("Shared/Inner/.hidden", { bytes: new Uint8Array(1), mtime: 0 });
 
-  assert.equal(await host.trashFolder("Shared"), false, "a folder holding a subfolder was removed");
-  assert.equal(await host.trashFolder("Shared/Inner"), false, "a folder holding a hidden file was removed");
+  // This adapter lists every entry beneath a folder, not only its own, so
+  // `Shared` counts the subfolder and the hidden file inside it.
+  assert.equal(await host.trashFolder("Shared"), 2, "a folder holding a subfolder was removed");
+  assert.equal(await host.trashFolder("Shared/Inner"), 1, "a folder holding a hidden file was removed");
   files.delete("Shared/Inner/.hidden");
-  assert.equal(await host.trashFolder("Shared/Inner"), true);
+  assert.equal(await host.trashFolder("Shared/Inner"), 0);
   assert.equal(folders.has("Shared/Inner"), false);
-  assert.equal(await host.trashFolder("Shared"), true);
-  assert.equal(await host.trashFolder("Gone"), true, "an absent folder is already removed");
+  assert.equal(await host.trashFolder("Shared"), 0);
+  assert.equal(await host.trashFolder("Gone"), 0, "an absent folder is already removed");
 });
 
 test("the mobile host refuses to write a file where a folder stands", async (t) => {

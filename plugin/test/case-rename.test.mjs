@@ -522,9 +522,9 @@ test("the two host models answer a second spelling differently, or these tests p
     r.host.explicitFolders.clear();
     await r.host.createFolder("Team docs");
   }
-  assert.equal(await folding.host.trashFolder("team docs"), true, "the folding host refused a name it answers for");
+  assert.equal(await folding.host.trashFolder("team docs"), 0, "the folding host refused a name it answers for");
   assert.deepEqual([...folding.host.explicitFolders], [], "the folding host removed nothing at the folded name");
-  assert.equal(await apart.host.trashFolder("team docs"), true, "a folder nothing holds is already gone");
+  assert.equal(await apart.host.trashFolder("team docs"), 0, "a folder nothing holds is already gone");
   assert.deepEqual([...apart.host.explicitFolders], ["Team docs"], "a host that keeps them apart removed the other entry");
 });
 

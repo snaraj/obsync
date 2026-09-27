@@ -623,7 +623,8 @@ notes are untouched.
 reports an error.
 
 **Why it happens.** It is left out by design. Hidden folders (`.obsidian`,
-`.git`), linked (symlinked) folders, and anything outside this device's folder
+`.git`), linked (symlinked) folders, the files Windows writes into folders by
+itself (`Thumbs.db`, `desktop.ini`), and anything outside this device's folder
 selection are not synced in either direction.
 
 **How to fix it.**

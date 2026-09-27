@@ -182,6 +182,23 @@ export function isVaultPath(value: unknown): value is string {
   return vaultPathRefusal(value) === null;
 }
 
+/**
+ * THE FILES AN OPERATING SYSTEM WRITES INTO A FOLDER BY ITSELF, and the one
+ * list of them (issue #184): Finder's `.DS_Store`, its `Icon\r` for a custom
+ * folder icon and the `._` AppleDouble files macOS leaves on volumes that
+ * cannot hold its metadata, and Windows Explorer's `Thumbs.db` and
+ * `desktop.ini`. None of them is synced -- the dot and the carriage return
+ * already fail the rule above, and `syncScope.ts` leaves the two Windows names
+ * out of what a device syncs -- and none of them keeps a folder another device
+ * deleted (`main.ts`, `trashFolder`). Windows compares these names without
+ * regard to case, so they are compared that way here.
+ */
+const OS_JUNK = new Set([".ds_store", "icon\r", "thumbs.db", "desktop.ini"]);
+
+export function osJunk(name: string): boolean {
+  return OS_JUNK.has(name.toLowerCase()) || name.startsWith("._");
+}
+
 /** The same rule, as a refusal. Every vault operation calls this or the above. */
 export function assertVaultPath(value: unknown): string {
   const refusal = vaultPathRefusal(value);
