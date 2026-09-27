@@ -1025,7 +1025,10 @@ test("the engine queues, debounces and pushes what the watcher reports", async (
 
   host.seed("New.md", "typed just now", 2000);
   engine.changed("New.md");
-  await timers.run(1000, () => state.fileByPath("New.md") !== undefined);
+  // The record lands when the post answers; the engine reads idle a few turns
+  // later, once the queue is drained. Waiting on the record alone raced that
+  // on a loaded CI container ('syncing' !== 'idle', proxy (traefik), c3294a9).
+  await timers.run(1000, () => state.fileByPath("New.md") !== undefined && statuses[statuses.length - 1] === "idle");
   assert.equal(state.fileByPath("New.md") !== undefined, true);
   assert.ok(statuses.includes("syncing"));
   assert.equal(statuses[statuses.length - 1], "idle");
