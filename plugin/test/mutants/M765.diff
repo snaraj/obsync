@@ -1,7 +1,7 @@
 # M765: remove retained merge verdict
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2435,10 +2435,6 @@
+@@ -2582,10 +2582,6 @@
            // cannot give this device the editor's Resume role. A stale verdict,
            // an actual editor input, and an incoming-only result prove no such
            // contribution; the latter returned above without carrying it.
@@ -10,5 +10,5 @@
 -            context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
 -          }
            await postMerged(context, change, localPath, target, localVersionId, text, stat.mtime);
-           context.host.notify(`obsync merged concurrent edits to ${target}.`);
-           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq}`);
+           if (ours) context.host.notify(`obsync merged concurrent edits to ${target}.`);
+           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
