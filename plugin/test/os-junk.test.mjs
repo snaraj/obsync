@@ -174,7 +174,10 @@ test("the one list names what an operating system writes, and nothing a user wou
   }
 });
 
-for (const names of [[".DS_Store"], ["Thumbs.db", "desktop.ini"], ["._One.md", "Icon\r", ".DS_Store"]]) {
+// Finder's `Icon\r` is a name no Windows volume can hold (Win32 refuses a
+// control character in a file name), so a Windows vault never meets it.
+const finder = process.platform === "win32" ? ["._One.md", ".DS_Store"] : ["._One.md", "Icon\r", ".DS_Store"];
+for (const names of [[".DS_Store"], ["Thumbs.db", "desktop.ini"], finder]) {
   test(`a folder deleted on another device goes, with only ${JSON.stringify(names)} in it (#184)`, async (t) => {
     const v = await vault(t);
     const created = await kept(v, "Projects/Beta", names);
