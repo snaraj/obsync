@@ -100,7 +100,7 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ApiError, ChangeRecord, DeviceRecord, FileRecord, ReadControl, Transport, isNewer } from "../transport";
+import { ApiError, ChangeRecord, DeviceRecord, FileRecord, Patience, ReadControl, Transport, isNewer } from "../transport";
 // The per-path record this device keeps, named apart from the SERVER's file
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
@@ -635,9 +635,20 @@ async function* chunkPlaintexts(
     control?.check();
     const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
     index += batch.length;
+    // A ONE-CHUNK NOTE of the page being applied comes from the page's
+    // prefetch, which asks for the next notes' chunks in the same request
+    // (`Prefetch`), under this read's own stop; every proof below runs on its
+    // bytes exactly as on a GET's. Never the last batch of a file of many
+    // chunks: that is not a note of the page, and the background lane's
+    // `stage` streams one beside the page (issue #196) -- neither may move
+    // the page's cursor.
+    const only = batch.length === 1 ? (batch[0] as ManifestChunk).sid : null;
+    const ahead = only !== null && manifest.chunks.length === 1 && control === undefined
+      ? await context.ahead?.take(only, patience) ?? null
+      : null;
     const bodies =
-      batch.length === 1
-        ? [await context.transport.getChunk((batch[0] as ManifestChunk).sid, control, patience)]
+      only !== null
+        ? [ahead ?? await context.transport.getChunk(only, control, patience)]
         : await context.transport.getChunks(batch.map((chunk) => chunk.sid), control, patience);
     control?.check();
     for (let i = 0; i < batch.length; i++) {
@@ -652,6 +663,132 @@ async function* chunkPlaintexts(
       if (stop?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
       yield plaintext;
     }
+  }
+}
+
+/** Sids one prefetch asks for: the route's own cap (`docs/protocol.md`, `POST /v1/chunks/get`). */
+export const PREFETCH_SIDS = 64;
+/**
+ * The ciphertext a page's prefetch holds at once (issue #194): the route's
+ * own 32 MiB on desktop, and a quarter of it on a phone, whose heap also holds
+ * the note being written. Counted by the lengths the records declare and
+ * enforced on the answer itself, so a record that lies costs a refusal and a
+ * GET, never more memory.
+ */
+export const PREFETCH_BYTES = BATCH_BYTES;
+export const PREFETCH_BYTES_MOBILE = 8 << 20;
+
+/**
+ * THE NEXT NOTES' CHUNKS, MANY TO A REQUEST (issue #194). A first sync fetched
+ * each note of one chunk with its own GET: ten thousand notes, ten thousand
+ * round trips, one after another. The feed names each version's sids in the
+ * clear, so when the note being applied needs its chunk, the chunks of the
+ * page's next such notes -- from other devices, admitted by this device's
+ * ceilings, not parked, paused or expected to be adopted, and not already
+ * held here -- come in the same `POST /v1/chunks/get`, up to 64 sids and the
+ * byte budget.
+ *
+ * NOTHING IS TRUSTED FOR BEING FETCHED EARLY. The page is still applied one
+ * note at a time, in order; a body taken from here is ciphertext, and it goes
+ * through `decryptChunk`, the cid check and the manifest's digest exactly as a
+ * GET's does, after `bindManifestToRecord` has bound that note's manifest.
+ * The route checks each part's sid (`transport.ts`). A body nobody asks for is
+ * dropped as the page passes its note. A refusal of the batch -- a proxy that
+ * mangles multipart, an answer over the budget -- is said once and the page
+ * goes on with single GETs; no answer at all is the feed's to handle, as a
+ * GET's is.
+ */
+export class Prefetch {
+  private readonly held = new Map<string, Bytes>();
+  private bytes = 0;
+  /** The first entry of the page not yet passed. */
+  private at = 0;
+  private off = false;
+
+  constructor(private readonly context: SyncContext, private readonly changes: readonly ChangeRecord[]) {}
+
+  /** The body of `sid` for the page's note being applied, or `null` for a GET; a fetch carries the page's stop. */
+  async take(sid: string, patience: Patience): Promise<Bytes | null> {
+    let index = this.at;
+    while (index < this.changes.length && !this.single(this.changes[index] as ChangeRecord, sid)) index++;
+    if (index === this.changes.length) return null;
+    for (; this.at < index; this.at++) this.drop((this.changes[this.at] as ChangeRecord).sids[0]);
+    this.at = index + 1;
+    const body = this.held.get(sid);
+    if (body !== undefined) {
+      this.drop(sid);
+      return body;
+    }
+    return this.off ? null : await this.fetch(index, sid, patience);
+  }
+
+  private single(change: ChangeRecord, sid: string): boolean {
+    return change.sids.length === 1 && change.sids[0] === sid;
+  }
+
+  private drop(sid: string | undefined): void {
+    const body = sid === undefined ? undefined : this.held.get(sid);
+    if (body === undefined) return;
+    this.held.delete(sid as string);
+    this.bytes -= body.length;
+  }
+
+  /** Will applying this entry download its one chunk? Asked of metadata only, so a wrong guess costs bytes, never a proof. */
+  private async wanted(change: ChangeRecord, local: number): Promise<boolean> {
+    const { context } = this;
+    const { state } = context;
+    if (change.sids.length !== 1 || change.deleted || change.file_id === context.mapFileId ||
+      change.device_id === context.deviceId || context.authored.has(change.version_id) ||
+      state.data.paused[change.file_id] !== undefined || state.data.parked[change.file_id] !== undefined ||
+      context.expected?.has(change.file_id) === true || change.bytes + 16 > CHUNK_CIPHERTEXT_MAX ||
+      this.held.has(change.sids[0] as string) || !admit(state.data.policy, local, change.bytes).ok) return false;
+    const path = state.pathByFileId(change.file_id);
+    const record = path === undefined ? undefined : state.fileByPath(path);
+    // A version this device holds, or a rename of the bytes it holds, fetches nothing.
+    return record === undefined || (record.versionId !== change.version_id && record.sha256 !== (await sidDigest(change.sids)));
+  }
+
+  private async fetch(index: number, sid: string, patience: Patience): Promise<Bytes | null> {
+    const { context } = this;
+    const budget = (context.host.isMobile ? PREFETCH_BYTES_MOBILE : PREFETCH_BYTES) - this.bytes;
+    const first = this.changes[index] as ChangeRecord;
+    const asked = [sid];
+    let bytes = first.bytes + 16;
+    let local = context.state.localBytes() + first.bytes;
+    for (let next = index + 1; next < this.changes.length && asked.length < PREFETCH_SIDS; next++) {
+      const change = this.changes[next] as ChangeRecord;
+      if (!(await this.wanted(change, local)) || asked.includes(change.sids[0] as string)) continue;
+      if (bytes + change.bytes + 16 > budget) break;
+      asked.push(change.sids[0] as string);
+      bytes += change.bytes + 16;
+      local += change.bytes;
+    }
+    if (asked.length === 1 || bytes > budget) return null;
+    const started = context.now();
+    let bodies: (Bytes | null)[];
+    try {
+      bodies = await context.transport.getChunks(asked, undefined, patience, budget);
+    } catch (error) {
+      // No answer, or a stop: the feed's to handle, exactly as a GET's would be.
+      if (!(error instanceof ApiError) || error.code === "unreachable" || error.code === "cancelled") throw error;
+      this.off = true;
+      context.host.log(
+        `pull decision=prefetch_refused reason=${error.code} sids=${asked.length} bytes=${bytes} budget_bytes=${budget} ` +
+          `duration_ms=${context.now() - started}`,
+      );
+      return null;
+    }
+    for (let i = 1; i < asked.length; i++) {
+      const body = bodies[i];
+      if (body === null || body === undefined || this.held.has(asked[i] as string)) continue;
+      this.held.set(asked[i] as string, body);
+      this.bytes += body.length;
+    }
+    context.host.log(
+      `pull decision=prefetched sids=${asked.length} bytes=${bytes} budget_sids=${PREFETCH_SIDS} budget_bytes=${budget} ` +
+        `duration_ms=${context.now() - started}`,
+    );
+    return bodies[0] ?? null;
   }
 }
 
@@ -2015,7 +2152,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
   }
   // `landed.path`, never `manifest.path`: what the vault shows for the file
   // this write put there (`landedAt`, review round 2, finding 3).
-  await recordAt(context, change, landed.path, landed);
+  await recordAt(context, change, landed.path, landed, undefined, localPath === undefined);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} chunks=${manifest.chunks.length} decision=applied seq=${change.seq} duration_ms=${context.now() - started}`,
   );
@@ -4109,14 +4246,16 @@ async function movable(context: SyncContext, path: string, record: FileState): P
  * a rename it can make next time. Each line names the pass that decided it.
  */
 export async function settleBeside(context: SyncContext, seq: number, pass = "pull"): Promise<void> {
-  const files = context.state.data.files;
   for (let moved = true; moved;) {
     moved = false;
-    for (const path in files) {
-      const record = files[path] as FileState;
-      const want = record.name;
-      if (want === undefined) continue;
-      const holder = files[want];
+    // The waiting notes only, from the state's own index (issue #194): this
+    // runs after every applied version, and a walk of every record there was
+    // most of what a first sync of a large vault cost.
+    for (const path of context.state.besideNames()) {
+      const record = context.state.fileByPath(path);
+      const want = record?.name;
+      if (record === undefined || want === undefined) continue;
+      const holder = context.state.fileByPath(want);
       if (holder !== undefined && holder.name === undefined) continue;
       let outcome: string;
       try {
@@ -4169,7 +4308,7 @@ async function adopt(
 ): Promise<boolean> {
   const verified = await alreadyCopied(context, manifest, manifest.path, occupant);
   if (verified === null) return false;
-  await recordAt(context, change, manifest.path, verified);
+  await recordAt(context, change, manifest.path, verified, undefined, true);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=adopted reason=identical_bytes file=${change.file_id} seq=${change.seq}`,
   );
@@ -4239,8 +4378,8 @@ const identifying = new WeakMap<SyncContext, Set<string>>();
 export async function yieldName(context: SyncContext, path: string): Promise<boolean> {
   if (context.host.bindsRemoval !== true || identifying.get(context)?.has(path)) return false;
   let waiting: FileState | undefined;
-  for (const at in context.state.data.files) {
-    const record = context.state.data.files[at] as FileState;
+  for (const at of context.state.besideNames()) {
+    const record = context.state.fileByPath(at) as FileState;
     if (record.name === path && (waiting === undefined || record.fileId < waiting.fileId)) waiting = record;
   }
   const found = context.state.fileByPath(path);
@@ -4344,6 +4483,7 @@ async function recordAt(
   path: string,
   stat: VaultStat,
   wants?: string,
+  created = false,
 ): Promise<void> {
   context.state.setFile(path, {
     fileId: change.file_id,
@@ -4355,8 +4495,22 @@ async function recordAt(
     // that name is free (`settleBeside`, issue #149).
     ...(wants === undefined ? {} : { name: wants }),
     ts: change.ts,
+    // What the repair walk asks the server about (`FileRecord.sid`, #198).
+    ...(change.sids.length === 1 ? { sid: change.sids[0] as string } : {}),
   });
-  await context.state.save();
+  // ONE SAVE PER PAGE, NOT PER NOTE (issue #194). The whole data file was
+  // rewritten for every note a first sync created -- about ten thousand
+  // rewrites of a file that grows to megabytes, on the main thread. A note
+  // CREATED here from one chunk is the one record whose loss a restart
+  // repairs by itself: its bytes are the version's, and the next start holds
+  // their name back until the feed, replayed from the saved cursor, adopts
+  // them by the manifest's digest (`adopt`; `engine.ts`, `holding`). So it
+  // waits for the page's save, or the engine's timer. Everything else is
+  // saved now: a move or a record beside its name, whose loss would be read as
+  // a deletion or a second note, and a file of many chunks, which carries no
+  // digest to be adopted by (#181).
+  if (created && wants === undefined && change.sids.length === 1 && context.defer !== undefined) context.defer();
+  else await context.state.save();
 }
 
 /** Write the foreign head beside ours under a named copy, and say so. */

@@ -1,0 +1,12 @@
+# M2122: a record waiting beside its name is not indexed as waiting
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -564,7 +564,7 @@
+   if (sign === 1) {
+     paths.add(path);
+     indexes.ids.set(record.fileId, paths);
+-    if (record.name !== undefined) indexes.names.add(path);
++    if (false && record.name !== undefined) indexes.names.add(path);
+   } else {
+     paths.delete(path);
+     if (paths.size === 0) indexes.ids.delete(record.fileId);

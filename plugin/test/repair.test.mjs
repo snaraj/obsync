@@ -7,7 +7,7 @@ import nodePath, { join } from "node:path";
 import { FakeTimers, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_TICK_MS, REPAIR_SCAN_MS } = require("../build/sync/repair.js");
+const { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_TICK_MS, REPAIR_SCAN_MS, REPAIR_WALK_MS } = require("../build/sync/repair.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { pushFile } = require("../build/sync/push.js");
 const { applyChange } = require("../build/sync/pull.js");
@@ -476,7 +476,8 @@ test("engine automatically repairs unchanged files, idles between complete walks
   assert.equal(puts(r).length, 1);
   await engine.repairTick(); // Finish the walk, then schedule the idle interval.
   assert.ok(r.host.logs.some((line) => /^repair decision=verified bytes=25 budget_sids=64 budget_chunks=1 duration_ms=\d+$/.test(line)));
-  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS));
+  // Hours between complete walks now, not five minutes (#198).
+  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_WALK_MS));
   r.server.chunks.delete(r.sid);
   r.host.seed(r.path, "X".repeat(25), 1000);
   await engine.repairTick();

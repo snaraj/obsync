@@ -737,10 +737,12 @@ long poll and needs its timeout raised.
    nothing, and a silent same-metadata rewrite is uploaded even long after
    the arrival window expired. It uses the ordinary bounded streaming push
    and device budget policy rather than buffering the whole vault.
-   Every 30 s the engine also compares its own listing of the vault against
-   the local state. On desktop that listing is the filesystem, read directly,
-   because Obsidian's index is never fresher than the events it emits: a
-   note moved in from a file manager is in neither until the app notices.
+   The engine also compares its own listing of the vault against the local
+   state: every 30 s on mobile, from Obsidian's index; on desktop from the
+   filesystem, read directly, every five minutes, at each start and whenever
+   the window comes forward (plugin 1.1.4), because Obsidian's index is never
+   fresher than the events it emits: a note moved in from a file manager is
+   in neither until the app notices.
    The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
    recorded path with a new unrecorded one carrying the same `(mtime, size)`
    as a MOVE, keeping the file id -- and it never publishes a tombstone,
@@ -961,7 +963,10 @@ long poll and needs its timeout raised.
    Each declared length is then proved against the bytes as its chunk
    decrypts, so nothing unverified is written even when record and manifest
    agree, and one batched fetch is bounded by the chunk ceiling times the
-   batch size rather than by lengths another device declared.
+   batch size rather than by lengths another device declared. The page's
+   prefetch of other notes' single chunks (plugin 1.1.4) counts declared
+   lengths to fill its budget, and refuses any answer larger than that
+   budget, falling back to one GET per note.
 
    ONE RECORD THIS DEVICE CANNOT WRITE NEVER HOLDS UP THE REST (issue #144).
    A write the host's filesystem refuses for that one file (`EPERM`, `EBUSY`,
@@ -1465,24 +1470,30 @@ separate from source and isolated tests.
 After scrub quarantines a bad primary chunk without a healthy mirror, the
 server removes that SID from its inventory. Each running client walks its
 remembered, selected local versions independently of watcher events and
-`(mtime, size)` reconciliation. It authenticates the exact retained version
-and manifest, then asks which of its SIDs are absent. A healthy file requires
-no local content read. A missing chunk is regenerated from its authenticated
-offset and length only when the current local record, selection and stat
+`(mtime, size)` reconciliation. A one-chunk file whose SID the device
+remembers (plugin 1.1.4, `FileRecord.sid`, believed only while the record's
+digest is that SID's) is asked about with up to 4,095 others in one
+existence question; any other file, and one whose SID the server lacks, has
+its exact retained version and manifest authenticated first, and then asks
+which of its SIDs are absent. A healthy file requires no local content read.
+A missing chunk is regenerated from its authenticated offset and length only
+when the current local record, selection and stat
 still match. Its CID and SID must match the retained manifest before the
 signed, idempotent ciphertext PUT; an exact SID readback is required before
 the client reports restoration. No version, tombstone, file identity, feed
 cursor or selection is changed by this worker, and server quarantine evidence
 is retained.
 
-Work is incremental: at most one retained-version metadata read, 64 chunk
-entries audited, and one chunk restored per step. The authenticated manifest
-stays in memory across that file's batches. Steps run one second apart during
-a walk, with five minutes between complete walks; **Sync now** advances one
-step immediately. Completion time therefore depends on the number of files,
-chunk batches, missing chunks and request latency. There is one repair worker
-per engine, and stopping the engine cancels further work and drains an
-already dispatched write before a replacement engine starts.
+Work is incremental: at most one existence question of remembered SIDs, one
+retained-version metadata read, 64 chunk entries audited, and one chunk
+restored per step. The authenticated manifest stays in memory across that
+file's batches. Steps run one second apart during a walk, with six hours
+between complete walks (five minutes after a failed step); **Sync now**
+advances one step immediately. A 10,000-note vault whose SIDs are remembered
+walks in three existence questions. Completion time therefore depends on the
+number of files, chunk batches, missing chunks and request latency. There is
+one repair worker per engine, and stopping the engine cancels further work and
+drains an already dispatched write before a replacement engine starts.
 
 The host declares whether it can serve bounded ranges without buffering the
 whole file. The native desktop filesystem host can; the Obsidian adapter

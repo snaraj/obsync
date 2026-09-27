@@ -1,0 +1,11 @@
+# M2144: a record with no sid remembered is passed over by the batch and never read back
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -115,7 +115,6 @@
+     this.operation.check();
+     this.inventory(missing, sids);
+     for (const gone of missing) this.later.push(...(asked.get(gone) ?? []));
+-    this.later.push(...unknown);
+     this.walk.batched += sids.length;
+     this.walk.requests++;
+     this.walk.missing += missing.length;

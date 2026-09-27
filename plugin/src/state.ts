@@ -87,6 +87,17 @@ export interface FileRecord {
    * from its version's position.
    */
   ts?: number;
+  /**
+   * The one chunk this version is made of, when it is one (issue #198): what
+   * the repair walk asks the server about, 4,096 at a time, instead of reading
+   * the version back (`sync/repair.ts`). A hash of the CIPHERTEXT the server
+   * already stores -- `sha256` above is a hash of it in turn -- never of a
+   * note's bytes. Believed only while `sha256` is its digest, so one left from
+   * an older version is never read as this one's. Absent on multi-chunk files
+   * and on every record before 1.1.4; 1.1.3 drops it on load, and the walk
+   * learns it again.
+   */
+  sid?: string;
 }
 
 /**
@@ -408,6 +419,8 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       const name = record["name"];
       if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
       if (typeof record["ts"] === "number" && Number.isFinite(record["ts"])) data.files[path].ts = record["ts"];
+      const sid = record["sid"];
+      if (typeof sid === "string" && isHex(sid, 32)) data.files[path].sid = sid;
     }
   }
   const folders = loaded["folders"];
@@ -521,6 +534,55 @@ export interface Lease {
   writing: Promise<unknown>;
 }
 
+/**
+ * What `files` holds, answered without walking it (issue #194): the paths
+ * holding each file id, the paths whose record waits beside its name, and the
+ * bytes held. Three questions the pull path asked by walking every record, a
+ * few times per applied version -- about six full passes per note of a first
+ * sync. `of` is the map it describes: one replaced wholesale is indexed again
+ * on the next question.
+ */
+interface Indexes {
+  of: Record<string, FileRecord>;
+  ids: Map<string, Set<string>>;
+  names: Set<string>;
+  bytes: number;
+  /**
+   * Where each path stands in `files`' own key order, which is the order the
+   * waiting notes were always settled in (`besideNames`): insertion order, a
+   * key replaced in place keeping its place.
+   */
+  order: Map<string, number>;
+  next: number;
+}
+
+/** A key JavaScript orders before every other, by its number: an array index. */
+const ARRAY_INDEX = /^(0|[1-9][0-9]*)$/;
+
+function indexed(indexes: Indexes, path: string, record: FileRecord, sign: 1 | -1): void {
+  const paths = indexes.ids.get(record.fileId) ?? new Set<string>();
+  if (sign === 1) {
+    paths.add(path);
+    indexes.ids.set(record.fileId, paths);
+    if (record.name !== undefined) indexes.names.add(path);
+  } else {
+    paths.delete(path);
+    if (paths.size === 0) indexes.ids.delete(record.fileId);
+    indexes.names.delete(path);
+  }
+  indexes.bytes += sign * record.size;
+}
+
+/** The indexes of `files` built from nothing: what the maintained ones must always equal. */
+function indexFiles(files: Record<string, FileRecord>): Indexes {
+  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0 };
+  for (const [path, record] of Object.entries(files)) {
+    indexes.order.set(path, indexes.next++);
+    indexed(indexes, path, record, 1);
+  }
+  return indexes;
+}
+
 export function dataLease(app: object, pluginId: string): Lease {
   const scope = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
   const windows = scope[Symbol.for("obsync.dataLease")] ??= new WeakMap();
@@ -549,6 +611,7 @@ export class State {
   private pending = false;
   private flushing: Promise<void> | null = null;
   private failure: StateStorageError | null = null;
+  private indexes: Indexes | null = null;
 
   private constructor(
     private readonly store: Store,
@@ -843,15 +906,43 @@ export class State {
     return this.data.files[path];
   }
 
+  /** The maintained indexes (`Indexes`), current for the `files` map this state holds now. */
+  private get index(): Indexes {
+    if (this.indexes?.of !== this.data.files) this.indexes = indexFiles(this.data.files);
+    return this.indexes;
+  }
+
+  /**
+   * THE ANSWER IS CHECKED AGAINST `files` BEFORE IT IS GIVEN: the pull path
+   * writes and trashes at the path this returns, so a record changed without
+   * its writer -- which nothing in the plugin does, and only a test's fixture
+   * can -- costs one rebuild, never a wrong file.
+   */
   pathByFileId(fileId: string): string | undefined {
-    for (const [path, record] of Object.entries(this.data.files)) {
-      if (record.fileId === fileId) return path;
+    for (let rebuilt = false; ; rebuilt = true) {
+      const paths = this.index.ids.get(fileId);
+      if (paths === undefined) return undefined;
+      for (const path of paths) if (this.data.files[path]?.fileId === fileId) return path;
+      if (rebuilt) return undefined;
+      this.indexes = null;
     }
-    return undefined;
+  }
+
+  /** Paths whose record waits beside the name it carries (`FileRecord.name`, `sync/pull.ts`, `settleBeside`). */
+  besideNames(): string[] {
+    const { names, order } = this.index;
+    const place = (path: string): number =>
+      ARRAY_INDEX.test(path) && Number(path) < 2 ** 32 - 1 ? Number(path) - 2 ** 32 : order.get(path) ?? Infinity;
+    return [...names].filter((path) => this.data.files[path]?.name !== undefined).sort((a, b) => place(a) - place(b));
   }
 
   setFile(path: string, record: FileRecord): void {
+    const index = this.index;
+    const replaced = this.data.files[path];
+    if (replaced !== undefined) indexed(index, path, replaced, -1);
+    else index.order.set(path, index.next++);
     this.data.files[path] = record;
+    indexed(index, path, record, 1);
     delete this.data.remoteOnly[record.fileId];
     // A file id recorded again is alive here: its old tombstone is no
     // deletion to re-send.
@@ -859,6 +950,10 @@ export class State {
   }
 
   forgetPath(path: string): void {
+    const index = this.index;
+    const forgotten = this.data.files[path];
+    if (forgotten !== undefined) indexed(index, path, forgotten, -1);
+    index.order.delete(path);
     delete this.data.files[path];
   }
 
@@ -895,8 +990,6 @@ export class State {
 
   /** Bytes held locally, the input to the total-budget ceiling. */
   localBytes(): number {
-    let total = 0;
-    for (const record of Object.values(this.data.files)) total += record.size;
-    return total;
+    return this.index.bytes;
   }
 }

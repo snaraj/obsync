@@ -1,0 +1,11 @@
+# M2123: a new path takes no place in the key order
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -940,7 +940,6 @@
+     const index = this.index;
+     const replaced = this.data.files[path];
+     if (replaced !== undefined) indexed(index, path, replaced, -1);
+-    else index.order.set(path, index.next++);
+     this.data.files[path] = record;
+     indexed(index, path, record, 1);
+     delete this.data.remoteOnly[record.fileId];

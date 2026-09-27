@@ -425,6 +425,9 @@ export class ObsidianHost implements VaultHost {
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
   private readonly nested = new Set<string>();
+  /** The engine passes running now, and their nested-vault answer per folder (`pass`). */
+  private passes = 0;
+  private nestedAnswers: Map<string, boolean> | null = null;
   /** A directory this host could not fsync has been logged, once (`syncFolder`). */
   private folderSyncRefused = false;
   /** The linked folders this host has already told the user about, once each (issue #167). */
@@ -522,6 +525,21 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
+   * An engine pass over many paths begins or ends (`VaultHost.pass`). While
+   * one runs, the nested-vault answer is kept per folder (issue #198): asked
+   * of every folder on the way to every note, it cost three no-follow stats a
+   * level on desktop and a bridge call a level on a phone -- about 60,000
+   * calls in a phone's first sync of 10,000 notes. The answers go when the
+   * last pass ends, so a folder that becomes a vault of its own is found by
+   * the next pass, and every question outside one is asked afresh. The walk
+   * that refuses a link still runs before every write.
+   */
+  pass(open: boolean): void {
+    this.passes = Math.max(0, this.passes + (open ? 1 : -1));
+    this.nestedAnswers = this.passes === 0 ? null : this.nestedAnswers ?? new Map();
+  }
+
+  /**
    * Is `path` in a folder of this vault that is a vault of its own syncing
    * with this plugin, or is it that folder (issue #180)?
    *
@@ -546,10 +564,18 @@ export class ObsidianHost implements VaultHost {
   async inNestedVault(path: string): Promise<boolean> {
     const segments = path.split("/");
     const desktop = this.desktop;
+    // One answer per folder per engine pass (`pass`); outside one, every
+    // question is asked. A folder that holds the plugin is named every time.
+    const answers = this.nestedAnswers;
+    const answer = async (folder: string, ask: () => Promise<boolean>): Promise<boolean> => {
+      const known = answers?.get(folder) ?? await ask();
+      answers?.set(folder, known);
+      return known;
+    };
     if (desktop === null) {
       for (let depth = 1; depth <= segments.length; depth++) {
         const folder = segments.slice(0, depth).join("/");
-        if (await this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`)) return this.named(folder);
+        if (await answer(folder, () => this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`))) return this.named(folder);
       }
       return false;
     }
@@ -562,7 +588,8 @@ export class ObsidianHost implements VaultHost {
     }
     // `chain[depth]` is the directory the first `depth` segments name.
     for (let depth = 1; depth < chain.length; depth++) {
-      if (await this.holdsPlugin(desktop, (chain[depth] as ChainLink).path)) return this.named(segments.slice(0, depth).join("/"));
+      const folder = segments.slice(0, depth).join("/");
+      if (await answer(folder, () => this.holdsPlugin(desktop, (chain[depth] as ChainLink).path))) return this.named(folder);
     }
     return false;
   }

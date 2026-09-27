@@ -158,7 +158,8 @@ was restored to an earlier state; this device re-sent N changes."
   for the last change-feed entry it read. A journal that no longer holds that
   entry where it was, or holds entries where the device read none, was
   rebuilt. The repair pass also notices when the server does not hold a
-  version the device recorded less than a day ago.
+  version the device recorded less than a day ago, whenever it reads that
+  version back: for a chunk the server lacks, or one it does not remember yet.
 - **What it re-sends.** Each note, rename and folder the server lost, onto
   the versions the server still holds. Each deletion the device made or
   received, from the last 1000 it remembers. Then it reads the rebuilt feed

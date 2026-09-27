@@ -1,0 +1,12 @@
+# M2161: a page's prefetch does not carry the stop
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -767,7 +767,7 @@
+     const started = context.now();
+     let bodies: (Bytes | null)[];
+     try {
+-      bodies = await context.transport.getChunks(asked, undefined, patience, budget);
++      bodies = await context.transport.getChunks(asked, undefined, {}, budget);
+     } catch (error) {
+       // No answer, or a stop: the feed's to handle, exactly as a GET's would be.
+       if (!(error instanceof ApiError) || error.code === "unreachable" || error.code === "cancelled") throw error;

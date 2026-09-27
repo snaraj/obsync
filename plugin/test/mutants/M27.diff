@@ -1,11 +1,12 @@
 # M27: the record is never saved
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3467,7 +3467,6 @@
-     ...(wants === undefined ? {} : { name: wants }),
-     ts: change.ts,
-   });
--  await context.state.save();
+@@ -4437,8 +4437,6 @@
+   // saved now: a move or a record beside its name, whose loss would be read as
+   // a deletion or a second note, and a file of many chunks, which carries no
+   // digest to be adopted by (#181).
+-  if (created && wants === undefined && change.sids.length === 1 && context.defer !== undefined) context.defer();
+-  else await context.state.save();
  }
  
  /** Write the foreign head beside ours under a named copy, and say so. */

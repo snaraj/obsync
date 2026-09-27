@@ -1,9 +1,9 @@
 # M23: recordAt stats the file itself
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3456,6 +3456,7 @@
-   stat: VaultStat,
+@@ -4413,6 +4413,7 @@
    wants?: string,
+   created = false,
  ): Promise<void> {
 +  stat = (await context.host.stat(path)) ?? stat;
    context.state.setFile(path, {

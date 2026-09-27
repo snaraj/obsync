@@ -1,0 +1,11 @@
+# M2150: the window coming back walks nothing
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2451,7 +2451,6 @@
+     // behind it is found now, by a walk that starts at once -- or by the next
+     // pass, when one is running -- and not at the next `WALK_MS`.
+     if (reason === "focus" || reason === "foreground") {
+-      this.walkFor = "focus";
+       if (this.scanHandle !== null) {
+         this.timers.clear(this.scanHandle);
+         this.scanTick();

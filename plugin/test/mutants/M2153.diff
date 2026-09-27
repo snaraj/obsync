@@ -1,0 +1,12 @@
+# M2153: the nested-vault answers outlive their pass
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -536,7 +536,7 @@
+    */
+   pass(open: boolean): void {
+     this.passes = Math.max(0, this.passes + (open ? 1 : -1));
+-    this.nestedAnswers = this.passes === 0 ? null : this.nestedAnswers ?? new Map();
++    this.nestedAnswers = this.nestedAnswers ?? new Map();
+   }
+ 
+   /**

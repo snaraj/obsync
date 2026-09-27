@@ -1,0 +1,12 @@
+# M2118: a note the feed is expected to adopt is downloaded ahead anyway
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -724,7 +724,7 @@
+     if (change.sids.length !== 1 || change.deleted || change.file_id === context.mapFileId ||
+       change.device_id === context.deviceId || context.authored.has(change.version_id) ||
+       state.data.paused[change.file_id] !== undefined || state.data.parked[change.file_id] !== undefined ||
+-      context.expected?.has(change.file_id) === true || change.bytes + 16 > CHUNK_CIPHERTEXT_MAX ||
++      change.bytes + 16 > CHUNK_CIPHERTEXT_MAX ||
+       this.held.has(change.sids[0] as string) || !admit(state.data.policy, local, change.bytes).ok) return false;
+     const path = state.pathByFileId(change.file_id);
+     const record = path === undefined ? undefined : state.fileByPath(path);

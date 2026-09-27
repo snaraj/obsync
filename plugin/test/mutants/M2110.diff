@@ -1,0 +1,12 @@
+# M2110: a prefetch asks for the whole page, past the route's 64 sids
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -739,7 +739,7 @@
+     const asked = [sid];
+     let bytes = first.bytes + 16;
+     let local = context.state.localBytes() + first.bytes;
+-    for (let next = index + 1; next < this.changes.length && asked.length < PREFETCH_SIDS; next++) {
++    for (let next = index + 1; next < this.changes.length; next++) {
+       const change = this.changes[next] as ChangeRecord;
+       if (!(await this.wanted(change, local)) || asked.includes(change.sids[0] as string)) continue;
+       if (bytes + change.bytes + 16 > budget) break;

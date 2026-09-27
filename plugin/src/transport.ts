@@ -1237,9 +1237,15 @@ export class Transport {
    * latency is made of. A missing sid comes back as a zero-length part with
    * `X-Obsync-Missing: 1` and is returned as `null`.
    */
-  async getChunks(sids: string[], control?: ReadControl, patience: Patience = {}): Promise<(Bytes | null)[]> {
+  async getChunks(
+    sids: string[],
+    control?: ReadControl,
+    patience: Patience = {},
+    maxBytes = sids.length * CHUNK_CIPHERTEXT_MAX,
+  ): Promise<(Bytes | null)[]> {
     const target = "/v1/chunks/get";
-    const cap = sids.length * (CHUNK_CIPHERTEXT_MAX + MULTIPART_PART_OVERHEAD) + MULTIPART_PART_OVERHEAD;
+    // `maxBytes` is the ciphertext a caller's budget holds (`pull.ts`, `Prefetch`); the framing is this route's.
+    const cap = Math.min(sids.length * CHUNK_CIPHERTEXT_MAX, maxBytes) + (sids.length + 1) * MULTIPART_PART_OVERHEAD;
     const response = control
       ? await this.readOnce(target, control, 33 * 1024 * 1024, { sids })
       : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids }, cap, bulk: true, ...patience }), cap, true);

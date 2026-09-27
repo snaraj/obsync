@@ -1,0 +1,12 @@
+# M2116: a prefetched body is handed to the wrong note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -772,7 +772,7 @@
+       `pull decision=prefetched sids=${asked.length} bytes=${bytes} budget_sids=${PREFETCH_SIDS} budget_bytes=${budget} ` +
+         `duration_ms=${context.now() - started}`,
+     );
+-    return bodies[0] ?? null;
++    return bodies[1] ?? null;
+   }
+ }
+ 

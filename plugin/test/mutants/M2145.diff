@@ -1,0 +1,12 @@
+# M2145: one existence question carries every remembered sid, past the route's 4,096
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -101,7 +101,7 @@
+   private async batch(path: string, sid: string): Promise<void> {
+     const asked = new Map<string, string[]>([[sid, [path]]]);
+     const unknown: string[] = [];
+-    while (asked.size < REPAIR_EXISTS_SIDS) {
++    while (true) {
+       const next = this.next();
+       if (next === null) break;
+       const saved = inSyncScope(next, this.context.state.data.syncFolders) ? this.context.state.fileByPath(next) : undefined;

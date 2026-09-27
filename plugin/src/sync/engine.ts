@@ -76,10 +76,10 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, FileRecord, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
-import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
+import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
 export interface VaultStat {
@@ -298,6 +298,12 @@ export interface VaultHost {
   typing(path: string): boolean;
   notify(message: string, actions?: NoticeAction[]): void;
   log(line: string): void;
+  /**
+   * A pass over many paths -- a feed page, a reconcile or scan -- begins
+   * (`true`) or ends. A host may keep answers that cost a walk for its length
+   * (`main.ts`, `inNestedVault`, issue #198); outside a pass it asks afresh.
+   */
+  pass?(open: boolean): void;
 }
 
 export interface SyncContext {
@@ -384,6 +390,23 @@ export interface SyncContext {
    * the lane.
    */
   readonly staged?: Map<string, VaultWriter>;
+  /**
+   * A record written in memory only, to be saved with the page it came in or
+   * within `SAVE_COALESCE_MS` (`pull.ts`, `recordAt`, issue #194). Absent where
+   * no engine runs, and then every record is saved as it is written.
+   */
+  defer?(): void;
+  /**
+   * The chunks of the page being applied, fetched many to a request (`pull.ts`,
+   * `Prefetch`, issue #194); `null` between pages and where no engine runs.
+   */
+  ahead?: Prefetch | null;
+  /**
+   * File ids the feed is expected to find already here, byte for byte: the
+   * notes of other devices whose names a held local note occupies (`holding`).
+   * Their chunks are not fetched ahead, because adopting them fetches none.
+   */
+  readonly expected?: Set<string>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -535,6 +558,39 @@ export const NAMES_TTL_MS = 10 * 60 * 1000;
  * to converge from and the wrong thing to delete on.
  */
 export const SCAN_MS = 30 * 1000;
+
+/**
+ * How often that pass walks the vault's tree on a host that can
+ * (`VaultHost.scan`, desktop), and it walks at a start and at once when the
+ * window comes forward (`wake`, issue #198). The tree is where a move made in
+ * a file manager shows first, and that move is made with obsync's window
+ * behind it, so the moment it comes back is when a walk finds it. Every 30 s,
+ * a vault of ten thousand notes was read whole 120 times an hour, on battery
+ * too; the passes between walks keep the rest of their work on its 30 s and
+ * read nothing.
+ */
+export const WALK_MS = 5 * 60 * 1000;
+
+/**
+ * How long a note another device created may be recorded in memory only
+ * before the data file is written (issue #194). The page's own save usually
+ * comes first; this bounds a page that takes minutes, a phone's first sync,
+ * to a few seconds of records its next start adopts again (`pull.ts`,
+ * `recordAt`).
+ */
+export const SAVE_COALESCE_MS = 1500;
+
+/**
+ * How long a start holds back the local notes whose names the feed already
+ * carries from another device, waiting for the feed to catch up once (issue
+ * #194). A vault copied over from another sync tool, or a restart after a
+ * crash inside a page, holds notes that ARE those versions; published first,
+ * each took a new file id and was retired again, two versions per note on
+ * every device. The feed adopts them by digest instead (`pull.ts`, `adopt`),
+ * and a note it does not settle goes out when it has caught up -- or after
+ * this long, whatever the feed is doing.
+ */
+export const HOLD_MS = 10 * 60 * 1000;
 
 /**
  * The coarsest step a vault volume keeps a modification time to: FAT32's two
@@ -740,6 +796,23 @@ export class SyncEngine {
   private swept = false;
   /** Whether this engine has read the feed for its own notes (`ownNotes`); one start per engine. */
   private ownRead = false;
+  /**
+   * Local notes this start holds back until the feed has caught up once
+   * (`HOLD_MS`, issue #194): by path, with the file ids the feed brings for
+   * them (`SyncContext.expected`). `all` holds every note without a record:
+   * an empty state whose read of the feed failed, which cannot tell a copy
+   * from a note of its own.
+   */
+  private holding: { paths: Set<string>; since: number; handle: unknown; all: boolean } | null = null;
+  private readonly expected = new Set<string>();
+  /** No record and no cursor at this start: a vault the server has not seen from here. */
+  private emptyStart = false;
+  /** Passes since the last walk of the tree (`WALK_MS`), and why the next pass walks, when it must. */
+  private unwalked = 0;
+  private walkFor: "start" | "focus" | null = "start";
+  /** Records written in memory only since the last save (`defer`), and the timer that saves them. */
+  private deferred = 0;
+  private saveHandle: unknown = null;
   /** When the repair tick began yielding to a manual history operation. */
   private repairDeferredAt: number | null = null;
   private repairDeferredTicks = 0;
@@ -879,6 +952,9 @@ export class SyncEngine {
       signal,
       copies: new Map(),
       staged: new Map(),
+      defer: () => this.defer(),
+      ahead: null,
+      expected: this.expected,
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -886,6 +962,13 @@ export class SyncEngine {
     this.caughtUp = false;
     this.retiredHeld.clear();
     this.running = true;
+    // Armed before the pass that would publish what it holds (`survey`).
+    this.expected.clear();
+    this.holding = { paths: new Set(), since: this.nowFn(), handle: null, all: false };
+    this.emptyStart = state.data.lastSeq === 0 && Object.keys(state.data.files).length === 0;
+    // A start's first pass walks: what moved while the app was closed shows there first.
+    this.unwalked = 0;
+    this.walkFor = "start";
     host.log(
       `engine start platform=${host.platform} concurrency=${this.contextValue.concurrency} seq=${state.data.lastSeq}`,
     );
@@ -944,6 +1027,12 @@ export class SyncEngine {
     this.repairHandle = null;
     if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
     this.scanHandle = null;
+    // What a stop leaves held, the next start's pass finds again.
+    if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
+    this.holding = null;
+    this.expected.clear();
+    // And what `defer` held in memory is written now, not at a page that is not coming.
+    void this.saveDeferred("stop");
     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
     this.parkHandle = null;
     this.parkDelay = 0;
@@ -1903,6 +1992,8 @@ export class SyncEngine {
 
   private enqueue(path: string): void {
     if (!this.running) return;
+    // A held note waits for the feed, whichever pass or event asks (`holdBack`).
+    if (this.holding?.paths.has(path) === true && this.options.state.fileByPath(path) === undefined) return;
     if (!this.queue.includes(path)) this.queue.push(path);
     void this.track(this.drain());
   }
@@ -2437,6 +2528,16 @@ export class SyncEngine {
     if (pause !== null || dropped) {
       this.options.host.log(`feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} waited_ms=${waited}`);
     }
+    // THE WINDOW IS BACK IN FRONT (issue #198): a note moved in a file manager
+    // behind it is found now, by a walk that starts at once -- or by the next
+    // pass, when one is running -- and not at the next `WALK_MS`.
+    if (reason === "focus" || reason === "foreground") {
+      this.walkFor = "focus";
+      if (this.scanHandle !== null) {
+        this.timers.clear(this.scanHandle);
+        this.scanTick();
+      }
+    }
   }
 
   /**
@@ -2894,6 +2995,8 @@ export class SyncEngine {
       // down as it lands: a receiving device read `idle` through a thousand
       // notes and a gigabyte (issue #158, S46, S26).
       this.pulls = page.changes.length;
+      context.ahead = new Prefetch(context, page.changes);
+      context.host.pass?.(true);
       try {
         for (const change of page.changes) {
           if (!this.running) break;
@@ -2909,10 +3012,17 @@ export class SyncEngine {
         }
       } finally {
         this.pulls = 0;
+        context.ahead = null;
+        context.host.pass?.(false);
       }
     });
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
-    if (!this.caughtUp && page.seq >= page.head_seq) await this.releaseRetired(context);
+    if (!this.caughtUp && page.seq >= page.head_seq) {
+      await this.releaseRetired(context);
+      this.release("caught_up");
+    }
+    // The save below writes what `defer` held (issue #194).
+    this.takeDeferred();
     if (!this.running) {
       await context.state.save();
       return;
@@ -2925,6 +3035,76 @@ export class SyncEngine {
     // happens to carry a change -- which kept every device reading `offline —
     // retrying` for minutes after its server was back.
     this.status(this.resting());
+  }
+
+  /**
+   * A record `recordAt` wrote in memory only (issue #194): its page's save
+   * writes it, or this timer, when the page is still running
+   * `SAVE_COALESCE_MS` after the first such record.
+   */
+  private defer(): void {
+    this.deferred++;
+    if (this.saveHandle !== null || !this.running) return;
+    this.saveHandle = this.timers.set(() => {
+      this.saveHandle = null;
+      void this.saveDeferred("coalesced");
+    }, SAVE_COALESCE_MS);
+  }
+
+  /** What `defer` held, handed to a save about to run: the count, and no timer left to write it twice. */
+  private takeDeferred(): number {
+    if (this.saveHandle !== null) this.timers.clear(this.saveHandle);
+    this.saveHandle = null;
+    const records = this.deferred;
+    this.deferred = 0;
+    return records;
+  }
+
+  /** Save what `defer` held, now -- its timer, or a stop -- and say so in one line. */
+  private saveDeferred(reason: string): Promise<void> {
+    const records = this.takeDeferred();
+    if (records === 0) return Promise.resolve();
+    const { state, host } = this.options;
+    const started = this.nowFn();
+    return this.track(state.save()).then(
+      () => host.log(`state decision=saved reason=${reason} records=${records} budget_ms=${SAVE_COALESCE_MS} duration_ms=${this.nowFn() - started}`),
+      () => {
+        host.log(`state decision=failed reason=${reason} records=${records} budget_ms=${SAVE_COALESCE_MS}`);
+        if (this.running) this.stop();
+      },
+    );
+  }
+
+  /** Hold back one local note until the feed has caught up (`HOLD_MS`); the limit runs from the first. */
+  private holdBack(path: string): void {
+    const holding = this.holding;
+    if (holding === null) return;
+    holding.paths.add(path);
+    holding.handle ??= this.timers.set(() => this.release("timeout"), HOLD_MS);
+  }
+
+  /**
+   * The feed has caught up once, or `HOLD_MS` passed: every held note the feed
+   * did not settle -- adopted, or kept beside another -- is published now. One
+   * line, and always one when the limit ended it.
+   */
+  private release(reason: "caught_up" | "timeout"): void {
+    const holding = this.holding;
+    if (holding === null) return;
+    this.holding = null;
+    this.expected.clear();
+    if (holding.handle !== null) this.timers.clear(holding.handle);
+    let queued = 0;
+    for (const path of holding.paths) {
+      if (this.options.state.fileByPath(path) !== undefined) continue;
+      this.enqueue(path);
+      queued++;
+    }
+    if (holding.paths.size === 0 && reason !== "timeout") return;
+    this.options.host.log(
+      `reconcile decision=released reason=${reason} held=${holding.paths.size} settled=${holding.paths.size - queued} ` +
+        `queued=${queued} all=${holding.all ? 1 : 0} budget_ms=${HOLD_MS} duration_ms=${this.nowFn() - holding.since}`,
+    );
   }
 
   /**
@@ -2965,7 +3145,11 @@ export class SyncEngine {
     if (result === "echo") {
       const path = state.pathByFileId(change.file_id);
       const record = path === undefined ? undefined : state.fileByPath(path);
-      if (record?.versionId === change.version_id) record.ts = change.ts;
+      if (record?.versionId === change.version_id) {
+        record.ts = change.ts;
+        // And the one chunk it is made of, for the repair walk (`FileRecord.sid`, #198).
+        if (change.sids.length === 1) record.sid = change.sids[0];
+      }
       const grave = state.data.graves[change.file_id];
       if (grave?.versionId === change.version_id) grave.ts = change.ts;
     }
@@ -3016,7 +3200,18 @@ export class SyncEngine {
   }
 
   private async reconcileLocal(verifyContent: boolean): Promise<void> {
-    await this.survey(await this.need().host.list(), true, "reconcile", verifyContent);
+    const host = this.need().host;
+    await this.inPass(host, async () => this.survey(await host.list(), true, "reconcile", verifyContent));
+  }
+
+  /** `work` as one pass of the host's (`VaultHost.pass`), closed however it ends. */
+  private async inPass<T>(host: VaultHost, work: () => Promise<T>): Promise<T> {
+    host.pass?.(true);
+    try {
+      return await work();
+    } finally {
+      host.pass?.(false);
+    }
   }
 
   /**
@@ -3060,8 +3255,23 @@ export class SyncEngine {
       // beside its name for one this device's own user has since freed
       // (issue #149).
       await settleBeside(context, context.state.data.lastSeq, "scan");
+      // A HOST THAT WALKS ITS TREE WALKS IT EVERY `WALK_MS` -- counted in
+      // passes, because that is what fires -- at a start, and when the window
+      // came back (issue #198). The passes between compare nothing: the walk
+      // is the listing that sees what the watcher did not, and Obsidian's
+      // index offers a desktop pass nothing a walk minutes later does not,
+      // while it names every note the walk leaves out, a nested vault's too.
+      if (context.host.scan !== undefined) {
+        if (this.walkFor === null && ++this.unwalked < Math.round(WALK_MS / SCAN_MS)) {
+          this.sweepEchoes(context, "scan");
+          return;
+        }
+        context.host.log(`scan decision=walk reason=${this.walkFor ?? "interval"} interval_ms=${WALK_MS}`);
+        this.walkFor = null;
+        this.unwalked = 0;
+      }
       const own = context.host.scan === undefined ? null : await context.host.scan();
-      await this.survey(own ?? await context.host.list(), false, "scan");
+      await this.inPass(context.host, async () => this.survey(own ?? await context.host.list(), false, "scan"));
     } catch (error) {
       context.host.log(
         `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
@@ -3377,12 +3587,13 @@ export class SyncEngine {
       queued++;
     }
     let adopted = 0;
+    let heldBack = 0;
     for (const file of fresh) {
       if (!this.running) return;
       if (settled.has(file.path)) continue;
       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
       const note = own?.notes.get(file.path);
-      if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
+      if (note !== undefined && note.device_id === context.deviceId && context.state.pathByFileId(note.file_id) === undefined) {
         const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
         if (isPushed(record, file.mtime, file.size)) {
           context.state.setFile(file.path, record);
@@ -3390,6 +3601,19 @@ export class SyncEngine {
           adopted++;
           continue;
         }
+      }
+      // ANOTHER DEVICE'S NOTE AT THIS NAME, NOT YET APPLIED HERE (issue #194):
+      // a vault copied over from another sync tool, or a note a crash left
+      // unrecorded inside a page. Published now, it took a new file id that
+      // the feed's same-name rule retired again a moment later. It waits
+      // instead, and the feed adopts it by digest or settles the name by the
+      // rule; a note no other device named goes out at once.
+      if (this.holding !== null && context.state.fileByPath(file.path) === undefined &&
+        (this.holding.all || (note !== undefined && note.device_id !== context.deviceId))) {
+        if (note !== undefined) this.expected.add(note.file_id);
+        if (!this.holding.paths.has(file.path)) heldBack++;
+        this.holdBack(file.path);
+        continue;
       }
       this.enqueue(file.path);
       queued++;
@@ -3399,6 +3623,10 @@ export class SyncEngine {
         `${label} decision=held since=${own.since} untracked=${untracked.length} adopted=${adopted} ` +
           `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - own.started}`,
       );
+    }
+    if (heldBack > 0) {
+      context.host.log(`${label} decision=holding reason=${this.holding?.all === true ? "feed_unread" : "feed_names"} ` +
+        `held=${heldBack} budget_ms=${HOLD_MS}`);
     }
     // AND THE TOMBSTONE HALF LAST, after the file work: a folder record is
     // retired once the notes under it have published their own tombstones, so
@@ -3435,13 +3663,15 @@ export class SyncEngine {
   }
 
   /**
-   * This device's own newest live notes, by name (issue #181): ONE walk of
-   * the feed per start, from this device's cursor -- a version whose record
-   * was lost was posted after the cursor that was saved with it -- and only
-   * when some name has no record. The reader is pairing's (`heldNotes`). A
-   * walk that fails leaves those files to be published as they always were,
-   * which costs a duplicate id, never a note: a retirement never deletes what
-   * its keeper holds (`pull.ts`, `retiredInto`).
+   * The newest live notes the feed carries past this device's cursor, by name
+   * (issue #181): ONE walk of the feed per start, from this device's cursor --
+   * a version whose record was lost was posted after the cursor that was
+   * saved with it -- and only when some name has no record. This device's own
+   * are adopted again; another device's hold that name back for the feed
+   * (issue #194). The reader is pairing's (`heldNotes`). A walk that fails
+   * leaves those files to be published as they always were, which costs a
+   * duplicate id, never a note: a retirement never deletes what its keeper
+   * holds (`pull.ts`, `retiredInto`).
    */
   private async ownNotes(
     context: SyncContext,
@@ -3452,13 +3682,16 @@ export class SyncEngine {
     const started = context.now();
     const since = context.state.data.lastSeq;
     try {
-      const held = await heldNotes(context.transport, context.manifestKey, since);
-      return { notes: new Map([...held].filter(([, note]) => note.device_id === context.deviceId)), since, started };
+      return { notes: await heldNotes(context.transport, context.manifestKey, since), since, started };
     } catch (error) {
       context.host.log(
         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
           `untracked=${untracked} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
       );
+      // An empty state is a vault this server has never seen from here: with
+      // no feed to say which of its notes the server already has, every one
+      // of them waits for it (`holding`, issue #194).
+      if (this.emptyStart && this.holding !== null) this.holding.all = true;
       return null;
     }
   }
@@ -3807,7 +4040,17 @@ export class SyncEngine {
     try {
       const result = await repair.step();
       if (!this.running || this.repair !== repair) return;
-      if (result.kind === "idle") delay = REPAIR_SCAN_MS;
+      if (result.kind === "idle") {
+        // A walk ended (issue #198): the next one is hours away, and the sids it
+        // learned are saved with the next state write.
+        delay = REPAIR_WALK_MS;
+        const walk = repair.walk;
+        host.log(
+          `repair decision=walked batched=${walk.batched} requests=${walk.requests} missing=${walk.missing} ` +
+            `learned=${walk.learned} next_ms=${REPAIR_WALK_MS} duration_ms=${this.nowFn() - walk.started}`,
+        );
+        if (walk.learned > 0) this.defer();
+      }
       if (result.kind === "repaired") host.log(`repair decision=verified bytes=${result.bytes} ${budget()}`);
       else if (result.kind === "lost") {
         // NOT A READ OR WRITE FAILURE (issue #145): the server does not hold

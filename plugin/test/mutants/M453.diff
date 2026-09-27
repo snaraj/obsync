@@ -1,10 +1,10 @@
 # M453: a feed read failing at startup stops sync instead of uploading new files
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2301,7 +2301,7 @@
-         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
-           `untracked=${untracked} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
-       );
+@@ -3456,7 +3456,7 @@
+       // no feed to say which of its notes the server already has, every one
+       // of them waits for it (`holding`, issue #194).
+       if (this.emptyStart && this.holding !== null) this.holding.all = true;
 -      return null;
 +      throw error;
      }

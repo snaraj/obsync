@@ -1,12 +1,12 @@
 # M449: bytes typed here are recorded as another device's version of the same size and time, and never uploaded
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2295,7 +2295,7 @@
-     const since = context.state.data.lastSeq;
-     try {
-       const held = await heldNotes(context.transport, context.manifestKey, since);
--      return { notes: new Map([...held].filter(([, note]) => note.device_id === context.deviceId)), since, started };
-+      return { notes: new Map(held), since, started };
-     } catch (error) {
-       context.host.log(
-         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +
+@@ -3361,7 +3361,7 @@
+       if (settled.has(file.path)) continue;
+       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
+       const note = own?.notes.get(file.path);
+-      if (note !== undefined && note.device_id === context.deviceId && context.state.pathByFileId(note.file_id) === undefined) {
++      if (note !== undefined && context.state.pathByFileId(note.file_id) === undefined) {
+         const record = { fileId: note.file_id, versionId: note.version_id, mtime: note.mtime, size: note.size, sha256: await sidDigest(note.sids) };
+         if (isPushed(record, file.mtime, file.size)) {
+           context.state.setFile(file.path, record);

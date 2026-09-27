@@ -252,6 +252,43 @@ test("a stop ends the repair pass's check asleep in its retry (#157)", async () 
   assert.ok(d.host.logs.some((line) => /^http POST \/v1\/chunks\/exists decision=cancelled phase=sleeping/.test(line)));
 });
 
+test("a stop ends a page's prefetch of many notes asleep in its retry (#157, #194)", async () => {
+  // The page asks for the next notes' chunks in one request (`Prefetch`); a
+  // server gone mid-page left that request retrying under a stop.
+  const d = await device({ refuse: (_method, target) => target === "/v1/chunks/get" });
+  for (let i = 0; i < 3; i++) {
+    await d.server.publish({ fileId: String(i + 1).padStart(2, "0").repeat(16), path: `Notes/n${i}.md`, bytes: enc(`PREFETCH SENTINEL ${i}\n`),
+      mtime: 1000 + i, domainKey: d.keys.domainKey, manifestKey: d.keys.manifestKey });
+  }
+  await d.engine.start();
+  await d.timers.run(10, () => retried(d, "http POST /v1/chunks/get"));
+
+  const ms = await elapsed(d.timers, d.engine.stopAndWait());
+
+  assert.ok(ms < 1000, `the stop took ${ms} ms of virtual time`);
+  assert.ok(d.host.logs.some((line) => /^http POST \/v1\/chunks\/get decision=cancelled phase=sleeping/.test(line)), d.host.logs.join("\n"));
+  assert.equal(d.host.text("Notes/n0.md"), null, "nothing was written");
+});
+
+test("a stop ends a read-back's chunk check asleep in its retry, for a file of many chunks (#157, #198)", async () => {
+  // Since #198 the pass asks about remembered one-chunk notes together; a
+  // file of many chunks is still read back, and its chunks asked about in a
+  // check of their own, which must hear the stop as the batched one does.
+  let gone = false;
+  const d = await device({ refuse: (_method, target) => gone && target === "/v1/chunks/exists" });
+  d.host.seed(VIDEO, noise(12 << 20), 1000);
+  await pushFile(d.context, VIDEO);
+  gone = true;
+  await d.engine.start();
+  await d.timers.run(10, () => retried(d, "http POST /v1/chunks/exists"));
+  assert.ok(d.server.requests.some((request) => request.target.includes("/versions/")), "the version was read back first");
+
+  const ms = await elapsed(d.timers, d.engine.stopAndWait());
+
+  assert.ok(ms < 1000, `the stop took ${ms} ms of virtual time`);
+  assert.ok(d.host.logs.some((line) => /^http POST \/v1\/chunks\/exists decision=cancelled phase=sleeping/.test(line)));
+});
+
 for (const step of ["map read", "device list"]) test(`a restart the stop cuts short in its ${step} ends quietly, at once (#157)`, async () => {
   // S70: the start after a refused Leave retried the map for 89 s, and the
   // refusal waited behind it.

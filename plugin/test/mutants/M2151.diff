@@ -1,0 +1,12 @@
+# M2151: every pass walks the tree, as every 30 s did
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3026,7 +3026,7 @@
+       // index offers a desktop pass nothing a walk minutes later does not,
+       // while it names every note the walk leaves out, a nested vault's too.
+       if (context.host.scan !== undefined) {
+-        if (this.walkFor === null && ++this.unwalked < Math.round(WALK_MS / SCAN_MS)) {
++        if (false && this.walkFor === null && ++this.unwalked < Math.round(WALK_MS / SCAN_MS)) {
+           this.sweepEchoes(context, "scan");
+           return;
+         }

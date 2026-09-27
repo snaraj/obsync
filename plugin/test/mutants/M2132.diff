@@ -1,0 +1,11 @@
+# M2132: an empty state whose read of the feed failed publishes every note at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3455,7 +3455,6 @@
+       // An empty state is a vault this server has never seen from here: with
+       // no feed to say which of its notes the server already has, every one
+       // of them waits for it (`holding`, issue #194).
+-      if (this.emptyStart && this.holding !== null) this.holding.all = true;
+       return null;
+     }
+   }

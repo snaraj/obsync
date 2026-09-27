@@ -1,0 +1,12 @@
+# M2101: a created one-chunk note is saved on its own again, once per note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4437,7 +4437,7 @@
+   // saved now: a move or a record beside its name, whose loss would be read as
+   // a deletion or a second note, and a file of many chunks, which carries no
+   // digest to be adopted by (#181).
+-  if (created && wants === undefined && change.sids.length === 1 && context.defer !== undefined) context.defer();
++  if (created && wants === undefined && change.sids.length === 1 && context.defer !== undefined) await context.state.save();
+   else await context.state.save();
+ }
+ 

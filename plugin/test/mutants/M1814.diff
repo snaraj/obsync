@@ -1,8 +1,8 @@
 # M1814: a batched chunk answer of any size is parsed
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -1242,7 +1242,7 @@
-     const cap = sids.length * (CHUNK_CIPHERTEXT_MAX + MULTIPART_PART_OVERHEAD) + MULTIPART_PART_OVERHEAD;
+@@ -1248,7 +1248,7 @@
+     const cap = Math.min(sids.length * CHUNK_CIPHERTEXT_MAX, maxBytes) + (sids.length + 1) * MULTIPART_PART_OVERHEAD;
      const response = control
        ? await this.readOnce(target, control, 33 * 1024 * 1024, { sids })
 -      : this.capped("POST", target, await this.call("POST", target, { auth: "device", json: { sids }, cap, bulk: true, ...patience }), cap, true);

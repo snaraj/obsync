@@ -1,0 +1,12 @@
+# M2111: a phone's prefetch holds the desktop's 32 MiB
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -749,7 +749,7 @@
+ 
+   private async fetch(index: number, sid: string, patience: Patience): Promise<Bytes | null> {
+     const { context } = this;
+-    const budget = (context.host.isMobile ? PREFETCH_BYTES_MOBILE : PREFETCH_BYTES) - this.bytes;
++    const budget = PREFETCH_BYTES - this.bytes;
+     const first = this.changes[index] as ChangeRecord;
+     const asked = [sid];
+     let bytes = first.bytes + 16;

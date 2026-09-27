@@ -1,0 +1,12 @@
+# M2140: a complete walk starts again a second later, as the old walk nearly did
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3807,7 +3807,7 @@
+       if (result.kind === "idle") {
+         // A walk ended (issue #198): the next one is hours away, and the sids it
+         // learned are saved with the next state write.
+-        delay = REPAIR_WALK_MS;
++        delay = REPAIR_TICK_MS;
+         const walk = repair.walk;
+         host.log(
+           `repair decision=walked batched=${walk.batched} requests=${walk.requests} missing=${walk.missing} ` +

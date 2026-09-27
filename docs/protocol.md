@@ -237,7 +237,10 @@ retain the account-wide authority described below.
   `X-Obsync-Missing: 1`. The sum of stored ciphertext lengths must be
   ≤ 32 MiB, excluding multipart framing, or the response is `413 batch_too_large`.
   Clients budget by the ciphertext maximum: the plugin fetches at most three
-  chunks per batch, while ordinary upload concurrency remains four on desktop.
+  chunks of one file per batch, while ordinary upload concurrency remains four
+  on desktop. From plugin 1.1.4 it also asks for the single chunks of up to 64
+  notes of one feed page at once, within 32 MiB (8 MiB on a phone) counted by
+  the lengths their records declare, and refuses a larger answer.
   Cuts request count over a proxied hop.
 
 ## Files and versions
