@@ -1002,6 +1002,12 @@ impl App {
     /// The one line every request logs (`docs/protocol.md`, "Limits and
     /// headers"). A refusal raises it to warn, and a server fault to error, so
     /// the decision is visible at any level an operator runs (requirement 12).
+    ///
+    /// A `503` that names the SENDER is a refusal, not a fault: a body slower
+    /// than the floor, or one that ended before it was whole, is the device's
+    /// link, and the device retries it. Logged as an error, every phone on a
+    /// weak signal read as a failing server, which the troubleshooting table
+    /// says it is not (#212).
     fn emit(&self, line: &LogLine) {
         let fields = [
             ("method", Val::word(line.method)),
@@ -1015,7 +1021,8 @@ impl App {
             ("duration_ms", Val::ms(line.duration_ms)),
             ("decision", Val::word(line.decision)),
         ];
-        if line.status >= 500 {
+        let sender = matches!(line.decision, "slow_body" | "body_incomplete");
+        if line.status >= 500 && !sender {
             self.log.error("request", &fields);
         } else if line.status >= 400 {
             self.log.warn("request", &fields);

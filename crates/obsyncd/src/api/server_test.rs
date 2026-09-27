@@ -2299,6 +2299,14 @@ fn assert_slow_body(h: &Harness, refused: &Res) {
     );
     assert!(log.contains("status=503"), "{log}");
     assert!(log.contains("decision=slow_body"), "{log}");
+    // The sender's link, not a server fault: a warning an operator can
+    // read past, never an error (#212).
+    assert!(
+        log.lines()
+            .any(|l| l.contains("level=warn event=request ") && l.contains("decision=slow_body")),
+        "{log}"
+    );
+    assert!(!log.contains("level=error event=request "), "{log}");
 }
 
 /// The slowloris floor (`cli::serve::MIN_BODY_RATE`): a body trickled at a
@@ -2436,6 +2444,14 @@ fn a_body_is_too_large_only_when_it_passed_its_ceiling() {
             "event=request_body decision=refused reason=body_incomplete io=UnexpectedEof bytes=5"
         )),
         "{}",
+        h.captured()
+    );
+    assert!(
+        h.captured()
+            .lines()
+            .any(|l| l.contains("level=warn event=request ")
+                && l.contains("decision=body_incomplete")),
+        "a body that ended early is the sender's, logged as a warning: {}",
         h.captured()
     );
 
