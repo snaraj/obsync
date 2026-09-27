@@ -198,6 +198,13 @@ export interface VaultHost {
    */
   settle?(): Promise<void>;
   /**
+   * Is `path` held by such a re-case, its entry still under the hidden name
+   * after one more try to put it back? A folder record there waits
+   * (`pull.ts`, `applyFolder`); a host that leaves nothing half-done has
+   * none.
+   */
+  recasePending?(path: string): Promise<boolean>;
+  /**
    * May this device sync this path at all? The string rule is not enough on
    * desktop: a symlinked folder is excluded in both directions in v0.1, and
    * only the host can see the filesystem (`vaultPath.ts`).

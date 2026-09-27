@@ -815,6 +815,14 @@ export class ObsidianHost implements VaultHost {
     return pending !== undefined && [pending.from, pending.to].some((root) => path === root || path.startsWith(`${root}/`));
   }
 
+  /** `VaultHost.recasePending`: held, and the entry still wears its hidden name after a try to put it back. */
+  async recasePending(path: string): Promise<boolean> {
+    if (!this.holds(path)) return false;
+    await this.settleRecase(false);
+    const pending = this.plugin.state.data.pendingRecase;
+    return pending !== undefined && (await this.plugin.app.vault.adapter.exists(pending.temp));
+  }
+
   /**
    * The whole index, whatever the selection (`VaultHost.inventory`): the
    * names, sizes and mtimes Obsidian already holds in memory, on desktop and

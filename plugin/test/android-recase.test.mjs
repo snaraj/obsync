@@ -410,6 +410,10 @@ test("a FOLDER re-case stopped between its renames holds the folder records unde
   await r.timers.run(STEP_MS);
   assert.deepEqual(await phonePosts(r), [], `the phone published while the folder was held: ${story(r)}`);
   assert.ok(r.b.state.folderByPath("Team docs/Sub"), story(r));
+  // Sync now asks the feed at once (#197): the folder records wait for the
+  // entry, and nothing is made where it is to come back.
+  assert.ok(r.b.logs.some((line) => /^pull path_class=folder decision=held reason=recase_pending file=[0-9a-f]{32} seq=\d+$/.test(line)), story(r));
+  assert.deepEqual(r.vault.entries().filter((path) => !path.startsWith(".obsync-recase-")), [], `a folder was made where the entry is to come back: ${story(r)}`);
   r.b.engine.stop();
   r.vault.fault = null;
 

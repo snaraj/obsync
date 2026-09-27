@@ -1189,6 +1189,16 @@ async function applyFolder(
   manifest: FolderManifest,
 ): Promise<ApplyResult> {
   const path = manifest.path;
+  // NOTHING LANDS ON A FOLDER STOPPED MID RE-CASE (issue #219). It wears a
+  // hidden name until it is put back, so a record at either spelling, or
+  // under them, finds nothing there: a create made a second, empty folder
+  // where the entry was to come back -- and the way back was taken -- and a
+  // tombstone forgot a record the entry still has. The record waits, as a
+  // note's move does (`landing`), and the feed asks again.
+  if ((await context.host.recasePending?.(path)) === true) {
+    context.host.log(`pull path_class=folder decision=held reason=recase_pending file=${change.file_id} seq=${change.seq}`);
+    throw new Error("a capitals-only rename of this folder is still being put back");
+  }
   // WHAT THIS VAULT SHOWS, ASKED ONCE, because both decisions below turn on
   // it. A record naming one capitalisation of a selected folder reaches this
   // function on the string rule's tolerance alone (`syncScope.ts`,
