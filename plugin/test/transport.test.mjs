@@ -821,10 +821,17 @@ test("a connection refused on the only attempt says nothing was sent and names t
 
 // --- patience: wake, the address per attempt, budgets, refusals ------------
 
-/** Let the transport's continuations run until `ready()` holds. */
+/**
+ * Let the transport's continuations run until `ready()` holds, for as long as a
+ * wall clock allows, never a number of turns (issue #231): the transport signs
+ * with WebCrypto, which answers on the threadpool, and a loaded machine gets
+ * there in more turns, not never. `ready()` is still asked after every turn,
+ * because some states it waits for last only until the next one.
+ */
 async function turns(ready = () => true) {
-  for (let turn = 0; turn < 1000 && !ready(); turn++) await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(ready(), "the transport never reached the state the test waits for");
+  const started = Date.now();
+  while (!ready() && Date.now() - started < 10_000) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(ready(), `the transport never reached the state the test waits for (waited ${Date.now() - started} ms)`);
 }
 
 /**
