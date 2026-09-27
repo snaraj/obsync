@@ -1871,10 +1871,19 @@ fn maximal_ciphertext_uploads_and_one_extra_byte_is_refused() {
         writer.write_all(&oversized)
     });
     let mut raw = Vec::new();
+    let reading = std::time::Instant::now();
     if let Err(error) = stream.read_to_end(&mut raw) {
         // Some platforms reset after delivering the early refusal with
         // unread request bytes. The complete parsed decision is still required.
-        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        // Any other end is named with its timing: a `WouldBlock` near 30 s is
+        // this client's read timeout, a server that answered nothing.
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset,
+            "the read ended with {error:?} after {:?}, holding {} bytes",
+            reading.elapsed(),
+            raw.len()
+        );
     }
     let _ = send.join().expect("writer joined");
     let refused = Res::parse(&raw);
