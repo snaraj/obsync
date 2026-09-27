@@ -1372,6 +1372,7 @@ impl Store {
         totals.mismatches += summary.mismatches;
         totals.quarantined += summary.quarantined.len() as u64;
         totals.repaired += repaired;
+        totals.worked_ms += summary.duration_ms;
         if walked {
             run.summary(
                 &self.log,
@@ -1382,6 +1383,7 @@ impl Store {
                     ("mismatches", Val::count(totals.mismatches)),
                     ("quarantined", Val::count(totals.quarantined)),
                     ("repaired", Val::count(totals.repaired)),
+                    ("worked_ms", Val::ms(totals.worked_ms)),
                     ("complete", Val::flag(summary.complete_pass)),
                 ],
             );
@@ -1398,6 +1400,12 @@ impl Store {
             }
         }
         summary
+    }
+
+    /// Install the hook a scrub step calls before its summary. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_before_scrub_summary(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        *self.before_scrub_summary.lock().expect("scrub hook") = Some(hook);
     }
 
     /// Ask for a scrub pass now: a resting scrub begins one at its next step

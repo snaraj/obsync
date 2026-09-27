@@ -180,6 +180,19 @@ CASES = [
         "if summary.complete_pass || summary.mismatches > 0 {",
         "if true {",
     )], "a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary"),
+    # --- scrub paced by the time it works (#216) -----------------------------
+    ("scrub-rests-for-its-work", SERVE, [(
+        "    by_rate.max(worked.mul_f64(rest_per_work))", "    by_rate",
+    )], "the_scrub_rests_for_the_rate_or_its_work_whichever_is_longer"),
+    ("scrub-loop-is-paced", SERVE, [(
+        "        nap(app, scrub_pause(by_rate, worked));", "        nap(app, by_rate);",
+    )], "a_scrub_step_rests_for_the_time_it_worked"),
+    ("scrub-work-counted", STORE, [(
+        "        totals.worked_ms += summary.duration_ms;\n", "",
+    )], "a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary"),
+    ("scrub-work-logged", STORE, [(
+        "                    (\"worked_ms\", Val::ms(totals.worked_ms)),\n", "",
+    )], "a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary"),
     # --- readiness backed by real writes (#192) ------------------------------
     ("refused-write-takes-the-proof-away", STORE, [(
         "Err(StoreError::Io(_)) => proof.store(0, Ordering::SeqCst),",

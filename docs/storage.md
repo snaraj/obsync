@@ -388,17 +388,22 @@ the index, which put 200 000 versions past a 1 GiB limit at every start.
 ## Integrity
 
 - Every upload is verified against its `sid` while streaming.
-- The scrub thread re-hashes blobs at `OBSYNC_SCRUB_RATE`, one pass at a
-  time in sid order, repairs a mismatch from a healthy mirror when
-  available, and otherwise preserves it in `quarantine/` using the sequence
-  below. A pass begins no sooner than a day after the last one began, and at
-  once when the dashboard asks for one: a bad chunk is only worth finding
-  while a mirror or a device can still repair it, and the shortest window
-  this contract gives either is a day (`OBSYNC_RETENTION_DAYS` is at least 1,
-  a newborn chunk is protected for 24 h). A store too large to hash in a day
-  is scrubbed continuously at the rate. The day is a constant, not a setting.
-  A step journals only a mismatch and what became of it, or a completed
-  pass; each walk logs one START and one SUMMARY.
+- The scrub thread re-hashes blobs one pass at a time in sid order, repairs
+  a mismatch from a healthy mirror when available, and otherwise preserves
+  it in `quarantine/` using the sequence below. It reads no faster than
+  `OBSYNC_SCRUB_RATE` and works no more than one minute in each hour: a step
+  that took `t` rests at least 59 `t`, because on a store of small notes a
+  chunk costs a file open, not its bytes, and a byte rate alone let the
+  scrub work most of every minute. A pass begins no sooner than a day after
+  the last one began, and at once when the dashboard asks for one: a bad
+  chunk is only worth finding while a mirror or a device can still repair
+  it, and the shortest window this contract gives either is a day
+  (`OBSYNC_RETENTION_DAYS` is at least 1, a newborn chunk is protected for
+  24 h). A store the scrub cannot walk in a day at that pace is scrubbed
+  continuously at it. The day and the minute are constants, not settings. A
+  step journals only a mismatch and what became of it, or a completed pass;
+  each walk logs one START and one SUMMARY, whose `worked_ms` beside its
+  `duration_ms` shows the pace.
 - Every read verifies size; the client verifies the plaintext hash from the
   manifest after decryption, so a corrupted chunk can never be written into
   a vault.

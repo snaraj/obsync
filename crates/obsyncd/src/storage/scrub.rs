@@ -24,7 +24,7 @@ use crate::types::{Sid, UnixMs};
 /// a day -- `OBSYNC_RETENTION_DAYS` is at least 1 and a newborn chunk is
 /// protected for 24 h -- so re-hashing everything at least daily finds rot
 /// inside every window the contract promises. A store too large to hash in a
-/// day is simply scrubbed continuously at the configured rate. A constant,
+/// day is simply scrubbed continuously at its pace. A constant,
 /// not a setting: an interval that could be stretched without bound would
 /// be a switch that turns integrity verification off (AGENTS.md
 /// requirement 4). The rate is the operator's knob; the interval is not.
@@ -56,6 +56,9 @@ pub(crate) struct Totals {
     pub(crate) mismatches: u64,
     pub(crate) quarantined: u64,
     pub(crate) repaired: u64,
+    /// Time the steps spent working, rests excluded: the SUMMARY's own
+    /// duration is the pass's wall time, so the two show its pace.
+    pub(crate) worked_ms: u64,
 }
 
 impl Pass {

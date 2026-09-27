@@ -3449,12 +3449,16 @@ fn a_store_smaller_than_one_step_is_not_re_hashed_until_the_interval_passes() {
         "and logs nothing"
     );
 
-    // A day after the pass began, the next one does.
+    // A day after the pass began, the next one does. A chunk verified in the
+    // very millisecond a pass begins counts as verified by it, so each new
+    // pass here begins at least a millisecond after the last verification.
+    std::thread::sleep(Duration::from_millis(2));
     store.scrub.lock().expect("pass").began = UnixMs(UnixMs::now().0 - scrub::PASS_INTERVAL_MS);
     assert_eq!(store.scrub_step(1 << 20).chunks_verified, 3);
 
     // And one asked for begins at once.
     assert_eq!(store.scrub_step(1 << 20).chunks_verified, 0);
+    std::thread::sleep(Duration::from_millis(2));
     store.request_scrub();
     let asked = store.scrub_step(1 << 20);
     assert_eq!(asked.chunks_verified, 3);
@@ -3472,6 +3476,8 @@ fn a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary() {
     let head = store.head_seq();
     let log_before = store.log().captured().len();
     let verified_at = |sid: &Sid| -> UnixMs { store.index().chunks[sid].last_verified };
+    // Every step works at least 5 ms, for the SUMMARY's work time.
+    store.set_before_scrub_summary(Arc::new(|| std::thread::sleep(Duration::from_millis(5))));
     // A budget of one byte: one chunk a step, in sid order, each step
     // resuming after the last.
     let mut order = Vec::new();
@@ -3496,6 +3502,18 @@ fn a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary() {
     assert_eq!(log.matches("event=start job=scrub").count(), 1, "{log}");
     assert_eq!(log.matches("event=summary job=scrub").count(), 1, "{log}");
     assert!(log.contains("steps=4 chunks=4"), "{log}");
+    // #216: the SUMMARY says how long the pass worked beside how long it took.
+    let field = |name: &str| -> u64 {
+        log.lines()
+            .find(|l| l.contains("event=summary job=scrub"))
+            .and_then(|l| l.split(&format!(" {name}=")).nth(1))
+            .and_then(|v| v.split(' ').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{name} on the SUMMARY: {log}"))
+    };
+    let worked = field("worked_ms");
+    assert!(worked >= 20, "four steps of at least 5 ms: {log}");
+    assert!(worked <= field("duration_ms"), "{log}");
 }
 
 #[test]

@@ -102,3 +102,29 @@ scripts/ci/obsidian-e2e.sh` on the same machine, with the Obsidian instances in
 a Linux container. Its figures are upper bounds within 250 ms, the interval at
 which the driver reads the other vault's disk, so the p50 is the watcher's
 0.9 s plus at most about 0.1 s.
+
+### Idle CPU after B1 (#216)
+
+The baseline's B7 after B1 spent 11.9 s of CPU per idle minute: on 1.1.3 and
+on the train as `6fd61bf` had it, a store smaller than one scrub step came
+out of every step with its whole pass complete, and the next step began the
+next pass, so the scrub re-read every chunk every four seconds. 1.1.4 lets a
+completed pass rest a day, and paces every step to at most one minute of
+work in each hour (docs/storage.md, "Integrity").
+
+Two runs by hand, 2026-09-27, same laptop, `OBSYNC_BENCH_SCALE=full
+scripts/ci/bench.sh <image> results/` with the same subnet override. The
+train's run shared the laptop with a build, so compare its idle rows, not its
+B1 wall time:
+
+| Scenario | train `61c5b0a` | 1.1.4 |
+| --- | --- | --- |
+| B7, fresh | 0.2 s CPU; 15 fsync calls | 0.27 s CPU; 0 fsync calls |
+| B1 | 82.1 s; 13.1 s CPU; 244 MiB written | 48.3 s; 7.6 s CPU; 200 MiB written |
+| B1 fsyncs | 7.0 per note, 2.33 per request | 5.77 per note, 1.92 per request |
+| B7, after B1 | **12.8 s CPU**; 10 fsync calls; 22.0 MiB RSS | **0.36 s CPU**; 0 fsync calls; 16.9 MiB RSS |
+
+A pass still runs: at every start, and a day after the last one began. After
+a restart over the same 10,000 chunks, the first pass worked 228 ms over
+9.3 s and then rested (a loopback server in a container, CPU read from its
+`/proc/<pid>/stat`).

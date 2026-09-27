@@ -50,6 +50,13 @@ pub const GC_PERIOD: Duration = Duration::from_secs(3600);
 pub const GC_BUDGET: Duration = Duration::from_secs(600);
 /// One scrub step re-hashes at most this many bytes before sleeping.
 pub const SCRUB_STEP_BYTES: u64 = 16 * 1024 * 1024;
+/// The most of each hour the scrub works: one minute (#216). A step that took
+/// `t` is followed by at least 59 `t` of rest, whatever it read. The rate
+/// (`OBSYNC_SCRUB_RATE`) bounds the bytes; this bounds the time. On a store
+/// of small notes a chunk costs a file open, not its bytes, and the time is
+/// what a board and its disk pay. A constant, like the pass interval: it slows
+/// the scrub, and nothing can set it to stop it (AGENTS.md requirement 4).
+pub const SCRUB_WORK_PER_HOUR: Duration = Duration::from_secs(60);
 /// A snapshot is written once the journal has grown this much since the
 /// last one, and by at least the last one's own size (`Store::snapshot_due`):
 /// an idle journal is never snapshotted again, and a busy one never spends
@@ -387,38 +394,51 @@ fn spawn(
         .expect("spawn background thread")
 }
 
-/// The scrub thread: fixed-size steps paced to the configured byte rate, so a
-/// Pi spends a known fraction of its disk on integrity
-/// (`docs/storage.md`, "Integrity").
+/// The scrub thread: fixed-size steps paced to the configured byte rate and
+/// to [`SCRUB_WORK_PER_HOUR`], so a Pi spends a known fraction of its disk and
+/// its time on integrity (`docs/storage.md`, "Integrity").
 fn scrub_thread(app: &Arc<App>) -> JoinHandle<()> {
     let app = Arc::clone(app);
     std::thread::Builder::new()
         .name("obsync-scrub".to_string())
-        .spawn(move || {
-            let rate = app.cfg.scrub_rate_bytes_per_sec.max(1);
-            let pause = Duration::from_secs_f64(SCRUB_STEP_BYTES as f64 / rate as f64);
-            while !app.shutdown.load(Ordering::SeqCst) {
-                let asked = app.take_scrub_request();
-                app.set_scrub_running(true);
-                let summary = app.store.scrub_step(SCRUB_STEP_BYTES);
-                app.set_scrub_running(false);
-                if summary.mismatches > 0 {
-                    app.log.error(
-                        "scrub_mismatch",
-                        &[
-                            ("decision", Val::word("mismatch")),
-                            ("mismatches", Val::count(summary.mismatches)),
-                            ("quarantined", Val::count(summary.quarantined.len() as u64)),
-                        ],
-                    );
-                }
-                if asked {
-                    continue;
-                }
-                nap(&app, pause);
-            }
-        })
+        .spawn(move || scrub_loop(&app, SCRUB_STEP_BYTES))
         .expect("spawn scrub thread")
+}
+
+fn scrub_loop(app: &Arc<App>, step_bytes: u64) {
+    let rate = app.cfg.scrub_rate_bytes_per_sec.max(1);
+    let by_rate = Duration::from_secs_f64(step_bytes as f64 / rate as f64);
+    while !app.shutdown.load(Ordering::SeqCst) {
+        let asked = app.take_scrub_request();
+        app.set_scrub_running(true);
+        let started = Instant::now();
+        let summary = app.store.scrub_step(step_bytes);
+        let worked = started.elapsed();
+        app.set_scrub_running(false);
+        if summary.mismatches > 0 {
+            app.log.error(
+                "scrub_mismatch",
+                &[
+                    ("decision", Val::word("mismatch")),
+                    ("mismatches", Val::count(summary.mismatches)),
+                    ("quarantined", Val::count(summary.quarantined.len() as u64)),
+                ],
+            );
+        }
+        if asked {
+            continue;
+        }
+        nap(app, scrub_pause(by_rate, worked));
+    }
+}
+
+/// The rest after a step that took `worked`: enough to read no faster than
+/// the rate, and enough to work no more than [`SCRUB_WORK_PER_HOUR`].
+fn scrub_pause(by_rate: Duration, worked: Duration) -> Duration {
+    let hour = Duration::from_secs(3600);
+    let rest_per_work =
+        (hour - SCRUB_WORK_PER_HOUR).as_secs_f64() / SCRUB_WORK_PER_HOUR.as_secs_f64();
+    by_rate.max(worked.mul_f64(rest_per_work))
 }
 
 /// Sleep in ticks so a shutdown is noticed within one second.
@@ -900,6 +920,80 @@ mod tests {
         assert!(tail > 0 && tail < SNAPSHOT_AFTER_BYTES);
         assert_eq!(stop_snapshot(&store).expect("stop"), "not_due");
         assert_eq!(store.journal_growth(), tail, "no snapshot covered it");
+    }
+
+    /// #216: the scrub rests for what the rate asks or for 59 times what the
+    /// step took, whichever is longer.
+    #[test]
+    fn the_scrub_rests_for_the_rate_or_its_work_whichever_is_longer() {
+        let by_rate = Duration::from_secs(4);
+        assert_eq!(scrub_pause(by_rate, Duration::ZERO), by_rate);
+        assert_eq!(scrub_pause(by_rate, Duration::from_millis(10)), by_rate);
+        assert_eq!(
+            scrub_pause(by_rate, Duration::from_secs(1)),
+            Duration::from_secs(59)
+        );
+    }
+
+    /// #216: a store of small notes costs the scrub a file open per chunk,
+    /// not its bytes, so the byte rate alone let it work most of every
+    /// minute. Here the rate bounds nothing and each step works 100 ms: the
+    /// next step waits the 5.9 s that work earns, where an unpaced scrub
+    /// walked the next chunk at once.
+    #[test]
+    fn a_scrub_step_rests_for_the_time_it_worked() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        use obsync_core::sha256::sha256;
+
+        use crate::api::auth::SystemClock;
+        use crate::dashboard::Dashboard;
+        use crate::plugin_dist::PluginDist;
+        use crate::types::Sid;
+
+        let dir = TempDir::new("serve-scrub-pace");
+        let mut cfg = config(&dir);
+        cfg.scrub_rate_bytes_per_sec = u64::MAX;
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        let account = store.setup("sentinel account").expect("setup");
+        for n in 0..3u8 {
+            let body = [n; 64];
+            store
+                .put_chunk(&account, &Sid::new(sha256(&body)), 64, &mut &body[..])
+                .expect("chunk lands");
+        }
+        let steps = Arc::new(AtomicUsize::new(0));
+        store.set_before_scrub_summary({
+            let steps = Arc::clone(&steps);
+            Arc::new(move || {
+                steps.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+            })
+        });
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let app = Arc::new(
+            App::new(
+                cfg,
+                store,
+                Dashboard::unavailable(),
+                PluginDist::unavailable(),
+                Arc::clone(&shutdown),
+                None,
+                Arc::new(SystemClock),
+            )
+            .expect("the application state opens"),
+        );
+        let scrub = {
+            let app = Arc::clone(&app);
+            // One chunk a step: a pass of three steps.
+            std::thread::spawn(move || scrub_loop(&app, 1))
+        };
+        std::thread::sleep(Duration::from_secs(2));
+        let taken = steps.load(Ordering::SeqCst);
+        shutdown.store(true, Ordering::SeqCst);
+        scrub.join().expect("the scrub stops");
+        assert_eq!(taken, 1, "a step came before the one before it had rested");
     }
 
     #[test]
