@@ -925,7 +925,7 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
   try {
     if (staged === undefined) await writeVerified(context, manifest, writer);
     const now = over === undefined ? null : await context.host.stat(manifest.path);
-    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
+    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, over.fileId, now)) {
       await writer.abort();
       return null;
     }
@@ -1630,8 +1630,19 @@ async function competing(
   const record = context.state.fileByPath(path);
   if (record === undefined) return "no_record";
   if (record.fileId !== fileId) return "other_file";
+  if (droppedWrite(context, fileId, stat)) return null;
   if (record.mtime !== stat.mtime || record.size !== stat.size) return "local_edit";
   return null;
+}
+
+/**
+ * Does the name hold the platform's EMPTY file where this phone could not
+ * write a download of `fileId` (`write_dropped`, #242)? That file is no edit:
+ * the version is written over it (`competing`, `materialise`) and it is never
+ * sent (the engine's push). Text typed into it since makes it an edit again.
+ */
+export function droppedWrite(context: SyncContext, fileId: string, stat: VaultStat | null): boolean {
+  return stat !== null && stat.size === 0 && context.state.data.parked[fileId]?.reason === "write_dropped";
 }
 
 /**

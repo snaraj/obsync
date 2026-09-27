@@ -1,0 +1,12 @@
+# M3215: text typed into a note whose download stayed empty is never sent
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1642,7 +1642,7 @@
+  * sent (the engine's push). Text typed into it since makes it an edit again.
+  */
+ export function droppedWrite(context: SyncContext, fileId: string, stat: VaultStat | null): boolean {
+-  return stat !== null && stat.size === 0 && context.state.data.parked[fileId]?.reason === "write_dropped";
++  return stat !== null && context.state.data.parked[fileId]?.reason === "write_dropped";
+ }
+ 
+ /**

@@ -1,4 +1,4 @@
-# M415: an edit arriving for a note deleted here is refused as if the deletion were a save, and the deletion then forks the note
+# M3214: the retry's last check takes a dropped write's empty file for a save during the pull
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
 @@ -925,7 +925,7 @@
@@ -6,7 +6,7 @@
      if (staged === undefined) await writeVerified(context, manifest, writer);
      const now = over === undefined ? null : await context.host.stat(manifest.path);
 -    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, over.fileId, now)) {
-+    if (over !== undefined && (now === null || now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, over.fileId, now)) {
++    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
        await writer.abort();
        return null;
      }

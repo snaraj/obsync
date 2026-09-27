@@ -194,6 +194,74 @@ test("a locked note is parked: every later change arrives, and the status names 
   assert.equal(notices(r, "Notes/n17.md").length, 2);
 });
 
+test("a note a phone's write keeps leaving empty stays parked, is never sent, and lands at the retry (#242)", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const n17 = await foreign(r, N17, "Notes/n17.md", "n17 as both devices first had it\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/n17.md") !== null);
+
+  // Android's write resolves and leaves the file empty, every time: the
+  // writer refuses it (`write_dropped`) and the name holds an empty file.
+  const real = r.host.writer.bind(r.host);
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const edited = await foreign(r, N17, "Notes/n17.md", "n17 edited on the other device\n", [n17.version_id]);
+  await d.timers.run(1000, () => r.state.data.lastSeq === edited.seq);
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } });
+
+  // The watcher's event and Sync now both leave the empty note unsent.
+  const mine = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId && frame.file_id === N17).length;
+  const sent = mine();
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000, () => r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`));
+  await d.engine.syncNow();
+  await d.timers.run(1000);
+  assert.equal(mine(), sent, "the empty note was never published");
+  assert.ok(r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`), r.host.logs.join(" | "));
+
+  // Once the platform writes again, the parked retry lands the version.
+  r.host.writer = real;
+  await d.timers.run(10000, () => r.host.text("Notes/n17.md") === "n17 edited on the other device\n" && Object.keys(r.state.data.parked).length === 0);
+  assert.equal(r.host.text("Notes/n17.md"), "n17 edited on the other device\n");
+  assert.deepEqual(r.state.data.parked, {});
+  assert.equal(mine(), sent, "and nothing was sent for it on the way");
+});
+
+test("text typed into a note whose download stayed empty is an edit, and is sent (#242)", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const n17 = await foreign(r, N17, "Notes/n17.md", "n17 as both devices first had it\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/n17.md") !== null);
+  const real = r.host.writer.bind(r.host);
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const edited = await foreign(r, N17, "Notes/n17.md", "n17 edited on the other device\n", [n17.version_id]);
+  await d.timers.run(1000, () => r.state.data.lastSeq === edited.seq);
+  assert.equal(r.state.data.parked[N17]?.reason, "write_dropped");
+  // The person types into the empty note: that is theirs, and it goes out.
+  r.host.seed("Notes/n17.md", "typed into the empty note\n", 12000);
+  d.engine.changed("Notes/n17.md");
+  const mine = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId && frame.file_id === N17).length;
+  await d.timers.run(1000, () => mine() > 0);
+  assert.ok(mine() > 0, r.host.logs.filter((line) => line.startsWith("push")).join(" | "));
+});
+
 test("a read-only folder parks only its own notes, and Sync now applies them once it is writable", async (t) => {
   const r = await rig();
   const d = device(r);

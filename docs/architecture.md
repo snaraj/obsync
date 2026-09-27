@@ -860,7 +860,12 @@ long poll and needs its timeout raised.
    parked and tried again like any other, never recorded as written, and
    removed if the write had made it. Only emptiness is judged; a file holding
    other bytes is still a save that landed (`decision=write_superseded`,
-   which names both sizes).
+   which names both sizes). Where such a write replaced a note already
+   there, the empty file it leaves is not an edit (`droppedWrite`, pull.ts):
+   the push skips it (`push decision=skipped reason=write_dropped`), and the
+   parked retry writes the version over it, however its own write attempt
+   leaves the file. Text typed into that empty note meanwhile is an edit, and
+   is sent.
 
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a

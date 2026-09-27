@@ -76,7 +76,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
@@ -2286,6 +2286,17 @@ export class SyncEngine {
         // gone. A file that is there is a change, which is the rest of this
         // function; a path with nothing at it and nothing recorded is done.
         if ((await context.host.stat(path)) === null) return;
+      }
+      // A DOWNLOAD THIS DEVICE COULD NOT WRITE IS NOT AN EDIT (#242). A phone
+      // whose write stayed empty however often it was made parks the record
+      // (`write_dropped`); what stands at the name is the platform's empty
+      // file, and publishing it would empty the note on every device. It is
+      // never sent: the parked retry writes the version (`competing` in
+      // pull.ts), and a deletion the person makes still goes out above. Text
+      // typed into it since is an edit, and is sent as one.
+      if (held !== undefined && droppedWrite(context, held.fileId, await context.host.stat(path))) {
+        context.host.log(`push path_class=file decision=skipped reason=write_dropped file=${held.fileId}`);
+        return;
       }
       const forced = this.renames.delete(path);
       // A note another one is waiting to take the name of settles that first
