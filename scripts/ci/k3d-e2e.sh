@@ -83,6 +83,25 @@ deny() {
   if [ -n "${created}" ] && kubectl cluster-info >/dev/null 2>&1; then
     kubectl get pods,pvc,pv --all-namespaces >&2 2>&1 || true
     kubectl logs --namespace "${NAMESPACE}" "deploy/${RELEASE}" --tail 40 >&2 2>&1 || true
+    # k3s installs its own components (Traefik among them) through
+    # helm-install-* Jobs, so a component that never arrives is one of those
+    # pods failing, and only its log says why; a crashed one's last run too.
+    local pod restarts
+    for pod in $(kubectl get pods --namespace kube-system --output name 2>/dev/null | grep '^pod/helm-install-' || true); do
+      restarts="$(kubectl get "${pod}" --namespace kube-system \
+        --output jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || true)"
+      printf 'k3d-e2e: --- %s (restarts=%s) ---\n' "${pod}" "${restarts:-unknown}" >&2
+      kubectl logs --namespace kube-system "${pod}" --tail 40 >&2 2>&1 || true
+      if [ "${restarts:-0}" -gt 0 ] 2>/dev/null; then
+        printf 'k3d-e2e: --- %s, the run before (--previous) ---\n' "${pod}" >&2
+        # A collected container answers with a line of its own that has no
+        # newline, so one is added before whatever is printed next.
+        kubectl logs --namespace kube-system "${pod}" --previous --tail 40 >&2 2>&1 || true
+        printf '\n' >&2
+      fi
+    done
+    printf 'k3d-e2e: --- kube-system events, newest last ---\n' >&2
+    kubectl get events --namespace kube-system --sort-by=.lastTimestamp 2>&1 | tail -n 30 >&2 || true
   fi
   exit 1
 }
