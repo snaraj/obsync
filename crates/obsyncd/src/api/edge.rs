@@ -10,12 +10,13 @@
 //! claim, and only a peer inside `OBSYNC_TRUSTED_PROXY_CIDRS` may make one:
 //! the edge-header mode refuses a request carrying the edge's headers from
 //! any other peer, and `none` mode ignores forwarded headers from one. Every
-//! line of a header is read, in arrival order, because a proxy that ADDS a
-//! header line rather than appending to the client's would otherwise leave
-//! the client's own line first.
+//! field of a list header is read, in arrival order, as one list (RFC 9110
+//! 5.3), because a proxy that ADDS a field rather than appending to the
+//! client's would otherwise leave the client's own field first.
 #![forbid(unsafe_code)]
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Mutex;
 
 use obsync_core::http::Request;
 
@@ -35,6 +36,11 @@ pub const FORWARDED_FOR: &str = "x-forwarded-for";
 /// The RFC 7239 forwarded header, trusted only from a configured proxy.
 pub const FORWARDED: &str = "forwarded";
 
+/// The line saying a trusted proxy sent a forwarding header in more than one
+/// field goes out at most this often. Such a proxy does it on every request,
+/// and one line a minute states that as well as one a request would.
+pub const JOINED_LOG_INTERVAL_SECS: u64 = 60;
+
 /// What the server may say about who sent a request. Never persisted for an
 /// unauthenticated request and never part of a signed canonical string.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,6 +51,10 @@ pub struct ClientInfo {
     pub country: Option<String>,
     /// Why forwarded headers that arrived were not believed, for the log.
     pub ignored: Option<&'static str>,
+    /// The `X-Forwarded-For` and `Forwarded` fields a trusted proxy sent,
+    /// when either header came in more than one, for the log: a proxy that
+    /// adds its own field rather than appending to the client's.
+    pub joined: Option<(usize, usize)>,
 }
 
 impl ClientInfo {
@@ -135,9 +145,13 @@ pub fn derive_parts(
             address: Some(address.to_string()),
             country: single(&headers.country).and_then(sane_country),
             ignored: None,
+            joined: None,
         });
     }
     let offered = !headers.forwarded_for.is_empty() || !headers.forwarded.is_empty();
+    // Counted only where the fields are read: from a trusted proxy.
+    let fields = (headers.forwarded_for.len(), headers.forwarded.len());
+    let joined = (from_proxy && (fields.0 > 1 || fields.1 > 1)).then_some(fields);
     let (address, ignored) = match (offered, from_proxy) {
         (false, _) => (peer, None),
         (true, false) => (peer, Some("untrusted_peer")),
@@ -150,7 +164,30 @@ pub fn derive_parts(
         address: Some(address.to_string()),
         country: None,
         ignored,
+        joined,
     })
+}
+
+/// When the joined-fields line last went out, and the requests it has not
+/// counted yet.
+#[derive(Debug, Default)]
+pub struct JoinedLog(Mutex<(Option<u64>, u64)>);
+
+impl JoinedLog {
+    /// Count one request at `now`, in unix seconds. `Some(n)` when the line
+    /// is due, `n` being the requests since the last one, this one included.
+    /// A clock that steps a whole interval either way lets the next line out
+    /// rather than holding it until the clock catches up.
+    pub fn due(&self, now: u64) -> Option<u64> {
+        let mut state = self.0.lock().expect("joined log");
+        let (logged_at, unlogged) = &mut *state;
+        *unlogged += 1;
+        if logged_at.is_some_and(|at| at.abs_diff(now) < JOINED_LOG_INTERVAL_SECS) {
+            return None;
+        }
+        *logged_at = Some(now);
+        Some(std::mem::take(unlogged))
+    }
 }
 
 fn inside(trusted: &[Cidr], ip: IpAddr) -> bool {
@@ -196,7 +233,8 @@ fn forwarded_client(
     }
 }
 
-/// Every hop of a list-valued header, across every line, in arrival order.
+/// Every hop of a list-valued header, across every field, in arrival order:
+/// repeated fields are one list, as if joined by commas (RFC 9110 5.3).
 /// Empty list elements are list syntax, not hops.
 fn hops<'a>(lines: &[&'a str], node: fn(&'a str) -> &'a str) -> Vec<&'a str> {
     lines
@@ -289,6 +327,15 @@ mod tests {
         }
     }
 
+    /// Each header's fields, in arrival order.
+    fn fields<'a>(forwarded_for: &[&'a str], forwarded: &[&'a str]) -> Forwarding<'a> {
+        Forwarding {
+            forwarded_for: forwarded_for.to_vec(),
+            forwarded: forwarded.to_vec(),
+            ..Forwarding::default()
+        }
+    }
+
     /// `none` mode behind a proxy at 10.1.2.3, trusting 10.0.0.0/8.
     fn proxied(h: &Forwarding) -> ClientInfo {
         derive_parts(Edge::None, &[cidr("10.0.0.0/8")], ip("10.1.2.3"), h).expect("derives")
@@ -357,6 +404,89 @@ mod tests {
             ..Forwarding::default()
         };
         assert_eq!(address(&proxied(&h)), "203.0.113.7");
+    }
+
+    #[test]
+    fn repeated_fields_are_one_list_walked_from_the_right() {
+        for (h, why) in [
+            (fields(&["203.0.113.7"], &[]), "one field"),
+            (
+                fields(&["192.0.2.66", "203.0.113.7"], &[]),
+                "the proxy added its own field after the client's forgery",
+            ),
+            (
+                fields(&["192.0.2.66, 203.0.113.7", "10.4.4.4", "10.9.9.9"], &[]),
+                "a list split across fields, trusted hops to its right",
+            ),
+            (
+                fields(&[], &["for=192.0.2.66", "for=203.0.113.7, for=10.9.9.9"]),
+                "the same for Forwarded",
+            ),
+            (
+                fields(
+                    &["192.0.2.66", "203.0.113.7"],
+                    &["for=192.0.2.67", "for=203.0.113.7"],
+                ),
+                "both headers, the proxy adding a field to each",
+            ),
+        ] {
+            let c = proxied(&h);
+            assert_eq!(address(&c), "203.0.113.7", "{why}");
+            assert_eq!(c.ignored, None, "{why}");
+        }
+    }
+
+    #[test]
+    fn ipv6_hops_are_walked_like_ipv4_ones() {
+        let trusted = [cidr("10.0.0.0/8"), cidr("fd00::/8")];
+        let from =
+            |h: &Forwarding| derive_parts(Edge::None, &trusted, ip("fd00::1"), h).expect("derives");
+        let h = fields(&["2001:db8::66", "2001:db8::7, fd00::2"], &[]);
+        assert_eq!(address(&from(&h)), "2001:db8::7");
+        let h = fields(
+            &[],
+            &[
+                "for=\"[2001:db8::66]\"",
+                "for=\"[2001:db8::7]:4711\", for=\"[fd00::2]\"",
+            ],
+        );
+        assert_eq!(address(&from(&h)), "2001:db8::7");
+        assert_eq!(address(&from(&xff("fd00::3, fd00::2"))), "fd00::1");
+        // An IPv6 peer outside the trusted networks is not read.
+        let c = derive_parts(Edge::None, &trusted, ip("2001:db8::9"), &h).expect("derives");
+        assert_eq!(address(&c), "2001:db8::9");
+        assert_eq!(c.ignored, Some("untrusted_peer"));
+    }
+
+    #[test]
+    fn repeated_fields_are_counted_only_where_they_are_read() {
+        assert_eq!(proxied(&xff("192.0.2.66, 203.0.113.7")).joined, None);
+        let h = fields(&["192.0.2.66", "203.0.113.7"], &["for=203.0.113.7"]);
+        assert_eq!(proxied(&h).joined, Some((2, 1)));
+        let h = fields(&["203.0.113.7"], &["for=192.0.2.66", "for=203.0.113.7"]);
+        assert_eq!(proxied(&h).joined, Some((1, 2)));
+        // Neither from a peer outside the trusted networks, nor in edge mode,
+        // where only the edge's own headers are read.
+        let h = fields(&["192.0.2.66", "203.0.113.7"], &[]);
+        let c = derive_parts(Edge::None, &[cidr("10.0.0.0/8")], ip("203.0.113.9"), &h)
+            .expect("derives");
+        assert_eq!(c.joined, None);
+        let h = Forwarding {
+            forwarded_for: vec!["192.0.2.66", "203.0.113.7"],
+            ..edge_headers("198.51.100.4")
+        };
+        assert_eq!(edge("10.1.2.3", &h).expect("derives").joined, None);
+    }
+
+    #[test]
+    fn the_joined_line_is_due_once_an_interval_and_counts_the_requests_between() {
+        let log = JoinedLog::default();
+        assert_eq!(log.due(1_000), Some(1));
+        assert_eq!(log.due(1_001), None);
+        assert_eq!(log.due(1_000 + JOINED_LOG_INTERVAL_SECS - 1), None);
+        assert_eq!(log.due(1_000 + JOINED_LOG_INTERVAL_SECS), Some(3));
+        // A clock stepped back a whole interval lets the next line out.
+        assert_eq!(log.due(999), Some(1));
     }
 
     #[test]

@@ -421,6 +421,7 @@ pub struct App {
     pairings: Mutex<PairingTable>,
     sessions: Mutex<admin::SessionTable>,
     seen: Mutex<HashMap<String, u64>>,
+    joined: edge::JoinedLog,
     recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
     bodies: BodyBudget,
@@ -484,6 +485,7 @@ impl App {
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
             seen: Mutex::new(HashMap::new()),
+            joined: edge::JoinedLog::default(),
             recent: Mutex::new(Recent::default()),
             ready: Mutex::new(ReadyCache {
                 checked_at: 0,
@@ -788,6 +790,32 @@ impl App {
         }
     }
 
+    /// One line, at most once a minute, for a trusted proxy that sent a
+    /// forwarding header in more than one field: it ADDS its own field
+    /// rather than appending to the one that arrived, and the server reads
+    /// the fields as one list (`edge::derive_parts`). The line counts the
+    /// requests since the last one, so a proxy that does it on every request
+    /// cannot flood the log.
+    fn forwarding_joined(&self, (forwarded_for, forwarded): (usize, usize)) {
+        let Some(requests) = self.joined.due(self.clock.unix_secs()) else {
+            return;
+        };
+        self.log.info(
+            "forwarded_headers",
+            &[
+                ("decision", Val::word("joined")),
+                ("reason", Val::word("repeated_fields")),
+                ("x_forwarded_for", Val::count(forwarded_for as u64)),
+                ("forwarded", Val::count(forwarded as u64)),
+                ("requests", Val::count(requests)),
+                (
+                    "interval_ms",
+                    Val::ms(edge::JOINED_LOG_INTERVAL_SECS * 1000),
+                ),
+            ],
+        );
+    }
+
     /// Serve one request: resolve, enforce the edge requirement, dispatch,
     /// harden the response, and log exactly one line.
     pub fn handle(&self, req: &mut Request) -> Response {
@@ -799,12 +827,13 @@ impl App {
                 let health = matches!(route, Route::Livez | Route::Readyz);
                 let demands = demands_credential(&route);
                 let client = edge::derive(&self.cfg, req);
-                if let Ok(ClientInfo {
-                    ignored: Some(reason),
-                    ..
-                }) = &client
-                {
-                    self.forwarding_ignored(reason);
+                if let Ok(c) = &client {
+                    if let Some(reason) = c.ignored {
+                        self.forwarding_ignored(reason);
+                    }
+                    if let Some(fields) = c.joined {
+                        self.forwarding_joined(fields);
+                    }
                 }
                 let out = match (health, client) {
                     (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),

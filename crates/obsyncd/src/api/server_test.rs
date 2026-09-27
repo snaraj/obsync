@@ -1308,6 +1308,11 @@ fn a_trusted_proxy_names_the_client_and_a_disagreeing_header_is_ignored_and_logg
         ("X-Forwarded-For", "203.0.113.7"),
     ];
     assert_eq!(address(&two_lines).as_deref(), Some("203.0.113.7"));
+    let two_fields = [
+        ("Forwarded", "for=192.0.2.66"),
+        ("Forwarded", "for=203.0.113.8;proto=https"),
+    ];
+    assert_eq!(address(&two_fields).as_deref(), Some("203.0.113.8"));
     let rfc = [("Forwarded", r#"for="[2001:db8::7]:4711""#)];
     assert_eq!(address(&rfc).as_deref(), Some("2001:db8::7"));
     let forged = [
@@ -1319,6 +1324,70 @@ fn a_trusted_proxy_names_the_client_and_a_disagreeing_header_is_ignored_and_logg
     assert!(
         log.contains("reason=forwarded_headers_disagree"),
         "the disagreement is logged: {log}"
+    );
+}
+
+/// #214: a proxy that adds its own field does so on every request. The log
+/// says so once, then once a minute, counting the requests in between.
+#[test]
+fn repeated_forwarding_fields_from_a_trusted_proxy_are_said_once_a_minute() {
+    let h = Harness::start_with(
+        "forwarded-joined",
+        Setup {
+            trusted: Some("127.0.0.0/8"),
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let send = |headers: &[(&str, &str)]| {
+        let mut req = Req::get("/v1/devices");
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        assert_eq!(req.send(h.addr).status, 401);
+    };
+    let joined = || -> Vec<String> {
+        h.captured()
+            .lines()
+            .filter(|line| line.contains("decision=joined"))
+            .map(str::to_string)
+            .collect()
+    };
+    send(&[("X-Forwarded-For", "192.0.2.66, 203.0.113.7")]);
+    send(&[
+        ("X-Forwarded-For", "203.0.113.7"),
+        ("Forwarded", "for=203.0.113.7"),
+    ]);
+    assert_eq!(
+        joined(),
+        Vec::<String>::new(),
+        "one field of each is no join"
+    );
+    let added = [
+        ("X-Forwarded-For", "192.0.2.66"),
+        ("X-Forwarded-For", "203.0.113.7"),
+    ];
+    for _ in 0..3 {
+        send(&added);
+    }
+    let lines = joined();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains(
+            "event=forwarded_headers decision=joined reason=repeated_fields \
+             x_forwarded_for=2 forwarded=0 requests=1 interval_ms=60000"
+        ),
+        "{}",
+        lines[0]
+    );
+    h.clock.set(NOW + 60);
+    send(&added);
+    let lines = joined();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[1].contains(" requests=3 "),
+        "the line counts the requests it did not write: {}",
+        lines[1]
     );
 }
 
