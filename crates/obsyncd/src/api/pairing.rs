@@ -407,7 +407,7 @@ pub fn claim(
     _client: &ClientInfo,
     id: &str,
 ) -> Result<Response, ApiError> {
-    let body = render::json_body(req)?;
+    let body = render::json_body(app, req)?;
     let enroll = render::field_str(&body, "enroll_token")?.to_string();
     let enrolment = devices::enrolment_fields(&body)?;
     let vault = vault_details(&body)?;

@@ -5,7 +5,9 @@
 //! given (AGENTS.md requirement 6).
 #![forbid(unsafe_code)]
 
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::path::PathBuf;
 
 use obsync_core::http::{MultipartWriter, Request, Response, parse_range};
 use obsync_core::json::obj;
@@ -152,9 +154,11 @@ pub fn get(
 /// `POST /v1/chunks/get`: fetch up to 64 chunks in one `multipart/mixed`
 /// response, one part per requested sid in request order.
 ///
-/// A batch whose parts would exceed [`MULTIPART_MAX_TOTAL_BYTES`] is refused
-/// rather than buffered: clients must split the request into smaller batches
-/// or use `GET /v1/chunks/{sid}`, which streams.
+/// A batch whose parts would exceed [`MULTIPART_MAX_TOTAL_BYTES`] is refused:
+/// clients must split the request into smaller batches or use
+/// `GET /v1/chunks/{sid}`. Below it the response STREAMS ([`Batch`]), so a
+/// batch holds the server's copy buffer and one open chunk at a time rather
+/// than every part in memory, twice over, before its first byte leaves.
 ///
 /// # Errors
 /// `400 bad_request`, `413 batch_too_large`, plus the authentication refusals.
@@ -167,10 +171,17 @@ pub fn batch_get(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Re
         .map(|v| render::sid(v))
         .collect::<Result<_, _>>()?;
 
-    let mut total = 0u64;
-    for sid in &parsed {
-        total = total.saturating_add(app.store.chunk_len(sid).unwrap_or(0));
-    }
+    // Each chunk is opened here, once, for its length and for whether the
+    // volume holds it at all -- the same evidence a single GET answers from --
+    // and closed again. The stream reopens it when it gets there.
+    let lengths: Vec<Option<u64>> = parsed
+        .iter()
+        .map(|sid| app.store.open_chunk(sid).ok().map(|(_, len)| len))
+        .collect();
+    let total = lengths
+        .iter()
+        .flatten()
+        .fold(0u64, |sum, len| sum.saturating_add(*len));
     if total > MULTIPART_MAX_TOTAL_BYTES {
         return Err(ApiError::new(
             413,
@@ -181,43 +192,179 @@ pub fn batch_get(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Re
 
     let boundary = rand::hex_token(16)
         .map_err(|_| ApiError::new(500, "no_randomness", "the system CSPRNG is unavailable"))?;
-    let mut writer = MultipartWriter::new(&boundary);
-    for (hex, sid) in sids.iter().zip(parsed.iter()) {
-        match read_chunk(app, sid) {
-            Some(bytes) => {
-                let len = bytes.len().to_string();
-                writer.part(
-                    &[
-                        ("X-Obsync-Sid", hex.as_str()),
-                        ("Content-Type", CHUNK_CONTENT_TYPE),
-                        ("Content-Length", len.as_str()),
-                    ],
-                    &bytes,
-                );
-            }
-            None => writer.part(
-                &[
+    let framing = MultipartWriter::new(&boundary);
+    let mut segments = Vec::new();
+    let mut pending = Vec::new();
+    for ((hex, sid), len) in sids.iter().zip(&parsed).zip(&lengths) {
+        match len {
+            Some(len) => {
+                pending.extend(framing.part_head(&[
                     ("X-Obsync-Sid", hex.as_str()),
-                    ("X-Obsync-Missing", "1"),
-                    ("Content-Length", "0"),
-                ],
-                &[],
-            ),
+                    ("Content-Type", CHUNK_CONTENT_TYPE),
+                    ("Content-Length", &len.to_string()),
+                ]));
+                segments.push(Segment::Framing(std::mem::take(&mut pending)));
+                segments.push(Segment::Chunk(app.store.chunk_path(sid), *len));
+            }
+            None => pending.extend(framing.part_head(&[
+                ("X-Obsync-Sid", hex.as_str()),
+                ("X-Obsync-Missing", "1"),
+                ("Content-Length", "0"),
+            ])),
         }
+        pending.extend_from_slice(MultipartWriter::PART_END);
     }
-    let content_type = writer.content_type();
-    Ok(Response::bytes(200, &content_type, writer.finish()))
+    pending.extend(framing.close());
+    segments.push(Segment::Framing(pending));
+    let len = segments.iter().map(Segment::len).sum();
+    Ok(Response::stream(
+        200,
+        &framing.content_type(),
+        Box::new(Batch::new(segments)),
+        len,
+    ))
 }
 
-/// Read one whole chunk, or `None` when the server does not hold it.
-fn read_chunk(app: &App, sid: &Sid) -> Option<Vec<u8>> {
-    let (mut file, len) = app.store.open_chunk(sid).ok()?;
-    let mut buf = Vec::with_capacity(len as usize);
-    file.read_to_end(&mut buf).ok()?;
-    Some(buf)
+/// One stretch of a batch body: framing already in memory, or a chunk still
+/// on the volume with the length it had when the batch was planned.
+enum Segment {
+    Framing(Vec<u8>),
+    Chunk(PathBuf, u64),
+}
+
+impl Segment {
+    fn len(&self) -> u64 {
+        match self {
+            Segment::Framing(bytes) => bytes.len() as u64,
+            Segment::Chunk(_, len) => *len,
+        }
+    }
+}
+
+/// A batch body, read in order. A chunk is opened only when the stream
+/// reaches it, so a batch costs one descriptor at a time however many sids it
+/// names.
+///
+/// A chunk the volume no longer holds, or holds shorter than planned (a
+/// collection or a quarantine between the plan and the read), fails the read
+/// instead of framing the next part early: the response has promised its
+/// `Content-Length`, so the connection closes and the client retries against
+/// a fresh plan, which then names the chunk missing.
+struct Batch {
+    segments: std::vec::IntoIter<Segment>,
+    reading: Option<(Box<dyn Read + Send>, u64)>,
+}
+
+impl Batch {
+    fn new(segments: Vec<Segment>) -> Batch {
+        Batch {
+            segments: segments.into_iter(),
+            reading: None,
+        }
+    }
+}
+
+impl Read for Batch {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match &mut self.reading {
+                Some((_, 0)) => self.reading = None,
+                Some((reader, left)) => {
+                    let count = reader.read(out)?;
+                    if count == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "a chunk ended before the length its part declared",
+                        ));
+                    }
+                    *left -= count as u64;
+                    return Ok(count);
+                }
+                None => {
+                    let Some(segment) = self.segments.next() else {
+                        return Ok(0);
+                    };
+                    let left = segment.len();
+                    let reader: Box<dyn Read + Send> = match segment {
+                        Segment::Framing(bytes) => Box::new(Cursor::new(bytes)),
+                        Segment::Chunk(path, len) => Box::new(File::open(path)?.take(len)),
+                    };
+                    self.reading = Some((reader, left));
+                }
+            }
+        }
+    }
 }
 
 /// Whether the store wrote the chunk now (`201`) or already held it (`200`).
 fn stored_now(outcome: &crate::storage::types::PutOutcome) -> bool {
     matches!(outcome, crate::storage::types::PutOutcome::Created)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::testutil::TempDir;
+
+    /// Two chunk files and the batch that frames them.
+    fn planned(dir: &TempDir) -> (Batch, PathBuf) {
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::write(&first, b"one").expect("first chunk");
+        std::fs::write(&second, b"two").expect("second chunk");
+        let batch = Batch::new(vec![
+            Segment::Framing(b"[".to_vec()),
+            Segment::Chunk(first, 3),
+            Segment::Framing(b"|".to_vec()),
+            Segment::Chunk(second.clone(), 3),
+            Segment::Framing(b"]".to_vec()),
+        ]);
+        (batch, second)
+    }
+
+    #[test]
+    fn a_batch_streams_its_segments_in_order() {
+        let dir = TempDir::new("batch-order");
+        let (mut batch, _) = planned(&dir);
+        let mut body = Vec::new();
+        batch.read_to_end(&mut body).expect("the whole body");
+        assert_eq!(body, b"[one|two]");
+    }
+
+    /// The property the stream exists for: a chunk is opened when the body
+    /// reaches it and not before, so a batch never holds its chunks open, or
+    /// in memory, all at once. A chunk that goes after the plan and before
+    /// the read fails the read; an eager open would have read it anyway.
+    #[test]
+    fn a_batch_opens_each_chunk_only_when_its_stream_reaches_it() {
+        let dir = TempDir::new("batch-lazy");
+        let (mut batch, second) = planned(&dir);
+        let mut head = [0u8; 4];
+        batch.read_exact(&mut head).expect("the first part");
+        assert_eq!(&head, b"[one");
+        std::fs::remove_file(&second).expect("collected after the plan");
+        let mut rest = Vec::new();
+        let e = batch
+            .read_to_end(&mut rest)
+            .expect_err("the second chunk is opened only now, and is gone");
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// A chunk shorter now than when it was planned cannot keep the length
+    /// its part declared. The read fails rather than framing the next part
+    /// early, so the client sees a broken response and never a misframed one.
+    #[test]
+    fn a_chunk_shorter_than_its_plan_fails_the_read_instead_of_misframing() {
+        let dir = TempDir::new("batch-short");
+        let path = dir.path().join("short");
+        std::fs::write(&path, b"abc").expect("chunk");
+        let mut batch = Batch::new(vec![
+            Segment::Chunk(path, 5),
+            Segment::Framing(b"--next".to_vec()),
+        ]);
+        let mut body = Vec::new();
+        let e = batch.read_to_end(&mut body).expect_err("short chunk");
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(body, b"abc", "nothing after the short chunk was framed");
+    }
 }

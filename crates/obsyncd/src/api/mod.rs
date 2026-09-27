@@ -33,7 +33,7 @@ mod server_test;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -56,6 +56,14 @@ use self::render::s;
 /// JSON request bodies are refused above this size (`docs/protocol.md`,
 /// "Limits and headers").
 pub const JSON_BODY_LIMIT: u64 = 4 * 1024 * 1024;
+/// Bytes of request body this process holds, across every connection, before
+/// any credential has verified: sixteen maximal JSON bodies. Every JSON body
+/// is read before its credential verifies, because a device signature covers
+/// the body's hash and the setup and enrolment tokens ride inside the body.
+/// Without this the bound was the connection ceiling times 4 MiB, about the
+/// chart's whole memory limit, and anyone who can reach the port could spend
+/// it (`docs/threat-model.md`).
+pub const PREAUTH_BODY_BUDGET: u64 = 16 * JSON_BODY_LIMIT;
 /// Maximum ciphertext: 8 MiB plaintext plus the existing 16-byte AES-GCM tag.
 pub const CHUNK_BODY_LIMIT: u64 = 8 * 1024 * 1024 + 16;
 /// `POST /v1/chunks/exists` accepts at most this many sids.
@@ -103,6 +111,10 @@ pub struct ApiError {
     /// Extra body fields a refusal carries, such as the `missing` sid list of
     /// `409 missing_chunks`.
     pub fields: Vec<(String, obsync_core::json::Value)>,
+    /// Answered as the framework answers its own overload: a status line,
+    /// `Retry-After`, `Connection: close` and no body. The code still
+    /// reaches the log line.
+    pub bare: bool,
 }
 
 impl ApiError {
@@ -113,7 +125,16 @@ impl ApiError {
             code,
             detail: detail.into(),
             fields: Vec::new(),
+            bare: false,
         }
+    }
+
+    /// A refusal answered with no body, for load the server sheds before it
+    /// has anything to say to the caller.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
     }
 
     /// Add one field to the refusal body.
@@ -136,6 +157,11 @@ impl ApiError {
     /// The wire body: `{"error","detail"}` plus any extra fields
     /// (`docs/protocol.md`).
     pub fn to_response(&self) -> Response {
+        if self.bare {
+            return Response::empty(self.status)
+                .header("Retry-After", "1")
+                .close();
+        }
         let mut fields = vec![
             ("error".to_string(), s(self.code)),
             ("detail".to_string(), s(&self.detail)),
@@ -347,6 +373,25 @@ impl Recent {
     }
 }
 
+/// The body bytes reserved against [`PREAUTH_BODY_BUDGET`] right now.
+#[derive(Default)]
+struct BodyBudget {
+    held: AtomicU64,
+}
+
+/// One read's reservation against the budget, given back when the read that
+/// needed it ends, however it ends.
+pub struct Reserved<'a> {
+    budget: &'a BodyBudget,
+    bytes: u64,
+}
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        self.budget.held.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
 struct ReadyCache {
     checked_at: u64,
@@ -378,6 +423,7 @@ pub struct App {
     seen: Mutex<HashMap<String, u64>>,
     recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
+    bodies: BodyBudget,
     gc_requested: AtomicBool,
     scrub_requested: AtomicBool,
     gc_running: AtomicBool,
@@ -443,6 +489,7 @@ impl App {
                 checked_at: 0,
                 verdict: Ok(()),
             }),
+            bodies: BodyBudget::default(),
             gc_requested: AtomicBool::new(false),
             scrub_requested: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
@@ -533,6 +580,53 @@ impl App {
     /// Whether a scrub was asked for, clearing the request.
     pub fn take_scrub_request(&self) -> bool {
         self.scrub_requested.swap(false, Ordering::SeqCst)
+    }
+
+    /// Reserve `bytes` of body read before any credential verifies, or refuse
+    /// the read before a byte of it is taken off the wire.
+    ///
+    /// # Errors
+    /// A bare `503` with `Retry-After: 1` when the reservation does not fit
+    /// under [`PREAUTH_BODY_BUDGET`], with one line naming the budget
+    /// (requirement 12). A bodiless request reserves nothing and always fits.
+    pub fn reserve_body(&self, bytes: u64) -> Result<Reserved<'_>, ApiError> {
+        let fits = |held: u64| {
+            held.checked_add(bytes)
+                .filter(|total| *total <= PREAUTH_BODY_BUDGET)
+        };
+        match self
+            .bodies
+            .held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fits)
+        {
+            Ok(_) => Ok(Reserved {
+                budget: &self.bodies,
+                bytes,
+            }),
+            Err(held) => {
+                self.log.warn(
+                    "preauth_body",
+                    &[
+                        ("decision", Val::word("refused")),
+                        ("bytes", Val::bytes(bytes)),
+                        ("held", Val::bytes(held)),
+                        ("budget", Val::bytes(PREAUTH_BODY_BUDGET)),
+                    ],
+                );
+                Err(ApiError::new(
+                    503,
+                    "preauth_budget_full",
+                    "unverified request bodies are at their ceiling; retry shortly",
+                )
+                .bare())
+            }
+        }
+    }
+
+    /// Body bytes reserved right now, for the tests that pin the ceiling.
+    #[cfg(test)]
+    pub fn preauth_held(&self) -> u64 {
+        self.bodies.held.load(Ordering::SeqCst)
     }
 
     /// The account id, or `409 not_set_up`.

@@ -344,6 +344,13 @@ impl Store {
         self.blobs.open_chunk(sid)
     }
 
+    /// Where a chunk rests on the primary volume, for a response that opens
+    /// it only when its stream reaches it (`api::chunks::batch_get`). Never
+    /// logged: it is a location (requirement 6).
+    pub fn chunk_path(&self, sid: &Sid) -> PathBuf {
+        self.blobs.path(sid)
+    }
+
     /// Store one chunk, verifying it as it streams.
     ///
     /// Refusals happen before any byte is published: over the watermark, over
@@ -640,6 +647,11 @@ impl Store {
     /// The change feed after `since`.
     pub fn changes(&self, since: Seq, limit: usize) -> Result<Changes, StoreError> {
         self.index().changes(since, limit)
+    }
+
+    /// When each version after `since` landed, at most `limit` of them.
+    pub fn version_times(&self, since: Seq, limit: usize) -> Vec<UnixMs> {
+        self.index().version_times(since, limit)
     }
 
     /// The journal head.

@@ -24,7 +24,7 @@ use super::{ApiError, App, auth, devices};
 /// that does not match, `409 already_set_up` without proof,
 /// `409 recovery_unavailable` without registration, or `403 bad_recovery_proof`.
 pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    let body = render::json_body(req)?;
+    let body = render::json_body(app, req)?;
     let token = render::field_str(&body, "setup_token")?;
     let account_name = render::text_field(
         render::field_str(&body, "account_name")?,

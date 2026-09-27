@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::ops::Bound;
 
 use crate::storage::journal::{Frame, Record};
 use crate::storage::types::{
@@ -413,7 +414,9 @@ impl Index {
             .cloned()
     }
 
-    /// One page of the file listing, ordered by file id.
+    /// One page of the file listing, ordered by file id. The walk starts AT
+    /// the cursor rather than at the first file, so paging through a vault
+    /// costs each page its own length, not every page before it.
     pub(crate) fn files_page(
         &self,
         after: Option<&FileId>,
@@ -421,10 +424,8 @@ impl Index {
     ) -> (Vec<FileSummary>, Option<FileId>) {
         let mut page: Vec<FileSummary> = Vec::new();
         let mut next = None;
-        for (file_id, entry) in &self.files {
-            if after.is_some_and(|a| file_id <= a) {
-                continue;
-            }
+        let start = after.map_or(Bound::Unbounded, |a| Bound::Excluded(*a));
+        for (file_id, entry) in self.files.range((start, Bound::Unbounded)) {
             if page.len() == limit {
                 // The cursor is the last id INCLUDED, because `after` is
                 // exclusive: handing back the first excluded id would skip it.
@@ -452,8 +453,9 @@ impl Index {
         }
         let start = self.feed.partition_point(|(seq, _, _)| *seq <= since);
         let window = &self.feed[start..];
-        let truncated = window.len() > limit;
+        let mut truncated = window.len() > limit;
         let mut changes = Vec::new();
+        let mut bytes = 0usize;
         for (_, file_id, version_id) in window.iter().take(limit) {
             let Some(entry) = self.files.get(file_id) else {
                 continue;
@@ -461,6 +463,15 @@ impl Index {
             let Some(version) = entry.versions.iter().find(|v| v.version_id == *version_id) else {
                 continue;
             };
+            // The page stops at its byte budget, never before its first
+            // entry: a client asks for the rest from the cursor this page
+            // hands back, exactly as it does after a full count.
+            let cost = wire_bytes(version, &entry.heads);
+            if !changes.is_empty() && bytes + cost > CHANGES_PAGE_BYTES {
+                truncated = true;
+                break;
+            }
+            bytes += cost;
             changes.push(Change {
                 version: version.clone(),
                 heads: entry.heads.clone(),
@@ -481,6 +492,44 @@ impl Index {
             changes,
         })
     }
+
+    /// When each version after `since` landed, at most `limit` of them, in
+    /// feed order: what the dashboard's activity graph counts, read without
+    /// cloning a single version.
+    pub(crate) fn version_times(&self, since: Seq, limit: usize) -> Vec<UnixMs> {
+        let start = self.feed.partition_point(|(seq, _, _)| *seq <= since);
+        self.feed[start..]
+            .iter()
+            .take(limit)
+            .filter_map(|(_, file_id, version_id)| {
+                let entry = self.files.get(file_id)?;
+                let version = entry
+                    .versions
+                    .iter()
+                    .find(|v| v.version_id == *version_id)?;
+                Some(version.ts)
+            })
+            .collect()
+    }
+}
+
+/// A change page stops before its entries pass this many bytes of JSON, and
+/// always carries at least one. One entry is under 6 MiB at the protocol's
+/// ceilings, so no page passes 8 MiB where a thousand maximal entries used to
+/// make one about 6 GiB, on the server and on the phone that parses it
+/// (`docs/protocol.md`, "Limits and headers").
+pub(crate) const CHANGES_PAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What one change entry costs as JSON, rounded up: the base64 manifest, one
+/// quoted id per sid, parent and head, and the fixed fields. An estimate that
+/// never falls short is all the page cut needs, and it clones nothing.
+fn wire_bytes(version: &VersionRecord, heads: &[VersionId]) -> usize {
+    /// Every fixed field of one entry, keys and punctuation included.
+    const FIXED: usize = 512;
+    /// One id in a list: 64 hex characters, two quotes and a comma.
+    const ID: usize = 67;
+    let ids = version.sids.len() + version.parents.len() + heads.len();
+    FIXED + version.manifest_ct.len().div_ceil(3) * 4 + ids * ID
 }
 
 #[cfg(test)]
@@ -651,6 +700,106 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    /// An index whose versions each carry a manifest of `manifest` bytes.
+    fn wide_feed(count: u8, manifest: usize) -> Index {
+        let mut index = Index::default();
+        for n in 1..=count {
+            let mut v = version_record(file(n), version(n), &[], Seq(n.into()));
+            v.manifest_ct = vec![0x6d; manifest];
+            index.apply(&record(u64::from(n), Frame::Version(v)));
+        }
+        index
+    }
+
+    /// The hostile page: a thousand maximal entries used to be one answer of
+    /// about 6 GiB. A page now stops at its byte budget and hands back a
+    /// cursor, and the next page resumes after it with nothing skipped or
+    /// repeated.
+    #[test]
+    fn a_change_page_stops_at_its_byte_budget_and_resumes_after_it() {
+        // 1 MiB manifests are about 1.4 MB each on the wire, so five fit in
+        // 8 MiB and a sixth does not.
+        let index = wide_feed(10, 1024 * 1024);
+        let first = index.changes(Seq(0), 1000).expect("first page");
+        assert_eq!(first.changes.len(), 5, "cut at the budget, not the count");
+        assert_eq!(first.seq, Seq(5), "the cursor is the last entry included");
+        assert_eq!(first.head_seq, Seq(10));
+        let cost: usize = first
+            .changes
+            .iter()
+            .map(|c| wire_bytes(&c.version, &c.heads))
+            .sum();
+        assert!(cost <= CHANGES_PAGE_BYTES, "{cost} bytes in one page");
+
+        let second = index.changes(first.seq, 1000).expect("second page");
+        let seqs: Vec<Seq> = second.changes.iter().map(|c| c.version.seq).collect();
+        assert_eq!(seqs, (6..=10).map(Seq).collect::<Vec<_>>());
+        assert_eq!(second.seq, Seq(10), "the last page reaches the head");
+    }
+
+    /// An entry wider than the whole budget still travels, alone: a page that
+    /// could carry nothing would hand back its own cursor, and a client
+    /// following it would ask for the same page forever.
+    #[test]
+    fn an_entry_wider_than_the_budget_still_moves_the_cursor() {
+        let index = wide_feed(2, CHANGES_PAGE_BYTES);
+        let first = index.changes(Seq(0), 1000).expect("first page");
+        assert_eq!(first.changes.len(), 1);
+        assert_eq!(first.seq, Seq(1));
+        let second = index.changes(first.seq, 1000).expect("second page");
+        assert_eq!(second.changes.len(), 1);
+        assert_eq!(second.seq, Seq(2));
+    }
+
+    /// The cut runs on an estimate, so the estimate must never fall short of
+    /// what a client is actually sent: for the narrowest entry, and for the
+    /// widest the protocol admits (every list and the manifest at their
+    /// ceilings). Measured on the rendering itself.
+    #[test]
+    fn the_page_estimate_never_falls_short_of_the_rendering() {
+        use crate::api::files::{MANIFEST_CT_MAX, VERSION_MAX_SIDS};
+        use crate::api::render;
+
+        let mut narrow = version_record(file(1), version(1), &[], Seq(1));
+        narrow.seq = Seq(u64::MAX);
+        let heads: Vec<VersionId> = (0..FILE_MAX_HEADS)
+            .map(|n| VersionId::new([n as u8; 32]))
+            .collect();
+        let mut wide = narrow.clone();
+        wide.parents = heads.clone();
+        wide.sids = (0..VERSION_MAX_SIDS)
+            .map(|n| Sid::new([n as u8; 32]))
+            .collect();
+        wide.manifest_ct = vec![0xa5; MANIFEST_CT_MAX / 4 * 3];
+        wide.bytes = u64::MAX;
+        wide.ts = UnixMs(u64::MAX);
+        for (version, heads) in [(narrow, Vec::new()), (wide, heads)] {
+            let rendered = render::change(&Change {
+                version: version.clone(),
+                heads: heads.clone(),
+                conflicted: true,
+            })
+            .to_json()
+            .len();
+            // One entry's share of a page: itself and the comma after it.
+            assert!(
+                wire_bytes(&version, &heads) > rendered,
+                "estimated {} for {rendered} rendered",
+                wire_bytes(&version, &heads)
+            );
+        }
+    }
+
+    #[test]
+    fn version_times_reads_the_feed_tail_without_its_records() {
+        let index = wide_feed(4, 16);
+        assert_eq!(
+            index.version_times(Seq(1), 2),
+            vec![UnixMs(1_757_000_000_002), UnixMs(1_757_000_000_003)]
+        );
+        assert!(index.version_times(Seq(4), 10).is_empty());
     }
 
     #[test]

@@ -451,7 +451,7 @@ impl Journal {
         }
         let payload = record.to_value().to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&self.frame_len(payload.len(), "append")?);
         bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
         bytes.extend_from_slice(&payload);
 
@@ -503,6 +503,36 @@ impl Journal {
                 Ok(())
             }
             Err(e) => Err(self.recover(durable, e)),
+        }
+    }
+
+    /// The length field of a frame header, or a refusal and its line.
+    ///
+    /// The field is 32 bits, and it is the format every 1.x server replays,
+    /// so a payload that does not fit is refused rather than written with a
+    /// length that wraps: a wrapped journal frame reads back as a torn tail
+    /// and cuts every frame after it, a wrapped snapshot as unreadable. The
+    /// refusal loses nothing. A refused snapshot leaves the segments it would
+    /// have pruned where they are, and the next start replays them.
+    fn frame_len(&self, len: usize, at: &'static str) -> Result<[u8; 4], StoreError> {
+        match frame_len(len) {
+            Some(field) => Ok(field),
+            None => {
+                self.log.error(
+                    "journal_frame",
+                    &[
+                        ("decision", Val::word("refused")),
+                        ("reason", Val::word("over_frame_length")),
+                        ("at", Val::word(at)),
+                        ("bytes", Val::bytes(len as u64)),
+                        ("budget", Val::bytes(u64::from(u32::MAX))),
+                    ],
+                );
+                Err(StoreError::Io(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "a frame payload over the 32-bit length field",
+                )))
+            }
         }
     }
 
@@ -714,7 +744,7 @@ impl Journal {
         let seq = index.seq;
         let payload = snapshot_value(index).to_json().into_bytes();
         let mut bytes = Vec::with_capacity(HEADER + payload.len());
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&self.frame_len(payload.len(), "snapshot")?);
         bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
         bytes.extend_from_slice(&payload);
 
@@ -877,6 +907,11 @@ impl Journal {
             _ => None,
         }
     }
+}
+
+/// A payload length as the frame header stores it, when it fits.
+fn frame_len(len: usize) -> Option<[u8; 4]> {
+    u32::try_from(len).ok().map(u32::to_le_bytes)
 }
 
 /// What one read at the current offset found.
@@ -2813,6 +2848,33 @@ mod tests {
         assert_eq!(report.frames, 1, "only the intact frame survives");
         assert_eq!(seen.len(), 1);
         assert!(report.truncated_bytes > 0);
+    }
+
+    /// The 4 GiB boundary, without allocating 4 GiB: the largest payload the
+    /// 32-bit field can state is written as itself, and one byte more is
+    /// refused rather than written as a length that wraps to zero.
+    #[test]
+    fn a_frame_length_over_32_bits_is_refused_rather_than_wrapped() {
+        let max = u32::MAX as usize;
+        assert_eq!(frame_len(max), Some(u32::MAX.to_le_bytes()));
+        assert_eq!(frame_len(max + 1), None, "4 GiB wraps to a zero length");
+        assert_eq!(frame_len(max + 9), None);
+
+        let dir = TempDir::new("journal-frame-length");
+        let log = Log::buffered(LogLevel::Debug);
+        let journal = open_logged(&dir, log.clone());
+        let e = journal.frame_len(max + 1, "snapshot").expect_err("refused");
+        assert!(
+            matches!(&e, StoreError::Io(io) if io.kind() == io::ErrorKind::FileTooLarge),
+            "{e}"
+        );
+        assert!(
+            log.captured().contains(
+                "event=journal_frame decision=refused reason=over_frame_length at=snapshot"
+            ),
+            "{}",
+            log.captured()
+        );
     }
 
     #[test]

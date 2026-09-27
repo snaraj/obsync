@@ -32,6 +32,12 @@ pub const NONCE_TTL_SECS: u64 = 600;
 /// Most nonces held at once. Reaching it refuses requests rather than
 /// forgetting a nonce that is still inside its window.
 pub const NONCE_CACHE_MAX: usize = 200_000;
+/// Most nonces one device holds at once: a quarter of the cache, about 83
+/// requests a second sustained across the whole window. A device that
+/// reaches it is refused on its own, and the other devices keep the rest, so
+/// one runaway or compromised device can no longer lock every device out.
+pub const NONCE_DEVICE_SHARE: usize = NONCE_CACHE_MAX / 4;
+const _: () = assert!(NONCE_DEVICE_SHARE < NONCE_CACHE_MAX);
 
 /// Wall-clock source. Production reads the system clock; tests drive the
 /// window and the nonce TTL with a fake.
@@ -103,6 +109,15 @@ pub struct NonceCache {
     /// Most nonces held at once. [`NONCE_CACHE_MAX`] everywhere but the
     /// tests that drive the ceiling and the compaction it triggers.
     capacity: usize,
+    /// How many of `seen` each device holds, against its share.
+    held: HashMap<String, usize>,
+    /// Most nonces one device holds: [`NONCE_DEVICE_SHARE`], or the whole
+    /// capacity where a test shrinks that below it.
+    share: usize,
+    /// The second of the last sweep a refusal ran. Nothing expires inside
+    /// one second, so a device knocking at its share costs one sweep a
+    /// second rather than one per request.
+    swept_at: u64,
 }
 
 impl NonceCache {
@@ -130,11 +145,18 @@ impl NonceCache {
         log: &Log,
     ) -> Result<NonceCache, StoreError> {
         let (durable, entries) = NonceLog::open(journal_dir, now, reported, log)?;
+        let mut held: HashMap<String, usize> = HashMap::new();
+        for ((device, _), _) in &entries {
+            *held.entry(device.clone()).or_default() += 1;
+        }
         Ok(NonceCache {
             seen: entries.into_iter().collect(),
             durable,
             log: log.clone(),
             capacity,
+            held,
+            share: NONCE_DEVICE_SHARE.min(capacity),
+            swept_at: 0,
         })
     }
 
@@ -148,9 +170,11 @@ impl NonceCache {
     ///
     /// # Errors
     /// `401 replayed_nonce` when the pair is already held, `503
-    /// nonce_cache_full` when the cache is at its ceiling — refusing beats
-    /// forgetting a nonce that is still inside its window — and `503
-    /// nonce_log_unavailable` when the volume will not take the record.
+    /// nonce_cache_full` when the cache is at its ceiling and `503
+    /// nonce_share_full` when this device holds its whole share of it --
+    /// refusing beats forgetting a nonce that is still inside its window --
+    /// and `503 nonce_log_unavailable` when the volume will not take the
+    /// record.
     pub fn remember(&mut self, device: &str, nonce: &str, now: u64) -> Result<(), ApiError> {
         let entry = (device.to_string(), nonce.to_string());
         if let Some(expiry) = self.seen.get(&entry)
@@ -162,7 +186,10 @@ impl NonceCache {
                 "nonce was used inside the window",
             ));
         }
-        if self.seen.len() >= self.capacity {
+        if (self.seen.len() >= self.capacity || self.held_by(device) >= self.share)
+            && now > self.swept_at
+        {
+            self.swept_at = now;
             self.sweep(now);
         }
         if self.seen.len() >= self.capacity {
@@ -170,6 +197,24 @@ impl NonceCache {
                 503,
                 "nonce_cache_full",
                 "replay cache is full; retry shortly",
+            ));
+        }
+        let held = self.held_by(device);
+        if held >= self.share {
+            let mut fields = vec![
+                ("decision", Val::word("refused")),
+                ("reason", Val::word("device_share")),
+                ("held", Val::count(held as u64)),
+                ("budget", Val::count(self.share as u64)),
+            ];
+            if let Ok(id) = device.parse::<DeviceId>() {
+                fields.insert(0, ("device", Val::device(&id)));
+            }
+            self.log.warn("nonce_cache", &fields);
+            return Err(ApiError::new(
+                503,
+                "nonce_share_full",
+                "this device's share of the replay cache is full; retry shortly",
             ));
         }
         // The file is rewritten before this line joins it, never after: a
@@ -185,14 +230,28 @@ impl NonceCache {
         self.durable
             .append(now, &entry)
             .map_err(|e| self.unavailable(&e))?;
+        *self.held.entry(entry.0.clone()).or_default() += 1;
         self.seen.insert(entry, now + NONCE_TTL_SECS);
         Ok(())
+    }
+
+    /// How many nonces `device` holds right now.
+    fn held_by(&self, device: &str) -> usize {
+        self.held.get(device).copied().unwrap_or(0)
     }
 
     /// Drop expired entries, returning how many went.
     pub fn sweep(&mut self, now: u64) -> usize {
         let before = self.seen.len();
-        self.seen.retain(|_, expiry| *expiry > now);
+        let held = &mut self.held;
+        self.seen.retain(|(device, _), expiry| {
+            let live = *expiry > now;
+            if !live && let Some(count) = held.get_mut(device) {
+                *count -= 1;
+            }
+            live
+        });
+        held.retain(|_, count| *count > 0);
         before - self.seen.len()
     }
 
@@ -378,7 +437,7 @@ fn authenticate(
     let (hash_hex, body) = match body_hash {
         BodyHash::Sid(sid) => ((*sid).to_string(), Vec::new()),
         BodyHash::Buffer => {
-            let raw = render::read_body(req, super::JSON_BODY_LIMIT)?;
+            let raw = render::read_body(app, req, super::JSON_BODY_LIMIT)?;
             (hex::encode(&sha256::sha256(&raw)), raw)
         }
     };
@@ -824,6 +883,61 @@ mod tests {
             .expect_err("the ceiling is reached");
         assert_eq!(e.status, 503);
         assert_eq!(e.code, "nonce_cache_full");
+    }
+
+    /// Security item 7: one device at its share is refused, alone, with its
+    /// own code and a line naming the share; every other device is still
+    /// answered, and the device is answered again once its window moves on.
+    #[test]
+    fn a_device_at_its_share_is_refused_and_no_other_device_is() {
+        let dir = volume("nonce-share");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 8, &log);
+        c.share = 2;
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        let e = c
+            .remember(DEVICE, &nonce(3), 1_000)
+            .expect_err("the device's share is spent");
+        assert_eq!((e.status, e.code), (503, "nonce_share_full"));
+        assert!(
+            log.captured().contains(
+                "event=nonce_cache device=a1a1a1a1 decision=refused reason=device_share held=2 budget=2"
+            ),
+            "{}",
+            log.captured()
+        );
+        c.remember(OTHER, &nonce(1), 1_000)
+            .expect("another device is still answered");
+        c.remember(OTHER, &nonce(2), 1_000)
+            .expect("up to its own share");
+        assert_eq!(c.len(), 4, "the cache itself was never full");
+
+        // The window moves on: the spent share comes back as it expires.
+        c.remember(DEVICE, &nonce(3), 1_000 + NONCE_TTL_SECS + 1)
+            .expect("answered again once its nonces expire");
+    }
+
+    /// A restart is not a way past a share: what comes back off the volume
+    /// counts against its device exactly as what this process accepted.
+    #[test]
+    fn a_share_still_refuses_after_a_reload() {
+        let dir = volume("nonce-share-reload");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 8, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        drop(c);
+
+        let mut restarted = cache(&dir, 1_000, 8, &log);
+        restarted.share = 2;
+        let e = restarted
+            .remember(DEVICE, &nonce(3), 1_000)
+            .expect_err("the reloaded nonces count");
+        assert_eq!(e.code, "nonce_share_full");
+        restarted
+            .remember(OTHER, &nonce(3), 1_000)
+            .expect("and only against their own device");
     }
 
     #[test]

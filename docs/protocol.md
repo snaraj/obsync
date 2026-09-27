@@ -30,7 +30,9 @@ bad_signature`, `401 stale_timestamp` (outside ±300 s), `401 replayed_nonce`
 (seen within 600 s, and the 600 s survives a restart: accepted nonces rest on
 the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
-forgetting a nonce still inside its window), `503 nonce_log_unavailable`
+forgetting a nonce still inside its window), `503 nonce_share_full` (this
+device holds its whole share of that cache, 50,000 nonces, a quarter of it;
+only this device is refused), `503 nonce_log_unavailable`
 (the volume would not take that record), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
 wrapped secret and leaves nothing to check it against), `403 device_pending`
@@ -585,6 +587,12 @@ device whose link opened it is revoked.
 
 - Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB; chunk ciphertext
   bodies ≤ 8 MiB + 16 bytes.
+- Every JSON body is read before its credential verifies (a signature covers
+  the body's hash; the setup and enrolment tokens ride inside it), so the
+  bodies being read at any moment share one 64 MiB reservation across every
+  connection. A body that does not fit is answered with a bare `503` (no
+  body, `Retry-After: 1`, `Connection: close`) before a byte of it is read,
+  and a repeatable request retries.
 - Heads per file record ≤ 64; versions per file record ≤
   `OBSYNC_RETENTION_VERSIONS` plus one per head; sids per version ≤ 65,536;
   parents per version ≤ 64; `manifest_ct` ≤ 1 MiB of base64.
@@ -592,9 +600,10 @@ device whose link opened it is revoked.
   above: a full head list is under 8 KiB, so a 1000-entry `/v1/changes` page
   carries at most 64,000 head ids. The widest single version and the widest
   change entry are each under 6 MiB, so one file record stays under 450 MiB
-  at the shipped retention of 10 and one full page under 6 GiB. The
-  per-version ceilings, not the heads, are what set those two; a client that
-  wants a smaller page sets `limit`.
+  at the shipped retention of 10. A `/v1/changes` page also stops before its
+  entries pass 8 MiB of JSON and always carries at least one, so no page
+  passes 8 MiB; its `seq` is then below `head_seq`, and the next request from
+  that cursor carries on. A client that wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
   `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s.
 - Every response carries `Cache-Control: no-store` and the security headers

@@ -16,7 +16,7 @@ use crate::storage::types::{
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
-use super::{ApiError, JSON_BODY_LIMIT};
+use super::{ApiError, App, JSON_BODY_LIMIT};
 
 /// A JSON string.
 pub fn s(v: &str) -> Value {
@@ -267,17 +267,24 @@ pub fn quarantine(last: Option<&ScrubSummary>) -> Value {
 /// # Errors
 /// `413 body_too_large` above the ceiling, `400 bad_json` when it does not
 /// parse, `400 bad_request` when the body cannot be read.
-pub fn json_body(req: &mut Request) -> Result<Value, ApiError> {
-    let raw = read_body(req, JSON_BODY_LIMIT)?;
+pub fn json_body(app: &App, req: &mut Request) -> Result<Value, ApiError> {
+    let raw = read_body(app, req, JSON_BODY_LIMIT)?;
     parse_json(&raw)
 }
 
 /// Read a request body under an explicit ceiling.
 ///
+/// Every caller reads its body before a credential has verified, so the read
+/// holds a reservation against [`super::PREAUTH_BODY_BUDGET`] for as long as
+/// it takes. A chunked body's length is unknown until it ends, so it reserves
+/// the ceiling.
+///
 /// # Errors
-/// `413 body_too_large` above the ceiling, `400 bad_request` on a read error.
-pub fn read_body(req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
-    if let Some(declared) = req.body.declared_len()
+/// `413 body_too_large` above the ceiling, `400 bad_request` on a read error,
+/// and a bare `503` when the budget has no room for this body.
+pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
+    let declared = req.body.declared_len();
+    if let Some(declared) = declared
         && declared > limit
     {
         return Err(ApiError::new(
@@ -286,6 +293,7 @@ pub fn read_body(req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
             "request body exceeds the limit",
         ));
     }
+    let _reserved = app.reserve_body(declared.unwrap_or(limit))?;
     req.body
         .read_to_vec(limit as usize)
         .map_err(|_| ApiError::new(413, "body_too_large", "request body exceeds the limit"))
@@ -466,7 +474,7 @@ mod tests {
         const HEADS_CEILING: usize = 8 * 1024;
         const VERSION_CEILING: u64 = 6 * 1024 * 1024;
         const RECORD_CEILING: u64 = 450 * 1024 * 1024;
-        const PAGE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
+        const PAGE_CEILING: u64 = 8 * 1024 * 1024;
 
         let heads: Vec<VersionId> = (0..FILE_MAX_HEADS)
             .map(|n| VersionId::new([n as u8; 32]))
@@ -539,8 +547,14 @@ mod tests {
         let record = heads_bytes as u64 + versions * version_bytes;
         assert!(record <= RECORD_CEILING, "a file record reaches {record}");
 
-        // A page holds as many entries as the feed's own ceiling allows.
-        let page = CHANGES_MAX_LIMIT * change_bytes;
-        assert!(page <= PAGE_CEILING, "a full changes page reaches {page}");
+        // A page stops at its byte budget and always carries one entry, so
+        // the widest entry alone must fit under the page ceiling too. The
+        // count ceiling is no longer what bounds a page: a thousand of these
+        // would be about 6 GiB.
+        assert!(
+            change_bytes <= PAGE_CEILING,
+            "one entry reaches {change_bytes}"
+        );
+        assert!(CHANGES_MAX_LIMIT * change_bytes > PAGE_CEILING);
     }
 }

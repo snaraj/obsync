@@ -5,7 +5,7 @@
 //! and `max_connections` (256 by default) bounds both threads and memory.
 
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -27,11 +27,19 @@ pub type Handler = Arc<dyn Fn(&mut Request) -> Response + Send + Sync + 'static>
 /// (AGENTS.md requirement 12).
 type ErrorSink = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// How often the accept loop looks at the shutdown flag.
-const ACCEPT_POLL: Duration = Duration::from_millis(50);
+/// How often the shutdown waker looks at the flag. The accept itself blocks,
+/// so this bounds how long a stop takes to begin, never how long a new
+/// connection waits.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
 
-/// How often a connection waiting for its next request looks at it.
-const IDLE_POLL: Duration = Duration::from_millis(100);
+/// How long the accept loop pauses after a failed accept (a full descriptor
+/// table, say), so the failure is not retried in a hot loop.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// How often a connection waiting for its next request looks at the shutdown
+/// flag. Bytes arriving wake the wait at once; this only bounds how long an
+/// idle keep-alive takes to notice a stop.
+const IDLE_POLL: Duration = Duration::from_secs(1);
 
 /// How much of an unread request body is drained before the connection is
 /// closed instead. A handler that refuses a body early should not have to read
@@ -74,24 +82,36 @@ impl Server {
     /// Serve until `shutdown` is set, then stop accepting, wait up to
     /// `drain_timeout` for connections in flight, and return. Blocks the
     /// calling thread.
+    ///
+    /// The accept BLOCKS, so a connection is taken the moment it arrives
+    /// rather than at the next look at a flag. What wakes it for a stop is a
+    /// connection to itself, which [`wake_on_shutdown`] makes once the flag
+    /// is set.
     pub fn serve(self, handler: Handler, shutdown: Arc<AtomicBool>, drain_timeout: Duration) {
         let Server {
             listener,
+            addr,
             limits,
             sink,
-            ..
         } = self;
-        if let Err(err) = listener.set_nonblocking(true) {
-            (*sink)(&format!("http: listener would not poll: {err}"));
-            return;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let waker = wake_on_shutdown(addr, Arc::clone(&shutdown), Arc::clone(&stopped));
+        if let Err(err) = &waker {
+            (*sink)(&format!(
+                "http: no thread to wake the listener at shutdown: {err}"
+            ));
         }
         let active = Arc::new(AtomicUsize::new(0));
         while !shutdown.load(Ordering::Relaxed) {
             match listener.accept() {
+                // The waker's own connection, or one that raced the stop.
+                Ok(_) if shutdown.load(Ordering::Relaxed) => break,
                 Ok((stream, peer)) => {
-                    if let Err(err) = stream.set_nonblocking(false) {
-                        (*sink)(&format!("http: connection stayed non-blocking: {err}"));
-                        continue;
+                    // Responses leave in more than one write (a head, then a
+                    // streamed body), and Nagle would hold the last one back
+                    // for the peer's delayed acknowledgement.
+                    if let Err(err) = stream.set_nodelay(true) {
+                        (*sink)(&format!("http: connection kept Nagle's delay: {err}"));
                     }
                     let guard = ActiveGuard::new(&active);
                     if active.load(Ordering::SeqCst) > limits.max_connections {
@@ -120,19 +140,50 @@ impl Server {
                         (*sink)(&format!("http: no thread for a connection: {err}"));
                     }
                 }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => thread::sleep(ACCEPT_POLL),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(err) => {
                     (*sink)(&format!("http: accept failed: {err}"));
-                    thread::sleep(ACCEPT_POLL);
+                    thread::sleep(ACCEPT_BACKOFF);
                 }
             }
+        }
+        stopped.store(true, Ordering::SeqCst);
+        if let Ok(waker) = waker {
+            let _ = waker.join();
         }
         let deadline = Instant::now() + drain_timeout;
         while active.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+/// Once `shutdown` is set, connect to the listener until the accept loop
+/// says it has `stopped`: a blocked accept returns only for a connection.
+/// Retried rather than tried once, because one lost connect would leave the
+/// process unable to stop.
+fn wake_on_shutdown(
+    addr: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+) -> io::Result<thread::JoinHandle<()>> {
+    let mut target = addr;
+    if target.ip().is_unspecified() {
+        target.set_ip(match addr {
+            SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+            SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    thread::Builder::new()
+        .name("obsync-http-waker".to_string())
+        .spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::Relaxed) {
+                    let _ = TcpStream::connect_timeout(&target, SHUTDOWN_POLL);
+                }
+                thread::sleep(SHUTDOWN_POLL);
+            }
+        })
 }
 
 /// Holds one connection slot for as long as the connection lives, including
@@ -477,6 +528,48 @@ mod tests {
         assert!(!head.contains("Date:"));
     }
 
+    /// A new connection is taken when it arrives, not at the next look at a
+    /// flag. Twenty back-to-back connections behind a 50 ms accept poll wait
+    /// about a second in all; blocking, they take a few milliseconds, so the
+    /// ceiling below has room for a loaded machine and none for a poll.
+    #[test]
+    fn a_new_connection_is_accepted_without_waiting_for_a_poll() {
+        let server = TestServer::start(
+            Limits::default(),
+            handler_of(|_request: &mut Request| Response::text(200, "ok")),
+        );
+        let started = Instant::now();
+        for _ in 0..20 {
+            let stream = server.connect();
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            (&stream)
+                .write_all(b"GET /x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                .expect("write");
+            assert_eq!(status_of(&read_response(&mut reader).0), 200);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "twenty fresh connections took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The accept blocks, so a stop has to wake it. Nothing connects here but
+    /// the server's own waker. The serving thread is watched rather than
+    /// joined, so a listener nobody wakes fails this test instead of hanging.
+    #[test]
+    fn a_stop_wakes_a_listener_nobody_is_connecting_to() {
+        let mut server = TestServer::start(Limits::default(), echo_handler());
+        thread::sleep(Duration::from_millis(50));
+        let join = server.join.take().expect("serving");
+        server.shutdown.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        while !join.is_finished() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(join.is_finished(), "the listener was never woken");
+    }
+
     #[test]
     fn keep_alive_carries_two_pipelined_requests() {
         let server = TestServer::start(Limits::default(), echo_handler());
@@ -659,11 +752,23 @@ mod tests {
         let server = TestServer::start(
             Limits::default(),
             handler_of(|_request: &mut Request| {
-                let mut multipart = MultipartWriter::new("obsync-chunks");
-                multipart.part(&[("X-Obsync-Sid", "aa"), ("Content-Length", "2")], b"hi");
-                multipart.part(&[("X-Obsync-Sid", "bb"), ("X-Obsync-Missing", "1")], b"");
-                let content_type = multipart.content_type();
-                Response::bytes(200, &content_type, multipart.finish())
+                let multipart = MultipartWriter::new("obsync-chunks");
+                let mut body =
+                    multipart.part_head(&[("X-Obsync-Sid", "aa"), ("Content-Length", "2")]);
+                body.extend_from_slice(b"hi");
+                body.extend_from_slice(MultipartWriter::PART_END);
+                body.extend(
+                    multipart.part_head(&[("X-Obsync-Sid", "bb"), ("X-Obsync-Missing", "1")]),
+                );
+                body.extend_from_slice(MultipartWriter::PART_END);
+                body.extend(multipart.close());
+                let len = body.len() as u64;
+                Response::stream(
+                    200,
+                    &multipart.content_type(),
+                    Box::new(Cursor::new(body)),
+                    len,
+                )
             }),
         );
         let stream = server.connect();

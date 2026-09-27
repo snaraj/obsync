@@ -411,6 +411,80 @@ impl Res {
     }
 }
 
+/// Security item 2 over the wire: three hundred uploads that each declare a
+/// maximal JSON body to the unauthenticated setup route and then send it
+/// slowly. What the process reserves for bodies no credential has verified
+/// never passes its budget, the uploads beyond it are answered with a bare
+/// `503` and one line naming the budget, and every reservation comes back.
+#[test]
+fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
+    let h = Harness::start_with(
+        "preauth-budget",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let budget = crate::api::PREAUTH_BODY_BUDGET;
+    let head = format!(
+        "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+        crate::api::JSON_BODY_LIMIT
+    );
+    // A first slice of each body: enough to buy about two seconds of the
+    // rate floor, so the admitted reads are all held at once.
+    let slice = vec![b' '; 64 * 1024];
+    let mut streams = Vec::new();
+    let mut peak = 0;
+    for _ in 0..300 {
+        let stream = TcpStream::connect(h.addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("timeout");
+        let _ = (&stream).write_all(head.as_bytes());
+        let _ = (&stream).write_all(&slice);
+        streams.push(stream);
+        peak = peak.max(h.app.preauth_held());
+    }
+    let mut bare = 0;
+    for mut stream in streams {
+        peak = peak.max(h.app.preauth_held());
+        let mut raw = Vec::new();
+        // An early answer to a body still being sent can arrive as a reset.
+        if stream.read_to_end(&mut raw).is_err() || raw.is_empty() {
+            continue;
+        }
+        let res = Res::parse(&raw);
+        // The server's own 503, not the connection ceiling's: that one is
+        // written before any handler runs and carries no hardening headers.
+        if res.status == 503 && res.header("cache-control") == Some("no-store") {
+            assert!(res.body.is_empty(), "a bare refusal: {}", res.text());
+            assert_eq!(res.header("retry-after"), Some("1"));
+            assert_eq!(res.header("connection"), Some("close"));
+            bare += 1;
+        }
+    }
+    assert!(peak > 0, "the admitted reads reserved their bodies");
+    assert!(peak <= budget, "{peak} bytes reserved past {budget}");
+    assert!(bare > 0, "the uploads past the budget were shed");
+    let log = h.captured();
+    assert!(
+        log.contains(&format!(
+            "event=preauth_body decision=refused bytes={}",
+            crate::api::JSON_BODY_LIMIT
+        )) && log.contains(&format!("budget={budget}")),
+        "{}",
+        log.lines()
+            .filter(|l| l.contains("preauth"))
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(log.contains("decision=preauth_budget_full"));
+    assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
+    // And the budget serves again: an ordinary setup is answered.
+    h.setup_account();
+}
+
 #[test]
 fn health_endpoints_answer_and_every_response_is_hardened() {
     let h = Harness::start("health");
@@ -1755,6 +1829,84 @@ fn maximal_ciphertext_uploads_and_one_extra_byte_is_refused() {
     assert_eq!(absent.status, 404, "refused bytes were not stored");
 }
 
+/// Security item 8 over the wire: a 32 MiB batch STREAMS. Its head is on the
+/// wire while most of its chunks are still unread, so a chunk the volume
+/// loses after the head has gone breaks that response instead of being
+/// served out of memory; a buffered batch would already hold all four.
+/// A chunk the volume had lost BEFORE the batch was planned is named
+/// missing, exactly as 1.1.3 named it.
+#[test]
+fn a_batch_streams_and_names_a_lost_chunk_missing() {
+    let h = Harness::start("batch-stream");
+    let cred = h.setup_account();
+    let mut sids = Vec::new();
+    for fill in 0x61..=0x64u8 {
+        let body = vec![fill; 8 * 1024 * 1024];
+        let (_, sid) = chunk(&body);
+        let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+            .raw_body(&body)
+            .sign_with(&cred, NOW, &nonce(), &sid)
+            .send(h.addr);
+        assert_eq!(put.status, 201, "{}", put.text());
+        sids.push(sid);
+    }
+    let path = |sid: &str| h.app.store.chunk_path(&sid.parse().expect("sid"));
+    let list = |sids: &[String]| {
+        sids.iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    let req = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{}]}}"#, list(&sids)))
+        .sign(&cred, NOW);
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    let mut head = format!("POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in &req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        req.body.len()
+    ));
+    stream.write_all(head.as_bytes()).expect("head");
+    stream.write_all(&req.body).expect("body");
+    let mut first = [0u8; 16];
+    stream
+        .read_exact(&mut first)
+        .expect("the response has begun");
+    assert!(first.starts_with(b"HTTP/1.1 200"));
+    // Socket buffers hold a few MiB, so the stream is still inside its
+    // first two chunks: the last one is removed before it is reached.
+    std::fs::remove_file(path(&sids[3])).expect("lost after the plan");
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    let raw = [&first[..], &rest[..]].concat();
+    let res = Res::parse(&raw);
+    let promised: usize = res
+        .header("content-length")
+        .and_then(|v| v.parse().ok())
+        .expect("a length");
+    assert!(
+        res.body.len() < promised,
+        "all {promised} bytes arrived: the batch was held in memory"
+    );
+
+    // The next plan opens the chunk again, finds it gone, and says so.
+    let res = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{}]}}"#, list(&sids[2..])))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(res.status, 200, "{}", res.text());
+    let text = String::from_utf8_lossy(&res.body);
+    assert_eq!(text.matches("X-Obsync-Missing: 1").count(), 1, "one part");
+    assert!(text.contains(&format!("X-Obsync-Sid: {}\r\nX-Obsync-Missing: 1", sids[3])));
+}
+
 #[test]
 fn multipart_ciphertext_budget_accepts_exactly_32_mib_and_refuses_more() {
     let h = Harness::start("multipart-ceiling");
@@ -1778,6 +1930,23 @@ fn multipart_ciphertext_budget_accepts_exactly_32_mib_and_refuses_more() {
             assert_eq!(res.code(), "batch_too_large");
         }
     }
+
+    // The hostile end: every sid the protocol allows, all naming one maximal
+    // chunk -- 512 MiB of parts. Refused from the plan, before a part is read.
+    let body = vec![0x54; 8 * 1024 * 1024];
+    let (_, sid) = chunk(&body);
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+    let sids = vec![format!("\"{sid}\""); crate::api::MULTIPART_MAX_SIDS].join(",");
+    let res = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{sids}]}}"#))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(res.status, 413, "{}", res.text());
+    assert_eq!(res.code(), "batch_too_large");
 }
 
 #[test]
@@ -1825,6 +1994,27 @@ fn a_batch_get_returns_one_part_per_sid_and_marks_what_is_missing() {
     assert!(
         text.contains("batched-ciphertext"),
         "the stored part carries its bytes"
+    );
+
+    // Streamed, and still byte for byte the body a buffered 1.1.3 server
+    // sent, so a client that parses one parses the other: the length is
+    // exact, and the framing is the documented one.
+    let boundary = res
+        .header("content-type")
+        .and_then(|v| v.strip_prefix("multipart/mixed; boundary="))
+        .expect("a boundary");
+    assert_eq!(
+        text,
+        format!(
+            "--{boundary}\r\nX-Obsync-Sid: {sid}\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: 18\r\n\r\nbatched-ciphertext\r\n\
+             --{boundary}\r\nX-Obsync-Sid: {absent}\r\nX-Obsync-Missing: 1\r\n\
+             Content-Length: 0\r\n\r\n\r\n--{boundary}--\r\n"
+        )
+    );
+    assert_eq!(
+        res.header("content-length"),
+        Some(res.body.len().to_string().as_str())
     );
 }
 
@@ -2481,6 +2671,62 @@ fn the_change_feed_long_polls_and_wakes_on_a_concurrent_post() {
         list[0].get("manifest_ct").is_some(),
         "the feed carries the encrypted manifest"
     );
+}
+
+/// The hostile page over the wire: ten versions whose manifests sit at the
+/// protocol's 1 MiB ceiling. A page stops inside its 8 MiB budget
+/// (`storage::index::CHANGES_PAGE_BYTES`) as RENDERED, not only as
+/// estimated, and following the cursor delivers every version exactly once:
+/// the loop a 1.1.3 client already runs (`seq < head_seq`).
+#[test]
+fn a_change_page_stays_inside_its_byte_budget_and_the_cursor_delivers_the_rest() {
+    let h = Harness::start("changes-bytes");
+    let cred = h.setup_account();
+    let manifest = obsync_core::base64::encode(&vec![0x6d; 780_000]);
+    for n in 1..=10u8 {
+        let file_id = format!("{n:02x}").repeat(16);
+        let res = post_version(&h, &cred, &file_id, &[], &[], &manifest);
+        assert_eq!(res.status, 201, "{}", res.text());
+    }
+    let mut since = 0u64;
+    let mut delivered = Vec::new();
+    let mut pages = 0;
+    loop {
+        let res = Req::get(&format!("/v1/changes?since={since}&limit=1000"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        assert!(
+            res.body.len() <= 8 * 1024 * 1024,
+            "a page of {} bytes",
+            res.body.len()
+        );
+        let page = res.json();
+        for change in page
+            .get("changes")
+            .and_then(Value::as_array)
+            .expect("changes")
+        {
+            delivered.push(
+                change
+                    .get("file_id")
+                    .and_then(Value::as_str)
+                    .expect("id")
+                    .to_string(),
+            );
+        }
+        pages += 1;
+        since = page.get("seq").and_then(Value::as_u64).expect("seq");
+        if since >= page.get("head_seq").and_then(Value::as_u64).expect("head") {
+            break;
+        }
+        assert!(pages < 10, "the cursor stopped moving");
+    }
+    assert!(pages >= 2, "ten maximal manifests fit no single page");
+    assert_eq!(delivered.len(), 10, "{delivered:?}");
+    delivered.sort();
+    delivered.dedup();
+    assert_eq!(delivered.len(), 10, "nothing repeated");
 }
 
 #[test]
