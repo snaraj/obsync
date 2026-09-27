@@ -27,7 +27,7 @@ impl Default for Limits {
             max_header_bytes: 16 * 1024,
             header_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(60),
-            min_body_rate_bytes_per_sec: 64 * 1024,
+            min_body_rate_bytes_per_sec: 16 * 1024,
             max_connections: 256,
         }
     }
@@ -43,7 +43,7 @@ mod tests {
         assert_eq!(limits.max_header_bytes, 16384);
         assert_eq!(limits.header_timeout, Duration::from_secs(10));
         assert_eq!(limits.idle_timeout, Duration::from_secs(60));
-        assert_eq!(limits.min_body_rate_bytes_per_sec, 65536);
+        assert_eq!(limits.min_body_rate_bytes_per_sec, 16384);
         assert_eq!(limits.max_connections, 256);
     }
 }

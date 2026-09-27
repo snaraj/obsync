@@ -716,6 +716,22 @@ accident. Ordinary syncing works on these drives; only these copies fail.
 2. Keep the vault on the computer's own drive, or on a drive formatted for
    your system (APFS on a Mac, NTFS on Windows, ext4 on Linux), and try again.
 
+## A photo or PDF from my phone never arrives on my other devices
+
+**Symptom.** On a phone with a weak connection, a photo, a PDF or another
+large file stays unsynced and keeps retrying. Short notes still sync.
+
+**Cause.** Before 1.1.4 the server gave each piece of a large file a fixed
+time to arrive. On a slow upload link (below roughly half a megabit per
+second: weak mobile data, a busy hotspot) a big piece never made it in time,
+so every retry failed the same way. The server's answer blamed its storage,
+but nothing was wrong with it: the connection was simply too slow, and from
+1.1.4 the answer says so (`slow_body`).
+
+**Fix.** Update your server to 1.1.4 or later. Then give it time on a slow
+link: a large file sends more slowly, but it arrives. If it still does not,
+try Wi-Fi.
+
 ## A conflict copy appeared
 
 That is obsync refusing to throw away an edit, not a failure. See

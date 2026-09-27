@@ -433,6 +433,14 @@ one that makes sync look broken:
   address decides which interface accepts connections; the firewall decides
   which sources do. An overlay's addresses are a new source.
 
+**Slow links.** The server accepts a request body as slow as 16 KiB/s (about
+128 kbit/s), so a phone on weak mobile data can still send a large file: one
+8 MiB piece may take up to about nine minutes. Connections that trickle stay
+bounded by the connection limit (`OBSYNC_MAX_CONNECTIONS`, 256 by default)
+and the 10-second header timeout, which closes a connection that has not
+finished its request head, and the bodies no credential has verified yet
+share one 64 MiB reservation.
+
 What has actually been proved is the LAN: the recorded run
 ([`docs/validation-runs/2026-09-14.md`](validation-runs/2026-09-14.md))
 carried setup, pairing and two-way sync between a macOS desktop and an iOS

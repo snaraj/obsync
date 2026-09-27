@@ -606,7 +606,7 @@ device whose link opened it is revoked.
   passes 8 MiB; its `seq` is then below `head_seq`, and the next request from
   that cursor carries on. A client that wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
-  `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s. A body
+  `wait`); header read timeout 10 s; body read minimum rate 16 KiB/s. A body
   slower than that, on any route, is `503 slow_body`: the sender's link, not the
   server's storage, and a client retries it.
 - Every response carries `Cache-Control: no-store` and the security headers

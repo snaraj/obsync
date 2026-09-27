@@ -2084,6 +2084,23 @@ fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
     assert_slow_body(&h, &refused);
 }
 
+/// #204: a phone on weak mobile data, uploading at 256 kbit/s (32 KiB/s).
+/// Under the old 64 KiB/s floor this upload was refused after about two
+/// seconds, on every retry, forever; at 16 KiB/s it arrives whole.
+#[test]
+fn a_chunk_sent_at_256_kbit_per_second_arrives() {
+    let h = Harness::start("slow-uplink");
+    let cred = h.setup_account();
+    let body = vec![0x58; 128 * 1024];
+    let res = trickle_put(&h, &cred, &body, 32 * 1024);
+    assert_eq!(res.status, 201, "{}", res.text());
+    let (_, sid) = chunk(&body);
+    let got = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(got.body, body, "stored whole");
+}
+
 #[test]
 fn multipart_ciphertext_budget_accepts_exactly_32_mib_and_refuses_more() {
     let h = Harness::start("multipart-ceiling");

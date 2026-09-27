@@ -35,8 +35,13 @@ pub const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// An idle connection is closed after this long; a long-poll is excepted up to
 /// its own `wait`.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// A body slower than this is a slowloris and is dropped.
-pub const MIN_BODY_RATE: u64 = 64 * 1024;
+/// A body slower than this is a slowloris and is dropped. 16 KiB/s is about
+/// 128 kbit/s: a maximal 8 MiB chunk gets about 513 s, so a phone on weak
+/// mobile data still delivers one, where 64 KiB/s failed every upload below
+/// about 512 kbit/s forever (#204). A trickle stays bounded by the
+/// connection ceiling and `HEADER_TIMEOUT`, and unverified bodies by
+/// `api::PREAUTH_BODY_BUDGET`.
+pub const MIN_BODY_RATE: u64 = 16 * 1024;
 /// In-flight requests get this long to finish after a signal.
 pub const DRAIN: Duration = Duration::from_secs(20);
 /// Garbage collection runs on this period (`docs/storage.md`).
