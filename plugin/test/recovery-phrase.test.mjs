@@ -17,7 +17,6 @@ import { join } from "node:path";
 import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
-const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
 
 /** The sandbox, with `Setting` widgets that record what is drawn and can be pressed. */
 function box(t) {
@@ -66,9 +65,15 @@ function dialog(b, p, confirmFirst, afterClose) {
   modal.setTitle = () => {};
   let closed = 0;
   modal.close = () => { closed++; modal.onClose(); };
+  // The words are derived asynchronously; hold the drawing `onOpen` starts so
+  // a test waits for it, not for a guessed number of turns (a loaded runner
+  // took more than five).
+  const render = modal.render.bind(modal);
+  let ready = null;
+  modal.render = () => (ready = render());
   b.made.length = 0;
   modal.onOpen();
-  return { modal, drawn, closed: () => closed };
+  return { modal, drawn, closed: () => closed, ready: () => ready };
 }
 
 test("Escape on the words at setup leaves them unconfirmed, owed one reminder; passing the check confirms them (#170)", async (t) => {
@@ -76,7 +81,7 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
   const words = await b.words();
   const p = plugin();
   const d = dialog(b, p, true);
-  await settle();
+  await d.ready();
   const fields = b.made.filter((w) => w.kind === "text");
   assert.equal(fields.length, 3, "the three-word check is drawn");
   for (const field of fields) {
@@ -90,7 +95,7 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
 
   // Opened again from Settings: a wrong word changes nothing, the right ones confirm.
   const again = dialog(b, p, true);
-  await settle();
+  await again.ready();
   const [w3, w11, w20] = b.made.filter((w) => w.kind === "text");
   const confirm = b.made.find((w) => w.kind === "button" && w.text === "I have written it down");
   w3.change(words[2]); w11.change("wrong"); w20.change(words[19]);
@@ -113,7 +118,7 @@ test("the words shown from the palette offer the check to an unconfirmed device,
     const p = plugin({ recoveryPhrase: state });
     let after = 0;
     const d = dialog(b, p, false, () => { after++; });
-    await settle();
+    await d.ready();
     assert.equal(d.drawn.filter((line) => line.startsWith("li: ")).length, 24);
     assert.equal(b.made.filter((w) => w.kind === "text").length, check ? 3 : 0, state);
     d.modal.onClose();
@@ -124,7 +129,7 @@ test("the words shown from the palette offer the check to an unconfirmed device,
   // A device with no key has nothing to confirm or skip.
   const p = plugin({ vrk: null });
   const d = dialog(b, p, true);
-  await settle();
+  await d.ready();
   d.modal.onClose();
   assert.equal(p.state.data.recoveryPhrase, "unconfirmed");
   assert.deepEqual(p.calls, []);
