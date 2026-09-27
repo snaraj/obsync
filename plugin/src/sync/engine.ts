@@ -3944,8 +3944,8 @@ export class SyncEngine {
         "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
           "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
           "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
-          "capitalisation, update every device first, let each sync once, and only then delete the stale " +
-          "folder there -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+          "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
+          "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
       );
     }
     return true;

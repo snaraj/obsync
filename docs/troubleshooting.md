@@ -871,9 +871,11 @@ do not want. Two different NAMES settle on one name by themselves: see
 folds capitals, the old spelling IS the live folder, so deleting it too early
 deletes the notes you are trying to keep, everywhere. Follow this order:
 
-1. **Update every device** to 1.1.0 or later, open each one, and let it sync
-   once. A device that folds capitals then forgets the old spelling and says
-   so once in a notice. That is what makes the next steps safe.
+1. **Check that every device runs 1.1.0 or later,** and update any that does
+   not: **Devices** in obsync's settings shows each device's version. Open each
+   one and let it sync once. A device that folds capitals then forgets the old
+   spelling and says so once in a notice. That is what makes the next steps
+   safe.
 2. **Check the stale folder** on the device that shows two. Its notes should
    be the ones you renamed away from. Anything you edited there after the
    rename exists only there: move it into the live folder first, under a name

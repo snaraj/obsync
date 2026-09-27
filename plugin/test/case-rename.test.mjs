@@ -827,10 +827,15 @@ test("the startup scan drops the ghost record, publishes nothing, and disarms th
     a.host.logs.some((line) => line.includes("decision=case_ghost_forgotten")),
     a.host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
   );
-  assert.ok(
-    a.host.notices.some((message) => message.includes("capitalisation")),
-    a.host.notices.join(" | "),
-  );
+  // True of a fleet already on 1.1.4, and still the order a mixed one needs:
+  // no "update every device" to a person whose devices all run this version.
+  assert.ok(a.host.notices.includes(
+    "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
+      "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
+      "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
+      "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
+      "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+  ), a.host.notices.join(" | "));
 
   // And now the tombstone the stale folder's deletion publishes elsewhere
   // reaches a device that no longer maps the old spelling to anything.
