@@ -40,8 +40,8 @@ rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
 
 In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
-connecting-address and request-id headers or it is refused with `421
-edge_required`.
+connecting-address and request-id headers, once each, from a peer inside
+`OBSYNC_TRUSTED_PROXY_CIDRS`, or it is refused with `421 edge_required`.
 
 ## Idempotence
 

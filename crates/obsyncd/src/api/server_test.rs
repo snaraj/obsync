@@ -63,6 +63,8 @@ struct Setup {
     /// (requirement 12). Off by default: every other test measures behavior
     /// through the wire, and a buffer nobody reads is just memory.
     capture_log: bool,
+    /// `OBSYNC_TRUSTED_PROXY_CIDRS`; unset when `None`.
+    trusted: Option<&'static str>,
 }
 
 impl Harness {
@@ -106,7 +108,7 @@ impl Harness {
         } else {
             Edge::None
         };
-        let pairs: Vec<(String, String)> = [
+        let mut pairs: Vec<(String, String)> = [
             ("OBSYNC_BLOBS_DIR", blobs.display().to_string()),
             ("OBSYNC_JOURNAL_DIR", journal.display().to_string()),
             ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
@@ -125,6 +127,9 @@ impl Harness {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+        if let Some(trusted) = setup.trusted {
+            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
+        }
         let cfg = Config::from_pairs(&pairs).expect("configuration");
         let log = if setup.capture_log {
             Log::buffered(LogLevel::Debug)
@@ -1117,6 +1122,72 @@ fn edge_mode_refuses_a_request_without_the_edge_headers_but_still_serves_health(
         Some("198.51.100.7")
     );
     assert_eq!(first.get("country").and_then(Value::as_str), Some("PT"));
+}
+
+#[test]
+fn edge_mode_refuses_the_edge_headers_from_a_peer_outside_the_trusted_networks() {
+    // Every request here arrives from loopback, which this deployment says is
+    // not where its edge connector lives.
+    let h = Harness::start_with(
+        "edge-peer",
+        Setup {
+            edge_mode: true,
+            trusted: Some("10.0.0.0/8"),
+            ..Setup::default()
+        },
+    );
+    let res = Req::post("/v1/setup")
+        .body(r#"{"setup_token":"x","account_name":"v"}"#)
+        .header("CF-Connecting-IP", "198.51.100.7")
+        .header("CF-Ray", "test-ray")
+        .send(h.addr);
+    assert_eq!(res.status, 421);
+    assert_eq!(res.code(), "edge_required");
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+}
+
+#[test]
+fn a_trusted_proxy_names_the_client_and_a_disagreeing_header_is_ignored_and_logged() {
+    let h = Harness::start_with(
+        "forwarded",
+        Setup {
+            trusted: Some("127.0.0.0/8"),
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    // A heartbeat records the address every time; the device list reads it.
+    let address = |headers: &[(&str, &str)]| {
+        let mut beat = Req::post("/v1/devices/heartbeat").body(r#"{"app_version":"0.1.0"}"#);
+        for (name, value) in headers {
+            beat = beat.header(name, value);
+        }
+        assert_eq!(beat.sign(&cred, NOW).send(h.addr).status, 204);
+        let v = Req::get("/v1/devices").sign(&cred, NOW).send(h.addr).json();
+        v.get("devices").and_then(Value::as_array).expect("devices")[0]
+            .get("address")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    // A proxy that adds its own line after the client's forged one.
+    let two_lines = [
+        ("X-Forwarded-For", "192.0.2.66"),
+        ("X-Forwarded-For", "203.0.113.7"),
+    ];
+    assert_eq!(address(&two_lines).as_deref(), Some("203.0.113.7"));
+    let rfc = [("Forwarded", r#"for="[2001:db8::7]:4711""#)];
+    assert_eq!(address(&rfc).as_deref(), Some("2001:db8::7"));
+    let forged = [
+        ("X-Forwarded-For", "203.0.113.7"),
+        ("Forwarded", "for=192.0.2.66"),
+    ];
+    assert_eq!(address(&forged).as_deref(), Some("127.0.0.1"));
+    let log = h.captured();
+    assert!(
+        log.contains("reason=forwarded_headers_disagree"),
+        "the disagreement is logged: {log}"
+    );
 }
 
 #[test]

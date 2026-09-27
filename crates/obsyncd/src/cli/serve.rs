@@ -6,7 +6,8 @@
 //! configuration, because it is a capacity choice and not a security one.
 #![forbid(unsafe_code)]
 
-use std::io::Write;
+use std::io::{self, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::{JoinHandle, sleep};
@@ -101,7 +102,7 @@ pub fn run() -> i32 {
         min_body_rate_bytes_per_sec: MIN_BODY_RATE,
         max_connections: cfg.max_connections,
     };
-    let mut server = match Server::bind(&cfg.listen.to_string(), limits) {
+    let mut server = match listen(cfg.listen, &limits, &log) {
         Ok(server) => server,
         Err(e) => {
             log.error(
@@ -168,6 +169,33 @@ pub fn run() -> i32 {
 /// on I/O names the `io::ErrorKind` it died on: a full volume, a wrong owner
 /// and a missing mount printed the identical line before, and telling them
 /// apart cost a probe container (issue #19).
+/// Bind the configured listener. `[::]`, the default, is dual-stack wherever
+/// the kernel has IPv6 and reports an IPv4 client as a mapped address
+/// (`api::edge` reads it as IPv4). A host booted without IPv6 refuses that
+/// socket, and the same port on every IPv4 address is then the listener that
+/// still serves, said in one line rather than an exit. A port already taken
+/// is refused on both families alike, so it is not retried.
+fn listen(addr: SocketAddr, limits: &Limits, log: &Log) -> io::Result<Server> {
+    let e = match Server::bind(&addr.to_string(), limits.clone()) {
+        Err(e) => e,
+        bound => return bound,
+    };
+    let Some(v4) = ipv4_fallback(addr, &e) else {
+        return Err(e);
+    };
+    log.warn(
+        "listen_ipv4_only",
+        &[("decision", Val::word("fallback")), ("io", Val::io(&e))],
+    );
+    Server::bind(&v4.to_string(), limits.clone())
+}
+
+/// The IPv4 listener to try when `addr` could not be bound, if any.
+fn ipv4_fallback(addr: SocketAddr, e: &io::Error) -> Option<SocketAddr> {
+    (addr.ip() == Ipv6Addr::UNSPECIFIED && e.kind() != io::ErrorKind::AddrInUse)
+        .then(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, addr.port())))
+}
+
 fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
     let mut fields = vec![
         ("decision", Val::word("exit")),
@@ -400,6 +428,50 @@ mod tests {
     use crate::cli::testutil::config;
     use crate::log::LogLevel;
     use crate::storage::testutil::TempDir;
+
+    #[test]
+    fn the_default_listener_serves_ipv4_clients_and_a_taken_port_is_not_retried() {
+        let log = Log::buffered(LogLevel::Debug);
+        let limits = Limits::default();
+        let server = listen("[::]:0".parse().expect("addr"), &limits, &log).expect("binds");
+        let port = server.local_addr().port();
+        std::net::TcpStream::connect(("127.0.0.1", port))
+            .expect("an IPv4 client reaches the default listener");
+        let before = log.captured();
+        let taken = listen(
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+            &limits,
+            &log,
+        );
+        assert_eq!(
+            taken.err().map(|e| e.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        assert_eq!(
+            log.captured(),
+            before,
+            "a taken port is refused, not retried"
+        );
+    }
+
+    #[test]
+    fn only_the_unspecified_ipv6_listener_falls_back_and_only_when_ipv6_is_missing() {
+        let any6: SocketAddr = "[::]:8080".parse().expect("addr");
+        let no_ipv6 = io::Error::from(io::ErrorKind::Unsupported);
+        assert_eq!(
+            ipv4_fallback(any6, &no_ipv6),
+            Some("0.0.0.0:8080".parse().expect("addr"))
+        );
+        let in_use = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(ipv4_fallback(any6, &in_use), None);
+        for other in ["[::1]:8080", "127.0.0.1:8080", "0.0.0.0:8080"] {
+            assert_eq!(
+                ipv4_fallback(other.parse().expect("addr"), &no_ipv6),
+                None,
+                "{other}"
+            );
+        }
+    }
 
     /// The start sequence up to the token, as `run` performs it.
     fn start(cfg: &Config, log: &Log) -> (Posture, Store) {

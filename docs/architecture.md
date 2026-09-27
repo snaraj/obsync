@@ -1521,7 +1521,9 @@ JSON under `/v1/admin/*` behind the dashboard session. Pages:
 
 Address and country: in `cloudflare` edge mode from the edge's
 connecting-address and country headers; in `none` mode from the peer
-address or a trusted proxy header. Device history retention defaults to 90
+address or a trusted proxy's `X-Forwarded-For` or `Forwarded` header. Either
+header is believed only from a peer inside `OBSYNC_TRUSTED_PROXY_CIDRS`, and
+when a proxy sends both they must name the same client or neither is believed. Device history retention defaults to 90
 days. Multi-account operation is a backlog issue; every record already
 carries an `account_id`.
 
@@ -1531,7 +1533,7 @@ Environment only, so containers and charts need no config file:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `OBSYNC_LISTEN` | `0.0.0.0:8080` | HTTP listener |
+| `OBSYNC_LISTEN` | `[::]:8080` | HTTP listener; `[::]` is dual-stack, and falls back to every IPv4 address on a host without IPv6 |
 | `OBSYNC_BLOBS_DIR` | `/data/blobs` | Chunk volume |
 | `OBSYNC_JOURNAL_DIR` | `/data/journal` | Journal, index snapshots, server key |
 | `OBSYNC_BLOBS_MIRRORS` | empty | Comma-separated extra blob volumes |
@@ -1540,7 +1542,7 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_DASHBOARD_DIR` | `/opt/obsync/dashboard` | Dashboard static files |
 | `OBSYNC_PLUGIN_DIR` | `/opt/obsync/plugin` | Plugin bundle (`main.js`, `manifest.json`, `styles.css`) |
 | `OBSYNC_EDGE` | `none` | `none` or `cloudflare` |
-| `OBSYNC_TRUSTED_PROXY_CIDRS` | empty | Forwarded-address trust in `none` mode |
+| `OBSYNC_TRUSTED_PROXY_CIDRS` | empty | The only peers whose forwarding headers are believed, in every mode. Empty in `none` mode believes only the peer address; empty in `cloudflare` mode means the private networks a tunnel connector reaches its origin from (loopback, RFC 1918, RFC 6598, IPv6 unique local). A block holding every address is refused |
 | `OBSYNC_PUBLIC_URL` | empty | The base every generated link is built on -- the dashboard sign-in link the plugin asks for, and the addresses the pairing and install pages show. Empty is the private default: the server then hands out a relative link and the device resolves it against the server address it is configured with. Set, it must carry the scheme, the host AND the port devices arrive on |
 | `OBSYNC_SERVER_KEY` | empty | 64 hex chars; generated once if absent |
 | `OBSYNC_FREE_WATERMARK` | `5%,2GiB` | Refuse writes below the larger of the two |

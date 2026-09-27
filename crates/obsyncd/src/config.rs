@@ -46,7 +46,9 @@ pub struct Config {
     pub plugin_dir: PathBuf,
     /// Which edge behaviour to require (`OBSYNC_EDGE`).
     pub edge: Edge,
-    /// Networks whose forwarded-address header is trusted in `none` mode.
+    /// The only peers whose forwarding headers are believed, in every mode
+    /// (`OBSYNC_TRUSTED_PROXY_CIDRS`; [`private_networks`] when the edge's
+    /// headers are required and the variable names none).
     pub trusted_proxy_cidrs: Vec<Cidr>,
     /// Public URL shown on pairing and install pages (`OBSYNC_PUBLIC_URL`).
     pub public_url: Option<String>,
@@ -141,6 +143,28 @@ impl Edge {
             Edge::Cloudflare => "cloudflare",
         }
     }
+}
+
+/// The peers a tunnel connector reaches its origin from, trusted when the
+/// edge's headers are required and `OBSYNC_TRUSTED_PROXY_CIDRS` names none:
+/// loopback, the RFC 1918 and RFC 6598 ranges, and IPv6 loopback and unique
+/// local. A connector on the same host, a container bridge or a pod network is
+/// inside them; a peer on the public internet is not, so with nothing
+/// configured the edge's headers are still refused from anything that reached
+/// the port from outside. Naming the connector's own network narrows it.
+pub fn private_networks() -> Vec<Cidr> {
+    [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fc00::/7",
+    ]
+    .iter()
+    .filter_map(|block| Cidr::parse(block))
+    .collect()
 }
 
 /// A CIDR block, v4 or v6.
@@ -281,7 +305,7 @@ impl Default for Config {
     /// values here exist only so a partially built `Config` is a valid value.
     fn default() -> Config {
         Config {
-            listen: "0.0.0.0:8080".parse().expect("default listener parses"),
+            listen: "[::]:8080".parse().expect("default listener parses"),
             blobs_dir: PathBuf::from("/data/blobs"),
             journal_dir: PathBuf::from("/data/journal"),
             blobs_mirrors: Vec::new(),
@@ -364,11 +388,18 @@ impl Config {
                 "OBSYNC_TRUSTED_PROXY_CIDRS" => {
                     cfg.trusted_proxy_cidrs = list(value)
                         .iter()
-                        .map(|c| {
-                            Cidr::parse(c).ok_or(invalid(
+                        .map(|c| match Cidr::parse(c) {
+                            // A block holding every address trusts every
+                            // sender, which is no trust boundary at all.
+                            Some(block) if block.prefix == 0 => Err(invalid(
+                                "OBSYNC_TRUSTED_PROXY_CIDRS",
+                                "expected blocks narrower than every address",
+                            )),
+                            Some(block) => Ok(block),
+                            None => Err(invalid(
                                 "OBSYNC_TRUSTED_PROXY_CIDRS",
                                 "expected a comma-separated list of address/prefix blocks",
-                            ))
+                            )),
                         })
                         .collect::<Result<_, _>>()?;
                 }
@@ -427,6 +458,9 @@ impl Config {
         }
         if !journal_capacity_set {
             return Err(ConfigError::Missing("OBSYNC_JOURNAL_CAPACITY"));
+        }
+        if cfg.edge.requires_edge_headers() && cfg.trusted_proxy_cidrs.is_empty() {
+            cfg.trusted_proxy_cidrs = private_networks();
         }
         cfg.validate()?;
         Ok(cfg)
@@ -494,6 +528,10 @@ impl Config {
             &[
                 ("port", Val::count(u64::from(self.listen.port()))),
                 ("edge", Val::word(self.edge.as_word())),
+                (
+                    "trusted_proxy_networks",
+                    Val::count(self.trusted_proxy_cidrs.len() as u64),
+                ),
                 ("mirrors", Val::count(self.blobs_mirrors.len() as u64)),
                 ("blobs_capacity", Val::bytes(self.blobs_capacity)),
                 ("journal_capacity", Val::bytes(self.journal_capacity)),
@@ -698,7 +736,7 @@ mod tests {
     #[test]
     fn defaults_match_the_documented_table() {
         let cfg = parse(&[]).expect("the required variables alone are valid");
-        assert_eq!(cfg.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(cfg.listen.to_string(), "[::]:8080");
         assert_eq!(cfg.blobs_dir, PathBuf::from("/data/blobs"));
         assert_eq!(cfg.journal_dir, PathBuf::from("/data/journal"));
         assert!(cfg.blobs_mirrors.is_empty());
@@ -733,8 +771,8 @@ mod tests {
             ("OBSYNC_BLOBS_MIRRORS", "/mnt/m1, /mnt/m2=slow-hdd"),
             ("OBSYNC_BLOBS_CAPACITY", "500GiB"),
             ("OBSYNC_JOURNAL_CAPACITY", "8GiB"),
-            ("OBSYNC_BLOBS_CLASS", "local-pie-ssd"),
-            ("OBSYNC_JOURNAL_CLASS", "local-pie-ssd"),
+            ("OBSYNC_BLOBS_CLASS", "local-ssd"),
+            ("OBSYNC_JOURNAL_CLASS", "local-ssd"),
             ("OBSYNC_DASHBOARD_DIR", "/srv/dash"),
             ("OBSYNC_PLUGIN_DIR", "/srv/plugin"),
             ("OBSYNC_EDGE", "cloudflare"),
@@ -770,8 +808,8 @@ mod tests {
         );
         assert_eq!(cfg.blobs_capacity, 500 * GIB);
         assert_eq!(cfg.journal_capacity, 8 * GIB);
-        assert_eq!(cfg.blobs_class, "local-pie-ssd");
-        assert_eq!(cfg.journal_class, "local-pie-ssd");
+        assert_eq!(cfg.blobs_class, "local-ssd");
+        assert_eq!(cfg.journal_class, "local-ssd");
         assert_eq!(cfg.dashboard_dir, PathBuf::from("/srv/dash"));
         assert_eq!(cfg.plugin_dir, PathBuf::from("/srv/plugin"));
         assert!(cfg.edge.requires_edge_headers());
@@ -895,6 +933,8 @@ mod tests {
             ("OBSYNC_TRUSTED_PROXY_CIDRS", "10.0.0.0"),
             ("OBSYNC_TRUSTED_PROXY_CIDRS", "10.0.0.0/33"),
             ("OBSYNC_TRUSTED_PROXY_CIDRS", "2001:db8::/129"),
+            ("OBSYNC_TRUSTED_PROXY_CIDRS", "0.0.0.0/0"),
+            ("OBSYNC_TRUSTED_PROXY_CIDRS", "10.0.0.0/8,::/0"),
             ("OBSYNC_PUBLIC_URL", "example.invalid"),
             ("OBSYNC_SERVER_KEY", "00"),
             (
@@ -1039,6 +1079,43 @@ mod tests {
         assert!(watermark("1%,2g").is_err(), "a decimal-letter size term");
         assert!(watermark("64m").is_err(), "a decimal-letter size term");
         assert!(watermark("2gib").is_err(), "a misspelled size term");
+    }
+
+    #[test]
+    fn the_edge_mode_trusts_private_peers_until_told_which() {
+        let cfg = parse(&[("OBSYNC_EDGE", "cloudflare")]).expect("edge mode alone parses");
+        assert_eq!(cfg.trusted_proxy_cidrs, private_networks());
+        let inside = |ip: &str| {
+            let ip = ip.parse().expect("ip");
+            cfg.trusted_proxy_cidrs.iter().any(|c| c.contains(&ip))
+        };
+        for private in [
+            "127.0.0.1",
+            "10.42.0.7",
+            "172.31.255.241",
+            "192.168.1.10",
+            "100.64.0.1",
+            "::1",
+            "fd00:10:244::5",
+        ] {
+            assert!(inside(private), "{private} is a connector's network");
+        }
+        for public in ["203.0.113.9", "8.8.8.8", "172.32.0.1", "2001:db8::1"] {
+            assert!(!inside(public), "{public} is not");
+        }
+        let named = parse(&[
+            ("OBSYNC_EDGE", "cloudflare"),
+            ("OBSYNC_TRUSTED_PROXY_CIDRS", "10.42.0.0/16"),
+        ])
+        .expect("a named network parses");
+        assert_eq!(
+            named.trusted_proxy_cidrs,
+            vec![Cidr::parse("10.42.0.0/16").expect("block")]
+        );
+        // `none` mode keeps an empty list empty: its forwarded chains are
+        // walked hop by hop, and a trusted client range would let a client on
+        // it hand the walk a forged hop.
+        assert!(parse(&[]).expect("parses").trusted_proxy_cidrs.is_empty());
     }
 
     #[test]

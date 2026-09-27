@@ -5,9 +5,17 @@
 //! header names, which are provider-neutral tokens; `config.rs` is the one
 //! file that knows which provider the setting selects, and `doctrine_test`
 //! pins that.
+//!
+//! TRUST IS BOUND TO THE PEER, in every mode. A header naming a client is a
+//! claim, and only a peer inside `OBSYNC_TRUSTED_PROXY_CIDRS` may make one:
+//! the edge-header mode refuses a request carrying the edge's headers from
+//! any other peer, and `none` mode ignores forwarded headers from one. Every
+//! line of a header is read, in arrival order, because a proxy that ADDS a
+//! header line rather than appending to the client's would otherwise leave
+//! the client's own line first.
 #![forbid(unsafe_code)]
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use obsync_core::http::Request;
 
@@ -24,6 +32,8 @@ pub const EDGE_COUNTRY: &str = "cf-ipcountry";
 
 /// Standard forwarded-address header, trusted only from a configured proxy.
 pub const FORWARDED_FOR: &str = "x-forwarded-for";
+/// The RFC 7239 forwarded header, trusted only from a configured proxy.
+pub const FORWARDED: &str = "forwarded";
 
 /// What the server may say about who sent a request. Never persisted for an
 /// unauthenticated request and never part of a signed canonical string.
@@ -33,6 +43,8 @@ pub struct ClientInfo {
     pub address: Option<String>,
     /// Two-letter country from the edge, when it supplied one.
     pub country: Option<String>,
+    /// Why forwarded headers that arrived were not believed, for the log.
+    pub ignored: Option<&'static str>,
 }
 
 impl ClientInfo {
@@ -48,9 +60,36 @@ impl ClientInfo {
     }
 }
 
+/// Every line of each header this file reads, in arrival order.
+#[derive(Clone, Debug, Default)]
+pub struct Forwarding<'a> {
+    /// `EDGE_CONNECTING_ADDRESS` lines.
+    pub connecting: Vec<&'a str>,
+    /// `EDGE_REQUEST_ID` lines.
+    pub request_id: Vec<&'a str>,
+    /// `EDGE_COUNTRY` lines.
+    pub country: Vec<&'a str>,
+    /// `FORWARDED_FOR` lines.
+    pub forwarded_for: Vec<&'a str>,
+    /// `FORWARDED` lines.
+    pub forwarded: Vec<&'a str>,
+}
+
+impl<'a> Forwarding<'a> {
+    fn of(req: &'a Request) -> Self {
+        Self {
+            connecting: req.headers.all(EDGE_CONNECTING_ADDRESS),
+            request_id: req.headers.all(EDGE_REQUEST_ID),
+            country: req.headers.all(EDGE_COUNTRY),
+            forwarded_for: req.headers.all(FORWARDED_FOR),
+            forwarded: req.headers.all(FORWARDED),
+        }
+    }
+}
+
 /// Derive the client address and country for one request, refusing with
-/// `421 edge_required` when the deployment sits behind an edge and the edge's
-/// headers are absent (`docs/protocol.md`, "Authentication").
+/// `421 edge_required` when the deployment sits behind an edge and the
+/// request did not come through it (`docs/protocol.md`, "Authentication").
 ///
 /// # Errors
 /// `421 edge_required`.
@@ -59,10 +98,7 @@ pub fn derive(cfg: &Config, req: &Request) -> Result<ClientInfo, ApiError> {
         cfg.edge,
         &cfg.trusted_proxy_cidrs,
         req.peer.ip(),
-        req.headers.get(EDGE_CONNECTING_ADDRESS),
-        req.headers.get(EDGE_REQUEST_ID),
-        req.headers.get(EDGE_COUNTRY),
-        req.headers.get(FORWARDED_FOR),
+        &Forwarding::of(req),
     )
 }
 
@@ -70,74 +106,152 @@ pub fn derive(cfg: &Config, req: &Request) -> Result<ClientInfo, ApiError> {
 /// case are unit-testable.
 ///
 /// # Errors
-/// `421 edge_required` when the edge's headers are required and absent.
+/// `421 edge_required` when the edge's headers are required and either the
+/// peer is not a trusted proxy or a header is absent, blank or repeated.
 pub fn derive_parts(
     edge: Edge,
     trusted: &[Cidr],
     peer: IpAddr,
-    connecting: Option<&str>,
-    request_id: Option<&str>,
-    country: Option<&str>,
-    forwarded: Option<&str>,
+    headers: &Forwarding,
 ) -> Result<ClientInfo, ApiError> {
+    // A dual-stack listener reports an IPv4 peer as `::ffff:a.b.c.d`, which
+    // no IPv4 block contains.
+    let peer = peer.to_canonical();
+    let from_proxy = inside(trusted, peer);
     if edge.requires_edge_headers() {
-        let address = connecting
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .and_then(|v| v.parse::<IpAddr>().ok())
-            .ok_or_else(|| {
-                ApiError::new(
-                    421,
-                    "edge_required",
-                    "edge connecting-address header missing",
-                )
-            })?;
-        if !request_id.map(str::trim).is_some_and(|v| !v.is_empty()) {
-            return Err(ApiError::new(
-                421,
-                "edge_required",
-                "edge request-id header missing",
+        let refuse = |detail| ApiError::new(421, "edge_required", detail);
+        if !from_proxy {
+            return Err(refuse(
+                "edge headers from a peer outside the trusted proxy networks",
             ));
+        }
+        let address = single(&headers.connecting)
+            .and_then(node_ip)
+            .ok_or_else(|| refuse("edge connecting-address header missing"))?;
+        if single(&headers.request_id).is_none() {
+            return Err(refuse("edge request-id header missing"));
         }
         return Ok(ClientInfo {
             address: Some(address.to_string()),
-            country: sane_country(country),
+            country: single(&headers.country).and_then(sane_country),
+            ignored: None,
         });
     }
-    if trusted.iter().any(|c| c.contains(&peer))
-        && let Some(addr) = last_untrusted_hop(forwarded, trusted)
-    {
-        return Ok(ClientInfo {
-            address: Some(addr),
-            country: None,
-        });
-    }
+    let offered = !headers.forwarded_for.is_empty() || !headers.forwarded.is_empty();
+    let (address, ignored) = match (offered, from_proxy) {
+        (false, _) => (peer, None),
+        (true, false) => (peer, Some("untrusted_peer")),
+        (true, true) => match forwarded_client(headers, trusted) {
+            Ok(client) => (client.unwrap_or(peer), None),
+            Err(reason) => (peer, Some(reason)),
+        },
+    };
     Ok(ClientInfo {
-        address: Some(peer.to_string()),
+        address: Some(address.to_string()),
         country: None,
+        ignored,
     })
 }
 
-/// The rightmost `X-Forwarded-For` entry that is not itself a trusted proxy:
-/// the last hop this deployment has no reason to trust.
-fn last_untrusted_hop(forwarded: Option<&str>, trusted: &[Cidr]) -> Option<String> {
-    let raw = forwarded?;
-    for hop in raw.split(',').rev() {
-        let hop = hop.trim();
-        let Ok(ip) = hop.parse::<IpAddr>() else {
-            continue;
-        };
-        if !trusted.iter().any(|c| c.contains(&ip)) {
-            return Some(ip.to_string());
+fn inside(trusted: &[Cidr], ip: IpAddr) -> bool {
+    trusted.iter().any(|c| c.contains(&ip))
+}
+
+/// Exactly one non-blank line. A repeated single-valued header is two
+/// claims, and the server believes neither.
+fn single<'a>(lines: &[&'a str]) -> Option<&'a str> {
+    match lines {
+        [line] => Some(line.trim()).filter(|v| !v.is_empty()),
+        _ => None,
+    }
+}
+
+/// The client a trusted proxy vouches for. Each header names a chain of hops,
+/// client first; the client is the rightmost hop that is not itself a trusted
+/// proxy. Both standard headers are read, and when both arrive they must name
+/// the same client: a proxy that manages one passes the other through from the
+/// client untouched, so a disagreement is a forgery in the one it does not
+/// manage, and neither is believed.
+fn forwarded_client(
+    headers: &Forwarding,
+    trusted: &[Cidr],
+) -> Result<Option<IpAddr>, &'static str> {
+    let by_for = hops(&headers.forwarded_for, |hop| hop);
+    let by_forwarded = hops(&headers.forwarded, for_parameter);
+    let chain = |hops: Vec<&str>| last_untrusted_hop(&hops, trusted);
+    match (
+        headers.forwarded_for.is_empty(),
+        headers.forwarded.is_empty(),
+    ) {
+        (false, true) => Ok(chain(by_for)),
+        (true, false) => Ok(chain(by_forwarded)),
+        _ => {
+            let (a, b) = (chain(by_for), chain(by_forwarded));
+            if a == b {
+                Ok(a)
+            } else {
+                Err("forwarded_headers_disagree")
+            }
+        }
+    }
+}
+
+/// Every hop of a list-valued header, across every line, in arrival order.
+/// Empty list elements are list syntax, not hops.
+fn hops<'a>(lines: &[&'a str], node: fn(&'a str) -> &'a str) -> Vec<&'a str> {
+    lines
+        .iter()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|hop| !hop.is_empty())
+        .map(node)
+        .collect()
+}
+
+/// The `for=` node of one RFC 7239 element, or the empty string when the
+/// element names none (which then ends the walk as an unreadable hop).
+///
+/// The split is deliberately naive about quoting: a node is an address, which
+/// never contains `,` or `;`, and a quote-aware split would let a client's
+/// unterminated quote swallow the element the proxy appended after it.
+fn for_parameter(element: &str) -> &str {
+    element
+        .split(';')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("for"))
+        .map_or("", |(_, value)| value.trim())
+}
+
+/// The rightmost hop that is not a trusted proxy. The walk stops at the
+/// first hop it cannot read: an unreadable hop cannot be shown to be a
+/// trusted proxy, so nothing written to its left can be attributed to one,
+/// and skipping over it would hand a client that wrote there the answer.
+fn last_untrusted_hop(hops: &[&str], trusted: &[Cidr]) -> Option<IpAddr> {
+    for hop in hops.iter().rev() {
+        let ip = node_ip(hop)?;
+        if !inside(trusted, ip) {
+            return Some(ip);
         }
     }
     None
 }
 
+/// An address in any spelling a forwarding header uses: bare, quoted,
+/// bracketed IPv6, or either with a port.
+fn node_ip(raw: &str) -> Option<IpAddr> {
+    let v = raw.trim().trim_matches('"');
+    let ip = v
+        .parse::<IpAddr>()
+        .ok()
+        .or_else(|| v.parse::<SocketAddr>().ok().map(|s| s.ip()))
+        .or_else(|| v.strip_prefix('[')?.strip_suffix(']')?.parse().ok())?;
+    Some(ip.to_canonical())
+}
+
 /// Two ASCII alphanumerics, uppercased, or nothing. A header value never
 /// reaches a record or a log line unsanitized.
-fn sane_country(v: Option<&str>) -> Option<String> {
-    let v = v?.trim();
+fn sane_country(v: &str) -> Option<String> {
+    let v = v.trim();
     if v.len() == 2 && v.bytes().all(|b| b.is_ascii_alphanumeric()) {
         Some(v.to_ascii_uppercase())
     } else {
@@ -161,128 +275,249 @@ mod tests {
         c.address.as_deref().expect("an address")
     }
 
+    fn xff(v: &str) -> Forwarding<'_> {
+        Forwarding {
+            forwarded_for: vec![v],
+            ..Forwarding::default()
+        }
+    }
+
+    fn fwd(v: &str) -> Forwarding<'_> {
+        Forwarding {
+            forwarded: vec![v],
+            ..Forwarding::default()
+        }
+    }
+
+    /// `none` mode behind a proxy at 10.1.2.3, trusting 10.0.0.0/8.
+    fn proxied(h: &Forwarding) -> ClientInfo {
+        derive_parts(Edge::None, &[cidr("10.0.0.0/8")], ip("10.1.2.3"), h).expect("derives")
+    }
+
+    fn edge_headers<'a>(connecting: &'a str) -> Forwarding<'a> {
+        Forwarding {
+            connecting: vec![connecting],
+            request_id: vec!["req-1"],
+            country: vec!["us"],
+            ..Forwarding::default()
+        }
+    }
+
+    fn edge(peer: &str, h: &Forwarding) -> Result<ClientInfo, ApiError> {
+        derive_parts(
+            Edge::requiring_headers(),
+            &[cidr("10.0.0.0/8")],
+            ip(peer),
+            h,
+        )
+    }
+
     #[test]
     fn direct_mode_uses_the_peer_address() {
-        let c = derive_parts(Edge::None, &[], ip("203.0.113.9"), None, None, None, None)
+        let c = derive_parts(Edge::None, &[], ip("203.0.113.9"), &Forwarding::default())
             .expect("derives");
         assert_eq!(address(&c), "203.0.113.9");
         assert_eq!(c.country, None);
+        assert_eq!(c.ignored, None);
     }
 
     #[test]
     fn direct_mode_ignores_forwarded_from_an_untrusted_peer() {
-        let c = derive_parts(
-            Edge::None,
-            &[cidr("10.0.0.0/8")],
-            ip("203.0.113.9"),
-            None,
-            None,
-            None,
-            Some("198.51.100.4"),
-        )
-        .expect("derives");
-        assert_eq!(address(&c), "203.0.113.9");
+        for h in [xff("198.51.100.4"), fwd("for=198.51.100.4")] {
+            let c = derive_parts(Edge::None, &[cidr("10.0.0.0/8")], ip("203.0.113.9"), &h)
+                .expect("derives");
+            assert_eq!(address(&c), "203.0.113.9");
+            assert_eq!(c.ignored, Some("untrusted_peer"));
+        }
     }
 
     #[test]
     fn direct_mode_takes_the_last_untrusted_hop_from_a_trusted_proxy() {
-        let c = derive_parts(
-            Edge::None,
-            &[cidr("10.0.0.0/8")],
-            ip("10.1.2.3"),
-            None,
-            None,
-            None,
-            Some("198.51.100.4, 203.0.113.7, 10.9.9.9"),
-        )
-        .expect("derives");
+        let c = proxied(&xff("198.51.100.4, 203.0.113.7, 10.9.9.9"));
         assert_eq!(address(&c), "203.0.113.7");
+        assert_eq!(c.ignored, None);
     }
 
     #[test]
     fn direct_mode_falls_back_to_the_peer_when_every_hop_is_trusted() {
-        let c = derive_parts(
-            Edge::None,
-            &[cidr("10.0.0.0/8")],
-            ip("10.1.2.3"),
-            None,
-            None,
-            None,
-            Some("10.4.4.4, 10.9.9.9"),
-        )
-        .expect("derives");
+        assert_eq!(address(&proxied(&xff("10.4.4.4, 10.9.9.9"))), "10.1.2.3");
+    }
+
+    #[test]
+    fn every_line_of_a_forwarded_header_is_read_in_order() {
+        // A proxy that ADDS its own line after the client's: reading only the
+        // first line would believe the client's forgery.
+        let h = Forwarding {
+            forwarded_for: vec!["192.0.2.66", "203.0.113.7"],
+            ..Forwarding::default()
+        };
+        assert_eq!(address(&proxied(&h)), "203.0.113.7");
+        let h = Forwarding {
+            forwarded: vec!["for=192.0.2.66", "for=203.0.113.7;proto=https"],
+            ..Forwarding::default()
+        };
+        assert_eq!(address(&proxied(&h)), "203.0.113.7");
+    }
+
+    #[test]
+    fn the_walk_stops_at_an_unreadable_hop_rather_than_skipping_it() {
+        // "unknown" is the proxy's own entry; left of it is client text.
+        let c = proxied(&xff("192.0.2.66, unknown"));
+        assert_eq!(address(&c), "10.1.2.3");
+        let c = proxied(&fwd("for=192.0.2.66, for=_hidden"));
+        assert_eq!(address(&c), "10.1.2.3");
+        let c = proxied(&fwd("for=192.0.2.66, by=10.1.2.3"));
         assert_eq!(address(&c), "10.1.2.3");
     }
 
     #[test]
-    fn edge_mode_requires_the_connecting_address() {
+    fn rfc_7239_nodes_parse_in_every_spelling() {
+        for (value, expected) in [
+            ("for=192.0.2.60;proto=http;by=203.0.113.43", "192.0.2.60"),
+            ("For=\"192.0.2.60:47011\"", "192.0.2.60"),
+            ("for=\"[2001:db8:cafe::17]\"", "2001:db8:cafe::17"),
+            ("for=\"[2001:db8:cafe::17]:4711\"", "2001:db8:cafe::17"),
+            ("proto=https; for=198.51.100.17", "198.51.100.17"),
+        ] {
+            assert_eq!(address(&proxied(&fwd(value))), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_quote_cannot_swallow_the_proxys_element() {
+        let c = proxied(&fwd("for=\"192.0.2.66, for=203.0.113.7"));
+        assert_eq!(address(&c), "203.0.113.7");
+    }
+
+    #[test]
+    fn both_headers_must_name_the_same_client() {
+        let agree = Forwarding {
+            forwarded_for: vec!["203.0.113.7"],
+            forwarded: vec!["for=203.0.113.7"],
+            ..Forwarding::default()
+        };
+        assert_eq!(address(&proxied(&agree)), "203.0.113.7");
+        // The proxy manages X-Forwarded-For and passes a forged Forwarded.
+        let forged = Forwarding {
+            forwarded_for: vec!["203.0.113.7"],
+            forwarded: vec!["for=192.0.2.66"],
+            ..Forwarding::default()
+        };
+        let c = proxied(&forged);
+        assert_eq!(address(&c), "10.1.2.3");
+        assert_eq!(c.ignored, Some("forwarded_headers_disagree"));
+        // A forged header naming a trusted hop still disagrees with the
+        // managed one; it cannot defer the answer to the forgery either way.
+        let internal = Forwarding {
+            forwarded_for: vec!["10.7.7.7"],
+            forwarded: vec!["for=192.0.2.66"],
+            ..Forwarding::default()
+        };
+        assert_eq!(address(&proxied(&internal)), "10.1.2.3");
+    }
+
+    #[test]
+    fn a_mapped_ipv4_peer_and_hop_are_matched_as_ipv4() {
+        let c = derive_parts(
+            Edge::None,
+            &[cidr("10.0.0.0/8")],
+            ip("::ffff:10.1.2.3"),
+            &xff("::ffff:203.0.113.7"),
+        )
+        .expect("derives");
+        assert_eq!(address(&c), "203.0.113.7");
+        let direct = derive_parts(
+            Edge::None,
+            &[],
+            ip("::ffff:203.0.113.9"),
+            &Forwarding::default(),
+        )
+        .expect("derives");
+        assert_eq!(address(&direct), "203.0.113.9");
+    }
+
+    #[test]
+    fn edge_mode_refuses_the_edge_headers_from_an_untrusted_peer() {
+        let e = edge("203.0.113.9", &edge_headers("198.51.100.4")).expect_err("refuses");
+        assert_eq!(e.status, 421);
+        assert_eq!(e.code, "edge_required");
         let e = derive_parts(
             Edge::requiring_headers(),
             &[],
             ip("10.1.2.3"),
-            None,
-            Some("req-1"),
-            Some("US"),
-            None,
+            &edge_headers("198.51.100.4"),
         )
-        .expect_err("refuses");
+        .expect_err("an empty trust list trusts no peer");
+        assert_eq!(e.code, "edge_required");
+    }
+
+    #[test]
+    fn edge_mode_requires_the_connecting_address() {
+        let h = Forwarding {
+            connecting: vec![],
+            ..edge_headers("")
+        };
+        let e = edge("10.1.2.3", &h).expect_err("refuses");
         assert_eq!(e.status, 421);
         assert_eq!(e.code, "edge_required");
     }
 
     #[test]
     fn edge_mode_requires_the_request_id() {
-        let e = derive_parts(
-            Edge::requiring_headers(),
-            &[],
-            ip("10.1.2.3"),
-            Some("198.51.100.4"),
-            None,
-            Some("US"),
-            None,
-        )
-        .expect_err("refuses");
+        let h = Forwarding {
+            request_id: vec![],
+            ..edge_headers("198.51.100.4")
+        };
+        let e = edge("10.1.2.3", &h).expect_err("refuses");
         assert_eq!(e.status, 421);
         assert_eq!(e.code, "edge_required");
     }
 
     #[test]
-    fn edge_mode_refuses_an_unparseable_connecting_address() {
-        let e = derive_parts(
-            Edge::requiring_headers(),
-            &[],
-            ip("10.1.2.3"),
-            Some("not-an-address"),
-            Some("req-1"),
-            None,
-            None,
-        )
-        .expect_err("refuses");
+    fn edge_mode_refuses_an_unparseable_or_repeated_edge_header() {
+        let e = edge("10.1.2.3", &edge_headers("not-an-address")).expect_err("refuses");
         assert_eq!(e.code, "edge_required");
+        let twice = Forwarding {
+            connecting: vec!["192.0.2.66", "198.51.100.4"],
+            ..edge_headers("")
+        };
+        assert_eq!(
+            edge("10.1.2.3", &twice).expect_err("refuses").code,
+            "edge_required"
+        );
+        let twice = Forwarding {
+            request_id: vec!["req-1", "req-2"],
+            ..edge_headers("198.51.100.4")
+        };
+        assert_eq!(
+            edge("10.1.2.3", &twice).expect_err("refuses").code,
+            "edge_required"
+        );
     }
 
     #[test]
     fn edge_mode_reports_the_edge_address_and_country_over_any_forwarded_header() {
-        let c = derive_parts(
-            Edge::requiring_headers(),
-            &[],
-            ip("10.1.2.3"),
-            Some("198.51.100.4"),
-            Some("req-1"),
-            Some("us"),
-            Some("192.0.2.1"),
-        )
-        .expect("derives");
+        let h = Forwarding {
+            forwarded_for: vec!["192.0.2.1"],
+            forwarded: vec!["for=192.0.2.1"],
+            ..edge_headers("198.51.100.4")
+        };
+        let c = edge("10.1.2.3", &h).expect("derives");
         assert_eq!(address(&c), "198.51.100.4");
         assert_eq!(c.country.as_deref(), Some("US"));
     }
 
     #[test]
     fn a_nonsense_country_is_dropped() {
-        assert_eq!(sane_country(Some("United States")), None);
-        assert_eq!(sane_country(Some("")), None);
-        assert_eq!(sane_country(Some("u\n")), None);
-        assert_eq!(sane_country(Some("t1")).as_deref(), Some("T1"));
+        assert_eq!(sane_country("United States"), None);
+        assert_eq!(sane_country(""), None);
+        assert_eq!(sane_country("u\n"), None);
+        assert_eq!(sane_country("t1").as_deref(), Some("T1"));
+        let twice = Forwarding {
+            country: vec!["US", "FR"],
+            ..edge_headers("198.51.100.4")
+        };
+        assert_eq!(edge("10.1.2.3", &twice).expect("derives").country, None);
     }
 
     #[test]

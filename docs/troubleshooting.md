@@ -197,8 +197,12 @@ first pairing attempt.
 
 **Cause.** The server is configured for an access-controlled edge
 (`OBSYNC_EDGE=cloudflare`) and this request did not arrive through it: the
-edge's connecting-address and request-id headers were absent. In that mode the
-server refuses rather than guessing who the client is.
+edge's connecting-address and request-id headers were absent, or they came
+from a peer outside `OBSYNC_TRUSTED_PROXY_CIDRS` (the private networks, when
+that is empty). In that mode the server refuses rather than guessing who the
+client is. If every request is refused while the edge is in use, the
+connector reaches the server from an address that list leaves out: add the
+connector's own network to it.
 
 **Fix.** Reach the server through the edge, not around it — and if that edge
 requires a service token, paste its headers into **Edge service-token headers**

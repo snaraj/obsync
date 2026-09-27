@@ -671,6 +671,24 @@ impl App {
         );
     }
 
+    /// One line for forwarded headers the server did not believe. From a
+    /// peer outside `OBSYNC_TRUSTED_PROXY_CIDRS` that is either a client
+    /// naming itself or a proxy nobody listed, and the dashboard then shows
+    /// the proxy's address for everyone (debug: it is also every direct
+    /// request that carries one). Two headers from a trusted proxy naming
+    /// different clients is a forgery in the one the proxy does not manage.
+    fn forwarding_ignored(&self, reason: &'static str) {
+        let fields = [
+            ("decision", Val::word("ignored")),
+            ("reason", Val::word(reason)),
+        ];
+        if reason == "untrusted_peer" {
+            self.log.debug("forwarded_headers", &fields);
+        } else {
+            self.log.warn("forwarded_headers", &fields);
+        }
+    }
+
     /// Serve one request: resolve, enforce the edge requirement, dispatch,
     /// harden the response, and log exactly one line.
     pub fn handle(&self, req: &mut Request) -> Response {
@@ -682,6 +700,13 @@ impl App {
                 let health = matches!(route, Route::Livez | Route::Readyz);
                 let demands = demands_credential(&route);
                 let client = edge::derive(&self.cfg, req);
+                if let Ok(ClientInfo {
+                    ignored: Some(reason),
+                    ..
+                }) = &client
+                {
+                    self.forwarding_ignored(reason);
+                }
                 let out = match (health, client) {
                     (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),
                     (false, Ok(c)) => self.dispatch(route, req, &c),

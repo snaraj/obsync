@@ -127,7 +127,11 @@ cluster, and the one the reference deployment has not taken.
    `OBSYNC_EDGE=cloudflare`. In that mode every request must carry the
    edge's connecting-address and request-id headers, and a request that
    arrives around the edge is refused with `421 edge_required`
-   ([troubleshooting](troubleshooting.md#edge_required)).
+   ([troubleshooting](troubleshooting.md#edge_required)). The server believes
+   those headers only from `OBSYNC_TRUSTED_PROXY_CIDRS`, which defaults in
+   this mode to the private networks a connector on the same host, container
+   network or cluster reaches it from; set it to the connector's own network
+   to narrow it further.
 6. **Verify.** Open the hostname in a browser and expect the Access sign-in,
    then the dashboard. In the plugin, select **Check** under **Connection**.
 
