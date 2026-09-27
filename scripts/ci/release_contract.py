@@ -35,7 +35,7 @@ import tomllib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1602,33 +1602,91 @@ def _rule_parameters(rules: list[object], rule_type: str) -> Mapping[str, object
     return _object(rule.get("parameters", {}), f"{rule_type} parameters")
 
 
-def observe_live_settings(repository: str) -> dict[str, object]:
+# Rulesets LAYER: GitHub enforces every applicable ruleset's rules at once, and
+# a bypass actor escapes only the ruleset that lists it. So main's protection
+# is observed as the union of the CORE rulesets -- active, targeting branches,
+# naming main exactly, excluding nothing that could be main, and bypassable by
+# nobody. Anything else (an owner-only `update` restriction with its bypass,
+# the release-tag ruleset, a ruleset reaching main only through a glob) can add
+# rules GitHub enforces but never stands in for one the receipt claims.
+MAIN_REF = "refs/heads/main"
+MAIN_TARGETS = frozenset({MAIN_REF, "~DEFAULT_BRANCH", "~ALL"})
+# The rules whose PARAMETERS the receipt reads. Two core rulesets setting one
+# leave its effective parameters to GitHub's merge, which is not a receipt.
+PARAMETERIZED_CORE_RULES = ("pull_request", "required_status_checks")
+
+
+def _names_main(ruleset: Mapping[str, object]) -> bool:
+    """Whether a branch ruleset's conditions name main exactly, never by a glob.
+
+    An exclusion is judged the other way: any `~` token, any spelling of main,
+    and any glob could be main, so it disqualifies the ruleset as core.
+    """
+    conditions = _object(ruleset.get("conditions"), "ruleset conditions")
+    ref_name = _object(conditions.get("ref_name"), "ruleset ref_name condition")
+    if set(conditions) != {"ref_name"} or set(ref_name) != {"include", "exclude"}:
+        raise ContractError("ruleset conditions are not one ref_name include/exclude pair")
+    include = _array(ref_name["include"], "ruleset ref_name include")
+    exclude = _array(ref_name["exclude"], "ruleset ref_name exclude")
+    if not all(isinstance(pattern, str) for pattern in include + exclude):
+        raise ContractError("ruleset ref_name patterns must be strings")
+    return bool(MAIN_TARGETS.intersection(include)) and not any(
+        pattern.startswith("~")
+        or pattern.casefold() == MAIN_REF
+        or any(character in pattern for character in "*?[{\\")
+        for pattern in exclude
+    )
+
+
+def _bypassed_by_nobody(ruleset: Mapping[str, object]) -> bool:
+    # A missing actor list is what a caller without admin read sees: an
+    # incomplete inventory, refused rather than read as "nobody".
+    actors = _array(ruleset.get("bypass_actors"), "ruleset bypass actors")
+    return not actors and ruleset.get("current_user_can_bypass") == "never"
+
+
+def observe_live_settings(
+    repository: str, get: Callable[..., object] = _github_api_get
+) -> dict[str, object]:
     """Query only GET endpoints; emit the receipt `settings-receipt` validates."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ContractError("repository must be an exact owner/name pair")
-    repository_record = _object(_github_api_get(f"repos/{repository}"), "repository settings")
-    immutable = _object(
-        _github_api_get(f"repos/{repository}/immutable-releases"), "immutable-release settings"
-    )
+    repository_record = _object(get(f"repos/{repository}"), "repository settings")
+    if repository_record.get("default_branch") != "main":
+        raise ContractError("the default branch is not main")
+    immutable = _object(get(f"repos/{repository}/immutable-releases"), "immutable-release settings")
     workflow_permissions = _object(
-        _github_api_get(f"repos/{repository}/actions/permissions/workflow"),
+        get(f"repos/{repository}/actions/permissions/workflow"),
         "default workflow permission settings",
     )
-    summaries = _array(
-        _github_api_get(f"repos/{repository}/rulesets", paginate=True), "rulesets"
-    )
-    active = [
+    summaries = [
         _object(summary, "ruleset summary")
-        for summary in summaries
-        if _object(summary, "ruleset summary").get("enforcement") == "active"
+        for summary in _array(get(f"repos/{repository}/rulesets", paginate=True), "rulesets")
     ]
-    if len(active) != 1:
-        raise ContractError("expected exactly one active repository ruleset")
-    ruleset = _object(
-        _github_api_get(f"repos/{repository}/rulesets/{active[0]['id']}"), "main ruleset"
-    )
-    rules = _array(ruleset.get("rules"), "ruleset rules")
-    types = {_object(rule, "ruleset rule").get("type") for rule in rules}
+    ids = [summary.get("id") for summary in summaries]
+    if not all(
+        isinstance(ruleset_id, int) and not isinstance(ruleset_id, bool) for ruleset_id in ids
+    ) or len(set(ids)) != len(ids):
+        raise ContractError("the ruleset inventory is incomplete: ids are missing or repeated")
+    core = []
+    for summary in summaries:
+        if summary.get("target") != "branch" or summary.get("enforcement") != "active":
+            continue
+        ruleset = _object(get(f"repos/{repository}/rulesets/{summary['id']}"), "branch ruleset")
+        if any(ruleset.get(field) != summary[field] for field in ("id", "target", "enforcement")):
+            raise ContractError("a branch ruleset changed between the listing and its read")
+        if _names_main(ruleset) and _bypassed_by_nobody(ruleset):
+            core.append(ruleset)
+    if not core:
+        raise ContractError(
+            "no active branch ruleset names main exactly, excludes nothing that could be "
+            "main, and has no bypass actor"
+        )
+    rules = [rule for ruleset in core for rule in _array(ruleset.get("rules"), "ruleset rules")]
+    types = [_object(rule, "ruleset rule").get("type") for rule in rules]
+    for rule_type in PARAMETERIZED_CORE_RULES:
+        if types.count(rule_type) > 1:
+            raise ContractError(f"main's {rule_type} rule is set more than once: ambiguous")
     security = _object(
         repository_record.get("security_and_analysis", {}), "security and analysis settings"
     )

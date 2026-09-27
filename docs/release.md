@@ -133,9 +133,20 @@ not prove directory acceptance, installation, or device synchronization.
 
 Before the first Release under this path the repository owner activates:
 immutable releases, strict required checks at the exact head, no core bypass
-actor, signed commits on `main`. The read-only preflight and the standalone
-bypass check are pinned in `scripts/ci/test_release_contract.py`, so the
-settings are re-read rather than remembered.
+actor, signed commits on `main`. `release_contract.py settings-preflight`
+re-reads them with GET requests only and prints the receipt `settings-receipt`
+validates, so the settings are re-read rather than remembered.
+
+Rulesets layer, so the preflight reads main's protection from its CORE
+rulesets: active branch rulesets that name main exactly (`refs/heads/main`,
+`~DEFAULT_BRANCH` or `~ALL`), exclude nothing that could be main, and have no
+bypass actor. A bypassable ruleset such as an owner-only update restriction,
+the release-tag ruleset, and a ruleset that reaches main only through a glob
+are tolerated and never counted. It refuses a default branch other than main,
+no core ruleset, a pull-request or required-checks rule set by two core
+rulesets, a condition it does not model, a bypass list it cannot read, and a
+ruleset that changes while it reads. `scripts/ci/test_release_contract.py`
+pins each case.
 
 ## Deployment
 

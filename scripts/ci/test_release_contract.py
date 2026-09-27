@@ -1236,6 +1236,289 @@ class TheGovernanceReceipt(unittest.TestCase):
             contract.validate_settings_receipt(self.receipt(branch="topic"), REPOSITORY)
 
 
+def core_rules(*, without: tuple[str, ...] = ()) -> list[dict]:
+    """The rules main's protection carries, shaped as GitHub returns them."""
+    rules = [
+        {"type": "deletion"},
+        {"type": "non_fast_forward"},
+        {"type": "creation"},
+        {"type": "required_linear_history"},
+        {"type": "pull_request", "parameters": {
+            "required_approving_review_count": 0, "allowed_merge_methods": ["squash", "rebase"],
+        }},
+        {"type": "code_quality", "parameters": {"severity": "errors"}},
+        {"type": "required_signatures"},
+        {"type": "required_status_checks", "parameters": {
+            "strict_required_status_checks_policy": True,
+            "do_not_enforce_on_create": False,
+            "required_status_checks": [
+                {"context": context, "integration_id": contract.GITHUB_ACTIONS_INTEGRATION_ID}
+                for context in contract.REQUIRED_STATUS_CHECKS
+            ],
+        }},
+    ]
+    return [rule for rule in rules if rule["type"] not in without]
+
+
+def ruleset(
+    ruleset_id: int,
+    *,
+    target: str = "branch",
+    enforcement: str = "active",
+    include: tuple[str, ...] = ("refs/heads/main",),
+    exclude: tuple[str, ...] = (),
+    rules: list[dict] | None = None,
+    bypass: tuple[dict, ...] = (),
+    can_bypass: str = "never",
+) -> dict:
+    return {
+        "id": ruleset_id,
+        "target": target,
+        "enforcement": enforcement,
+        "conditions": {"ref_name": {"include": list(include), "exclude": list(exclude)}},
+        "rules": core_rules() if rules is None else rules,
+        "bypass_actors": list(bypass),
+        "current_user_can_bypass": can_bypass,
+    }
+
+
+def protect_main(**overrides: object) -> dict:
+    return ruleset(11, **overrides)
+
+
+ADMIN_BYPASS = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
+
+
+def owner_updates() -> dict:
+    """The owner-only update restriction: main again, bypassable by the owner."""
+    return ruleset(
+        22,
+        include=("~DEFAULT_BRANCH",),
+        rules=[{"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}],
+        bypass=(ADMIN_BYPASS,),
+        can_bypass="always",
+    )
+
+
+def release_tags() -> dict:
+    return ruleset(
+        33,
+        target="tag",
+        include=("refs/tags/v*.*.*", "refs/tags/*.*.*"),
+        rules=[{"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}],
+    )
+
+
+class FakeGitHub:
+    """The GET endpoints the observer reads, and nothing else: an unexpected
+    endpoint fails the test instead of returning something plausible."""
+
+    def __init__(self, *rulesets: dict, default_branch: str = "main", listing: list | None = None):
+        prefix = f"repos/{REPOSITORY}"
+        self.records: dict[str, object] = {
+            prefix: {
+                "default_branch": default_branch,
+                "security_and_analysis": {
+                    "secret_scanning": {"status": "enabled"},
+                    "secret_scanning_push_protection": {"status": "enabled"},
+                },
+            },
+            f"{prefix}/immutable-releases": {"enabled": True, "enforced_by_owner": False},
+            f"{prefix}/actions/permissions/workflow": {"default_workflow_permissions": "read"},
+            f"{prefix}/rulesets": listing if listing is not None else [
+                {field: record[field] for field in ("id", "target", "enforcement")}
+                for record in rulesets
+            ],
+        }
+        for record in rulesets:
+            self.records[f"{prefix}/rulesets/{record['id']}"] = record
+
+    def __call__(self, endpoint: str, *, paginate: bool = False) -> object:
+        if endpoint not in self.records:
+            raise AssertionError(f"the observer read an unexpected endpoint: {endpoint}")
+        if paginate != endpoint.endswith("/rulesets"):
+            raise AssertionError(f"only the ruleset listing is paginated: {endpoint}")
+        return json.loads(json.dumps(self.records[endpoint]))
+
+
+class TheLiveSettingsObserver(unittest.TestCase):
+    """`settings-preflight` (#43): layered rulesets are a stronger setup, not an
+    absent one, and only a ruleset that truly protects main speaks for it."""
+
+    def observe(self, *rulesets: dict, **github: object) -> dict:
+        return contract.observe_live_settings(REPOSITORY, get=FakeGitHub(*rulesets, **github))
+
+    def refuses(self, reason: str, *rulesets: dict, **github: object) -> None:
+        # A refusal is a named ContractError, which the CLI prints as DENY; a
+        # crash is a traceback nobody reads as a reason, so it fails here.
+        try:
+            receipt = self.observe(*rulesets, **github)
+        except contract.ContractError as refusal:
+            self.assertRegex(str(refusal), reason)
+        except Exception as crash:  # noqa: BLE001 - the point is to catch it
+            self.fail(f"refused by a crash, not a reason: {crash!r}")
+        else:
+            self.fail(f"observed a receipt instead of refusing ({reason}): {receipt}")
+
+    def accepts(self, *rulesets: dict, **github: object) -> None:
+        # The receipt must validate unmodified; a refusal of a protected main
+        # is the #43 defect, reported as a failure rather than an error.
+        try:
+            contract.validate_settings_receipt(self.observe(*rulesets, **github), REPOSITORY)
+        except contract.ContractError as refusal:
+            self.fail(f"a protected main was refused: {refusal}")
+
+    def test_the_layered_protections_yield_a_receipt_that_validates(self):
+        # The #42 configuration: the core ruleset, an owner-only update
+        # restriction with its bypass, and immutable release tags. The old
+        # observer refused it for holding more than one active ruleset.
+        self.accepts(protect_main(), owner_updates(), release_tags())
+
+    def test_main_named_by_the_default_branch_or_all_branches_is_named_exactly(self):
+        for include in (("~DEFAULT_BRANCH",), ("~ALL",), ("refs/heads/release/*", "refs/heads/main")):
+            with self.subTest(include=include):
+                self.accepts(protect_main(include=include), owner_updates())
+
+    def test_an_exclusion_that_cannot_be_main_leaves_the_core_standing(self):
+        self.accepts(protect_main(include=("~ALL",), exclude=("refs/heads/dev",)))
+
+    def test_core_rules_split_across_bypass_free_rulesets_are_one_protection(self):
+        signatures = ruleset(44, rules=[{"type": "required_signatures"}])
+        self.accepts(protect_main(rules=core_rules(without=("required_signatures",))), signatures)
+
+    def test_absent_core_protection_refuses(self):
+        for rulesets in ((), (release_tags(),), (owner_updates(), release_tags())):
+            with self.subTest(rulesets=[record["id"] for record in rulesets]):
+                self.refuses("no active branch ruleset names main", *rulesets)
+
+    def test_a_ruleset_that_is_not_an_active_branch_ruleset_never_stands_in(self):
+        for record in (
+            protect_main(target="tag"),
+            protect_main(target="push"),
+            protect_main(enforcement="evaluate"),
+            protect_main(enforcement="disabled"),
+        ):
+            with self.subTest(target=record["target"], enforcement=record["enforcement"]):
+                self.refuses("no active branch ruleset names main", record, release_tags())
+
+    def test_wrong_ref_core_protection_refuses(self):
+        for include in (
+            ("refs/heads/master",),
+            ("main",),
+            ("refs/heads/*",),
+            ("refs/heads/ma*",),
+            ("refs/tags/main",),
+            (),
+        ):
+            with self.subTest(include=include):
+                self.refuses("no active branch ruleset names main", protect_main(include=include))
+
+    def test_excluded_core_protection_refuses(self):
+        for pattern in (
+            "refs/heads/main",
+            "refs/heads/MAIN",
+            "~DEFAULT_BRANCH",
+            "~ALL",
+            "refs/heads/ma*",
+            "refs/heads/mai?",
+            "refs/heads/[m]ain",
+            "refs/heads/{main,dev}",
+            "refs/heads/ma\\in",
+        ):
+            with self.subTest(pattern=pattern):
+                self.refuses(
+                    "no active branch ruleset names main",
+                    protect_main(include=("~ALL",), exclude=(pattern,)),
+                )
+
+    def test_a_core_bypass_refuses(self):
+        for record in (
+            protect_main(bypass=(ADMIN_BYPASS,), can_bypass="always"),
+            protect_main(bypass=(ADMIN_BYPASS,), can_bypass="never"),
+            protect_main(can_bypass="always"),
+            protect_main(can_bypass="pull_requests_only"),
+            protect_main(can_bypass="exempt"),
+        ):
+            with self.subTest(bypass=record["bypass_actors"], state=record["current_user_can_bypass"]):
+                self.refuses("no active branch ruleset names main", record, owner_updates())
+
+    def test_an_unreadable_bypass_inventory_refuses(self):
+        # A caller without admin read gets no `bypass_actors`: unknown is not
+        # "nobody", on the core ruleset or on a supplemental one.
+        for records in (
+            (protect_main(),),
+            (protect_main(), owner_updates()),
+        ):
+            with self.subTest(hidden=records[-1]["id"]):
+                del records[-1]["bypass_actors"]
+                self.refuses("bypass actors must be a JSON array", *records)
+
+    def test_invalid_condition_shapes_refuse(self):
+        # On the core ruleset, and on one that names only other branches: a
+        # shape this reader does not model is one whose reach it cannot judge.
+        for label, conditions in (
+            ("absent", None),
+            ("a second condition", {"ref_name": {"include": ["refs/heads/main"], "exclude": []},
+                                    "repository_name": {"include": ["obsync"], "exclude": []}}),
+            ("no exclude", {"ref_name": {"include": ["refs/heads/main"]}}),
+            ("a foreign key", {"ref_name": {"include": ["refs/heads/main"], "exclude": [], "x": []}}),
+            ("a pattern that is not a string", {"ref_name": {"include": [["refs/heads/main"]], "exclude": []}}),
+            ("an exclusion that is not a string", {"ref_name": {"include": ["~ALL"], "exclude": [7]}}),
+        ):
+            for victim, name in enumerate(("core", "feature branches")):
+                with self.subTest(shape=label, ruleset=name):
+                    records = [
+                        protect_main(),
+                        ruleset(55, include=("refs/heads/feature/*",), rules=[{"type": "deletion"}]),
+                    ]
+                    records[victim]["conditions"] = conditions
+                    self.refuses("ruleset (conditions|ref_name)", *records)
+
+    def test_ambiguous_core_parameters_refuse(self):
+        for rule_type in contract.PARAMETERIZED_CORE_RULES:
+            with self.subTest(rule=rule_type):
+                second = ruleset(66, rules=[rule for rule in core_rules() if rule["type"] == rule_type])
+                self.refuses(f"main's {rule_type} rule is set more than once", protect_main(), second)
+
+    def test_supplemental_and_tag_rules_never_stand_in_for_main(self):
+        # The core lacks deletion and signatures; the bypassable owner-update
+        # ruleset and the tag ruleset carry them. The receipt reports what
+        # main's core enforces, so the validator refuses it.
+        supplemental = owner_updates()
+        supplemental["rules"].append({"type": "required_signatures"})
+        tags = release_tags()
+        tags["rules"].append({"type": "required_signatures"})
+        receipt = self.observe(
+            protect_main(rules=core_rules(without=("deletion", "required_signatures"))),
+            supplemental,
+            tags,
+        )
+        self.assertIs(receipt["allow_deletions"], True)
+        self.assertIs(receipt["require_signed_commits"], False)
+        with self.assertRaises(contract.ContractError):
+            contract.validate_settings_receipt(receipt, REPOSITORY)
+
+    def test_an_incomplete_or_inconsistent_inventory_refuses(self):
+        listed = {"id": 11, "target": "branch", "enforcement": "active"}
+        for label, listing in (
+            ("a repeated id", [listed, dict(listed)]),
+            ("a missing id", [{**listed, "id": None}]),
+            ("a boolean id", [{**listed, "id": True}]),
+            ("a textual id", [{**listed, "id": "11"}]),
+        ):
+            with self.subTest(listing=label):
+                self.refuses("ruleset inventory is incomplete", protect_main(), listing=listing)
+        for field, value in (("id", 12), ("target", "tag"), ("enforcement", "evaluate")):
+            with self.subTest(changed=field):
+                github = FakeGitHub(protect_main())
+                github.records[f"repos/{REPOSITORY}/rulesets/11"][field] = value
+                with self.assertRaisesRegex(contract.ContractError, "changed between the listing"):
+                    contract.observe_live_settings(REPOSITORY, get=github)
+
+    def test_a_default_branch_other_than_main_refuses(self):
+        self.refuses("default branch is not main", protect_main(), default_branch="trunk")
+
+
 class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
     """The ruleset contexts and the publisher's job inventory are one fact."""
 
