@@ -29,12 +29,12 @@
 #   4. nginx       the distribution's nginx binary, as www-data in a unit of
 #                  its own, runs deploy/proxies/nginx/nginx.conf with only
 #                  its host paths moved: the upstream to 127.0.0.1:8080, /tls
-#                  to this run's leaf, /tmp to this run's directory, and
-#                  `error_log /dev/stderr` to nginx's own `stderr`: under
-#                  systemd the error stream is a journal socket, which
-#                  /dev/stderr cannot reopen (ENXIO). The system's own nginx
-#                  and /etc/nginx are never touched. `nginx -t` passes and
-#                  `/readyz` answers over TLS.
+#                  to this run's leaf, /tmp to this run's directory. No
+#                  directive is changed or dropped, so the file's own
+#                  `listen ... http2` and `error_log stderr` are what start
+#                  under systemd, where the error stream is a journal socket.
+#                  The system's own nginx and /etc/nginx are never touched.
+#                  `nginx -t` passes and `/readyz` answers over TLS.
 #   5. it syncs    `api_flow.py enroll`, then `api_flow.py proxy`: the largest
 #                  chunk, a full batch, a held and a woken long poll, and the
 #                  address the server records is the one nginx saw
@@ -42,11 +42,6 @@
 #   6. a restart   `systemctl restart`, then `api_flow.py verify`.
 #   7. teardown    both units stopped, the unit file, the tree, the state,
 #                  the environment file and the user removed.
-#
-# ONE LINE IS DROPPED FOR OLD NGINX. The committed file says `http2 on;`,
-# which nginx learned in 1.25.1; Ubuntu 24.04 ships 1.24.0, which refuses it.
-# On an nginx older than 1.25.1 this run removes that one line and SAYS so
-# in its proven step, so a reader of the log sees what the file needs.
 #
 # usage: binary-e2e.sh <server-dist directory>
 # Requires: systemd, nginx, sudo (or root), runuser, curl, openssl, python3, ss.
@@ -229,18 +224,11 @@ sudo_ install -d -m 0700 -o "${NGINX_USER}" -g "${NGINX_USER}" "${FRONT}/run"
 sudo_ install -m 0644 -o root -g root "${scratch}/tls.crt" "${TLS}/tls.crt"
 sudo_ install -m 0640 -o root -g "${NGINX_USER}" "${scratch}/tls.key" "${TLS}/tls.key"
 config="$(sed -e 's|proxy_pass http://obsync:8080;|proxy_pass http://127.0.0.1:8080;|' \
-  -e 's|^error_log /dev/stderr |error_log stderr |' \
   -e "s|/tls/|${TLS}/|g" -e "s|/tmp/|${FRONT}/run/|g" "${root}/deploy/proxies/nginx/nginx.conf")"
-for moved in 'proxy_pass http://127.0.0.1:8080;' "ssl_certificate_key ${TLS}/tls.key;" "pid ${FRONT}/run/nginx.pid;" \
-  '^error_log stderr '; do
+for moved in 'proxy_pass http://127.0.0.1:8080;' "ssl_certificate_key ${TLS}/tls.key;" "pid ${FRONT}/run/nginx.pid;"; do
   grep -q "${moved}" <<<"${config}" \
     || deny "deploy/proxies/nginx/nginx.conf no longer carries the line this run moves to: ${moved}"
 done
-dropped=''
-if [ "$(printf '%s\n' "${nginx_version}" 1.25.1 | sort -V | head -n 1)" != 1.25.1 ]; then
-  config="$(grep -v '^ *http2 on;$' <<<"${config}")"
-  dropped=", without its 'http2 on;' line, which nginx ${nginx_version} does not know"
-fi
 printf '%s\n' "${config}" | sudo_ tee "${FRONT}/nginx.conf" >/dev/null
 sudo_ chmod 0644 "${FRONT}/nginx.conf"
 # The check runs as the user the unit runs as, so nothing it creates is root's.
@@ -249,7 +237,7 @@ sudo_ runuser -u "${NGINX_USER}" -- "${nginx_binary}" -e stderr -c "${FRONT}/ngi
   || deny "nginx -t refused the committed configuration: $(tr '\n' ' ' < "${scratch}/nginx-t.log")"
 start_nginx || deny 'systemd-run refused the nginx unit'
 wait_for ready_tls 'no {"ready":true through nginx over TLS'
-prove "nginx: deploy/proxies/nginx/nginx.conf${dropped}, passes nginx -t as ${NGINX_USER} and serves /readyz on ${HTTPS_PORT} over TLS to 127.0.0.1:8080"
+prove "nginx: deploy/proxies/nginx/nginx.conf on nginx ${nginx_version}, every directive as shipped, passes nginx -t as ${NGINX_USER} and serves /readyz on ${HTTPS_PORT} over TLS to 127.0.0.1:8080"
 
 # (5) The flow, and the address the server records.
 umask 077
