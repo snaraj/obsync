@@ -65,11 +65,17 @@ Obsidian's own [storage guide](https://docs.obsidian.md/plugins/guides/secret-st
 describes the storage itself.
 
 If secret storage is unavailable or cannot be verified, sync stops with an
-error. Then:
+error, and nothing is sent or changed. Then:
 
-1. Keep the vault, its settings and the recovery phrase as they are.
-2. Check Obsidian's secret storage, then reload Obsidian.
-3. Do not delete the plugin's stored reference and do not repeat server setup.
+1. Reload Obsidian.
+2. If it keeps happening, have your recovery phrase or another syncing device
+   at hand, reinstall obsync, and pair this device again. Your notes stay in
+   the vault. Do not repeat server setup.
+
+A copied vault, or one whose folder was renamed outside Obsidian, is not an
+error: it opens unpaired, says so, and offers **Pair this device** and
+**Start fresh**
+([what to do](troubleshooting.md#a-copied-or-renamed-vault-shows-a-storage-error)).
 
 A pairing waiting for approval finishes even if its dialog was closed, and
 after Obsidian restarts, as long as it is approved within the code's ten

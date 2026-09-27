@@ -54,9 +54,12 @@ capture uses a disposable desktop device named by its role:
 
 ## A device's plugin data is gone, but other devices still sync
 
-A reinstall, a cleared secret storage, or a vault copied without its
-`.obsidian` folder. The device has no credential and no vault key, and the
-plugin says `not paired`.
+A reinstall, or a vault copied without its `.obsidian` folder. The device has
+no credential and no vault key, and the plugin says `not paired`. A vault
+copied with its `.obsidian` folder, or whose folder was renamed outside
+Obsidian, reads `not paired` too and says it is a copy. A cleared secret
+storage in a vault that has synced stops with a storage error instead, which
+says to pair again if a reload does not bring the credentials back.
 
 Pair it again from a device that still syncs. If it ends up enrolled but
 without a vault key, the **Vault key** dialog offers two buttons, and only one

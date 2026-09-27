@@ -51,7 +51,7 @@ server again unless the entry says so.
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
 | A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
 | **Restore a copy** fails on a USB stick or memory card | [Restoring a copy fails on a USB stick or memory card](#restoring-a-copy-fails-on-a-usb-stick-or-memory-card) |
-| I copied or renamed my vault, and obsync says credential storage could not be verified | [A copied or renamed vault shows a storage error](#a-copied-or-renamed-vault-shows-a-storage-error) |
+| I copied or renamed my vault, and obsync says it is a copy (up to 1.1.3: that credential storage could not be verified) | [A copied or renamed vault says it is a copy](#a-copied-or-renamed-vault-shows-a-storage-error) |
 
 **Sync stopped**
 
@@ -594,34 +594,36 @@ reads `offline — retrying`. The code below is in the obsync log line.
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the edge service-token headers in obsync settings |
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
 | `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
-| a credential-storage failure | Obsidian's secret storage is unavailable or unverified | do not delete the credential or repeat setup; see [Where your keys are kept](community-plugin.md#where-your-keys-are-kept), or, for a copied or renamed vault, [the entry below](#a-copied-or-renamed-vault-shows-a-storage-error) |
+| a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
 
-## A copied or renamed vault shows a storage error
+<a id="a-copied-or-renamed-vault-shows-a-storage-error"></a>
 
-**What you see.** When the vault opens (TODO(1.1.4-text); in 1.1.3 as
-below), then "Failed to load plugin", and no obsync settings or status bar:
+## A copied or renamed vault says it is a copy
 
-> Credential storage could not be verified (missing_secret). Sync is stopped. Keep this vault and its settings intact, check Obsidian secret storage, then reload. Do not repeat server setup or delete the credential reference.
-
-Both cases were tested: a copy of a synced vault opened as a second vault, and
-a synced vault whose folder was renamed while Obsidian was closed.
+**What you see.** In obsync's settings: "This vault is a copy, or its folder
+was renamed. It will not sync as the original. Pair it as a new device, or
+start fresh." Up to 1.1.3 the plugin failed to load instead, with "Credential
+storage could not be verified (missing_secret)".
 
 **Why it happens.** Obsidian keeps each vault's secrets under that vault's own
-identity. A copy, or a folder renamed outside Obsidian, is a new vault to
-Obsidian, so the credential the plugin's settings point to is not there. Your
-notes are untouched.
+identity. A vault copied with its `.obsidian` folder, or a vault folder renamed
+while Obsidian was closed, is a new vault to Obsidian, so the copy holds none
+of the original's keys. obsync never syncs it as the original. Your notes are
+untouched.
 
 **How to fix it.**
 
-1. If you did not copy or rename the vault, stop here and follow
-   [Where your keys are kept](community-plugin.md#where-your-keys-are-kept):
-   this is a storage problem, and deleting anything would make it worse.
-2. For a copy or a renamed vault, pair it as a new device from a device that
-   still syncs. TODO(1.1.4-text): the plugin's own button for this.
-3. On a syncing device, revoke the old entry for this vault in **Devices**.
-4. To keep one vault in sync, sync the original rather than copying it.
-   Copying a vault by hand, or renaming its folder, is not a way to add a
-   device.
+1. To keep this vault syncing, select **Pair this device** and pair it from a
+   device that still syncs. It joins as a new device.
+2. To use it as a separate vault, select **Start fresh**. This also forgets
+   the server address the copy brought with it.
+3. Once it is paired, the device the vault was before stays in the **Devices**
+   list under its old name. Revoke that entry once the original vault is gone,
+   never while the original still syncs.
+4. To add a device, pair it. Copying a vault by hand, or renaming its folder,
+   is not a way to add one.
+
+<!-- CAPTURE(1.1.4): Settings on a copied vault: the copy notice with Pair this device and Start fresh -->
 
 ## A file is not syncing
 

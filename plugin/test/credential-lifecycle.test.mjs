@@ -7,6 +7,8 @@ import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const tick = () => new Promise(setImmediate);
+/** A storage stop, by its logged reason: the words shown carry no code (#168). */
+const reason = (code) => (error) => error.reason === code;
 async function fixture(t, initial = null) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
@@ -36,7 +38,7 @@ const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
 test("unavailable native storage stops startup without writing metadata or starting requests", async (t) => {
   const r = await fixture(t, identity());
   r.instance.app.secretStorage = undefined;
-  await assert.rejects(r.instance.onload(), /unavailable/);
+  await assert.rejects(r.instance.onload(), reason("unavailable"));
   assert.equal(r.starts(), 0);
   assert.equal(r.writes.length, 0);
   assert.equal(r.requests.length, 0);
@@ -52,11 +54,11 @@ test("a failed native save stops the active engine and refuses its future transp
   r.instance.engine = { stop: () => { stopped++; }, stopAndWait: async () => {} };
   r.hooks.save = async () => { throw new Error("fixture metadata failed"); };
   r.instance.state.data.edgeHeaders = [{ name: "X-Local", value: "LOCAL EDGE SENTINEL" }];
-  await assert.rejects(r.instance.state.save(), /metadata_write_failed/);
+  await assert.rejects(r.instance.state.save(), reason("metadata_write_failed"));
   assert.equal(stopped, 1);
   assert.equal(r.instance.engine, null);
   assert.equal(r.statuses.at(-1).kind, "error");
-  await assert.rejects(async () => transport.options.request({ url: "https://sync.example.invalid/v1/account" }), /metadata_write_failed/);
+  await assert.rejects(async () => transport.options.request({ url: "https://sync.example.invalid/v1/account" }), reason("metadata_write_failed"));
   assert.equal(r.requests.length, 0);
   assert.ok(r.logs.includes("state decision=stopped reason=metadata_write_failed"));
   assert.ok(!JSON.stringify([r.logs, r.statuses, r.obsidian.notices, r.metadata()]).includes("LOCAL EDGE SENTINEL"));
@@ -113,7 +115,7 @@ test("key adoption never restarts after a rejected save or superseded save compl
     const entered = deferred(), released = deferred();
     r.hooks.save = async () => { entered.resolve(); await released.promise; if (failure) throw new Error("fixture failure"); };
     const adopting = r.instance.adoptVaultKey(KEYS.vrk);
-    const refused = assert.rejects(adopting, failure ? /metadata_write_failed/ : /inactive/);
+    const refused = assert.rejects(adopting, failure ? reason("metadata_write_failed") : /inactive/);
     await entered.promise;
     const replacement = { data: { vrk: "replacement" }, save: () => assert.fail("replacement save") };
     if (!failure) { r.instance.state = replacement; r.instance.lifecycle = {}; }
@@ -291,7 +293,7 @@ test("new-key dialog handles a rejected save without showing recovery or an unha
   assert.equal(dialog.recoveryShown(), 0);
   assert.equal(dialog.closed(), 0);
   assert.equal(r.starts(), 0);
-  assert.ok(r.obsidian.notices.some((message) => message.includes("metadata_write_failed")));
+  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync could not read or save this vault's sync credentials")));
 });
 
 for (const cause of ["storage failure", "unload", "same-instance reload"]) {
@@ -307,7 +309,7 @@ for (const cause of ["storage failure", "unload", "same-instance reload"]) {
       } };
       if (cause === "storage failure") {
         r.hooks.save = async () => { throw new Error("fixture metadata failure"); };
-        await assert.rejects(r.instance.state.save(), /metadata_write_failed/);
+        await assert.rejects(r.instance.state.save(), reason("metadata_write_failed"));
         r.hooks.save = null;
       } else if (cause === "unload") {
         r.instance.onunload();

@@ -58,7 +58,7 @@ import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, un
 import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
-import { State, StateStorageError, dataLease, isPushed, type ObsyncData } from "./state";
+import { State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -74,7 +74,7 @@ import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, Syn
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
-import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import {
   LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, awaitApproval,
 } from "./ui/modals";
@@ -270,6 +270,9 @@ const PLUGIN_NAME = "Self Hosted Private Sync";
 
 /** The tab id of Obsidian's own Community plugins page, where an update is installed. */
 const COMMUNITY_PLUGINS_TAB = "community-plugins";
+
+/** The per-vault local-storage key of the reference this vault last opened (`heldReference`). */
+const HELD_REFERENCE = "obsync-private-sync-held-reference";
 
 /**
  * Obsidian's settings window, which the app sets on `App` at runtime and the
@@ -2078,7 +2081,7 @@ export default class ObsyncPlugin extends Plugin {
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
       new Notice(error.message, 15000);
-    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id)).catch((error: unknown) => {
+    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id), this.heldReference()).catch((error: unknown) => {
       if (!this.isCurrent(generation)) return null;
       throw error;
     });
@@ -2111,6 +2114,13 @@ export default class ObsyncPlugin extends Plugin {
     this.registerDomEvent(this.statusEl, "click", () => this.showStatus());
     this.setStatus({ kind: "idle" });
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
+    // A COPY GETS A WAY TO START (issue #168). It loaded as a device that
+    // never paired, so the status bar, the settings tab and every command
+    // are here; the tab offers Pair this device and Start fresh.
+    if (state.copied) {
+      this.log("state decision=not_paired reason=copied_vault");
+      new Notice(`obsync: ${COPIED_VAULT} Both are in obsync's settings, under This device.`, 15000);
+    }
     // ONE reminder, at the start after a confirmation was skipped, and never
     // a recurring popup: Settings and Show sync status keep saying it
     // quietly until the words are confirmed (issue #170).
@@ -2212,6 +2222,24 @@ export default class ObsyncPlugin extends Plugin {
       else this.resumePairing();
       if (this.isCurrent(generation)) void this.checkForUpdate();
     });
+  }
+
+  /**
+   * The credential reference this vault last opened, in Obsidian's per-vault
+   * local storage (issue #168; `Held` in state.ts). Not a secret: the data
+   * file names the same reference. Local storage can refuse or throw, and a
+   * read that fails counts as "never held" -- the copy path, which writes
+   * nothing until the person acts -- never as a reason to sync.
+   */
+  private heldReference(): Held {
+    return {
+      holds: (ref) => {
+        try { return this.app.loadLocalStorage(HELD_REFERENCE) === ref; } catch { return false; }
+      },
+      hold: (ref) => {
+        try { this.app.saveLocalStorage(HELD_REFERENCE, ref); } catch { this.log("held decision=failed reason=local_storage_unwritable"); }
+      },
+    };
   }
 
   override onunload(): void {

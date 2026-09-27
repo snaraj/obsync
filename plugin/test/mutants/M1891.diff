@@ -1,0 +1,12 @@
+# M1891: a vault whose held secret is gone is treated as a copy instead of a fault (#168)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -572,7 +572,7 @@
+         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
+         const raw = secrets.getSecret(ref);
+         if (raw === null) {
+-          if (held.holds(ref)) throw new StateStorageError("missing_secret");
++          if (held.holds(ref) && ref === "") throw new StateStorageError("missing_secret");
+           // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device
+           // the reference names, and never a stop with nothing to press.
+           state = fresh(data);

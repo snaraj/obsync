@@ -47,6 +47,9 @@ import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVE
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
 
+/** What a copied vault, or one whose folder was renamed outside Obsidian, is told (issue #168). */
+export const COPIED_VAULT = "This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh.";
+
 /**
  * The project's setup guide. A fixed address in the source, never one a server
  * supplies, and opened only when the person presses for it: the plugin itself
@@ -648,6 +651,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       desc: () => {
         const data = this.plugin.state.data;
         if (this.plugin.forgottenDevice) return FORGOTTEN_DEVICE;
+        if (this.plugin.state.copied) return COPIED_VAULT;
         const waiting = this.plugin.waiting;
         if (waiting) {
           return `Pairing: waiting for approval on the other device${waiting.code === null ? "" : `, whose prompt shows the code ${waiting.code}`}.`;
@@ -659,14 +663,31 @@ export class ObsyncSettingTab extends PluginSettingTab {
         return "This device's last pairing did not finish, so it holds no vault key. Pair it again: on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device. Do not repeat server setup.";
       },
       render: (setting) => {
-        setting
-          .addButton((button) => button.setButtonText("Pair this device").onClick(() => { void this.pairThisDevice(); }))
-          .addButton((button) => button
+        setting.addButton((button) => button.setButtonText("Pair this device").onClick(() => { void this.pairThisDevice(); }));
+        if (this.plugin.state.copied) setting.addButton((button) => button.setButtonText("Start fresh").onClick(() => { this.startFresh(); }));
+        else {
+          setting.addButton((button) => button
             .setButtonText("Pair a new device")
             .setDisabled(!this.plugin.state.paired)
             .onClick(() => { new PairCreateModal(this.app, this.plugin).open(); }));
+        }
       },
     };
+  }
+
+  /**
+   * A copy started over as a vault that never synced (issue #168): it already
+   * holds nothing of the original's identity, and the copied server address
+   * goes too. The save gives it an installation of its own.
+   */
+  private startFresh(): void {
+    this.plugin.state.data.serverUrl = "";
+    this.plugin.log("state decision=started_fresh reason=copied_vault");
+    // State reports persistence failure and stops sync through its host hook.
+    void this.plugin.state.save().then(() => {
+      new Notice("obsync: this vault starts fresh. It is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready.");
+      this.left();
+    }, () => {});
   }
 
   private setup(): Row {

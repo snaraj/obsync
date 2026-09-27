@@ -13,7 +13,9 @@
  * readback and awaited saveData do not promise a crash-durable transaction
  * across the two host stores. The bounded previous credential record allows
  * reload to select the revision named by metadata after an interrupted write;
- * an unknown revision or identity mismatch stops loading.
+ * an unknown revision or identity mismatch stops loading. A reference this
+ * vault never held, with no secret behind it, loads as a copy: unpaired,
+ * never as the device it names (`Held`).
  */
 
 import { Policy, defaultPolicy } from "./policy";
@@ -27,11 +29,34 @@ export interface SecretStore {
   setSecret(id: string, value: string): void;
 }
 
+/**
+ * The stop every storage fault ends in. The reason goes to the log line, never
+ * to the person (issue #168): the words say what happened and what to do, and
+ * no longer forbid the one step that gets a vault whose saved credentials are
+ * truly gone syncing again -- pairing it as a new device.
+ */
 export class StateStorageError extends Error {
   constructor(readonly reason: string, message?: string) {
-    super(message ?? `Credential storage could not be verified (${reason}). Sync is stopped. Keep this vault and its settings intact, check Obsidian secret storage, then reload. Do not repeat server setup or delete the credential reference.`);
+    super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your 24-word recovery phrase or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
   }
 }
+
+/**
+ * What this vault, as Obsidian registers it NOW, remembers holding: the
+ * credential reference it last opened (issue #168). Obsidian keeps both this
+ * record and the secret store per vault id, and a copied vault -- or a folder
+ * renamed outside Obsidian, which it registers as a new vault -- is a new id
+ * that remembers neither. So a well-formed reference this vault never held,
+ * with no secret behind it, is a copy; one it held whose secret is gone is a
+ * storage fault. Neither ever syncs as the device the reference names.
+ */
+export interface Held {
+  holds(ref: string): boolean;
+  hold(ref: string): void;
+}
+
+/** No record at all: every reference counts as held, so a missing secret stays a fault. */
+const ALWAYS_HELD: Held = { holds: () => true, hold: () => {} };
 
 /** Obsidian's `Plugin` provides exactly this pair. */
 export interface Store {
@@ -538,15 +563,32 @@ export class State {
     private readonly claim: object,
   ) {}
 
+  /**
+   * True while this is a COPY's state (issue #168): its data file names a
+   * well-formed credential reference this vault never held, and no secret
+   * stands behind it. It loads as a device that never paired -- the copied
+   * identity, key, name and server records dropped; the folder selection,
+   * ceilings and server address kept -- and nothing is written until the
+   * person pairs or starts fresh. The first save gives it an installation of
+   * its own and ends it.
+   */
+  copied = false;
+
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
     isCurrent: () => boolean = () => true,
     lease: Lease = { holder: null, writing: Promise.resolve() },
+    held: Held = ALWAYS_HELD,
   ): Promise<State> {
     let state: State;
     let migrate = false;
     const claim = lease.holder = {};
+    const fresh = (data: ObsyncData): State => {
+      const id = hex(randomBytes(16));
+      if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
+      return new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+    };
     try {
       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
         throw new StateStorageError("unavailable");
@@ -574,19 +616,28 @@ export class State {
         const ref = secretRef(id);
         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
         const raw = secrets.getSecret(ref);
-        if (raw === null) throw new StateStorageError("missing_secret");
-        const envelope = readEnvelope(raw, id);
-        const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
-        if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
-          throw new StateStorageError("identity_mismatch");
+        if (raw === null) {
+          if (held.holds(ref)) throw new StateStorageError("missing_secret");
+          // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device
+          // the reference names, and never a stop with nothing to press.
+          state = fresh(data);
+          const { serverUrl } = data;
+          state.forgetPairing();
+          Object.assign(data, { vrk: null, deviceName: null, serverUrl, recoveryPhrase: "unconfirmed" });
+          state.copied = true;
+        } else {
+          const envelope = readEnvelope(raw, id);
+          const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
+          if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
+            throw new StateStorageError("identity_mismatch");
+          }
+          Object.assign(data, credentials({ ...selected }));
+          state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
+          held.hold(ref);
         }
-        Object.assign(data, credentials({ ...selected }));
-        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
       } else {
         Object.assign(data, credentials(metadata));
-        const id = hex(randomBytes(16));
-        if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
-        state = new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+        state = fresh(data);
         migrate = true;
       }
     } catch (error) {
@@ -594,7 +645,10 @@ export class State {
       onFailure(failure);
       throw failure;
     }
-    if (migrate) await state.save();
+    if (migrate) {
+      await state.save();
+      held.hold(secretRef(state.installationId));
+    }
     return state;
   }
 
@@ -641,6 +695,7 @@ export class State {
         credentialRef: ref, credentialRevision: selected.revision }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
     this.record = selected;
+    this.copied = false;
   }
 
   async save(): Promise<void> {

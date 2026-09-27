@@ -124,9 +124,9 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 7. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
-If a storage error appears instead, keep the vault and the recovery phrase
-as they are and follow [Where your keys are kept](community-plugin.md#where-your-keys-are-kept):
-do not delete anything and do not repeat server setup.
+If a storage error appears instead, reload Obsidian. If it comes back, follow
+[Where your keys are kept](community-plugin.md#where-your-keys-are-kept); do
+not repeat server setup.
 
 ## Prepare an Android phone
 

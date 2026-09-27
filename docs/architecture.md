@@ -418,8 +418,14 @@ credential records: vault root key, device secret and optional edge headers,
 bound to the installation, server URL, device ID and a credential revision.
 Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
 selects only the record named by metadata with the matching server/device
-identity; missing, malformed or mismatched data stops loading instead of
-resetting identity or generating another key. Key-only recovery and
+identity; malformed or mismatched data, and a missing entry this vault has
+held, stop loading instead of resetting identity or generating another key.
+A missing entry this vault never held -- a copied vault, or a folder renamed
+outside Obsidian, which Obsidian registers as a new vault id with empty
+secret storage -- loads as a device that never paired, never as the device
+the reference names, and nothing is written until the person pairs it or
+starts fresh. Which reference a vault last opened is kept in Obsidian's
+per-vault local storage; it is not a secret. Key-only recovery and
 credential-only enrollment are preserved as incomplete states. A pairing
 claim waiting for its key is held in a second owned entry, beside the
 credential and never in it: the pairing id, `PS`, the claimed credential and

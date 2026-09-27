@@ -46,10 +46,13 @@ const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
  * Obsidian loads it, so nothing module-level survives from one to the next.
  */
 function vaultWindow(t) {
-  const secrets = new Map();
+  const secrets = new Map(), local = new Map();
   const app = {
     workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() },
     secretStorage: { getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
+    // Obsidian's per-vault local storage, which records the reference held (#168).
+    loadLocalStorage: (key) => local.get(key) ?? null,
+    saveLocalStorage: (key, value) => { local.set(key, value); },
     vault: { adapter: {}, on: () => ({}) },
   };
   let metadata = identity();

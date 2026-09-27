@@ -1,0 +1,11 @@
+# M1893: a copy keeps the original device's identity and server records (#168)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -577,7 +577,6 @@
+           // the reference names, and never a stop with nothing to press.
+           state = fresh(data);
+           const { serverUrl } = data;
+-          state.forgetPairing();
+           Object.assign(data, { vrk: null, deviceName: null, serverUrl, recoveryPhrase: "unconfirmed" });
+           state.copied = true;
+         } else {
