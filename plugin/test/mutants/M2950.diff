@@ -1,0 +1,13 @@
+# M2950: a clear disarms both clocks but keeps the callback page-side
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -94,7 +94,8 @@
+       return id;
+     },
+     clear(handle) {
+-      if (take(handle as number) !== undefined) worker?.postMessage({ id: handle });
++      const timer = armed.get(handle as number);
++      if (timer !== undefined) { page.clear(timer.handle); worker?.postMessage({ id: handle }); }
+     },
+     stop,
+   };

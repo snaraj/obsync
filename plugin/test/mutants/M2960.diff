@@ -1,0 +1,12 @@
+# M2960: the worker's script never disarms a cleared timer
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -33,7 +33,7 @@
+ export const WORKER_SOURCE = `"use strict";
+ const armed = new Map();
+ self.onmessage = ({ data: { id, ms } }) => {
+-  if (ms === undefined) { self.clearTimeout(armed.get(id)); armed.delete(id); return; }
++  if (ms === undefined) { armed.delete(id); return; }
+   armed.set(id, self.setTimeout(() => { armed.delete(id); self.postMessage(id); }, ms));
+ };
+ `;

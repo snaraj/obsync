@@ -1,0 +1,11 @@
+# M2967: a second load leaves the first load's worker running
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2093,7 +2093,6 @@
+     if (!this.isCurrent(generation) || state === null) return;
+     this.state = state;
+     this.host = new ObsidianHost(this);
+-    this.clock?.stop();
+     const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;
+     const timers = clock ?? pageTimers;
+     const transport: Transport = new Transport({

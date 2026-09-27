@@ -1,0 +1,11 @@
+# M2959: a timer is never forgotten, so it can run twice
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -68,7 +68,6 @@
+   /** Forget `id` and disarm it on the page: its callback, or `undefined` once it ran or was cleared. */
+   const take = (id: number): (() => void) | undefined => {
+     const timer = armed.get(id);
+-    armed.delete(id);
+     if (timer !== undefined) page.clear(timer.handle);
+     return timer?.fn;
+   };

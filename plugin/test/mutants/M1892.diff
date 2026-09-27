@@ -1,7 +1,7 @@
 # M1892: a copy loads but the plugin stops before its settings tab and status bar (#168)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1854,7 +1854,7 @@
+@@ -2090,7 +2090,7 @@
      });
      const state = await loading;
      if (this.stateLoad === loading) this.stateLoad = null;
@@ -9,4 +9,4 @@
 +    if (!this.isCurrent(generation) || state === null || state.copied) return;
      this.state = state;
      this.host = new ObsidianHost(this);
-     const transport: Transport = new Transport({
+     this.clock?.stop();

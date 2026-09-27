@@ -1,0 +1,16 @@
+# M2961: the Blob URL is never revoked
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -48,11 +48,7 @@
+  */
+ export function spawnWorker(): WorkerPort {
+   const url = window.URL.createObjectURL(new window.Blob([WORKER_SOURCE], { type: "text/javascript" }));
+-  try {
+-    return new window.Worker(url);
+-  } finally {
+-    window.URL.revokeObjectURL(url);
+-  }
++  return new window.Worker(url);
+ }
+ 
+ export interface Clock extends Timers {

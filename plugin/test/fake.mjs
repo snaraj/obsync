@@ -115,15 +115,27 @@ module.exports = {
   );
   cpSync(join(PLUGIN_DIR, "build"), join(home, "build"), { recursive: true });
   if (dist) cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
-  // The renderer's `window`, for the two things the bundle reads from it:
+  // The renderer's `window`, for the three things the bundle reads from it:
   // timers (`window.setTimeout`, the guideline rule `guidelines.test.mjs`
-  // pins) and the `online` event. Real timers that never hold the process
-  // open, and listeners that go nowhere: a test that must see either installs
-  // its own `globalThis.window` before `onload` and restores it after, as
+  // pins), the `online` event, and the worker the desktop clock runs on
+  // (`clock.ts`, #221). Real timers that never hold the process open, and
+  // listeners that go nowhere: a test that must see any of them installs its
+  // own `globalThis.window` before `onload` and restores it after, as
   // `reconnect.test.mjs` does.
   globalThis.window ??= {
     setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
     clearTimeout: (handle) => clearTimeout(handle),
+    Blob, URL,
+    // What the worker's script does, on the same timers: `clock.test.mjs` runs the script itself.
+    Worker: class {
+      armed = new Map();
+      onmessage = null;
+      postMessage({ id, ms }) {
+        clearTimeout(this.armed.get(id));
+        if (ms !== undefined) this.armed.set(id, setTimeout(() => this.onmessage?.({ data: id }), ms).unref());
+      }
+      terminate() { for (const handle of this.armed.values()) clearTimeout(handle); }
+    },
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
     // Where `visibilitychange` is raised; a test that fires it installs its own window.

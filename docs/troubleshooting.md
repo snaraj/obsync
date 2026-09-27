@@ -44,6 +44,7 @@ server again unless the entry says so.
 | --- | --- |
 | A note came back as a conflict copy | [A conflict copy appeared](#a-conflict-copy-appeared) |
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
+| On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
@@ -767,6 +768,27 @@ selection are not synced in either direction.
    down. On a vault with a long history this takes a while.
 
 ![The Sync folders on this device section: Folder selection set to Whole vault, the Selected folders box, and the Save button](assets/settings-sync-folders.png)
+
+## Changes wait while Obsidian is in the background
+
+**What you see.** On a computer, a note you change while Obsidian's window is
+minimized, behind other windows or on another desktop reaches your other
+devices minutes later, often only once you bring the window forward.
+
+**Why it happens.** A hidden Obsidian window slows its own timers to about one
+a minute, and obsync up to 1.1.3 waited on those timers before each upload.
+From 1.1.4 obsync keeps time in a small background worker that a hidden window
+does not slow.
+
+**How to fix it.**
+
+1. Update obsync to 1.1.4 or later: **Settings → Community plugins → Check for
+   updates**.
+2. If it still happens, look in [the plugin's own log](#how-to-collect-a-report)
+   for a warning that starts with `obsync timers decision=fallback`. It means
+   Obsidian on this computer did not let obsync start its worker, so a change
+   made in the background can again take minutes, and uploads at once when the
+   window comes forward. Open an issue with that line.
 
 ## A large file did not arrive on a phone
 

@@ -58,6 +58,7 @@ import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, un
 import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
+import { Clock, pageTimers, workerClock } from "./clock";
 import { State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import {
   assertFolderCaseScope,
@@ -237,8 +238,8 @@ function soleSpelling(names: string[], segment: string): string | null {
   return folded.length === 1 ? (folded[0] as string) : null;
 }
 
-/** The decisions that mean the plugin did NOT do what was asked. */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
+/** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
 
 /**
  * How long a device waits to start again after the server could not be
@@ -2416,6 +2417,8 @@ export default class ObsyncPlugin extends Plugin {
    * runs, and whenever it stopped for a reason a later start cannot fix.
    */
   private reconnect: { attempt: number; handle: number | null; at: number } | null = null;
+  /** The timers the transport and the engine run on, on desktop: a hidden window does not slow them (#221). */
+  private clock: Clock | null = null;
 
   get isMobile(): boolean {
     return Platform.isMobile;
@@ -2457,6 +2460,9 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.isCurrent(generation) || state === null) return;
     this.state = state;
     this.host = new ObsidianHost(this);
+    this.clock?.stop();
+    const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;
+    const timers = clock ?? pageTimers;
     const transport: Transport = new Transport({
       request: (request) => {
         state.assertAvailable();
@@ -2471,8 +2477,9 @@ export default class ObsyncPlugin extends Plugin {
       reachable: (answered) => {
         if (this.transport === transport) this.reachability(answered);
       },
-      // An attempt nothing answers is abandoned by the renderer's own clock (#195).
-      timers: { set: (fn, ms) => window.setTimeout(fn, ms), clear: (handle) => window.clearTimeout(handle as number) },
+      // An attempt nothing answers is abandoned (#195), and a backoff ends, on time in a hidden window (#221).
+      timers,
+      sleep: (ms) => new Promise((resolve) => timers.set(resolve, ms)),
     });
     this.transport = transport;
     this.statusEl = this.addStatusBarItem();
@@ -2627,6 +2634,8 @@ export default class ObsyncPlugin extends Plugin {
     this.lifecycle = null;
     this.cancelHistories();
     this.teardownEngine();
+    this.clock?.stop();
+    this.clock = null;
     this.mobileIndicator?.el.remove();
     this.mobileIndicator = null;
     this.indicator.stop();
@@ -2827,6 +2836,7 @@ export default class ObsyncPlugin extends Plugin {
       state: this.state,
       transport: this.transport,
       host: this.host,
+      timers: this.clock ?? pageTimers,
       onStatus: (status) => {
         if (this.engine === engine) this.setStatus(status);
       },
