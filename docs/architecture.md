@@ -1379,8 +1379,12 @@ admission, not an atomic filesystem quota.
 Desktop creates an exclusive mode-0600 hidden sibling temporary file, streams
 and verifies content, flushes it, and publishes with a same-directory hard
 link that cannot replace a destination. It syncs the destination directory
-and retains directory/inode confinement checks. Unsupported publication
-primitives are errors; there is no overwriting fallback. Abort removes only
+and retains directory/inode confinement checks. A volume without hard links
+(FAT32, exFAT) answers the link with an exclusive create filled from the
+verified temporary file, which cannot replace a destination either; the copy
+is visible under its final name while it is filled, and one that fails is
+removed while that name still means it (issue #176). There is no overwriting
+fallback. Abort removes only
 the attempt's temporary inode. A crash can leave a hidden temporary file;
 it is excluded from sync, and recovery never automatically deletes unknown
 temporary names. Mobile holds the completed file in memory and calls

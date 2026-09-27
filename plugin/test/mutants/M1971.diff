@@ -1,0 +1,12 @@
+# M1971: the fallback replaces a file that took the name
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1067,7 +1067,7 @@
+     let copy: NodeFileHandle | null = null;
+     try {
+       if (!sameFile(await source.stat(), proven)) throw new VaultPathError("temp_identity");
+-      copy = await fs.promises.open(target, "wx", 0o600);
++      copy = await fs.promises.open(target, "w", 0o600);
+       const window = new Uint8Array(Math.max(1, Math.min(size, CHUNK_MAX)));
+       for (let at = 0; at < size;) {
+         const { bytesRead } = await source.read(window, 0, Math.min(window.length, size - at), at);

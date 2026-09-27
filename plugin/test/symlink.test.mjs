@@ -782,3 +782,64 @@ test("a tombstoned note takes the real directory it emptied, and stops at one th
   assert.deepEqual(readdirSync(join(root, "Tree")), ["Keep"]);
   assert.equal(readFileSync(join(root, "Tree", "Keep", "kept.md"), "utf8"), "a note that stays\n");
 });
+
+/**
+ * A pulled note is durable before it has its name (issue #202). A rename is
+ * atomic for the name and not for the bytes, and closing a file flushes
+ * nothing, so the writer syncs the temp through its own descriptor before the
+ * rename and the directory after it. The filesystem records the order.
+ */
+function recording(calls) {
+  return {
+    ...realFsPromises,
+    open: async (path, flags, mode) => {
+      const handle = await realFsPromises.open(path, flags, mode);
+      const what = path.includes(".obsync-write-") ? "temp" : lstatSync(path).isDirectory() ? "folder" : "file";
+      return new Proxy(handle, {
+        get: (target, key) => {
+          const value = target[key];
+          if (typeof value !== "function") return value;
+          return (...args) => {
+            if (key === "sync" || key === "close") calls.push(`${key}:${what}`);
+            return value.apply(target, args);
+          };
+        },
+      });
+    },
+    rename: async (from, to) => {
+      calls.push("rename");
+      return realFsPromises.rename(from, to);
+    },
+  };
+}
+
+test("a pulled note is synced before it takes its name, and its folder after", async () => {
+  const calls = [];
+  const { root, context, publish, applyChange, logs } = await vault({ fs: { promises: recording(calls) } });
+  mkdirSync(join(root, "Notes"));
+  assert.equal(await applyChange(context, await publish("Notes/n05.md", "BODY SENTINEL\n")), "applied");
+  assert.equal(readFileSync(join(root, "Notes", "n05.md"), "utf8"), "BODY SENTINEL\n");
+
+  const at = (call) => calls.indexOf(call);
+  assert.ok(at("sync:temp") !== -1 && at("sync:temp") < at("close:temp"), calls.join(" "));
+  assert.ok(at("close:temp") < at("rename"), `the temp was published before it was synced: ${calls.join(" ")}`);
+  assert.ok(at("rename") < at("sync:folder"), `the rename was never made durable: ${calls.join(" ")}`);
+  assert.deepEqual(refusals(logs), [], logs.join(" | "));
+});
+
+test("a folder the host cannot sync is said once, and never fails the note it follows", async () => {
+  // Windows opens no directory for syncing: the note's bytes were synced
+  // before the rename, so the write stands and the log says what was skipped.
+  const base = recording([]);
+  const refusing = { ...base, open: async (path, flags, mode) => {
+    if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory() === true) throw Object.assign(new Error("EISDIR SENTINEL"), { code: "EISDIR" });
+    return base.open(path, flags, mode);
+  } };
+  const { root, context, publish, applyChange, logs } = await vault({ fs: { promises: refusing } });
+  mkdirSync(join(root, "Notes"));
+  assert.equal(await applyChange(context, await publish("Notes/a.md", "A\n")), "applied");
+  assert.equal(await applyChange(context, await publish("Notes/b.md", "B\n")), "applied");
+  assert.equal(readFileSync(join(root, "Notes", "b.md"), "utf8"), "B\n");
+  assert.deepEqual(logs.filter((line) => line.includes("reason=directory_fsync")),
+    ["host path_class=folder decision=skipped reason=directory_fsync code=EISDIR"]);
+});

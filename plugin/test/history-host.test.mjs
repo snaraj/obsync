@@ -211,3 +211,81 @@ test("desktop publication pins directory and destination identity and syncs the 
     if (phase !== "chain") assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
   }
 });
+
+/**
+ * A volume with no hard links (issue #176). FAT32 and exFAT refuse `link`, so
+ * a restored copy and a conflict copy used to end in `CopyPublicationError`
+ * there. The fake filesystem refuses `link` with each code a real one gives;
+ * the copy is then created exclusively and filled from the proven temp.
+ */
+const refusing = (code) => (p) => ({ ...p,
+  rename: async () => assert.fail("overwrite fallback"),
+  copyFile: async () => assert.fail("overwrite fallback"),
+  link: async () => { throw Object.assign(new Error(`${code} SENTINEL`), { code }); },
+});
+
+for (const code of ["ENOTSUP", "EPERM", "EISDIR", "EXDEV"]) test(`a volume that refuses link (${code}) still publishes the copy, exclusively and once`, async (t) => {
+  const r = host(t, { wrap: refusing(code) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  const stat = await writer.commit(1757200000000);
+  await writer.abort();
+  assert.equal(stat.path, "Notes/copy.md");
+  assert.equal(stat.size, bytes.length);
+  assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+  assert.equal(lstatSync(join(r.root, "Notes/copy.md")).mode & 0o777, 0o600);
+  assert.equal(Math.round(lstatSync(join(r.root, "Notes/copy.md")).mtimeMs), 1757200000000, "the copy carries the version's time");
+  assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "the temp outlived the fallback");
+  assert.ok(
+    r.logs.some((line) => line.startsWith("host path_class=file decision=published reason=link_unsupported fallback=exclusive_create") &&
+      line.includes(`code=${code}`) && line.includes(`bytes=${bytes.length}`)),
+    r.logs.join(" | "),
+  );
+});
+
+test("the fallback never replaces a file that took the name, and leaves no partial copy of its own", async (t) => {
+  // A save at the copy's name between the temp's proof and the fallback's
+  // create: the exclusive create refuses it exactly as `link` would.
+  const taken = host(t, { wrap: (p) => ({ ...refusing("ENOTSUP")(p),
+    link: async () => {
+      writeFileSync(join(taken.root, "Notes/copy.md"), "SAVED MEANWHILE SENTINEL");
+      throw Object.assign(new Error("ENOTSUP SENTINEL"), { code: "ENOTSUP" });
+    },
+  }) });
+  const writer = await taken.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  await assert.rejects(writer.commit(1000), /may exist/);
+  await writer.abort();
+  assert.equal(readFileSync(join(taken.root, "Notes/copy.md"), "utf8"), "SAVED MEANWHILE SENTINEL");
+  assert.deepEqual(readdirSync(join(taken.root, "Notes")), ["copy.md"], "the temp was left behind");
+
+  // A copy that fails part-way is removed -- it is this call's own file -- and
+  // nothing else is.
+  const torn = host(t, { wrap: (p) => ({ ...refusing("ENOTSUP")(p),
+    open: async (...args) => {
+      const handle = await p.open(...args);
+      if (!args[0].endsWith("copy.md")) return handle;
+      return { stat: () => handle.stat(), close: () => handle.close(), sync: () => handle.sync(), utimes: (...v) => handle.utimes(...v),
+        write: async () => { throw new Error("DISK FULL SENTINEL"); } };
+    },
+  }) });
+  const second = await torn.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await second.write(bytes);
+  await assert.rejects(second.commit(1000), /may exist/);
+  await second.abort();
+  assert.deepEqual(readdirSync(join(torn.root, "Notes")), [], "a partial copy or the temp was left behind");
+});
+
+test("a name already taken is not a volume without links: EEXIST never falls back", async (t) => {
+  let opened = 0;
+  const r = host(t, { wrap: (p) => ({ ...p,
+    link: async () => { throw Object.assign(new Error("EEXIST SENTINEL"), { code: "EEXIST" }); },
+    open: async (...args) => { if (args[0].endsWith("copy.md")) opened++; return p.open(...args); },
+  }) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  await assert.rejects(writer.commit(1000), /may exist/);
+  await writer.abort();
+  assert.equal(opened, 0, "the destination was created after all");
+  assert.equal(existsSync(join(r.root, "Notes/copy.md")), false);
+});

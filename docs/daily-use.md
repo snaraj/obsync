@@ -147,6 +147,9 @@ native observations from automated coverage.
 
    ![The Restore from history dialog listing three versions of a note, newest first, each with Restore a copy](assets/restore-from-history.png)
 
+   A restored copy works on any drive, a USB stick or memory card included,
+   and never replaces a file that is already there.
+
 Nothing else changes: the original note, your unsynced edits and the history
 all stay as they were, and the copy syncs like any new note. The notice
 confirms the local copy; **Show sync status** shows whether it has uploaded.

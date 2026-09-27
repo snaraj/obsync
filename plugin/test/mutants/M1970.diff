@@ -1,0 +1,12 @@
+# M1970: a volume that refuses link gets no fallback
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1007,7 +1007,7 @@
+             // on Windows. The copy is created EXCLUSIVELY instead -- `wx`
+             // cannot replace a file either -- and filled from the proven temp.
+             const code = (error as { code?: string }).code ?? "";
+-            if (!LINK_UNSUPPORTED.has(code)) throw error;
++            throw error;
+             const started = Date.now();
+             published = made = await this.publishExclusive(fs, temp, found.target, opened, size, mtime);
+             await discard();

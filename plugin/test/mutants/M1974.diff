@@ -1,0 +1,11 @@
+# M1974: a pulled note is renamed into place before its bytes are synced
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1177,7 +1177,6 @@
+         // come back from a power cut with the note's name on an empty file.
+         // So the temp's own descriptor is synced first, and the directory
+         // after the rename (`syncFolder`). One more fsync per pulled file.
+-        await handle.sync();
+         await handle.close();
+         open = false;
+         const seconds = mtime / 1000;

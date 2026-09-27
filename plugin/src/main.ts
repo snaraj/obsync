@@ -57,7 +57,7 @@ import type { App } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
 import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
-import { ByteSource } from "./chunker";
+import { ByteSource, CHUNK_MAX } from "./chunker";
 import { State, StateStorageError, dataLease, isPushed } from "./state";
 import {
   assertFolderCaseScope,
@@ -111,6 +111,16 @@ const SCAN_MAX_DEPTH = 32;
  * a hold may be the last name of a save (`hold`).
  */
 const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
+
+/**
+ * What `link` answers on a volume that has no hard links (issue #176):
+ * FAT32 and exFAT say `ENOTSUP` on macOS and `EPERM` on Linux, and Windows
+ * reports them as `EISDIR` or `ENOTSUP`; a FUSE or overlay filesystem can say
+ * `ENOSYS`, `EOPNOTSUPP` or `EXDEV`. Each of these is answered by an
+ * exclusive create, which refuses an occupied name as `link` does. `EEXIST`
+ * is not among them: it is the name being taken, the refusal `link` is for.
+ */
+const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
 
 /**
  * What makes a folder a vault that syncs with this plugin (issue #180):
@@ -413,6 +423,8 @@ export class ObsidianHost implements VaultHost {
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
   private readonly nested = new Set<string>();
+  /** A directory this host could not fsync has been logged, once (`syncFolder`). */
+  private folderSyncRefused = false;
   private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
   private readonly composing = new WeakMap<MarkdownView, string>();
   private readonly inputWindows = new WeakSet<Window>();
@@ -875,10 +887,12 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
-   * An atomic vault write. Desktop writes a sibling temp file, fsyncs it by
-   * closing, restores the modification time and renames over the target, so
-   * a crash mid-write can never leave a torn note. Mobile buffers and calls
-   * `writeBinary` once, which is the strongest primitive the adapter has.
+   * An atomic vault write. Desktop writes a sibling temp file, fsyncs it
+   * through its descriptor, closes it, restores the modification time,
+   * renames it over the target and fsyncs the directory, so a crash mid-write
+   * can never leave a torn or empty note (issue #202). Mobile buffers and
+   * calls `writeBinary` once, which is the strongest primitive the adapter
+   * has; it exposes no fsync.
    */
   async writer(path: string): Promise<VaultWriter> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
@@ -1031,22 +1045,103 @@ export class ObsidianHost implements VaultHost {
         try {
           // link is atomic and cannot replace a destination, even one that
           // appeared after preflight. Never fall back to rename/copyFile.
-          await fs.promises.link(temp, found.target);
+          let published = opened;
+          let made = wrote;
+          try {
+            await fs.promises.link(temp, found.target);
+          } catch (error) {
+            // A VOLUME WITH NO HARD LINKS (issue #176): FAT32 and exFAT answer
+            // `ENOTSUP` on macOS, `EPERM` on Linux and `EISDIR` or `ENOTSUP`
+            // on Windows. The copy is created EXCLUSIVELY instead -- `wx`
+            // cannot replace a file either -- and filled from the proven temp.
+            const code = (error as { code?: string }).code ?? "";
+            if (!LINK_UNSUPPORTED.has(code)) throw error;
+            const started = Date.now();
+            published = made = await this.publishExclusive(fs, temp, found.target, opened, size, mtime);
+            await discard();
+            this.log(
+              `host path_class=file decision=published reason=link_unsupported fallback=exclusive_create code=${code} ` +
+                `bytes=${size} duration_ms=${Date.now() - started}`,
+            );
+          }
           // From here on, failure/cancellation preserves the published copy.
           const directory = await fs.promises.open(parent, "r");
           try { await directory.sync(); } finally { await directory.close(); }
           const refusal = await chainRefusal(found.chain, walker(fs));
           const landed = await walker(fs).lstat(found.target);
-          if (refusal !== null || !sameFile(opened, landed)) throw new Error("Restore publication identity changed.");
+          if (refusal !== null || !sameFile(published, landed)) throw new Error("Restore publication identity changed.");
           const stat = landed as PathStat;
-          if (stat.size !== wrote.size || Math.round(stat.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+          if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
             this.log("host path_class=file decision=write_superseded");
           }
-          return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
+          return { path, mtime: Math.round(made.mtimeMs), size: made.size };
         } catch { throw new CopyPublicationError(path); }
       },
       abort: discard,
     };
+  }
+
+  /**
+   * Make a rename in `folder` durable: fsync the directory (issue #202). A
+   * host that cannot -- Windows opens no directory for syncing -- still has
+   * the note's bytes on disk, synced before the rename, so it is said once in
+   * the log and never fails the write it follows.
+   */
+  private async syncFolder(fs: NodeFs, folder: string): Promise<void> {
+    try {
+      const directory = await fs.promises.open(folder, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    } catch (error) {
+      if (this.folderSyncRefused) return;
+      this.folderSyncRefused = true;
+      this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${(error as { code?: string }).code ?? "none"}`);
+    }
+  }
+
+  /**
+   * Publish the temp at `target` where `link` cannot (issue #176), and answer
+   * with the identity of the file it made.
+   *
+   * THE SAME TWO PROMISES, KEPT ANOTHER WAY. The destination is opened
+   * exclusive-create, which refuses a name anything already wears exactly as
+   * `link` does; and nothing but the proven temp -- the inode this writer
+   * filled, still under its name -- is read into it. The cost is the one the
+   * issue names: while the copy is filled, a partial file is visible under its
+   * final name. A copy that fails part-way is removed, and only while that
+   * name still means the file this call created.
+   */
+  private async publishExclusive(fs: NodeFs, temp: string, target: string, proven: PathStat, size: number, mtime: number): Promise<PathStat> {
+    const source = await fs.promises.open(temp, "r");
+    let copy: NodeFileHandle | null = null;
+    try {
+      if (!sameFile(await source.stat(), proven)) throw new VaultPathError("temp_identity");
+      copy = await fs.promises.open(target, "wx", 0o600);
+      const window = new Uint8Array(Math.max(1, Math.min(size, CHUNK_MAX)));
+      for (let at = 0; at < size;) {
+        const { bytesRead } = await source.read(window, 0, Math.min(window.length, size - at), at);
+        if (bytesRead <= 0) throw new Error("Restore copy ended early.");
+        for (let offset = 0; offset < bytesRead;) {
+          const { bytesWritten } = await copy.write(window.subarray(offset, bytesRead));
+          if (bytesWritten <= 0) throw new Error("Restore write made no valid progress.");
+          offset += bytesWritten;
+        }
+        at += bytesRead;
+      }
+      await copy.utimes(mtime / 1000, mtime / 1000);
+      await copy.sync();
+      return await copy.stat();
+    } catch (error) {
+      if (copy !== null) {
+        const mine = await copy.stat().catch(() => null);
+        await copy.close().catch(() => undefined);
+        copy = null;
+        if (sameFile(mine, await walker(fs).lstat(target).catch(() => null))) await fs.promises.unlink(target).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      await source.close().catch(() => undefined);
+      await copy?.close();
+    }
   }
 
   /**
@@ -1124,6 +1219,13 @@ export class ObsidianHost implements VaultHost {
       },
       commit: async (mtime) => {
         await bind();
+        // DURABLE BEFORE IT HAS A NAME (issue #202). A rename is atomic for
+        // the name, not for the bytes under it, and closing a file flushes
+        // nothing: a filesystem that does not flush on replace-by-rename can
+        // come back from a power cut with the note's name on an empty file.
+        // So the temp's own descriptor is synced first, and the directory
+        // after the rename (`syncFolder`). One more fsync per pulled file.
+        await handle.sync();
         await handle.close();
         open = false;
         const seconds = mtime / 1000;
@@ -1142,6 +1244,7 @@ export class ObsidianHost implements VaultHost {
         }
         await fs.promises.rename(temp, target);
         this.temps.delete(temp);
+        await this.syncFolder(fs, parent);
         // The rename is the moment the file takes its real name, so the
         // chain is checked again here: a parent swapped after the last
         // binding would otherwise leave our own inode sitting outside the
