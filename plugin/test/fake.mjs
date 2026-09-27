@@ -1116,6 +1116,19 @@ const MAX_ADVANCES = 1800;
 const QUIET_ADVANCES = 40;
 
 /**
+ * ONE IDLE ROUND: about a millisecond of real time, yielded. `setTimeout(1)`
+ * is that on Linux and macOS; on Windows it is a whole timer tick, about
+ * 15.6 ms, so every virtual step cost many times the real time these budgets
+ * were written for, and a wait that walks virtual time outran its ten seconds
+ * (the Windows runner, 2026-09-27: the co-typing, stamper and parked-file
+ * tests). There the millisecond is waited out on `setImmediate`, which still
+ * lets every completion the threadpool delivers run first.
+ */
+const idle = process.platform === "win32"
+  ? async () => { for (const until = performance.now() + 1; performance.now() < until;) await new Promise(setImmediate); }
+  : () => new Promise((resolve) => setTimeout(resolve, 1));
+
+/**
  * Timers on a virtual clock: nothing fires until the test advances time, so a
  * 500 ms debounce and a one-hour heartbeat cannot be confused for each other.
  */
@@ -1177,7 +1190,7 @@ export class FakeTimers {
         // Nothing was due, so what we are waiting for is a promise, most of
         // it off-thread. Yield the CPU instead of spinning on it: that is
         // what makes this wait independent of how busy the machine is.
-        await new Promise((resolve) => setTimeout(resolve, 1));
+        await idle();
         if (advances < advanceLimit) {
           this.now += advanceMs;
           advances++;
