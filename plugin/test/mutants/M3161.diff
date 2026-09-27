@@ -1,0 +1,11 @@
+# M3161: a phone settles a note it no longer has without saying so (#234)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2134,7 +2134,6 @@
+       // record, and a deletion from another device reached the vault's own
+       // `.trash`, which throws for a name it cannot find: the page failed,
+       // and every read after it failed at the same deletion, for good.
+-      this.log("host path_class=file decision=absent");
+       return "removed";
+     }
+     if (expect === undefined) {

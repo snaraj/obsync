@@ -105,8 +105,17 @@ export class PhoneVault {
       },
       writeBinary: (path, data, options) => vault.queue(async () => vault.write(path, new Uint8Array(data), options?.mtime ?? vault.clock, true)),
       remove: (path) => vault.queue(async () => vault.drop(path)),
-      trashLocal: (path) => vault.queue(async () => vault.drop(path)),
-      trashSystem: (path) => vault.queue(async () => { vault.drop(path); return true; }),
+      // A name the storage does not answer for, as the emulator did (#234):
+      // the system bin declines it and the vault's own `.trash` throws.
+      trashLocal: (path) => vault.queue(async () => {
+        if (vault.real(path) === null) throw new Error("The source object does not exist");
+        vault.drop(path);
+      }),
+      trashSystem: (path) => vault.queue(async () => {
+        if (vault.real(path) === null) return false;
+        vault.drop(path);
+        return true;
+      }),
       rmdir: (path) => vault.queue(async () => vault.drop(path)),
       // PRIVATE in Obsidian: drop a name from the index, touching nothing on the storage.
       ...(indexApi ? { reconcileDeletion: async (_realPath, path, now = true) => { if (now) vault.unindex(path); } } : {}),

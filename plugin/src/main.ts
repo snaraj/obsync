@@ -2128,6 +2128,14 @@ export class ObsidianHost implements VaultHost {
       found = await this.confine(desktop, path, ["absent", "file"]);
       // Nothing here to remove, and so nothing here to preserve either.
       if (found.final === "absent") return "removed";
+    } else if (!(await this.plugin.app.vault.adapter.exists(path))) {
+      // The same on a phone (issue #234). A note gone from its storage with
+      // nobody watching -- the Files app, or Obsidian closed -- still has a
+      // record, and a deletion from another device reached the vault's own
+      // `.trash`, which throws for a name it cannot find: the page failed,
+      // and every read after it failed at the same deletion, for good.
+      this.log("host path_class=file decision=absent");
+      return "removed";
     }
     if (expect === undefined) {
       await this.remove(path);

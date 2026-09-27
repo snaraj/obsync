@@ -725,3 +725,24 @@ test("a removal through a name the vault shows as a DIFFERENT recorded note is r
   assert.equal(await r.b.host.trash("Notes/probe.md"), "removed");
   assert.equal(r.vault.text("Notes/probe.md"), null);
 });
+
+for (const folds of [true, false]) {
+  const kind = folds ? "Android" : "an iPhone";
+  test(`on ${kind}, a deletion for a note the phone no longer has settles as done, and the feed goes on (#234)`, async (t) => {
+    const r = await seeded(t, { "Gone/Lost.md": BODY, "Gone/Kept.md": OTHER }, { folds });
+    // The note leaves the phone's storage with nobody watching: the Files app,
+    // or Obsidian closed. Its record stays; nothing on the phone says it went.
+    r.vault.disk.delete("Gone/Lost.md");
+    r.vault.index.delete("Gone/Lost.md");
+    // The desktop deletes it too, then edits the other note.
+    r.a.host.remove("Gone/Lost.md");
+    await r.timers.run(STEP_MS, () => r.a.state.fileByPath("Gone/Lost.md") === undefined);
+    r.a.host.write("Gone/Kept.md", `${OTHER}and a later line\n`, 2000);
+    await r.timers.run(STEP_MS, () => r.vault.text("Gone/Kept.md") === `${OTHER}and a later line\n`);
+    assert.equal(r.vault.text("Gone/Kept.md"), `${OTHER}and a later line\n`, `the feed stopped at the deletion: ${story(r)}`);
+    assert.equal(r.b.state.data.files["Gone/Lost.md"], undefined, "the record of the note that went stayed");
+    assert.deepEqual(r.b.logs.filter((line) => line.includes("decision=absent")), ["host path_class=file decision=absent"], story(r));
+    assert.deepEqual(r.b.logs.filter((line) => line.startsWith("feed decision=retry")), [], story(r));
+    assert.deepEqual(await phonePosts(r), [], `the phone published something: ${story(r)}`);
+  });
+}
