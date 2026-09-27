@@ -125,6 +125,13 @@ const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
  */
 const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
 
+/** The words on a notice's buttons (`VaultHost.notify`). */
+const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
+  delete_everywhere: "Delete everywhere",
+  restore_here: "Restore here",
+  fetch: "Fetch",
+};
+
 /**
  * What a folder sync answers on a host that has none. Node opens a directory
  * on Windows for reading only, and `FlushFileBuffers` needs write access, so
@@ -133,13 +140,6 @@ const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "E
  * directory for reading, and no `fsync(2)`, answers either.
  */
 const NO_FOLDER_SYNC = new Set(["EPERM", "EISDIR"]);
-
-/** The words on a notice's buttons (`VaultHost.notify`). */
-const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
-  delete_everywhere: "Delete everywhere",
-  restore_here: "Restore here",
-  fetch: "Fetch",
-};
 
 /**
  * What makes a folder a vault that syncs with this plugin (issue #180):
