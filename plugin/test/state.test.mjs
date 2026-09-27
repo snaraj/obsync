@@ -232,6 +232,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     feedMark: { seq: 9, fileId: "f1", versionId: "v1", ts: 5, replay: false },
     graves: { f4: { versionId: "v4", path: "Notes/gone.md", folder: false } },
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+    // The key is kept, so the words confirmed for it stay confirmed (#170).
+    recoveryPhrase: "confirmed",
   });
 
   state.forgetPairing();
@@ -242,7 +244,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
       retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
-      syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+      syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
     },
   );
   assert.equal(state.paired, false);

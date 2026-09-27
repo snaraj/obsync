@@ -42,7 +42,7 @@ import { refusalStatus, refusalText } from "../sync/engine";
 import type { EdgeHeader } from "../state";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
-import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst, secretText } from "./modals";
+import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, secretText } from "./modals";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -924,18 +924,24 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   // ---- Vault key -----------------------------------------------------------
 
+  /** Until this device has confirmed the words, the row says so and its button asks for them (issue #170). */
   private recoveryPhrase(): Row {
+    const unconfirmed = (): boolean => this.plugin.state.data.vrk !== null && this.plugin.state.data.recoveryPhrase !== "confirmed";
     return {
       name: "Recovery phrase",
       desc: () => this.plugin.state.data.vrk === null
         ? "This device holds no vault key. Pair with a device that has one, or restore the phrase."
-        : "24 words that are the vault key. Anyone holding them can read this vault; without them and without a paired device the vault cannot be recovered.",
+        : unconfirmed() ? RECOVERY_UNCONFIRMED
+          : "24 words that are the vault key. Anyone holding them can read this vault; without them and without a paired device the vault cannot be recovered.",
       render: (setting) => {
         setting
-          .addButton((button) => button
-            .setButtonText("Show")
-            .setDisabled(this.plugin.state.data.vrk === null)
-            .onClick(() => { new RecoveryPhraseModal(this.app, this.plugin, false).open(); }))
+          .addButton((button) => {
+            button
+              .setButtonText(unconfirmed() ? "Show and confirm" : "Show")
+              .setDisabled(this.plugin.state.data.vrk === null)
+              .onClick(() => { new RecoveryPhraseModal(this.app, this.plugin, unconfirmed(), () => { this.update(); }).open(); });
+            if (unconfirmed()) button.setCta();
+          })
           .addButton((button) => button.setButtonText("Restore or create").onClick(() => { new VaultKeyModal(this.app, this.plugin).open(); }));
       },
     };

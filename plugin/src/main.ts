@@ -58,7 +58,7 @@ import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, un
 import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
-import { State, StateStorageError, dataLease, isPushed } from "./state";
+import { State, StateStorageError, dataLease, isPushed, type ObsyncData } from "./state";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -2111,6 +2111,15 @@ export default class ObsyncPlugin extends Plugin {
     this.registerDomEvent(this.statusEl, "click", () => this.showStatus());
     this.setStatus({ kind: "idle" });
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
+    // ONE reminder, at the start after a confirmation was skipped, and never
+    // a recurring popup: Settings and Show sync status keep saying it
+    // quietly until the words are confirmed (issue #170).
+    if (state.data.recoveryPhrase === "skipped" && state.data.vrk !== null) {
+      state.data.recoveryPhrase = "unconfirmed";
+      this.log("phrase decision=reminded");
+      new Notice("obsync: your 24-word recovery phrase is not confirmed. Without it and without a paired device this vault cannot be recovered. Open obsync's settings, Vault key, and choose Show and confirm.", 15000);
+      void state.save().catch(() => {});
+    }
 
     this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
     this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
@@ -3151,8 +3160,11 @@ export default class ObsyncPlugin extends Plugin {
    * every start and writes one for a vault that has none, so the domain a
    * path belongs to has exactly one source (`docs/architecture.md` 5.1).
    */
-  async adoptVaultKey(vrk: string): Promise<void> {
+  async adoptVaultKey(vrk: string, phrase: ObsyncData["recoveryPhrase"] = "unconfirmed"): Promise<void> {
     const { state, assertCurrent } = this.captureSession();
+    // A different key is a phrase this device has not confirmed; restoring
+    // one from its 24 words is the confirmation (issue #170).
+    if (state.data.vrk !== vrk || phrase === "confirmed") state.data.recoveryPhrase = phrase;
     state.data.vrk = vrk;
     await state.save();
     assertCurrent();
@@ -3184,7 +3196,7 @@ export default class ObsyncPlugin extends Plugin {
     if (strands) {
       throw new Error("These 24 words do not open the vault on this server: nothing there was sealed with them. The key on this device was not changed.");
     }
-    await this.adoptVaultKey(vrk);
+    await this.adoptVaultKey(vrk, "confirmed");
   }
 
   /**
@@ -3216,6 +3228,7 @@ export default class ObsyncPlugin extends Plugin {
       freshKey = state.data.vrk === null;
       if (freshKey) {
         state.data.vrk = hex(newVaultKey());
+        state.data.recoveryPhrase = "unconfirmed";
         await state.save();
       }
       const vrk = state.data.vrk as string;

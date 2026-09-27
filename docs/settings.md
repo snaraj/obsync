@@ -109,7 +109,7 @@ a revoked device is paired again as a new device.
 
 | Setting | What it does |
 | --- | --- |
-| **Recovery phrase** → **Show** | Re-displays the 24 words from this device's own key. Anyone holding them can read this vault |
+| **Recovery phrase** → **Show** | Re-displays the 24 words from this device's own key. Anyone holding them can read this vault. Until this device has confirmed them, the row reads **Not confirmed — Show and confirm** and the button asks for three of the words |
 | **Recovery phrase** → **Restore or create** | **Restore** adopts an existing vault key from its phrase, and refuses words that open nothing on a server that holds a vault. **Create a new vault key** starts a NEW vault that existing devices will not read, and asks first on a server that holds one — see [`recovery.md`](recovery.md) before pressing it |
 
 ## Commands, not settings

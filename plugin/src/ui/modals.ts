@@ -951,16 +951,27 @@ export class AccountSetupModal extends Modal {
   override onClose(): void { this.contentEl.empty(); }
 }
 
+/** What a device that has not confirmed its 24 words is told, wherever it is told (issue #170). */
+export const RECOVERY_UNCONFIRMED =
+  "Not confirmed — Show and confirm. Write the 24 words down, away from this device, and type three of them back: without them and without a paired device this vault cannot be recovered.";
+
 /**
  * Show the recovery phrase and make the user prove they wrote it down: three
  * words, by position, before the dialog will close as confirmed. The phrase
  * is the only way back into a vault whose devices are all gone.
+ *
+ * THE DEVICE REMEMBERS THE ANSWER (issue #170). Passing the check records
+ * it. Closing a dialog opened to confirm -- Escape, the cross, a tap outside
+ * -- records a skip, which the next start mentions ONCE; Settings and Show
+ * sync status say "not confirmed" until the check is passed. The check is
+ * offered whenever this device has not passed it, however the dialog opened.
  */
 export class RecoveryPhraseModal extends Modal {
   constructor(
     app: App,
     private readonly plugin: ObsyncPlugin,
     private readonly confirmFirst: boolean,
+    private readonly afterClose: () => void = () => undefined,
   ) {
     super(app);
   }
@@ -972,6 +983,13 @@ export class RecoveryPhraseModal extends Modal {
 
   override onClose(): void {
     this.contentEl.empty();
+    const data = this.plugin.state.data;
+    if (this.confirmFirst && data.vrk !== null && data.recoveryPhrase !== "confirmed") {
+      data.recoveryPhrase = "skipped";
+      this.plugin.log("phrase decision=skipped");
+      void this.plugin.state.save().catch(() => {});
+    }
+    this.afterClose();
   }
 
   private async render(): Promise<void> {
@@ -987,7 +1005,7 @@ export class RecoveryPhraseModal extends Modal {
     // A numbered list, laid out by the stylesheet in two columns of twelve.
     const list = this.contentEl.createEl("ol", { cls: "obsync-phrase" });
     for (const word of words) list.createEl("li", { text: word });
-    if (!this.confirmFirst) return;
+    if (!this.confirmFirst && this.plugin.state.data.recoveryPhrase === "confirmed") return;
 
     const asked = [3, 11, 20];
     const answers = new Map<number, string>();
@@ -1006,6 +1024,9 @@ export class RecoveryPhraseModal extends Modal {
             new Notice(`Word ${wrong.join(", ")} does not match. Check the list again.`);
             return;
           }
+          this.plugin.state.data.recoveryPhrase = "confirmed";
+          this.plugin.log("phrase decision=confirmed");
+          void this.plugin.state.save().catch(() => {});
           new Notice("Recovery phrase confirmed.");
           this.close();
         }),
@@ -1146,6 +1167,16 @@ export class StatusModal extends Modal {
       const row = table.createEl("tr");
       row.createEl("td", { text: name });
       row.createEl("td", { text: value });
+    }
+    // The one thing to do that nothing else here would show (issue #170).
+    if (data.vrk !== null && data.recoveryPhrase !== "confirmed") {
+      new Setting(this.contentEl)
+        .setName("Recovery phrase")
+        .setDesc(RECOVERY_UNCONFIRMED)
+        .addButton((button) => button.setButtonText("Show and confirm").setCta().onClick(() => {
+          this.close();
+          new RecoveryPhraseModal(this.app, this.plugin, true).open();
+        }));
     }
     // Every note paused because something here rewrites it after every sync,
     // each with its own way back (issue #179).

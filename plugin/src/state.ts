@@ -223,6 +223,14 @@ export interface ObsyncData {
    * and the next start puts it in force (`main.ts`, `saveSyncFolders`).
    */
   pendingScope?: { folders?: string[] };
+  /**
+   * Whether the 24 words were confirmed ON THIS DEVICE, by the three-word
+   * check or by restoring them (issue #170). `skipped` is a check closed
+   * unanswered: the next start says so once and sets it back to
+   * `unconfirmed`. Nothing before 1.1.4 recorded a confirmation, so a device
+   * that never recorded one is `unconfirmed`.
+   */
+  recoveryPhrase: "unconfirmed" | "skipped" | "confirmed";
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -246,6 +254,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     feedMark: null,
     graves: {},
     policy: defaultPolicy(isMobile),
+    recoveryPhrase: "unconfirmed",
   };
 }
 
@@ -461,6 +470,9 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       totalBudgetBytes: num(policy["totalBudgetBytes"], data.policy.totalBudgetBytes),
     };
   }
+  // Anything else is not a confirmation: an unreadable value reminds.
+  const phrase = loaded["recoveryPhrase"];
+  if (phrase === "skipped" || phrase === "confirmed") data.recoveryPhrase = phrase;
   return data;
 }
 
