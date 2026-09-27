@@ -254,8 +254,15 @@ impl NonceCache {
         })
     }
 
+    /// The state, whatever a panic did to the lock. The panic that can hold
+    /// it is a flush's, and `Flight` puts the state back before that guard
+    /// goes, so the poison the guard leaves says nothing about the state. A
+    /// member woken by the flush before reached the lock in the instant
+    /// between the two, trusted the poison and panicked in turn -- poisoning
+    /// the lock again, for good, so that every request after it failed too
+    /// (the arm64 runners, 2026-09-27).
     fn state(&self) -> MutexGuard<'_, NonceState> {
-        self.state.lock().expect("nonce cache")
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The file, while no flush holds it. Tests only, between requests.
@@ -340,7 +347,10 @@ impl NonceCache {
                 // answered like every other member rather than with the panic.
                 Some(file) => catch_unwind(AssertUnwindSafe(|| self.flush(state, file, now)))
                     .unwrap_or_else(|_| self.state()),
-                None => self.settled.wait(state).expect("nonce cache"),
+                None => self
+                    .settled
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
             };
         }
     }
@@ -487,10 +497,10 @@ impl Drop for Flight<'_> {
         }
         state.durable = Some(file);
         let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));
+        // Dropped while unwinding, this guard poisons the lock; the state it
+        // guards is whole again, and every lock taken on it says so
+        // (`NonceCache::state`).
         drop(state);
-        // A guard dropped while unwinding poisons the mutex. What it guards
-        // is whole again, so nothing that locks it next should fail for it.
-        cache.state.clear_poison();
         cache.settled.notify_all();
     }
 }
@@ -1417,6 +1427,46 @@ mod tests {
     fn a_flush_that_panics_answers_every_member_and_blocks_nobody() {
         flush_panics(false, "nonce-panic-write");
         flush_panics(true, "nonce-panic-locked");
+    }
+
+    /// The member that meets the poison: parked on the condvar while a flush
+    /// is out, it is woken only after that flush has died holding the lock.
+    /// Held, not raced -- the arm64 runners met this instant by chance and
+    /// the member panicked; no answer and no later request may depend on it.
+    #[test]
+    fn a_member_woken_on_a_lock_a_flush_poisoned_is_answered() {
+        let dir = volume("nonce-poisoned-wake");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = Arc::new(cache(&dir, 1_000, NONCE_CACHE_MAX, &log));
+        let file = c.state().durable.take().expect("no flush in flight");
+        let member = {
+            let c = Arc::clone(&c);
+            std::thread::spawn(move || c.remember(DEVICE, &nonce(1), 1_000))
+        };
+        // The member holds the lock from its check until it waits, so its
+        // nonce in the open batch means it is waiting.
+        while c.state().open.entries.is_empty() {
+            std::thread::yield_now();
+        }
+        let flush = Arc::clone(&c);
+        let died = std::thread::spawn(move || {
+            let mut state = flush.state();
+            state.durable = Some(file);
+            panic!("injected panic while a flush holds the cache");
+        })
+        .join();
+        assert!(
+            died.is_err() && c.state.is_poisoned(),
+            "the lock is poisoned"
+        );
+        c.settled.notify_all();
+        member
+            .join()
+            .expect("a member woken on a poisoned lock panicked")
+            .expect("it leads the next flush, which lands");
+        c.remember(DEVICE, &nonce(2), 1_000)
+            .expect("and the next request is served");
+        assert_eq!(c.len(), 2);
     }
 
     fn flush_panics(locked: bool, name: &str) {
