@@ -187,6 +187,17 @@ test('index.html: the install steps use the listing name and the current control
   assert.ok(!/search for <strong>Obsync<\/strong>|First-time setup|service-token/.test(HTML));
 });
 
+// The edge note sends an operator to the plugin row that carries a proxy's
+// credentials (#201). The row's name is read out of the plugin, so a rename on
+// either side fails here instead of sending a reader to a setting that is not
+// there, and the note keeps no provider's product term for it.
+test('index.html: the edge note names the plugin row by the name the plugin shows', () => {
+  const settings = readFileSync(new URL('../../plugin/src/ui/settings.ts', import.meta.url), 'utf8');
+  const row = settings.match(/name: "(Custom request headers)",/);
+  assert.ok(row, 'the plugin shows no "Custom request headers" row');
+  assert.ok(HTML.includes(`add them to the device's ${row[1].toLowerCase()} before`));
+});
+
 test('index.html: no off-origin reference beyond the SVG namespace', () => {
   const urls = HTML.match(/https?:\/\/[^"'\s>]+/g) || [];
   assert.deepEqual(urls, ['http://www.w3.org/2000/svg']);
