@@ -1,0 +1,12 @@
+# M3170: this device's own deletion is an echo whatever the replay recorded since
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1133,7 +1133,7 @@
+     return "skipped";
+   }
+   const authored = context.authored.delete(change.version_id);
+-  if ((authored || change.device_id === context.deviceId) && !(await deletionOwed(context, change))) return "echo";
++  if (authored || change.device_id === context.deviceId) return "echo";
+   // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
+   // a push that was in flight when it paused and came back conflicted. Its
+   // versions are asked of the server again, as the file stands then, when it

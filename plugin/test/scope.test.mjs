@@ -1305,3 +1305,97 @@ for (const placement of ["before the widening", "between the rewind and the firs
   });
 }
 
+/**
+ * AND WHAT IT MEETS THAT THIS DEVICE DELETED (issue #237).
+ *
+ * The phone wrote the note, so the replay hands this device the phone's
+ * versions first, with no record here to meet: written, recorded, the grave
+ * gone. The deletion after them is this device's own, and was skipped as an
+ * echo -- the note stood here again, alone, at a version the phone had
+ * deleted too. An edit made here before the deletion is an echo as well, so
+ * the record the replay leaves is an ANCESTOR of what the deletion names; a
+ * folder is the same rule one kind over.
+ */
+for (const kind of ["note", "note edited here first", "folder"]) {
+  test(`a widening does not bring back a ${kind} this device deleted, and sends no deletion again (#237)`, async (t) => {
+    const rig = await widening(t);
+    const { server, timers, a, b } = rig;
+    const path = kind === "folder" ? "Notes/Sub/Theirs.md" : "Notes/Theirs.md";
+    if (kind === "folder") {
+      b.host.makeFolder("Notes/Sub");
+      await timers.run(STEP_MS, () => a.state.folderByPath("Notes/Sub") !== undefined);
+    }
+    b.host.write(path, "PHONE NOTE SENTINEL\n", 2000);
+    await timers.run(STEP_MS, () => settled(a, path) && a.host.text(path) === "PHONE NOTE SENTINEL\n");
+    const id = a.state.fileByPath(path).fileId;
+    const folderId = a.state.folderByPath("Notes/Sub")?.fileId;
+    if (kind === "note edited here first") {
+      a.host.write(path, "DESKTOP EDIT SENTINEL\n", 3000);
+      await timers.run(STEP_MS, () => b.host.text(path) === "DESKTOP EDIT SENTINEL\n");
+    }
+    if (kind === "folder") a.host.removeFolder("Notes/Sub");
+    else a.host.remove(path);
+    await timers.run(STEP_MS, () => b.host.text(path) === null && b.state.fileByPath(path) === undefined &&
+      b.state.folderByPath("Notes/Sub") === undefined && a.state.data.lastSeq === server.seq);
+    if (kind === "folder") {
+      // And a folder deleted here and made again since: that deletion is no
+      // longer where the folder stands, and the replay leaves the folder be.
+      b.host.makeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => a.state.folderByPath("Notes/Again") !== undefined);
+      a.host.removeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => b.host.resolveFolder("Notes/Again") === undefined);
+      a.host.makeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => b.host.resolveFolder("Notes/Again") !== undefined && a.state.data.lastSeq === server.seq);
+    }
+    const own = (fileId) => server.journal.filter((frame) => frame.file_id === fileId && frame.deleted);
+    const [deletion] = own(id);
+    assert.equal(deletion?.device_id, KEYS.deviceId, "the fixture's deletion is not this device's own");
+    const frames = server.journal.length;
+
+    await save(rig, ["Notes", "Work"]);
+    await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" && a.state.data.lastSeq === server.seq);
+    // The pass that publishes a deletion for a recorded note the vault lacks.
+    await a.engine.syncNow();
+    await timers.run(STEP_MS);
+
+    const story = `${vaultNames(a)} ${JSON.stringify(a.host.logs.filter((line) => /^(pull|push)/.test(line)))}`;
+    assert.equal(a.host.text(path), null, `the deleted ${kind} came back: ${story}`);
+    assert.equal(a.state.pathByFileId(id), undefined, `and is recorded here again: ${story}`);
+    assert.equal(a.state.data.graves[id]?.versionId, deletion.version_id, "its grave is not the deletion this device made");
+    assert.deepEqual(server.journal.slice(frames).filter((frame) => frame.deleted), [], `a deletion was sent again: ${story}`);
+    assert.equal(b.host.text(path), null);
+    assert.ok(a.host.logs.includes(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${id} seq=${deletion.seq}`), story);
+    assert.ok(a.host.logs.some((line) => line.startsWith(`pull path_class=file decision=unburied file=${id} `) &&
+      line.endsWith(` grave=${deletion.version_id}`)), story);
+    if (kind === "folder") {
+      assert.equal(a.host.resolveFolder("Notes/Sub"), undefined, `the deleted folder came back: ${story}`);
+      assert.equal(a.state.folderByPath("Notes/Sub"), undefined);
+      assert.equal(a.state.data.graves[folderId]?.versionId, own(folderId)[0]?.version_id);
+      assert.equal(a.host.resolveFolder("Notes/Again"), "Notes/Again", `the folder made again here was removed: ${story}`);
+      assert.notEqual(a.state.folderByPath("Notes/Again"), undefined, story);
+    }
+  });
+}
+
+test("this device's own deletion removes the version it deleted, and stays an echo over an edit it never saw (#237)", async () => {
+  const r = await rig();
+  const { domainKey, manifestKey } = r.keys;
+  const replay = async (fileId, path, edited) => {
+    const base = await r.server.publish({ fileId, path, bytes: enc("BASE SENTINEL"), mtime: 1000, domainKey, manifestKey });
+    const deletion = await r.server.publishTombstone({ fileId, path, manifestKey, parents: [base.version_id], deviceId: KEYS.deviceId });
+    assert.equal(await applyChange(r.context, base), "applied");
+    if (edited) {
+      const edit = await r.server.publish({ fileId, path, bytes: enc("EDIT SENTINEL"), mtime: 2000, domainKey, manifestKey, parents: [base.version_id] });
+      assert.equal(await applyChange(r.context, edit), "applied");
+    }
+    const frames = r.server.journal.length;
+    const result = await applyChange(r.context, deletion);
+    assert.equal(r.server.journal.length, frames, `a version was published for this device's own deletion: ${r.host.logs.join(" | ")}`);
+    return result;
+  };
+  assert.equal(await replay("35".repeat(16), "Notes/deleted.md", false), "deleted");
+  assert.equal(r.host.text("Notes/deleted.md"), null);
+  assert.equal(await replay("36".repeat(16), "Notes/edited.md", true), "echo");
+  assert.equal(r.host.text("Notes/edited.md"), "EDIT SENTINEL");
+});
+

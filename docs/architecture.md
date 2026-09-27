@@ -1410,13 +1410,16 @@ it exists. Narrowing keeps its cursor, because nothing new is covered.
 
 The replay is safe because the pull path answers each record against what
 this device holds NOW rather than against the order it arrives in: a version
-this device authored is its own echo, a version its head already reaches is
-`already_incorporated`, a tombstone for a file it no longer tracks is
-skipped, and local content the server never received is kept beside the
-incoming version instead of replaced (6.2 item 3). It is not free: replaying a file whose
-history this device already holds spends one `GET /v1/files/{id}` per foreign
-version older than its own head, and the decision line records the cursor it
-rewound from. No
+this device authored is its own echo -- except its own deletion of a file the
+replay has just written back, which is applied again (issue #237) -- a version
+its head already reaches is `already_incorporated`, a tombstone for a file it
+no longer tracks is skipped, and local content the server never received is
+kept beside the incoming version instead of replaced (6.2 item 3). It is not
+free: replaying a file whose history this device already holds spends one
+`GET /v1/files/{id}` per foreign version older than its own head, a file this
+device deleted after another device wrote it is downloaded and removed again
+(`pull decision=unburied`, then `decision=reapplied`), and the decision line
+records the cursor it rewound from. No
 re-pairing, state reset or fresh vault is involved, and another device's
 selection is untouched.
 

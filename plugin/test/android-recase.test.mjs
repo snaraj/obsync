@@ -746,3 +746,65 @@ for (const folds of [true, false]) {
     assert.deepEqual(await phonePosts(r), [], `the phone published something: ${story(r)}`);
   });
 }
+
+/** Save a folder selection on the phone as Settings does, releasing the parked poll the stop waits for. */
+async function saveFolders(r, folders) {
+  r.b.plugin.startEngine = async () => { r.b.plugin.engine = r.b.engine; await r.b.engine.start(); };
+  let done = false;
+  const saving = r.b.plugin.saveSyncFolders(folders).finally(() => { done = true; });
+  for (const deadline = Date.now() + 10000; !done; await new Promise((resolve) => setTimeout(resolve, 5))) {
+    r.server.releaseFeed();
+    if (Date.now() > deadline) throw new Error("the folder change never settled");
+  }
+  await saving;
+}
+
+/**
+ * A NOTE THIS PHONE DELETED, AND A WIDENING AFTER IT (issue #237), as the
+ * emulator ran it. The desktop wrote the note, so replaying the feed from zero
+ * gives the phone the desktop's version first, with no record here to meet,
+ * and the deletion after it is the phone's own: skipped as an echo, it left
+ * the note back on the phone alone, at a version every other device had
+ * deleted. The emulator's record had lost its file as well, so Leave counted
+ * it as an edit while the status read idle, and the next start deleted it
+ * again -- which, answered with the deletion the server already held, made
+ * that deletion this start's own, and the replay skipped it once more.
+ */
+test("on Android, a widening does not bring back a note this phone deleted, nor keep the record it once did (#237)", async (t) => {
+  const r = await seeded(t, { "R237/One.md": BODY, "R237/Two.md": OTHER });
+  const id = r.ids["R237/One.md"];
+  const live = { ...r.b.state.fileByPath("R237/One.md") };
+  await r.vault.fileManager.trashFile(r.vault.getAbstractFileByPath("R237/One.md"));
+  await r.timers.run(STEP_MS, () => r.a.host.text("R237/One.md") === null && r.b.state.data.lastSeq === r.server.journal.at(-1).seq);
+  const deletion = r.server.journal.find((frame) => frame.file_id === id && frame.deleted);
+  assert.equal(deletion?.device_id, PHONE, story(r));
+  const frames = r.server.journal.length;
+  const widen = async () => {
+    await saveFolders(r, ["Elsewhere"]);
+    await saveFolders(r, undefined);
+    await r.timers.run(STEP_MS, () => r.b.state.data.lastSeq === r.server.journal.at(-1).seq);
+    await r.b.engine.syncNow();
+    await r.timers.run(STEP_MS);
+  };
+  const settledHere = async () => {
+    assert.deepEqual(r.vault.entries(), ["R237", "R237/Two.md"], `the deleted note came back: ${story(r)}`);
+    assert.equal(r.b.state.pathByFileId(id), undefined, story(r));
+    assert.equal(r.b.state.data.graves[id]?.versionId, deletion.version_id, story(r));
+    assert.deepEqual(await r.b.plugin.unpushedEdits(), [], story(r));
+    assert.deepEqual(r.server.journal.slice(frames), [], `the phone sent something: ${story(r)}`);
+  };
+
+  await widen();
+  await settledHere();
+  assert.ok(r.b.logs.includes(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${id} seq=${deletion.seq}`), story(r));
+
+  // The emulator's state, which a replay before this one left: the record back
+  // at the old version, the note on no spelling of the storage, no grave.
+  r.b.state.setFile("R237/One.md", live);
+  assert.deepEqual(await r.b.plugin.unpushedEdits(), ["R237/One.md"]);
+  await widen();
+  await settledHere();
+  assert.equal(r.a.host.text("R237/One.md"), null);
+  assert.equal(r.a.host.text("R237/Two.md"), OTHER);
+  assert.deepEqual(r.b.notices, []);
+});

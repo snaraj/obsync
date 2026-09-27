@@ -1,0 +1,12 @@
+# M3173: a folder this device deleted is not looked for, so the replay's folder stays
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1110,7 +1110,7 @@
+   const path = context.state.pathByFileId(change.file_id);
+   const held = path !== undefined
+     ? context.state.fileByPath(path)
+-    : Object.values(context.state.data.folders).find((folder) => folder.fileId === change.file_id);
++    : undefined;
+   if (held === undefined) return false;
+   const file = await context.transport.getFile(change.file_id);
+   if (!file.heads.includes(change.version_id) || !reaches(file.versions, change.version_id, held.versionId)) return false;

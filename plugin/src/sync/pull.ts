@@ -1080,6 +1080,45 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
 }
 
 /**
+ * THIS DEVICE'S OWN DELETION, OF A FILE THE FEED HAS GIVEN BACK (issue #237).
+ *
+ * A version this device posted, or adopted when the server answered its post
+ * with one it already held, is an echo: the record already says it. A
+ * deletion's record says nothing once the file is recorded again, and a
+ * replay from zero does exactly that to every file this device deleted after
+ * another device wrote it. Widening the selection reads the whole feed again
+ * (`main.ts`, `applyScope`); the other device's versions meet no record here
+ * and are written and recorded, the grave with them (`state.ts`, `setFile`);
+ * and the deletion after them was skipped. The note stood on this device
+ * alone, at a version every other device had deleted, and where the storage
+ * no longer held it, the next start deleted it again under a new version.
+ *
+ * So the deletion is owed when it is still where the file stands -- one of its
+ * heads -- and this device holds that file, or that folder, at a version the
+ * tombstone descends from: what it deleted, or an older version when an edit
+ * it made first was an echo too. It goes through the ordinary branch with
+ * every guard that has. A version the tombstone does not reach is an edit it
+ * never saw, and stays an echo: delete-versus-edit is the editing device's to
+ * settle, as it always was. A deletion something came after is history, and
+ * stays one too: the later versions settle the record as they arrive, and a
+ * folder made again here is not taken by the deletion it replaced -- a folder
+ * record replayed overwrites a newer one (`applyFolder`), so without the head
+ * the replay removed it.
+ */
+async function deletionOwed(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+  if (!change.deleted) return false;
+  const path = context.state.pathByFileId(change.file_id);
+  const held = path !== undefined
+    ? context.state.fileByPath(path)
+    : Object.values(context.state.data.folders).find((folder) => folder.fileId === change.file_id);
+  if (held === undefined) return false;
+  const file = await context.transport.getFile(change.file_id);
+  if (!file.heads.includes(change.version_id) || !reaches(file.versions, change.version_id, held.versionId)) return false;
+  context.host.log(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${change.file_id} seq=${change.seq}`);
+  return true;
+}
+
+/**
  * Apply one change-feed record.
  */
 export async function applyChange(context: SyncContext, change: ChangeRecord, incoming?: () => Promise<void>): Promise<ApplyResult> {
@@ -1093,11 +1132,8 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, in
     context.host.log(`pull path_class=domainmap decision=skipped seq=${change.seq}`);
     return "skipped";
   }
-  if (context.authored.has(change.version_id)) {
-    context.authored.delete(change.version_id);
-    return "echo";
-  }
-  if (change.device_id === context.deviceId) return "echo";
+  const authored = context.authored.delete(change.version_id);
+  if ((authored || change.device_id === context.deviceId) && !(await deletionOwed(context, change))) return "echo";
   // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
   // a push that was in flight when it paused and came back conflicted. Its
   // versions are asked of the server again, as the file stands then, when it
@@ -4621,6 +4657,15 @@ async function recordAt(
   wants?: string,
   created = false,
 ): Promise<void> {
+  // A FILE THIS DEVICE DELETED, RECORDED AGAIN (issue #237): an edit another
+  // device kept over the deletion, or a replay handing back what came before
+  // it. Said, because the grave goes with it, and without this line a replay
+  // that brought deleted notes back left nothing in the log until the next
+  // start deleted them a second time.
+  const grave = context.state.data.graves[change.file_id];
+  if (grave !== undefined) {
+    context.host.log(`pull path_class=file decision=unburied file=${change.file_id} version=${change.version_id} grave=${grave.versionId}`);
+  }
   context.state.setFile(path, {
     fileId: change.file_id,
     versionId: change.version_id,

@@ -1,0 +1,12 @@
+# M3174: this device's own deletion is applied over an edit it never saw
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1113,7 +1113,7 @@
+     : Object.values(context.state.data.folders).find((folder) => folder.fileId === change.file_id);
+   if (held === undefined) return false;
+   const file = await context.transport.getFile(change.file_id);
+-  if (!file.heads.includes(change.version_id) || !reaches(file.versions, change.version_id, held.versionId)) return false;
++  if (!file.heads.includes(change.version_id)) return false;
+   context.host.log(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${change.file_id} seq=${change.seq}`);
+   return true;
+ }

@@ -3437,11 +3437,13 @@ export default class ObsyncPlugin extends Plugin {
    *
    * Replay is safe because the pull path answers each record against what
    * this device holds NOW, not against the order it arrives in: a version
-   * this device authored is its own echo, a version its head already reaches
-   * is `already_incorporated`, a tombstone for a file it no longer tracks is
-   * skipped, and local content the server never received is kept beside the
-   * incoming version rather than replaced (`sync/pull.ts`). Narrowing keeps
-   * its cursor: nothing new is covered, so there is nothing to replay.
+   * this device authored is its own echo -- except its own deletion of a file
+   * the replay has just written back, which is applied again (issue #237) --
+   * a version its head already reaches is `already_incorporated`, a tombstone
+   * for a file it no longer tracks is skipped, and local content the server
+   * never received is kept beside the incoming version rather than replaced
+   * (`sync/pull.ts`). Narrowing keeps its cursor: nothing new is covered, so
+   * there is nothing to replay.
    *
    * THE CHOICE IS KEPT THE MOMENT SAVE IS PRESSED (issue #185), as the
    * pending selection, and put in force once the old one's transfers have
