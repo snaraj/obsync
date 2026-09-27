@@ -149,6 +149,17 @@ copied vault of 1,000 notes published 668 versions and 650 deletions; it now
 publishes none. A note the server also names waits at most ten minutes for
 the device to catch up (#194).
 
+**Attachments are recognised too, not uploaded again.** A device paired
+again after Leave, or a vault copied onto a new device, recognised its
+notes but not its files over 8 MiB, such as photos, PDFs and recordings: it
+published each one again under a new id, and your other devices retired one
+of the two, which could leave a file's history under the retired copy. Such
+a file is now recognised by reading it once and comparing it, piece by
+piece, with the version the server holds; nothing is uploaded or
+downloaded. A file that differs by one byte is kept beside the other, as
+before. On a phone, a file above its per-file limit is not read to check it
+and is handled as before. All platforms (#232).
+
 **An idle vault stays quiet.** 4 requests instead of 3,186 per idle hour at
 10,000 notes: repair walks every 6 hours, and a computer walks its folders
 every 5 minutes and when you return to Obsidian (#198).
