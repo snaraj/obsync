@@ -1,10 +1,10 @@
 # M1820: after a failed read the feed long-polls again instead of asking at once
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2011,7 +2011,6 @@
-         // A wake dropped the poll (`wake`): the next read asks at once, and
-         // whatever the dropped one brings later is discarded unread.
-         if (error instanceof ApiError && error.code === "cancelled") continue;
+@@ -2518,7 +2518,6 @@
+         // A failed read is the answer a waiting Sync now gets: it says what
+         // the status says, and the retry goes on without it.
+         this.answerFeed(Number.POSITIVE_INFINITY);
 -        this.feedAnswered = false;
          // What the failure means, said on the FIRST one (#155): a refusal names
          // itself and stands until the server answers again; only absence reads

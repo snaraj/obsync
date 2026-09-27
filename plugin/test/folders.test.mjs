@@ -438,10 +438,16 @@ for (const { name, from, to } of directions) {
 
 test("startup reconciliation publishes a record for every folder that has none, once", async (t) => {
   const { server, timers, a, b, keys: k } = await pair(t);
-  // A vault from before 1.1.0: folders exist, no folder record does.
-  a.host.write("Old/note.md", "written before folders synced\n", 1000);
+  // A vault from before 1.1.0: folders exist, no folder record does. FIVE
+  // notes, one more than a desktop's push slots (`concurrency`, issue #196):
+  // pushes in flight are journaled in completion order, so behind fewer notes
+  // than slots a folder record queued LAST would still land first, and the
+  // order this test pins would go unchecked.
+  const notes = ["Old/note.md", "Old/a.md", "Old/b.md", "Old/c.md", "Old/d.md"];
+  for (const note of notes) a.host.write(note, `written before folders synced: ${note}\n`, 1000);
   a.host.explicitFolders.add("Old/Empty");
   await a.engine.start();
+  assert.ok(notes.length > a.engine.context.concurrency, "the notes must outnumber the push slots");
   // THE NOTE TOO, AND NOT ONLY THE FOLDERS. The reconcile pass publishes
   // every folder record it owes BEFORE any file work (`survey`; review round
   // 4, finding 3), so a milestone naming the folder records alone is reached
@@ -449,7 +455,7 @@ test("startup reconciliation publishes a record for every folder that has none, 
   // be measured against a journal that had not finished growing.
   await timers.run(STEP_MS, () =>
     a.state.folderByPath("Old") !== undefined && a.state.folderByPath("Old/Empty") !== undefined &&
-    settled(a, "Old/note.md"));
+    notes.every((note) => settled(a, note)));
   const published = server.journal.length;
   // AND THE FOLDERS WENT FIRST. The pass publishes every folder record it
   // owes before any file work, so a receiver never meets a note under a
@@ -457,14 +463,16 @@ test("startup reconciliation publishes a record for every folder that has none, 
   // rename by capitalisation alone depends on, and the order a restart used
   // to lose (review round 4, finding 3).
   const at = (id) => server.journal.findIndex((frame) => frame.file_id === id);
-  assert.ok(
-    at(await folderId(k, "Old")) < at(a.state.fileByPath("Old/note.md").fileId),
-    `the note was journaled before its folder's record: ${story(a, b)}`,
-  );
-  assert.ok(
-    at(await folderId(k, "Old/Empty")) < at(a.state.fileByPath("Old/note.md").fileId),
-    `the note was journaled before the empty folder's record: ${story(a, b)}`,
-  );
+  for (const note of notes) {
+    assert.ok(
+      at(await folderId(k, "Old")) < at(a.state.fileByPath(note).fileId),
+      `${note} was journaled before its folder's record: ${story(a, b)}`,
+    );
+    assert.ok(
+      at(await folderId(k, "Old/Empty")) < at(a.state.fileByPath(note).fileId),
+      `${note} was journaled before the empty folder's record: ${story(a, b)}`,
+    );
+  }
 
   // A second pass publishes nothing: the records exist now.
   await a.engine.syncNow();

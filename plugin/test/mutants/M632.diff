@@ -1,8 +1,8 @@
 # M632: Resume overwrites a same-metadata copy edit made during preparation
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2366,7 +2366,7 @@
-     const writer = await context.host.writer(path);
+@@ -3023,7 +3023,7 @@
+     const writer = await context.host.writer(path, mine.length);
      try {
        await writer.write(mine);
 -      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");

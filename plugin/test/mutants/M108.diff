@@ -1,7 +1,7 @@
 # M108: the reconcile pass queues the folder records it owes after the file work
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2382,49 +2382,6 @@
+@@ -3374,49 +3374,6 @@
      // barrier, then the moves underneath -- which queue behind that barrier
      // precisely because they are queued after it.
      const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
@@ -48,13 +48,13 @@
 -        folderQueued++;
 -      }
 -    }
-     for (const file of files) {
-       if (!this.running) return;
-       if (!this.tracked(file.path, label)) { skipped++; continue; }
-@@ -2650,6 +2607,41 @@
-       this.enqueue(file.path);
+     // Sync now reads a recorded file's contents again only up to its ceiling
+     // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted.
+     let unread = 0;
+@@ -3678,6 +3635,41 @@
        queued++;
      }
+     if (verifyUpTo > 0) this.examined += queued;
 +    // THE FOLDER RECORDS THIS DEVICE OWES, after the file work.
 +    let folderQueued = 0;
 +    let folderSkipped = 0;

@@ -1,12 +1,12 @@
 # M1821: the feed never asks without waiting: every read is a long poll
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2259,7 +2259,7 @@
-         // Answered before the next page, one pull at a time (`recover`).
+@@ -2487,7 +2487,7 @@
          if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
          if (!live()) return;
--        const quick = !this.feedAnswered;
+         // A Sync now waiting on the feed is asked for at once too (`readFeed`).
+-        const quick = !this.feedAnswered || this.feedAsks.length > 0;
 +        const quick = false;
          const drop = new AbortController();
          this.poll = quick ? null : { sent: this.nowFn(), drop };
-         // Ended by the stop, not waited out: a stopped engine's poll is one more
+         this.reading = quick;

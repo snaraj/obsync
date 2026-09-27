@@ -1,11 +1,11 @@
 # M1823: a wake drops any long poll, however fresh
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1918,7 +1918,7 @@
+@@ -2568,7 +2568,7 @@
      pause?.();
      const poll = this.poll;
      const waited = poll === null ? 0 : this.nowFn() - poll.sent;
--    const dropped = poll !== null && (reason === "address" || waited >= POLL_STALE_MS);
+-    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
 +    const dropped = poll !== null;
      if (dropped) {
        this.poll = null;

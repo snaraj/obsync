@@ -1,9 +1,9 @@
 # M637: Resume fails to store the held bytes in its preserved copy
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2365,7 +2365,7 @@
+@@ -3022,7 +3022,7 @@
      if (current.deleted || current.path !== path || !known(await sidDigest(current.chunks.map((chunk) => chunk.sid)))) return fail("remote_edit");
-     const writer = await context.host.writer(path);
+     const writer = await context.host.writer(path, mine.length);
      try {
 -      await writer.write(mine);
 +      await writer.write(new Uint8Array());
