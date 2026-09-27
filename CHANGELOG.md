@@ -5,6 +5,8 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.4 - Unreleased
+
 ## 1.1.3 - Unreleased
 
 **Turning obsync off and on during an upload no longer loses track of your
