@@ -499,7 +499,9 @@ peer_value() {
 }
 probe_image="$(printf '%s\n' "${front}" | awk '$1 == "image:" {print $2; exit}')"
 [ -n "${probe_image}" ] || deny "${GUIDE}'s TLS-front block names no image for the probe pods"
-"${here}/np-probe.sh" "http://${RELEASE}.${NAMESPACE}.svc.cluster.local:8080/livez" \
+# An absolute name, as the page's front uses: the probe pods are Alpine, and
+# a search suffix the cluster's upstream cannot answer ends a lookup there.
+"${here}/np-probe.sh" "http://${RELEASE}.${NAMESPACE}.svc.cluster.local.:8080/livez" \
   "$(peer_value namespace)" "$(peer_value appName)" "$(peer_value instance)" "${probe_image}" \
   || deny 'the cluster does not enforce the NetworkPolicy the chart renders'
 prove 'the policy holds: the named peer connects, a sibling instance and another namespace are refused'

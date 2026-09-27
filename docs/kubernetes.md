@@ -287,7 +287,11 @@ data:
       # 60-second read timeout closes a healthy long poll.
       proxy_read_timeout 120s;
       location / {
-        proxy_pass http://obsync.obsidian.svc.cluster.local:8080;
+        # The trailing dot makes the name absolute: nginx resolves it once at
+        # start, and a name the cluster's search suffixes are tried on first
+        # can fail on a suffix the upstream DNS cannot answer, which stops an
+        # Alpine nginx ("host not found in upstream").
+        proxy_pass http://obsync.obsidian.svc.cluster.local.:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         # Replaced, never appended to: the address that connected here is

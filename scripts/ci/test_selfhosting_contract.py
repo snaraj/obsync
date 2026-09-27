@@ -108,7 +108,7 @@ K8S_TOKEN_READ = re.compile(r"^sudo cat (?P<path>/\S+)/v1/setup-token$", re.MULT
 # The one Service the terminator must reach, and the ceiling it must lift.
 # Requirement 8: files of any size take one path, and a proxy's default 1 MiB
 # body limit is a refusal the server never made.
-FRONT_UPSTREAM = "http://obsync.obsidian.svc.cluster.local:8080"
+FRONT_UPSTREAM = "http://obsync.obsidian.svc.cluster.local.:8080"
 FRONT_BODY_CEILING = "client_max_body_size 0;"
 # The three facts an `ingress.peers` pod entry injects into the chart's
 # NetworkPolicy. A terminator that does not carry all three is a connection
@@ -765,8 +765,8 @@ class MutatedGuidesAreRefused(unittest.TestCase):
     def test_pointing_the_terminator_at_another_service_is_refused(self):
         found = self.mutate(
             "docs/kubernetes.md",
-            "proxy_pass http://obsync.obsidian.svc.cluster.local:8080;",
-            "proxy_pass http://obsync.default.svc.cluster.local:8080;",
+            "proxy_pass http://obsync.obsidian.svc.cluster.local.:8080;",
+            "proxy_pass http://obsync.default.svc.cluster.local.:8080;",
         )
         self.kills(found, "no longer proxies to")
 
