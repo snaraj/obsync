@@ -119,6 +119,10 @@ def _parse_mapping(lines: list[tuple[int, str, int]], index: int, indent: int) -
             break
         if line_indent > indent:
             raise YamlError(f"line {number} is over-indented inside a mapping")
+        if content.startswith("- ") or content == "-":
+            # A sequence entry where a key belongs. The key pattern would read
+            # `- from:` as a key named "- from", so this is refused by name.
+            raise YamlError(f"line {number} is a sequence entry inside a mapping")
         match = _KEY_RE.match(content)
         if not match:
             raise YamlError(f"line {number} is not a mapping entry: {content!r}")
@@ -178,6 +182,13 @@ def _parse_value(
         nested = _next(lines, index)
         if nested < len(lines) and lines[nested][0] > indent:
             return _parse_block(lines, nested, lines[nested][0])
+        # The indentless form `key:\n- item`, which is how Helm's `toYaml`
+        # writes a sequence nested in a mapping: the dashes sit at the key's
+        # own column and the sequence ends at the next line that is not one.
+        if nested < len(lines) and lines[nested][0] == indent and (
+            lines[nested][1].startswith("- ") or lines[nested][1] == "-"
+        ):
+            return _parse_sequence(lines, nested, indent)
         return None, index
     raw = raw.strip()
     if _BLOCK_SCALAR_RE.match(raw):

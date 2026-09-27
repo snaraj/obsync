@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Prove what `helm template` actually renders -- structurally, not by grep.
 
-THREE PINS, each named by the property it holds:
+THE PINS, each named by the property it holds:
 
-  ingress   the NetworkPolicy admits EXACTLY ONE peer, named by every fact it
-            takes to name one connector (namespace + app name + instance), on
-            the service port only, and denies all egress.
+  ingress   the NetworkPolicy admits EXACTLY the values peers -- each pod named
+            by every fact it takes to name one connector (namespace + app name
+            + instance), each address block narrower than everything -- on the
+            service port only, admits NOTHING when none is named, and denies
+            all egress.
   storage   the render carries exactly the claims docs/storage.md defines, on
             the classes and sizes chart/values.yaml names, and the workload
             mounts NOTHING but those claims -- no hostPath, no emptyDir, no
@@ -17,6 +19,9 @@ THREE PINS, each named by the property it holds:
             the rendered process environment is one the SERVER can parse: the
             claim sizes it is told are Kubernetes binary quantities, and the
             kubelet adds no OBSYNC_* name of its own.
+  kubernetes
+            the chart renders on every Kubernetes minor `Chart.yaml` claims,
+            suffixed vendor versions included, and refuses the minor below.
 
 HOW THESE READ THE RENDER -- the security-critical part. They do NOT count
 `- from:` lines and inspect the first: that is bypassable. A second ingress
@@ -83,11 +88,11 @@ def values() -> dict[str, Any]:
     return document
 
 
-def _helm(sets: list[str]) -> subprocess.CompletedProcess[str]:
+def _helm(sets: list[str], kube_version: str = KUBE_VERSION) -> subprocess.CompletedProcess[str]:
     command = [
         "helm", "template", RELEASE, str(CHART_DIR),
         "--namespace", NAMESPACE,
-        "--kube-version", KUBE_VERSION,
+        "--kube-version", kube_version,
     ]
     for override in sets:
         command.extend(("--set", override))
@@ -146,61 +151,75 @@ def selector_labels() -> dict[str, str]:
 # --------------------------------------------------------------------------
 
 
+def _pod_peer(namespace: str, app: str, instance: str) -> dict[str, Any]:
+    return {
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
+        "podSelector": {
+            "matchLabels": {"app.kubernetes.io/name": app, "app.kubernetes.io/instance": instance}
+        },
+    }
+
+
 def pin_ingress() -> None:
     configured = values()
     port = configured["service"]["port"]
 
-    def expected_rule(instance: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "from": [
-                    {
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": configured["ingress"][
-                                    "peerNamespace"
-                                ]
-                            }
-                        },
-                        "podSelector": {
-                            "matchLabels": {
-                                "app.kubernetes.io/name": configured["ingress"]["peerAppName"],
-                                "app.kubernetes.io/instance": instance,
-                            }
-                        },
-                    }
-                ],
-                "ports": [{"port": port, "protocol": "TCP"}],
-            }
-        ]
+    def rule(*peers: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"from": list(peers), "ports": [{"port": port, "protocol": "TCP"}]}]
 
-    policy = only(render(*ACTIVE), "NetworkPolicy")
-    spec = policy["spec"]
-    equals(spec["podSelector"], {"matchLabels": selector_labels()}, "the policy podSelector")
-    equals(spec["policyTypes"], ["Ingress", "Egress"], "the policy types")
+    def ingress(*sets: str) -> Any:
+        spec = only(render(*ACTIVE, *sets), "NetworkPolicy")["spec"]
+        equals(spec["podSelector"], {"matchLabels": selector_labels()}, "the policy podSelector")
+        equals(spec["policyTypes"], ["Ingress", "Egress"], "the policy types")
+        equals(spec["egress"], [], "the rendered egress rule set")
+        return spec["ingress"]
+
+    # (a) The shipped default names no peer and admits NOTHING: no rule at
+    # all, and never a rule with an empty `from`, which admits every source.
+    equals(configured["ingress"], {"peers": []}, "the shipped ingress default")
+    equals(ingress(), [], "the default ingress rule set")
+    print("chart-pins ingress: (a) the default render admits nothing and renders no rule")
+
+    # (b) Every values peer renders exactly, in order: a pod by all three of
+    # its facts, an address block with its exceptions. The expectation is
+    # built from the SETS, so the pin moves with the values it is given.
+    pod = ("ingress.peers[0].namespace=ing", "ingress.peers[0].appName=front", "ingress.peers[0].instance=front")
+    block = ("ingress.peers[1].ipBlock.cidr=192.168.1.0/24", "ingress.peers[1].ipBlock.except[0]=192.168.1.1/32")
     equals(
-        spec["ingress"],
-        expected_rule(configured["ingress"]["peerInstance"]),
-        "the rendered ingress rule set",
+        ingress(*pod, *block),
+        rule(
+            _pod_peer("ing", "front", "front"),
+            {"ipBlock": {"cidr": "192.168.1.0/24", "except": ["192.168.1.1/32"]}},
+        ),
+        "the rendered pod and block peers",
     )
-    equals(spec["egress"], [], "the rendered egress rule set")
-    print("chart-pins ingress: (a) the default render admits exactly the one values peer")
+    print("chart-pins ingress: (b) a pod and an address block render exactly as named")
 
-    # (b) An unpinned instance must be refused rather than rendering wide.
-    refuse("ingress.peerInstance=", because="a blank peer instance admits every peer in the namespace")
-    refuse(
-        "ingress.peerInstance=null",
-        because="an absent peer instance admits every peer in the namespace",
+    # (c) The single-peer fields earlier releases shipped render the rule they
+    # always rendered, first, so an existing values file keeps its policy.
+    legacy = (
+        "ingress.peerNamespace=edge",
+        "ingress.peerAppName=connector",
+        "ingress.peerInstance=connector-one",
     )
-    print("chart-pins ingress: (b) a blank or absent peer instance is refused by the schema")
+    equals(ingress(*legacy), rule(_pod_peer("edge", "connector", "connector-one")), "the legacy peer")
+    equals(
+        ingress(*legacy, *pod),
+        rule(_pod_peer("edge", "connector", "connector-one"), _pod_peer("ing", "front", "front")),
+        "the legacy peer beside a listed one",
+    )
+    print("chart-pins ingress: (c) the single-peer form renders its old rule, first")
 
-    # (c) The pin MOVES with the value, which is what proves it reads the
-    # instance at all rather than matching a constant.
-    moved = only(render(*ACTIVE, "ingress.peerInstance=other-tunnel"), "NetworkPolicy")
-    equals(moved["spec"]["ingress"], expected_rule("other-tunnel"), "the overridden ingress rule")
-    if configured["ingress"]["peerInstance"] in str(moved["spec"]["ingress"]):
-        raise PinError("the overridden render still names the default peer instance")
-    print("chart-pins ingress: (c) an overridden instance moves the pin and leaves no default")
+    # (d) Anything that would read narrow and behave wide is refused.
+    refuse(*pod[:2], because="a pod peer with no instance admits every connector in its namespace")
+    refuse(*pod[:2], "ingress.peers[0].instance=", because="a blank instance admits every connector")
+    refuse(*legacy[:2], because="the single-peer form without its instance")
+    refuse(*legacy[:2], "ingress.peerInstance=", because="the single-peer form with a blank instance")
+    refuse("ingress.peers[0].ipBlock.cidr=0.0.0.0/0", because="a block holding every IPv4 address")
+    refuse("ingress.peers[0].ipBlock.cidr=::/0", because="a block holding every IPv6 address")
+    refuse(*pod, "ingress.peers[0].ipBlock.cidr=10.0.0.0/8", because="one entry naming a pod and a block")
+    refuse("trustedProxyCidrs[0]=0.0.0.0/0", because="trusting every sender's forwarded address")
+    print("chart-pins ingress: (d) unpinned pods, a partial single peer and a /0 are refused")
 
 
 def _volume_claims(volume: dict[str, Any]) -> str:
@@ -260,7 +279,7 @@ def pin_storage() -> None:
     mirrored = render(
         *ACTIVE,
         "storage.mirrors[0].name=spare",
-        "storage.mirrors[0].className=local-pie-ssd",
+        f"storage.mirrors[0].className={configured['storage']['blobs']['className']}",
         "storage.mirrors[0].size=100Gi",
         "storage.mirrors[0].capacity=100Gi",
     )
@@ -484,12 +503,56 @@ def pin_security() -> None:
         refuse(override, because=because)
     print("chart-pins security: (b) every weakening override is refused by the schema")
 
-    # (c) The image reference keeps its digest. A tag alone resolves whatever
-    # the registry says today.
-    image = container["image"]
-    if "@sha256:" not in image or not image.startswith("ghcr.io/snaraj/obsync:v"):
-        raise PinError(f"the rendered image reference {image!r} is not repository:tag@digest")
-    print("chart-pins security: (c) the workload reference renders repository:tag@digest")
+    # (c) The image reference keeps its digest, whatever registry serves it. A
+    # tag alone resolves whatever the registry says today, so a mirror may
+    # change where the bytes come from and never which bytes run.
+    image_values = configured["image"]
+    pinned = f"{image_values['tag']}@{image_values['digest']}"
+    equals(container["image"], f"{image_values['repository']}:{pinned}", "the image reference")
+    mirror = "registry.example.org:5000/mirror/obsync"
+    mirrored = only(render(*ACTIVE, f"image.repository={mirror}"), "Deployment")
+    equals(
+        mirrored["spec"]["template"]["spec"]["containers"][0]["image"],
+        f"{mirror}:{pinned}",
+        "the mirrored image reference",
+    )
+    refuse("image.digest=", because="an image with no digest resolves whatever a tag says today")
+    refuse("image.repository=Not A Registry", because="a repository that is not a registry path")
+    print("chart-pins security: (c) any repository renders repository:tag@digest, and never without it")
+
+    # (d) Scheduling, registry credentials and pod labels pass through, and
+    # none of them reaches the security context or the selector labels.
+    scheduled = only(
+        render(
+            *ACTIVE,
+            "nodeSelector.kubernetes\\.io/arch=arm64",
+            "tolerations[0].key=dedicated",
+            "tolerations[0].operator=Exists",
+            "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=disk",
+            "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=Exists",
+            "imagePullSecrets[0].name=mirror-credentials",
+            "podLabels.team=notes",
+        ),
+        "Deployment",
+    )["spec"]["template"]
+    spec = scheduled["spec"]
+    equals(spec["nodeSelector"], {"kubernetes.io/arch": "arm64"}, "the node selector")
+    equals(spec["tolerations"], [{"key": "dedicated", "operator": "Exists"}], "the tolerations")
+    equals(
+        spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"],
+        {"nodeSelectorTerms": [{"matchExpressions": [{"key": "disk", "operator": "Exists"}]}]},
+        "the node affinity",
+    )
+    equals(spec["imagePullSecrets"], [{"name": "mirror-credentials"}], "the pull secrets")
+    equals(scheduled["metadata"]["labels"]["team"], "notes", "an extra pod label")
+    equals(spec["securityContext"], pod["securityContext"], "the scheduled pod security context")
+    equals(
+        spec["containers"][0]["securityContext"],
+        container["securityContext"],
+        "the scheduled container security context",
+    )
+    refuse("podLabels.app\\.kubernetes\\.io/name=other", because="a pod label the selectors match on")
+    print("chart-pins security: (d) scheduling passes through and leaves the posture and selectors alone")
 
 
 
@@ -584,6 +647,27 @@ def pin_environment() -> None:
     print("chart-pins environment: (c) an accepted binary quantity renders through to the process")
 
 
+KUBE_FLOOR = ("v1.34.0", "v1.34.2-eks-1234", "v1.34.2-gke.100")
+"""The lowest minor `Chart.yaml` claims, bare and with the pre-release-style
+suffixes managed clusters report: the oldest node image the pinned kind
+publishes (scripts/ci/install-kind.sh), so a live leg can prove what this
+render claims. The templates themselves need nothing newer than 1.22."""
+KUBE_CEILING = "v1.37.0"
+KUBE_BELOW = "v1.33.9"
+
+
+def pin_kubernetes() -> None:
+    """The claimed range renders, suffixed versions included, and ends where it says."""
+    for version in (*KUBE_FLOOR, KUBE_CEILING):
+        completed = _helm(list(ACTIVE), kube_version=version)
+        if completed.returncode != 0:
+            raise PinError(f"the chart does not render on {version}:\n{completed.stderr.strip()}")
+    print(f"chart-pins kubernetes: (a) renders on {', '.join((*KUBE_FLOOR, KUBE_CEILING))}")
+    if _helm(list(ACTIVE), kube_version=KUBE_BELOW).returncode == 0:
+        raise PinError(f"the chart renders on {KUBE_BELOW}, below the minor it claims")
+    print(f"chart-pins kubernetes: (b) refuses {KUBE_BELOW}, the minor below the floor")
+
+
 def emit_environment() -> None:
     """Print the rendered pod environment for a caller that RUNS it.
 
@@ -619,6 +703,7 @@ PINS = {
     "security": pin_security,
     "readiness": pin_readiness,
     "environment": pin_environment,
+    "kubernetes": pin_kubernetes,
 }
 
 

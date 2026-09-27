@@ -134,6 +134,39 @@ class RefusesWhatItCannotModel(unittest.TestCase):
     def test_a_line_that_is_not_a_mapping_entry(self):
         self.refuses("a: 1\nnot a mapping entry\n")
 
+    def test_a_sequence_entry_where_a_key_belongs(self):
+        # Read as a key named "- from", it would have hidden a second rule.
+        self.refuses("ingress: []\n- from: []\n")
+        self.refuses("spec:\n  a: 1\n  - b\n")
+
+
+class ReadsIndentlessSequences(unittest.TestCase):
+    """Helm's `toYaml` writes a nested sequence at its key's own column."""
+
+    def test_an_indentless_sequence_is_the_keys_value_and_ends_at_the_next_key(self):
+        text = (
+            "affinity:\n"
+            "  nodeAffinity:\n"
+            "    terms:\n"
+            "    - matchExpressions:\n"
+            "      - key: disk\n"
+            "        operator: Exists\n"
+            "    weight: 1\n"
+        )
+        self.assertEqual(
+            miniyaml.loads(text),
+            [
+                {
+                    "affinity": {
+                        "nodeAffinity": {
+                            "terms": [{"matchExpressions": [{"key": "disk", "operator": "Exists"}]}],
+                            "weight": 1,
+                        }
+                    }
+                }
+            ],
+        )
+
     def test_load_one_refuses_a_multi_document_stream(self):
         with self.assertRaises(miniyaml.YamlError):
             miniyaml.load_one("kind: A\n---\nkind: B\n")

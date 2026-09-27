@@ -148,8 +148,8 @@ away, which is what you want for the volume holding every encrypted chunk.
 ## 3. The values that are yours
 
 The chart's defaults are fail-closed rather than portable: zero replicas, a
-StorageClass name from one cluster, one ingress peer from one cluster. None of
-the three is a value you keep.
+StorageClass no cluster has, and no ingress peer at all. None of the three is
+a value you keep.
 [`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
 section 2 explains each of the four; this is the file that matches the volumes
 above:
@@ -170,9 +170,15 @@ storage:
   mirrors: []
 
 ingress:
-  peerNamespace: obsync-ingress
-  peerAppName: tls-front
-  peerInstance: tls-front
+  peers:
+    - namespace: obsync-ingress
+      appName: tls-front
+      instance: tls-front
+
+# Your cluster's pod network, so the dashboard believes the front's
+# X-Forwarded-For; the NetworkPolicy keeps every other pod out. kind's is shown.
+trustedProxyCidrs:
+  - 10.244.0.0/16
 
 publicUrl: "https://sync.example.org"
 ```
@@ -184,11 +190,14 @@ tracked usage, and the refusal watermark is the LARGER of five per cent and
 2 GiB ([storage](storage.md), "Free-space watermark and quota"). A journal
 claim under 2 GiB is therefore full before its first write — the server answers
 `507 journal_full` to everything, including the first `POST /v1/setup`, with
-the volume empty and nothing else wrong. The three `ingress.peer*` values name the ONE workload allowed to
-open a connection to this pod, by its namespace label and by both of its own
-labels — a namespace often holds several connectors that publish the same app
-name and differ only by instance, so a policy naming two of the three reads
-narrow and behaves wide.
+the volume empty and nothing else wrong. Each entry of `ingress.peers` names a
+workload allowed to open a connection to this pod, by its namespace label and
+by both of its own labels — a namespace often holds several connectors that
+publish the same app name and differ only by instance, so a policy naming two
+of the three reads narrow and behaves wide. List a second entry when a tunnel
+connector reaches the server beside the front, or an `ipBlock` entry for a
+front that is not a pod ([`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
+section 2).
 
 ## 4. A TLS front, inside the cluster
 
@@ -242,11 +251,13 @@ Issue the certificate BEFORE you scale the Deployment up. A terminator that
 starts without one takes its own readiness down, and a readiness probe on the
 proxy in front of obsync reports the proxy, never the app behind it.
 
-Whatever you terminate with, it is the workload `ingress.peer*` names, so its
+Whatever you terminate with, it is the workload `ingress.peers` names, so its
 three labels must be exactly the three values of section 3 — a mismatch is not
-a warning anywhere, it is a connection the NetworkPolicy drops. A minimal one,
-with the certificate arriving as the `obsync-tls` Secret the ceremony above
-produces:
+a warning anywhere, it is a connection the NetworkPolicy drops. It is also the
+only workload that reaches obsync, so it runs as hardened as the server does:
+no root, no capabilities, the runtime's default seccomp profile, a read-only
+root filesystem, and an image pinned by digest. A minimal one, with the
+certificate arriving as the `obsync-tls` Secret the ceremony above produces:
 
 <!-- ci: k8s-tls-front -->
 ```yaml
@@ -277,6 +288,10 @@ data:
         proxy_pass http://obsync.obsidian.svc.cluster.local:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
+        # Replaced, never appended to: the address that connected here is
+        # the only one this front can vouch for.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
       }
     }
 ---
@@ -300,20 +315,26 @@ spec:
         app.kubernetes.io/name: tls-front
         app.kubernetes.io/instance: tls-front
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
         runAsGroup: 101
         fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nginx
-          image: nginx:1.29-alpine
+          image: docker.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
           ports:
             - name: https
               containerPort: 8443
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: config
               mountPath: /etc/nginx/conf.d
@@ -354,10 +375,10 @@ spec:
       protocol: TCP
 ```
 
-Pin the image to a digest you chose rather than to the tag above, for the
-reason section 1 gives about the chart and the server. The proxy is the one
-workload that reaches obsync, so its bytes are part of your deployment's
-surface.
+The digest is the one this project's CI runs the front at; pin a digest you
+chose when you take a newer nginx, for the reason section 1 gives about the
+chart and the server. The proxy is the one workload that reaches obsync, so its
+bytes are part of your deployment's surface.
 
 ## 5. Read the setup token, and first boot
 
@@ -405,15 +426,17 @@ private deployment has two halves, and both are outside this chart:
 Which products answer those two halves is yours to choose, and the chart knows
 none of their names: a tunnel provider with its own connector and client, a
 WireGuard network you run, an overlay like Tailscale. What the chart DOES need
-is the connector's three labels in `ingress.peer*`, whichever one you run.
+is each connector's three labels in `ingress.peers`, whichever one you run.
 
 If you choose Cloudflare's edge integration, set `edge.mode` to `cloudflare`.
 The server then requires its connecting-address and request-id headers on every
-request and refuses requests without them. For your own reverse proxy or
-another provider, use `edge.mode: none`, even when that front end authenticates
-users. Set `trustedProxyCidrs` only to the proxy networks whose forwarded
-addresses you trust. Authentication at the edge does not require Cloudflare;
-the plugin's optional service-token headers can serve another front end too.
+request, believes them only from a peer inside `trustedProxyCidrs` (the private
+networks, when the list is empty), and refuses every other request. For your
+own reverse proxy or another provider, use `edge.mode: none`, even when that
+front end authenticates users: the server reads the standard
+`X-Forwarded-For` and `Forwarded` headers, only from `trustedProxyCidrs`.
+Authentication at the edge does not require Cloudflare; the plugin's optional
+service-token headers can serve another front end too.
 
 ## 7. One reference deployment, end to end
 
@@ -479,8 +502,8 @@ job issues, so what is proven is the terminator and its wiring, never the
 certificate), the private route of section 6, and the NetworkPolicy's
 refusals, which are proven instead against the RENDERED policy by
 `scripts/ci/chart_pins.py`. What the gate does hold is that the three peer
-labels on this page and the three `ingress.peer*` values on it stay the same
-three facts.
+labels on this page and the peer in its `ingress.peers` stay the same three
+facts, and that the front stays as hardened as section 4 shows.
 
 ## Next
 

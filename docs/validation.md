@@ -184,7 +184,7 @@ readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Reference (pie5) | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. The deployment's own tuple (proxy, route, certificate) lives in the platform runbook, not here | private, owner-only: the LAN, or the owner's private route back to it; no public application, no access broker | the deployment itself; V1-V14 by hand |
+| Kubernetes route | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) lives in its platform's runbook, not here | private, owner-only: the LAN, or a private route back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` for the chart, terminator and device flow; V1-V14 by hand on a real deployment |
 | Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
 
 The Compose path is the no-provider route: it needs no account with anybody

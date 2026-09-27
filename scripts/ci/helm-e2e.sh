@@ -123,11 +123,9 @@ readonly INGRESS_NAMESPACE='obsync-ingress'
 readonly FRONT='tls-front'
 readonly FRONT_HOST='sync-e2e.invalid'
 readonly FRONT_PORT=18443
-# The digest this run pulls the terminator at. The page shows the TAG, as a
-# reader reads it, and tells them to pin their own; the substitution below is
-# what names the bytes this job may run, and the tag it replaces is checked
-# against the page by scripts/ci/test_selfhosting_contract.py.
-readonly FRONT_IMAGE='docker.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de'
+# The terminator's bytes are the digest the page itself pins, so this run
+# applies the page as written; scripts/ci/test_selfhosting_contract.py refuses
+# a page whose front is not pinned by digest.
 # Requirement 12: every wait names the budget it is measured against.
 readonly CLUSTER_BUDGET_SECONDS=300
 readonly BIND_BUDGET_SECONDS=180
@@ -363,7 +361,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "${scratch}/tls.key" -out "${scratch}/tls.crt" -days 1 \
   -subj "/CN=${FRONT_HOST}" -addext "subjectAltName=DNS:${FRONT_HOST}" >/dev/null 2>&1 \
   || deny 'openssl could not issue the leaf this run terminates with'
-front="$(documented k8s-tls-front --substitute "nginx:1.29-alpine=${FRONT_IMAGE}")" \
+front="$(documented k8s-tls-front)" \
   || deny "${GUIDE} no longer shows the TLS-front block this gate substitutes into"
 printf 'helm-e2e: applying, from %s:\n%s\n' "${GUIDE}" "${front}"
 printf '%s\n' "${front}" | kubectl apply -f - \

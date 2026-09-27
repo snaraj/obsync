@@ -5,6 +5,7 @@
   "required": [
     "deploymentReady",
     "image",
+    "imagePullSecrets",
     "service",
     "ingress",
     "edge",
@@ -15,6 +16,10 @@
     "retention",
     "scrubRate",
     "resources",
+    "nodeSelector",
+    "tolerations",
+    "affinity",
+    "podLabels",
     "securityContext"
   ],
   "definitions": {
@@ -39,6 +44,42 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+    },
+    "cidr": {
+      "description": "An address block narrower than every address: a /0 trusts or admits every sender, which is no boundary at all.",
+      "type": "string",
+      "pattern": "^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[1-9]|[12][0-9]|3[0-2])$|^[0-9A-Fa-f:]+/(?:[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
+    },
+    "peer": {
+      "description": "One admitted source: a pod named by all three of its facts, or an address block.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["namespace", "appName", "instance"],
+          "properties": {
+            "namespace": { "$ref": "#/definitions/kubernetesName" },
+            "appName": { "$ref": "#/definitions/labelValue" },
+            "instance": { "$ref": "#/definitions/labelValue" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ipBlock"],
+          "properties": {
+            "ipBlock": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cidr"],
+              "properties": {
+                "cidr": { "$ref": "#/definitions/cidr" },
+                "except": { "type": "array", "items": { "$ref": "#/definitions/cidr" } }
+              }
+            }
+          }
+        }
+      ]
     },
     "volume": {
       "type": "object",
@@ -67,7 +108,11 @@
       "additionalProperties": false,
       "required": ["repository", "tag", "digest", "pullPolicy"],
       "properties": {
-        "repository": { "type": "string", "const": "ghcr.io/snaraj/obsync" },
+        "repository": {
+          "type": "string",
+          "description": "Any registry path, a mirror included: the required digest pins the bytes wherever they come from.",
+          "pattern": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(:[0-9]{1,5})?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)+$"
+        },
         "tag": {
           "type": "string",
           "description": "Locked to appVersion by the release contract's seven-lock walk.",
@@ -75,6 +120,15 @@
         },
         "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "pullPolicy": { "type": "string", "enum": ["IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "$ref": "#/definitions/kubernetesName" } }
       }
     },
     "service": {
@@ -85,13 +139,19 @@
     },
     "ingress": {
       "type": "object",
-      "description": "The deployment-provider binding point. All three fields name ONE connector; the instance is required because the peer namespace is shared.",
+      "description": "The deployment-provider binding point. `peers` is every admitted source; the single-peer fields name ONE connector and are accepted only all three together, because the peer namespace is shared.",
       "additionalProperties": false,
-      "required": ["peerNamespace", "peerAppName", "peerInstance"],
+      "required": ["peers"],
       "properties": {
+        "peers": { "type": "array", "items": { "$ref": "#/definitions/peer" } },
         "peerNamespace": { "$ref": "#/definitions/kubernetesName" },
         "peerAppName": { "$ref": "#/definitions/labelValue" },
         "peerInstance": { "$ref": "#/definitions/labelValue" }
+      },
+      "dependencies": {
+        "peerNamespace": ["peerAppName", "peerInstance"],
+        "peerAppName": ["peerNamespace", "peerInstance"],
+        "peerInstance": ["peerNamespace", "peerAppName"]
       }
     },
     "edge": {
@@ -102,10 +162,7 @@
     },
     "trustedProxyCidrs": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$|^[0-9A-Fa-f:]+/(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
-      }
+      "items": { "$ref": "#/definitions/cidr" }
     },
     "publicUrl": { "type": "string", "pattern": "^$|^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\\s]*)?$" },
     "serverKeySecret": {
@@ -158,6 +215,39 @@
         "requests": { "$ref": "#/definitions/resourcePair" },
         "limits": { "$ref": "#/definitions/resourcePair" }
       }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string" },
+          "operator": { "type": "string", "enum": ["Exists", "Equal"] },
+          "value": { "type": "string" },
+          "effect": { "type": "string", "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"] },
+          "tolerationSeconds": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "affinity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nodeAffinity": { "type": "object" },
+        "podAffinity": { "type": "object" },
+        "podAntiAffinity": { "type": "object" }
+      }
+    },
+    "podLabels": {
+      "type": "object",
+      "description": "Extra pod labels. The chart's own app.kubernetes.io/* keys are refused: selectors and the NetworkPolicy match on them.",
+      "propertyNames": { "not": { "pattern": "^app\\.kubernetes\\.io/" } },
+      "additionalProperties": { "$ref": "#/definitions/labelValue" }
     },
     "securityContext": {
       "type": "object",

@@ -15,27 +15,52 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+  {{- /* EXACTLY the values peers, each pod named by every fact it takes to
+  name one connector: namespace + app name + instance. A peer namespace is
+  often shared by several connectors that publish the same app label and
+  differ only by instance, so dropping the instance line would admit all of
+  them -- a policy that reads narrow and behaves wide; the schema refuses a pod
+  peer missing any of the three and an address block holding every address.
+  The single-peer fields of earlier releases render as the first pod peer, so
+  an existing values file keeps its exact policy. No peer renders NO rule:
+  a rule whose `from` is empty admits every source, so it is never written.
+  The identities are injected from values (the deployment-provider binding
+  point), so this template names no provider. `scripts/ci/chart_pins.py
+  ingress` proves the rendered result structurally rather than by counting
+  lines. */}}
+  {{- $peers := .Values.ingress.peers }}
+  {{- if .Values.ingress.peerNamespace }}
+  {{- $peers = prepend $peers (dict "namespace" .Values.ingress.peerNamespace "appName" .Values.ingress.peerAppName "instance" .Values.ingress.peerInstance) }}
+  {{- end }}
+  {{- if $peers }}
   ingress:
-    {{- /* EXACTLY ONE peer, named by every fact it takes to name one
-    connector: namespace + app name + instance. The peer namespace is shared by
-    several connectors that publish the same app label and differ only by
-    instance, so dropping the instance line would admit all of them -- a policy
-    that reads narrow and behaves wide. The identity is injected from values
-    (the deployment-provider binding point), so this template names no
-    provider, and the schema requires the instance non-empty, so it cannot
-    render unpinned. `scripts/ci/chart_pins.py ingress` proves the rendered
-    result structurally rather than by counting lines. */}}
     - from:
+        {{- range $peers }}
+        {{- if .ipBlock }}
+        - ipBlock:
+            cidr: {{ .ipBlock.cidr }}
+            {{- with .ipBlock.except }}
+            except:
+              {{- range . }}
+              - {{ . }}
+              {{- end }}
+            {{- end }}
+        {{- else }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.ingress.peerNamespace }}
+              kubernetes.io/metadata.name: {{ .namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ .Values.ingress.peerAppName }}
-              app.kubernetes.io/instance: {{ .Values.ingress.peerInstance }}
+              app.kubernetes.io/name: {{ .appName }}
+              app.kubernetes.io/instance: {{ .instance }}
+        {{- end }}
+        {{- end }}
       ports:
         - port: {{ .Values.service.port }}
           protocol: TCP
+  {{- else }}
+  ingress: []
+  {{- end }}
   {{- /* NO OUTBOUND CONNECTION, and this list is empty by construction rather
   than by current configuration. obsync is a blind server (requirement 6): it
   stores ciphertext its clients push and serves it back, and there is no

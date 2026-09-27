@@ -40,7 +40,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `container` | `scripts/ci/image-smoke.sh obsync-gate-full:<sha>` | The shipped image SERVES, run the way README.md's quick start runs it: two FRESH named volumes, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, a loopback-published port. Five properties — `/readyz` answers `{"ready":true` inside a 60 s budget, every process in the container is uid 65532, the README's own `docker cp … \| tar -xO` yields a 64-lowercase-hex setup token, the same read works on the STOPPED container, and the run carried the hardening it claims. It builds nothing; the image reference is the argument, so the gate smokes exactly what it just built. The build steps above were all green on an image that exited at first boot with `event=server_key_failed decision=exit refusal=io_error`, because the final stage declared `USER nonroot` without creating `/data/blobs` and `/data/journal` and Docker therefore created both mount points root-owned. A sixth property weakens the real key, token and roots on the same volumes to the round-8 reviewer's restored-volume shape and requires a second start to repair every class, log each repair, and log only the modes it read back. A seventh starts a second container on the same volumes while the first serves and requires it to refuse with `reason=journal_locked`, exit non-zero, and leave the first serving: `ReadWriteOnce` excludes other nodes, the server's own lock excludes a second process. An eighth presents root-owned `0755` volumes holding no root, the shape a dynamic provisioner hands a non-root workload, and requires the `unwritable` refusal with nothing created. A ninth exhausts a real blob volume — a tmpfs-backed volume the digest-pinned throwaway fills while the server serves, because a `--tmpfs` mount belongs to one container and `docker cp` into one writes past the mount — and requires `/readyz` to answer `503 not_ready` naming the volume, the log to carry `event=readiness decision=not_ready volume=blobs io=StorageFull`, the container to stay running, and readiness to return once the space does. It does NOT put a chunk through `PUT /v1/chunks/{sid}`: that is HMAC-authenticated and the smoke ships no signing client, so `scripts/ci/test_image_smoke_contract.py` pins the property's executable structure instead — the size option, the separate journal volume, the hardening, the pinned filler, the grep, and the recovery half. |
 | `gate` | asserts each job's result | One aggregate required context that names every job, so a job renamed, conditioned out, or removed turns the gate red instead of leaving a required check that never reports. |
 
-### What the three chart pins prove
+### What the chart pins prove
 
 They read the COMPLETE render — every template, no `--show-only` — through
 `scripts/ci/miniyaml.py`, a fail-closed reader that refuses every construct it
@@ -48,14 +48,18 @@ does not fully model. An unparseable render is a FAILED pin, never a passed
 one, and expectations come from `chart/values.yaml` so the peer identity and
 the storage classes are stated in exactly one place.
 
-- **ingress** — the NetworkPolicy admits exactly one peer, named by namespace
-  **and** app label **and** instance, on the service port only, and denies all
-  egress. A blank or absent instance is refused by the schema; an overridden
-  instance moves the pin and leaves no trace of the default. Comparing the
-  whole `spec.ingress` sub-tree rather than counting `- from:` lines is what
-  catches a second rule with no `from` (`- {}` renders an allow-all), and
-  requiring exactly one NetworkPolicy document is what catches a second policy
-  in another template, since ingress rules are additive.
+- **ingress** — the NetworkPolicy admits exactly the `ingress.peers` values
+  name, each pod by namespace **and** app label **and** instance and each
+  address block as written, on the service port only, and denies all egress.
+  The shipped default names none and renders NO rule, never one with an empty
+  `from`. The single-peer fields of earlier releases render the rule they
+  always did. A pod peer missing or blanking its instance, a partial
+  single-peer form, a pod and a block in one entry, and a `/0` block or trusted
+  network are refused by the schema. Comparing the whole `spec.ingress`
+  sub-tree rather than counting `- from:` lines is what catches a second rule
+  with no `from` (`- {}` renders an allow-all), and requiring exactly one
+  NetworkPolicy document is what catches a second policy in another template,
+  since ingress rules are additive.
 - **storage** — exactly the two claims `docs/storage.md` defines, on the
   classes, sizes and provisioned capacities `values.yaml` names, all
   `ReadWriteOnce`; and the workload mounts NOTHING but those claims — a
@@ -68,7 +72,15 @@ the storage classes are stated in exactly one place.
   escalation, all capabilities dropped, `RuntimeDefault` seccomp, no
   service-account token), and every weakening override is refused by the
   schema rather than merely absent from the defaults. The workload reference
-  still renders `repository:tag@digest`.
+  renders `repository:tag@digest` from any registry path, a mirror included,
+  and never without the digest. Scheduling fields, pull secrets and pod labels
+  pass through without touching that context, and a pod label the selectors
+  match on is refused.
+- **readiness** and **environment** — `deploymentReady` gates the replica
+  count and nothing else; the process environment is one the server parses.
+- **kubernetes** — the chart renders on the lowest minor `Chart.yaml` claims,
+  bare and with the suffixes managed clusters report, and on the newest, and
+  refuses the minor below.
 
 ## `codeql.yml` — pull requests, pushes to `main`, weekly cron
 

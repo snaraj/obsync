@@ -123,16 +123,16 @@ class TheGateRunsEveryPin(unittest.TestCase):
 
     `test_each_pin_holds` iterates `PINS`, so deleting a registration would
     delete its own test. These pins name the registry independently: exactly
-    the five pins, each bound to its function; `all` invokes every one of
+    the six pins, each bound to its function; `all` invokes every one of
     them, readiness included; a readiness refusal fails the gate; and the
     hosted gate and `make check` run `all`, never a subset. None of them needs
     helm, so they run everywhere.
     """
 
-    def test_the_registry_names_exactly_the_five_pins_bound_to_their_functions(self):
+    def test_the_registry_names_exactly_the_six_pins_bound_to_their_functions(self):
         self.assertEqual(
             list(chart_pins.PINS),
-            ["ingress", "storage", "security", "readiness", "environment"],
+            ["ingress", "storage", "security", "readiness", "environment", "kubernetes"],
         )
         for name in chart_pins.PINS:
             self.assertIs(chart_pins.PINS[name], getattr(chart_pins, f"pin_{name}"))
@@ -143,7 +143,7 @@ class TheGateRunsEveryPin(unittest.TestCase):
         with mock.patch.dict(chart_pins.PINS, stubs), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(chart_pins.main(["all"]), 0)
         self.assertEqual(
-            calls, ["ingress", "storage", "security", "readiness", "environment"]
+            calls, ["ingress", "storage", "security", "readiness", "environment", "kubernetes"]
         )
 
     def test_a_readiness_refusal_fails_the_all_gate_and_the_single_pin(self):
@@ -271,9 +271,7 @@ class ExpectationsComeFromValues(unittest.TestCase):
         configured = chart_pins.values()
         for path in (
             ("service", "port"),
-            ("ingress", "peerNamespace"),
-            ("ingress", "peerAppName"),
-            ("ingress", "peerInstance"),
+            ("image", "repository"),
             ("storage", "blobs", "className"),
             ("storage", "blobs", "size"),
             ("storage", "blobs", "capacity"),
@@ -286,6 +284,15 @@ class ExpectationsComeFromValues(unittest.TestCase):
                 for key in path:
                     node = node[key]
                 self.assertTrue(node not in (None, ""))
+
+    def test_the_shipped_defaults_name_no_cluster(self):
+        # A default that names one cluster's peer or class is that cluster's
+        # private fact and a policy that admits a stranger's pod of the same
+        # name. The shipped peers admit nothing until they are named.
+        configured = chart_pins.values()
+        self.assertEqual(configured["ingress"], {"peers": []})
+        for role in ("blobs", "journal"):
+            self.assertEqual(configured["storage"][role]["className"], "unset-storage-class")
 
 
 @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
