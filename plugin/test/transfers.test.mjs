@@ -219,14 +219,33 @@ test("a note-sized body never queues behind large ones, and the small pipe holds
 
 // --- one pass (#196) -------------------------------------------------------
 
-/** Count what a push reads from the source, and what it holds between encrypting a chunk and the server taking it. */
-function instrument(context) {
-  const seen = { read: 0, lastRead: Date.now(), held: 0, peak: 0, putsOpen: 0, postedWithPutOpen: false };
+/**
+ * Count what a push reads from the source, and what it holds between
+ * encrypting a chunk and the server taking it -- and whether it is WAITING on
+ * the wire: between its steps a push always awaits a read, a WebCrypto call,
+ * an ask about missing chunks, or the chunks it has sent, so with none of the
+ * first three in flight at a turn of the event loop, it is the last.
+ */
+function instrument(t, context) {
+  const seen = { read: 0, reading: 0, asking: 0, crypto: 0, held: 0, peak: 0, putsOpen: 0, postedWithPutOpen: false };
+  const count = async (key, work) => {
+    seen[key]++;
+    try { return await work(); } finally { seen[key]--; }
+  };
+  seen.waiting = () => seen.reading === 0 && seen.asking === 0 && seen.crypto === 0;
+  const subtle = globalThis.crypto.subtle;
+  for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(subtle)).filter((key) => key !== "constructor")) {
+    const call = subtle[name].bind(subtle);
+    subtle[name] = (...args) => count("crypto", () => call(...args));
+    t.after(() => { delete subtle[name]; });
+  }
   const source = context.host.source.bind(context.host);
   context.host.source = (path, size) => {
     const inner = source(path, size);
-    return { size, read: async (offset, length) => { const bytes = await inner.read(offset, length); seen.read += bytes.length; seen.lastRead = Date.now(); return bytes; } };
+    return { size, read: (offset, length) => count("reading", async () => { const bytes = await inner.read(offset, length); seen.read += bytes.length; return bytes; }) };
   };
+  const missing = context.transport.missingChunks.bind(context.transport);
+  context.transport.missingChunks = (...args) => count("asking", () => missing(...args));
   const put = context.transport.putChunk.bind(context.transport);
   context.transport.putChunk = async (sid, ciphertext, patience) => {
     seen.held += ciphertext.length;
@@ -247,21 +266,27 @@ function instrument(context) {
   return seen;
 }
 
-test("a large push reads each byte once, holds at most its window, and posts only after every chunk landed (#196)", async () => {
+test("a large push reads each byte once, holds at most its window, and posts only after every chunk landed (#196)", async (t) => {
   for (const isMobile of [false, true]) {
     const r = await rig({ isMobile });
     const size = (isMobile ? 48 : 64) << 20;
     r.host.seed("Archive/box.bin", noise(size, isMobile ? 7 : 8), 1000);
-    const seen = instrument(r.context);
-    // THE WIRE IS SLOWER THAN THE READ: no chunk body is answered while the
-    // push is still reading, until it has stopped reading for 30 ms -- which a
-    // push only does when its window is full. Encrypted chunks pile up to
-    // exactly what the window lets them.
+    const seen = instrument(t, r.context);
+    // THE WIRE IS SLOWER THAN THE READ: no chunk body is answered until the
+    // push is waiting on the wire, which it is only with its window full or
+    // everything sent. Encrypted chunks pile up to exactly what the window
+    // lets them. (It was "until it has stopped reading for 30 ms", and on a
+    // machine building the Rust stage beside the suite an encryption took
+    // longer than that: the chunks were answered early and never piled up.)
     const request = r.context.transport.options.request;
     r.context.transport.options.request = async (sent) => {
-      if (sent.method === "PUT") {
-        while (seen.read < size && Date.now() - seen.lastRead < 30) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      if (sent.method !== "PUT") return request(sent);
+      // Asked between turns of the event loop, never inside one: in a
+      // microtask a read can have just resolved with its continuation not yet
+      // run, and the push would look idle between two of its own steps.
+      const deadline = Date.now() + 10_000;
+      do await new Promise((resolve) => setTimeout(resolve, 1));
+      while (!seen.waiting() && Date.now() < deadline);
       return request(sent);
     };
     const outcome = await pushFile(r.context, "Archive/box.bin");
