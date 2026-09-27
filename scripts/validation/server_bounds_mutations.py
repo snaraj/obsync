@@ -28,6 +28,7 @@ SHARE = "a_device_at_its_share_is_refused_and_no_other_device_is"
 STREAM = "a_batch_streams_and_names_a_lost_chunk_missing"
 PROBE = "the_readiness_probe_never_writes_through_a_planted_link"
 KEY_FILE = "export_reads_the_key_from_a_file_only_its_owner_can_read"
+INCOMPLETE = "a_body_is_too_large_only_when_it_passed_its_ceiling"
 PROBE_BODY = """    match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -113,6 +114,17 @@ CASES = [
      "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
     ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
      "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
+    ("incomplete-is-not-too-large", SERVER, RENDER,
+     "        Err(e) => Err(incomplete_body(app, &req.body, &e)),",
+     "        Err(_) => Err(ApiError::new(413, \"body_too_large\", \"request body exceeds the limit\")),",
+     INCOMPLETE),
+    ("too-large-needs-the-ceiling", SERVER, RENDER,
+     " if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(",
+     " if e.kind() == ErrorKind::InvalidData => Err(", INCOMPLETE),
+    ("incomplete-retried", SERVER, RENDER, "        503,\n        \"body_incomplete\",",
+     "        400,\n        \"body_incomplete\",", INCOMPLETE),
+    ("incomplete-logged", SERVER, RENDER,
+     "            (\"reason\", Val::word(\"body_incomplete\")),", "", INCOMPLETE),
     ("reset-is-ordinary", CORE, HTTP,
      "        Report::io(if closed { \"peer_closed\" } else { decision }, err)",
      "        Report::io(decision, err)", "a_connection_failure_is_ordinary_only_when_the_peer_ended_it"),

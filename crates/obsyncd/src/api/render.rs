@@ -284,9 +284,10 @@ pub fn json_body(app: &App, req: &mut Request) -> Result<Value, ApiError> {
 /// the ceiling.
 ///
 /// # Errors
-/// `413 body_too_large` above the ceiling or on a read error, `503 slow_body`
-/// for a body slower than the rate floor, and a bare `503` when the budget
-/// has no room for this body.
+/// `413 body_too_large` above the ceiling, `503 slow_body` for a body slower
+/// than the rate floor, `503 body_incomplete` for one that ended or broke
+/// before it was whole, `400 bad_request` for a chunked body whose framing is
+/// not HTTP, and a bare `503` when the budget has no room for this body.
 pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
     let declared = req.body.declared_len();
     if let Some(declared) = declared
@@ -302,12 +303,38 @@ pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, Ap
     match req.body.read_to_vec(limit as usize) {
         Ok(raw) => Ok(raw),
         Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),
-        Err(_) => Err(ApiError::new(
-            413,
-            "body_too_large",
-            "request body exceeds the limit",
+        // The body refuses its ceiling once more than `limit` bytes of it
+        // have arrived, and only then; the same kind below that is framing.
+        Err(e) if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(
+            ApiError::new(413, "body_too_large", "request body exceeds the limit"),
+        ),
+        Err(e) if e.kind() == ErrorKind::InvalidData => Err(ApiError::bad_request(
+            "the chunked request body is not framed as HTTP",
         )),
+        Err(e) => Err(incomplete_body(app, &req.body, &e)),
     }
+}
+
+/// A body that ended, or whose connection broke, before it was whole: the
+/// client left, or something between it and the server gave up. Nothing
+/// was wrong with its size, so it is not `413`; the request never arrived,
+/// so a client retries it (`docs/protocol.md`, "Limits and headers"). One
+/// line with what did arrive and how the read ended.
+fn incomplete_body(app: &App, body: &Body, e: &std::io::Error) -> ApiError {
+    app.log.warn(
+        "request_body",
+        &[
+            ("decision", Val::word("refused")),
+            ("reason", Val::word("body_incomplete")),
+            ("io", Val::io(e)),
+            ("bytes", Val::bytes(body.received())),
+        ],
+    );
+    ApiError::new(
+        503,
+        "body_incomplete",
+        "the request body did not arrive whole; retry",
+    )
 }
 
 /// A body that arrived more slowly than the rate floor allows. That is the

@@ -648,7 +648,10 @@ device whose link opened it is revoked.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
   `wait`); header read timeout 10 s; body read minimum rate 16 KiB/s. A body
   slower than that, on any route, is `503 slow_body`: the sender's link, not the
-  server's storage, and a client retries it.
+  server's storage, and a client retries it. A body that ends or breaks before
+  it is whole is `503 body_incomplete`, retried the same way, and a chunked body
+  whose framing is not HTTP is `400 bad_request`; `413 body_too_large` is only
+  ever a body past its ceiling.
 - Every response carries `Cache-Control: no-store` and the security headers
   listed in `AGENTS.md`. `X-Obsync-Seq` (journal head) rides only a response
   to a caller that proved a credential: it is write activity, and an

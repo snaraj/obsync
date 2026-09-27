@@ -2352,6 +2352,98 @@ fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
     assert_slow_body(&h, &refused);
 }
 
+/// Send `head` and `body`, end the request's half of the connection, and
+/// read the answer: the server sees a body end wherever `body` does.
+fn send_and_hang_up(h: &Harness, head: &str, body: &[u8]) -> Res {
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    stream.write_all(head.as_bytes()).expect("head");
+    stream.write_all(body).expect("body");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("end the request");
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw) {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    Res::parse(&raw)
+}
+
+/// A read error is `413 body_too_large` only when the body really passed
+/// its ceiling. A body cut short of its `Content-Length` -- a client that
+/// left, a proxy that gave up -- did not arrive whole, and is `503
+/// body_incomplete`, which every client retries; a chunked body whose
+/// framing is not HTTP is `400 bad_request`. Both were `413`, which is
+/// untrue and which no client retries. One line names what arrived.
+#[test]
+fn a_body_is_too_large_only_when_it_passed_its_ceiling() {
+    let h = Harness::start_with(
+        "body-read-errors",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let post = "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n";
+
+    let cut = send_and_hang_up(
+        &h,
+        &format!("{post}Content-Length: 100\r\n\r\n"),
+        b"{\"a\":",
+    );
+    assert_eq!(
+        (cut.status, cut.code()),
+        (503, "body_incomplete".to_string()),
+        "{}",
+        cut.text()
+    );
+    assert!(
+        h.captured().lines().any(|l| l.contains(
+            "event=request_body decision=refused reason=body_incomplete io=UnexpectedEof bytes=5"
+        )),
+        "{}",
+        h.captured()
+    );
+
+    let framed = send_and_hang_up(
+        &h,
+        &format!("{post}Transfer-Encoding: chunked\r\n\r\n"),
+        b"zz\r\n{}\r\n0\r\n\r\n",
+    );
+    assert_eq!(
+        (framed.status, framed.code()),
+        (400, "bad_request".to_string()),
+        "{}",
+        framed.text()
+    );
+
+    // One byte of payload past the ceiling, in chunks of 64 KiB.
+    let mut over = Vec::new();
+    let limit = usize::try_from(super::JSON_BODY_LIMIT).expect("fits");
+    let mut payload = 0;
+    while payload <= limit {
+        let piece = vec![b' '; (limit + 1 - payload).min(64 * 1024)];
+        payload += piece.len();
+        over.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+        over.extend_from_slice(&piece);
+        over.extend_from_slice(b"\r\n");
+    }
+    over.extend_from_slice(b"0\r\n\r\n");
+    let large = send_and_hang_up(
+        &h,
+        &format!("{post}Transfer-Encoding: chunked\r\n\r\n"),
+        &over,
+    );
+    assert_eq!(
+        (large.status, large.code()),
+        (413, "body_too_large".to_string()),
+        "{}",
+        large.text()
+    );
+}
+
 /// #204: a phone on weak mobile data, uploading at 256 kbit/s (32 KiB/s).
 /// Under the old 64 KiB/s floor this upload was refused after about two
 /// seconds, on every retry, forever; at 16 KiB/s it arrives whole.
