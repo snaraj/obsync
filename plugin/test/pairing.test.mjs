@@ -178,6 +178,25 @@ test("a certificate from an authority this device does not trust is said as that
   assert.equal(untrustedCertificate(new Error("network=net::ERR_CERT_AUTHORITY_INVALID")), false);
 });
 
+/*
+ * A REQUEST THAT DID NOT COME THROUGH THE SERVER'S EDGE (`421 edge_required`,
+ * #228). A first pairing said so; a running device and a restart said only
+ * that changes could not be read, or that the server refused. One set of
+ * words now, from one constant: pairing's, and the status adds that it retries.
+ */
+test("pairing, the status and Check say an edge refusal in the same words (#228)", () => {
+  const { ApiError, EDGE_REQUIRED } = require("../build/transport.js");
+  const { EDGE_REFUSED, refusalStatus, refusalText } = require("../build/sync/engine.js");
+  assert.equal(EDGE_REQUIRED, "This server only answers through its access-controlled edge, and this request did not come " +
+    "through it. Check the Server URL and the Custom request headers in obsync settings, and that your route to the server " +
+    "goes through that edge.");
+  assert.equal(EDGE_REFUSED, `${EDGE_REQUIRED} Sync retries by itself.`);
+  const error = new ApiError(421, "edge_required", "edge connecting-address header missing");
+  assert.equal(pairing.refusalText(error), EDGE_REQUIRED);
+  assert.deepEqual(refusalStatus(error), { kind: "error", code: "edge", message: EDGE_REFUSED });
+  assert.equal(refusalText(error), EDGE_REFUSED, "Check and the device list");
+});
+
 test("a held claim is read back exactly, and anything else is no claim (#153)", () => {
   const claim = { pairingId: PAIRING_ID, pairingSecret: "10".repeat(16), deviceId: "aa".repeat(16),
     deviceSecret: "0f".repeat(32), serverUrl: "https://sync.example.invalid", claimedAt: 1757200000000 };

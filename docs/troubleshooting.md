@@ -566,8 +566,11 @@ is further off than that. The window is fixed; no setting widens it.
 **What you see.** Every request refused with `421 edge_required`, including
 the first pairing attempt. Up to 1.1.3 a device that was already running reads
 offline instead, and after a restart shows
-`obsync: error — 421 edge_required: edge connecting-address header missing`
-(TODO(1.1.4-text)).
+`obsync: error — 421 edge_required: edge connecting-address header missing`.
+From 1.1.4 the status and **Show sync status** say, and pairing says all but
+the last sentence:
+
+> This server only answers through its access-controlled edge, and this request did not come through it. Check the Server URL and the Custom request headers in obsync settings, and that your route to the server goes through that edge. Sync retries by itself.
 
 **Why it happens.** The server is set up for Cloudflare's edge
 (`OBSYNC_EDGE=cloudflare`), and this request did not come through it, or it

@@ -1379,6 +1379,15 @@ export class Transport {
 export const NOT_OBSYNC = "not_obsync";
 
 /**
+ * A request the server refused because it did not come through the edge the
+ * server is set up behind (`421 edge_required`, issue #228). Pairing says
+ * exactly this, and the status says it too, adding that sync retries.
+ */
+export const EDGE_REQUIRED =
+  "This server only answers through its access-controlled edge, and this request did not come through it. Check the " +
+  "Server URL and the Custom request headers in obsync settings, and that your route to the server goes through that edge.";
+
+/**
  * A CERTIFICATE THIS DEVICE DOES NOT TRUST IS NOT ABSENCE. Something answered,
  * and the device's own TLS refused the certificate it showed: signed by an
  * authority this device was never told to trust. No retry changes that, and

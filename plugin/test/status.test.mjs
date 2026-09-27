@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, EDGE_REFUSED, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const polls = (r) => r.server.requests.filter((request) => request.target.startsWith("/v1/changes?since="));
@@ -164,6 +164,7 @@ test("a feed refusal names itself on the first read, never as offline, and clear
   for (const [name, answer, expected] of [
     ["a wrong clock", (r) => r.server.error(401, "stale_timestamp", "timestamp is outside the window"), { code: "clock", message: CLOCK_OFF }],
     ["a proxy's page", () => proxyPage(), { code: "edge", message: NOT_OBSYNC_ANSWER }],
+    ["a read around the server's edge (#228)", (r) => r.server.error(421, "edge_required", "edge connecting-address header missing"), { code: "edge", message: EDGE_REFUSED }],
     ["a refusal no row names", (r) => r.server.error(403, "device_pending", "SENTINEL"), { code: "feed", message: FEED_FAILED }],
   ]) {
     const r = await started();
@@ -214,6 +215,25 @@ test("a full server is said on the first chunk it refuses, stays through answere
   r.engine.changed("Big.md");
   await r.timers.run(STEP_MS, () => r.state.fileByPath("Big.md") !== undefined && r.last()?.kind === "idle");
   assert.ok(r.host.logs.includes("engine decision=cleared reason=storage"));
+  await stopped(r);
+});
+
+test("a change sent around the server's edge says so, not that the server refused it, and clears when one gets through (#228)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  let around = true;
+  const refused = refuse(r, (sent) => around && sent.method === "PUT", () => r.server.error(421, "edge_required", "edge connecting-address header missing"));
+  r.host.seed("Edge.md", "a note sent while the route missed the edge\n", 5000);
+  r.engine.changed("Edge.md");
+  await r.timers.run(STEP_MS, () => refused.length === 1);
+  await r.timers.run(STEP_MS);
+  assert.equal(refused.length, 1, "a refusal is not retried as absence");
+  assert.deepEqual(r.last(), { kind: "error", code: "edge", message: EDGE_REFUSED });
+  // The route goes through the edge again; the next change is taken, and the status says so by itself.
+  around = false;
+  r.engine.changed("Edge.md");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Edge.md") !== undefined && r.last()?.kind === "idle");
+  assert.ok(r.host.logs.includes("engine decision=cleared reason=edge"), r.host.logs.join("\n"));
   await stopped(r);
 });
 

@@ -9,4 +9,4 @@
 +  if (error.code === "never") {
      return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
    }
-   return null;
+   if (error.code === "edge_required") return { kind: "error", code: "edge", message: EDGE_REFUSED };

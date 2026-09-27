@@ -73,7 +73,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, CERT_UNTRUSTED, ChangeRecord, ChangesPage, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, untrustedCertificate } from "../transport";
+import { ApiError, CERT_UNTRUSTED, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, untrustedCertificate } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -468,6 +468,8 @@ export const SERVER_FULL =
   "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.";
 export const NOT_OBSYNC_ANSWER =
   "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings; sync retries by itself.";
+/** The pairing refusal's own words for `421 edge_required` (`transport.ts`), and that sync retries (#228). */
+export const EDGE_REFUSED = `${EDGE_REQUIRED} Sync retries by itself.`;
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
 export const PUSH_REFUSED =
@@ -503,6 +505,7 @@ export function refusalStatus(error: unknown): EngineStatus | null {
   if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
     return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
   }
+  if (error.code === "edge_required") return { kind: "error", code: "edge", message: EDGE_REFUSED };
   return null;
 }
 

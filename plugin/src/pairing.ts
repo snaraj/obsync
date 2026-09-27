@@ -44,7 +44,7 @@ import {
   unhex,
   utf8,
 } from "./crypto";
-import { ApiError, CERT_UNTRUSTED, untrustedCertificate } from "./transport";
+import { ApiError, CERT_UNTRUSTED, EDGE_REQUIRED, untrustedCertificate } from "./transport";
 import { WORDLIST } from "./wordlist";
 
 export const PAIRING_ID_BYTES = 16;
@@ -308,7 +308,7 @@ const REFUSALS: Record<string, string> = {
   pairing_expired: `That code has expired: codes last ten minutes. ${NEW_CODE}`,
   already_claimed: `Another device already used that code. ${NEW_CODE} If none of your devices used it, choose Reject when the other device asks.`,
   stale_timestamp: "This device's clock is more than five minutes off, so the server refused it. Set the date and time automatically, then try again.",
-  edge_required: "This server only answers through its access-controlled edge, and this request did not come through it. Check the Server URL and the Custom request headers in obsync's settings.",
+  edge_required: EDGE_REQUIRED,
   device_revoked: "This device was removed from the server, so it cannot pair another. Use Leave this server in obsync's settings, then pair this device again.",
 };
 
