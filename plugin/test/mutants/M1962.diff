@@ -1,4 +1,4 @@
-# M70: the confirmation queues nothing, so a real deletion never publishes
+# M1962: Delete everywhere is asked about again instead of published
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -1265,7 +1265,7 @@
@@ -6,7 +6,7 @@
      for (const folder of this.heldFolders) this.vanishedFolders.add(folder);
      this.heldFolders = [];
 -    this.vanish(held, true);
-+    void held;
++    this.vanish(held);
      this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
    }
  

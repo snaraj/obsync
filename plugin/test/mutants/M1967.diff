@@ -1,0 +1,12 @@
+# M1967: the list calls every entry larger than this device allows
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4164,7 +4164,7 @@
+     // EACH ENTRY SAYS ITS OWN REASON (issue #161): an older copy is here, the
+     // file is above a ceiling, or it no longer is -- ceilings set to 0 leave
+     // entries that fit, and those are not "larger than this device allows".
+-    const kind: RemoteOnlyKind = context.state.pathByFileId(fileId) !== undefined ? "older" : admission.ok ? "available" : "limit";
++    const kind: RemoteOnlyKind = context.state.pathByFileId(fileId) !== undefined ? "older" : "limit";
+     return {
+       fileId,
+       path: record.path,

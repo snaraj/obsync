@@ -1,0 +1,12 @@
+# M1966: the kept older copy is never named in a notice
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1568,7 +1568,7 @@
+     if (localPath !== undefined && (await context.host.stat(localPath)) !== null) {
+       local = `kept_${(await competing(context, localPath, change.file_id)) ?? "older"}`;
+       const told = `older\u0000${change.file_id}`;
+-      if (!context.refused.has(told)) {
++      if (!context.refused.has(told) && told === "") {
+         context.refused.add(told);
+         context.host.notify(
+           `obsync did not download the newer version of ${manifest.path} (${formatBytes(manifest.size)}): it is ` +

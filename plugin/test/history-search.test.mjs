@@ -185,3 +185,29 @@ test("the descending walk reaches the end of retained history and says so", asyn
   assert.equal(page.entries.length, 9, "and every record is shown exactly once");
   assert.equal((await view.next()).scanned, 0, "a completed walk issues no further request");
 });
+
+test("a note deleted with many others is found by the content it can restore, listed before its marker", async () => {
+  // S12: twenty notes deleted at once put twenty deletion markers in the
+  // newest window, so the search for one of them stopped at its marker, whose
+  // Restore is disabled, and a second search was needed (issue #162).
+  const r = await rig();
+  const notes = Array.from({ length: HISTORY_SCAN_RECORDS }, (_, i) => `Notes/n${String(i).padStart(2, "0")}.md`);
+  const heads = [];
+  for (const [i, path] of notes.entries()) {
+    heads.push(await r.server.publish({
+      fileId: String(i + 10).repeat(16), path, bytes: enc(`CONTENT ${path}`), mtime: 1000 + i,
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    }));
+  }
+  for (const [i, path] of notes.entries()) {
+    await r.server.publishTombstone({ fileId: String(i + 10).repeat(16), path, manifestKey: r.keys.manifestKey, parents: [heads[i].version_id] });
+  }
+  r.state.data.lastSeq = r.server.seq;
+
+  const page = await open(r).next("n07");
+
+  assert.deepEqual(
+    page.entries.map((entry) => `${entry.path} ${entry.deleted ? "marker" : `${entry.size} B`}`),
+    [`Notes/n07.md ${"CONTENT Notes/n07.md".length} B`, "Notes/n07.md marker"],
+  );
+});

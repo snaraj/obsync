@@ -1,0 +1,12 @@
+# M1957: the floor is ignored: every live deletion is held
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -941,7 +941,7 @@
+     // (`confirmHeldDeletions`) or Restore here (`restoreHeldDeletions`), and
+     // nothing of it leaves this device before then. Below the floor a
+     // deletion goes as it always did, and what the user has confirmed goes.
+-    const holding = asked.length >= BULK_DELETION_MIN;
++    const holding = asked.length > 0;
+     if (holding) this.holdBurst(context, asked);
+     else gone.push(...asked);
+     for (const path of gone) {

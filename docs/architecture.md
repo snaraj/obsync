@@ -727,7 +727,13 @@ long poll and needs its timeout raised.
    as a MOVE, keeping the file id -- and it never publishes a tombstone,
    because a listing this device took itself is the right thing to converge
    from and the wrong thing to delete on. Deletions stay with the watcher
-   and with startup reconciliation, which read Obsidian's own index.
+   and with startup reconciliation, which read Obsidian's own index, and
+   either holds a bulk deletion rather than publish it: the startup pass
+   when most of what this device tracks is gone (issue #123), the watcher
+   when at least five notes -- a multi-select, or a folder's notes -- go in
+   one burst (issue #162). The hold is persisted, and nothing of it leaves
+   the device until the user answers **Delete everywhere** or **Restore
+   here**, which puts the notes back from the versions this device recorded.
 
    THE SCAN READS RECORDS BEFORE THE LISTING, and that order carries one
    fact. A rename the plugin never heard as an event -- made while Obsidian
@@ -1153,8 +1159,11 @@ long poll and needs its timeout raised.
    512 MiB, the practical whole-file read ceiling in a WebView) and
    `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a
    ceiling are not downloaded; they appear in the plugin's "Remote only"
-   view with an on-demand fetch. Every ceiling is visible in settings and
-   in the dashboard's device table.
+   view with an on-demand fetch. Excluding never deletes: a copy already on
+   the device when a newer version arrives above a ceiling stays, is listed
+   there as older, and is named once in a notice offering Fetch (issue
+   #161). Every ceiling is visible in settings and in the dashboard's device
+   table.
 6. **Streaming on desktop.** Electron exposes Node's `fs`; the plugin
    reads, hashes, and encrypts in 8 MiB windows and never loads a large
    file whole. Mobile reads whole files through the adapter, which is why

@@ -1,0 +1,13 @@
+# M1960: Restore here writes over a file that took the name after its look
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1975,8 +1975,7 @@
+   if (!admit({ ...context.state.data.policy, totalBudgetBytes: 0 }, 0, manifest.size).ok) {
+     throw new Error("restore: above this device's per-file ceiling");
+   }
+-  const landed = await createOnly(context, { ...manifest, path });
+-  if (landed === null) return "present";
++  const landed = await materialise(context, { ...manifest, path });
+   // Only over the record it read: the feed may have moved it meanwhile (#149).
+   if (context.state.fileByPath(path) === record) {
+     context.state.setFile(landed.path, { ...record, mtime: landed.mtime, size: landed.size });

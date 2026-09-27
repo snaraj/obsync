@@ -1,0 +1,12 @@
+# M1964: a history search stops at a deletion marker
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -247,7 +247,7 @@
+       do {
+         if (this.newestFirst) await this.stepDown(filter, entries, counts);
+         else await this.stepUp(filter, entries, counts);
+-      } while (entries.every((entry) => entry.deleted) && !this.done && budget > 0 && this.now() - started < budget);
++      } while (entries.length === 0 && !this.done && budget > 0 && this.now() - started < budget);
+       entries.sort((a, b) => Number(a.deleted) - Number(b.deleted));
+     } catch (failure) {
+       this.operation.check();

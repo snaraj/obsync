@@ -329,10 +329,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   /**
-   * Deletions one startup pass refused to publish (issue #123). The row is
-   * absent whenever there are none, so it is only ever seen by a user who has
-   * something to decide, and its button is destructive because confirming
-   * removes those notes from every device.
+   * Deletions held back from the other devices: a startup pass that could no
+   * longer see its notes (issue #123), or many deleted at once (issue #162).
+   * The row is absent whenever there are none, so it is only ever seen by a
+   * user who has something to decide. Delete everywhere is destructive
+   * because it removes those notes from every device; Restore here puts them
+   * back on this one, from the server.
    */
   private heldDeletions(): Row {
     return {
@@ -341,9 +343,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
       visible: () => this.plugin.heldDeletionLine() !== null,
       render: (setting) => {
         setting.addButton((button) =>
-          button.setButtonText("Confirm deletions").setDestructive().onClick(() => {
+          button.setButtonText("Delete everywhere").setDestructive().onClick(() => {
             this.plugin.confirmHeldDeletions();
             new Notice("obsync: the deletions were published. Your other devices will remove those notes.", 8000);
+          }));
+        setting.addButton((button) =>
+          button.setButtonText("Restore here").onClick(() => {
+            void this.plugin.restoreHeldDeletions();
           }));
       },
     };

@@ -74,7 +74,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, resumePaused, settleBeside, unwritableText } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, unwritableText } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
@@ -123,6 +123,16 @@ export interface VaultWriter {
   commit(mtime: number): Promise<VaultStat>;
   abort(): Promise<void>;
 }
+
+/**
+ * A button on a notice, named by what it asks for: the host draws it and
+ * carries it out, so nothing Obsidian-shaped crosses into `sync/` (issues
+ * #161, #162). A notice that asks something stays until it is answered.
+ */
+export type NoticeAction =
+  | { kind: "delete_everywhere" }
+  | { kind: "restore_here" }
+  | { kind: "fetch"; fileId: string };
 
 /** Everything the engine needs from Obsidian, so `sync/` imports none of it. */
 export interface VaultHost {
@@ -280,7 +290,7 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
-  notify(message: string): void;
+  notify(message: string, actions?: NoticeAction[]): void;
   log(line: string): void;
 }
 
@@ -513,6 +523,25 @@ export const MTIME_STEP_MS = 2000;
  */
 export const BULK_DELETION_MIN = 5;
 
+/**
+ * How long one burst of deletions may keep growing (issue #162). The file
+ * explorer's multi-select Delete trashes its notes one after another, and a
+ * slow system trash spreads twenty of them over several debounce windows,
+ * each under the floor; the wait restarts while deletes keep coming, for at
+ * most this long from the first.
+ */
+export const BULK_WINDOW_MS = 5000;
+
+/** The two answers a held deletion waits for, on every notice that asks. */
+const HELD_ACTIONS: NoticeAction[] = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+
+/** ` (in Folder)` when every path shares one folder, and nothing when they share none. */
+function within(paths: string[]): string {
+  let common = folderOf(paths[0] ?? "");
+  for (const path of paths) while (common !== "" && !path.startsWith(`${common}/`)) common = folderOf(common);
+  return common === "" ? "" : ` (in ${common})`;
+}
+
 /** What one pass is measured against; an overrun is logged, never truncated. */
 export const SCAN_BUDGET_MS = 5000;
 
@@ -636,8 +665,18 @@ export class SyncEngine {
   private readonly vanishedFolders = new Set<string>();
   private vanishHandle: unknown = null;
   private caseGhostNoticeShown = false;
-  /** Tombstones one pass refused to publish, awaiting the user's word. */
-  private heldDeletions: string[] = [];
+  /**
+   * The folders deleted with a held burst (issue #162): published after their
+   * notes on Delete everywhere, dropped on Restore here, which brings the notes
+   * back into them. Not persisted: after a restart the startup pass retires a
+   * gone folder's record, and a folder record removes nothing still holding a
+   * note on any device (`docs/architecture.md` 6.2.0).
+   */
+  private heldFolders: string[] = [];
+  /** Held deletions the user confirmed, on their way through `settleVanished` unheld. */
+  private readonly confirmedDeletions = new Set<string>();
+  /** When the burst `vanished` holds began: it grows for at most `BULK_WINDOW_MS`. */
+  private burstStarted = 0;
   private bulkNoticeShown = false;
   /** Whether this engine has read the feed for its own notes (`ownNotes`); one start per engine. */
   private ownRead = false;
@@ -1006,12 +1045,24 @@ export class SyncEngine {
     else this.vanishedFolders.add(path);
   }
 
-  /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */
-  private vanish(paths: string[]): void {
-    for (const path of paths) this.vanished.add(path);
-    if (this.vanishHandle === null) {
-      this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+  /**
+   * Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS` after
+   * the last of them, and never longer than `BULK_WINDOW_MS` after the first.
+   * `confirmed` is the user's word on a held deletion: it is published, not
+   * asked about again.
+   */
+  private vanish(paths: string[], confirmed = false): void {
+    const now = this.nowFn();
+    if (this.vanished.size === 0) this.burstStarted = now;
+    for (const path of paths) {
+      this.vanished.add(path);
+      if (confirmed) this.confirmedDeletions.add(path);
     }
+    if (this.vanishHandle !== null) {
+      if (now - this.burstStarted >= BULK_WINDOW_MS) return;
+      this.timers.clear(this.vanishHandle);
+    }
+    this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
   }
 
   /**
@@ -1032,12 +1083,17 @@ export class SyncEngine {
     this.vanishHandle = null;
     const paths = [...this.vanished];
     const folders = [...this.vanishedFolders];
+    const confirmed = new Set(paths.filter((path) => this.confirmedDeletions.delete(path)));
     this.vanished.clear();
     this.vanishedFolders.clear();
     if (!this.running) return;
     const context = this.need();
     const started = context.now();
     const left: string[] = [];
+    // What goes now -- confirmed, or back at its name and so the change it
+    // is -- and what may be asked about first (issue #162).
+    const gone: string[] = [];
+    const asked: string[] = [];
     let moved = 0;
     let removed = 0;
     try {
@@ -1047,11 +1103,8 @@ export class SyncEngine {
         const outcome = await this.follow(context, path, index, new Set());
         if (outcome === "moved") moved++;
         else if (outcome === "left") left.push(path);
-        else {
-          this.deletions.add(path);
-          this.enqueue(path);
-          removed++;
-        }
+        else if (!confirmed.has(path) && (await context.host.stat(path)) === null) asked.push(path);
+        else gone.push(path);
       }
     } catch (error) {
       // Nothing is published on a question the vault could not answer: the
@@ -1062,15 +1115,61 @@ export class SyncEngine {
       );
       return;
     }
+    // A BULK DELETION IS A QUESTION HERE TOO (issue #162). Deleted in
+    // Obsidian, many notes at once -- a multi-select, or a folder, whose notes
+    // each count -- reached every other device within a second, and neither
+    // the trash there nor anything here said a word. So a burst at the
+    // startup pass's own floor is held, persisted and asked about exactly as
+    // that pass's hold is; the user's answer is Delete everywhere
+    // (`confirmHeldDeletions`) or Restore here (`restoreHeldDeletions`), and
+    // nothing of it leaves this device before then. Below the floor a
+    // deletion goes as it always did, and what the user has confirmed goes.
+    const holding = asked.length >= BULK_DELETION_MIN;
+    if (holding) this.holdBurst(context, asked);
+    else gone.push(...asked);
+    for (const path of gone) {
+      this.deletions.add(path);
+      this.enqueue(path);
+      removed++;
+    }
     for (const path of left) this.leftScope(path);
     for (const folder of folders) {
       if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
+      else if (holding) this.heldFolders.push(folder);
       else this.folderDeleted(folder);
     }
     context.host.log(
       `watch decision=settled reason=vanished files=${paths.length} moved=${moved} left=${left.length} ` +
         `removed=${removed} folders=${folders.length} budget_ms=${DEBOUNCE_MS} duration_ms=${context.now() - started}`,
     );
+  }
+
+  /**
+   * Hold a burst the user deleted (issue #162) beside anything already held,
+   * and ask once: one notice for the burst, with both answers on it.
+   */
+  private holdBurst(context: SyncContext, paths: string[]): void {
+    const held = [...new Set([...context.state.data.heldDeletions, ...paths])];
+    this.hold(held);
+    this.bulkNoticeShown = true;
+    context.host.log(
+      `watch decision=held reason=bulk_deletion files=${paths.length} held=${held.length} floor=${BULK_DELETION_MIN}`,
+    );
+    context.host.notify(
+      `obsync: you deleted ${paths.length} notes${within(paths)}. Delete them on your other devices too? ` +
+        "They stay there until you choose.",
+      HELD_ACTIONS,
+    );
+  }
+
+  /** Persist what is held; a hold that cannot be saved stops the engine rather than be forgotten. */
+  private hold(paths: string[]): void {
+    const { state, host } = this.options;
+    state.data.heldDeletions = paths;
+    void this.track(state.save()).catch(() => {
+      this.stop();
+      host.log("reconcile decision=failed reason=state_not_saved");
+    });
   }
 
   /**
@@ -1326,7 +1425,7 @@ export class SyncEngine {
    * (issue #123). Zero whenever the last pass published what it found.
    */
   get heldDeletionCount(): number {
-    return this.heldDeletions.length;
+    return this.options.state.data.heldDeletions.length;
   }
 
   /**
@@ -1342,12 +1441,60 @@ export class SyncEngine {
    * selection, never a deletion (issue #139).
    */
   confirmHeldDeletions(): void {
-    if (!this.running || this.heldDeletions.length === 0) return;
-    const held = this.heldDeletions;
-    this.heldDeletions = [];
+    const held = this.options.state.data.heldDeletions;
+    if (!this.running || held.length === 0) return;
+    this.hold([]);
     this.bulkNoticeShown = false;
-    this.vanish(held);
+    // The folders deleted with them go after them, as they would have.
+    for (const folder of this.heldFolders) this.vanishedFolders.add(folder);
+    this.heldFolders = [];
+    this.vanish(held, true);
     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
+  }
+
+  /**
+   * The user's word that the held deletions were NOT meant for every device
+   * (issue #162): each note is put back HERE, from the version this device
+   * recorded for it (`pull.ts`, `restoreRecorded`). Create-only, so a note
+   * that came back some other way, or a file that took its name, is left
+   * exactly as it is; and the record keeps its version, so nothing is
+   * published and no copy is made anywhere. A note that cannot be put back
+   * now -- the server out of reach -- stays held, to be answered again. One
+   * pull at a time, because this writes as the feed does.
+   */
+  restoreHeldDeletions(): Promise<void> {
+    return this.track(this.exclusive(async () => {
+      const asked = [...this.options.state.data.heldDeletions];
+      if (!this.running || asked.length === 0) return;
+      const context = this.need();
+      const started = context.now();
+      this.heldFolders = [];
+      const done = new Set<string>();
+      let restored = 0;
+      for (const path of asked) {
+        if (!this.running) return;
+        try {
+          if ((await restoreRecorded(context, path)) === "restored") restored++;
+          done.add(path);
+        } catch (error) {
+          context.host.log(
+            `watch decision=failed reason=restore_held error=${error instanceof ApiError ? `http_${error.status}` : error instanceof Error ? error.name : "unknown"}`,
+          );
+        }
+      }
+      this.hold(context.state.data.heldDeletions.filter((path) => !done.has(path)));
+      const left = context.state.data.heldDeletions.length;
+      if (left === 0) this.bulkNoticeShown = false;
+      context.host.log(
+        `watch decision=restored reason=bulk_deletion restored=${restored} held=${left} asked=${asked.length} ` +
+          `duration_ms=${context.now() - started}`,
+      );
+      context.host.notify(
+        `obsync put ${restored} note(s) back on this device, and deleted nothing anywhere.` + (left === 0 ? ""
+          : ` ${left} could not be put back yet and are still held back: try Restore here again once the server can be reached.`),
+        left === 0 ? [] : HELD_ACTIONS,
+      );
+    }));
   }
 
   /** Cancel any debounce this path is still owed. */
@@ -2852,31 +2999,42 @@ export class SyncEngine {
     let removed = 0;
     const scope = context.state.data.syncFolders;
     const tracked = Object.keys(context.state.data.files).filter((path) => inSyncScope(path, scope)).length;
+    //
+    // AND THE HOLD OUTLIVES A RESTART (issue #162): it is persisted, so the
+    // first pass after one finds the user's question still open, holds what
+    // is still missing and asks again -- where a hold forgotten there was
+    // re-derived by share alone, and twenty notes deleted from a vault of a
+    // thousand were published by the next start.
     const still = new Set(missing);
-    const kept = this.heldDeletions.filter((path) => still.has(path));
-    if (kept.length < this.heldDeletions.length) {
+    const held = context.state.data.heldDeletions;
+    const kept = held.filter((path) => still.has(path));
+    if (kept.length < held.length) {
       context.host.log(
-        `${label} decision=released reason=bulk_deletion released=${this.heldDeletions.length - kept.length} held=${kept.length}`,
+        `${label} decision=released reason=bulk_deletion released=${held.length - kept.length} held=${kept.length}`,
       );
-      this.heldDeletions = kept;
+      this.hold(kept);
     }
     if (tombstones && (kept.length > 0 || (missing.length >= BULK_DELETION_MIN && missing.length * 2 > tracked))) {
-      this.heldDeletions = missing;
+      this.hold(missing);
       context.host.log(
         `${label} decision=refused reason=bulk_deletion candidates=${missing.length} tracked=${tracked} pending=${kept.length}`,
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
         context.host.notify(
-          `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
-            `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
-            "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
-            "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
-            "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
+          kept.length > 0
+            ? `obsync is still holding back ${missing.length} deletions${within(missing)} from your other devices. ` +
+                "Delete them there too?"
+            : `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
+              `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
+              "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
+              "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
+              "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
+          HELD_ACTIONS,
         );
       }
     } else if (tombstones) {
-      this.heldDeletions = [];
+      if (held.length > 0) this.hold([]);
       this.bulkNoticeShown = false;
       for (const from of missing) {
         this.deletions.add(from);
@@ -3246,7 +3404,8 @@ export class SyncEngine {
   async syncNow(): Promise<number> {
     const started = this.nowFn();
     const joined = this.draining;
-    const pending = this.heldDeletions.length > 0;
+    const held = (): number => this.options.state.data.heldDeletions.length;
+    const pending = held() > 0;
     // A paused note first, so what it holds is in the pass below (issue #179).
     await this.resume();
     // An explicit repair command verifies content even when a fixed-width
@@ -3254,10 +3413,11 @@ export class SyncEngine {
     await this.reconcile(true);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
-    if (pending && this.heldDeletions.length > 0) {
+    if (pending && held() > 0) {
       this.options.host.notify(
-        `obsync is still holding back ${this.heldDeletions.length} deletions: Sync now does not send them. Put ` +
+        `obsync is still holding back ${held()} deletions: Sync now does not send them. Put ` +
           "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
+        HELD_ACTIONS,
       );
     }
     const queued = this.queue.length;

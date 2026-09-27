@@ -143,7 +143,8 @@ native observations from automated coverage.
    have more history after it: select **Load next** again.
 3. Select **Restore a copy** beside the version you want. obsync creates a
    copy with a new, unique name beside the original, inside the folders this
-   device syncs. A deletion entry has no content to restore.
+   device syncs. A deletion entry has no content to restore; a deleted
+   note's saved versions are listed before its deletion entry.
 
    ![The Restore from history dialog listing three versions of a note, newest first, each with Restore a copy](assets/restore-from-history.png)
 

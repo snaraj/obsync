@@ -63,6 +63,14 @@ const raised = [];
 class NoticeEl {
   constructor(parent = null) { this.handlers = {}; this.parent = parent; }
   addEventListener(type, handler) { (this.handlers[type] ??= []).push(handler); }
+  /** Obsidian's element helper, for the buttons a notice that asks something carries. */
+  createEl(tag, options = {}) {
+    const el = new NoticeEl(this);
+    el.tag = tag;
+    el.text = options.text;
+    (this.children ??= []).push(el);
+    return el;
+  }
   /** A click on an element runs its listeners, then its ancestors', as the DOM does. */
   dispatch(type) { for (let el = this; el !== null; el = el.parent) for (const handler of el.handlers[type] ?? []) handler(); }
 }
@@ -71,8 +79,9 @@ class NoticeEl {
 // of \`messageEl\`, the text element inside it. A fake that made them one element
 // would hide the difference between a tap on the text and a tap on the padding.
 class Notice {
-  constructor(message) {
+  constructor(message, duration) {
     this.message = message;
+    this.duration = duration;
     this.containerEl = new NoticeEl();
     this.noticeEl = this.messageEl = new NoticeEl(this.containerEl);
     this.hidden = false;
@@ -173,6 +182,8 @@ export class FakeHost {
     this.explicitFolders = new Set();
     this.logs = [];
     this.notices = [];
+    /** The notices that asked something, with their buttons (`notify`). */
+    this.asked = [];
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
@@ -517,8 +528,14 @@ export class FakeHost {
     return this.editors.get(path) === this.text(path) ? "saved" : "unsaved";
   }
 
-  notify(message) {
+  /**
+   * What the user was told, and -- for a notice that asks something -- the
+   * buttons it offered (`VaultHost.notify`), so a test can see the question
+   * and press an answer by what it names.
+   */
+  notify(message, actions = []) {
     this.notices.push(message);
+    if (actions.length > 0) this.asked.push({ message, actions });
   }
 
   log(line) {

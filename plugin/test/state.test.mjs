@@ -90,6 +90,18 @@ test("a remembered waiting name survives a load only when it is a vault path", (
   assert.equal("name" in data.files["Notes/Plain.md"], false);
 });
 
+/**
+ * A held deletion (issue #162) is a question the next start asks again, so
+ * it is read back -- and as input: a name that is not a vault path, or not a
+ * string, is dropped, and a missing field is no hold at all.
+ */
+test("held deletions survive a load, and only as vault paths", () => {
+  const data = parseData({ heldDeletions: ["Notes/a.md", "../outside.md", 7, "Notes/a.md", ".obsidian/x.md", "Notes/b.md"] }, false);
+  assert.deepEqual(data.heldDeletions, ["Notes/a.md", "Notes/b.md"]);
+  assert.deepEqual(parseData({ heldDeletions: "Notes/a.md" }, false).heldDeletions, []);
+  assert.deepEqual(parseData({}, false).heldDeletions, []);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -212,6 +224,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
     // And a paused note (#179), which names a file id on that server too.
     paused: { f6: { path: "Notes/stamped.md" } },
+    // And a held deletion (#162), a question about records being dropped.
+    heldDeletions: ["Notes/a.md"],
     // And the feed mark and the graves (#145), which name entries and
     // versions on the server being left: a mark kept for the next server
     // would read its journal as a restored one.
@@ -227,7 +241,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, feedMark: null, graves: {},
+      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     },
   );

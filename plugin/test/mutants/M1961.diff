@@ -1,0 +1,12 @@
+# M1961: Restore here never releases what it put back
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1299,7 +1299,7 @@
+           );
+         }
+       }
+-      this.hold(context.state.data.heldDeletions.filter((path) => !done.has(path)));
++      this.hold(context.state.data.heldDeletions.filter((path) => !done.has(path) || true));
+       const left = context.state.data.heldDeletions.length;
+       if (left === 0) this.bulkNoticeShown = false;
+       context.host.log(

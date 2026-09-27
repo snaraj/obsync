@@ -239,10 +239,16 @@ export class HistoryBrowser {
     );
     let error: string | undefined;
     try {
+      // A DELETION MARKER IS NOT WHAT A SEARCH IS FOR (issue #162). A note
+      // deleted with many others has its marker in the newest window and its
+      // content windows further down, so the search stopped at a row whose
+      // Restore is disabled. It runs on until it holds a version it can
+      // restore, and lists those first.
       do {
         if (this.newestFirst) await this.stepDown(filter, entries, counts);
         else await this.stepUp(filter, entries, counts);
-      } while (entries.length === 0 && !this.done && budget > 0 && this.now() - started < budget);
+      } while (entries.every((entry) => entry.deleted) && !this.done && budget > 0 && this.now() - started < budget);
+      entries.sort((a, b) => Number(a.deleted) - Number(b.deleted));
     } catch (failure) {
       this.operation.check();
       // A later read failure must not hide rows whose cursor already moved.

@@ -16,7 +16,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { formatBytes } from "../policy";
-import { remoteOnlyList, unwritableText } from "../sync/pull";
+import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PHRASE_WORDS,
   decodePairingCode,
@@ -878,6 +878,13 @@ export class StatusModal extends Modal {
   }
 }
 
+/** What each kind of "Remote only" entry is, in the order the view shows them. */
+export const REMOTE_ONLY_HEADINGS: [RemoteOnlyKind, string][] = [
+  ["older", "On this device in an older version: the newer one on the server was not downloaded. Fetch it to replace the copy here."],
+  ["limit", "Not on this device, because they are larger than this device allows. Fetch one when you need it."],
+  ["available", "Not on this device yet, and within this device's limits now. Fetch one to bring it here."],
+];
+
 /** Files this device declined to hold, with a per-file "Fetch" that overrides the ceiling. */
 export class RemoteOnlyModal extends Modal {
   constructor(
@@ -908,26 +915,29 @@ export class RemoteOnlyModal extends Modal {
       this.contentEl.createEl("p", { text: "Every file in this vault is on this device." });
       return;
     }
-    this.contentEl.createEl("p", {
-      text: "These files are in the vault but not on this device, because they are larger than this device allows. Fetch one when you need it.",
-    });
-    for (const entry of entries) {
-      new Setting(this.contentEl)
-        .setName(entry.path)
-        .setDesc(`${formatBytes(entry.size)} — ${entry.why}`)
-        .addButton((button) =>
-          button.setButtonText("Fetch").onClick(() => {
-            void (async () => {
-              try {
-                await this.plugin.fetchRemoteOnly(entry.fileId);
-                new Notice(`Fetched ${entry.path}.`);
-                this.render();
-              } catch (error) {
-                fail(error);
-              }
-            })();
-          }),
-        );
+    // One heading per reason, above only the entries it is true of (issue #161).
+    for (const [kind, heading] of REMOTE_ONLY_HEADINGS) {
+      const group = entries.filter((entry) => entry.kind === kind);
+      if (group.length === 0) continue;
+      this.contentEl.createEl("p", { text: heading });
+      for (const entry of group) {
+        new Setting(this.contentEl)
+          .setName(entry.path)
+          .setDesc(`${formatBytes(entry.size)} — ${entry.why}`)
+          .addButton((button) =>
+            button.setButtonText("Fetch").onClick(() => {
+              void (async () => {
+                try {
+                  await this.plugin.fetchRemoteOnly(entry.fileId);
+                  new Notice(`Fetched ${entry.path}.`);
+                  this.render();
+                } catch (error) {
+                  fail(error);
+                }
+              })();
+            }),
+          );
+      }
     }
   }
 }

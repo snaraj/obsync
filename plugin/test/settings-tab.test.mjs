@@ -62,6 +62,7 @@ function stubPlugin(overrides = {}) {
     updateLine: () => null,
     heldDeletionLine: () => null,
     confirmHeldDeletions: () => { calls.push("confirmHeldDeletions"); },
+    restoreHeldDeletions: async () => { calls.push("restoreHeldDeletions"); },
     deviceName: () => "macos-1a2b",
     platformName: () => "macos",
     listDevices: async () => { calls.push("listDevices"); return []; },
@@ -194,25 +195,29 @@ test("the update row carries the button that opens Obsidian's Community plugins 
   assert.deepEqual(s.calls, ["openPluginManager"]);
 });
 
-test("the held-deletions row is absent until a pass holds some, and its button confirms them", (t) => {
+test("the held-deletions row is absent until a pass holds some, and offers both answers", (t) => {
   // The row is a question the user should never be asked idly: a settings
-  // page that always offers "Confirm deletions" teaches the click, and the
-  // click removes notes from every device (issue #123).
+  // page that always offers "Delete everywhere" teaches the click, and the
+  // click removes notes from every device (issue #123). Its other answer puts
+  // the notes back here (issue #162).
   const s = open(t);
   const shown = () => s.row("Deletions held back").visible();
   assert.equal(shown(), false, "the row was offered with nothing to decide");
 
-  s.plugin.heldDeletionLine = () => "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.";
+  s.plugin.heldDeletionLine = () => "7 note(s) deleted or missing here are still on your other devices: obsync has NOT told them.";
   assert.equal(shown(), true, "the row is hidden while there is something to decide");
   assert.equal(s.row("Deletions held back").desc,
-    "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.");
+    "7 note(s) deleted or missing here are still on your other devices: obsync has NOT told them.");
   const { made } = s.render("Deletions held back");
-  const button = s.button(made, "Confirm deletions");
-  assert.equal(button.destructive, true, "confirming removes notes from every device");
+  const everywhere = s.button(made, "Delete everywhere");
+  const here = s.button(made, "Restore here");
+  assert.equal(everywhere.destructive, true, "confirming removes notes from every device");
+  assert.notEqual(here.destructive, true, "putting notes back is not the destructive answer");
 
   assert.equal(s.calls.length, 0, "drawing the row published nothing");
-  button.click();
-  assert.deepEqual(s.calls, ["confirmHeldDeletions"]);
+  here.click();
+  everywhere.click();
+  assert.deepEqual(s.calls, ["restoreHeldDeletions", "confirmHeldDeletions"]);
 });
 
 test("a bare host name becomes an https URL; an explicit scheme is kept; mobile refuses http", (t) => {

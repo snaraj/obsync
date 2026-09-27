@@ -276,6 +276,32 @@ test("the fallback never replaces a file that took the name, and leaves no parti
   assert.deepEqual(readdirSync(join(torn.root, "Notes")), [], "a partial copy or the temp was left behind");
 });
 
+test("a notice that asks something carries one button per answer, stays up, and a press answers it", (t) => {
+  // Issues #161 and #162: the sync layer names the answers, the host draws
+  // them. A statement still goes after ten seconds.
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true }));
+  const obsidian = box.require("obsidian");
+  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const pressed = [];
+  const h = new ObsidianHost({ state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) }, null);
+  const raised = obsidian.raised.length;
+
+  h.notify("STATEMENT SENTINEL");
+  h.notify("QUESTION SENTINEL", [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }]);
+
+  const [statement, question] = obsidian.raised.slice(raised);
+  assert.equal(statement.messageEl.children, undefined, "a statement grew buttons");
+  assert.equal(statement.duration, 10000);
+  assert.equal(question.duration, 0, "a question went away before it was answered");
+  const buttons = question.messageEl.children;
+  assert.deepEqual(buttons.map((button) => `${button.tag}:${button.text}`), ["button:Delete everywhere", "button:Restore here", "button:Fetch"]);
+  assert.equal(pressed.length, 0, "drawing the question answered it");
+  buttons[1].dispatch("click");
+  assert.deepEqual(pressed, [{ kind: "restore_here" }]);
+  assert.equal(question.hidden, true, "the answered question stayed up");
+});
+
 test("a name already taken is not a volume without links: EEXIST never falls back", async (t) => {
   let opened = 0;
   const r = host(t, { wrap: (p) => ({ ...p,

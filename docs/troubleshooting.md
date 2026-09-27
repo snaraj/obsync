@@ -738,6 +738,20 @@ but nothing was wrong with it: the connection was simply too slow, and from
 3. If it still does not arrive, move the phone to Wi-Fi or a stronger
    connection.
 
+## Notes I deleted are still on my other devices
+
+**Symptom.** You deleted five or more notes at once, or a folder, and a notice
+asks "Delete them on your other devices too?". The notes are still on your
+other devices.
+
+**Cause.** obsync holds a bulk deletion until you answer, so a folder deleted
+by mistake is never deleted everywhere at once. The question survives a
+restart; smaller deletions go at once.
+
+**Fix.** Choose **Delete everywhere** to delete them on every device, or
+**Restore here** to put them back on this device. Both answers are also under
+Settings, obsync, **Deletions held back**.
+
 ## A conflict copy appeared
 
 That is obsync refusing to throw away an edit, not a failure. See

@@ -1,0 +1,11 @@
+# M1965: an older copy is trashed without a word when a newer version is above the ceiling
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1567,6 +1567,7 @@
+     let local = "none";
+     if (localPath !== undefined && (await context.host.stat(localPath)) !== null) {
+       local = `kept_${(await competing(context, localPath, change.file_id)) ?? "older"}`;
++      if (local === "kept_older") { context.trashed.add(localPath); await context.host.trash(localPath); context.state.forgetPath(localPath); local = "trashed"; context.refused.add(`older\u0000${change.file_id}`); }
+       const told = `older\u0000${change.file_id}`;
+       if (!context.refused.has(told)) {
+         context.refused.add(told);

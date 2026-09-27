@@ -103,7 +103,7 @@ import { ApiError, ChangeRecord, FileRecord, ReadControl, Transport } from "../t
 // The per-path record this device keeps, named apart from the SERVER's file
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
-import { admissionReason, admit } from "../policy";
+import { admissionReason, admit, formatBytes } from "../policy";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import {
   assertFolderScope,
@@ -1556,29 +1556,31 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
 
   if (local && local.versionId === change.version_id) return "skipped";
 
-  const admission = admit(context.state.data.policy, context.state.localBytes(), manifest.size);
+  const policy = context.state.data.policy;
+  const admission = admit(policy, context.state.localBytes(), manifest.size);
   if (!admission.ok) {
     const started = context.now();
-    // AN OLDER LOCAL COPY IS NOT A SECOND TRUTH (issue #100). The file's
-    // current version is one this device will not hold, so any copy still on
-    // disk is behind it with nothing on screen saying so: the file explorer
-    // lists a file that looks synced while "Show remote-only files" lists the
-    // same path as absent, and one touch of that copy publishes a version
-    // whose parent is not the latest -- which is a conflict copy of stale
-    // content on every other device. Remote-only means remote-only, and Fetch
-    // is the way back. The one copy that is NOT this decision's to remove is
-    // one holding bytes this device never pushed, because no version holds
-    // them (`competing`, issue #98); that copy stays and its queued push
-    // carries it.
+    // EXCLUDING NEVER DELETES (issue #161). A version this device will not
+    // hold says nothing about the copy it already has: the user fetched it on
+    // purpose, or it arrived while it was small enough. Issue #100 moved that
+    // copy to the trash so no stale file looked synced -- without a word,
+    // taking a file the user had asked for by name. The copy now stays,
+    // with its record, and it is named as what it is instead: older than the
+    // server's, in "Show remote-only files" and in one notice offering Fetch.
+    // A copy holding bytes this device never pushed stays as it always did,
+    // and its queued push carries them (`competing`, issue #98).
     let local = "none";
     if (localPath !== undefined && (await context.host.stat(localPath)) !== null) {
-      const held = await competing(context, localPath, change.file_id);
-      if (held !== null) local = `kept_${held}`;
-      else {
-        context.trashed.add(localPath);
-        await context.host.trash(localPath);
-        context.state.forgetPath(localPath);
-        local = "trashed";
+      local = `kept_${(await competing(context, localPath, change.file_id)) ?? "older"}`;
+      const told = `older\u0000${change.file_id}`;
+      if (!context.refused.has(told)) {
+        context.refused.add(told);
+        context.host.notify(
+          `obsync did not download the newer version of ${manifest.path} (${formatBytes(manifest.size)}): it is ` +
+            `${admissionReason(policy, admission.reason)}. This device keeps its older copy. Fetch the newer one ` +
+            "when you need it, here or under Show remote-only files.",
+          [{ kind: "fetch", fileId: change.file_id }],
+        );
       }
     }
     context.state.data.remoteOnly[change.file_id] = { path: manifest.path, size: manifest.size };
@@ -1888,9 +1890,17 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
 /**
  * Download a file this device previously declined, ignoring the ceiling
  * because the user asked for this one by name.
+ *
+ * AN OLDER COPY HERE IS REPLACED ONLY AS IT WAS RECORDED (issue #161). Kept
+ * when the newer version was declined, it can have been edited since, and
+ * those bytes are on no server: such a copy is refused, not written over. A
+ * copy the other device renamed is moved to the new name first, by the same
+ * refusing rename the feed uses, so it is replaced where it stands and never
+ * left behind as a second file. Any other file at the name is refused too.
  */
 export async function fetchRemoteOnly(context: SyncContext, fileId: string): Promise<string> {
-  const remembered = context.state.pathByFileId(fileId) ?? context.state.data.remoteOnly[fileId]?.path;
+  let localPath = context.state.pathByFileId(fileId);
+  const remembered = localPath ?? context.state.data.remoteOnly[fileId]?.path;
   if (remembered !== undefined) assertSyncPath(remembered, context.state.data.syncFolders);
   const file = await context.transport.getFile(fileId);
   const head = file.versions.find((version) => version.version_id === (file.heads[0] ?? ""));
@@ -1903,7 +1913,32 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
     file_id: fileId,
     domain_id: file.domain_id,
   });
-  const written = await materialise(context, manifest);
+  const present = localPath !== undefined && (await context.host.stat(localPath)) !== null;
+  if (present && (await competing(context, localPath as string, fileId)) !== null) {
+    throw new Error(`${localPath} has changes on this device that are not on the server yet, so obsync did not replace it. Let it sync, then fetch again.`);
+  }
+  if (present && localPath !== manifest.path) {
+    const echo = `${localPath}\u0000${manifest.path}`;
+    context.moved.add(echo);
+    const outcome = await context.host.move(localPath as string, manifest.path).catch((error: unknown) => {
+      context.moved.delete(echo);
+      throw error;
+    });
+    if (outcome !== "moved") {
+      context.moved.delete(echo);
+      throw new Error(`Another file is already at ${manifest.path}, so obsync did not replace it. Move it, then fetch again.`);
+    }
+    context.state.setFile(manifest.path, context.state.fileByPath(localPath as string) as FileState);
+    context.state.forgetPath(localPath as string);
+    localPath = manifest.path;
+  } else if (!present && (await context.host.stat(manifest.path)) !== null) {
+    throw new Error(`Another file is already at ${manifest.path}, so obsync did not replace it. Move it, then fetch again.`);
+  }
+  const over = present ? context.state.fileByPath(manifest.path) : undefined;
+  const written = await materialise(context, manifest, over);
+  if (written === null) throw new Error(`${manifest.path} changed while the newer version downloaded, so obsync did not replace it. Fetch again.`);
+  if (localPath !== undefined && localPath !== written.path) context.state.forgetPath(localPath);
+  context.refused.delete(`older\u0000${fileId}`);
   const stat = await context.host.stat(written.path);
   // The vault's own spelling of what was written, exactly as every other
   // record this device writes for a file it materialised (`landedAt`).
@@ -1918,6 +1953,43 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
   await context.state.save();
   context.host.log(`pull path_class=file bytes=${manifest.size} decision=fetched_on_demand`);
   return written.path;
+}
+
+/**
+ * Put a note deleted here back at its own name, as the version this device
+ * recorded for it: Restore here, for a deletion held back from the other
+ * devices (issue #162).
+ *
+ * NOTHING IS REPLACED AND NOTHING IS PUBLISHED. The write is create-only, so a
+ * note that came back some other way -- or any file that took the name -- is
+ * left exactly as it is, and answers `present`. The record keeps its file id
+ * and version and takes the stat of what landed, so the watcher's event is the
+ * echo it is and no push, copy or version follows. Above this device's
+ * per-file ceiling the note is not downloaded -- on a phone that is a
+ * whole-file buffer -- and the caller keeps it held.
+ */
+export async function restoreRecorded(context: SyncContext, path: string): Promise<"restored" | "present"> {
+  const record = context.state.fileByPath(path);
+  if (record === undefined || (await context.host.stat(path)) !== null) return "present";
+  assertSyncPath(path, context.state.data.syncFolders);
+  const file = await context.transport.getFile(record.fileId);
+  const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
+  if (version === undefined) throw new Error("restore: the recorded version is not on the server");
+  const manifest = await decryptRecordManifest(context, { ...version, file_id: record.fileId, domain_id: file.domain_id });
+  if (manifest.deleted) throw new Error("restore: the recorded version is a deletion");
+  if (!admit({ ...context.state.data.policy, totalBudgetBytes: 0 }, 0, manifest.size).ok) {
+    throw new Error("restore: above this device's per-file ceiling");
+  }
+  const landed = await createOnly(context, { ...manifest, path });
+  if (landed === null) return "present";
+  // Only over the record it read: the feed may have moved it meanwhile (#149).
+  if (context.state.fileByPath(path) === record) {
+    context.state.setFile(landed.path, { ...record, mtime: landed.mtime, size: landed.size });
+    if (landed.path !== path) context.state.forgetPath(path);
+    await context.state.save();
+  }
+  context.host.log(`pull path_class=file bytes=${manifest.size} decision=restored reason=held_deletion file=${record.fileId}`);
+  return "restored";
 }
 
 /** A version graph, as `GET /v1/files/{id}` renders it. */
@@ -4089,16 +4161,25 @@ async function postMerged(
  * list is what the user sees and what a fetch acts on, and a data file is
  * editable by anything that can reach the vault.
  */
-export function remoteOnlyList(context: SyncContext): { fileId: string; path: string; size: number; why: string }[] {
+export function remoteOnlyList(context: SyncContext): { fileId: string; path: string; size: number; kind: RemoteOnlyKind; why: string }[] {
   const policy = context.state.data.policy;
   const listable = Object.entries(context.state.data.remoteOnly).filter(([, record]) => inSyncScope(record.path, context.state.data.syncFolders));
   return listable.map(([fileId, record]) => {
     const admission = admit(policy, context.state.localBytes(), record.size);
+    // EACH ENTRY SAYS ITS OWN REASON (issue #161): an older copy is here, the
+    // file is above a ceiling, or it no longer is -- ceilings set to 0 leave
+    // entries that fit, and those are not "larger than this device allows".
+    const kind: RemoteOnlyKind = context.state.pathByFileId(fileId) !== undefined ? "older" : admission.ok ? "available" : "limit";
     return {
       fileId,
       path: record.path,
       size: record.size,
-      why: admission.ok ? "available" : admissionReason(policy, admission.reason),
+      kind,
+      why: kind === "older" ? "a newer version is on the server"
+        : admission.ok ? "available" : admissionReason(policy, admission.reason),
     };
   });
 }
+
+/** Why a file is in the "Remote only" view; the view heads each kind with its own sentence. */
+export type RemoteOnlyKind = "older" | "limit" | "available";

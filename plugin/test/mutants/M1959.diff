@@ -1,7 +1,7 @@
-# M219: one Finder move is decided several times over, one decision line per deleted note
+# M1959: a burst is never re-armed, so a slow multi-select splits under the floor
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -875,10 +875,6 @@
+@@ -875,10 +875,7 @@
        this.vanished.add(path);
        if (confirmed) this.confirmedDeletions.add(path);
      }
@@ -9,6 +9,7 @@
 -      if (now - this.burstStarted >= BULK_WINDOW_MS) return;
 -      this.timers.clear(this.vanishHandle);
 -    }
++    if (this.vanishHandle !== null) return;
      this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
    }
  

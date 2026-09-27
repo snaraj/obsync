@@ -70,7 +70,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, lostMessage } from "./transport";
-import { EngineStatus, MoveResult, NOT_ANSWERING, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
@@ -121,6 +121,13 @@ const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
  * is not among them: it is the name being taken, the refusal `link` is for.
  */
 const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
+
+/** The words on a notice's buttons (`VaultHost.notify`). */
+const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
+  delete_everywhere: "Delete everywhere",
+  restore_here: "Restore here",
+  fetch: "Fetch",
+};
 
 /**
  * What makes a folder a vault that syncs with this plugin (issue #180):
@@ -1930,8 +1937,22 @@ export class ObsidianHost implements VaultHost {
     }
   }
 
-  notify(message: string): void {
-    new Notice(message, 10000);
+  /**
+   * A statement goes after ten seconds; a notice that asks something stays
+   * until it is answered or dismissed, with one button per action (issues
+   * #161, #162). The same decision stays reachable afterwards -- Settings,
+   * "Deletions held back", and Show remote-only files -- so a dismissed
+   * notice loses nothing.
+   */
+  notify(message: string, actions: NoticeAction[] = []): void {
+    const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
+    for (const action of actions) {
+      const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
+      button.addEventListener("click", () => {
+        notice.hide();
+        this.plugin.act(action);
+      });
+    }
   }
 
   log(line: string): void {
@@ -3265,14 +3286,31 @@ export default class ObsyncPlugin extends Plugin {
   heldDeletionLine(): string | null {
     const held = this.engine?.heldDeletionCount ?? 0;
     if (held === 0) return null;
-    return `obsync can no longer see ${held} note(s) it syncs here and has NOT told your other devices. ` +
+    return `${held} note(s) deleted or missing here are still on your other devices: obsync has NOT told them. ` +
       "If a folder was renamed or moved outside Obsidian, put it back or select it under its new name. " +
-      "Confirm only if you really deleted them: this removes them from every device.";
+      "Delete everywhere removes them from every device; Restore here puts them back on this one.";
   }
 
   /** The user's word that the held deletions were real (issue #123). */
   confirmHeldDeletions(): void {
     this.engine?.confirmHeldDeletions();
+  }
+
+  /** The user's word that they were not: put them back here, from the server (issue #162). */
+  async restoreHeldDeletions(): Promise<void> {
+    await this.engine?.restoreHeldDeletions();
+  }
+
+  /** A notice's button, pressed (`ObsidianHost.notify`). */
+  act(action: NoticeAction): void {
+    if (action.kind === "delete_everywhere") this.confirmHeldDeletions();
+    else if (action.kind === "restore_here") void this.restoreHeldDeletions();
+    else {
+      void this.fetchRemoteOnly(action.fileId).then(
+        (path) => new Notice(`Fetched ${path}.`),
+        (error: unknown) => new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 10000),
+      );
+    }
   }
 
   /** The settings tab's update line, or `null` when this device is current. */

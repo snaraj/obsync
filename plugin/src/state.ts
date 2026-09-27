@@ -199,6 +199,14 @@ export interface ObsyncData {
    * restart must not start the bounce again unasked.
    */
   paused: Record<string, { path: string; remote?: true }>;
+  /**
+   * Deletions held back from the other devices until the user answers: many
+   * notes deleted at once here (issue #162), or a pass that could no longer
+   * see them (issue #123). Their records stay in `files`, which is what Restore
+   * here reads; persisted because the question outlives a restart, and a
+   * restart that forgot it published what the user was still being asked.
+   */
+  heldDeletions: string[];
   /** The last feed entry processed, `null` until the first (issue #145). */
   feedMark: FeedMark | null;
   /** File id to the tombstone this device published or applied for it. */
@@ -231,6 +239,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     folderBarriers: [],
     parked: {},
     paused: {},
+    heldDeletions: [],
     feedMark: null,
     graves: {},
     policy: defaultPolicy(isMobile),
@@ -379,6 +388,15 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
     for (const path of barriers as unknown[]) {
       if (!isVaultPath(path) || data.folderBarriers.includes(path)) continue;
       data.folderBarriers.push(path);
+    }
+  }
+  // A held path is only ever a question: dropped here, the note's deletion is
+  // asked again by the next pass that finds it gone, never published unasked.
+  const held = loaded["heldDeletions"];
+  if (Array.isArray(held)) {
+    for (const path of held as unknown[]) {
+      if (!isVaultPath(path) || data.heldDeletions.includes(path)) continue;
+      data.heldDeletions.push(path);
     }
   }
   const parked = loaded["parked"];
@@ -663,6 +681,7 @@ export class State {
     // restored one.
     this.data.parked = {};
     this.data.paused = {};
+    this.data.heldDeletions = [];
     this.data.feedMark = null;
     this.data.graves = {};
     this.data.remoteOnly = {};
