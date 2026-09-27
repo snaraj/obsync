@@ -64,6 +64,15 @@ written, migrated and recovered is in
 Obsidian's own [storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 describes the storage itself.
 
+**On Linux**, that storage is only as strong as your desktop's keyring, such as
+GNOME Keyring or KWallet. Without one, as on a minimal window manager or in a
+container, Obsidian still accepts and keeps the keys (seen with Obsidian
+1.13.7), and nothing warns you. They are then protected only by your home
+folder's permissions. Obsidian does not tell plugins which storage it uses, so
+obsync cannot warn you either:
+[On Linux, the keys may not be in a keyring](troubleshooting.md#on-linux-the-keys-may-not-be-in-a-keyring)
+says what to do.
+
 If secret storage is unavailable or cannot be verified, sync stops with an
 error, and nothing is sent or changed. Then:
 
