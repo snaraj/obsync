@@ -28,16 +28,42 @@ deny() {
 
 : "${OBSYNC_E2E_KEYRING_PASSWORD:?the keyring password file is not set}"
 [ "$#" -ge 1 ] || deny 'no Obsidian binary to start'
+# A runtime directory for this start alone, made BEFORE the bus: the daemon's
+# control socket lives there, and the bus hands its environment to whatever it
+# starts. A keyring daemon the bus starts on demand then finds the one this
+# script started and hands over to it; given another directory it found none,
+# became a rival, and read login.keyring while the first was still writing it
+# ("keyring was in an invalid or unrecognized format"). One left by the last
+# start must not answer for this one either.
 if [ -z "${OBSYNC_E2E_SESSION_BUS:-}" ]; then
+  XDG_RUNTIME_DIR="$(mktemp -d "${HOME}/.runtime.XXXXXX")"
+  export XDG_RUNTIME_DIR
   exec dbus-run-session -- env OBSYNC_E2E_SESSION_BUS=1 "$0" "$@"
 fi
 
-# A runtime directory for this start alone: the daemon's control socket lives
-# there, and one left by the last start must not answer for this one.
-XDG_RUNTIME_DIR="$(mktemp -d "${HOME}/.runtime.XXXXXX")"
-export XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP=GNOME
+export XDG_CURRENT_DESKTOP=GNOME
 gnome-keyring-daemon --unlock --components=secrets <"${OBSYNC_E2E_KEYRING_PASSWORD}" >/dev/null \
   || deny 'GNOME Keyring would not start and unlock a login keyring'
+# Nothing asks the Secret Service anything until the daemon above owns its
+# name on this bus: the question goes to the bus itself (NameHasOwner), which
+# starts nothing. Bounded and logged.
+readonly READY_BUDGET_MS=10000
+owned() {
+  case "$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null || true)" in
+    *'boolean true'*) return 0 ;;
+  esac
+  return 1
+}
+since="$(date +%s%N)"
+until owned; do
+  waited=$((($(date +%s%N) - since) / 1000000))
+  [ "${waited}" -lt "${READY_BUDGET_MS}" ] \
+    || deny "GNOME Keyring did not own org.freedesktop.secrets on its bus within ${READY_BUDGET_MS}ms"
+  sleep 0.05
+done
+printf 'obsidian-session: the keyring owned org.freedesktop.secrets %dms after unlocking (budget %dms)\n' \
+  "$((($(date +%s%N) - since) / 1000000))" "${READY_BUDGET_MS}" >&2
 secrets() {
   dbus-send --session --print-reply --dest=org.freedesktop.secrets "$@" 2>&1 || true
 }
