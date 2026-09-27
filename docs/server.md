@@ -40,7 +40,7 @@ for a new host, or put the bare server behind the HTTPS reverse proxy you
 already operate. A VPN supplies a route to that endpoint; it does not remove
 the plugin's HTTPS requirement. With your own proxy, use `OBSYNC_EDGE=none`
 and trust forwarded addresses only from that proxy's actual network. Leave
-**Edge service-token headers** empty unless your chosen front end requires them.
+**Custom request headers** empty unless your chosen front end requires them.
 
 The server does not provision your DNS, VPN, router, certificate or firewall.
 Choose those independently. Keep its plain-HTTP port private to the trusted

@@ -319,7 +319,7 @@ test("a header pasted from a command line or wrapped in quotes is unwrapped, sav
   ]) {
     const s = open(t);
     s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
-    const area = s.render("Edge service-token headers").made.find((c) => c.kind === "textarea");
+    const area = s.render("Custom request headers").made.find((c) => c.kind === "textarea");
     assert.equal(area.value, "X-Before: kept");
     // Key by key; emptying the box is one change to "".
     for (let i = Math.min(1, typed.length); i <= typed.length; i++) area.change(typed.slice(0, i));
@@ -328,7 +328,7 @@ test("a header pasted from a command line or wrapped in quotes is unwrapped, sav
     for (const fn of area.inputEl.listeners.change) fn();
     assert.deepEqual(s.plugin.state.data.edgeHeaders, headers, typed);
     assert.deepEqual(s.calls, ["state.save"], "saved once, when the field is left");
-    assert.deepEqual(s.obsidian.notices, told === null ? [] : [`Edge service-token headers saved. ${told}`], typed);
+    assert.deepEqual(s.obsidian.notices, told === null ? [] : [`Custom request headers saved. ${told}`], typed);
     assert.equal(area.value, headers.map((h) => `${h.name}: ${h.value}`).join("\n"), "the field shows what is kept");
     assert.ok(s.plugin.logs.includes(`edge decision=kept headers=${headers.length} trimmed=${told === null ? 0 : 1}`), s.plugin.logs.join("\n"));
   }
@@ -355,9 +355,9 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
   ]) {
     const s = open(t);
     s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
-    const area = s.render("Edge service-token headers").made.find((c) => c.kind === "textarea");
+    const area = s.render("Custom request headers").made.find((c) => c.kind === "textarea");
     area.commit(typed);
-    assert.deepEqual(s.obsidian.notices, [`Edge service-token headers were not saved: ${refusal}`], typed);
+    assert.deepEqual(s.obsidian.notices, [`Custom request headers were not saved: ${refusal}`], typed);
     assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }], typed);
     assert.deepEqual(s.calls, [], "a refusal saves nothing");
     assert.ok(s.plugin.logs.includes(`edge decision=refused reason=${reason}`), s.plugin.logs.join("\n"));
@@ -366,16 +366,16 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
 
 test("edge headers typed and left behind are adopted when Settings closes, and a refused draft is not kept (#183)", (t) => {
   const s = open(t);
-  s.render("Edge service-token headers").made.find((c) => c.kind === "textarea").change("-H 'X-Id: abc'");
+  s.render("Custom request headers").made.find((c) => c.kind === "textarea").change("-H 'X-Id: abc'");
   s.tab.hide();
   assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Id", value: "abc" }]);
   assert.deepEqual(s.calls, ["state.save"]);
-  s.render("Edge service-token headers").made.find((c) => c.kind === "textarea").change("X-Id: “abc”");
+  s.render("Custom request headers").made.find((c) => c.kind === "textarea").change("X-Id: “abc”");
   s.tab.hide();
   assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Id", value: "abc" }]);
   s.tab.hide();
   assert.deepEqual(s.calls, ["state.save"], "a field nobody typed into adopts nothing");
-  assert.equal(s.render("Edge service-token headers").made.find((c) => c.kind === "textarea").value, "X-Id: abc");
+  assert.equal(s.render("Custom request headers").made.find((c) => c.kind === "textarea").value, "X-Id: abc");
 });
 
 test("Check asks the server without a credential before setup, and says to type an address first", async (t) => {
@@ -570,7 +570,7 @@ test("every code or secret field in Settings keeps the phone keyboard from capit
   const s = open(t);
   const field = (row, kind) => s.render(row).made.find((c) => c.kind === kind);
   assert.deepEqual(field("Server URL", "text").inputEl.attributes, { ...LITERAL, inputmode: "url" });
-  for (const [row, kind] of [["Setup or recover", "text"], ["Edge service-token headers", "textarea"], ["Selected folders", "textarea"]]) {
+  for (const [row, kind] of [["Setup or recover", "text"], ["Custom request headers", "textarea"], ["Selected folders", "textarea"]]) {
     assert.deepEqual(field(row, kind).inputEl.attributes, LITERAL, row);
   }
   // A name is prose: the keyboard may help with it.
@@ -587,7 +587,7 @@ test("on a phone the two boxes of lines take the whole row, without a resize han
     item.render(setting);
     return setting.classes?.includes("obsync-lines");
   }).map((item) => item.name);
-  assert.deepEqual(classed, ["Edge service-token headers", "Selected folders"]);
+  assert.deepEqual(classed, ["Custom request headers", "Selected folders"]);
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, selector]) => selector.includes("obsync-lines"));
   assert.ok(rules.length > 0, "the stylesheet really was read");

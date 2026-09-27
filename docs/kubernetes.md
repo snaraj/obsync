@@ -438,7 +438,7 @@ own reverse proxy or another provider, use `edge.mode: none`, even when that
 front end authenticates users: the server reads the standard
 `X-Forwarded-For` and `Forwarded` headers, only from `trustedProxyCidrs`.
 Authentication at the edge does not require Cloudflare; the plugin's optional
-service-token headers can serve another front end too.
+custom request headers can serve another front end too.
 
 ## 7. One example deployment, end to end
 

@@ -85,7 +85,7 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 3. Open the Self Hosted Private Sync settings tab. Set **Server URL** to the
    URL your devices reach the server at, port included when it is not 443
    (`https://name:8443`). If an access-controlled edge sits in front of the
-   server, paste its headers under **Edge service-token headers**, one per
+   server, paste its headers under **Custom request headers**, one per
    line as `Name: value`. Trying it on one computer? A desktop also accepts
    plain `http://127.0.0.1:8080` for a server on that same machine; Obsidian
    on iOS and Android refuses plain HTTP.

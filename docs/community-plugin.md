@@ -93,8 +93,8 @@ in front of your server is chosen by whoever runs the server.
 
 Four more things the plugin touches, each only when you act:
 
-- **Your edge, only if you configured one.** Headers you paste under **Edge
-  service-token headers** ride on every request to the Server URL, because
+- **Your edge, only if you configured one.** Headers you paste under **Custom
+  request headers** ride on every request to the Server URL, because
   the proxy that needs them is on the path to your server.
 - **Your browser, when you ask for the dashboard.** **Open dashboard** opens a
   sign-in link in your browser, and only when that link is on your server's

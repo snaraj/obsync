@@ -118,7 +118,7 @@ provider-free form of the same path.
    copy the Client ID and the Client Secret; the secret is shown once. Add a
    **Service Auth** policy to the application that includes this token, for
    the paths the plugin uses (`/v1/*`).
-4. **Paste the token into the plugin.** Under **Edge service-token headers**,
+4. **Paste the token into the plugin.** Under **Custom request headers**,
    one per line, exactly as Cloudflare names them:
 
    ```text

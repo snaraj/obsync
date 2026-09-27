@@ -151,7 +151,7 @@ for (const stage of ["initial migration", "bookkeeping"]) {
 }
 
 test("asynchronous settings handlers surface storage failure without an unhandled rejection", async (t) => {
-  for (const field of ["Server URL", "Edge service-token headers"]) {
+  for (const field of ["Server URL", "Custom request headers"]) {
     const r = await fixture(t, identity());
     await r.instance.onload();
     const handlers = new Map(), commits = new Map();

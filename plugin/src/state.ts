@@ -173,7 +173,7 @@ export interface ObsyncData {
   /** The four characters its default name ends with, made here once (issue #152). */
   deviceTag: string | null;
   serverUrl: string;
-  /** Optional service-token headers required by an access-controlled edge. */
+  /** Optional headers an access-controlled proxy or tunnel requires ("Custom request headers"). */
   edgeHeaders: EdgeHeader[];
   /** Last change-feed sequence applied. */
   lastSeq: number;

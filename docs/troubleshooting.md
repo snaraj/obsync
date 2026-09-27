@@ -244,19 +244,23 @@ each one cuts the connection before it is set up:
 message, for example `403 error: access denied` (TODO(1.1.4-text)).
 
 **Why it happens.** Your server sits behind a proxy or access service that
-wants a header, such as a service token, and the header did not arrive as
-typed. Three common ways: the box under **Edge service-token headers** is
-empty; the header was pasted from a command line with `-H` and quotes around
-it; or the value has curly quotes (`“…”`) that a text editor added. All three
-were tested, and all three look the same from the device.
+wants a header, such as a service token, and the header is missing or its
+value is wrong: the box under **Custom request headers** is empty, or holds
+another value than the one your proxy expects. Up to 1.1.3, a header pasted
+from a command line with `-H` and quotes, or a value with curly quotes (`“…”`)
+that a text editor added, failed the same way. From 1.1.4 obsync removes a
+pasted `-H` and the quotes around a line by itself, and says so, and refuses
+to save a line it cannot send, naming the line and the character.
 
 **How to fix it.**
 
-1. Open **Edge service-token headers** in the plugin's settings.
+1. Open **Custom request headers** in the plugin's settings.
 2. Write one header per line, as `Name: value`, with no `-H` and no quotes:
    `CF-Access-Client-Id: <the client id>`, not
    `-H "CF-Access-Client-Id: <the client id>"`.
-3. Select **Check** again. On a device that is not paired yet, success reads
+3. If obsync says a line was not saved, correct what it names there, such as a
+   curly quote, and leave the box again.
+4. Select **Check** again. On a device that is not paired yet, success reads
    "Reached your obsync server."
 
 <a id="device_pending"></a>
@@ -432,8 +436,8 @@ edge.
 
 1. Reach the server through the edge, not around it: use the edge's hostname in
    the **Server URL**.
-2. If the edge requires a service token, paste its headers into **Edge
-   service-token headers**, one per line as `Name: value`.
+2. If the edge requires a service token, paste its headers into **Custom
+   request headers**, one per line as `Name: value`.
 3. A server with nothing like that in front should run with `OBSYNC_EDGE=none`.
 4. If every request is refused even when it goes through the edge, the edge's
    connector reaches the server from an address outside the private networks
@@ -591,7 +595,7 @@ reads `offline — retrying`. The code below is in the obsync log line.
 | --- | --- | --- |
 | `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write | free space on that volume, or grow it and the claim together |
 | `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
-| `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the edge service-token headers in obsync settings |
+| `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
 | `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
@@ -861,7 +865,7 @@ message to anybody:
 
 - the setup token, a pairing code, or a dashboard sign-in link;
 - the 24-word recovery phrase, or any part of it;
-- the value of an edge service-token header;
+- the value of a custom request header;
 - your server's hostname or address, if it is not one you publish;
 - file names or note content that are not disposable.
 

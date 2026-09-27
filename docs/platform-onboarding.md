@@ -37,7 +37,7 @@ no pod this chart renders.
    new zone, and on the free tier of a provider that offers one, no spend.
 3. **Access policy (optional)**: one application on that hostname with an
    identity policy for the dashboard paths and a service-token policy for
-   `/v1/*`. The plugin sends the service-token headers when configured; the
+   `/v1/*`. The plugin sends its custom request headers when configured; the
    pairing code can carry them.
 4. **Namespace and reconciler:** a namespace of the deployer's choosing,
    prerequisites, default-deny, an OCIRepository with the chart release's

@@ -664,7 +664,7 @@ export class Transport {
       // a list saved before it did.
       if (ownHeader(header.name) || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
         this.log(`http ${target} decision=refused reason=edge_header`);
-        throw new Error(`The edge header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Edge service-token headers.`);
+        throw new Error(`The custom request header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Custom request headers.`);
       }
       headers[header.name] = header.value;
     }

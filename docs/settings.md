@@ -22,12 +22,12 @@ device can change it for you.
 
 ## Server
 
-<!-- CAPTURE(1.1.4): the Server section: Server URL, Edge service-token headers and the Connection row, host masked -->
+<!-- CAPTURE(1.1.4): the Server section: Server URL, Custom request headers and the Connection row, host masked -->
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
 | **Server URL** | empty | Where this device sends every sync request. A host name alone becomes `https://host`; give the port when it is not 443 (`host:8443`). HTTPS only on iOS and Android. | Once at setup, and again if the server moves ([`recovery.md`](recovery.md)) |
-| **Edge service-token headers** | empty | One `name: value` per line, sent with every request. For a deployment with an access-controlled proxy in front of the server. | Only if your edge requires a service token. Leave empty otherwise |
+| **Custom request headers** | empty | Sent with every request, so an access-controlled proxy or tunnel in front of your server lets this device through. One `Name: value` per line; a header pasted from a command line is trimmed to that form, and one that cannot be sent is refused when you leave the box. | Only if your proxy or tunnel requires a header. Leave empty otherwise |
 | **Connection** → **Check** | — | Asks the server who it is and reports the account name and device count. | Any time you want one round trip to prove the address, the certificate and the credential together |
 | **Connection** → **Open dashboard** | — | Mints a single-use sign-in link and opens the dashboard. The link is resolved against the Server URL above and opened only if it stays on that origin. | — |
 | **Update available** → **Open Community plugins** | shown only when the server reports a newer plugin version than this device runs | One sentence naming the plugin and both versions, and a button that opens Obsidian's own Community plugins page, where **Check for updates** installs. The 15-second notice says the same thing and opens the same page when you tap it. Nothing here installs code: the plugin never fetches its own bundle from the sync server. | — |

@@ -200,7 +200,7 @@ test("a missing server URL refuses before it reaches the network", async () => {
   assert.equal(sent.length, 0);
 });
 
-test("edge service-token headers ride on every request", async () => {
+test("custom request headers ride on every request", async () => {
   const { transport, sent } = harness([{ status: 200, text: "{}" }], {
     edgeHeaders: [
       { name: "X-Service-Id", value: "id-value" },
@@ -225,7 +225,7 @@ test("an edge header never replaces obsync's own, and one the platform would dro
       edgeHeaders: [{ name: "X-Service-Id", value: "id-value" }, header],
     });
     await assert.rejects(() => transport.postVersion(FILE_ID, VERSION_POST), (error) => {
-      assert.equal(error.message, `The edge header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Edge service-token headers.`);
+      assert.equal(error.message, `The custom request header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Custom request headers.`);
       assert.equal(error.message.includes(header.value), false, "a value can be a service token and is never shown");
       return true;
     }, JSON.stringify(header));

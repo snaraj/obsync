@@ -721,7 +721,7 @@ const UNPUSHED_SHOWN = 10;
 const LEAVE_KEPT =
   "Every note in this vault stays exactly where it is. Leaving changes nothing inside the vault, and the 24 words still open the SAME vault afterwards, so pairing again is not a new vault. This device's name, its folder selection and its two ceilings are kept too.";
 const LEAVE_LOST =
-  "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any edge service-token headers, its place in the change feed and its record of every synced file. No other device is touched.";
+  "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any custom request headers, its place in the change feed and its record of every synced file. No other device is touched.";
 const LEAVE_AGAIN =
   "Pairing again — with this server or another — is a first sync for this device. Identical notes stay one note. If a local note differs from the server's note at the same path, both versions are kept for you to review.";
 const LEAVE_UNKNOWN_DEVICE =

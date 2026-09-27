@@ -333,8 +333,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   private edgeHeaders(): Row {
     return {
-      name: "Edge service-token headers",
-      desc: "One header per line, written as Name: value, for a deployment with an access-controlled proxy in front of the server. A header pasted from a command line is trimmed to that form. Leave empty otherwise.",
+      name: "Custom request headers",
+      desc: "Sent with every request, so an access-controlled proxy or tunnel in front of your server lets this device through. One header per line, as Name: value; a header pasted from a command line is trimmed to that form. Leave empty otherwise.",
       render: (setting) => {
         setting.setClass("obsync-lines").addTextArea((area) => {
           area
@@ -359,12 +359,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftHeaders = null;
     if ("refusal" in parsed) {
       this.plugin.log(`edge decision=refused reason=${parsed.reason}`);
-      new Notice(`Edge service-token headers were not saved: ${parsed.refusal}`, 12000);
+      new Notice(`Custom request headers were not saved: ${parsed.refusal}`, 12000);
       return false;
     }
     this.plugin.state.data.edgeHeaders = parsed.headers;
     this.plugin.log(`edge decision=kept headers=${parsed.headers.length} trimmed=${parsed.trimmed.length}`);
-    if (parsed.trimmed.length !== 0) new Notice(["Edge service-token headers saved.", ...parsed.trimmed].join(" "), 8000);
+    if (parsed.trimmed.length !== 0) new Notice(["Custom request headers saved.", ...parsed.trimmed].join(" "), 8000);
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().catch(() => {});
     return true;
