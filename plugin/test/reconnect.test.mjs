@@ -172,6 +172,18 @@ test("a start refused by a certificate this device does not trust says so, is re
   assert.equal(r.instance.statusText(), "idle", "a start that gets through clears it");
 });
 
+test("a start refused by a certificate out of date says so, is retried, and a start that gets through clears it (#229)", async (t) => {
+  const { CERT_OUT_OF_DATE } = require("../build/transport.js");
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_DATE_INVALID"); });
+  await r.instance.onload();
+  assert.deepEqual(r.win.armed(), [5000], "retried like absence: a renewed certificate or a corrected clock needs no press here");
+  assert.equal(r.instance.statusText(), `error — ${CERT_OUT_OF_DATE}`, "the settings row and Show sync status read this");
+  r.win.fire();
+  await settle();
+  assert.equal(r.instance.statusText(), "idle", "a start that gets through clears it");
+});
+
 test("the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts", async (t) => {
   const r = await fixture(t);
   r.plan(() => { throw r.unreachable(); });

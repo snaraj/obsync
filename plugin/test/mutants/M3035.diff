@@ -1,0 +1,11 @@
+# M3035: a certificate out of date is never named: Check says nothing answered, the status offline (certificate wording, #229)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1388,7 +1388,6 @@
+ const CERTIFICATE_REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
+   [UNTRUSTED_AUTHORITY, CERT_UNTRUSTED],
+   [WRONG_NAME, CERT_WRONG_NAME],
+-  [OUT_OF_DATE, CERT_OUT_OF_DATE],
+ ];
+ 
+ /**

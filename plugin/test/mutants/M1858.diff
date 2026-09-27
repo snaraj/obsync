@@ -1,10 +1,10 @@
 # M1858: a server refusal is shown as its raw code (#154)
 --- a/plugin/src/pairing.ts
 +++ b/plugin/src/pairing.ts
-@@ -322,7 +322,7 @@
- /** Any error a setup or pairing step throws, as text: refusals by table, this plugin's own words as they are. */
+@@ -323,7 +323,7 @@
  export function refusalText(error: unknown): string {
-   if (untrustedCertificate(error)) return CERT_UNTRUSTED;
+   const certificate = certificateRefusal(error);
+   if (certificate !== null) return certificate;
 -  if (error instanceof ApiError) return refusalFor(error.code);
 +  if (error instanceof ApiError) return error.message;
    const message = error instanceof Error ? error.message.trim() : "";

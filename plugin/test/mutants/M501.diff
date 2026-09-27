@@ -1,12 +1,12 @@
 # M501: storage refusal is hidden as an offline repair
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -443,7 +443,7 @@
+@@ -493,7 +493,7 @@
  export function refusalStatus(error: unknown): EngineStatus | null {
    if (!(error instanceof ApiError)) return null;
    // First: a full server is never absence, whatever carried its answer.
 -  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
 +  if (error.status === 507 && error.code !== "unreachable") return { kind: "error", code: "storage", message: SERVER_FULL };
-   if (untrustedCertificate(error)) return { kind: "error", code: "certificate", message: CERT_UNTRUSTED };
+   const certificate = certificateRefusal(error);
+   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
    if (error.code === "unreachable") return { kind: "offline" };
-   // Not narrowed by the predicate: every branch below is an `ApiError` too.

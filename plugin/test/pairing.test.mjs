@@ -153,7 +153,7 @@ test("every setup and pairing refusal reads as what happened and what to do, nev
  * and an expired certificate are not it, and nothing but absence is offline.
  */
 test("a certificate from an authority this device does not trust is said as that, on every path and platform", () => {
-  const { ApiError, CERT_UNTRUSTED, untrustedCertificate } = require("../build/transport.js");
+  const { ApiError, CERT_UNTRUSTED, certificateRefusal } = require("../build/transport.js");
   const { refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(CERT_UNTRUSTED, "This device does not trust your server's certificate, so it refused the connection. " +
     "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
@@ -164,18 +164,67 @@ test("a certificate from an authority this device does not trust is said as that
   ];
   for (const reason of untrusted) {
     const error = new ApiError(0, "unreachable", reason);
-    assert.equal(untrustedCertificate(error), true, reason);
+    assert.equal(certificateRefusal(error), CERT_UNTRUSTED, reason);
     assert.deepEqual(refusalStatus(error), { kind: "error", code: "certificate", message: CERT_UNTRUSTED }, reason);
     assert.equal(refusalText(error), CERT_UNTRUSTED, reason);
     assert.equal(pairing.refusalText(error), CERT_UNTRUSTED, reason);
   }
-  for (const reason of ["network=net::ERR_CONNECTION_REFUSED", "network=net::ERR_CERT_DATE_INVALID",
-    "network=net::ERR_CERT_COMMON_NAME_INVALID", "timeout budget_ms=10000"]) {
+  for (const reason of ["network=net::ERR_CONNECTION_REFUSED", "timeout budget_ms=10000"]) {
     assert.deepEqual(refusalStatus(new ApiError(0, "unreachable", reason)), { kind: "offline" }, reason);
   }
   // Only the transport's own verdict: a server's refusal naming it is the server's refusal.
-  assert.equal(untrustedCertificate(new ApiError(400, "bad_request", "ERR_CERT_AUTHORITY_INVALID")), false);
-  assert.equal(untrustedCertificate(new Error("network=net::ERR_CERT_AUTHORITY_INVALID")), false);
+  assert.equal(certificateRefusal(new ApiError(400, "bad_request", "ERR_CERT_AUTHORITY_INVALID")), null);
+  assert.equal(certificateRefusal(new Error("network=net::ERR_CERT_AUTHORITY_INVALID")), null);
+});
+
+/*
+ * A CERTIFICATE FOR ANOTHER NAME, AND ONE OUT OF DATE (#229). Check said
+ * "Nothing answered at <url>" and the status read offline, when something had
+ * answered and this device's own TLS refused what it showed. Each platform's
+ * words for each refusal are that refusal, said the same way by the status,
+ * Check, setup and pairing; the desktop's are Chromium's, the phones' are the
+ * platforms' documented messages. Absence, a timeout and every other TLS
+ * failure still read as absence: none of them is named for what it is not.
+ */
+test("a certificate for another name or out of date is said as that, on every path and platform (#229)", () => {
+  const { ApiError, CERT_OUT_OF_DATE, CERT_WRONG_NAME, certificateRefusal } = require("../build/transport.js");
+  const { refusalStatus, refusalText } = require("../build/sync/engine.js");
+  assert.equal(CERT_WRONG_NAME, "This device refused your server's certificate because it was made for another name than " +
+    "the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this " +
+    "name -- see Troubleshooting, \"The certificate is for another name\".");
+  assert.equal(CERT_OUT_OF_DATE, "This device refused your server's certificate because it has expired or is not valid " +
+    "yet. Renew the certificate on your server, or check that this device's date and time are right.");
+  const refused = [
+    // Chromium, on desktop.
+    ["network=net::ERR_CERT_COMMON_NAME_INVALID", CERT_WRONG_NAME],
+    ["network=net::ERR_CERT_DATE_INVALID", CERT_OUT_OF_DATE],
+    // Apple: the trust evaluation's words for a name, the URL system's for a date.
+    ["network=“192.168.1.10” certificate name does not match input", CERT_WRONG_NAME],
+    ["network=The certificate for this server has expired. You might be connecting to a server that is pretending to be " +
+      "“sync.example.invalid” which could put your confidential information at risk.", CERT_OUT_OF_DATE],
+    ["network=The certificate for this server is not yet valid. You might be connecting to a server that is pretending to " +
+      "be “sync.example.invalid” which could put your confidential information at risk.", CERT_OUT_OF_DATE],
+    // Android.
+    ["network=javax.net.ssl.SSLPeerUnverifiedException: Hostname 192.168.1.10 not verified:", CERT_WRONG_NAME],
+    ["network=javax.net.ssl.SSLHandshakeException: java.security.cert.CertPathValidatorException: timestamp check failed",
+      CERT_OUT_OF_DATE],
+  ];
+  for (const [reason, words] of refused) {
+    const error = new ApiError(0, "unreachable", reason);
+    assert.equal(certificateRefusal(error), words, reason);
+    assert.deepEqual(refusalStatus(error), { kind: "error", code: "certificate", message: words }, reason);
+    assert.equal(refusalText(error), words, `${reason}: Check and the device list`);
+    assert.equal(pairing.refusalText(error), words, `${reason}: setup and pairing`);
+  }
+  for (const reason of ["network=net::ERR_CONNECTION_REFUSED", "network=net::ERR_CONNECTION_TIMED_OUT",
+    "timeout budget_ms=10000", "network=net::ERR_CERT_REVOKED", "network=net::ERR_SSL_PROTOCOL_ERROR",
+    "network=The certificate for this server is invalid. You might be connecting to a server that is pretending to be " +
+      "“sync.example.invalid” which could put your confidential information at risk."]) {
+    const error = new ApiError(0, "unreachable", reason);
+    assert.equal(certificateRefusal(error), null, reason);
+    assert.deepEqual(refusalStatus(error), { kind: "offline" }, `${reason}: absence, and retried as absence`);
+  }
+  assert.equal(certificateRefusal(new ApiError(400, "bad_request", "ERR_CERT_DATE_INVALID")), null);
 });
 
 /*

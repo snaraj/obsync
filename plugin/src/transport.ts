@@ -1404,8 +1404,39 @@ export const CERT_UNTRUSTED =
   "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device " +
   "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
 
-export function untrustedCertificate(error: unknown): boolean {
-  return error instanceof ApiError && error.code === "unreachable" && UNTRUSTED_AUTHORITY.test(error.detail);
+/**
+ * THE OTHER TWO CERTIFICATE REFUSALS, named the same way (issue #229): a
+ * certificate made for another name than the one in the Server URL -- an IP
+ * address, a short name, a name it does not list -- and one that has expired
+ * or is not valid yet. Each is matched on the platform's own words: Chromium's
+ * on desktop, and the documented ones of Apple and Android on a phone.
+ */
+const WRONG_NAME = /ERR_CERT_COMMON_NAME_INVALID|certificate name does not match|Hostname \S+ not verified/i;
+const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|certificate for this server (?:has expired|is not yet valid)|timestamp check failed/i;
+
+export const CERT_WRONG_NAME =
+  "This device refused your server's certificate because it was made for another name than the one in the Server URL. " +
+  "Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, " +
+  "\"The certificate is for another name\".";
+export const CERT_OUT_OF_DATE =
+  "This device refused your server's certificate because it has expired or is not valid yet. Renew the certificate on " +
+  "your server, or check that this device's date and time are right.";
+
+const CERTIFICATE_REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
+  [UNTRUSTED_AUTHORITY, CERT_UNTRUSTED],
+  [WRONG_NAME, CERT_WRONG_NAME],
+  [OUT_OF_DATE, CERT_OUT_OF_DATE],
+];
+
+/**
+ * What a certificate this device refused says, or `null`. Only the
+ * transport's own `unreachable` verdict is one: a server's refusal that names
+ * a certificate error is the server's refusal.
+ */
+export function certificateRefusal(error: unknown): string | null {
+  if (!(error instanceof ApiError) || error.code !== "unreachable") return null;
+  const detail = error.detail;
+  return CERTIFICATE_REFUSALS.find(([words]) => words.test(detail))?.[1] ?? null;
 }
 
 function decode<T>(response: HttpResponse): T {

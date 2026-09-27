@@ -44,7 +44,7 @@ import {
   unhex,
   utf8,
 } from "./crypto";
-import { ApiError, CERT_UNTRUSTED, EDGE_REQUIRED, untrustedCertificate } from "./transport";
+import { ApiError, EDGE_REQUIRED, certificateRefusal } from "./transport";
 import { WORDLIST } from "./wordlist";
 
 export const PAIRING_ID_BYTES = 16;
@@ -321,7 +321,8 @@ export function refusalFor(code: string): string {
 
 /** Any error a setup or pairing step throws, as text: refusals by table, this plugin's own words as they are. */
 export function refusalText(error: unknown): string {
-  if (untrustedCertificate(error)) return CERT_UNTRUSTED;
+  const certificate = certificateRefusal(error);
+  if (certificate !== null) return certificate;
   if (error instanceof ApiError) return refusalFor(error.code);
   const message = error instanceof Error ? error.message.trim() : "";
   return message !== "" ? message : "Something went wrong on this device before anything was shared. Try again.";

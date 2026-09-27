@@ -414,6 +414,21 @@ test("Check against a certificate this device does not trust says so and where t
     "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
 });
 
+test("Check against a certificate for another name, or out of date, says which and what to do, never 'nothing answered' (#229)", async (t) => {
+  for (const [reason, said] of [
+    ["network=net::ERR_CERT_COMMON_NAME_INVALID", /^This device refused your server's certificate because it was made for another name/],
+    ["network=net::ERR_CERT_DATE_INVALID", /^This device refused your server's certificate because it has expired or is not valid yet/],
+  ]) {
+    let ApiError;
+    const s = open(t, { transport: { pluginManifest: async () => { throw new ApiError(0, "unreachable", reason); } } });
+    ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+    s.plugin.state.data.serverUrl = "https://192.168.1.10:8443";
+    s.button(s.render("Connection").made, "Check").click();
+    await tick(); await tick();
+    assert.match(s.obsidian.notices.at(-1), said, reason);
+  }
+});
+
 test("Check reads 'Checking…' at once, asks with a person's patience, and answers in words, never a code (#182)", async (t) => {
   let answer;
   const asked = [];
