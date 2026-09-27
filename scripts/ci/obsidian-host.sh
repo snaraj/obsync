@@ -235,7 +235,12 @@ OBSYNC_HOST="${HOST}" XDG_DATA_HOME="$(native "${scratch}/xdg-data")" \
   XDG_CONFIG_HOME="$(native "${scratch}/xdg-config")" \
   "${caddy}" run --config "$(native "${scratch}/Caddyfile")" --adapter caddyfile >"${scratch}/caddy.log" 2>&1 &
 caddy_pid=$!
-ready "${caddy_pid}" Caddy --cacert "${scratch}/ca.crt" --resolve "${HOST}:${PORT}:127.0.0.1" "https://${HOST}:${PORT}/readyz" \
+# The Windows curl verifies with schannel, which also asks the authority for
+# its revocation list, and this run's throwaway authority publishes none ("the
+# revocation status is unknown"). Best effort still refuses a revoked leaf.
+revoke=''
+[ "${os}" = windows ] && revoke='--ssl-revoke-best-effort'
+ready "${caddy_pid}" Caddy ${revoke} --cacert "${scratch}/ca.crt" --resolve "${HOST}:${PORT}:127.0.0.1" "https://${HOST}:${PORT}/readyz" \
   || deny "no {\"ready\":true through Caddy within ${READY_BUDGET_SECONDS}s"
 printf 'obsidian-host: (3) Caddy serves /readyz over TLS from deploy/proxies/caddy/Caddyfile\n'
 
