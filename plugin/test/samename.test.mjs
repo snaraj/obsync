@@ -1796,3 +1796,101 @@ test("a note waiting at a name that holds an unpushed edit is not moved for the 
   assert.equal(r.state.pathByFileId(HIGHER), "Notes/Draft.md");
   assert.equal(r.state.fileByPath("Notes/Draft.md").name, "Notes/Final.md", pullLog(r));
 });
+
+/*
+ * PAIRING AGAIN OVER A NOTE WITH HISTORY (issue #163, S22). Leaving drops
+ * every record, so pairing again replays the feed from zero over notes this
+ * device still holds, and a note with two versions arrives as its OLDER one
+ * first. The note here is the CURRENT one, byte for byte: it must be taken
+ * for that version when it arrives, never moved aside for the one before it.
+ */
+const HISTORY = "22".repeat(16);
+const OLDER = "the note as it was first written\n";
+const CURRENT = "the note as it is now, after an edit\n";
+
+/** A file another device wrote twice at NOTE; `CURRENT` is its only head. */
+async function history(r) {
+  const v1 = await r.server.publish({
+    fileId: HISTORY, path: NOTE, bytes: enc(OLDER), mtime: 1000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const v2 = await r.server.publish({
+    fileId: HISTORY, path: NOTE, bytes: enc(CURRENT), mtime: 2000, parents: [v1.version_id],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  return { v1, v2 };
+}
+
+test("pairing again: a note holding its file's current version is taken for it, with no copy (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, CURRENT, 5000);
+  const { v1, v2 } = await history(r);
+  const before = r.server.journal.length;
+
+  assert.equal(await applyChange(r.context, v1), "skipped", pullLog(r));
+  assert.equal(await applyChange(r.context, v2), "applied", pullLog(r));
+
+  assert.deepEqual(copies(r.host), [], `an identical copy was made: ${pullLog(r)}`);
+  assert.equal(r.host.text(NOTE), CURRENT);
+  assert.equal(r.host.files.get(NOTE).mtime, 5000, "the note was rewritten");
+  assert.equal(r.state.fileByPath(NOTE).fileId, HISTORY);
+  assert.equal(r.state.fileByPath(NOTE).versionId, v2.version_id);
+  assert.equal(r.server.journal.length, before, "pairing again published something");
+  assert.ok(pullLog(r).includes(`decision=skipped reason=superseded_at_name file=${HISTORY} seq=${v1.seq}`), pullLog(r));
+});
+
+for (const [ours, role] of [[LOWER, "keep"], [HIGHER, "yield"]]) {
+  test(`pairing again: a note already published under its own id settles on the current version, with no copy (${role}, #163)`, async () => {
+    const r = await rig();
+    r.host.seed(NOTE, CURRENT, 5000);
+    await pushFile(r.context, NOTE);
+    r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), fileId: ours });
+    const { v1, v2 } = await history(r);
+
+    await applyChange(r.context, v1);
+    await applyChange(r.context, v2);
+
+    assert.deepEqual(copies(r.host), [], `an identical copy was made: ${pullLog(r)}`);
+    assert.deepEqual([...r.host.files.keys()], [NOTE]);
+    assert.equal(r.host.text(NOTE), CURRENT);
+    assert.deepEqual(r.host.trashed, [], "the note was moved aside");
+    assert.equal(r.state.fileByPath(NOTE).fileId, role === "keep" ? LOWER : HISTORY, pullLog(r));
+    assert.ok(pullLog(r).includes(`decision=converged reason=identical_same_name role=${role}`), pullLog(r));
+  });
+}
+
+test("pairing again: a note that differs from every version still keeps both, settled on the current one (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 5000);
+  await pushFile(r.context, NOTE);
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), fileId: LOWER });
+  const { v1, v2 } = await history(r);
+
+  assert.equal(await applyChange(r.context, v1), "skipped", pullLog(r));
+  assert.deepEqual(copies(r.host), [], `a copy was made for a version the file has left behind: ${pullLog(r)}`);
+  assert.equal(await applyChange(r.context, v2), "conflict_copy", pullLog(r));
+
+  // Nothing lost: this device's note keeps the name (the lower id), and the
+  // file's current text is beside it, recorded under its own id.
+  assert.equal(r.host.text(NOTE), MINE);
+  const copy = copies(r.host);
+  assert.equal(copy.length, 1, pullLog(r));
+  assert.equal(r.host.text(copy[0]), CURRENT);
+  assert.equal(r.state.fileByPath(copy[0]).fileId, HISTORY);
+});
+
+test("a view of the file that cannot show its current head proves nothing, and the version settles as before (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, CURRENT, 5000);
+  const { v1, v2 } = await history(r);
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (id) => {
+    const view = await getFile(id);
+    return { ...view, versions: view.versions.filter((version) => version.version_id !== v2.version_id) };
+  };
+
+  assert.equal(await applyChange(r.context, v1), "conflict_copy", pullLog(r));
+
+  assert.ok(!pullLog(r).includes("superseded_at_name"), pullLog(r));
+  assert.equal(r.host.text(NOTE), CURRENT, "the note here was replaced");
+});

@@ -1,0 +1,11 @@
+# M1904: a superseded version at a name a published note holds settles it again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3443,7 +3443,6 @@
+   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
+   const healed = await takeEditedTwin(context, change, manifest, ours);
+   if (healed !== null) return healed;
+-  if (await superseded(context, change)) return "skipped";
+ 
+   if (ours.fileId < change.file_id) {
+     const kept = await keepBothRecorded(context, change, manifest);

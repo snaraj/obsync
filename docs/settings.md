@@ -86,10 +86,9 @@ another device's Devices list or the dashboard.
 The last ACTIVE device may leave once account recovery is registered. Keep
 the setup token and recovery phrase first. An older server or unregistered
 account still refuses with `409 last_device`; local leave keeps that credential
-active remotely and the dialog explains the upgrade requirement. Pairing again is a first sync for this device, so where the server
-already holds a note at the same path the local note stays and the server's
-copy arrives beside it as a conflict copy
-([`conflicts.md`](conflicts.md)).
+active remotely and the dialog explains the upgrade requirement. Pairing again is a first sync for this device: a note identical to the
+server's current note at the same path stays one note, and one that differs
+keeps both versions for you to review ([`conflicts.md`](conflicts.md)).
 
 <!-- CAPTURE(1.1.4): the Leave this server dialog, naming what is kept and what is lost -->
 

@@ -1,0 +1,11 @@
+# M1905: a superseded version at a name an unpublished note holds settles it again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3431,7 +3431,6 @@
+     // to settle and the caller applies the version as it would any other.
+     if (stat === null) return null;
+     if (await adopt(context, change, manifest, stat)) return "applied";
+-    if (await superseded(context, change)) return "skipped";
+     if (!(await identify(context, manifest.path, change.file_id))) {
+       return await keepBothRecorded(context, change, manifest);
+     }

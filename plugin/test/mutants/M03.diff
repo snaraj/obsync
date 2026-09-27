@@ -1,9 +1,9 @@
 # M03: the tie-break always renames
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2354,7 +2354,7 @@
-   const healed = await takeEditedTwin(context, change, manifest, ours);
+@@ -3445,7 +3445,7 @@
    if (healed !== null) return healed;
+   if (await superseded(context, change)) return "skipped";
  
 -  if (ours.fileId < change.file_id) {
 +  if (ours.fileId === change.file_id) {

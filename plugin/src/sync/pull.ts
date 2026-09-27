@@ -3577,6 +3577,7 @@ async function sameNameTiebreak(
     // to settle and the caller applies the version as it would any other.
     if (stat === null) return null;
     if (await adopt(context, change, manifest, stat)) return "applied";
+    if (await superseded(context, change)) return "skipped";
     if (!(await identify(context, manifest.path, change.file_id))) {
       return await keepBothRecorded(context, change, manifest);
     }
@@ -3588,6 +3589,7 @@ async function sameNameTiebreak(
   if (same !== null) return await convergeIdentical(context, change, manifest, ours);
   const healed = await takeEditedTwin(context, change, manifest, ours);
   if (healed !== null) return healed;
+  if (await superseded(context, change)) return "skipped";
 
   if (ours.fileId < change.file_id) {
     const kept = await keepBothRecorded(context, change, manifest);
@@ -3644,6 +3646,29 @@ async function identicalAtName(
   const stat = await context.host.stat(path);
   if (stat === null || stat.mtime !== ours.mtime || stat.size !== ours.size) return null;
   return stat;
+}
+
+/**
+ * A VERSION THE FILE HAS ALREADY LEFT BEHIND SETTLES NO NAME (issue #163).
+ *
+ * Pairing again replays the feed from zero over notes this device still holds,
+ * and a note with history arrives as its OLDEST version first. Compared with
+ * that, the note here -- the file's current version, byte for byte -- was
+ * moved aside for bytes nobody holds any more, and the matching version then
+ * landed at the name: one identical copy of every note with an edit history.
+ * So a version that is not one of its file's current heads is skipped at an
+ * occupied name, and the note there is compared with the version that IS
+ * current, which the same replay delivers after it -- adopted when it is that
+ * version (`adopt`, `identicalAtName`), settled by the rule when it is not.
+ * A head view that cannot show every head proves nothing, and the version is
+ * settled as before.
+ */
+async function superseded(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+  const file = await context.transport.getFile(change.file_id);
+  const complete = file.heads.length > 0 && file.heads.every((id) => file.versions.some((version) => version.version_id === id));
+  if (!complete || file.heads.includes(change.version_id)) return false;
+  context.host.log(`pull decision=skipped reason=superseded_at_name file=${change.file_id} seq=${change.seq}`);
+  return true;
 }
 
 /**
