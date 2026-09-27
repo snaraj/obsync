@@ -83,6 +83,13 @@ wslpath_of() {
   printf '/mnt%s' "$(cygpath -u "$1")"
 }
 
+wsl() {
+  # Everything WSL is handed is a Linux path or command (`/bin/sh`,
+  # `OBSYNC_BLOBS_DIR=/var/lib/...`), which the rewrite above would turn into
+  # a path under the Git installation, so nothing it is given is rewritten.
+  MSYS2_ARG_CONV_EXCL='*' wsl.exe "$@"
+}
+
 deny() {
   printf 'obsidian-host: DENY %s\n' "$1" >&2
   for log in openssl server caddy; do
@@ -99,8 +106,8 @@ cleanup() {
     [ -n "${pid}" ] && kill "${pid}" >/dev/null 2>&1 || true
   done
   if [ -n "${distro}" ]; then
-    wsl.exe --terminate "${DISTRO}" >/dev/null 2>&1 || true
-    wsl.exe --unregister "${DISTRO}" >/dev/null 2>&1 || true
+    wsl --terminate "${DISTRO}" >/dev/null 2>&1 || true
+    wsl --unregister "${DISTRO}" >/dev/null 2>&1 || true
   fi
   if [ -n "${trusted}" ]; then
     if [ "${os}" = macos ]; then
@@ -142,7 +149,7 @@ done
 for file in main.js manifest.json styles.css; do
   [ -f "${root}/plugin/dist/${file}" ] || deny "no built plugin (plugin/dist/${file})"
 done
-if [ "${os}" = windows ] && wsl.exe --list --quiet 2>/dev/null | tr -d '\0\r' | grep -qx "${DISTRO}"; then
+if [ "${os}" = windows ] && wsl --list --quiet 2>/dev/null | tr -d '\0\r' | grep -qx "${DISTRO}"; then
   deny "a WSL distribution called ${DISTRO} already exists"
 fi
 
@@ -184,13 +191,13 @@ if [ "${os}" = macos ]; then
 else
   fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64 "${ALPINE}" "${scratch}/rootfs.tar.gz"
   distro=yes
-  wsl.exe --import "${DISTRO}" "$(native "${scratch}/wsl")" "$(native "${scratch}/rootfs.tar.gz")" --version 1 \
+  wsl --import "${DISTRO}" "$(native "${scratch}/wsl")" "$(native "${scratch}/rootfs.tar.gz")" --version 1 \
     || deny 'WSL 1 would not import the Alpine distribution'
-  wsl.exe -d "${DISTRO}" -- /bin/sh -c "install -D -m 0755 '$(wslpath_of "${binary}")' /usr/local/bin/obsyncd \
+  wsl -d "${DISTRO}" -- /bin/sh -c "install -D -m 0755 '$(wslpath_of "${binary}")' /usr/local/bin/obsyncd \
     && install -d -m 0700 /var/lib/obsync/blobs /var/lib/obsync/journal \
     && mkdir -p /opt/obsync && cp -R '$(wslpath_of "${root}/dashboard")' /opt/obsync/dashboard \
     && cp -R '$(wslpath_of "${root}/plugin/dist")' /opt/obsync/plugin" || deny 'could not install the server in WSL'
-  wsl.exe -d "${DISTRO}" -- env OBSYNC_LISTEN=127.0.0.1:8080 OBSYNC_BLOBS_DIR=/var/lib/obsync/blobs \
+  wsl -d "${DISTRO}" -- env OBSYNC_LISTEN=127.0.0.1:8080 OBSYNC_BLOBS_DIR=/var/lib/obsync/blobs \
     OBSYNC_JOURNAL_DIR=/var/lib/obsync/journal OBSYNC_BLOBS_CAPACITY=8GiB OBSYNC_JOURNAL_CAPACITY=4GiB \
     OBSYNC_EDGE=none OBSYNC_TRUSTED_PROXY_CIDRS=127.0.0.1/32 OBSYNC_PUBLIC_URL="https://${HOST}:${PORT}" \
     /usr/local/bin/obsyncd serve >"${scratch}/server.log" 2>&1 &
@@ -231,7 +238,7 @@ umask 077
 if [ "${os}" = macos ]; then
   tr -d '[:space:]' < "${scratch}/journal/v1/setup-token" > "${scratch}/token"
 else
-  wsl.exe -d "${DISTRO}" -- cat /var/lib/obsync/journal/v1/setup-token | tr -d '[:space:]' > "${scratch}/token"
+  wsl -d "${DISTRO}" -- cat /var/lib/obsync/journal/v1/setup-token | tr -d '[:space:]' > "${scratch}/token"
 fi
 umask 022
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -248,7 +255,9 @@ if [ "${os}" = macos ]; then
   ntfs=0
 else
   fetch https://github.com/obsidianmd/obsidian-releases/releases/download/v1.13.7 "${OBSIDIAN_EXE}" "${scratch}/Obsidian-setup.exe"
-  "${scratch}/Obsidian-setup.exe" /S || deny 'the Obsidian installer failed silently'
+  # `/S` is the installer's switch, not a path: unrewritten, as `taskkill //F`
+  # in the workflow's cleanup is by doubling.
+  MSYS2_ARG_CONV_EXCL='*' "${scratch}/Obsidian-setup.exe" /S || deny 'the Obsidian installer failed silently'
   obsidian=''
   for candidate in "${LOCALAPPDATA:-}/Programs/Obsidian/Obsidian.exe" "${LOCALAPPDATA:-}/Programs/obsidian/Obsidian.exe" \
     "${PROGRAMFILES:-}/Obsidian/Obsidian.exe"; do
