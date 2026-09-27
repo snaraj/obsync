@@ -1,0 +1,12 @@
+# M1863: names are never re-read while every id is known: a rename made elsewhere never arrives (#164)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3098,7 +3098,7 @@
+     const others = changes.filter((change) => change.device_id !== context.deviceId);
+     if (others.length === 0) return;
+     const unknown = others.some((change) => !context.deviceNames.has(change.device_id) && !this.unnamed.has(change.device_id));
+-    if (!unknown && this.nowFn() - this.namesReadAt < NAMES_TTL_MS) return;
++    if (!unknown) return;
+     await this.readNames(context, unknown ? "unknown_device" : "stale");
+     for (const change of others) if (!context.deviceNames.has(change.device_id)) this.unnamed.add(change.device_id);
+   }

@@ -1,0 +1,12 @@
+# M1871: a hostile refusal code reads a prototype member (#154)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -517,7 +517,7 @@
+   } catch (error) {
+     const code = error instanceof ApiError ? error.code : "";
+     const reason = error instanceof ClaimEnded ? error.reason
+-      : Object.hasOwn(CLAIM_REFUSALS, code) ? CLAIM_REFUSALS[code] as string : code === "" ? "local_or_lost" : code;
++      : CLAIM_REFUSALS[code] ?? (code === "" ? "local_or_lost" : code);
+     plugin.log(`pairing role=claimant decision=${kept ? "paired" : "failed"} reason=${reason} duration_ms=${Date.now() - started}`);
+     // A newer session of this plugin owns the state now, and resumes this
+     // claim from its entry; a state that stopped is the next session's too.

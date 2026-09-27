@@ -1,12 +1,12 @@
 # M615: ignore pairing close callback
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -263,7 +263,7 @@
-   override onClose(): void {
-     this.waiting = false;
+@@ -584,7 +584,7 @@
+     this.closed = true;
      this.contentEl.empty();
+     this.handOff();
 -    this.afterClose();
 +    // Mutant: leave the underlying settings stale.
    }
  
-   private async claim(): Promise<void> {
+   /** A closed dialog is not a cancelled pairing: the claim finishes behind it (issue #153). */

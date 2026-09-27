@@ -71,11 +71,11 @@ error. Then:
 2. Check Obsidian's secret storage, then reload Obsidian.
 3. Do not delete the plugin's stored reference and do not repeat server setup.
 
-A device whose pairing was interrupted can finish approval in the pairing
-dialog that is still open. Once it is approved, the recovery phrase can restore
-its key; the phrase cannot approve a pending device. Closing or restarting
-Obsidian does not bring a pending pairing dialog back, because the pairing code
-is not saved. Other plugin installations are never imported automatically.
+A pairing waiting for approval finishes even if its dialog was closed, and
+after Obsidian restarts, as long as it is approved within the code's ten
+minutes; after that, pair again with a new code. The recovery phrase cannot
+approve a pending device. Other plugin installations are never imported
+automatically.
 
 ## Trust and network use
 

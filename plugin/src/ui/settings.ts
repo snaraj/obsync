@@ -552,9 +552,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
       desc: () => {
         const data = this.plugin.state.data;
         if (this.plugin.forgottenDevice) return FORGOTTEN_DEVICE;
-        if (data.deviceId === null) return "Not paired yet. Pair from a device that already syncs this vault, or set up a new server below.";
+        const waiting = this.plugin.waiting;
+        if (waiting) {
+          return `Pairing: waiting for approval on the other device${waiting.code === null ? "" : `, whose prompt shows the code ${waiting.code}`}.`;
+        }
+        if (data.deviceId === null) {
+          return "Not paired yet. On a device that already syncs this vault, choose Pair a new device, then paste its code here with Pair this device. For a new server, use Setup or recover below.";
+        }
         if (this.plugin.state.paired) return `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`;
-        return "Enrolled, but the vault key has not arrived. Finish approval on the existing device, then restore the recovery phrase if needed. A pending dialog does not resume after a restart; do not repeat server setup.";
+        return "This device's last pairing did not finish, so it holds no vault key. Pair it again: on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device. Do not repeat server setup.";
       },
       render: (setting) => {
         setting

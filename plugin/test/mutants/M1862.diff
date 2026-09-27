@@ -1,0 +1,11 @@
+# M1862: an id no read can name is read again for every page (#164)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3100,7 +3100,6 @@
+     const unknown = others.some((change) => !context.deviceNames.has(change.device_id) && !this.unnamed.has(change.device_id));
+     if (!unknown && this.nowFn() - this.namesReadAt < NAMES_TTL_MS) return;
+     await this.readNames(context, unknown ? "unknown_device" : "stale");
+-    for (const change of others) if (!context.deviceNames.has(change.device_id)) this.unnamed.add(change.device_id);
+   }
+ 
+   /** The one place device names are read; a failed read keeps the names it had. */

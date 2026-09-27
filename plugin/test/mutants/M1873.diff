@@ -1,0 +1,12 @@
+# M1873: the stored credential signs before a waiting claim (#153)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2441,7 +2441,7 @@
+    * waits, because a device that syncs never claims.
+    */
+   credential(state: State): { id: string; secret: Uint8Array<ArrayBuffer> } | null {
+-    const waiting = this.waiting?.claim;
++    const waiting = state.data.deviceId === null ? this.waiting?.claim : undefined;
+     if (waiting !== undefined) return { id: waiting.deviceId, secret: unhex(waiting.deviceSecret) };
+     const { deviceId, deviceSecret } = state.data;
+     return deviceId && deviceSecret ? { id: deviceId, secret: unhex(deviceSecret) } : null;

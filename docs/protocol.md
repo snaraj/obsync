@@ -36,9 +36,9 @@ only this device is refused), `503 nonce_log_unavailable`
 (the volume would not take that record), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
 wrapped secret and leaves nothing to check it against), `403 device_pending`
-(a claimed device that the creator has not yet approved, answered only AFTER
-its signature verifies; only that pairing's envelope endpoint admits it, with
-`409 not_approved`).
+(a claimed device that has not yet collected the envelope its creator
+approved, answered only AFTER its signature verifies; only that pairing's
+envelope endpoint admits it, with `409 not_approved` until the approval).
 Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
@@ -156,28 +156,48 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   windows|linux","app_version":"…"}` → `201 {"device_id":"<32hex>",
   "device_secret":"<64hex>"}`. `404 unknown_pairing`, `410 pairing_expired`,
   `409 already_claimed`. The device is created in state `pending`: it holds a
-  credential, but every device-authenticated route refuses it until the
-  creator approves.
+  credential, but every device-authenticated route refuses it until it
+  collects the envelope the creator approved. Since 1.1.4 an expired pairing
+  still answers `410 pairing_expired` for an hour to a claim carrying its
+  token (the server remembers at most 256), while any other token reads `404
+  unknown_pairing`, as it would for a live pairing.
 - `GET /v1/pairing/{id}` (device auth, creator only) → `{"state":"open|
   claimed|approved|consumed|expired","claimant":{"device_id","name",
-  "platform","app_version"}|null}`.
+  "platform","app_version"}|null}`. For the same hour after expiry the
+  creator reads `expired` or, if the key was collected, `consumed`, with a
+  `null` claimant.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
+  Approval activates nothing by itself (1.1.4; earlier servers activated the
+  claimant here).
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
   pending device and its wrapped secret are destroyed. Only a CLAIMED pairing
   is rejectable: an unclaimed one is `409 not_claimed` and one the creator
   already approved is `409 already_approved` and changes nothing, because the
   claimant is a paired device by then and deletion carries no last-active
   guard. A paired device is taken away with
-  `POST /v1/devices/{id}/revoke`. Expiry of an
-  unapproved pairing destroys them the same way, and so does a restart:
-  pairings live in memory, so a claim that does not survive one leaves a
-  device nobody can approve, and the start destroys it. The claimant pairs
-  again.
+  `POST /v1/devices/{id}/revoke`. Expiry of a pairing whose claimant never
+  collected the envelope, approved or not, destroys them the same way, and
+  so does a restart: pairings live in memory, so a claim that does not
+  survive one leaves a device nobody can approve, and the start destroys it.
+  The claimant pairs again.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
   then `{"envelope","nonce"}` exactly once; `410 envelope_consumed`
-  afterwards. Approval moves the device to state `active`.
+  afterwards, and `410 pairing_expired` once the ten minutes have passed.
+  Collecting it moves the device to state `active`: the activation is
+  journaled before the envelope is answered, and a refused journal write
+  consumes nothing.
+
+The approval prompt and the waiting claimant show the same six-digit match
+code (1.1.4), which neither side sends: each computes
+`HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" + device_id)`, reads its
+first four bytes as a big-endian integer modulo 1,000,000 and shows it as
+`ddd ddd` -- the creator from the claimant id the pairing poll names, the
+claimant from the id its claim returned. The server, which never holds `PS`,
+cannot make two screens agree, and a second device claiming a leaked code
+holds another id and shows another code. A 1.1.3 device shows no code and
+ignores one; either side pairs as before.
 
 ## Devices
 

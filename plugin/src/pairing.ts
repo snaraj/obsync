@@ -44,6 +44,7 @@ import {
   unhex,
   utf8,
 } from "./crypto";
+import { ApiError } from "./transport";
 import { WORDLIST } from "./wordlist";
 
 export const PAIRING_ID_BYTES = 16;
@@ -53,6 +54,8 @@ export const VRK_BYTES = 32;
 export const PHRASE_WORDS = 24;
 /** The directory identity also owns the pairing URI action. */
 export const PAIRING_ACTION = "obsync-private-sync";
+/** A pairing is claimable for ten minutes from its creation, the server's own window. */
+export const PAIRING_WINDOW_MS = 10 * 60 * 1000;
 
 export interface PairingCode {
   pairingId: string;
@@ -74,10 +77,27 @@ export function encodePairingCode(pairingId: string, enrollToken: string, pairin
   return base32(concat(unhex(pairingId), unhex(enrollToken), pairingSecret));
 }
 
+/** Quotes and brackets a copy picked up around what was meant (issue #154). */
+function unwrap(text: string): string {
+  return text.trim().replace(/^["'`<‘’“”]+|["'`>‘’“”]+$/g, "").trim();
+}
+
+/**
+ * Read a pasted code, or the link Copy link makes, whose query carries the
+ * code (issue #154). Refusals say what to paste, never what failed to decode.
+ */
 export function decodePairingCode(code: string): PairingCode {
-  const raw = unbase32(code.trim());
+  const linked = /[?&]code=([^&#\s]+)/.exec(code)?.[1];
+  let raw: Bytes;
+  try {
+    raw = unbase32(unwrap(linked ?? code));
+  } catch {
+    throw new Error("That is not a pairing code. Paste the code, or the link, exactly as your other device shows it under Pair a new device.");
+  }
   const expected = PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES + PAIRING_SECRET_BYTES;
-  if (raw.length < expected) throw new Error("pairing: the code is too short");
+  if (raw.length < expected) {
+    throw new Error("That pairing code is incomplete. Copy all of it again from your other device, or use its Copy link.");
+  }
   return {
     pairingId: hex(raw.subarray(0, PAIRING_ID_BYTES)),
     enrollToken: hex(raw.subarray(PAIRING_ID_BYTES, PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES)),
@@ -182,6 +202,128 @@ export async function openPairingVault(secret: Bytes, id: string, sealed: Sealed
     await vaultDetailsKey(secret, id), unbase64(sealed.envelope),
   );
   return checkedVault(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
+}
+
+const MATCH_LABEL = "obsync/v1/pair-match";
+
+/**
+ * The code both screens show while a pairing waits for approval (issue
+ * #152): six digits of `HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" +
+ * device_id)`. Each side computes it alone -- the creator from the claimant
+ * id the pairing poll names, the claimant from the id its claim returned --
+ * from a secret the server never sees, so the server cannot make two screens
+ * agree, and a second device racing a leaked code holds another id and shows
+ * another code. Nothing about it crosses the wire: a device older than 1.1.4
+ * shows none, and pairs as before.
+ */
+export async function matchCode(secret: Bytes, pairingId: string, deviceId: string): Promise<string> {
+  const bytes = await hkdf(secret, utf8(MATCH_LABEL), utf8(`${pairingId}:${deviceId}`), 4);
+  const value = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0) % 1_000_000;
+  const digits = String(value).padStart(6, "0");
+  return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+}
+
+const PLATFORM_LABELS: Record<string, string> = {
+  macos: "Mac", windows: "Windows PC", linux: "Linux PC", ios: "iPhone", ipados: "iPad", android: "Android",
+};
+
+/** What a person calls a platform word (issue #152); anything else is "device". */
+export function platformLabel(platform: string): string {
+  return Object.hasOwn(PLATFORM_LABELS, platform) ? PLATFORM_LABELS[platform] as string : "device";
+}
+
+/** No 0/O, 1/I/L or U: a tag is read aloud and retyped. */
+const TAG_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * Four characters that tell this device from every other of its kind, made
+ * HERE, once, and kept (issue #152). Not the computer's own name: that is
+ * often its owner's, and the server stores device names in clear.
+ */
+export function newDeviceTag(): string {
+  let tag = "";
+  while (tag.length < 4) {
+    // Rejection keeps the 30 characters equally likely.
+    const byte = randomBytes(1)[0] as number;
+    if (byte < 240) tag += TAG_ALPHABET[byte % 30];
+  }
+  return tag;
+}
+
+/** A setup token as pasted: quotes, spaces and line breaks are copy-paste, never token (issue #154). */
+export function pastedToken(text: string): string {
+  return unwrap(text).replace(/\s+/g, "");
+}
+
+/**
+ * A claim waiting for its vault key: everything a device that restarted needs
+ * to finish it inside the ten minutes, and nothing it keeps afterwards (issue
+ * #153). It lives in its own native secret entry, never in the credential.
+ */
+export interface PendingClaim {
+  pairingId: string;
+  /** `PS`, hex: it opens only this pairing's envelope. */
+  pairingSecret: string;
+  deviceId: string;
+  deviceSecret: string;
+  serverUrl: string;
+  /** Unix ms; the pairing was made before it, so it ends by `+ PAIRING_WINDOW_MS`. */
+  claimedAt: number;
+}
+
+/** A held claim as stored, or `null` for anything that is not exactly one. */
+export function readClaim(text: string | null): PendingClaim | null {
+  let value: unknown;
+  try {
+    value = text === null || text === "" ? null : JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const claim = value as PendingClaim | null;
+  const hexOf = (field: unknown, bytes: number): boolean =>
+    typeof field === "string" && new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(field);
+  if (claim === null || typeof claim !== "object" || !hexOf(claim.pairingId, PAIRING_ID_BYTES) ||
+      !hexOf(claim.pairingSecret, PAIRING_SECRET_BYTES) || !hexOf(claim.deviceId, 16) ||
+      !hexOf(claim.deviceSecret, 32) || typeof claim.serverUrl !== "string" ||
+      !Number.isSafeInteger(claim.claimedAt)) {
+    return null;
+  }
+  const { pairingId, pairingSecret, deviceId, deviceSecret, serverUrl, claimedAt } = claim;
+  return { pairingId, pairingSecret, deviceId, deviceSecret, serverUrl, claimedAt };
+}
+
+const PAIR_ELSEWHERE = "on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device";
+const NEW_CODE = "Make a new one on your other device with Pair a new device.";
+
+/**
+ * What a person reads when setup or pairing is refused: what happened, then
+ * what to do (issue #154). The server's code stays in the log line; nothing
+ * here names a status, a code or a cryptographic detail.
+ */
+const REFUSALS: Record<string, string> = {
+  bad_setup_token: "This server did not accept that setup token. Check that it is this server's token (obsyncd setup-token prints it) and paste it again.",
+  already_set_up: `This server already holds a vault, and one server holds one vault. To add this device to it, pair it: ${PAIR_ELSEWHERE}; a different vault needs a server of its own.`,
+  not_set_up: "This server holds no vault yet. Set it up first on one device, with Setup or recover and the server's setup token.",
+  unknown_pairing: `That code does not match a pairing on this server. Check that you copied all of it and that this device uses the same server. ${NEW_CODE}`,
+  pairing_expired: `That code has expired: codes last ten minutes. ${NEW_CODE}`,
+  already_claimed: `Another device already used that code. ${NEW_CODE} If none of your devices used it, choose Reject when the other device asks.`,
+  stale_timestamp: "This device's clock is more than five minutes off, so the server refused it. Set the date and time automatically, then try again.",
+  edge_required: "This server only answers through its access-controlled edge, and this request did not come through it. Check the Server URL and the edge headers in obsync's settings.",
+  device_revoked: "This device was removed from the server, so it cannot pair another. Use Leave this server in obsync's settings, then pair this device again.",
+};
+
+/** The text for one refusal code; one this table does not know says so without naming it. */
+export function refusalFor(code: string): string {
+  return Object.hasOwn(REFUSALS, code)
+    ? REFUSALS[code] as string
+    : "The server refused this step, so nothing changed. Try again; if it repeats, obsync's log names the reason.";
+}
+
+/** Any error a setup or pairing step throws, as text: refusals by table, this plugin's own words as they are. */
+export function refusalText(error: unknown): string {
+  if (error instanceof ApiError) return refusalFor(error.code);
+  const message = error instanceof Error ? error.message.trim() : "";
+  return message !== "" ? message : "Something went wrong on this device before anything was shared. Try again.";
 }
 
 /**

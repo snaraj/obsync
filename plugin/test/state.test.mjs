@@ -206,7 +206,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
   const state = await State.open(store(), false, memorySecrets());
   Object.assign(state.data, {
     vrk: "aa".repeat(32), deviceId: "bb".repeat(16), deviceSecret: "cc".repeat(32),
-    deviceName: "Study laptop", serverUrl: "https://sync.example.invalid",
+    deviceName: "Study laptop", deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid",
     edgeHeaders: [{ name: "X-Edge", value: "EDGE SENTINEL" }], lastSeq: 9,
     files: { "Notes/a.md": { fileId: "f1", versionId: "v1", mtime: 1, size: 2, sha256: "s" } },
     // A FOLDER RECORD IS A PAIRING FACT TOO (#104): its file id is derived
@@ -239,7 +239,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
   assert.deepEqual(
     { ...state.data },
     {
-      vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
+      vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
       retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
       syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },

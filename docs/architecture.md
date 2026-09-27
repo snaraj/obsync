@@ -372,23 +372,29 @@ that phrase the vault is unrecoverable by design.
    for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
    AES-GCM binding to the pairing ID keep these details blind to the server;
    the creator decrypts them before showing approval (protocol: Pairing).
-3. The paired device polls the pairing, shows "Approve <name> on
-   <platform>?", and on approval encrypts `{VRK}` with `K_pair =
+3. The paired device polls the pairing and asks about the claim by the
+   claimant's name ("Mac 7KQ4": what it is and a tag it made itself), what it
+   is, when it asked, and a match code both screens derive from `PS` and the
+   claimant's device id (protocol: Pairing). Sealed vault details that do not
+   open under `PS` mean the claimant holds another code, and it is refused
+   before anyone is asked. On approval it encrypts `{VRK}` with `K_pair =
    HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
-   envelope. The server stores it for one fetch.
+   envelope. The server stores it for one fetch, and the paired device says
+   "paired" only once the server reports it fetched.
 4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and persists `VRK` through the native secret store before sync starts. Approval
-   is what activates the device; rejection, or expiry of an unapproved
-   pairing, destroys the pending credential. Rejection reaches a PENDING
-   claimant only: once approved, the claimant is a paired device, so a
-   reject that arrived after the approval is refused
-   (`409 already_approved`) and the store refuses to delete anything but a
-   pending device. Removing a paired device is revocation, which keeps the
-   record, destroys the secret, and refuses the last active device only while
-   account recovery is unregistered.
+   `PS`, and persists `VRK` and its credential together, in one write to the
+   native secret store, before sync starts. Collecting the envelope is what
+   activates the device; rejection, or expiry before collection, approved or
+   not, destroys the pending credential. A claimant that cannot open or keep
+   the key revokes the device it just activated. Rejection reaches a claim
+   the creator has not approved only: a reject that arrived after the
+   approval is refused (`409 already_approved`) and the store refuses to
+   delete anything but a pending device. Removing a paired device is
+   revocation, which keeps the record, destroys the secret, and refuses the
+   last active device only while account recovery is unregistered.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
-restart between step 2 and step 3 leaves a pending device behind a pairing
+restart between step 2 and step 4 leaves a pending device behind a pairing
 that no longer exists: nobody can approve it, and the expiry sweep cannot
 reach it, because the sweep only ever sees the table. Assembling the
 application state therefore destroys every pending device no pairing is
@@ -403,8 +409,8 @@ it holds no `VRK`. Approval is always from a paired Obsidian instance.
 
 Obsidian 1.13.0 or newer is required; the vendored official API package is
 pinned at exactly that version, so the compiler refuses any newer member. The plugin uses only the public SecretStorage
-`getSecret` and `setSecret` operations for its exact owned entry. A validated,
-random installation ID determines that entry's name. No secret inventory or
+`getSecret` and `setSecret` operations for its exact owned entries. A validated,
+random installation ID determines their names. No secret inventory or
 other plugin installation is read or imported.
 
 The entry contains one versioned envelope with current and previous valid
@@ -414,10 +420,14 @@ Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
 selects only the record named by metadata with the matching server/device
 identity; missing, malformed or mismatched data stops loading instead of
 resetting identity or generating another key. Key-only recovery and
-credential-only enrollment are preserved as incomplete states. Approval can
-finish in an already-open pairing dialog. Its pairing code is not persisted,
-so app restart does not resume that dialog. A recovery phrase can restore
-the key after device approval; it does not authorize a pending device.
+credential-only enrollment are preserved as incomplete states. A pairing
+claim waiting for its key is held in a second owned entry, beside the
+credential and never in it: the pairing id, `PS`, the claimed credential and
+the claim time. It signs only its own envelope collection, survives a closed
+dialog and an app restart, and is emptied (the API has no delete) when the
+key is kept or the claim ends, or once it is older than the pairing's ten
+minutes. A recovery phrase can restore a key; it does not authorize a
+pending device.
 
 Existing plaintext settings migrate by writing and reading back the owned
 entry before replacing metadata. Saves use detached snapshots and serialize
@@ -436,9 +446,10 @@ a dialog invalidates its later UI continuation. Closing cannot undo a local
 write already dispatched by the user’s action. Setup, pairing and key-recovery continuations are bound to the
 state, transport, server URL and plugin session that started them; a
 superseded response cannot overwrite a new session’s identity. Shutdown can
-still lose a one-time server response. Closing a pairing dialog after an
-envelope request was dispatched preserves a received key in the same active
-session, without restarting sync or issuing another collection request.
+still lose a one-time server response; a claim that collected its envelope
+and restarted before keeping the key revokes that device when it resumes.
+Closing a pairing dialog does not cancel the claim: it finishes behind the
+dialog and says so.
 An interrupted first migration can leave an unreferenced native entry;
 the plugin never inventories or automatically deletes native secrets.
 

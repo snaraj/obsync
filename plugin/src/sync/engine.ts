@@ -496,6 +496,14 @@ export const RECHECK_MS = 400;
  */
 export const QUIET_MS = 5000;
 export const HEARTBEAT_MS = 60 * 60 * 1000;
+
+/**
+ * How long a read of the device names serves a page from other devices
+ * before that page reads them again (issue #164): a rename made elsewhere
+ * reaches this device's copies and notices within it, at one request per
+ * period at most, and only while other devices are writing.
+ */
+export const NAMES_TTL_MS = 10 * 60 * 1000;
 /**
  * How often the engine compares the vault against its own record.
  *
@@ -666,6 +674,10 @@ export class SyncEngine {
   /** One per start: `stop` aborts it, which ends every request that start is waiting on. */
   private halt = new AbortController();
   private heartbeatHandle: unknown = null;
+  /** When the device names were last read (`readNames`). */
+  private namesReadAt = 0;
+  /** Ids a read did not name, so a page cannot cost a read per record; cleared hourly. */
+  private readonly unnamed = new Set<string>();
   private repairHandle: unknown = null;
   private scanHandle: unknown = null;
   private repair: ChunkRepair | null = null;
@@ -2650,6 +2662,7 @@ export class SyncEngine {
    * (`exclusive`), and a record this device cannot write is parked (`receive`).
    */
   private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+    await this.learnNames(context, page.changes);
     let replayed = 0;
     await this.exclusive(async () => {
       // What arrived and is not yet written is work, and the status counts it
@@ -3617,16 +3630,88 @@ export class SyncEngine {
       const beat = await context.transport.heartbeat(context.host.appVersion, context.state.data.policy);
       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
       else context.host.log("heartbeat decision=reported policy_schema=v1");
-      const { devices } = await context.transport.devices({ signal: context.signal });
-      context.deviceNames.clear();
-      for (const device of devices) context.deviceNames.set(device.device_id, device.name);
     } catch (error) {
       context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${error instanceof Error ? error.message : String(error)}`);
     }
+    this.unnamed.clear();
+    await this.readNames(context, "heartbeat");
     if (this.running) {
       this.heartbeatHandle = this.timers.set(() => {
         void this.track(this.heartbeat());
       }, HEARTBEAT_MS);
     }
+  }
+
+  /** Read the names again now: this device just paired another, or renamed one (issue #164). */
+  async refreshDeviceNames(): Promise<void> {
+    const context = this.contextValue;
+    if (this.running && context !== null) await this.readNames(context, "requested");
+  }
+
+  /**
+   * Name every device a page speaks for BEFORE applying it (issue #164).
+   * Names were read at start and hourly, so a device paired since was
+   * "another device" for up to an hour, in copies that keep that name for
+   * good. An id no read has named yet costs ONE read; an id still unnamed
+   * after it -- a device deleted since -- is remembered and falls back, so a
+   * page never costs more than one request. A page from other devices also
+   * re-reads names older than `NAMES_TTL_MS`, which is how a rename made
+   * elsewhere arrives.
+   */
+  private async learnNames(context: SyncContext, changes: ChangeRecord[]): Promise<void> {
+    const others = changes.filter((change) => change.device_id !== context.deviceId);
+    if (others.length === 0) return;
+    const unknown = others.some((change) => !context.deviceNames.has(change.device_id) && !this.unnamed.has(change.device_id));
+    if (!unknown && this.nowFn() - this.namesReadAt < NAMES_TTL_MS) return;
+    await this.readNames(context, unknown ? "unknown_device" : "stale");
+    for (const change of others) if (!context.deviceNames.has(change.device_id)) this.unnamed.add(change.device_id);
+  }
+
+  /** The one place device names are read; a failed read keeps the names it had. */
+  private async readNames(context: SyncContext, reason: string): Promise<void> {
+    const started = this.nowFn();
+    let devices: { device_id: string; name: string }[];
+    try {
+      // Ended by the stop like every request a start makes (#157).
+      ({ devices } = await context.transport.devices({ signal: context.signal }));
+    } catch (error) {
+      context.host.log(
+        `devices decision=${stopped(error) ? "cancelled" : "failed"} reason=${reason} error=${error instanceof ApiError ? error.code : "local_or_lost"} duration_ms=${this.nowFn() - started}`,
+      );
+      return;
+    }
+    context.deviceNames.clear();
+    for (const device of devices) context.deviceNames.set(device.device_id, device.name);
+    this.namesReadAt = this.nowFn();
+    context.host.log(`devices decision=read reason=${reason} devices=${devices.length} duration_ms=${this.nowFn() - started}`);
+    await this.settleOwnName(context, devices).catch((error: unknown) =>
+      context.host.log(`device decision=failed reason=own_name error=${error instanceof ApiError ? error.code : "local_or_lost"}`));
+  }
+
+  /**
+   * This device's own row (issue #152). Before 1.1.4 every desktop enrolled
+   * as its bare platform, "macos", and showed "macos-xxxx" only to itself; a
+   * device that never chose a name gives the server the one it shows here,
+   * once. Any other difference is a rename made on another device, and this
+   * device takes it as its own, so it has one name everywhere.
+   */
+  private async settleOwnName(context: SyncContext, devices: { device_id: string; name: string }[]): Promise<void> {
+    const own = devices.find((device) => device.device_id === context.deviceId);
+    const shown = context.host.deviceName;
+    if (own === undefined || own.name === shown) return;
+    const { platform } = context.host;
+    const legacy = context.state.data.deviceName === null &&
+      (own.name === platform || own.name === `${platform}-${context.deviceId.slice(0, 4)}`);
+    if (!legacy) {
+      context.state.data.deviceName = own.name;
+      await context.state.save();
+      context.host.log("device decision=adopted reason=renamed_elsewhere");
+      return;
+    }
+    // The default's tag is kept before the server is told the name it ends.
+    await context.state.save();
+    const sent = await context.transport.patchDevice(context.deviceId, { name: shown });
+    if (sent.outcome === "ok") context.deviceNames.set(context.deviceId, shown);
+    context.host.log(`device decision=${sent.outcome === "ok" ? "renamed" : "unconfirmed"} reason=legacy_default`);
   }
 }

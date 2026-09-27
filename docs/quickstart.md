@@ -219,11 +219,15 @@ server with its own certificate authority, see
 
    This is the actual phone dialog, captured before entering a code. For
    certificate setup, follow [Add the phone](same-network.md#add-the-phone).
-4. Back on the computer, check the device name and, on updated devices, the
-   new device's vault name and note count before approving. If these are not
-   the vault you intended, select **Reject**. The phone
-   receives the vault key encrypted under a pairing secret that never touches
-   the server; until you approve, the phone has no authority of any kind.
+4. Back on the computer, check the device name, that both screens show the
+   same match code, and, on updated devices, the new device's vault name and
+   note count before approving. If these are not the vault you intended, or
+   the match codes differ, select **Reject**. The phone receives the vault key
+   encrypted under a pairing secret that never touches the server; until you
+   approve, the phone has no authority of any kind. If the phone's dialog is
+   closed or Obsidian restarts while it waits, pairing still finishes once you
+   approve within the code's ten minutes; after that, pair again with a new
+   code.
 
    ![The computer names the phone vault and its note count before approval](assets/phone-candidate-113/final-train-approval.png)
 

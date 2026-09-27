@@ -1,0 +1,11 @@
+# M1856: a claim whose vault details do not open is left waiting, not refused (#153)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -252,7 +252,6 @@
+         if (this.asking !== pairingId) return;
+         this.asking = null;
+         statusEl.setText(MISMATCH);
+-        await this.refuse(pairingId, "code_mismatch", null);
+         return;
+       }
+     }

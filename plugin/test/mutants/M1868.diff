@@ -1,0 +1,12 @@
+# M1868: a restarted device never resumes its held claim (#153)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2453,7 +2453,7 @@
+    */
+   resumePairing(): void {
+     const state = this.state;
+-    const held = readClaim(state.heldClaim());
++    const held = readClaim(null);
+     if (held === null) return;
+     // A claim an older session was collecting is this session's now: that
+     // session stops at its next step and leaves the entry alone.

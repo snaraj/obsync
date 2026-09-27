@@ -73,9 +73,11 @@ import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Tra
 import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
-import { newVaultKey, PAIRING_ACTION } from "./pairing";
+import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
-import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
+import {
+  LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, awaitApproval,
+} from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import { Indicator, indicated } from "./ui/indicator";
 import {
@@ -2020,6 +2022,8 @@ export default class ObsyncPlugin extends Plugin {
   private readonly watchers = new Set<() => void>();
   private statusValue: EngineStatus = { kind: "idle" };
   forgottenDevice = false;
+  /** A pairing claim waiting for its vault key (issue #153); it signs its own collection. */
+  waiting: Waiting | null = null;
   private enrolling = false;
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
@@ -2090,10 +2094,7 @@ export default class ObsyncPlugin extends Plugin {
         return requestUrl(request);
       },
       serverUrl: () => state.data.serverUrl,
-      device: () => {
-        const { deviceId, deviceSecret } = state.data;
-        return deviceId && deviceSecret ? { id: deviceId, secret: unhex(deviceSecret) } : null;
-      },
+      device: () => this.credential(state),
       edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
       // Only this session's transport speaks for the status bar.
@@ -2199,6 +2200,7 @@ export default class ObsyncPlugin extends Plugin {
     })).then(async () => {
       if (this.state.data.pendingScope !== undefined) await this.finishScopeChange(generation);
       if (this.state.paired) await this.startEngine();
+      else this.resumePairing();
       if (this.isCurrent(generation)) void this.checkForUpdate();
     });
   }
@@ -2796,17 +2798,68 @@ export default class ObsyncPlugin extends Plugin {
   /**
    * The name this device answers to in the dashboard's device table and in
    * another device's conflict copies. It is the name the user gave it, or a
-   * platform-and-id default until they give it one.
+   * default until they give it one.
    */
   deviceName(): string {
     const chosen = this.state.data.deviceName;
     return chosen !== null && chosen.trim() !== "" ? chosen.trim() : this.defaultDeviceName();
   }
 
-  /** The name a device answers to before anyone renames it. */
+  /**
+   * The name a device answers to before anyone renames it: what it is and a
+   * tag made here, "Mac 7KQ4" (issue #152). The tag exists BEFORE setup or a
+   * claim, so the server is told the name this device will show -- not the
+   * bare platform every Mac used to share -- and it is kept, so the name
+   * never changes under the device (`nameThisDevice`).
+   */
   defaultDeviceName(): string {
-    const id = this.state.data.deviceId;
-    return id === null ? this.platformName() : `${this.platformName()}-${id.slice(0, 4)}`;
+    return `${platformLabel(this.platformName())} ${this.state.data.deviceTag ??= newDeviceTag()}`;
+  }
+
+  /** Keep the tag before the name is sent anywhere a restart could lose it. */
+  async nameThisDevice(): Promise<string> {
+    if (this.state.data.deviceTag === null) {
+      this.state.data.deviceTag = newDeviceTag();
+      await this.state.save();
+    }
+    return this.deviceName();
+  }
+
+  /**
+   * The credential a device request signs with. A pairing claim waiting for
+   * its key signs as itself (issue #153): it is never the stored credential
+   * until the key it was approved for is kept, and nothing else runs while it
+   * waits, because a device that syncs never claims.
+   */
+  credential(state: State): { id: string; secret: Uint8Array<ArrayBuffer> } | null {
+    const waiting = this.waiting?.claim;
+    if (waiting !== undefined) return { id: waiting.deviceId, secret: unhex(waiting.deviceSecret) };
+    const { deviceId, deviceSecret } = state.data;
+    return deviceId && deviceSecret ? { id: deviceId, secret: unhex(deviceSecret) } : null;
+  }
+
+  /**
+   * Finish a pairing a restart interrupted, inside its window, or say to pair
+   * again (issue #153). Never the recovery phrase: a claim holds no key yet.
+   */
+  resumePairing(): void {
+    const state = this.state;
+    const held = readClaim(state.heldClaim());
+    if (held === null) return;
+    // A claim an older session was collecting is this session's now: that
+    // session stops at its next step and leaves the entry alone.
+    if (state.paired || held.serverUrl !== state.data.serverUrl) {
+      this.log("pairing role=claimant decision=dropped reason=stale_claim");
+      state.holdClaim(null);
+      return;
+    }
+    this.log(`pairing role=claimant decision=resumed age_ms=${Date.now() - held.claimedAt} window_ms=${PAIRING_WINDOW_MS}`);
+    awaitApproval(this, this.app, held, () => undefined, true);
+  }
+
+  /** Name another device's copies right after a pairing or a rename (issue #164). */
+  async refreshDeviceNames(): Promise<void> {
+    await this.engine?.refreshDeviceNames();
   }
 
   /**
@@ -2835,6 +2888,7 @@ export default class ObsyncPlugin extends Plugin {
     await state.save();
     assertCurrent();
     this.log(`device decision=updated name_len=${trimmed.length}`);
+    await this.refreshDeviceNames();
   }
 
   /** Every device paired to this vault, for the settings tab's device list. */
@@ -3140,11 +3194,14 @@ export default class ObsyncPlugin extends Plugin {
   async setUpAccount(setupToken: string, accountName: string): Promise<void> {
     if (this.enrolling) return;
     this.enrolling = true;
+    let freshKey = false;
     try {
       if (this.forgottenDevice) await this.resetForgottenEnrollment();
       const { state, transport, assertCurrent } = this.captureSession();
       if (state.data.deviceId !== null || state.data.deviceSecret !== null) {
-        throw new Error("This device already has an enrollment. Finish device approval first, then restore its recovery phrase if needed; do not repeat server setup.");
+        throw new Error(state.paired
+          ? "This device already has an enrollment, so server setup was not repeated. To set it up with another server, use Leave this server or Switch server first."
+          : "This device already has an enrollment, but its last pairing did not finish, so it holds no vault key. Pair it again: on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device. Do not repeat server setup.");
       }
       const nested = await this.nestedRefusal("setup");
       if (nested !== null) {
@@ -3153,7 +3210,10 @@ export default class ObsyncPlugin extends Plugin {
       }
       // Persist the key BEFORE a one-time request can create its account. A
       // lost answer then leaves the proof needed for an explicit recovery.
-      const freshKey = state.data.vrk === null;
+      // The name's tag rides that save, or the credential's, so the server
+      // is told the name this device keeps (issue #152).
+      const name = this.deviceName();
+      freshKey = state.data.vrk === null;
       if (freshKey) {
         state.data.vrk = hex(newVaultKey());
         await state.save();
@@ -3162,8 +3222,8 @@ export default class ObsyncPlugin extends Plugin {
       const recovery = await accountRecovery(vrk);
       assertCurrent();
       if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
-      const enrolled = await transport.setup(setupToken, accountName, {
-        name: this.deviceName(),
+      const enrolled = await transport.setup(pastedToken(setupToken), accountName, {
+        name,
         platform: this.platformName(),
         app_version: this.manifest.version,
       }, recovery);
@@ -3191,15 +3251,22 @@ export default class ObsyncPlugin extends Plugin {
     } catch (error) {
       const code = error instanceof ApiError ? error.code : "local_or_lost";
       this.log(`setup decision=failed reason=${code}`);
-      // One server holds one vault (#141): the one route left after this
-      // refusal, pairing, would merge a second vault into the first.
-      const text = code === "already_set_up"
-        ? "This server already holds a vault, and one server holds one vault. If this is that vault, use Pair this device from a device that syncs it, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own."
-        : code === "recovery_unavailable"
-          ? "This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost. Use Pair this device from a device that still syncs it, then update that device and server to register recovery; a different vault needs a server of its own."
-          : code === "bad_recovery_proof"
-            ? "These recovery words do not open this server’s vault. Restore its correct 24-word phrase, or pair from a syncing device. No device was enrolled; a different vault needs a server of its own."
-            : error instanceof Error ? error.message : String(error);
+      // One server holds one vault (#141). A device whose key was made for
+      // this setup is a SECOND device whatever the server said about
+      // recovery, and pairing is its way in (#154). Only a key restored from
+      // the phrase is told about recovery.
+      const pairHere = "pair this device from one that syncs it (Pair a new device there, then Pair this device here)";
+      const text = !(error instanceof ApiError)
+        ? refusalText(error)
+        : freshKey && ["already_set_up", "recovery_unavailable", "bad_recovery_proof"].includes(code)
+          ? refusalFor("already_set_up")
+          : code === "already_set_up"
+            ? `This server already holds a vault, and one server holds one vault. If this is that vault, ${pairHere}, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own.`
+            : code === "recovery_unavailable"
+              ? `This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost, so these words cannot re-enrol this device: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
+              : code === "bad_recovery_proof"
+                ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
+                : refusalFor(code);
       new Notice(`obsync: ${text}`, 12000);
     } finally {
       this.enrolling = false;

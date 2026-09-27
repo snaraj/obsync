@@ -145,6 +145,8 @@ export interface ObsyncData {
   deviceSecret: string | null;
   /** What this device calls itself, as renamed here or on another device. */
   deviceName: string | null;
+  /** The four characters its default name ends with, made here once (issue #152). */
+  deviceTag: string | null;
   serverUrl: string;
   /** Optional service-token headers required by an access-controlled edge. */
   edgeHeaders: EdgeHeader[];
@@ -229,6 +231,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     deviceId: null,
     deviceSecret: null,
     deviceName: null,
+    deviceTag: null,
     serverUrl: "",
     edgeHeaders: [],
     lastSeq: 0,
@@ -292,6 +295,15 @@ function secretRef(installationId: string): string {
   return `obsync-private-sync-v1-${installationId}`;
 }
 
+/**
+ * The second owned entry: a pairing claim waiting for its vault key (issue
+ * #153). Beside the credential envelope, never in it, so a plugin that does
+ * not know it reads its credential exactly as before.
+ */
+function claimRef(installationId: string): string {
+  return `${secretRef(installationId)}-claim`;
+}
+
 function readEnvelope(raw: string, installationId: string): SecretEnvelope {
   const envelope: unknown = JSON.parse(raw);
   const fields = ["version", "installationId", "current", "previous"];
@@ -331,6 +343,8 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;
   data.deviceSecret = typeof loaded["deviceSecret"] === "string" ? loaded["deviceSecret"] : null;
   data.deviceName = typeof loaded["deviceName"] === "string" ? loaded["deviceName"] : null;
+  const tag = loaded["deviceTag"];
+  data.deviceTag = typeof tag === "string" && /^[2-9A-HJKMNP-TV-Z]{4}$/.test(tag) ? tag : null;
   data.serverUrl = str(loaded["serverUrl"], "");
   data.lastSeq = num(loaded["lastSeq"], 0);
   const headers = loaded["edgeHeaders"];
@@ -723,6 +737,34 @@ export class State {
     if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
     this.envelope = collapsed;
     this.serializedSecret = serialized;
+  }
+
+  /** The held pairing claim as stored, or `null` (`pairing.ts`, `readClaim`). */
+  heldClaim(): string | null {
+    try {
+      const raw = this.secrets.getSecret(claimRef(this.installationId));
+      return raw === "" ? null : raw;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Hold a pairing claim, or drop it with `null` (`SecretStorage` declares no
+   * delete, so dropping writes it empty). Best effort, and read back: a claim
+   * not kept costs a restart its resume and nothing else, so this answers
+   * whether it was kept instead of stopping the state.
+   */
+  holdClaim(claim: string | null): boolean {
+    if (this.failure !== null || this.lease.holder !== this.claim) return false;
+    const ref = claimRef(this.installationId);
+    const text = claim ?? "";
+    try {
+      this.secrets.setSecret(ref, text);
+      return this.secrets.getSecret(ref) === text;
+    } catch {
+      return false;
+    }
   }
 
   /** True once this device holds a vault key and a device credential. */

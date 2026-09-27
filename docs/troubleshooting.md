@@ -268,14 +268,18 @@ approval on the other device…". A request from it may be refused with
 `403 device_pending`.
 
 **Why it happens.** The pairing code was accepted and nobody has approved the
-new device yet. Until approval it has no access of any kind.
+new device yet. Until the new device collects the vault key you approve, it has
+no access of any kind.
 
 **How to fix it.**
 
 1. On the device you made the code on, keep **Pair a new device** open.
-2. It asks whether to approve the new device, by name and vault. Check both,
-   then select **Approve**.
-3. A pairing that expires before approval leaves nothing behind: pair again.
+2. It asks whether to approve the new device, by name and vault, and shows a
+   match code. Approve only if the name and vault are right and the new
+   device's screen shows the same match code; otherwise select **Reject**.
+3. A pairing that ends before the new device collects the key (rejected, or
+   past its ten minutes, approved or not) leaves nothing behind: pair again
+   with a new code.
 
 <!-- CAPTURE(1.1.4): the approval question with the pairing match code -->
 
@@ -550,15 +554,16 @@ for each volume, minus what is already stored.
 
 ## Other refusals a device can show
 
-The plugin prints the server's refusal as `<status> <code>: <detail>`, so any
-code below appears in the status bar or in a notice exactly as it is spelled
-here. These are the ones left after the entries above; none of them is a
-reason to repeat setup.
+Setup and pairing say what happened and what to do in words (1.1.4), and the
+code stays in the log. Elsewhere the plugin prints the server's refusal as
+`<status> <code>: <detail>`, so any code below appears in the status bar or in
+a notice exactly as it is spelled here. These are the ones left after the
+entries above; none of them is a reason to repeat setup.
 
 | Code | What it means | What to do |
 | --- | --- | --- |
 | `409 already_claimed` | the pairing code has already been claimed by another device | mint a new one with **Pair a new device** |
-| `410 pairing_expired` | the code was not claimed within its ten minutes | mint a new one |
+| `410 pairing_expired` | the code was not claimed, or its key not collected, within its ten minutes; answered for an hour afterwards, then `404 unknown_pairing` | mint a new one |
 | `409 missing_chunks` | a version was posted naming chunks the server does not hold, so it refused to record it rather than record a file it cannot serve | let sync run again; it re-uploads what is missing. A repeat is worth a report |
 | `409 too_many_heads` | one file has accumulated more unmerged heads than the server will carry | resolve the conflict copies for that file, which retires its heads |
 | `503 nonce_cache_full` | the replay cache is full | transient by construction: a repeatable request retries itself with backoff, and the next sweep clears it |

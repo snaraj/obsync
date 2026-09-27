@@ -52,8 +52,108 @@ test("a code survives the way people retype it, and a short one is refused", () 
   const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret);
   const mangled = `${code.slice(0, 20).toLowerCase()} ${code.slice(20, 60)}-${code.slice(60)}`;
   assert.deepEqual(pairing.decodePairingCode(mangled), pairing.decodePairingCode(code));
-  assert.throws(() => pairing.decodePairingCode(code.slice(0, 40)), /too short/);
-  assert.throws(() => pairing.decodePairingCode("not a code!"), /invalid character/);
+  // Refusals say what to paste, never what failed to decode (issue #154).
+  assert.throws(() => pairing.decodePairingCode(code.slice(0, 40)), /^Error: That pairing code is incomplete\. Copy all of it again/);
+  assert.throws(() => pairing.decodePairingCode("not a code!"), /^Error: That is not a pairing code\. Paste the code, or the link/);
+  for (const bad of ["not a code!", code.slice(0, 40)]) {
+    assert.throws(() => pairing.decodePairingCode(bad), (error) => !/base32|character|bytes/.test(error.message));
+  }
+});
+
+test("a pasted pairing link, or a code in quotes, decodes to the code it carries (#154)", () => {
+  const secret = bytes("101112131415161718191a1b1c1d1e1f");
+  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret);
+  const want = pairing.decodePairingCode(code);
+  for (const pasted of [
+    pairing.pairingLink(code),
+    `  ${pairing.pairingLink(code)}\n`,
+    `obsidian://obsync-private-sync?code=${code}`,
+    `obsidian://obsync-private-sync/pair?x=1&code=${code}&y=2`,
+    `"${code}"`, `“${code}”`, `<${code}>`, `'${code}'`,
+  ]) {
+    assert.deepEqual(pairing.decodePairingCode(pasted), want, pasted);
+  }
+});
+
+test("the match code is six digits of HKDF over the secret, the pairing and the claimant (#152)", async () => {
+  const secret = bytes("101112131415161718191a1b1c1d1e1f");
+  const device = "aabbccddeeff00112233445566778899";
+  const code = await pairing.matchCode(secret, PAIRING_ID, device);
+  assert.match(code, /^\d{3} \d{3}$/);
+  const derived = await c.hkdf(secret, c.utf8("obsync/v1/pair-match"), c.utf8(`${PAIRING_ID}:${device}`), 4);
+  const expected = String(new DataView(derived.buffer).getUint32(0) % 1_000_000).padStart(6, "0");
+  assert.equal(code.replace(" ", ""), expected, "both ends derive it the same way, with no wire field");
+  assert.equal(await pairing.matchCode(secret, PAIRING_ID, device), code, "deterministic");
+  // Each input moves it: another claimant, another pairing, another secret.
+  const others = [
+    await pairing.matchCode(secret, PAIRING_ID, "aabbccddeeff00112233445566778898"),
+    await pairing.matchCode(secret, "fe".repeat(16), device),
+    await pairing.matchCode(bytes("101112131415161718191a1b1c1d1e1e"), PAIRING_ID, device),
+  ];
+  for (const other of others) assert.notEqual(other, code);
+});
+
+test("platform words read as what a person calls the device; anything else is a device (#152)", () => {
+  assert.deepEqual(
+    ["macos", "windows", "linux", "ios", "ipados", "android"].map(pairing.platformLabel),
+    ["Mac", "Windows PC", "Linux PC", "iPhone", "iPad", "Android"],
+  );
+  for (const hostile of ["__proto__", "constructor", "hasOwnProperty", "", "MACOS"]) {
+    assert.equal(pairing.platformLabel(hostile), "device", hostile);
+  }
+});
+
+test("a device tag is four unambiguous characters, made fresh each time (#152)", () => {
+  const tags = new Set();
+  for (let draw = 0; draw < 200; draw++) {
+    const tag = pairing.newDeviceTag();
+    assert.match(tag, /^[2-9A-HJKMNP-TV-Z]{4}$/);
+    tags.add(tag);
+  }
+  assert.ok(tags.size > 190, `only ${tags.size} distinct tags in 200 draws`);
+});
+
+test("a pasted setup token loses quotes, spaces and line breaks, and nothing else (#154)", () => {
+  const token = "ab".repeat(32);
+  for (const pasted of [token, ` ${token} `, `"${token}"`, `“${token}”`, `'${token}'\n`,
+    `${token.slice(0, 30)}\n${token.slice(30)}`, `${token.slice(0, 10)} ${token.slice(10)}`]) {
+    assert.equal(pairing.pastedToken(pasted), token, JSON.stringify(pasted));
+  }
+  assert.equal(pairing.pastedToken("other-server-token"), "other-server-token");
+});
+
+test("every setup and pairing refusal reads as what happened and what to do, never a code (#154)", () => {
+  const { ApiError } = require("../build/transport.js");
+  const codes = ["bad_setup_token", "already_set_up", "not_set_up", "unknown_pairing", "pairing_expired",
+    "already_claimed", "stale_timestamp", "edge_required", "device_revoked"];
+  const texts = new Set();
+  for (const code of codes) {
+    const text = pairing.refusalText(new ApiError(400, code, "server detail sentinel"));
+    assert.ok(text.length > 40, code);
+    assert.ok(!text.includes(code) && !text.includes("server detail sentinel") && !/\b\d{3}\b/.test(text), text);
+    texts.add(text);
+  }
+  assert.equal(texts.size, codes.length, "each refusal has its own words");
+  assert.match(pairing.refusalFor("pairing_expired"), /expired.*Pair a new device/);
+  assert.match(pairing.refusalFor("unknown_pairing"), /does not match a pairing.*Pair a new device/);
+  assert.match(pairing.refusalFor("already_set_up"), /Pair a new device.*Pair this device/);
+  const unknown = pairing.refusalText(new ApiError(418, "teapot_code", "sentinel"));
+  assert.ok(!unknown.includes("teapot_code") && !unknown.includes("418"), unknown);
+  assert.equal(pairing.refusalText(new Error("this plugin's own words")), "this plugin's own words");
+  for (const empty of [new Error(""), "", null, { name: "OperationError" }]) {
+    assert.match(pairing.refusalText(empty), /^Something went wrong on this device before anything was shared/);
+  }
+});
+
+test("a held claim is read back exactly, and anything else is no claim (#153)", () => {
+  const claim = { pairingId: PAIRING_ID, pairingSecret: "10".repeat(16), deviceId: "aa".repeat(16),
+    deviceSecret: "0f".repeat(32), serverUrl: "https://sync.example.invalid", claimedAt: 1757200000000 };
+  assert.deepEqual(pairing.readClaim(JSON.stringify({ ...claim, extra: "dropped" })), claim);
+  for (const bad of [null, "", "{", "null", "[]", JSON.stringify({ ...claim, pairingSecret: "10" }),
+    JSON.stringify({ ...claim, deviceId: "ZZ".repeat(16) }), JSON.stringify({ ...claim, claimedAt: "1" }),
+    JSON.stringify({ ...claim, serverUrl: 7 }), JSON.stringify({ ...claim, deviceSecret: undefined })]) {
+    assert.equal(pairing.readClaim(bad), null, String(bad));
+  }
 });
 
 test("the pairing link is an obsidian URI carrying the code", () => {

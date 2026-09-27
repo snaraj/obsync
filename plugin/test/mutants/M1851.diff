@@ -1,0 +1,12 @@
+# M1851: the default name falls back to the bare platform word (#152)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2422,7 +2422,7 @@
+    * never changes under the device (`nameThisDevice`).
+    */
+   defaultDeviceName(): string {
+-    return `${platformLabel(this.platformName())} ${this.state.data.deviceTag ??= newDeviceTag()}`;
++    return this.platformName();
+   }
+ 
+   /** Keep the tag before the name is sent anywhere a restart could lose it. */
