@@ -118,8 +118,13 @@ fetch() {
 }
 
 ready() {
+  # A process that has exited will not become ready: refuse at once, with its
+  # log, instead of spending the whole budget on it.
+  local pid="$1" name="$2"
+  shift 2
   for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
     curl --silent --max-time 2 "$@" 2>/dev/null | grep -q '"ready":true' && return 0
+    kill -0 "${pid}" 2>/dev/null || deny "${name} exited before it was ready"
     sleep 1
   done
   return 1
@@ -162,7 +167,9 @@ printf 'obsidian-host: (1) an authority trusted by this runner for one day\n'
 # (2) The server on loopback.
 if [ "${os}" = macos ]; then
   install -d -m 0700 "${scratch}/blobs" "${scratch}/journal"
-  OBSYNC_LISTEN=127.0.0.1:8080 OBSYNC_BLOBS_DIR="${scratch}/blobs" OBSYNC_JOURNAL_DIR="${scratch}/journal" \
+  # Exactly this configuration and nothing inherited: the server refuses an
+  # OBSYNC_ variable it does not know, and this job's OBSYNC_E2E_RUN_ID is one.
+  env -i OBSYNC_LISTEN=127.0.0.1:8080 OBSYNC_BLOBS_DIR="${scratch}/blobs" OBSYNC_JOURNAL_DIR="${scratch}/journal" \
     OBSYNC_BLOBS_CAPACITY=8GiB OBSYNC_JOURNAL_CAPACITY=4GiB \
     OBSYNC_DASHBOARD_DIR="${root}/dashboard" OBSYNC_PLUGIN_DIR="${root}/plugin/dist" \
     OBSYNC_EDGE=none OBSYNC_TRUSTED_PROXY_CIDRS=127.0.0.1/32 OBSYNC_PUBLIC_URL="https://${HOST}:${PORT}" \
@@ -183,7 +190,7 @@ else
     /usr/local/bin/obsyncd serve >"${scratch}/server.log" 2>&1 &
   server_pid=$!
 fi
-ready 'http://127.0.0.1:8080/readyz' || deny "the server did not answer /readyz within ${READY_BUDGET_SECONDS}s"
+ready "${server_pid}" 'the server' 'http://127.0.0.1:8080/readyz' || deny "the server did not answer /readyz within ${READY_BUDGET_SECONDS}s"
 printf 'obsidian-host: (2) the server serves /readyz on 127.0.0.1:8080 (%s)\n' "$([ "${os}" = macos ] && echo native || echo 'WSL 1')"
 
 # (3) Caddy in front, from the committed configuration with its certificate
@@ -209,7 +216,7 @@ OBSYNC_HOST="${HOST}" XDG_DATA_HOME="$(native "${scratch}/xdg-data")" \
   XDG_CONFIG_HOME="$(native "${scratch}/xdg-config")" \
   "${caddy}" run --config "$(native "${scratch}/Caddyfile")" --adapter caddyfile >"${scratch}/caddy.log" 2>&1 &
 caddy_pid=$!
-ready --cacert "${scratch}/ca.crt" --resolve "${HOST}:${PORT}:127.0.0.1" "https://${HOST}:${PORT}/readyz" \
+ready "${caddy_pid}" Caddy --cacert "${scratch}/ca.crt" --resolve "${HOST}:${PORT}:127.0.0.1" "https://${HOST}:${PORT}/readyz" \
   || deny "no {\"ready\":true through Caddy within ${READY_BUDGET_SECONDS}s"
 printf 'obsidian-host: (3) Caddy serves /readyz over TLS from deploy/proxies/caddy/Caddyfile\n'
 
