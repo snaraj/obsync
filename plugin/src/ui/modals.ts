@@ -5,7 +5,7 @@
  * These are the only files besides `main.ts` that touch Obsidian's UI
  * classes, so every other module stays testable without Obsidian. Plain
  * `Modal`, `Setting` and `Notice`: no framework, no remote asset, and no
- * inline style beyond the four classes in `styles.css`.
+ * inline style beyond the classes in `styles.css`.
  *
  * PLATFORM. Every dialog is single-column and works at 390 px. Pairing shows
  * the code as text, as a copy button and as an `obsidian://` link, because

@@ -113,3 +113,24 @@
 .obsync-table td:first-child {
   overflow-wrap: normal;
 }
+
+/*
+ * A box of lines -- the edge headers, the selected folders -- takes the whole
+ * row below its name and description on a phone or tablet (issue #210):
+ * beside the description it was 206 px of a 375 px row, with a resize handle
+ * no finger can use. Desktop keeps Obsidian's own row.
+ */
+.is-mobile .obsync-lines {
+  flex-wrap: wrap;
+}
+
+.is-mobile .obsync-lines .setting-item-control {
+  flex: 1 0 100%;
+  margin-top: var(--size-4-2);
+}
+
+.is-mobile .obsync-lines textarea {
+  width: 100%;
+  min-height: 6em;
+  resize: none;
+}

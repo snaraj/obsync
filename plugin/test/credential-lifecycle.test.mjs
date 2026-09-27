@@ -157,7 +157,7 @@ test("asynchronous settings handlers surface storage failure without an unhandle
     const handlers = new Map(), commits = new Map();
     class Setting {
       setName(value) { this.name = value; return this; }
-      setHeading() { return this; } setDesc() { return this; }
+      setHeading() { return this; } setDesc() { return this; } setClass() { return this; }
       addText(callback) { const widget = { setPlaceholder: () => widget, setValue: () => widget,
         onChange: (handler) => { handlers.set(this.name, handler); return widget; },
         inputEl: { addEventListener: (type, fn) => { if (type === "change") commits.set(this.name, fn); }, setAttribute() {} } }; callback(widget); return this; }

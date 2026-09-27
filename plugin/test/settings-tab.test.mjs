@@ -7,8 +7,9 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
@@ -41,6 +42,7 @@ function widgets(obsidian) {
   Object.assign(obsidian.Setting.prototype, {
     setName(value) { this.name = value; return this; },
     setDesc(value) { this.desc = value; return this; },
+    setClass(value) { (this.classes ??= []).push(value); return this; },
     setHeading() { return this; },
     addText: add("text"), addTextArea: add("textarea"), addDropdown: add("dropdown"), addButton: add("button"), addExtraButton: add("extra"),
   });
@@ -574,6 +576,28 @@ test("every code or secret field in Settings keeps the phone keyboard from capit
   // A name is prose: the keyboard may help with it.
   s.plugin.state.data.deviceId = "11".repeat(16);
   assert.deepEqual(field("Name", "text").inputEl.attributes, {});
+});
+
+test("on a phone the two boxes of lines take the whole row, without a resize handle; desktop keeps its layout (#210)", (t) => {
+  // Android 15 at 375 px: both boxes were 206 px wide beside their text.
+  const s = open(t);
+  const classed = s.rows().filter((item) => {
+    if (item.render === undefined) return false;
+    const setting = new s.obsidian.Setting({});
+    item.render(setting);
+    return setting.classes?.includes("obsync-lines");
+  }).map((item) => item.name);
+  assert.deepEqual(classed, ["Edge service-token headers", "Selected folders"]);
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, selector]) => selector.includes("obsync-lines"));
+  assert.ok(rules.length > 0, "the stylesheet really was read");
+  for (const [, selector] of rules) assert.match(selector.trim(), /^\.is-mobile \.obsync-lines\b/, "scoped to mobile: desktop keeps Obsidian's row");
+  const rule = (end) => rules.find(([, selector]) => selector.trim().endsWith(end))?.[2] ?? "";
+  assert.match(rule(".obsync-lines"), /flex-wrap:\s*wrap/);
+  assert.match(rule(".setting-item-control"), /flex:\s*1 0 100%/);
+  assert.match(rule("textarea"), /width:\s*100%/);
+  assert.match(rule("textarea"), /resize:\s*none/);
+  assert.match(rule("textarea"), /min-height:\s*6em/);
 });
 
 test("the pairing code and the recovery phrase box keep the phone keyboard out as well (#208)", (t) => {

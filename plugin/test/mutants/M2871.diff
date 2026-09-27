@@ -1,0 +1,12 @@
+# M2871: the edge-headers box stays half a row wide on a phone (#210)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -329,7 +329,7 @@
+       name: "Edge service-token headers",
+       desc: "One header per line, written as Name: value, for a deployment with an access-controlled proxy in front of the server. A header pasted from a command line is trimmed to that form. Leave empty otherwise.",
+       render: (setting) => {
+-        setting.setClass("obsync-lines").addTextArea((area) => {
++        setting.addTextArea((area) => {
+           area
+             .setValue(this.draftHeaders ?? headerLines(this.plugin.state.data.edgeHeaders))
+             .onChange((value) => { this.draftHeaders = value; });

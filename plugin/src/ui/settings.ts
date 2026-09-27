@@ -336,7 +336,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Edge service-token headers",
       desc: "One header per line, written as Name: value, for a deployment with an access-controlled proxy in front of the server. A header pasted from a command line is trimmed to that form. Leave empty otherwise.",
       render: (setting) => {
-        setting.addTextArea((area) => {
+        setting.setClass("obsync-lines").addTextArea((area) => {
           area
             .setValue(this.draftHeaders ?? headerLines(this.plugin.state.data.edgeHeaders))
             .onChange((value) => { this.draftHeaders = value; });
@@ -598,7 +598,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Selected folders",
       desc: "One folder per line, relative to the vault root. Files keep their folder names on every device.",
       render: (setting) => {
-        setting.addTextArea((area) => {
+        // A full-width box below the name on a phone (`styles.css`, issue #210).
+        setting.setClass("obsync-lines").addTextArea((area) => {
           // Folder names match exactly: a capital a phone keyboard adds is another folder.
           literal(area.inputEl);
           area.setPlaceholder("Notes").setValue(this.scopeDraft().text).onChange((value) => { this.scopeDraft().text = value; });
