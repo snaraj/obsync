@@ -110,14 +110,29 @@ async function rig(t, options = {}) {
   return r;
 }
 
-/** Notes made on the desktop, synced to the phone. */
+/**
+ * Notes made on the desktop, synced to the phone -- IN ONE ORDER ON EVERY RUN.
+ * The desktop's posts run side by side and the server journals them as they
+ * complete, so a loaded machine journaled `Team docs/Sub` before `Team docs`:
+ * the phone then made `Team docs` on its way to the subfolder and gave it a
+ * record of its own, as a pull that makes a folder does. The server answered
+ * with the version it held, so nothing changed, but the phone had posted.
+ * Here each folder's record lands before the next level is made, and the
+ * notes before the phone starts reading.
+ */
 async function seeded(t, notes, options) {
   const r = await rig(t, options);
-  for (const [path, text] of Object.entries(notes)) r.a.host.write(path, text, 1000);
   await r.a.engine.start();
+  const folders = [...new Set(Object.keys(notes).flatMap((path) =>
+    path.split("/").slice(0, -1).map((_, depth, parts) => parts.slice(0, depth + 1).join("/"))))];
+  for (const folder of folders.sort((x, y) => x.split("/").length - y.split("/").length)) {
+    r.a.host.makeFolder(folder);
+    await r.timers.run(STEP_MS, () => r.a.state.folderByPath(folder) !== undefined);
+  }
+  for (const [path, text] of Object.entries(notes)) r.a.host.write(path, text, 1000);
+  await r.timers.run(STEP_MS, () => Object.keys(notes).every((path) => settled(r.a, path)));
   await r.b.engine.start();
-  await r.timers.run(STEP_MS, () => Object.entries(notes).every(([path, text]) =>
-    r.vault.text(path) === text && settled(r.a, path) && settled(r.b, path)));
+  await r.timers.run(STEP_MS, () => Object.entries(notes).every(([path, text]) => r.vault.text(path) === text && settled(r.b, path)));
   r.ids = Object.fromEntries(Object.keys(notes).map((path) => [path, r.a.state.fileByPath(path).fileId]));
   return r;
 }
