@@ -159,9 +159,15 @@ same computer, and never on a phone.
 
 ## Check says the server cannot be reached
 
-**What you see.** You select **Check** under **Connection**. Nothing happens
-for about a minute, then a notice appears. TODO(1.1.4-text) Up to 1.1.3 it
-reads `0 unreachable: network=net::ERR_CONNECTION_REFUSED` when nothing
+**What you see.** You select **Check** under **Connection**, and within about
+ten seconds a notice says:
+
+> Nothing answered at &lt;your Server URL&gt;. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.
+
+If something answered but this device does not trust its certificate, the
+notice reads "This device does not trust your server's certificate, so it
+refused the connection." instead. Up to 1.1.3, **Check** waits about a minute
+and reads `0 unreachable: network=net::ERR_CONNECTION_REFUSED` when nothing
 answers at that address and port, and
 `0 unreachable: network=net::ERR_CERT_AUTHORITY_INVALID` when the certificate
 is not trusted.
@@ -171,9 +177,10 @@ or it did and refused the certificate it was shown.
 
 **How to fix it.**
 
-1. `ERR_CONNECTION_REFUSED`: check the address and the port in the Server URL,
-   and that the server is running.
-2. `ERR_CERT_AUTHORITY_INVALID`: trust the server's certificate on this device
+1. Nothing answered (`ERR_CONNECTION_REFUSED` up to 1.1.3): check the address
+   and the port in the Server URL, and that the server is running.
+2. The certificate is not trusted (`ERR_CERT_AUTHORITY_INVALID` up to 1.1.3):
+   trust the server's certificate on this device
    ([The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device)).
 3. Anything else: work through
    [The device cannot reach the server](#the-device-cannot-reach-the-server).
@@ -259,8 +266,14 @@ each one cuts the connection before it is set up:
 
 ## Your proxy or access service refuses the plugin
 
-**What you see.** **Check** answers `403` followed by your proxy's own
-message, for example `403 error: access denied` (TODO(1.1.4-text)).
+**What you see.** **Check**, or the status bar's words, say:
+
+> Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings; sync retries by itself.
+
+A proxy that answers in obsync's own format can instead produce "Your server
+refused this request; the obsync log names the reason." Up to 1.1.3, **Check**
+answers `403` followed by your proxy's own message, for example
+`403 error: access denied`.
 
 **Why it happens.** Your server sits behind a proxy or access service that
 wants a header, such as a service token, and the header is missing or its
@@ -326,17 +339,18 @@ here, or its stored credential was removed.
 
 ## Setup says the setup token does not match
 
-**What you see.** After **Set up or recover**, a notice
-(TODO(1.1.4-text); up to 1.1.3
-`obsync: 401 bad_setup_token: setup token does not match`).
+**What you see.** After **Set up or recover**, a notice:
 
-**Why it happens.** The token that arrived is not this server's. Three
-mistakes were tested, and each gives the same answer:
+> obsync: This server did not accept that setup token. Check that it is this server's token (obsyncd setup-token prints it) and paste it again.
 
-- the token was pasted with quotes around it;
-- the token was split, for example by a space or a line break where a
-  terminal window wrapped it;
-- the token came from a different server, or an older copy of this one.
+Up to 1.1.3 it reads
+`obsync: 401 bad_setup_token: setup token does not match`.
+
+**Why it happens.** The token that arrived is not this server's: it came from
+a different server, an older copy of this one, or only part of it was copied.
+From 1.1.4, quotes around the token and spaces or line breaks inside it, as a
+terminal window adds when it wraps a long line, are ignored. Up to 1.1.3 each
+of those gave the same refusal.
 
 **How to fix it.**
 
@@ -351,13 +365,19 @@ mistakes were tested, and each gives the same answer:
 
 ## Pairing says the code is not valid
 
-**What you see.** After **Pair**, a notice (TODO(1.1.4-text); up to 1.1.3
-`base32: invalid character`).
+**What you see.** After **Pair**, a notice:
 
-**Why it happens.** Something other than the code went into the **Pairing
-code** field. The usual one: the whole pairing link
+> That is not a pairing code. Paste the code, or the link, exactly as your other device shows it under Pair a new device.
+
+or, when only part of it arrived, "That pairing code is incomplete. Copy all of
+it again from your other device, or use its Copy link." Up to 1.1.3 it reads
+`base32: invalid character`.
+
+**Why it happens.** Something other than the whole code went into the
+**Pairing code** field. Up to 1.1.3 the usual one was the whole pairing link
 (`obsidian://obsync-private-sync/pair?code=…`), which **Copy link** puts on the
-clipboard, pasted where the code goes.
+clipboard, pasted where the code goes; from 1.1.4 the link is accepted there
+too.
 
 **How to fix it.**
 
@@ -368,10 +388,18 @@ clipboard, pasted where the code goes.
 
 ## Pairing says the code expired or was already used
 
-**What you see.** After **Pair**, a notice (TODO(1.1.4-text)). Up to 1.1.3, a
-code claimed after its ten minutes reads `404 unknown_pairing: no such pairing`,
-and a code another device already claimed reads
-`409 already_claimed: the pairing is already claimed`.
+**What you see.** After **Pair**, one of these notices:
+
+> That code has expired: codes last ten minutes. Make a new one on your other device with Pair a new device.
+
+> Another device already used that code. Make a new one on your other device with Pair a new device. If none of your devices used it, choose Reject when the other device asks.
+
+A code this server does not know reads "That code does not match a pairing on
+this server. Check that you copied all of it and that this device uses the
+same server. Make a new one on your other device with Pair a new device." Up
+to 1.1.3, a code claimed after its ten minutes reads
+`404 unknown_pairing: no such pairing`, and a code another device already
+claimed reads `409 already_claimed: the pairing is already claimed`.
 
 **Why it happens.** Each code works once, for ten minutes, for one device.
 
@@ -385,9 +413,14 @@ and a code another device already claimed reads
 
 ## You closed the recovery phrase without checking it
 
-**What you see.** Nothing (TODO(1.1.4-text)). After first-time setup, the
-recovery phrase dialog asks for three of the 24 words. If you close it
-instead, setup still succeeds and, up to 1.1.3, nothing reminds you later.
+**What you see.** Nothing at first. After first-time setup, the recovery
+phrase dialog asks for three of the 24 words. If you close it instead, setup
+still succeeds. From 1.1.4, the next time Obsidian starts, one notice says
+"obsync: your 24-word recovery phrase is not confirmed. Without it and without
+a paired device this vault cannot be recovered. Open obsync's settings, Vault
+key, and choose Show and confirm.", and until you confirm, the **Recovery
+phrase** row in Settings and in **Show sync status** reads "Not confirmed —
+Show and confirm". Up to 1.1.3 nothing reminds you later.
 
 **Why it happens.** The phrase is the only way back into your vault if every
 device is lost. The server never has it and cannot give it back.
@@ -434,10 +467,14 @@ cannot tell you which case you are in.
 
 ## This device was revoked
 
-**What you see.** Up to 1.1.3, the same message as
+**What you see.** Within a few seconds of the revocation, the alert icon, and
+its words read:
+
+> obsync: error — This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.
+
+Up to 1.1.3 it shows the same message as
 [The server no longer recognises this device](#the-server-no-longer-recognises-this-device),
-within a few seconds of the revocation. A request may be refused with
-`403 device_revoked`.
+and a request may be refused with `403 device_revoked`.
 
 **Why it happens.** This device was revoked, from the dashboard or from another
 device's **Devices** list. Revocation is final by design.
@@ -449,10 +486,14 @@ vault.
 
 ## The clock is wrong
 
-**What you see.** Sync stops with an error (TODO(1.1.4-text)). Up to 1.1.3 it
-reads `obsync: error — 401 stale_timestamp: timestamp is outside the ±300 s
-window`, and only after Obsidian restarts; before that, edits from that device
-quietly stop reaching the server.
+**What you see.** The alert icon, the first time the server refuses the
+device, and its words read:
+
+> obsync: error — This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically; sync resumes by itself.
+
+Up to 1.1.3 it reads `obsync: error — 401 stale_timestamp: timestamp is outside
+the ±300 s window`, and only after Obsidian restarts; before that, edits from
+that device quietly stop reaching the server.
 
 **Why it happens.** Every request is signed with the time it was made, and the
 server accepts five minutes either way. This device's clock, or the server's,
@@ -585,8 +626,8 @@ devices wait and resume on their own.
 
 ## The server no longer recognises this device
 
-**What you see.** Sync stops with this message (TODO(1.1.4-text); in 1.1.3 it
-reads as below), a few seconds after the server stopped accepting the device:
+**What you see.** Sync stops with this message, the same in 1.1.3 and 1.1.4,
+a few seconds after the server stopped accepting the device:
 
 > obsync: error — This server no longer recognises this device. Your local notes and vault key are safe. In obsync settings, pair from a syncing device, or use Setup or recover with this server's setup token and this vault's recovery phrase.
 
@@ -609,9 +650,14 @@ was restored from a backup older than this pairing.
 
 ## The server has run out of storage
 
-**What you see.** TODO(1.1.4-text). Up to 1.1.3, a device that is already
-running shows it is offline and keeps retrying; new and changed notes stay on
-the device. The server's log and its dashboard show `volume_full` or
+**What you see.** The alert icon, and its words read:
+
+> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.
+
+A phone also says it once in a notice. New and changed notes stay on the
+device, and the alert clears once the server accepts a change again. Up to
+1.1.3, a device that is already running shows it is offline and keeps
+retrying. The server's log and its dashboard show `volume_full` or
 `journal_full`.
 
 **Why it happens.** The server refuses to write below a reserve of free space
@@ -649,8 +695,10 @@ entries above; none of them is a reason to repeat setup.
 
 ## Sync stopped with an error
 
-**What you see.** `obsync: error — <reason>` (TODO(1.1.4-text)), and nothing
-moves until it is resolved.
+**What you see.** The alert icon, whose words read `obsync: error — <reason>`.
+From 1.1.4 the reason is a sentence that says what happened and what to do,
+and **Show sync status** repeats it on its **State** row. What it names does
+not move until it is resolved.
 
 **Why it happens.** The plugin stops rather than guessing. The reason names
 it, and **Show sync status** repeats it.
@@ -740,38 +788,62 @@ limits exist. Computers have none by default.
 
 ## Notes deleted on one device disappeared everywhere
 
-**What you see.** You deleted a folder or many notes on one device, and within
-seconds they are gone from every other device too (TODO(1.1.4-text)). Up to
-1.1.3 there is no warning: in a test, 20 notes deleted as one folder left the
-other device two seconds later.
+**What you see.** You deleted a folder or many notes on one device, and they
+are gone from every other device too. From 1.1.4, deleting five or more notes
+at once asks first, in one notice:
+
+> obsync: you deleted 20 notes (in Notes). Delete them on your other devices too? They stay there until you choose.
+
+with **Delete everywhere** and **Restore here**. The question also waits in
+obsync's settings under **Deletions held back**. Fewer than five deletions, and
+the ones you confirm, reach the other devices within seconds. Up to 1.1.3
+there is no warning: in a test, 20 notes deleted as one folder left the other
+device two seconds later.
 
 **Why it happens.** A deletion syncs like any other change. The server keeps
 every deleted note's content for 30 days by default.
 
 **How to fix it.**
 
-1. On any device, open **Restore from history** in the command palette.
-2. Select **Load next**, and **Restore a copy** beside each note you want back
+1. If the question is still open, choose **Restore here**: the notes come back
+   on this device exactly as they were, with no copies, and nothing is deleted
+   anywhere.
+2. Otherwise, on any device, open **Restore from history** in the command
+   palette.
+3. Select **Load next**, and **Restore a copy** beside each note you want back
    ([Restore a retained version](daily-use.md#restore-a-retained-version)).
-3. Each note comes back as a copy with a new name; rename it if you like.
+4. Each note comes back as a copy with a new name; rename it if you like.
 
 ## A deleted folder stays on a Mac
 
 **What you see.** A folder you deleted on another device is still on a Mac,
-empty, even after **Sync now** and a restart (TODO(1.1.4-text)).
+even after **Sync now** and a restart. From 1.1.4 obsync says so once:
 
-**Why it happens.** Finder once opened that folder on this Mac and left its
-hidden `.DS_Store` file inside. obsync never deletes a folder that still holds
-something it did not put there, so the folder stays.
+> obsync kept the folder "&lt;folder&gt;" here although &lt;device&gt; deleted it: it still holds 1 item that is not a synced note -- a hidden file, another app's data, or a note not sent yet -- and a folder is only removed when it is empty. Nothing in it was deleted. Delete the folder here if you no longer need what is in it.
 
-**How to fix it.** Delete the empty folder on that Mac, in Obsidian or in
-Finder. Nothing else is in it.
+Up to 1.1.3 the folder stays, empty, with no word.
+
+**Why it happens.** obsync never deletes a folder that still holds something it
+did not put there. Up to 1.1.3 that included the hidden `.DS_Store` file Finder
+leaves in a folder it opened. From 1.1.4 the files the operating system writes
+by itself (`.DS_Store`, `._` files and a custom folder icon on a Mac;
+`Thumbs.db` and `desktop.ini` on Windows) go with the folder, so a folder is
+kept only for something else.
+
+**How to fix it.** Look inside the folder on that device. If you no longer need
+what is in it, delete the folder there, in Obsidian or in Finder.
 
 ## A linked folder shows up empty on other devices
 
-**What you see.** On other devices, an empty folder appears with the name of a
-folder that is a link (a symlink) on one device (TODO(1.1.4-text)). Nothing in
-it ever arrives. Tested with a linked folder inside another folder.
+**What you see.** Up to 1.1.3, on other devices, an empty folder appears with
+the name of a folder that is a link (a symlink) on one device, and nothing in
+it ever arrives. Tested with a linked folder inside another folder. From
+1.1.4, the device with the link says once:
+
+> obsync doesn't sync linked folders: "&lt;folder&gt;" is a link, so it stays on this device only. Nothing in it is sent to your other devices, and nothing from them is written into it. To sync it, move the folder itself into the vault instead of linking to it.
+
+and the empty folders an earlier version made on the other devices go at its
+next start.
 
 **Why it happens.** obsync never syncs what is inside a linked folder: the
 link points outside the vault. Up to 1.1.3 it still sent the folder's name, so
@@ -785,9 +857,10 @@ the other devices made a real, empty folder.
 
 ## Restoring a copy fails on a USB stick or memory card
 
-**What you see.** **Restore a copy** says a restored copy "may exist" at a
-name, and no copy appears (TODO(1.1.4-text)). A conflict copy can fail the
-same way. Up to 1.1.3 the notice reads:
+**What you see.** Up to 1.1.3, **Restore a copy** says a restored copy "may
+exist" at a name, and no copy appears; a conflict copy can fail the same way.
+From 1.1.4 both work on these drives, and this notice appears only if a copy
+could not be confirmed for another reason. The notice reads:
 
 > A restored copy may exist at "&lt;note&gt; (restored-&lt;id&gt;).md". Check that path before retrying; no existing file was overwritten.
 
@@ -800,8 +873,11 @@ accident. Ordinary syncing works on these drives; only these copies fail.
 
 1. Nothing was overwritten. Check the named path; there is usually nothing
    there.
-2. Keep the vault on the computer's own drive, or on a drive formatted for
-   your system (APFS on a Mac, NTFS on Windows, ext4 on Linux), and try again.
+2. Update obsync to 1.1.4 or later on this device, and try again.
+3. If it still fails, keep the vault on the computer's own drive, or on a drive
+   formatted for your system (APFS on a Mac, NTFS on Windows, ext4 on Linux),
+   and send the lines the obsync log shows for that copy
+   ([How to collect a report](#how-to-collect-a-report)).
 
 ## A photo or PDF from my phone never arrives on my other devices
 
