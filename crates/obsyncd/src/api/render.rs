@@ -5,10 +5,14 @@
 //! are stated once and a change to a record is a one-file change.
 #![forbid(unsafe_code)]
 
+use std::io::ErrorKind;
+
 use obsync_core::base64;
 use obsync_core::hex;
-use obsync_core::http::Request;
+use obsync_core::http::{Body, Request};
 use obsync_core::json::{Value, obj, parse_limited};
+
+use crate::log::Val;
 
 use crate::storage::types::{
     AccountRecord, Change, DevicePolicy, DeviceRecord, FileRecord, FileSummary, GcSummary,
@@ -280,8 +284,9 @@ pub fn json_body(app: &App, req: &mut Request) -> Result<Value, ApiError> {
 /// the ceiling.
 ///
 /// # Errors
-/// `413 body_too_large` above the ceiling, `400 bad_request` on a read error,
-/// and a bare `503` when the budget has no room for this body.
+/// `413 body_too_large` above the ceiling or on a read error, `503 slow_body`
+/// for a body slower than the rate floor, and a bare `503` when the budget
+/// has no room for this body.
 pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
     let declared = req.body.declared_len();
     if let Some(declared) = declared
@@ -294,9 +299,40 @@ pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, Ap
         ));
     }
     let _reserved = app.reserve_body(declared.unwrap_or(limit))?;
-    req.body
-        .read_to_vec(limit as usize)
-        .map_err(|_| ApiError::new(413, "body_too_large", "request body exceeds the limit"))
+    match req.body.read_to_vec(limit as usize) {
+        Ok(raw) => Ok(raw),
+        Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),
+        Err(_) => Err(ApiError::new(
+            413,
+            "body_too_large",
+            "request body exceeds the limit",
+        )),
+    }
+}
+
+/// A body that arrived more slowly than the rate floor allows. That is the
+/// sender's link and never the server's storage, so it has its own code and
+/// a status every client retries, and one line with what arrived and the
+/// time it was allowed (`docs/protocol.md`, "Limits and headers").
+///
+/// The body reports its own timeout as `TimedOut` and nothing else does:
+/// every other failure of a read keeps the refusal it had.
+pub fn slow_body(app: &App, body: &Body) -> ApiError {
+    let budget = body.rate_budget().map_or(0, |b| b.as_millis() as u64);
+    app.log.warn(
+        "request_body",
+        &[
+            ("decision", Val::word("refused")),
+            ("reason", Val::word("slow_body")),
+            ("bytes", Val::bytes(body.received())),
+            ("budget_ms", Val::ms(budget)),
+        ],
+    );
+    ApiError::new(
+        503,
+        "slow_body",
+        "the request body arrived more slowly than the server accepts; retry",
+    )
 }
 
 /// Parse JSON bytes under the protocol's ceiling.

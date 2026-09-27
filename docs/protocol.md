@@ -206,7 +206,8 @@ retain the account-wide authority described below.
   ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
   declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
-  the watermark, `507 quota_exceeded` over the account quota. Success `201`
+  the watermark, `507 quota_exceeded` over the account quota, `503 slow_body`
+  when the body arrives more slowly than the minimum rate below. Success `201`
   (new) or `200` (already present). Idempotent.
 - `GET /v1/chunks/{sid}` → raw ciphertext with `Content-Length`; honors
   `Range` (single range) → `206`. `404 unknown_chunk`.
@@ -605,7 +606,9 @@ device whose link opened it is revoked.
   passes 8 MiB; its `seq` is then below `head_seq`, and the next request from
   that cursor carries on. A client that wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
-  `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s.
+  `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s. A body
+  slower than that, on any route, is `503 slow_body`: the sender's link, not the
+  server's storage, and a client retries it.
 - Every response carries `Cache-Control: no-store` and the security headers
   listed in `AGENTS.md`. `X-Obsync-Seq` (journal head) rides only a response
   to a caller that proved a credential: it is write activity, and an

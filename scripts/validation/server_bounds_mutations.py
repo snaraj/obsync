@@ -93,6 +93,13 @@ CASES = [
      "        let key_on_argv = false;", "a_key_on_the_command_line_still_parses_and_is_warned_about"),
     ("body-rate-floor", SERVER, SERVE, "pub const MIN_BODY_RATE: u64 = 64 * 1024;",
      "pub const MIN_BODY_RATE: u64 = 0;", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
+    ("slow-body-chunk", SERVER, CHUNKS, "    if upload.slow {", "    if false {",
+     "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
+    ("slow-body-json", SERVER, RENDER,
+     "        Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),\n", "",
+     "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
+    ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
+     "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
 ]
 
 

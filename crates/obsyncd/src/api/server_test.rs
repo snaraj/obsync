@@ -462,8 +462,13 @@ fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
         let res = Res::parse(&raw);
         // The server's own 503, not the connection ceiling's: that one is
         // written before any handler runs and carries no hardening headers.
+        // An admitted upload that then stalls is refused as a slow body; every
+        // other 503 is the budget's, and bare.
         if res.status == 503 && res.header("cache-control") == Some("no-store") {
-            assert!(res.body.is_empty(), "a bare refusal: {}", res.text());
+            if !res.body.is_empty() {
+                assert_eq!(res.code(), "slow_body", "a bare refusal: {}", res.text());
+                continue;
+            }
             assert_eq!(res.header("retry-after"), Some("1"));
             assert_eq!(res.header("connection"), Some("close"));
             bare += 1;
@@ -1970,6 +1975,12 @@ fn trickle_put(h: &Harness, cred: &Cred, body: &[u8], rate: u64) -> Res {
     for (name, value) in &req.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
+    trickle(h, head, body, rate)
+}
+
+/// Send `head` (the request line and headers, without their blank line),
+/// then `body` at `rate` bytes a second in 1 KiB slices.
+fn trickle(h: &Harness, mut head: String, body: &[u8], rate: u64) -> Res {
     head.push_str(&format!(
         "Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -1997,9 +2008,25 @@ fn trickle_put(h: &Harness, cred: &Cred, body: &[u8], rate: u64) -> Res {
     Res::parse(&raw)
 }
 
+/// A refusal of a slow body, as #211 has it: `503 slow_body`, a status every
+/// client retries, and the line naming what arrived and the time allowed.
+fn assert_slow_body(h: &Harness, refused: &Res) {
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "slow_body");
+    let log = h.captured();
+    assert!(
+        log.lines().any(|l| l
+            .contains("event=request_body decision=refused reason=slow_body bytes=")
+            && l.contains(" budget_ms=")),
+        "{log}"
+    );
+    assert!(log.contains("status=503"), "{log}");
+    assert!(log.contains("decision=slow_body"), "{log}");
+}
+
 /// The slowloris floor (`cli::serve::MIN_BODY_RATE`): a body trickled at a
 /// quarter of it is refused once its allowance runs out -- about 1.3 s,
-/// whatever the floor is -- the refusal is one line naming the timeout, and
+/// whatever the floor is -- as a slow body, never as the volume (#211), and
 /// nothing is stored. A floor of zero would take the whole minute this body
 /// needs at 1 KiB/s, and store it.
 #[test]
@@ -2016,24 +2043,36 @@ fn a_chunk_body_trickled_below_the_rate_floor_is_refused() {
     let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
     let started = std::time::Instant::now();
     let refused = trickle_put(&h, &cred, &body, rate);
-    assert_eq!(refused.status, 500, "{}", refused.text());
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "refused on the floor, not the idle timeout: {:?}",
         started.elapsed()
     );
-    assert!(
-        h.captured().lines().any(|l| l.contains("event=chunk_put")
-            && l.contains("decision=io_error")
-            && l.contains("io=TimedOut")),
-        "{}",
-        h.captured()
-    );
+    assert_slow_body(&h, &refused);
+    assert!(!refused.text().contains("volume"), "{}", refused.text());
     let (_, sid) = chunk(&body);
     let absent = Req::get(&format!("/v1/chunks/{sid}"))
         .sign(&cred, NOW)
         .send(h.addr);
     assert_eq!(absent.status, 404, "nothing of the trickle was stored");
+}
+
+/// The same floor under a JSON body, read before any credential: it was
+/// answered `413 body_too_large`, which is untrue and which a client never
+/// retries. It is a slow body too.
+#[test]
+fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
+    let h = Harness::start_with(
+        "trickle-json",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
+    let head = "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_string();
+    let refused = trickle(&h, head, &vec![b' '; 64 * 1024], rate);
+    assert_slow_body(&h, &refused);
 }
 
 #[test]

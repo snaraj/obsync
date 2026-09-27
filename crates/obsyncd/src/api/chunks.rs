@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
-use obsync_core::http::{MultipartWriter, Request, Response, parse_range};
+use obsync_core::http::{Body, MultipartWriter, Request, Response, parse_range};
 use obsync_core::json::obj;
 
 use crate::types::Sid;
@@ -91,11 +91,34 @@ pub fn put(
         ));
     }
 
-    let outcome = app
-        .store
-        .put_chunk(&account, &sid, declared, &mut req.body)?;
-    let status = if stored_now(&outcome) { 201 } else { 200 };
+    let mut upload = Upload {
+        body: &mut req.body,
+        slow: false,
+    };
+    let outcome = app.store.put_chunk(&account, &sid, declared, &mut upload);
+    if upload.slow {
+        return Err(render::slow_body(app, &req.body));
+    }
+    let status = if stored_now(&outcome?) { 201 } else { 200 };
     Ok(Response::json(status, &obj(vec![("sid", s(sid_hex))])))
+}
+
+/// A chunk body on its way to the store, remembering whether a read of it
+/// timed out on the rate floor. The store can only report that as I/O, and
+/// it was the sender's link, not the volume (#211).
+struct Upload<'a> {
+    body: &'a mut Body,
+    slow: bool,
+}
+
+impl Read for Upload<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let read = self.body.read(out);
+        if let Err(e) = &read {
+            self.slow |= e.kind() == io::ErrorKind::TimedOut;
+        }
+        read
+    }
 }
 
 /// `GET /v1/chunks/{sid}`, honoring a single `Range`.

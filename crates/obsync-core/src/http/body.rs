@@ -114,6 +114,18 @@ impl Body {
         self.framing == Framing::Chunked
     }
 
+    /// Bytes of the body read so far.
+    pub fn received(&self) -> u64 {
+        self.read_total
+    }
+
+    /// How long the rate floor allows the body to have taken by now, or
+    /// `None` when no floor applies: the budget a refusal of a slow body
+    /// states (requirement 12).
+    pub fn rate_budget(&self) -> Option<Duration> {
+        (self.min_rate != 0).then(|| self.allowance())
+    }
+
     /// Read the whole body, refusing anything longer than `max`. A declared
     /// length over `max` is refused before a byte is read.
     pub fn read_to_vec(&mut self, max: usize) -> io::Result<Vec<u8>> {
@@ -515,6 +527,11 @@ mod tests {
         // Bytes bought time: 1 MiB at 1 MiB/s is a second on top of the grace.
         body.read_total = 1024 * 1024;
         assert!(body.check_rate().is_ok());
+        // And that is the budget a refusal states, with what had arrived.
+        assert_eq!(body.received(), 1024 * 1024);
+        assert_eq!(body.rate_budget(), Some(Duration::from_secs(2)));
+        body.min_rate = 0;
+        assert_eq!(body.rate_budget(), None, "no floor, no budget");
     }
 
     #[test]

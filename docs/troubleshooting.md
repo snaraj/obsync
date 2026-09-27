@@ -560,6 +560,7 @@ reason to repeat setup.
 | `409 missing_chunks` | a version was posted naming chunks the server does not hold, so it refused to record it rather than record a file it cannot serve | let sync run again; it re-uploads what is missing. A repeat is worth a report |
 | `409 too_many_heads` | one file has accumulated more unmerged heads than the server will carry | resolve the conflict copies for that file, which retires its heads |
 | `503 nonce_cache_full` | the replay cache is full | transient by construction: a repeatable request retries itself with backoff, and the next sweep clears it |
+| `503 slow_body` | this device's connection sent a request more slowly than the server accepts; the server and its storage are fine | nothing: it retries by itself. If a large file from a phone never arrives, move the phone to a stronger connection or to Wi-Fi |
 | `503 nonce_share_full` | this one device has sent more signed requests in the last ten minutes than its share of the replay cache holds; other devices are unaffected | transient: its requests retry with backoff as its older ones age out. A device that keeps hitting it is misbehaving: update or revoke it |
 | `503 nonce_log_unavailable` | the server could not record replay state, so it refused the request rather than accept one it cannot prove is not a replay | the server's own log names the I/O error; treat it as a storage problem |
 
