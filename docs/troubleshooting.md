@@ -63,6 +63,7 @@ server again unless the entry says so.
 | What you see | Go to |
 | --- | --- |
 | `obsync: error` and a reason | [Sync stopped with an error](#sync-stopped-with-an-error) |
+| "Changes from your server could not be read", and it stays | [Changes from your server could not be read](#changes-from-your-server-could-not-be-read) |
 | The reason mentions the clock or `stale_timestamp` | [The clock is wrong](#the-clock-is-wrong) |
 | "This server no longer recognises this device" | [The server no longer recognises this device](#the-server-no-longer-recognises-this-device) |
 | My server says its storage is full | [The server has run out of storage](#the-server-has-run-out-of-storage) |
@@ -819,6 +820,38 @@ reads `offline — retrying`. The code below is in the obsync log line.
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
 | `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
+
+## Changes from your server could not be read
+
+**What you see.** The alert icon, and the reason "Changes from your server
+could not be read. obsync tries again every few seconds; if this stays, check
+your server's log." It stays, and nothing new arrives on this device.
+
+**Why it happens.** The device asks your server for the changes it has not
+seen yet, reads them and applies them in order. When one step fails, it asks
+again from the same place a few seconds later. The server's log says which
+side failed: find this device's `GET /v1/changes` lines.
+
+- **Answered with an error, or not at all:** the server, or something in
+  front of it, is the cause, and the line names it.
+- **Answered `200` every time:** the answer arrived, and this device could not
+  apply one of the changes in it. Up to 1.1.3 a phone did this for good when
+  another device deleted a note the phone no longer had: one deleted in the
+  phone's Files app, or while Obsidian was closed. It tried to move the note
+  to the trash, found nothing there, and stopped at that deletion on every
+  attempt (issue #234).
+
+**How to fix it.**
+
+1. If the server answered with an error, fix what its line names; see [Sync
+   stopped with an error](#sync-stopped-with-an-error).
+2. If it answered `200`, update obsync on this device to 1.1.4 or later. A
+   deletion of a note the device no longer has is then settled as done, and
+   sync goes on by itself; nothing needs to be put back.
+3. If it stays on 1.1.4 with `200` answers, open an issue with those server
+   lines and, from a computer, the plugin's `feed decision=retry reason=`
+   line, which names the step that failed ([How to collect a
+   report](#how-to-collect-a-report)).
 
 <a id="a-copied-or-renamed-vault-shows-a-storage-error"></a>
 

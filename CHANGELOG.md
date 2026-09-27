@@ -223,6 +223,15 @@ Settings, obsync, **Deletions held back**. Fewer than five deletions go at
 once, as before. A phone does not put back a note above its **Largest file
 to download** (#162).
 
+**A phone no longer stops syncing over a note it no longer has.** A note
+deleted on a phone while obsync was not running, in the phone's Files app or
+with Obsidian closed, and then deleted on another device, stopped that phone
+for good: it could not move the note to the trash because it was already
+gone, every attempt stopped at the same place, and the status read "Changes
+from your server could not be read" while the server answered every request.
+The deletion is now settled as done, the way a computer already settled it,
+and sync goes on. iPhone, iPad and Android (#234).
+
 **A file you fetched past the download ceiling is never trashed when it
 changes.** obsync keeps the copy you have, lists it under **Show remote-only
 files** as "a newer version is on the server", and says so once with a
