@@ -1,0 +1,12 @@
+# M3193: the survey knows only each note's newest version, so an earlier one is asked about
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -486,7 +486,7 @@
+         const { file_id, version_id, sids, device_id } = change;
+         const live = entry.v === 1 && !entry.deleted;
+         newest.set(file_id, live ? { ...entry, file_id, version_id, sids, device_id } : null);
+-        if (live && entry.sha256 !== "") versions.set(file_id, (versions.get(file_id) ?? new Set()).add(`${entry.size} ${entry.sha256}`));
++        if (live && entry.sha256 !== "") versions.set(file_id, new Set([`${entry.size} ${entry.sha256}`]));
+       } catch (error) {
+         if (!(error instanceof ManifestError)) throw error;
+       }

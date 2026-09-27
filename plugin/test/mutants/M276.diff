@@ -1,12 +1,12 @@
 # M276: a copy of the vault holding a file above the chunk ceiling is asked before pairing, as if it were another vault
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3803,7 +3803,7 @@
+@@ -3810,7 +3810,7 @@
          local++;
          const there = held?.get(file.path);
          const same = there !== undefined && there.size === file.size &&
 -          (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
 +          (hex(await sha256(await this.host.read(file.path))) === there.sha256);
-         if (!same) unknown++;
-       }
-     });
+         if (same) continue;
+         const earlier = there !== undefined && [...there.versions].some((version) => version.startsWith(`${file.size} `)) &&
+           there.versions.has(`${file.size} ${hex(await sha256(await this.host.read(file.path)))}`);

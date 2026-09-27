@@ -459,8 +459,14 @@ async function openManifest(
   }
 }
 
-/** A live note as the feed states it: the manifest, and the record it rode in. */
-export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | "sids" | "device_id">;
+/**
+ * A live note as the feed states it: the manifest, and the record it rode in.
+ * `versions` holds "size sha256" of every version of the note the walk met,
+ * the newest included: a copy that is one of them is this vault's note.
+ */
+export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | "sids" | "device_id"> & {
+  versions: ReadonlySet<string>;
+};
 
 /**
  * What the server's vault holds under this manifest key: the newest version
@@ -470,14 +476,17 @@ export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | 
  * From a cursor, it is what changed since then (issue #181).
  */
 export async function heldNotes(transport: Transport, manifestKey: Bytes, from = 0): Promise<Map<string, HeldNote>> {
-  const newest = new Map<string, HeldNote | null>();
+  const newest = new Map<string, Omit<HeldNote, "versions"> | null>();
+  const versions = new Map<string, Set<string>>();
   for (let since = from; ;) {
     const page = await transport.changes(since, 0);
     for (const change of page.changes) {
       try {
         const entry = parseEntry(await openManifest(manifestKey, change));
         const { file_id, version_id, sids, device_id } = change;
-        newest.set(file_id, entry.v === 1 && !entry.deleted ? { ...entry, file_id, version_id, sids, device_id } : null);
+        const live = entry.v === 1 && !entry.deleted;
+        newest.set(file_id, live ? { ...entry, file_id, version_id, sids, device_id } : null);
+        if (live && entry.sha256 !== "") versions.set(file_id, (versions.get(file_id) ?? new Set()).add(`${entry.size} ${entry.sha256}`));
       } catch (error) {
         if (!(error instanceof ManifestError)) throw error;
       }
@@ -486,7 +495,9 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, from =
     since = page.seq;
   }
   const held = new Map<string, HeldNote>();
-  for (const manifest of newest.values()) if (manifest !== null) held.set(manifest.path, manifest);
+  for (const [fileId, manifest] of newest) {
+    if (manifest !== null) held.set(manifest.path, { ...manifest, versions: versions.get(fileId) ?? new Set() });
+  }
   return held;
 }
 

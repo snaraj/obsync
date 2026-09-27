@@ -3786,6 +3786,12 @@ export default class ObsyncPlugin extends Plugin {
    * before its first sync, which publishes every such note to every device
    * syncing that vault: that is how pairing a second vault merged two. A
    * version too large to carry a whole-file digest is matched by size.
+   *
+   * AN EARLIER VERSION OF THE NOTE AT THAT PATH IS THE VAULT'S TOO: a device
+   * paired again after the others edited while it was away holds the note as
+   * it last saw it, which pairing takes as that version and uploads nothing
+   * (issue #194). Counted as unknown, it asked about notes the server holds
+   * (the Android journey J10, 2026-09-27).
    */
   async notesUnknownTo(vrk: string): Promise<number> {
     const started = Date.now();
@@ -3797,6 +3803,7 @@ export default class ObsyncPlugin extends Plugin {
       : await heldNotes(this.transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId));
     let local = 0;
     let unknown = 0;
+    let older = 0;
     await this.inHostPass(async () => {
       for (const file of await this.host.list()) {
         if (!(await this.tracked(file.path))) continue;
@@ -3804,11 +3811,15 @@ export default class ObsyncPlugin extends Plugin {
         const there = held?.get(file.path);
         const same = there !== undefined && there.size === file.size &&
           (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
-        if (!same) unknown++;
+        if (same) continue;
+        const earlier = there !== undefined && [...there.versions].some((version) => version.startsWith(`${file.size} `)) &&
+          there.versions.has(`${file.size} ${hex(await sha256(await this.host.read(file.path)))}`);
+        if (earlier) older++;
+        else unknown++;
       }
     });
     this.log(
-      `pairing role=claimant decision=surveyed local=${local} unknown=${unknown} held=${held?.size ?? 0} duration_ms=${Date.now() - started}`,
+      `pairing role=claimant decision=surveyed local=${local} unknown=${unknown} older=${older} held=${held?.size ?? 0} duration_ms=${Date.now() - started}`,
     );
     return unknown;
   }

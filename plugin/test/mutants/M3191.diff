@@ -1,0 +1,12 @@
+# M3191: a note held at an earlier version of the server's is counted as a note the server lacks, and pairing asks about it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3814,7 +3814,7 @@
+         if (same) continue;
+         const earlier = there !== undefined && [...there.versions].some((version) => version.startsWith(`${file.size} `)) &&
+           there.versions.has(`${file.size} ${hex(await sha256(await this.host.read(file.path)))}`);
+-        if (earlier) older++;
++        if (earlier && older < 0) older++;
+         else unknown++;
+       }
+     });

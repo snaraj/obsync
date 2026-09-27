@@ -147,7 +147,11 @@ notes, a computer 32 MiB (#194).
 **Copying a vault onto a new device no longer uploads it all again.** A
 copied vault of 1,000 notes published 668 versions and 650 deletions; it now
 publishes none. A note the server also names waits at most ten minutes for
-the device to catch up (#194).
+the device to catch up (#194). A device paired again after your other
+devices edited while it was away holds those notes as it last saw them;
+pairing takes each as the earlier version it is and uploads nothing, so it no
+longer asks whether to add them to the server's vault either. All platforms
+(#194, #141).
 
 **Attachments are recognised too, not uploaded again.** A device paired
 again after Leave, or a vault copied onto a new device, recognised its
