@@ -42,7 +42,7 @@ import { refusalStatus, refusalText } from "../sync/engine";
 import type { EdgeHeader } from "../state";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
-import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, secretText } from "./modals";
+import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -308,6 +308,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           // raised a refusal halfway through, and a paired device's requests
           // went to whatever prefix was current (2026-09-24, verifying #136).
           field.inputEl.addEventListener("change", () => { this.adoptServerUrl(); });
+          literal(field.inputEl, "url");
         });
       },
     };
@@ -345,6 +346,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           area.inputEl.addEventListener("change", () => {
             if (this.adoptEdgeHeaders()) area.setValue(headerLines(this.plugin.state.data.edgeHeaders));
           });
+          literal(area.inputEl);
         });
       },
     };
@@ -596,10 +598,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
       name: "Selected folders",
       desc: "One folder per line, relative to the vault root. Files keep their folder names on every device.",
       render: (setting) => {
-        setting.addTextArea((area) => area
-          .setPlaceholder("Notes")
-          .setValue(this.scopeDraft().text)
-          .onChange((value) => { this.scopeDraft().text = value; }));
+        setting.addTextArea((area) => {
+          // Folder names match exactly: a capital a phone keyboard adds is another folder.
+          literal(area.inputEl);
+          area.setPlaceholder("Notes").setValue(this.scopeDraft().text).onChange((value) => { this.scopeDraft().text = value; });
+        });
       },
     };
   }

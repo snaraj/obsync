@@ -27,7 +27,7 @@ function box(t) {
   const made = [];
   const add = (kind) => function (callback) {
     const widget = {
-      kind, inputEl: {},
+      kind, inputEl: { attributes: {}, setAttribute(name, value) { this.attributes[name] = value; } },
       setName: () => widget, setValue(value) { widget.value = value; return widget; }, setPlaceholder: () => widget,
       setButtonText(value) { widget.text = value; return widget; }, setDisabled(value) { widget.disabled = value; return widget; },
       setCta() { widget.cta = true; return widget; }, setIcon: () => widget, setTooltip: () => widget,
@@ -79,6 +79,10 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
   await settle();
   const fields = b.made.filter((w) => w.kind === "text");
   assert.equal(fields.length, 3, "the three-word check is drawn");
+  for (const field of fields) {
+    // A recovery word a phone keyboard learned would sit in its dictionary (#208).
+    assert.deepEqual(field.inputEl.attributes, { autocapitalize: "off", autocorrect: "off", autocomplete: "off", spellcheck: "false" });
+  }
   d.modal.onClose(); // Escape, the cross, a tap outside
   assert.equal(p.state.data.recoveryPhrase, "skipped");
   assert.deepEqual(p.calls, ["save"], "the skip is persisted");

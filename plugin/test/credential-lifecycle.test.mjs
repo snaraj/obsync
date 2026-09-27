@@ -160,7 +160,7 @@ test("asynchronous settings handlers surface storage failure without an unhandle
       setHeading() { return this; } setDesc() { return this; }
       addText(callback) { const widget = { setPlaceholder: () => widget, setValue: () => widget,
         onChange: (handler) => { handlers.set(this.name, handler); return widget; },
-        inputEl: { addEventListener: (type, fn) => { if (type === "change") commits.set(this.name, fn); } } }; callback(widget); return this; }
+        inputEl: { addEventListener: (type, fn) => { if (type === "change") commits.set(this.name, fn); }, setAttribute() {} } }; callback(widget); return this; }
       addTextArea(callback) { return this.addText(callback); }
       addButton() { return this; }
     }
@@ -202,7 +202,7 @@ function vaultKeyDialog(r, derive) {
   class Setting {
     setName() { return this; }
     addTextArea(callback) {
-      const area = { setPlaceholder: () => area, onChange: () => area };
+      const area = { setPlaceholder: () => area, onChange: () => area, inputEl: { setAttribute() {} } };
       callback(area); return this;
     }
     addButton(callback) {

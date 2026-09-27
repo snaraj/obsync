@@ -219,7 +219,7 @@ test("a server holding only a vault's map still has a vault to strand, and one h
 // ---- the key: Create, in the dialog ------------------------------------------
 
 class Component {
-  constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; }
+  constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; this.inputEl = { setAttribute() {} }; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }

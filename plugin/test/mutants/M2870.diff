@@ -1,0 +1,12 @@
+# M2870: secret and code fields let the phone keyboard capitalise, correct and learn them again (#208)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -49,8 +49,6 @@
+  * underline.
+  */
+ export function literal(el: HTMLInputElement | HTMLTextAreaElement, inputMode?: "url"): void {
+-  for (const name of ["autocapitalize", "autocorrect", "autocomplete"]) el.setAttribute(name, "off");
+-  el.setAttribute("spellcheck", "false");
+   if (inputMode !== undefined) el.setAttribute("inputmode", inputMode);
+ }
+ 

@@ -61,6 +61,21 @@ function clock(at: Date): string {
 }
 
 /**
+ * A field whose text is a code or a secret, never prose (issue #208). A phone
+ * keyboard must not capitalise, correct, suggest or LEARN it: a learned setup
+ * token, pairing code or recovery word stays in the keyboard's dictionary, its
+ * suggestion strip and any keyboard history it syncs. On Android these four
+ * took the setup token's input type from 0xc0a1 (capitals, corrections,
+ * suggestions, learning) to 0x800a1. Desktop only loses the spellcheck
+ * underline.
+ */
+export function literal(el: HTMLInputElement | HTMLTextAreaElement, inputMode?: "url"): void {
+  for (const name of ["autocapitalize", "autocorrect", "autocomplete"]) el.setAttribute(name, "off");
+  el.setAttribute("spellcheck", "false");
+  if (inputMode !== undefined) el.setAttribute("inputmode", inputMode);
+}
+
+/**
  * A one-time secret pasted into a field, such as the setup token (issue #169):
  * masked like a password, with a Show toggle to check what was pasted, so a
  * screenshot or a screen share taken while asking for help does not carry it.
@@ -71,7 +86,7 @@ export function secretText(setting: Setting, placeholder: string, value: string,
   setting.addText((field) => {
     input = field;
     field.inputEl.type = "password";
-    field.inputEl.autocomplete = "off";
+    literal(field.inputEl);
     field.setPlaceholder(placeholder).setValue(value).onChange(onChange);
   });
   setting.addExtraButton((button) => button.setIcon("eye").setTooltip("Show").onClick(() => {
@@ -587,11 +602,12 @@ export class PairClaimModal extends Modal {
     this.contentEl.createEl("p", {
       text: "On a device that already syncs this vault, choose Pair a new device, then paste its code or its link here. Approve this device there when it asks.",
     });
-    new Setting(this.contentEl).setName("Pairing code").addText((text) =>
+    new Setting(this.contentEl).setName("Pairing code").addText((text) => {
+      literal(text.inputEl);
       text.setValue(this.code).onChange((value) => {
         this.code = value;
-      }),
-    );
+      });
+    });
     new Setting(this.contentEl).addButton((button) =>
       button
         .setButtonText("Pair")
@@ -1010,9 +1026,10 @@ export class RecoveryPhraseModal extends Modal {
     const asked = [3, 11, 20];
     const answers = new Map<number, string>();
     for (const position of asked) {
-      new Setting(this.contentEl).setName(`Word ${position}`).addText((text) =>
-        text.onChange((value) => answers.set(position, value.trim().toLowerCase())),
-      );
+      new Setting(this.contentEl).setName(`Word ${position}`).addText((text) => {
+        literal(text.inputEl);
+        text.onChange((value) => answers.set(position, value.trim().toLowerCase()));
+      });
     }
     new Setting(this.contentEl).addButton((button) =>
       button
@@ -1059,11 +1076,12 @@ export class VaultKeyModal extends Modal {
     this.contentEl.createEl("p", {
       text: "Start a new vault key on this device, or restore one from its 24-word recovery phrase. A new key means a new vault: existing devices will not read it.",
     });
-    new Setting(this.contentEl).setName("Recovery phrase").addTextArea((text) =>
+    new Setting(this.contentEl).setName("Recovery phrase").addTextArea((text) => {
+      literal(text.inputEl);
       text.setPlaceholder(`${PHRASE_WORDS} words, separated by spaces`).onChange((value) => {
         this.phrase = value;
-      }),
-    );
+      });
+    });
     new Setting(this.contentEl)
       .addButton((button) =>
         button.setButtonText("Restore").onClick(async () => {

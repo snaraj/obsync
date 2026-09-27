@@ -16,7 +16,7 @@ const tick = () => new Promise(setImmediate);
 class Component {
   constructor(kind) {
     this.kind = kind; this.disabled = false;
-    this.inputEl = { listeners: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); } };
+    this.inputEl = { listeners: {}, attributes: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }, setAttribute(name, value) { this.attributes[name] = value; } };
     this.buttonEl = { focus: () => { this.focused = true; }, remove: () => { this.removed = true; } };
   }
   /** Type a value, then leave the field: the input's `change` event. */
@@ -545,6 +545,7 @@ test("the switch-server dialog masks its setup token and empties it after every 
   modal.onOpen();
   const field = s.made.find((c) => c.kind === "text");
   assert.equal(field.inputEl.type, "password");
+  assert.deepEqual(field.inputEl.attributes, LITERAL, "and the keyboard learns nothing (#208)");
   assert.ok(s.made.some((c) => c.kind === "extra" && c.tooltip === "Show"));
   field.value = " TOKEN SENTINEL "; // what the input holds once pasted
   field.change(field.value);
@@ -556,6 +557,37 @@ test("the switch-server dialog masks its setup token and empties it after every 
   s.button(s.made, "Set up or recover").click();
   await tick();
   assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL:obsync", "setUp::obsync"], "a second press never resends the old token");
+});
+
+/** What a phone keyboard is told about a code or a secret: no capitals, no corrections, no suggestions, nothing learned (#208). */
+const LITERAL = { autocapitalize: "off", autocorrect: "off", autocomplete: "off", spellcheck: "false" };
+
+test("every code or secret field in Settings keeps the phone keyboard from capitalising, correcting or learning it (#208)", (t) => {
+  // Android 15, Obsidian 1.13.8: the setup token's input type read 0xc0a1 --
+  // sentence capitals, autocorrect, suggestions and learning all on.
+  const s = open(t);
+  const field = (row, kind) => s.render(row).made.find((c) => c.kind === kind);
+  assert.deepEqual(field("Server URL", "text").inputEl.attributes, { ...LITERAL, inputmode: "url" });
+  for (const [row, kind] of [["Setup or recover", "text"], ["Edge service-token headers", "textarea"], ["Selected folders", "textarea"]]) {
+    assert.deepEqual(field(row, kind).inputEl.attributes, LITERAL, row);
+  }
+  // A name is prose: the keyboard may help with it.
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  assert.deepEqual(field("Name", "text").inputEl.attributes, {});
+});
+
+test("the pairing code and the recovery phrase box keep the phone keyboard out as well (#208)", (t) => {
+  const s = open(t);
+  const { PairClaimModal, VaultKeyModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  s.plugin.captureSession = () => ({ assertCurrent() {} });
+  for (const modal of [new PairClaimModal({}, s.plugin), new VaultKeyModal({}, s.plugin)]) {
+    modal.contentEl = { createEl: () => ({}), empty() {} };
+    modal.setTitle = () => {};
+    s.made.length = 0;
+    modal.onOpen();
+    const input = s.made.find((c) => c.kind === "text" || c.kind === "textarea");
+    assert.deepEqual(input.inputEl.attributes, LITERAL, modal.constructor.name);
+  }
 });
 
 test("a folder selection the device refuses stops Set up and Pair this device before they act", async (t) => {
