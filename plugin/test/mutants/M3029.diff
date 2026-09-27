@@ -1,0 +1,11 @@
+# M3029: a copy whose commit went through can still be taken back (one copy per conflict, #225)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1245,7 +1245,6 @@
+           if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
+             this.log("host path_class=file decision=write_superseded");
+           }
+-          unconfirmed = null;
+           return { path, mtime: Math.round(made.mtimeMs), size: made.size };
+         } catch (error) {
+           // The cause by its code alone, because its message names a path on

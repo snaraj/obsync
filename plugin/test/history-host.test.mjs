@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { promises as fs, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
+import { promises as fs, appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { sandbox } from "./fake.mjs";
@@ -170,6 +170,46 @@ for (const [code, at] of [["EPERM", "sync"], ["EISDIR", "open"]]) test(`a host w
   assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
   assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "one copy, and no temp beside it");
   assert.deepEqual(r.logs, [`host path_class=folder decision=skipped reason=directory_fsync code=${code}`]);
+});
+
+/**
+ * WHAT A FAILED COMMIT MAY TAKE BACK (issue #225): the copy it made, and only
+ * while the name still means that file as it was made -- the same inode, size
+ * and time. A file that took the name, a copy something wrote into, and a
+ * removal the disk refuses all stay; a commit that went through has nothing to
+ * take back. Asked twice, the second answer is always `none`.
+ */
+test("withdraw takes back only the copy its commit made, and only as it made it (#225)", async (t) => {
+  for (const phase of ["removed", "replaced", "written", "busy", "confirmed"]) {
+    const r = host(t, { wrap: (p) => ({ ...p,
+      unlink: async (...args) => {
+        if (phase === "busy" && args[0].endsWith("copy.md")) throw Object.assign(new Error("EBUSY SENTINEL"), { code: "EBUSY" });
+        return p.unlink(...args);
+      },
+      open: async (...args) => {
+        const h = await p.open(...args);
+        if (phase === "confirmed" || args[1] !== "r" || !(await p.lstat(args[0])).isDirectory()) return h;
+        return { sync: async () => { throw Object.assign(new Error("EIO SENTINEL"), { code: "EIO" }); }, close: () => h.close() };
+      },
+    }) });
+    const copy = join(r.root, "Notes/copy.md");
+    const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+    await writer.write(bytes);
+    if (phase === "confirmed") await writer.commit(1000);
+    else await assert.rejects(writer.commit(1000), /may exist/);
+    await writer.abort();
+    if (phase === "replaced") {
+      // The same bytes and the same time under the name, in another file.
+      writeFileSync(`${copy}.other`, bytes);
+      utimesSync(`${copy}.other`, 1, 1);
+      renameSync(`${copy}.other`, copy);
+    }
+    if (phase === "written") appendFileSync(copy, "!");
+    const answer = { removed: "removed", replaced: "kept", written: "kept", busy: "kept", confirmed: "none" }[phase];
+    assert.equal(await writer.withdraw(), answer, phase);
+    assert.equal(existsSync(copy), phase !== "removed", `${phase}: the copy was ${phase === "removed" ? "left" : "removed"}`);
+    assert.equal(await writer.withdraw(), "none", `${phase}: asked twice`);
+  }
 });
 
 test("desktop refuses symlinked selected folders and only cleans its own temporary inode", async (t) => {

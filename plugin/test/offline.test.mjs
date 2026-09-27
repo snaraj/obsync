@@ -823,6 +823,37 @@ test("a conflict copy on a host that cannot sync a folder lands once", async (t)
   assert.ok(logs.includes("host path_class=folder decision=skipped reason=directory_fsync code=EPERM"), logs.join(" | "));
 });
 
+/**
+ * A COPY WHOSE COMMIT FAILS AFTER IT LANDED (issue #225): here the folder sync
+ * fails with a code a host that has one gives, so the commit refuses a copy
+ * that is already at its name. The next name made another, and the next:
+ * twenty copies, then "refused". The copy at the name IS this version, proven
+ * by its digest, so it is the copy: one, recorded, its own event marked.
+ */
+test("a conflict copy whose commit fails after it landed is that one copy, never another under the next name (#225)", async (t) => {
+  const r = await rig();
+  const failing = { ...fsp, open: async (path, flags, mode) => {
+    const handle = await fsp.open(path, flags, mode);
+    if (!(await handle.stat()).isDirectory()) return handle;
+    return { sync: async () => { throw Object.assign(new Error("EIO SENTINEL"), { code: "EIO" }); }, close: () => handle.close() };
+  } };
+  const { root, context, logs } = desktopVault(t, r, failing);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(context, frame), "conflict_copy");
+
+  const copy = copyName(r, NOTE, 1);
+  assert.deepEqual(folder(root), [basename(NOTE), basename(copy)].sort(), "the note was copied again under the next name");
+  assert.equal(readFileSync(join(root, copy), "utf8"), THEIRS);
+  assert.ok(
+    logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=reused name_attempt=1 ")),
+    logs.join(" | "),
+  );
+  const stat = await context.host.stat(copy);
+  assert.ok(context.written.has(`${copy}:${stat.mtime}:${stat.size}`), "the copy's own event would be published back as a new note");
+});
+
 test("a failed conflict copy through the real desktop host leaves neither copy nor temporary", async (t) => {
   const r = await rig();
   const { root, context } = desktopVault(t, r);

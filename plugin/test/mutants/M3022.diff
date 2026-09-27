@@ -1,0 +1,11 @@
+# M3022: a failed commit's landed copy earns the next name again, as before (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3535,6 +3535,7 @@
+     if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat, written: true };
+     const there = await context.host.stat(target);
+     if (there === null) throw outcome.failure;
++    if (attempt > 0) continue;
+     // A COMMIT CAN FAIL AFTER ITS COPY LANDED (issue #225) -- the folder sync
+     // or the proof after the link -- and the next name then made a second
+     // copy, and a third: twenty, on a host that failed every time. So what is

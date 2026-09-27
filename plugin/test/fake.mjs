@@ -414,6 +414,9 @@ export class FakeHost {
         return writer.commit(mtime);
       },
       abort: writer.abort,
+      // A commit here refuses before it writes, so a failed one published
+      // nothing, which is what the desktop writer says of it (#225).
+      withdraw: async () => "none",
     };
   }
 

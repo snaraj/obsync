@@ -3538,6 +3538,7 @@ async function writeBeside(
       if (reused !== null) return { path: target, attempt, stat: reused, written: false };
       continue;
     }
+    const started = context.now();
     let writer: VaultWriter;
     try {
       writer = await context.host.createWriter(target, size, () => undefined);
@@ -3565,7 +3566,24 @@ async function writeBeside(
       );
     }
     if ("stat" in outcome) return { path: outcome.stat.path, attempt, stat: outcome.stat, written: true };
-    if ((await context.host.stat(target)) === null) throw outcome.failure;
+    const there = await context.host.stat(target);
+    if (there === null) throw outcome.failure;
+    // A COMMIT CAN FAIL AFTER ITS COPY LANDED (issue #225) -- the folder sync
+    // or the proof after the link -- and the next name then made a second
+    // copy, and a third: twenty, on a host that failed every time. So what is
+    // at the name is asked first whether it IS this version, as any occupant
+    // is; if not, the writer takes back the copy it made, and only that. A
+    // copy it cannot vouch for stays, and no second one is written beside it.
+    const reused = await reuse(target, there);
+    const landed = reused !== null ? "reused" : (await writer.withdraw?.()) ?? "kept";
+    if (landed !== "none") {
+      context.host.log(
+        `pull path_class=file decision=refused reason=copy_unconfirmed landed=${landed} name_attempt=${attempt} ` +
+          `duration_ms=${context.now() - started}`,
+      );
+    }
+    if (reused !== null) return { path: target, attempt, stat: reused, written: true };
+    if (landed === "kept") throw new Error("copy_unconfirmed");
   }
   return null;
 }

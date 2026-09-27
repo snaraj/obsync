@@ -99,6 +99,70 @@ test("the holder of the higher id moves its own note aside and yields the path",
   );
 });
 
+/**
+ * A COMMIT THAT FAILS AFTER ITS COPY LANDED (issue #225). The desktop host
+ * links a copy into place and then proves it -- the folder synced, the name
+ * still its own -- and either can fail with the copy already there; the next
+ * name then made a second copy, and a host that failed every time made twenty.
+ * `landsThenFails` makes the first commit do exactly that. Its `withdraw` is
+ * the desktop writer's -- the file it made, only while the name still means
+ * it -- or absent, as on a phone, whose writer cannot tell.
+ */
+function landsThenFails(r, { withdraws }) {
+  const create = r.host.createWriter.bind(r.host);
+  let failed = false;
+  r.host.createWriter = async (path, size, check) => {
+    const { withdraw: _, ...writer } = await create(path, size, check);
+    let made = null;
+    const landing = { ...writer, commit: async (mtime) => {
+      const stat = await writer.commit(mtime);
+      if (failed) return stat;
+      failed = true;
+      made = r.host.files.get(path);
+      throw new Error("sentinel confirmation failure");
+    } };
+    if (!withdraws) return landing;
+    return { ...landing, withdraw: async () => {
+      const mine = made;
+      made = null;
+      if (mine === null) return "none";
+      if (r.host.files.get(path) !== mine) return "kept";
+      r.host.files.delete(path);
+      return "removed";
+    } };
+  };
+}
+
+test("a moved note whose copy failed after it landed is taken back before the next name: one copy (#225)", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  landsThenFails(r, { withdraws: true });
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+
+  assert.equal(copies(r.host).length, 1, `the landed copy was left beside the next one: ${copies(r.host)}`);
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), THEIRS);
+  assert.ok(
+    r.host.logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=removed name_attempt=1 ")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("a landed copy its writer cannot vouch for stays, and no second one is written beside it (#225)", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  landsThenFails(r, { withdraws: false });
+
+  await assert.rejects(applyChange(r.context, frame), /copy_unconfirmed/);
+
+  assert.equal(copies(r.host).length, 1, `a second copy was written: ${copies(r.host)}`);
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), MINE, "the note kept its name");
+  assert.ok(
+    r.host.logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=kept name_attempt=1 ")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
 test("a later version of the other note lands on its own name, not on a new copy", async () => {
   const { r, frame } = await collision(LOWER, HIGHER);
   assert.equal(await applyChange(r.context, frame), "conflict_copy");

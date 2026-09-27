@@ -124,6 +124,14 @@ export interface VaultWriter {
   write(bytes: Bytes): Promise<void>;
   commit(mtime: number): Promise<VaultStat>;
   abort(): Promise<void>;
+  /**
+   * After a `commit` that failed, take back the copy it published anyway
+   * (issue #225): `removed` when the name still meant the file this writer
+   * made, as it made it, and it is gone now; `kept` when the name means
+   * anything else; `none` when this writer published nothing. Only a host
+   * that can tell its own file from another has it (desktop).
+   */
+  withdraw?(): Promise<"removed" | "kept" | "none">;
 }
 
 /**

@@ -1,0 +1,12 @@
+# M3026: what became of a landed copy is not logged (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3543,7 +3543,7 @@
+     // copy it cannot vouch for stays, and no second one is written beside it.
+     const reused = await reuse(target, there);
+     const landed = reused !== null ? "reused" : (await writer.withdraw?.()) ?? "kept";
+-    if (landed !== "none") {
++    if (attempt < 0) {
+       context.host.log(
+         `pull path_class=file decision=refused reason=copy_unconfirmed landed=${landed} name_attempt=${attempt} ` +
+           `duration_ms=${context.now() - started}`,

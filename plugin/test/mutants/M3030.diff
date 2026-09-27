@@ -1,0 +1,12 @@
+# M3030: withdraw removes whatever file wears the name, not only the one its commit made (one copy per conflict, #225)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1263,7 +1263,7 @@
+         unconfirmed = null;
+         if (made === null) return "none";
+         const now = await walker(fs).lstat(found.target);
+-        if (now === null || !sameFile(made, now) || now.size !== made.size || now.mtimeMs !== made.mtimeMs) return "kept";
++        if (now === null || now.size !== made.size || now.mtimeMs !== made.mtimeMs) return "kept";
+         return await fs.promises.unlink(found.target).then(() => "removed" as const, () => "kept" as const);
+       },
+     };

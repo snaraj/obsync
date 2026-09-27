@@ -1,0 +1,12 @@
+# M3032: a removal the disk refused is reported as done (one copy per conflict, #225)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1264,7 +1264,7 @@
+         if (made === null) return "none";
+         const now = await walker(fs).lstat(found.target);
+         if (now === null || !sameFile(made, now) || now.size !== made.size || now.mtimeMs !== made.mtimeMs) return "kept";
+-        return await fs.promises.unlink(found.target).then(() => "removed" as const, () => "kept" as const);
++        return await fs.promises.unlink(found.target).then(() => "removed" as const, () => "removed" as const);
+       },
+     };
+   }

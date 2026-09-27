@@ -1167,6 +1167,8 @@ export class ObsidianHost implements VaultHost {
     this.temps.add(temp);
     let open = true;
     let at = 0;
+    // The copy a commit published and then could not confirm (`withdraw`).
+    let unconfirmed: PathStat | null = null;
     // The descriptor's identity is read at each proof, as `desktopWriter`
     // says why: a FAT32 or exFAT volume renumbers the temp at its first byte.
     const discard = async (): Promise<void> => {
@@ -1237,6 +1239,7 @@ export class ObsidianHost implements VaultHost {
             );
           }
           // From here on, failure/cancellation preserves the published copy.
+          unconfirmed = made;
           await this.syncFolder(fs, parent, true);
           const refusal = await chainRefusal(found.chain, walker(fs));
           const landed = await walker(fs).lstat(found.target);
@@ -1245,6 +1248,7 @@ export class ObsidianHost implements VaultHost {
           if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
             this.log("host path_class=file decision=write_superseded");
           }
+          unconfirmed = null;
           return { path, mtime: Math.round(made.mtimeMs), size: made.size };
         } catch (error) {
           // The cause by its code alone, because its message names a path on
@@ -1254,6 +1258,17 @@ export class ObsidianHost implements VaultHost {
         }
       },
       abort: discard,
+      // Only the copy this commit made, and only as it made it: the same
+      // inode, size and time. Whatever else wears the name now -- another
+      // file, or this one after something wrote into it -- stays (#225).
+      withdraw: async () => {
+        const made = unconfirmed;
+        unconfirmed = null;
+        if (made === null) return "none";
+        const now = await walker(fs).lstat(found.target);
+        if (now === null || !sameFile(made, now) || now.size !== made.size || now.mtimeMs !== made.mtimeMs) return "kept";
+        return await fs.promises.unlink(found.target).then(() => "removed" as const, () => "kept" as const);
+      },
     };
   }
 
