@@ -389,19 +389,31 @@ test("Sync now takes the place of the pending retry: one engine, and the cycle g
   assert.equal(r.engines[2].manual, 1);
 });
 
-test("a manual start that gets through disarms the pending retry", async (t) => {
-  const r = await fixture(t);
-  r.plan((n) => { if (n === 1) throw r.unreachable(); });
-  await r.instance.onload();
-  assert.deepEqual(r.win.armed(), [5000]);
-  await r.instance.syncNow();
-  await settle();
-  assert.deepEqual(r.running(), [r.engines[1]]);
-  // Not merely harmless: a stale timer left armed would fire into a LATER
-  // cycle and run its retry early, ahead of the pause that cycle chose.
-  assert.deepEqual(r.win.armed(), [], "a running engine has no retry armed behind it");
-  assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
-});
+/*
+ * TWO WAYS A PENDING RETRY IS SHOWN, and Sync now takes them differently. One
+ * shown offline is woken (`wake`), which takes its timer before the start; a
+ * certificate this device does not trust is retried like absence but shown as
+ * the error it is (#201), so Sync now goes straight to the start, and the
+ * start's own take is the only thing that disarms the timer.
+ */
+for (const [shown, failure] of [
+  ["shown offline", (r) => r.unreachable()],
+  ["shown as a certificate refusal", (r) => new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID")],
+]) {
+  test(`a manual start that gets through disarms the pending retry (${shown})`, async (t) => {
+    const r = await fixture(t);
+    r.plan((n) => { if (n === 1) throw failure(r); });
+    await r.instance.onload();
+    assert.deepEqual(r.win.armed(), [5000]);
+    await r.instance.syncNow();
+    await settle();
+    assert.deepEqual(r.running(), [r.engines[1]]);
+    // Not merely harmless: a stale timer left armed would fire into a LATER
+    // cycle and run its retry early, ahead of the pause that cycle chose.
+    assert.deepEqual(r.win.armed(), [], "a running engine has no retry armed behind it");
+    assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
+  });
+}
 
 test("the real engine surfaces the transport's own classification, unwrapped", async (t) => {
   const { SyncEngine } = require("../build/sync/engine.js");

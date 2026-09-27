@@ -460,6 +460,19 @@ test("a note deleted while its push is still queued is published as deleted, not
   host.files.delete("Notes/e.md");
   engine.deleted("Notes/e.md");
   release();
+  // THE DELETE WITHDRAWS THE QUEUED PUSH; it is not left to find the file
+  // gone. Since #164 a push that does is a quiet `stood_down`, never an
+  // error, so the failure check below no longer tells the two apart. The
+  // virtual clock stands still while the four pushes land, so the deletion's
+  // own debounce cannot decide first: a push still queued for e takes the
+  // first free worker, and stands down where this can see it.
+  await timers.run(0, () =>
+    busy.every((path) => state.fileByPath(path)?.mtime === 5000) && engine.queue.length === 0 && engine.active === 0);
+  assert.deepEqual(
+    host.logs.filter((line) => line.startsWith("push path_class=file decision=stood_down")),
+    [],
+    "the delete left the note's push queued, to find the file gone",
+  );
   await timers.run(STEP_MS, () => tombstones(server).length > 0);
   await timers.run(STEP_MS);
 
