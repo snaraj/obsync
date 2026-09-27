@@ -93,7 +93,7 @@ and a test asserts every route it emits appears there.
 ## Health
 
 - `GET /livez` → `200 ok` while the process runs.
-- `GET /readyz` → `200 {"ready":true,"seq":<n>}` when volumes are writable,
+- `GET /readyz` → `200 {"ready":true}` when volumes are writable,
   the journal is replayed and its usage is verified, and no shutdown is in
   progress; else `503 not_ready`. A journal whose usage survey was refused is
   re-surveyed by this probe, so a fixed volume answers `200` again without any

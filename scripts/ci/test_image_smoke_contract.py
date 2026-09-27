@@ -1298,7 +1298,7 @@ exit 0
 
 # A ready answer, the 503 the full volume gives, and the log line the server
 # writes beside it. The bodies a world is built from.
-READY_BODY = '{"ready":true,"seq":0}'
+READY_BODY = '{"ready":true}'
 NOT_READY_BODY = '{"error":"not_ready","detail":"blobs volume is not writable"}'
 
 

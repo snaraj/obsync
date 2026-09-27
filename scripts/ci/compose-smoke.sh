@@ -378,11 +378,15 @@ case "${headers}" in
   *x-obsync-seq:*)
     deny 'the proxied readiness probe states the journal head to an unauthenticated caller' ;;
 esac
+case "${ready}" in
+  *'"seq"'*)
+    deny 'the proxied readiness body states the journal head to an unauthenticated caller' ;;
+esac
 case "${headers}" in
   *via:*caddy*) ;;
   *) deny 'the proxied response carries no Via naming the terminator' ;;
 esac
-prove 'origin bytes: the proxied 200 carries obsync headers, no journal head, and the proxy Via'
+prove 'origin bytes: the proxied 200 carries obsync headers, no journal head in headers or body, and the proxy Via'
 
 # (5) The origin publishes nothing. Read from Docker's record, so a `ports:`
 # entry added to the obsync service fails here rather than in someone's audit.

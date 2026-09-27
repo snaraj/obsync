@@ -80,7 +80,7 @@ docker run -d --name obsync -p 127.0.0.1:8080:8080 \
   ghcr.io/snaraj/obsync@sha256:<the digest cosign just verified>
 ```
 
-`GET /readyz` answers `{"ready":true,"seq":<n>}` once the server is serving.
+`GET /readyz` answers `{"ready":true}` once the server is serving.
 `OBSYNC_TRUSTED_PROXY_CIDRS` is the address your proxy reaches the container
 from (on Docker's default bridge, its gateway `172.17.0.1`). The server reads
 the standard `X-Forwarded-For` and `Forwarded` headers only from there, so the

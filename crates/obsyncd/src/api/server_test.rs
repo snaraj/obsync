@@ -518,6 +518,13 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
     assert_eq!(res.status, 200, "{}", res.text());
     assert_eq!(res.json().get("ready").and_then(Value::as_bool), Some(true));
     assert_eq!(res.header("x-obsync-seq"), None, "nor does readiness");
+    // Nor its body, whole: the journal head rode there to anyone who asked
+    // until 1.1.4 (issue #235).
+    assert_eq!(
+        res.text(),
+        r#"{"ready":true}"#,
+        "readiness says it is ready and nothing else"
+    );
 
     // And a caller that proved one still gets it: the dashboard's footer
     // reads exactly this header.

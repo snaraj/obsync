@@ -916,13 +916,12 @@ impl App {
         }
     }
 
+    /// Readiness and nothing else. The journal head is write activity, kept
+    /// from any caller that proved no credential (`X-Obsync-Seq`); the body
+    /// carried it to anyone who asked until 1.1.4 (issue #235).
     fn readyz(&self) -> Result<Response, ApiError> {
-        let seq = self.store.head_seq();
         match self.readiness() {
-            Ok(()) => Ok(Response::json(
-                200,
-                &obj(vec![("ready", render::b(true)), ("seq", render::seq(seq))]),
-            )),
+            Ok(()) => Ok(Response::json(200, &obj(vec![("ready", render::b(true))]))),
             Err(reason) => Err(ApiError::new(503, "not_ready", reason.detail())),
         }
     }
