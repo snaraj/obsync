@@ -12,7 +12,7 @@
  * typing 103 characters on a phone is not a plan.
  */
 
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { formatBytes } from "../policy";
@@ -58,6 +58,29 @@ function reasonOf(error: unknown): string {
 /** Local wall-clock time, "14:05", for when a claim arrived. */
 function clock(at: Date): string {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * A one-time secret pasted into a field, such as the setup token (issue #169):
+ * masked like a password, with a Show toggle to check what was pasted, so a
+ * screenshot or a screen share taken while asking for help does not carry it.
+ * The caller empties it after every attempt; the token is never shown again.
+ */
+export function secretText(setting: Setting, placeholder: string, value: string, onChange: (value: string) => void): () => void {
+  let input: TextComponent | null = null;
+  setting.addText((field) => {
+    input = field;
+    field.inputEl.type = "password";
+    field.inputEl.autocomplete = "off";
+    field.setPlaceholder(placeholder).setValue(value).onChange(onChange);
+  });
+  setting.addExtraButton((button) => button.setIcon("eye").setTooltip("Show").onClick(() => {
+    if (input === null) return;
+    const show = input.inputEl.type === "password";
+    input.inputEl.type = show ? "text" : "password";
+    button.setIcon(show ? "eye-off" : "eye").setTooltip(show ? "Hide" : "Show");
+  }));
+  return () => { input?.setValue(""); };
 }
 
 /**
@@ -912,11 +935,15 @@ export class AccountSetupModal extends Modal {
     this.setTitle("Set up or recover this account");
     this.contentEl.createEl("p", { text: "Enter this server’s setup token. An existing account also requires the vault key retained on this device, or its restored 24-word recovery phrase. An empty server uses this vault’s key." });
     let token = "";
-    new Setting(this.contentEl).setName("Setup token").addText((field) => field.onChange((value) => { token = value.trim(); }));
+    const clear = secretText(new Setting(this.contentEl).setName("Setup token"), "Setup token", "", (value) => { token = value.trim(); });
     new Setting(this.contentEl)
       .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => {
-        void this.plugin.setUpAccount(token, "obsync").then(() => {
+        const typed = token;
+        token = "";
+        void this.plugin.setUpAccount(typed, "obsync").then(() => {
+          // Used once, then gone from the screen, whatever the answer (#169).
+          clear();
           if (this.plugin.state.data.deviceId !== null) this.close();
         });
       }));

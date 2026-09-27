@@ -22,6 +22,8 @@ class Component {
   /** Type a value, then leave the field: the input's `change` event. */
   commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
   setDisabled(value) { this.disabled = value; return this; }
+  setIcon(value) { this.icon = value; return this; }
+  setTooltip(value) { this.tooltip = value; return this; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }
@@ -40,7 +42,7 @@ function widgets(obsidian) {
     setName(value) { this.name = value; return this; },
     setDesc(value) { this.desc = value; return this; },
     setHeading() { return this; },
-    addText: add("text"), addTextArea: add("textarea"), addDropdown: add("dropdown"), addButton: add("button"),
+    addText: add("text"), addTextArea: add("textarea"), addDropdown: add("dropdown"), addButton: add("button"), addExtraButton: add("extra"),
   });
   return made;
 }
@@ -395,7 +397,7 @@ test("leaving a server is offered only to an enrolled device, and both routes ar
   assert.deepEqual(s.calls, [], "drawing the row asks the server nothing");
 });
 
-test("Set up applies an unsaved folder selection first, in that order, and keeps the token until enrolment", async (t) => {
+test("Set up applies an unsaved folder selection first, in that order, and the token is gone after the attempt", async (t) => {
   const s = open(t);
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes\n\nAttachments");
@@ -407,9 +409,10 @@ test("Set up applies an unsaved folder selection first, in that order, and keeps
   // receives is its canonical form.
   assert.deepEqual(s.calls, ['saveSyncFolders:["Attachments","Notes"]', "setUp:TOKEN SENTINEL:obsync"]);
   assert.equal(s.updates(), 1);
-  // Enrolment did not happen (the stub leaves deviceId null), so the pasted token is still there.
+  // Enrolment did not happen (the stub leaves deviceId null), and the refused
+  // token is not drawn again (#169): a retry is a fresh paste.
   setup = s.render("Setup or recover");
-  assert.equal(setup.made.find((c) => c.kind === "text").value, "TOKEN SENTINEL");
+  assert.equal(setup.made.find((c) => c.kind === "text").value, "");
 
   // The same selection, once saved, is not saved again.
   s.plugin.state.data.syncFolders = ["Attachments", "Notes"];
@@ -419,6 +422,68 @@ test("Set up applies an unsaved folder selection first, in that order, and keeps
   await tick();
   assert.deepEqual(s.calls, ["setUp"]);
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the enrolled rows draw");
+});
+
+for (const outcome of ["refused", "enrolled"]) test(`the setup token is masked, can be shown to check it, and is gone after the attempt, ${outcome} (#169)`, async (t) => {
+  // A refused token stayed in the field in plain text, and the screenshots
+  // people took to ask for help carried it (S41, S35); the token is also the
+  // dashboard's recovery sign-in.
+  const s = open(t);
+  s.plugin.setUpAccount = async (token) => {
+    s.calls.push(`setUp:${token}`);
+    // The real one reports every refusal in a notice and never throws.
+    if (outcome === "enrolled") s.plugin.state.data.deviceId = "11".repeat(16);
+  };
+  const setup = s.render("Setup or recover");
+  const field = setup.made.find((c) => c.kind === "text");
+  const eye = setup.made.find((c) => c.kind === "extra");
+  assert.equal(field.inputEl.type, "password", "a pasted token is never drawn in plain text");
+  assert.equal(field.placeholder, "Setup token");
+  eye.click();
+  assert.deepEqual([field.inputEl.type, eye.tooltip], ["text", "Hide"], "Show reveals the paste to check it");
+  eye.click();
+  assert.deepEqual([field.inputEl.type, eye.tooltip], ["password", "Show"]);
+
+  field.change("  TOKEN SENTINEL  ");
+  s.button(setup.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL"]);
+  const again = s.render("Setup or recover").made.find((c) => c.kind === "text");
+  assert.deepEqual([again.value, again.inputEl.type], ["", "password"], "the token is not drawn again");
+});
+
+test("a setup token typed and left behind is gone when Settings closes (#169)", (t) => {
+  const s = open(t);
+  s.render("Setup or recover").made.find((c) => c.kind === "text").change("TOKEN SENTINEL");
+  assert.equal(s.render("Setup or recover").made.find((c) => c.kind === "text").value, "TOKEN SENTINEL", "kept while the tab is open");
+  s.tab.hide();
+  assert.equal(s.render("Setup or recover").made.find((c) => c.kind === "text").value, "");
+  assert.deepEqual(s.calls, [], "closing sends nothing");
+});
+
+test("the switch-server dialog masks its setup token and empties it after every attempt (#169)", async (t) => {
+  const s = open(t);
+  const { AccountSetupModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  const modal = new AccountSetupModal({}, s.plugin);
+  modal.contentEl = { createEl: () => ({}), empty() {} };
+  modal.setTitle = () => {};
+  let closed = 0;
+  modal.close = () => { closed++; };
+  s.made.length = 0;
+  modal.onOpen();
+  const field = s.made.find((c) => c.kind === "text");
+  assert.equal(field.inputEl.type, "password");
+  assert.ok(s.made.some((c) => c.kind === "extra" && c.tooltip === "Show"));
+  field.value = " TOKEN SENTINEL "; // what the input holds once pasted
+  field.change(field.value);
+  s.button(s.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL:obsync"]);
+  assert.equal(field.value, "", "the refused token is cleared from the open dialog");
+  assert.equal(closed, 0, "a refusal keeps the dialog open for a fresh paste");
+  s.button(s.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL:obsync", "setUp::obsync"], "a second press never resends the old token");
 });
 
 test("a folder selection the device refuses stops Set up and Pair this device before they act", async (t) => {

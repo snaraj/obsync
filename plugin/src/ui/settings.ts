@@ -41,7 +41,7 @@ import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import type { DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
-import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst } from "./modals";
+import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst, secretText } from "./modals";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -579,9 +579,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. Recovery must have been registered by an updated device before its last credential was lost. Keep both the token and phrase private.",
       visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
-        setting
-          .addText((field) => field.setPlaceholder("Setup token").setValue(this.draftToken).onChange((value) => { this.draftToken = value.trim(); }))
-          .addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => { void this.setUp(); }));
+        secretText(setting, "Setup token", this.draftToken, (value) => { this.draftToken = value.trim(); });
+        setting.addButton((button) => button.setButtonText("Set up or recover").setCta().onClick(() => { void this.setUp(); }));
       },
     };
   }
@@ -600,13 +599,19 @@ export class ObsyncSettingTab extends PluginSettingTab {
     }
   }
 
+  /**
+   * The token is used once and then gone from the tab, success or failure
+   * (issue #169): a refused token left in plain text reached the screenshots
+   * people took to ask for help, and the token is also the dashboard's
+   * recovery sign-in. A retry is a fresh paste.
+   */
   private async setUp(): Promise<void> {
     if (!(await this.applyScopeDraft())) return;
-    await this.plugin.setUpAccount(this.draftToken, ACCOUNT_NAME);
-    if (this.plugin.state.data.deviceId !== null) {
-      this.draftToken = "";
-      this.left(); // Re-enrollment replaces the identity behind the device list.
-    } else this.update();
+    const token = this.draftToken;
+    this.draftToken = "";
+    await this.plugin.setUpAccount(token, ACCOUNT_NAME);
+    if (this.plugin.state.data.deviceId !== null) this.left(); // Re-enrollment replaces the identity behind the device list.
+    else this.update();
   }
 
   private async pairThisDevice(): Promise<void> {
