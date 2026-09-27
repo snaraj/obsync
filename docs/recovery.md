@@ -1,5 +1,7 @@
 # Recovery
 
+*For people using obsync.*
+
 What to do when a device, a credential, or the server is gone. Every path here
 is one the shipped code supports; where there is no path, this page says so
 rather than implying one.
@@ -25,6 +27,8 @@ design, and it is also the reason recovery has the shape it does.
    device's hold on the dashboard: any sign-in link it minted stops working,
    and any dashboard session opened from one of its links is closed at the
    same moment.
+
+   ![The Devices section listing Laptop (this device) and Desk computer, each with a Revoke button, and the Device list row with Refresh](assets/settings-devices.png)
 
    **Two things revocation does not do.** It cannot be undone — there is no
    un-revoke route and no CLI that restores a revoked device, so the way

@@ -1,5 +1,7 @@
 # Daily use
 
+*For people using obsync.*
+
 Once two devices are paired, sync runs on its own. This page is the rest of
 it: the commands, what the status bar is telling you, what obsync does and
 does not touch, how to get an older version of a note back, and the dashboard.
@@ -46,9 +48,8 @@ says what to do.
 ## What syncs and what does not
 
 - obsync syncs one person's vault across their own devices. Every device you
-  pair has owner access; the current runtime has no recipient role. Giving anyone else
-  access to part of a vault is phase 2 work, gated on the acceptance
-  criteria in `architecture.md` section 5.
+  pair has full access to the vault. Sharing part of a vault with someone
+  else is not supported ([what that would take](architecture.md#5-sharing-phase-2)).
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
 - A folder opened as its own vault with obsync installed is excluded from
@@ -115,27 +116,28 @@ native observations from automated coverage.
 
 ## Restore a retained version
 
-Open **Self Hosted Private Sync: Restore from history** in the command palette. Optionally
-enter part of a filename, select **Restart search**, then **Load next**.
-Versions appear oldest first, including retained content of deleted notes.
-Each click checks at most 20 records; an empty filtered page can still have
-more history after it. Select **Restore a copy** on a content version to
-create a uniquely named sibling inside the currently selected folder.
-Deletion markers themselves contain no file bytes.
+1. Open **Self Hosted Private Sync: Restore from history** in the command
+   palette.
+2. Optionally type part of a file name and select **Restart search**, then
+   **Load next**. Versions appear newest first, including notes that have
+   since been deleted; turn on **Oldest first** to start from the other end.
+   Each **Load next** checks at most 20 entries, so an empty page can still
+   have more history after it: select **Load next** again.
+3. Select **Restore a copy** beside the version you want. obsync creates a
+   copy with a new, unique name beside the original, inside the folders this
+   device syncs. A deletion entry has no content to restore.
 
-The original file, unsynced edits and original history remain unchanged.
-The notice first confirms a local copy and requests ordinary sync; check
-sync status for upload failures. Device size/budget limits apply to the
-additional copy. Desktop streams into a temporary file and publishes only
-to an unoccupied name; a filesystem without that primitive is refused.
-Mobile buffers the verified file and uses Obsidian's create-only API.
+   ![The Restore from history dialog listing three versions of a note, newest first, each with Restore a copy](assets/restore-from-history.png)
 
-Cancel prevents later work, but Obsidian cannot abort a network request or
-local create already dispatched. A late create may finish; check any copy
-path named in an error before retrying. The network API buffers responses
-before a size check is possible. Reopening history does not start another
-manual request until the outstanding one settles. These are platform
-limits, not a claim of power-loss or real-device validation.
+Nothing else changes: the original note, your unsynced edits and the history
+all stay as they were, and the copy syncs like any new note. The notice
+confirms the local copy; **Show sync status** shows whether it has uploaded.
+This device's size limits apply to the copy too.
+
+If you cancel while a copy is already being written, that copy may still
+appear. If an error names a path, check that path before you try again. How
+restoring works inside, per platform, is in
+[the architecture](architecture.md#622-native-retained-history-recovery).
 
 ## See your devices
 

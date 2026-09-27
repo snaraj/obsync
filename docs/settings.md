@@ -1,5 +1,7 @@
 # Plugin settings
 
+*For people using obsync.*
+
 Every row in Settings → Community plugins → Self Hosted Private Sync, what it
 defaults to, and when it is worth changing. The rows are
 `plugin/src/ui/settings.ts`; both ceilings default per platform from
@@ -12,11 +14,15 @@ device can change it for you.
 
 ## Get started
 
+![The plugin's settings opening with Get started: the Setup guide row and its Open the guide button, above the Server URL field](assets/settings-get-started.png)
+
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
 | **Setup guide** → **Open the guide** | — | Opens this project's setup guide in your browser. The address ships with the plugin; the plugin itself sends nothing there. | When you set up a server or add a device |
 
 ## Server
+
+<!-- CAPTURE(1.1.4): the Server section: Server URL, Edge service-token headers and the Connection row, host masked -->
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
@@ -27,6 +33,8 @@ device can change it for you.
 | **Update available** → **Open Community plugins** | shown only when the server reports a newer plugin version than this device runs | One sentence naming the plugin and both versions, and a button that opens Obsidian's own Community plugins page, where **Check for updates** installs. The 15-second notice says the same thing and opens the same page when you tap it. Nothing here installs code: the plugin never fetches its own bundle from the sync server. | — |
 
 ## Sync folders on this device
+
+![The Sync folders on this device section: Folder selection set to Whole vault, the Selected folders box, and the Save button](assets/settings-sync-folders.png)
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
@@ -41,6 +49,12 @@ local files and their history on the server. Save the selection on each device
 independently; no re-pairing or state reset is needed.
 
 ## This device
+
+![The This device section on a paired computer: Pairing with its device id covered, Name set to Laptop, both download limits, Save to server, and Leave this server with Leave and Switch server](assets/settings-this-device.png)
+
+On a device that is not paired yet, this section also shows **Setup or recover**.
+
+<!-- CAPTURE(1.1.4): the This device section on a new device, with the Setup or recover row and its masked Setup token field -->
 
 | Setting | Default | What it does | When to change it |
 | --- | --- | --- | --- |
@@ -72,7 +86,11 @@ already holds a note at the same path the local note stays and the server's
 copy arrives beside it as a conflict copy
 ([`conflicts.md`](conflicts.md)).
 
+<!-- CAPTURE(1.1.4): the Leave this server dialog, naming what is kept and what is lost -->
+
 ## Devices
+
+![The Devices section listing Laptop (this device) and Desk computer, each with a Revoke button, and the Device list row with Refresh](assets/settings-devices.png)
 
 Every device on the account, one row each, with **Revoke** beside each one not
 already revoked; **Device list** → **Refresh** reads the list again.
@@ -80,6 +98,10 @@ Revocation destroys that device's wrapped secret on the server and is final —
 a revoked device is paired again as a new device.
 
 ## Vault key
+
+![The Vault key section: the Recovery phrase row with Show and Restore or create](assets/settings-vault-key.png)
+
+<!-- CAPTURE(1.1.4): the Recovery phrase row when the phrase has not been confirmed yet -->
 
 | Setting | What it does |
 | --- | --- |
