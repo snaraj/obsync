@@ -1,8 +1,8 @@
 # M1883: the edge headers are saved on every keystroke again (#183)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -328,7 +328,7 @@
-         setting.addTextArea((area) => {
+@@ -332,7 +332,7 @@
+         setting.setClass("obsync-lines").addTextArea((area) => {
            area
              .setValue(this.draftHeaders ?? headerLines(this.plugin.state.data.edgeHeaders))
 -            .onChange((value) => { this.draftHeaders = value; });

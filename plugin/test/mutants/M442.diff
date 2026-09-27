@@ -1,7 +1,7 @@
 # M442: a new session cannot see the old session's write in flight, and reads under it
 --- a/plugin/src/state.ts
 +++ b/plugin/src/state.ts
-@@ -482,8 +482,8 @@
+@@ -646,8 +646,8 @@
        this.serializedSecret = serialized;
      }
      try {
@@ -11,4 +11,4 @@
 +        credentialRef: ref, credentialRevision: selected.revision });
      } catch { throw new StateStorageError("metadata_write_failed"); }
      this.record = selected;
-   }
+     this.copied = false;

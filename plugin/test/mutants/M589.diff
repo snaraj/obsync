@@ -1,7 +1,7 @@
 # M589: replace retained vault key during setup
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2787,7 +2787,7 @@
+@@ -3253,7 +3253,7 @@
        // The name's tag rides that save, or the credential's, so the server
        // is told the name this device keeps (issue #152).
        const name = this.deviceName();
@@ -9,4 +9,4 @@
 +      freshKey = true;
        if (freshKey) {
          state.data.vrk = hex(newVaultKey());
-         await state.save();
+         state.data.recoveryPhrase = "unconfirmed";

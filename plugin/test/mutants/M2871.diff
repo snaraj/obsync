@@ -2,8 +2,8 @@
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
 @@ -329,7 +329,7 @@
-       name: "Edge service-token headers",
-       desc: "One header per line, written as Name: value, for a deployment with an access-controlled proxy in front of the server. A header pasted from a command line is trimmed to that form. Leave empty otherwise.",
+       name: "Custom request headers",
+       desc: "Sent with every request, so an access-controlled proxy or tunnel in front of your server lets this device through. One header per line, as Name: value; a header pasted from a command line is trimmed to that form. Leave empty otherwise.",
        render: (setting) => {
 -        setting.setClass("obsync-lines").addTextArea((area) => {
 +        setting.addTextArea((area) => {
