@@ -78,7 +78,7 @@ import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
-import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
+import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
@@ -1399,6 +1399,12 @@ export class SyncEngine {
       this.options.host.log("watch path_class=file decision=echo_suppressed event=rename");
       return;
     }
+    // A NEW NOTE WHOSE FIRST POST IS IN FLIGHT has no record to move: the
+    // post's answer follows it instead, and records nothing if it left the
+    // selection (issue #213, `carryPost`).
+    if (this.contextValue !== null && this.contextValue.state.fileByPath(from) === undefined && carryPost(this.contextValue, from, to)) {
+      this.options.host.log("rename path_class=file decision=carried reason=post_in_flight");
+    }
     // A local move across the boundary is a create within the selected
     // folders, or a file leaving them. Never transfer a remembered outside
     // identity in -- and never publish the exit as a deletion, whether the
@@ -1470,8 +1476,8 @@ export class SyncEngine {
     // longer has, where it was then refused as outside the selection, and
     // the note stayed on this device alone until something else triggered a
     // reconciliation. Pending work moves with the folder like everything
-    // else under it.
-    const pending = [...this.pending.keys(), ...this.queue];
+    // else under it, and so does a first post in flight (issue #213).
+    const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
     for (const path of new Set([...Object.keys(this.options.state.data.files), ...pending])) {
       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
     }

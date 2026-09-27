@@ -327,12 +327,52 @@ export async function serialPublication<T>(context: SyncContext, path: string, p
   finally { if (paths.get(path) === current) paths.delete(path); }
 }
 
+/**
+ * THE PATH A PUSH PUBLISHES, LINKED UNTIL ITS RECORD IS WRITTEN (issue #213).
+ *
+ * A note's first push has no record for a rename to move: the record is
+ * written when the server answers. A new note renamed before then moved
+ * nothing, so the rename's own push minted a second file id and the other
+ * device received the note twice. The rename carries this link instead
+ * (`carryPost`), the answer becomes the record at the new name (`publishFile`,
+ * beside `path_gone`), and the rename's push waits for it here and publishes
+ * a move of that id. A post that fails records nothing, and the moved note is
+ * a new note, as before.
+ */
+interface InFlight { path: string; settled: Promise<void> }
+const inFlight = new WeakMap<SyncContext, Map<string, InFlight>>();
+
+/** A rename moved `from` while a push of it was in flight: its answer follows the note to `to`. */
+export function carryPost(context: SyncContext, from: string, to: string): boolean {
+  const posts = inFlight.get(context);
+  const post = posts?.get(from);
+  if (posts === undefined || post === undefined) return false;
+  posts.delete(from);
+  post.path = to;
+  posts.set(to, post);
+  return true;
+}
+
 export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
   // Resume selects and preserves heads only after an earlier upload is acknowledged.
   // The name is resolved BEFORE it is serialised, so a push of either spelling
   // of one recorded note waits for the other rather than racing it (#166).
   return recordedSpelling(context, path).then((at) =>
-    serialPublication(context, at, async () => publishFile(context, at, force, typeof over === "function" ? await over() : over)));
+    serialPublication(context, at, async () => {
+      let posts = inFlight.get(context);
+      if (posts === undefined) { posts = new Map(); inFlight.set(context, posts); }
+      const carried = posts.get(at);
+      if (carried !== undefined) await carried.settled;
+      let settle = (): void => undefined;
+      const post: InFlight = { path: at, settled: new Promise<void>((resolve) => { settle = resolve; }) };
+      posts.set(at, post);
+      try {
+        return await publishFile(context, at, force, typeof over === "function" ? await over() : over, undefined, post);
+      } finally {
+        if (posts.get(post.path) === post) posts.delete(post.path);
+        settle();
+      }
+    }));
 }
 
 /**
@@ -367,7 +407,7 @@ export function reviveFile(context: SyncContext, path: string, tombstone: string
   return serialPublication(context, path, () => publishFile(context, path, true, undefined, tombstone));
 }
 
-async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {
+async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string, post?: InFlight): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
   if (!stat) throw new PathGone();
@@ -508,17 +548,30 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   // it changes: the path it waits to publish is still unpublished. A record a
   // pull has moved on since, and a path that left the selection (#91), are
   // left exactly as they are.
+  //
+  // A FIRST POST THE RENAME CARRIED (issue #213) has no record to follow: its
+  // answer IS the record, written at the note's new name and owing the move
+  // there, exactly as `renamed` leaves a record it moves. A name taken by now,
+  // or out of the selection, gets nothing, and the moved note is a new note.
+  // One the rename has not reached yet is recorded where it was posted, gone
+  // or not: the rename or deletion is an event of its own, and it, or the
+  // scan after it, finds that record and moves or deletes it like any other.
+  const renamed = record === undefined && post !== undefined && post.path !== path ? post.path : undefined;
   const inScope = inSyncScope(path, context.state.data.syncFolders);
-  if (!inScope || (await context.host.stat(path)) === null) {
-    const moved = inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined;
+  if (renamed !== undefined || !inScope || (record !== undefined && (await context.host.stat(path)) === null)) {
+    const moved = renamed ?? (inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined);
     const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
-    const follows = carried !== undefined && carried.versionId === record?.versionId;
+    const follows = renamed === undefined
+      ? carried !== undefined && carried.versionId === record?.versionId
+      : carried === undefined && inSyncScope(renamed, context.state.data.syncFolders);
     if (follows) {
-      context.state.setFile(moved as string, { ...carried, versionId: ack.versionId });
+      context.state.setFile(moved as string, carried === undefined
+        ? { fileId, versionId: ack.versionId, mtime: -1, size: stat.size, sha256: "" }
+        : { ...carried, versionId: ack.versionId });
       await context.state.save();
     }
     context.host.log(
-      `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} ` +
+      `push path_class=file decision=not_recorded reason=${renamed !== undefined ? "renamed" : inScope ? "path_gone" : "left_scope"} ` +
         `parent=${follows ? "advanced" : "kept"} file=${fileId}`,
     );
     return { status: "pushed", fileId, versionId: ack.versionId };

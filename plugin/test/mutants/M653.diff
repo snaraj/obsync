@@ -1,13 +1,21 @@
 # M653: startup push bypasses the publication queue
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -265,8 +265,7 @@
-   // Resume selects and preserves heads only after an earlier upload is acknowledged.
+@@ -315,7 +315,7 @@
    // The name is resolved BEFORE it is serialised, so a push of either spelling
    // of one recorded note waits for the other rather than racing it (#166).
--  return recordedSpelling(context, path).then((at) =>
--    serialPublication(context, at, async () => publishFile(context, at, force, typeof over === "function" ? await over() : over)));
-+  return recordedSpelling(context, path).then(async (at) => publishFile(context, at, force, typeof over === "function" ? await over() : over));
+   return recordedSpelling(context, path).then((at) =>
+-    serialPublication(context, at, async () => {
++    (async () => {
+       let posts = inFlight.get(context);
+       if (posts === undefined) { posts = new Map(); inFlight.set(context, posts); }
+       const carried = posts.get(at);
+@@ -329,7 +329,7 @@
+         if (posts.get(post.path) === post) posts.delete(post.path);
+         settle();
+       }
+-    }));
++    })());
  }
  
  /**

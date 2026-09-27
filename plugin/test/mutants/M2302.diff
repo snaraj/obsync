@@ -1,0 +1,11 @@
+# M2302: the rename's push does not wait for the post it carried (#213)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -319,7 +319,6 @@
+       let posts = inFlight.get(context);
+       if (posts === undefined) { posts = new Map(); inFlight.set(context, posts); }
+       const carried = posts.get(at);
+-      if (carried !== undefined) await carried.settled;
+       let settle = (): void => undefined;
+       const post: InFlight = { path: at, settled: new Promise<void>((resolve) => { settle = resolve; }) };
+       posts.set(at, post);

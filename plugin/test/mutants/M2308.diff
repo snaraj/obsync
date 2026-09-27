@@ -1,0 +1,12 @@
+# M2308: the carried record does not owe the move (#213)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -520,7 +520,7 @@
+       : carried === undefined && inSyncScope(renamed, context.state.data.syncFolders);
+     if (follows) {
+       context.state.setFile(moved as string, carried === undefined
+-        ? { fileId, versionId: ack.versionId, mtime: -1, size: stat.size, sha256: "" }
++        ? { fileId, versionId: ack.versionId, mtime: stat.mtime, size: stat.size, sha256: digest }
+         : { ...carried, versionId: ack.versionId });
+       await context.state.save();
+     }

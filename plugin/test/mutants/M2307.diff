@@ -1,0 +1,11 @@
+# M2307: the carried link also stays at the name the note left (#213)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -304,7 +304,6 @@
+   const posts = inFlight.get(context);
+   const post = posts?.get(from);
+   if (posts === undefined || post === undefined) return false;
+-  posts.delete(from);
+   post.path = to;
+   posts.set(to, post);
+   return true;
