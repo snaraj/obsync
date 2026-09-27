@@ -2,18 +2,23 @@
 """Reproduce the 1.1.4 server follow-up guard probes from the repository root.
 
 Each probe breaks one guard of #214 (repeated forwarding fields are one list,
-walked from the right, and said once a minute). It must compile and fail a
-behavioral test. Sources are restored from their exact starting bytes in
-finally, including on failure or interrupt. Never run beside another build or
-source editor in this worktree.
+walked from the right, and said once a minute) or #218 (a listener that
+cannot bind names its address; a poll behind the head answers at once and the
+next one waits). It must compile and fail a behavioral test. Sources are
+restored from their exact starting bytes in finally, including on failure or
+interrupt. Never run beside another build or source editor in this worktree.
 """
 from pathlib import Path
 import subprocess
 
 EDGE = "crates/obsyncd/src/api/edge.rs"
 API = "crates/obsyncd/src/api/mod.rs"
+SERVE = "crates/obsyncd/src/cli/serve.rs"
+FEED = "crates/obsyncd/src/api/changes.rs"
 NAMES = "a_trusted_proxy_names_the_client"
 JOINED = "said_once_a_minute"
+FALLBACK = "a_fallback_names_the_ipv4_address_it_tried"
+BEHIND = "a_long_poll_behind_the_head"
 CASES = [
     # First field wins again, header by header and in the list itself.
     ("xff-every-field", EDGE, "forwarded_for: req.headers.all(FORWARDED_FOR),",
@@ -36,6 +41,17 @@ CASES = [
     ("joined-rate-limited", EDGE, "at.abs_diff(now) < JOINED_LOG_INTERVAL_SECS", "false", JOINED),
     ("joined-counts-the-rest", EDGE, "Some(std::mem::take(unlogged))", "Some(1)", JOINED),
     ("joined-is-written", API, "self.forwarding_joined(fields);", "let _ = fields;", JOINED),
+    # #218: the failure names an address, the one whose bind failed, and the
+    # fallback names the address it moves to.
+    ("listen-failed-names-addr", SERVE, '                    ("addr", Val::addr(at)),\n', "",
+     "cli::serve::tests"),
+    ("failure-carries-its-bind", SERVE, "bind(at).map_err(|e| (at, e))", "bind(at).map_err(|e| (addr, e))",
+     FALLBACK),
+    ("fallback-names-ipv4", SERVE, '("addr", Val::addr(v4)),', '("addr", Val::addr(at)),', FALLBACK),
+    # A poll behind the head answers at once; the next, from the head, waits.
+    ("behind-answers-at-once", FEED, ".wait_for_change(Seq(since), Duration::from_secs(wait));",
+     ".wait_for_change(changes.seq, Duration::from_secs(wait));", BEHIND),
+    ("from-the-head-waits", FEED, "if changes.changes.is_empty() && wait > 0 {", "if false {", BEHIND),
 ]
 
 

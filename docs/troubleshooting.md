@@ -67,6 +67,7 @@ server again unless the entry says so.
 
 | What you see | Go to |
 | --- | --- |
+| The server stops as it starts, its last line `listen_failed` | [The server cannot listen on its address](#the-server-cannot-listen-on-its-address) |
 | The dashboard signs you out on every page | [The dashboard signs itself out on every page load](#the-dashboard-signs-itself-out-on-every-page-load) |
 | Repeated `dashboard_login_refused` lines in the log | [Repeated `dashboard_login_refused` lines](#repeated-dashboard_login_refused-lines) |
 | An occasional `replayed_nonce` | [A request arrived twice](#a-request-arrived-twice) |
@@ -509,6 +510,30 @@ to the caller's address would lock you out too, behind a shared proxy
 **How to fix it.** Nothing is required. If the noise bothers you, keep the
 dashboard off any public address, and rotate the setup token if you think it
 was ever exposed ([Recovery](recovery.md)).
+
+## The server cannot listen on its address
+
+**What you see.** The server stops as it starts. Its last line is
+`event=listen_failed decision=exit addr=[::]:8080 io=AddrInUse`, with your
+address, port and reason. Up to 1.1.3 the line did not name the address.
+
+**Why it happens.** The server could not open the address and port the line
+names. The `io` word says why:
+
+- `AddrInUse`: something already listens on that port, often a second copy
+  of the server or another service.
+- `AddrNotAvailable`: this machine has no such address, a typing mistake or
+  another machine's address.
+- `PermissionDenied`: a port below 1024, which the unprivileged server may
+  not open.
+- Before it, a `listen_ipv4_only` line: this machine or container has no
+  IPv6, so the server tried the same port on IPv4 (`0.0.0.0`), and the
+  failure is about that address.
+
+**How to fix it,** on the server: stop whatever holds the port, or set
+`OBSYNC_LISTEN` to a free address and port above 1024 (the default is
+`[::]:8080`), and point your proxy at it. Then start the server again. Your
+devices wait and resume on their own.
 
 <a id="missing_auth-and-bad_signature"></a>
 

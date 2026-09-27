@@ -531,8 +531,12 @@ note; the receipt records refusal, application and an advanced feed cursor.
   "file_id","domain_id","version_id","parents","sids","bytes","manifest_ct",
   "manifest_nonce","device_id","ts","deleted","heads","conflicted"}]}`. A
   feed entry arrives without its file, so it carries its own `domain_id`.
-  With `wait`, the server holds the request until a new frame lands or the
+  With `wait`, the server holds the request until a new version lands or the
   wait elapses, then returns whatever exists (possibly an empty list).
+  An empty page whose `seq` is above `since` is normal, and the client
+  continues from that `seq`: frames the feed does not carry (devices,
+  sign-ins, background work) move the head without waking a held request, so
+  a poll that starts behind the head answers at once with it.
   `since` beyond `head_seq` → `416 seq_ahead`.
 
 ## Domains

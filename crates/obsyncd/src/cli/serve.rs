@@ -107,15 +107,8 @@ pub fn run() -> i32 {
         min_body_rate_bytes_per_sec: MIN_BODY_RATE,
         max_connections: cfg.max_connections,
     };
-    let mut server = match listen(cfg.listen, &limits, &log) {
-        Ok(server) => server,
-        Err(e) => {
-            log.error(
-                "listen_failed",
-                &[("decision", Val::word("exit")), ("io", Val::io(&e))],
-            );
-            return 1;
-        }
+    let Some(mut server) = listen(cfg.listen, &limits, &log) else {
+        return 1;
     };
     let sink_log = log.clone();
     server.set_error_sink(Arc::new(move |report| log_http(&sink_log, report)));
@@ -139,6 +132,7 @@ pub fn run() -> i32 {
         "serve_start",
         &[
             ("version", Val::word(env!("CARGO_PKG_VERSION"))),
+            ("addr", Val::addr(server.local_addr())),
             (
                 "max_connections",
                 Val::count(app.cfg.max_connections as u64),
@@ -166,31 +160,58 @@ pub fn run() -> i32 {
     0
 }
 
-/// Log a fatal storage refusal by its code and exit non-zero.
-///
-/// The refusal's own numbers come from [`error_fields`], so a start that dies
-/// on I/O names the `io::ErrorKind` it died on: a full volume, a wrong owner
-/// and a missing mount printed the identical line before, and telling them
-/// apart cost a probe container (issue #19).
 /// Bind the configured listener. `[::]`, the default, is dual-stack wherever
 /// the kernel has IPv6 and reports an IPv4 client as a mapped address
 /// (`api::edge` reads it as IPv4). A host booted without IPv6 refuses that
 /// socket, and the same port on every IPv4 address is then the listener that
 /// still serves, said in one line rather than an exit. A port already taken
 /// is refused on both families alike, so it is not retried.
-fn listen(addr: SocketAddr, limits: &Limits, log: &Log) -> io::Result<Server> {
-    let e = match Server::bind(&addr.to_string(), limits.clone()) {
-        Err(e) => e,
-        bound => return bound,
-    };
-    let Some(v4) = ipv4_fallback(addr, &e) else {
-        return Err(e);
-    };
-    log.warn(
-        "listen_ipv4_only",
-        &[("decision", Val::word("fallback")), ("io", Val::io(&e))],
-    );
-    Server::bind(&v4.to_string(), limits.clone())
+///
+/// A failure is one line naming the address whose bind failed, carried with
+/// the error from that very bind (#218): a port something else holds, an IPv6
+/// address in a container without IPv6, an address this host does not have.
+fn listen(addr: SocketAddr, limits: &Limits, log: &Log) -> Option<Server> {
+    bind_or_fall_back(addr, log, |at| {
+        Server::bind(&at.to_string(), limits.clone())
+    })
+}
+
+/// [`listen`] with the bind handed in, so that a fallback which itself fails
+/// can be driven by a test on a host that has IPv6.
+fn bind_or_fall_back<S>(
+    addr: SocketAddr,
+    log: &Log,
+    bind: impl Fn(SocketAddr) -> io::Result<S>,
+) -> Option<S> {
+    let bind = |at: SocketAddr| bind(at).map_err(|e| (at, e));
+    let bound = bind(addr).or_else(|(at, e)| {
+        let Some(v4) = ipv4_fallback(at, &e) else {
+            return Err((at, e));
+        };
+        log.warn(
+            "listen_ipv4_only",
+            &[
+                ("decision", Val::word("fallback")),
+                ("addr", Val::addr(v4)),
+                ("io", Val::io(&e)),
+            ],
+        );
+        bind(v4)
+    });
+    match bound {
+        Ok(server) => Some(server),
+        Err((at, e)) => {
+            log.error(
+                "listen_failed",
+                &[
+                    ("decision", Val::word("exit")),
+                    ("addr", Val::addr(at)),
+                    ("io", Val::io(&e)),
+                ],
+            );
+            None
+        }
+    }
 }
 
 /// The IPv4 listener to try when `addr` could not be bound, if any.
@@ -199,6 +220,12 @@ fn ipv4_fallback(addr: SocketAddr, e: &io::Error) -> Option<SocketAddr> {
         .then(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, addr.port())))
 }
 
+/// Log a fatal storage refusal by its code and exit non-zero.
+///
+/// The refusal's own numbers come from [`error_fields`], so a start that dies
+/// on I/O names the `io::ErrorKind` it died on: a full volume, a wrong owner
+/// and a missing mount printed the identical line before, and telling them
+/// apart cost a probe container (issue #19).
 fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
     let mut fields = vec![
         ("decision", Val::word("exit")),
@@ -462,20 +489,68 @@ mod tests {
         let port = server.local_addr().port();
         std::net::TcpStream::connect(("127.0.0.1", port))
             .expect("an IPv4 client reaches the default listener");
-        let before = log.captured();
+        let before = log.captured().len();
         let taken = listen(
             SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
             &limits,
             &log,
         );
-        assert_eq!(
-            taken.err().map(|e| e.kind()),
-            Some(io::ErrorKind::AddrInUse)
+        assert!(taken.is_none());
+        let said = log.captured()[before..].to_string();
+        assert_eq!(said.lines().count(), 1, "refused, not retried: {said}");
+        assert!(
+            said.contains(&format!(
+                "event=listen_failed decision=exit addr=[::]:{port} io=AddrInUse"
+            )),
+            "the line names the address it could not bind: {said}"
         );
+    }
+
+    /// #218: in a container without IPv6 the listener that fails is the IPv4
+    /// fallback, and the line names that one, not the configured `[::]`.
+    #[test]
+    fn a_fallback_names_the_ipv4_address_it_tried() {
+        let no_ipv6 = |taken: bool| {
+            move |at: SocketAddr| match (at.is_ipv6(), taken) {
+                (true, _) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+                (false, true) => Err(io::Error::from(io::ErrorKind::AddrInUse)),
+                (false, false) => Ok(at),
+            }
+        };
+        let any6: SocketAddr = "[::]:8080".parse().expect("addr");
+        let fallback = "event=listen_ipv4_only decision=fallback addr=0.0.0.0:8080 io=Unsupported";
+
+        let log = Log::buffered(LogLevel::Debug);
         assert_eq!(
-            log.captured(),
-            before,
-            "a taken port is refused, not retried"
+            bind_or_fall_back(any6, &log, no_ipv6(false)),
+            Some("0.0.0.0:8080".parse().expect("addr"))
+        );
+        assert!(log.captured().contains(fallback), "{}", log.captured());
+        assert!(!log.captured().contains("listen_failed"));
+
+        let log = Log::buffered(LogLevel::Debug);
+        assert_eq!(bind_or_fall_back(any6, &log, no_ipv6(true)), None);
+        let said = log.captured();
+        assert!(said.contains(fallback), "{said}");
+        assert!(
+            said.contains("event=listen_failed decision=exit addr=0.0.0.0:8080 io=AddrInUse"),
+            "{said}"
+        );
+    }
+
+    /// #218: an address this host does not have is named too, with the
+    /// kernel's own answer beside it.
+    #[test]
+    fn a_listener_on_an_address_this_host_lacks_names_it() {
+        let log = Log::buffered(LogLevel::Debug);
+        let absent: SocketAddr = "192.0.2.1:8080".parse().expect("addr");
+        assert!(listen(absent, &Limits::default(), &log).is_none());
+        let said = log.captured();
+        assert!(
+            said.contains(
+                "event=listen_failed decision=exit addr=192.0.2.1:8080 io=AddrNotAvailable"
+            ),
+            "{said}"
         );
     }
 

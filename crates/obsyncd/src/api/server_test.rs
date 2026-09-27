@@ -3093,6 +3093,46 @@ fn the_change_feed_long_polls_and_wakes_on_a_concurrent_post() {
     );
 }
 
+/// #218: frames the feed does not carry (the account, a device, a sign-in)
+/// move the head without waking a held poll. A poll that starts behind the
+/// head therefore answers at once, empty, with the head's `seq`; the next
+/// poll, from that `seq`, is the one that waits.
+#[test]
+fn a_long_poll_behind_the_head_returns_the_head_at_once_and_the_next_one_waits() {
+    let h = Harness::start("changes-behind");
+    let cred = h.setup_account();
+    let poll = |since: u64, wait: u64| {
+        let started = std::time::Instant::now();
+        let res = Req::get(&format!("/v1/changes?since={since}&wait={wait}"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        let v = res.json();
+        let number = |name: &str| v.get(name).and_then(Value::as_u64).expect(name);
+        let empty = v
+            .get("changes")
+            .and_then(Value::as_array)
+            .expect("changes")
+            .is_empty();
+        (number("seq"), number("head_seq"), empty, started.elapsed())
+    };
+    let (seq, head, empty, took) = poll(0, 20);
+    assert!(empty, "no version has landed");
+    assert!(seq > 0, "the account and device frames moved the head");
+    assert_eq!(seq, head, "the page hands back the head as the cursor");
+    assert!(
+        took < Duration::from_secs(5),
+        "a poll behind the head answers at once, not at its wait: {took:?}"
+    );
+    let (again, _, empty, took) = poll(seq, 1);
+    assert!(empty);
+    assert_eq!(again, seq, "nothing moved the head");
+    assert!(
+        took >= Duration::from_millis(900),
+        "a poll from the head waits: {took:?}"
+    );
+}
+
 /// The hostile page over the wire: ten versions whose manifests sit at the
 /// protocol's 1 MiB ceiling. A page stops inside its 8 MiB budget
 /// (`storage::index::CHANGES_PAGE_BYTES`) as RENDERED, not only as

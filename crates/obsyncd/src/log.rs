@@ -14,6 +14,7 @@
 
 use std::fmt;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -140,6 +141,12 @@ impl Val {
     /// A boolean.
     pub fn flag(b: bool) -> Val {
         Val(if b { "true" } else { "false" }.to_string())
+    }
+
+    /// An address and port this server binds. Typed, so it can only ever be
+    /// an address.
+    pub fn addr(addr: SocketAddr) -> Val {
+        Val(addr.to_string())
     }
 
     /// A compile-time word: a decision, a refusal code, a role, an event kind.
