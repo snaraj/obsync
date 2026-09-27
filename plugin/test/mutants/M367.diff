@@ -1,11 +1,11 @@
 # M367: a long poll answered after a stop saves the state, over what a reloaded plugin already holds
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1740,7 +1740,6 @@
-         if (this.restoreDue !== null) await this.track(this.recover(context, this.restoreDue));
-         if (!live()) return;
-         const page = await context.transport.changes(context.state.data.lastSeq, 55);
+@@ -2020,7 +2020,6 @@
+         this.poll = quick ? null : { sent: this.nowFn(), drop };
+         const page = await context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal });
+         this.poll = null;
 -        if (!live()) return;
-         // A restore the repair pass noticed while this read waited is answered
-         // before anything the read brought is applied.
-         if (this.restoreDue !== null) continue;
+         this.feedAnswered = true;
+         this.absent = false;
+         this.accepted(false);

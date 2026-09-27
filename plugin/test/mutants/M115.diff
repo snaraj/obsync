@@ -1,11 +1,11 @@
 # M115: the network coming back is not listened for
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1604,7 +1604,6 @@
-     // there is, and the one a laptop lid or a phone leaving a tunnel produces;
-     // it runs the pending retry now instead of at the timer, and is nothing
-     // otherwise. Identical on desktop and mobile: both renderers raise it.
--    this.registerDomEvent(window, "online", () => this.retryNow("online"));
-     // NEVER AWAITED HERE. Obsidian holds its "Loading plugins…" screen until
-     // `onload` returns, and a first start talks to the server: with the
-     // server out of reach -- a phone away from a LAN-only setup, a laptop
+@@ -1951,7 +1951,6 @@
+     // phone's signal), or its window focused (`focus`, the desktop's, and the
+     // only one a VPN connected on an already-online machine is followed by:
+     // it raises no `online`). Both renderers raise all three.
+-    this.registerDomEvent(window, "online", () => this.wake("online"));
+     this.registerDomEvent(window, "focus", () => this.wake("focus"));
+     const page = window.document;
+     this.registerDomEvent(page, "visibilitychange", () => {
