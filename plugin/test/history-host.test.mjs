@@ -212,7 +212,10 @@ test("desktop publication pins directory and destination identity and syncs the 
       lstat: async (name) => {
         const stat = await p.lstat(name);
         const alter = changed && (phase === "chain" ? name.endsWith(`${path.sep}Notes`) : phase === "landed" && name.endsWith(`${path.sep}copy.md`));
-        return alter ? { ...stat, ino: stat.ino + 1, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
+        // An identity no file has. `ino + 1` is not one on Windows: an NTFS
+        // file id is 64 bits, a number keeps 53, and above 2^53 the sum
+        // rounds back to the same id.
+        return alter ? { ...stat, ino: -1, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
       },
       utimes: async () => assert.fail("path-based timestamp changed an unbound file"),
       open: async (...args) => {
