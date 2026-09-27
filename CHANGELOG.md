@@ -352,6 +352,12 @@ new device shows too, which both screens work out from the pairing code;
 the server cannot make them agree. Older devices show no code and pair as
 before (#152).
 
+**Once you approve, the new device says so.** It compares the notes it
+already holds with your server's vault before it syncs, which on a phone with
+thousands of files took a minute, and all that time its dialog still read
+"Waiting for approval on the other device". It now says it was approved and
+is comparing, and that a large vault takes a minute. All platforms (#236).
+
 **A pairing that fails or is abandoned no longer says "paired" or leaves a
 device without a key on your account.** A new device becomes active only
 when it collects the vault key, and one that has not collected it when the

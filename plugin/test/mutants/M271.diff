@@ -1,8 +1,8 @@
 # M271: a byte-identical copy of the vault is asked before pairing, as if it were another vault
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -527,7 +527,7 @@
-       // and pairs without a question; anything else asks, Cancel first.
+@@ -531,7 +531,7 @@
+       waiting.show("Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.");
        const unknown = await plugin.notesUnknownTo(envelope.vrk);
        assertCurrent();
 -      if (unknown > 0 && !(await confirmFirst(

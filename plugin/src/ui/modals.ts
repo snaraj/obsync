@@ -526,6 +526,9 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       // and that sync publishes every note here to every device syncing
       // the vault (issue #141). A copy of the same vault holds nothing new
       // and pairs without a question; anything else asks, Cancel first.
+      // The approval has happened, and the dialog says so while it compares:
+      // a phone with 6,069 files read "Waiting for approval" for 62 s (#236).
+      waiting.show("Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.");
       const unknown = await plugin.notesUnknownTo(envelope.vrk);
       assertCurrent();
       if (unknown > 0 && !(await confirmFirst(

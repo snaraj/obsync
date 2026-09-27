@@ -56,7 +56,7 @@ async function claimant(t, response, {
   const pairing = box.require(join(box.home, "build/pairing.js"));
   const notices = box.require("obsidian").notices;
   const sealed = await pairing.sealEnvelope(secret, id, { vrk: KEYS.vrk });
-  const calls = [], saves = [], logs = [], held = [], shown = [], claims = [];
+  const calls = [], saves = [], logs = [], held = [], shown = [], claims = [], surveyed = [];
   let restarted = 0, waited = 0;
   const state = { data: { vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid", ...data },
     // `State.paired`, over the same three fields.
@@ -76,6 +76,8 @@ async function claimant(t, response, {
     notesUnknownTo: async (vrk) => {
       assert.equal(vrk, KEYS.vrk, "the survey reads the vault with the key the envelope carried");
       calls.push("survey");
+      // What the dialog says while the survey runs.
+      surveyed.push(shown.at(-1));
       return unknown;
     },
     restartEngine: async () => {
@@ -125,7 +127,7 @@ async function claimant(t, response, {
   await modal.claim();
   // A claim handed to the background finishes there.
   await plugin.waiting?.done;
-  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, plugin, pairing, modal, state: state.data, current: plugin.state.data };
+  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, surveyed, plugin, pairing, modal, state: state.data, current: plugin.state.data };
 }
 
 test("a vault inside a vault that syncs with obsync refuses to pair before any request (#180)", async (t) => {
@@ -431,6 +433,16 @@ test("answering Pair and upload keeps the key and starts the first sync", async 
   assert.equal(result.asked.length, 1);
   assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
   assert.equal(result.restarted, 1);
+});
+
+test("while the vault is compared after approval, the dialog says so, not that it waits for approval (#236)", async (t) => {
+  // A phone with 6,069 files read "Waiting for approval on the other device"
+  // for 62 s after the person had approved there.
+  const result = await claimant(t, approved, { unknown: 0, answer: null });
+  assert.deepEqual(result.surveyed, [
+    "Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.",
+  ]);
+  assert.ok(result.shown.some((line) => line.startsWith("Waiting for approval on the other device.")), "the wait before it is unchanged");
 });
 
 // ---- issue #143: a device that syncs is never re-paired in place ------------
