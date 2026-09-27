@@ -32,16 +32,16 @@ The installation checks below still apply whichever networking product you use.
 ## 1. Verify what you are about to install
 
 Two artifacts, both signed keyless by this repository's publisher, both
-verified before anything reaches the cluster. The versions below are the
-release being installed -- `1.0.7` here, `X.Y.Z` and `vX.Y.Z` for whichever
-release you took off the Releases page:
+verified before anything reaches the cluster. Replace `X.Y.Z` and `vX.Y.Z`
+below with the release you are installing, the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest):
 
 ```sh
-cosign verify ghcr.io/snaraj/charts/obsync:1.0.7 \
+cosign verify ghcr.io/snaraj/charts/obsync:X.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-cosign verify ghcr.io/snaraj/obsync:v1.0.7 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

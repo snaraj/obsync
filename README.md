@@ -7,14 +7,16 @@ Read in your language: [English](README.md) • [العربية](docs/ar/README.
 Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md).
 Your notes sync through a server you run yourself. Notes, attachments and file
 names are encrypted on your device, and the server never receives the key. The
-plugin is built for every platform Obsidian runs on, desktop and mobile. There
-is no subscription and no account anywhere else.
+plugin works on every platform Obsidian runs on, desktop and mobile. There is
+no subscription and no account anywhere else.
 
 **Something not working? → [Troubleshooting](https://snaraj.github.io/obsync/troubleshooting/)**
 
 ## Find what you need
 
 Every page is also on the [documentation site](https://snaraj.github.io/obsync/).
+
+### Use obsync
 
 | I want to… | Go to |
 | --- | --- |
@@ -23,27 +25,48 @@ Every page is also on the [documentation site](https://snaraj.github.io/obsync/)
 | Install the plugin | [Install the plugin](docs/community-plugin.md) |
 | Set up my first device | [Quickstart](docs/quickstart.md) |
 | Pair a phone or another computer | [Pair your phone](docs/quickstart.md#pair-your-phone) |
-| Know what the status bar and the commands mean | [Daily use](docs/daily-use.md) |
+| Know what the status icon and the commands mean | [Daily use](docs/daily-use.md) and [Reading the status bar](docs/troubleshooting.md#reading-the-status-bar) |
 | Get an older version of a note back | [Restore a retained version](docs/daily-use.md#restore-a-retained-version) |
 | Know what a setting does | [Settings](docs/settings.md) |
 | Deal with a conflict copy | [Conflicts](docs/conflicts.md) |
 | Fix a problem | [Troubleshooting](docs/troubleshooting.md) |
 | Get back in after losing a device | [Recovery](docs/recovery.md) |
 | Move my vault to another server | [Moving this vault to a different server](docs/recovery.md#moving-this-vault-to-a-different-server) |
+
+### Run a server
+
+| I want to… | Go to |
+| --- | --- |
 | Run my server with Docker or Compose | [Run the server](docs/server.md) |
+| Put it behind my own proxy (Caddy, nginx, Traefik, HAProxy) | [Already have a TLS terminator](docs/server.md#already-have-a-tls-terminator-docker) |
+| Run it without a container, under systemd | [The static binary](docs/server.md#without-a-container-the-static-binary) |
 | Run my server on Kubernetes | [Kubernetes](docs/kubernetes.md) and the [chart reference](chart/README.md) |
 | Reach my server away from home, through my own VPN or proxy | [Reaching it from outside your LAN](docs/server.md#reaching-it-from-outside-your-lan) |
 | Use Cloudflare (optional) | [Cloudflare](docs/cloudflare.md) |
 | Trust my server's certificate on each device | [Trust the certificate authority](docs/server.md#trust-the-certificate-authority-once-per-device) |
+| Know how much memory and disk it needs | [How much memory it needs](docs/server.md#how-much-memory-it-needs) and [Storage](docs/storage.md) |
 | Back up my server | [Back up the two volumes](docs/server.md#back-up-the-two-volumes) |
 | Upgrade my server | [Upgrade by digest](docs/server.md#upgrade-by-digest) |
 | See my devices and revoke one | [The dashboard](docs/dashboard.md) |
-| Understand disk space, volumes and storage refusals | [Storage](docs/storage.md) |
 | Wipe my server and start again | [Purging a server](docs/purge.md) |
-| Understand what is encrypted and what the server can see | [Threat model](docs/threat-model.md), [the dashboard's threat model](docs/security/dashboard.md) and the [security policy](SECURITY.md) |
-| Report a security problem | [`SECURITY.md`](SECURITY.md) |
 | See what changed in each version | [`CHANGELOG.md`](CHANGELOG.md) |
-| Contribute, or read how it works inside | [`CONTRIBUTING.md`](CONTRIBUTING.md), [architecture](docs/architecture.md), [protocol](docs/protocol.md) and [every page](docs/README.md) |
+
+### Trust and privacy
+
+| I want to… | Go to |
+| --- | --- |
+| Know what this plugin touches on my device and network | [What this plugin accesses](#what-this-plugin-accesses) |
+| Understand what is encrypted and what the server can see | [Threat model](docs/threat-model.md) and [the dashboard's threat model](docs/security/dashboard.md) |
+| Report a security problem | [`SECURITY.md`](SECURITY.md) |
+
+### Inside the project
+
+For contributors and reviewers: [`CONTRIBUTING.md`](CONTRIBUTING.md),
+[architecture](docs/architecture.md), [protocol](docs/protocol.md),
+[benchmarks](docs/benchmarks.md), [device validation runs](docs/validation-runs/)
+and [every page](docs/README.md).
+
+## Install
 
 ![The plugin's settings opening with Get started: the Setup guide row and its Open the guide button, above the Server URL field](docs/assets/settings-get-started.png)
 
@@ -52,24 +75,25 @@ Install the plugin from **Settings → Community plugins → Browse**. Search fo
 Obsidian 1.13.0 or newer. Its settings open with the setup guide, one press
 away.
 
-## Get syncing
-
 > [!IMPORTANT]
 > - It syncs to a server **you** run: no hosted service, no account elsewhere.
 > - Back up your vault first; keep the 24-word recovery phrase off the device that made it.
 > - Never run it alongside another sync (Obsidian Sync, a cloud folder, another plugin) on one vault.
 > - Young software: read the [`CHANGELOG.md`](CHANGELOG.md) entry for your version, update every device, and know what each [validation run](docs/validation-runs/) covered.
 
+## Get syncing
+
 The shortest complete path is Compose with Caddy on your own network, from a
 checkout of this repository. It gives you HTTPS on any network, with no domain
-and no account anywhere. The tag `v1.0.6` below stands for the release you
-are installing. Take yours from the
+and no account anywhere. [Same network, step by step](docs/same-network.md)
+walks through it with every screen. Replace `vX.Y.Z` below with the release you
+are installing, the newest tag on the
 [Releases page](https://github.com/snaraj/obsync/releases/latest).
 
 **1. Verify the image.** Then run exactly the digest it printed:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -102,8 +126,8 @@ docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 Install the plugin, then follow the [Quickstart](docs/quickstart.md): set up
 the first device, then pair the others.
 
-Already have HTTPS in front, from a proxy or tunnel you trust? Run the bare
-server instead: [Run the server](docs/server.md).
+Already have HTTPS in front, from a proxy or tunnel you trust? Run the
+[bare server](docs/server.md#already-have-a-tls-terminator-docker) instead.
 
 ## What this plugin accesses
 

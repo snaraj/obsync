@@ -61,12 +61,12 @@ this repository's publisher. New releases carry
 `obsync-X.Y.Z-release-manifest.json`, which names their digests and the
 SHA-256 of the plugin bundle and each native installation file. Verify the
 signature with cosign, read the digest from the verified payload (it must match
-the manifest on the Release page), and run exactly that digest. The tag below
-is the release you are installing -- `v1.0.7` here, `vX.Y.Z` for whichever
-release you took off the Releases page:
+the manifest on the Release page), and run exactly that digest. Replace
+`vX.Y.Z` below with the release you are installing, the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest):
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.7 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
