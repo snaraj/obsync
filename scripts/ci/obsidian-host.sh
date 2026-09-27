@@ -92,7 +92,7 @@ wsl() {
 
 deny() {
   printf 'obsidian-host: DENY %s\n' "$1" >&2
-  for log in openssl server caddy; do
+  for log in openssl curl server caddy; do
     [ -f "${scratch}/${log}.log" ] && { printf 'obsidian-host: --- %s ---\n' "${log}" >&2; tail -n 30 "${scratch}/${log}.log" >&2; }
   done
   # Before the trap is armed nothing else removes the scratch directory.
@@ -134,7 +134,7 @@ ready() {
   local pid="$1" name="$2"
   shift 2
   for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
-    curl --silent --max-time 2 "$@" 2>/dev/null | grep -q '"ready":true' && return 0
+    curl --silent --show-error --max-time 2 "$@" 2>"${scratch}/curl.log" | grep -q '"ready":true' && return 0
     kill -0 "${pid}" 2>/dev/null || deny "${name} exited before it was ready"
     sleep 1
   done
