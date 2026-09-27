@@ -24,7 +24,7 @@ const id = "12".repeat(16), token = "34".repeat(32), secret = new Uint8Array(16)
 async function claimant(t, response, {
   onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {},
   unknown = 0, answer = null, data = {}, root = null, revoke = () => ({ outcome: "ok", value: undefined }),
-  code = null, waits = 3, onRestart = () => {},
+  code = null, waits = 3, onRestart = () => {}, field = null,
 } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
@@ -113,6 +113,8 @@ async function claimant(t, response, {
     code ?? pairing.encodePairingCode(id, token, secret));
   modal.contentEl = { createEl: () => ({ setText: (text) => shown.push(text) }), empty: () => {} };
   modal.close = () => modal.onClose();
+  // The Pairing code field `onOpen` draws, where a test asks about it.
+  if (field !== null) modal.codeField = field;
   const previousWindow = globalThis.window;
   globalThis.window = { setTimeout: (resolve, delay) => {
     assert.equal(delay, 2000);
@@ -123,7 +125,7 @@ async function claimant(t, response, {
   await modal.claim();
   // A claim handed to the background finishes there.
   await plugin.waiting?.done;
-  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, plugin, pairing, state: state.data, current: plugin.state.data };
+  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, plugin, pairing, modal, state: state.data, current: plugin.state.data };
 }
 
 test("a vault inside a vault that syncs with obsync refuses to pair before any request (#180)", async (t) => {
@@ -389,9 +391,9 @@ test("a vault holding notes the server's vault does not know is asked before its
   assert.deepEqual(result.calls, ["claim", "envelope", "survey", "revoke"], "the new credential is given back");
   assert.equal(result.asked.length, 1);
   const [question] = result.asked;
-  assert.match(question.text, /This vault holds 3 note\(s\) that are not in the vault https:\/\/sync\.example\.invalid holds/);
-  assert.match(question.text, /uploads them to every device syncing that vault/);
-  assert.match(question.text, /One server holds one vault/);
+  assert.ok(question.text.includes("This vault has 3 notes the server's vault does not. Pairing uploads them to every device that " +
+    "syncs with this server. One server holds one vault: a different vault needs a server of its own."), question.text);
+  assert.doesNotMatch(question.text, /https?:|note\(s\)/, "no address mid-sentence, and no note(s)");
   // Cancel is the default: it holds the focus, and the upload is not the call to action.
   const [cancel, upload] = question.buttons;
   assert.equal(upload.text, "Pair and upload");
@@ -404,6 +406,23 @@ test("a vault holding notes the server's vault does not know is asked before its
   assert.deepEqual(result.saves, [], "the other vault's key and its credential were never kept");
   assert.ok(result.logs.includes("pairing role=claimant decision=declined unknown=3"));
   assert.ok(result.notices.some((notice) => notice.includes("nothing was uploaded")));
+});
+
+test("one note the server's vault does not have is one note, and it is uploaded (iPhone pass, 2026-09-26)", async (t) => {
+  const result = await claimant(t, approved, { unknown: 1, answer: "Cancel" });
+  assert.ok(result.asked[0].text.includes("This vault has 1 note the server's vault does not. Pairing uploads it to every device"),
+    result.asked[0].text);
+});
+
+test("the pasted code leaves its field once the server holds the claim, and stays for a correction until then", async (t) => {
+  const set = [];
+  const field = { setValue(value) { set.push(value); return this; } };
+  const claimed = await claimant(t, approved, { field });
+  assert.deepEqual(set, [""], "the one-time code stayed on screen under Waiting for approval");
+  assert.equal(claimed.modal.code, "", "the dialog kept the code, and a later press would send it again");
+  const refused = [];
+  await claimant(t, approved, { code: "not-a-pairing-code", field: { setValue(value) { refused.push(value); return this; } } });
+  assert.deepEqual(refused, [], "a code this device could not read was taken away before it could be corrected");
 });
 
 test("answering Pair and upload keeps the key and starts the first sync", async (t) => {

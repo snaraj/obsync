@@ -1,7 +1,7 @@
 # M2334: the device list is asked again while still offline (iPhone pass)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -956,7 +956,6 @@
+@@ -958,7 +958,6 @@
    private rereadWhenAnswered(): void {
      this.unwatchDevices?.();
      const unwatch = this.plugin.onStatusChange(() => {

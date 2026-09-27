@@ -1,7 +1,7 @@
 # M271: a byte-identical copy of the vault is asked before pairing, as if it were another vault
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -484,7 +484,7 @@
+@@ -527,7 +527,7 @@
        // and pairs without a question; anything else asks, Cancel first.
        const unknown = await plugin.notesUnknownTo(envelope.vrk);
        assertCurrent();
@@ -9,4 +9,4 @@
 +      if (unknown >= 0 && !(await confirmFirst(
          app,
          "Add this vault's notes to the server's vault?",
-         `This vault holds ${unknown} note(s) that are not in the vault ${state.data.serverUrl} holds. Pairing ` +
+         `This vault has ${notes(unknown)} the server's vault does not. Pairing uploads ${unknown === 1 ? "it" : "them"} to every ` +

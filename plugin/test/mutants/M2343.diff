@@ -1,0 +1,12 @@
+# M2343: the question uploads 'them' for one note (iPhone pass)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -530,7 +530,7 @@
+       if (unknown > 0 && !(await confirmFirst(
+         app,
+         "Add this vault's notes to the server's vault?",
+-        `This vault has ${notes(unknown)} the server's vault does not. Pairing uploads ${unknown === 1 ? "it" : "them"} to every ` +
++        `This vault has ${notes(unknown)} the server's vault does not. Pairing uploads them to every ` +
+           "device that syncs with this server. One server holds one vault: a different vault needs a server of its own.",
+         "Pair and upload",
+       ))) {

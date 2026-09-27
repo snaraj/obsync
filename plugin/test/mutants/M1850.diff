@@ -1,13 +1,13 @@
 # M1850: store the claimed credential before the envelope is opened (store-before-open, #153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -649,6 +649,9 @@
+@@ -707,6 +707,9 @@
        );
        assertCurrent();
        this.plugin.log("pairing role=claimant decision=claimed");
 +      state.data.deviceId = credential.device_id;
 +      state.data.deviceSecret = credential.device_secret;
 +      await state.save();
-       // HELD, NOT KEPT (issue #153): the credential is this claim's until the
-       // key it was approved for is kept with it.
-       this.waiting = awaitApproval(this.plugin, this.app, {
+       // Claimed, the code opens nothing more: it leaves the screen, where a
+       // screenshot of "Waiting for approval" still showed it (iPhone pass, 2026-09-26).
+       this.code = "";

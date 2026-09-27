@@ -12,7 +12,7 @@ const VRK = "00".repeat(32);
  * A creator dialog over a scripted server: `statuses` answers each pairing
  * poll in turn, and every request is recorded.
  */
-async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", value: undefined }) } = {}) {
+async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", value: undefined }), notes = 7 } = {}) {
   const box = sandbox(); t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian"), buttons = [], messages = [], calls = [], logs = [];
   obsidian.Setting.prototype.addButton = function (build) {
@@ -49,7 +49,7 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   t.after(() => { globalThis.window = previousWindow; });
   const secret = pairing.newPairingSecret(), id = "ab".repeat(16), device = "cd".repeat(16);
   const claimant = { device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.4",
-    vault: await pairing.sealPairingVault(secret, id, { name: "Plans <2026>", notes: 7 }) };
+    vault: await pairing.sealPairingVault(secret, id, { name: "Plans <2026>", notes }) };
   return {
     modal, secret, id, device, claimant, buttons, messages, calls, logs, notices, pairing, ApiError, closed: () => closed,
     status: { setText: (text) => messages.push(text) },
@@ -69,6 +69,14 @@ test("approval names the decrypted vault and note count before showing its contr
   await r.modal.approve(r.id, r.secret, r.claimant, r.status);
   assert.match(r.messages[0], /Plans <2026>.*7 notes/);
   assert.deepEqual(r.buttons.map(b => b.text), ["Approve", "Reject"]);
+});
+
+test("the prompt counts the vault's notes in words: 1 note, 7 notes (iPhone pass, 2026-09-26)", async t => {
+  for (const [notes, said] of [[1, '(1 note)'], [7, '(7 notes)'], [0, '(0 notes)']]) {
+    const r = await prompt(t, { notes });
+    await r.modal.approve(r.id, r.secret, r.claimant, r.status);
+    assert.ok(r.messages[0].endsWith(` It will sync vault "Plans <2026>" ${said} with this server's vault.`), r.messages[0]);
+  }
 });
 
 test("the prompt shows the claimant's name, what it is, when it asked and the match code it shows (#152)", async t => {

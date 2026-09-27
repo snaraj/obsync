@@ -37,6 +37,7 @@ import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, ButtonComponent, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
+import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import type { EdgeHeader } from "../state";
@@ -690,7 +691,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
         if (data.deviceId === null) {
           return "Not paired yet. On a device that already syncs this vault, choose Pair a new device, then paste its code here with Pair this device. For a new server, use Setup or recover below.";
         }
-        if (this.plugin.state.paired) return `Paired as ${this.plugin.deviceName()} (${this.plugin.platformName()}), device ${data.deviceId}.`;
+        // The id stays out of the words people screenshot; Show sync status has it for support.
+        if (this.plugin.state.paired) return `Paired as ${this.plugin.deviceName()} (${platformLabel(this.plugin.platformName())}).`;
         return "This device's last pairing did not finish, so it holds no vault key. Pair it again: on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device. Do not repeat server setup.";
       },
       render: (setting) => {

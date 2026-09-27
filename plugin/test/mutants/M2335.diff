@@ -1,7 +1,7 @@
 # M2335: the re-read watch outlives its error (iPhone pass)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -957,7 +957,6 @@
+@@ -959,7 +959,6 @@
      this.unwatchDevices?.();
      const unwatch = this.plugin.onStatusChange(() => {
        if (this.plugin.currentStatus().kind === "offline") return;

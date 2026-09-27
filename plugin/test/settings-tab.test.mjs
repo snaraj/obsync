@@ -797,6 +797,14 @@ test("the device list puts this device first and the revoked last, and counts ea
   assert.equal(s.row("Device list").desc, "3 devices on this account, 1 not paired yet, and 1 revoked.");
 });
 
+test("the Pairing row names this device and what it is, never its id (iPhone pass, 2026-09-26)", (t) => {
+  const s = open(t);
+  s.plugin.state.data.deviceId = "e1".repeat(16);
+  s.plugin.state.paired = true;
+  assert.equal(s.row("Pairing").desc, "Paired as macos-1a2b (Mac).");
+  assert.ok(!s.row("Pairing").desc.includes("e1e1"), "the device id is in the words people screenshot");
+});
+
 test("an unreadable device list says so once and does not loop", async (t) => {
   const s = open(t, { listDevices: async () => { s.calls.push("listDevices"); throw new Error("LIST FAILURE SENTINEL"); } });
   s.plugin.state.data.deviceId = "11".repeat(16);

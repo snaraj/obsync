@@ -1,7 +1,7 @@
 # M2315: a device still pairing is not marked in the Devices list (#152)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -971,7 +971,7 @@
+@@ -973,7 +973,7 @@
      const self = device.device_id === this.plugin.state.data.deviceId;
      const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
      // Enrolled by a pairing code, without the vault key yet (issue #152).

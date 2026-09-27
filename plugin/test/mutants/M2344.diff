@@ -1,0 +1,11 @@
+# M2344: the claimed code stays in its field (iPhone pass)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -710,7 +710,6 @@
+       // Claimed, the code opens nothing more: it leaves the screen, where a
+       // screenshot of "Waiting for approval" still showed it (iPhone pass, 2026-09-26).
+       this.code = "";
+-      this.codeField?.setValue("");
+       // HELD, NOT KEPT (issue #153): the credential is this claim's until the
+       // key it was approved for is kept with it.
+       this.waiting = awaitApproval(this.plugin, this.app, {

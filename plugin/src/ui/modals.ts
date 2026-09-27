@@ -46,6 +46,11 @@ function fail(error: unknown): void {
   new Notice(error instanceof Error ? error.message : String(error), 8000);
 }
 
+/** "1 note", "7 notes": the approval prompt and the claimant's question count the same way. */
+function notes(count: number): string {
+  return `${count} note${count === 1 ? "" : "s"}`;
+}
+
 /** A pairing refusal or outcome, in words (issue #154); the log line keeps the code. */
 function tell(text: string): void {
   new Notice(`obsync: ${text}`, 12000);
@@ -299,7 +304,7 @@ export class PairCreateModal extends Modal {
     statusEl.setText(
       `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
         `Approve only if the new device shows the code ${code}.` +
-        (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`),
+        (vault === null ? "" : ` It will sync vault "${vault.name}" (${notes(vault.notes)}) with this server's vault.`),
     );
     const answer = new Setting(this.contentEl);
     answer
@@ -525,8 +530,8 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       if (unknown > 0 && !(await confirmFirst(
         app,
         "Add this vault's notes to the server's vault?",
-        `This vault holds ${unknown} note(s) that are not in the vault ${state.data.serverUrl} holds. Pairing ` +
-          "uploads them to every device syncing that vault. One server holds one vault: a different vault needs a server of its own.",
+        `This vault has ${notes(unknown)} the server's vault does not. Pairing uploads ${unknown === 1 ? "it" : "them"} to every ` +
+          "device that syncs with this server. One server holds one vault: a different vault needs a server of its own.",
         "Pair and upload",
       ))) {
         plugin.log(`pairing role=claimant decision=declined unknown=${unknown}`);
@@ -595,6 +600,7 @@ export function alreadyPaired(plugin: ObsyncPlugin): string | null {
 /** Claimant side: paste the code or the link, claim the pairing, wait for approval. */
 export class PairClaimModal extends Modal {
   private code = "";
+  private codeField: TextComponent | null = null;
   private busy = false;
   private closed = false;
   private statusEl: HTMLElement | null = null;
@@ -617,6 +623,7 @@ export class PairClaimModal extends Modal {
       text: "On a device that already syncs this vault, choose Pair a new device, then paste its code or its link here. Approve this device there when it asks.",
     });
     new Setting(this.contentEl).setName("Pairing code").addText((text) => {
+      this.codeField = text;
       literal(text.inputEl);
       text.setValue(this.code).onChange((value) => {
         this.code = value;
@@ -700,6 +707,10 @@ export class PairClaimModal extends Modal {
       );
       assertCurrent();
       this.plugin.log("pairing role=claimant decision=claimed");
+      // Claimed, the code opens nothing more: it leaves the screen, where a
+      // screenshot of "Waiting for approval" still showed it (iPhone pass, 2026-09-26).
+      this.code = "";
+      this.codeField?.setValue("");
       // HELD, NOT KEPT (issue #153): the credential is this claim's until the
       // key it was approved for is kept with it.
       this.waiting = awaitApproval(this.plugin, this.app, {
