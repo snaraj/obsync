@@ -1,0 +1,11 @@
+# M1942: a folder create event publishes a linked folder's name, on the string rule alone
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -626,7 +626,6 @@
+   // publication -- a create event, a rename, the start-up pass -- asks it
+   // here, where a file's publication already met it. The host logs the
+   // refusal and tells the user once.
+-  if (!(await context.host.syncable(path, "folder"))) return null;
+   const fileId = await folderFileId(context.manifestKey, path);
+   const manifest = folderManifest(context, path, false);
+   let ack = await postManifest(context, fileId, [], [], manifest, 0, false);

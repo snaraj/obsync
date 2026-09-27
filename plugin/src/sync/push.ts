@@ -644,6 +644,12 @@ export function folderManifest(context: SyncContext, path: string, deleted: bool
 export async function pushFolder(context: SyncContext, path: string, recreate = false): Promise<string | null> {
   assertFolderScope(path, context.state.data.syncFolders);
   if (context.state.folderByPath(path) !== undefined) return null;
+  // A LINKED FOLDER'S NAME IS NOT PUBLISHED (issue #167). The string rule
+  // passes a link; the filesystem's no-follow walk does not, and every folder
+  // publication -- a create event, a rename, the start-up pass -- asks it
+  // here, where a file's publication already met it. The host logs the
+  // refusal and tells the user once.
+  if (!(await context.host.syncable(path, "folder"))) return null;
   const fileId = await folderFileId(context.manifestKey, path);
   const manifest = folderManifest(context, path, false);
   let ack = await postManifest(context, fileId, [], [], manifest, 0, false);

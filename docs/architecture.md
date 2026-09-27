@@ -1219,7 +1219,10 @@ will take it when it empties.
 
 **Refusals.** A folder path takes the same vault-path rule and the same
 desktop component walk a file path takes, so no folder is created through a
-symlink or outside the vault. A folder record naming a path where a FILE
+symlink or outside the vault -- and none is PUBLISHED through one: every
+folder publication takes that walk first, so a linked folder's name never
+reaches another device, and the user is told once which folder stays on this
+device (issue #167). A folder record naming a path where a FILE
 stands is refused and logged, and so is a file manifest naming a path where a
 folder stands — on both platforms, since a folder can now arrive where a file
 used to be. Every folder decision logs one line: `folder path_class=folder

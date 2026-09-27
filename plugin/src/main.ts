@@ -422,6 +422,8 @@ export class ObsidianHost implements VaultHost {
   private readonly nested = new Set<string>();
   /** A directory this host could not fsync has been logged, once (`syncFolder`). */
   private folderSyncRefused = false;
+  /** The linked folders this host has already told the user about, once each (issue #167). */
+  private readonly linked = new Set<string>();
   private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
   private readonly composing = new WeakMap<MarkdownView, string>();
   private readonly inputWindows = new WeakSet<Window>();
@@ -488,9 +490,30 @@ export class ObsidianHost implements VaultHost {
       return true;
     } catch (error) {
       if (!(error instanceof VaultPathError)) throw error;
-      this.plugin.log(`host path_class=file decision=not_synced reason=${error.refusal}`);
+      this.plugin.log(`host path_class=${kind} decision=not_synced reason=${error.refusal}`);
+      this.linkedFolder(error);
       return false;
     }
+  }
+
+  /**
+   * Tell the user about one linked folder, once (issue #167). A link in the
+   * vault is not synced in either direction (`vaultPath.ts`), and that was
+   * true in silence: the folder's files stayed here while its NAME reached the
+   * other devices as a real empty folder. It is said where the link is met on
+   * the way OUT -- the listing, the watcher, a folder's publication -- in the
+   * words a person uses for it. A change from another device that would have
+   * to pass through the link keeps its own refusal (`sync/pull.ts`).
+   */
+  private linkedFolder(error: VaultPathError): void {
+    if (error.refusal !== "symlink_component" || error.at === undefined || this.linked.has(error.at)) return;
+    this.linked.add(error.at);
+    this.log("host path_class=folder decision=excluded reason=symlink_component");
+    this.notify(
+      `obsync doesn't sync linked folders: "${error.at}" is a link, so it stays on this device only. Nothing in it ` +
+        "is sent to your other devices, and nothing from them is written into it. To sync it, move the folder " +
+        "itself into the vault instead of linking to it.",
+    );
   }
 
   /**
@@ -633,6 +656,7 @@ export class ObsidianHost implements VaultHost {
             } catch (error) {
               if (!(error instanceof VaultPathError)) throw error;
               this.log(`list decision=not_synced reason=${error.refusal}`);
+              this.linkedFolder(error);
               return;
             }
           }
@@ -1787,6 +1811,7 @@ export class ObsidianHost implements VaultHost {
         } catch (error) {
           if (!(error instanceof VaultPathError)) throw error;
           this.log(`list decision=not_synced reason=${error.refusal}`);
+          this.linkedFolder(error);
           continue;
         }
       }

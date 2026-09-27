@@ -1,0 +1,12 @@
+# M1944: the walk refuses a link without naming where it is
+--- a/plugin/src/vaultPath.ts
++++ b/plugin/src/vaultPath.ts
+@@ -301,7 +301,7 @@
+     at = node.resolve(at, segments[index] as string);
+     const stat = await walker.lstat(at);
+     if (stat === null) return { target, final: "absent", stat: null, chain };
+-    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component", segments.slice(0, index + 1).join("/"));
++    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+     const last = index === segments.length - 1;
+     if (!last) {
+       if (!stat.isDirectory()) throw new VaultPathError("not_a_directory");

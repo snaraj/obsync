@@ -107,7 +107,12 @@ function hasControl(value: string): boolean {
 const DRIVE = /^[A-Za-z]:/;
 
 export class VaultPathError extends Error {
-  constructor(readonly refusal: VaultPathRefusal) {
+  /**
+   * `at` is the vault path of the LINK a walk met, for `symlink_component`,
+   * so the host can name that folder to the user once (issue #167). It is
+   * never part of the message.
+   */
+  constructor(readonly refusal: VaultPathRefusal, readonly at?: string) {
     // The path itself is untrusted text and stays out of the message, the
     // way every log line in the plugin keeps paths out (requirement 6).
     super(`refused: not a vault path (${refusal})`);
@@ -296,7 +301,7 @@ export async function walkVaultPath(
     at = node.resolve(at, segments[index] as string);
     const stat = await walker.lstat(at);
     if (stat === null) return { target, final: "absent", stat: null, chain };
-    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component", segments.slice(0, index + 1).join("/"));
     const last = index === segments.length - 1;
     if (!last) {
       if (!stat.isDirectory()) throw new VaultPathError("not_a_directory");
