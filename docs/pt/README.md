@@ -124,6 +124,10 @@ nunca o regista. Cria a sua conta uma vez e continua a ser o início de sessão
 de recuperação do painel. Guarde-o como a frase de recuperação:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

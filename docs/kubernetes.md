@@ -394,9 +394,12 @@ bytes are part of your deployment's surface.
 At first boot the server writes a token to `v1/setup-token` on the journal
 volume, mode 0600, never logged. It creates the account once and then remains
 the dashboard's recovery sign-in, so keep it as carefully as the recovery
-phrase. The image is distroless, so neither `kubectl exec` nor `kubectl cp` can
-read it — there is no shell and no `tar` for either to use. On the static local
-volumes of section 2 it is a file on the node:
+phrase. Once the pod runs, ask it:
+`kubectl exec deploy/obsync --namespace obsidian -- obsyncd setup-token` runs
+the image's own binary, so the distroless image's missing shell is no obstacle,
+and it works from any shell. `kubectl cp` cannot read the file, because the
+image has no `tar`. Before the pod runs, on the static local volumes of
+section 2, it is a file on the node:
 
 <!-- ci: k8s-token -->
 ```sh

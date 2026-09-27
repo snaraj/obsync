@@ -2,10 +2,15 @@
 
 *Internals, for contributors and reviewers.*
 
-Dated 2026-09-12. The MVP is validated when every step below passes on
-iPhone, iPad, Windows, and macOS against a private deployment on either route
-under "Routes" below, plus the LAN path from a desktop. Android and Linux are
-not in this definition; no recorded run covers them yet.
+Dated 2026-09-27. The MVP is validated when every step below passes on each
+client platform of the set -- macOS, Windows, Linux, iPhone or iPad, and
+Android -- against a server on either reference route under "Routes" below:
+the Kubernetes chart, or Docker Compose. Neither route presumes anybody's own
+deployment. A Compose server on a spare computer, brought up from
+[Run the server](server.md#any-network-no-provider-compose-with-caddy), is a
+complete reference, and every scenario and journey on this page can be run
+against one. Which platforms have a recorded run, and which are proven only in
+CI so far, is in the [runs index](validation-runs/README.md).
 
 ## What readiness means (owner ruling, 2026-09-07)
 
@@ -26,6 +31,12 @@ because mobile Obsidian accepts nothing else. A tunnel, a public hostname, or
 a publicly trusted certificate are optional conveniences layered on top; each
 is validated only if it is actually deployed, and never as a condition of
 readiness.
+
+**The MVP set (owner ruling, 2026-09-27).** Clients: macOS, Windows, Linux,
+iPhone or iPad, and Android. Reference routes: the Kubernetes chart and Docker
+Compose, the second being the one a stranger can stand up without a cluster.
+"Private" above means no public route; it never means one particular person's
+deployment.
 
 ## Install through the production path
 
@@ -56,11 +67,11 @@ evidence.
 | # | Scenario | Pass condition |
 | --- | --- | --- |
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
-| V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
-| V3 | Type in a note on iPhone | appears on the other three within 3 s |
+| V2 | Pair every other device of the set -- phone, tablet, the other desktops -- from the first desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
+| V3 | Type in a note on a phone | appears on every other device within 3 s |
 | V4 | Rename and move a populated folder on Windows, including a folder that IS a selected sync folder on that device | mirrored everywhere, no duplicates, no deletions in the journal; the selection names the new path. The note-level half is proven: [issue #96](https://github.com/snaraj/obsync/issues/96) shipped in 1.0.4, and the [2026-09-21 run](validation-runs/2026-09-21.md) renamed a synced note in BOTH directions with both devices on 1.0.4 and saw a move, not a deletion. The Windows folder scenario itself is still `not attempted`: no run has been made on Windows |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
-| V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
+| V6 | Add a 2 GiB image on one desktop | syncs to another desktop; a phone lists it as remote-only under the per-file ceiling |
 | V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; re-sent: fewer than 32 MiB of large chunks, plus at most 1 MiB of chunks of 256 KiB or less |
 | V8 | Delete a file on iPad | tombstone everywhere; restorable from history within retention |
 | V9 | Revoke the iPad from the dashboard | its next request fails; other devices unaffected |
@@ -182,18 +193,30 @@ fact: use disposable notes and name the class.
 
 ## Routes
 
-Two independent routes to a validated MVP, and either one alone satisfies
+Two reference routes to a validated MVP, and either one alone satisfies
 readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Kubernetes route | an in-cluster TLS terminator the deployer trusts, in front of the pod, as `docs/kubernetes.md` builds one; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) stays with whoever runs it, not here | private: the LAN, or a private route (a VPN or an overlay network) back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` on every pull request: the chart, the terminator and an API device flow on a throwaway cluster. Real devices on that route: V1-V14, by hand, in a run record |
-| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh` and `.github/workflows/compose-e2e.yml`, on every pull request |
+| The Kubernetes route | an in-cluster TLS terminator the deployer trusts, in front of the pod, as `docs/kubernetes.md` builds one; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) stays with whoever runs it, not here | private: the LAN, or a private route (a VPN or an overlay network) back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` on every pull request: the chart, the terminator and an API device flow on a throwaway cluster. Real devices on that route: V1-V14, by hand, in a run record |
+| Docker Compose | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh` and `.github/workflows/compose-e2e.yml`, on every pull request |
 
-The Compose path is the no-provider route: it needs no account with anybody
+A Compose server satisfies every V scenario and every J journey on this page.
+In V10 the server pod is the `obsync-obsync-1` container
+(`docker restart obsync-obsync-1`), and V15 is the Compose route itself. What
+the Kubernetes route adds -- the chart, its NetworkPolicy, its claims -- is
+nothing a device can observe, and `helm-e2e.yml` proves it on every pull
+request.
+
+Docker Compose is the no-provider route: it needs no account with anybody
 and nothing reachable from the internet. Both routes' serving paths are
-re-proven on every pull request by a synthetic client; neither CI job drives
-the real plugin or a real device, which is what the run records are for. The
+re-proven on every pull request by a synthetic client; neither of those CI
+jobs drives the real plugin or a real device. `.github/workflows/desktop-matrix.yml`
+does drive the real plugin, inside the official Obsidian desktop app on Linux,
+macOS and Windows, nightly and on plugin changes: setup, pairing, notes both
+ways, a rename and folders, against the server behind Caddy. That is CI
+evidence for those three desktops, not a device run, and no CI job drives a
+phone. Real devices are what the run records are for. The
 Compose path's "no public exposure" is an assertion and not a hope: the smoke reads back the
 `HostIp` Docker published 80 and 443 on and refuses any address but the one
 `OBSYNC_BIND_ADDRESS` selected, and refuses the compose file itself if that

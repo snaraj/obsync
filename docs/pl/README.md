@@ -124,6 +124,10 @@ pozostaje awaryjnym logowaniem do panelu. Strzeż go tak samo jak frazy
 odzyskiwania:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. اقرأ رمز الإعداد.** عند أول إقلاع يولّد الخادم رمز إعداد ويكتبه إلى وحدة تخزين السجل الخاصة به، بالوضع 0600، ولا يُسجَّل أبدًا. ينشئ حسابك مرة واحدة، ثم يبقى تسجيلَ الدخول الاستردادي للوحة التحكم. احفظه بالعناية نفسها التي تحفظ بها عبارة الاسترداد:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

@@ -61,16 +61,16 @@ and [Recovery](recovery.md). No provider is required to hold your plaintext.
 
 "Proven" names the evidence, and nothing else counts. There are two kinds:
 
-- **CI runs the guide:** on every change, CI runs the commands the page shows.
-- **A recorded run:** real devices completed setup, pairing and sync both ways, and a validation run records it ([how runs work](validation.md)).
+- **CI:** a named job in `.github/workflows/` runs that path on a throwaway machine, on pull requests or nightly. "CI runs the guide" means it runs the commands the page shows. CI proves the server path, not your devices.
+- **Recorded on devices:** real devices completed setup, pairing and sync both ways, and a validation run records it ([how runs work](validation.md)).
 
 | Setup | Syncs when | You need | Proven |
 | --- | --- | --- | --- |
-| **Same network:** [step by step](same-network.md), or [Compose with Caddy](server.md#any-network-no-provider-compose-with-caddy) in brief | Your devices are on the same network as the server | A computer with Docker. One certificate trusted per device | CI runs the guide. Recorded runs: macOS and iPhone, [2026-09-14](validation-runs/2026-09-14.md) and [2026-09-23](validation-runs/2026-09-23.md), the second with a Mac laptop as the server |
-| **Side by side, no Wi-Fi:** the same-network setup on one device's personal hotspot | Both devices are on that hotspot | As above, with the server's computer joined to the hotspot | Not yet recorded |
-| **Private route to a cluster:** [Kubernetes](kubernetes.md), reached through your VPN or private-network route | The device's private-network client is connected | A Kubernetes node, and the private-network client on each device | CI installs the chart. The recorded route used the optional [Cloudflare implementation](cloudflare.md#shape-a-a-private-route-and-the-cloudflare-one-client): macOS and iPhone, [2026-09-20](validation-runs/2026-09-20.md) and [2026-09-21](validation-runs/2026-09-21.md) |
-| **Your own VPN:** WireGuard or Tailscale to either server above | The VPN is connected | A VPN on every device, plus [what a roaming device needs](server.md#reaching-it-from-outside-your-lan) | Not yet recorded |
-| **A public name:** your HTTPS reverse proxy, or an optional [tunnel and access policy](cloudflare.md#shape-b-a-public-hostname-behind-access) | The device has internet | A domain. For an access policy, its service token in the plugin | Not yet recorded |
+| **Docker Compose, on the same network:** [step by step](same-network.md), or [Compose with Caddy](server.md#any-network-no-provider-compose-with-caddy) in brief | Your devices are on the same network as the server | A computer with Docker. One certificate trusted per device | CI runs the guide: `compose-e2e.yml` runs its commands on amd64 and arm64, and `generic-paths.yml` runs the same file under rootless Podman (`podman`). Recorded on devices: macOS and iPhone, [2026-09-14](validation-runs/2026-09-14.md) and [2026-09-23](validation-runs/2026-09-23.md), the second with a Mac laptop as the server |
+| **Side by side, no Wi-Fi:** the same-network setup on one device's personal hotspot | Both devices are on that hotspot | As above, with the server's computer joined to the hotspot | Not yet recorded on a device |
+| **The Kubernetes route:** [Kubernetes](kubernetes.md), reached over the LAN or a private route back to it | The device can reach the cluster's network | A Kubernetes node, and on each device whatever carries it to that network | CI installs the chart and syncs through its TLS front: `helm-e2e.yml` on a throwaway cluster, and `generic-paths.yml` on k3s as it ships (`k3d`) and on an IPv6-only cluster (`kind-ipv6`). Recorded on devices: macOS and iPhone, [2026-09-20](validation-runs/2026-09-20.md) and [2026-09-21](validation-runs/2026-09-21.md), over a private route; the one used was the optional [Cloudflare implementation](cloudflare.md#shape-a-a-private-route-and-the-cloudflare-one-client) |
+| **Your own VPN:** WireGuard or Tailscale, for example, to either server above | The VPN is connected | A VPN on every device, plus [what a roaming device needs](server.md#reaching-it-from-outside-your-lan) | Not yet recorded on a device, and no CI job runs a VPN |
+| **A public name through your own proxy:** an HTTPS reverse proxy you run on a domain you own. A [tunnel with an access policy](cloudflare.md#shape-b-a-public-hostname-behind-access) is one provider's version of it | The device has internet | A domain. For an access policy, its service token in the plugin | CI puts the server behind Caddy, nginx, Traefik and HAProxy as `deploy/proxies/` configures them (`proxy-matrix.yml`), and runs the bare binary behind a distribution's nginx (`generic-paths.yml`, `binary`). Not yet recorded on a device |
 
 In every recorded run so far, the devices were on the server's own network or its private route. Syncing from somewhere else entirely has not been recorded yet: [Reaching it from outside your LAN](server.md#reaching-it-from-outside-your-lan) lists what that needs.
 
@@ -96,8 +96,8 @@ devices.
 | --- | --- |
 | macOS | In every recorded run |
 | iPhone and iPad | iPhone is in every recorded run. Trust the certificate once, in [two steps](server.md#trust-the-certificate-authority-once-per-device) |
-| Windows and Linux | Not yet in a recorded run. The plugin runs the same code as on macOS |
-| Android | Not yet in a recorded run. Android apps may decline certificates you install yourself. If Obsidian refuses to connect, use a public name with a publicly trusted certificate ([how](server.md#trust-the-certificate-authority-once-per-device)) |
+| Windows and Linux | Not yet in a recorded device run. CI runs the plugin inside the official Obsidian app on both, and on macOS, nightly and on plugin changes (`desktop-matrix.yml`): setup, pairing, notes both ways, a rename and folders, and on Windows a case-only rename, the trash and a file another program holds open. On Linux, trust the certificate in Obsidian's own store ([how](server.md#trust-the-certificate-authority-once-per-device)) |
+| Android | Not yet in a recorded run, and no CI job runs it. Android apps may decline certificates you install yourself. If Obsidian refuses to connect, use a publicly trusted certificate; issued over DNS-01, it needs no open port and no public address ([how](server.md#trust-the-certificate-authority-once-per-device)) |
 
 ## When a device is away from the server
 

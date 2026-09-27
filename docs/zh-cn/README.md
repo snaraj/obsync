@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. 读取设置令牌。** 首次启动时，服务器会生成一个设置令牌，以 0600 权限写入它的 journal 卷，且从不记录到日志里。它只用来创建一次你的账号，之后仍是控制面板的恢复登录方式。请像保管恢复短语一样保管它：
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

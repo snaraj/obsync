@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. อ่านโทเค็นตั้งค่า** เมื่อบูตครั้งแรก เซิร์ฟเวอร์จะสร้างโทเค็นตั้งค่าและเขียนลงโวลุ่ม journal ของมันด้วยโหมด 0600 โดยไม่เคยบันทึกลงล็อก โทเค็นนี้สร้างบัญชีของคุณหนึ่งครั้ง และยังคงเป็นช่องทางเข้าสู่ระบบเพื่อกู้คืนของแดชบอร์ดต่อไป เก็บรักษามันให้ดีเท่ากับวลีกู้คืน:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

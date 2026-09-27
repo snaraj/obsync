@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **۳. توکن راه‌اندازی را بخوانید.** در نخستین راه‌اندازی، سرور یک توکن راه‌اندازی می‌سازد و آن را روی حجم ژورنالش می‌نویسد، با مجوز 0600، و هرگز در لاگ نمی‌آید. این توکن یک بار حسابتان را می‌سازد و پس از آن ورود بازیابی داشبورد می‌ماند. با همان دقتی نگهش دارید که عبارت بازیابی را:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

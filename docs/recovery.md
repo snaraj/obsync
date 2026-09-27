@@ -200,7 +200,7 @@ else — every diagnostic is on standard error and the token reaches no log
 line. It reads the same file a start reads, through the same measured volume
 pass, and opens no journal, so it answers from a server that is serving:
 `kubectl exec deploy/obsync -- obsyncd setup-token` on Kubernetes,
-`docker compose exec obsync obsyncd setup-token` under Compose, neither
+`docker exec obsync-obsync-1 obsyncd setup-token` under Compose, neither
 needing a shell the image does not have.
 
 It exits non-zero and names the reason when there is nothing to print: no

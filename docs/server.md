@@ -127,20 +127,30 @@ never logged, to `v1/setup-token` on the journal volume. The token creates
 the account once, and it then remains the dashboard's recovery sign-in for
 the life of the server ([architecture](architecture.md) section 4.5), so keep
 it with the same care as the recovery phrase: anyone holding it can sign in to
-the dashboard and revoke devices. Read it without any helper image, from the
-container's own volume, running or stopped:
+the dashboard and revoke devices. Ask the running server for it. The command
+runs the server's own binary inside its container, so it needs no helper image
+and no shell on either side, and works the same from PowerShell, Command
+Prompt or any other shell:
+
+```sh
+docker exec obsync obsyncd setup-token
+```
+
+Standard output is the token and a newline, and nothing else; diagnostics go
+to standard error. A stopped container cannot be asked, so read the file off
+its volume instead, from a POSIX shell (macOS, Linux, or WSL on Windows):
 
 ```sh
 docker cp obsync:/data/journal/v1/setup-token - | tar -xO
 ```
 
-On Kubernetes the same file is on the journal volume, and
+On Kubernetes, `kubectl exec deploy/obsync --namespace <namespace> -- obsyncd
+setup-token` asks the running pod the same way. `kubectl cp` cannot read the
+file, because the image has no `tar`, so
 [`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
-gives the two ways to read it there — `kubectl exec` and `kubectl cp` are not
-among them, because the image has no shell and no `tar` for either to use. The
-journal volume also carries the journal itself and, when `OBSYNC_SERVER_KEY` is
-not supplied, the generated server key: back it up as the sensitive volume it
-is.
+gives the read for a pod that is not running. The journal volume also carries
+the journal itself and, when `OBSYNC_SERVER_KEY` is not supplied, the generated
+server key: back it up as the sensitive volume it is.
 
 ## Any network, no provider: Compose with Caddy
 
@@ -244,7 +254,14 @@ address the plugin checks a generated link against, so it must be the address
 your devices actually use.
 
 The setup token is read the same way as above, from the container compose
-created:
+created. Compose names it `obsync-obsync-1` because the file fixes the project
+name, so this needs neither the compose file nor the variables of the `up`:
+
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+With the container stopped, from a POSIX shell:
 
 <!-- ci: compose-setup-token -->
 ```sh
@@ -260,9 +277,12 @@ readable, both containers hardened.
 
 `.github/workflows/compose-e2e.yml` then proves THIS PAGE, on an amd64 and an
 arm64 runner. It builds the image from the commit under test and runs the three
-commands above — the `up`, the setup-token read, the root-certificate export —
-by READING THEM OUT OF THIS FILE rather than out of a copy, substituting only
-the digest, the hostname and the bind address a reader supplies for themselves.
+commands above — the `up`, the `docker cp` setup-token read, the
+root-certificate export — by READING THEM OUT OF THIS FILE rather than out of a
+copy, substituting only the digest, the hostname and the bind address a reader
+supplies for themselves. The `docker exec` read is proven in the shipped image
+by `scripts/ci/image-smoke.sh`, on every pull request, against the token the
+volume holds.
 It then does what the token is for: signs in to the dashboard with it, creates
 the account, pairs a SECOND device through the API, pushes one file and reads
 it back on that second device, and is refused by name for a request that is
@@ -313,9 +333,18 @@ Copy `obsync-root.crt` to each device and install it:
   /Library/Keychains/System.keychain obsync-root.crt`
 - **Windows** (an Administrator prompt): `certutil -addstore -f Root
   obsync-root.crt`
-- **Linux** (Debian, Ubuntu): `sudo cp obsync-root.crt
-  /usr/local/share/ca-certificates/obsync-root.crt`, then `sudo
-  update-ca-certificates`. On Fedora and its relatives the directory is
+- **Linux:** Obsidian, like every Chromium-based app, reads the authorities
+  you add from your own NSS database, `~/.pki/nssdb`, and not from the system
+  store `update-ca-certificates` writes. As the user who runs Obsidian, with
+  `certutil` installed (`libnss3-tools` on Debian and Ubuntu, `nss-tools` on
+  Fedora): `certutil -d sql:$HOME/.pki/nssdb -A -t 'C,,' -n 'obsync root' -i
+  obsync-root.crt`, then restart Obsidian. With no database there yet, create
+  it first: `mkdir -p ~/.pki/nssdb`, then `certutil -d sql:$HOME/.pki/nssdb -N
+  --empty-password`. This is the trust CI gives the official AppImage
+  (`scripts/ci/obsidian-e2e.sh`), and an instance without it is refused.
+  Command-line tools such as `curl` read the system store instead: on Debian
+  and Ubuntu, `sudo cp obsync-root.crt /usr/local/share/ca-certificates/`, then
+  `sudo update-ca-certificates`; on Fedora the directory is
   `/etc/pki/ca-trust/source/anchors/` and the command is `update-ca-trust`.
 - **iOS and iPadOS:** send the file to the device by AirDrop, mail or the
   Files app, then open it. If AirDrop saved it to Files without asking
@@ -328,10 +357,16 @@ Copy `obsync-root.crt` to each device and install it:
 - **Android:** Settings, Security, Encryption & credentials, Install a
   certificate, CA certificate. Android keeps user-installed authorities
   separate from the system ones and an app may decline to trust them; if
-  Obsidian on Android refuses to connect, that is what happened, and the
-  answer is the public-ACME block documented in
-  `deploy/compose/Caddyfile` -- a real domain, ports 80 and 443 reachable,
-  and a certificate every device already trusts. Nothing else changes.
+  Obsidian on Android refuses to connect, that is what happened. The answer
+  is a publicly trusted certificate, and it needs no open port: issue it over
+  the DNS-01 challenge, which a DNS record answers instead of a connection, so
+  the name can still resolve only on your own network. It needs a domain and
+  a DNS provider credential. [Kubernetes](kubernetes.md#4-a-tls-front-inside-the-cluster)
+  walks through the ceremony with the lego ACME client, and
+  `deploy/compose/Caddyfile` says what Caddy needs to do it itself (a Caddy
+  build carrying your DNS provider's module). The public-ACME block in that file is
+  the other way: it needs ports 80 and 443 reachable from the internet.
+  Nothing else changes.
 
 ## Without a container: the static binary
 

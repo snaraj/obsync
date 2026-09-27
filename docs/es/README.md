@@ -123,6 +123,10 @@ sin registrarlo nunca. Crea tu cuenta una vez y sigue siendo el inicio de
 sesión de recuperación del panel. Guárdalo como la frase de recuperación:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

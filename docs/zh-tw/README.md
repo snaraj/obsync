@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. 讀取設定權杖。** 首次啟動時，伺服器會產生一組設定權杖，以 0600 權限寫入它的 journal 磁碟區，且從不記錄到日誌裡。它只用來建立一次你的帳號，之後仍是儀表板的復原登入方式。請像保管復原詞組一樣保管它：
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

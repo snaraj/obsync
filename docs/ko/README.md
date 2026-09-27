@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. 설정 토큰을 읽습니다.** 첫 부팅 때 서버는 설정 토큰을 발급해 저널 볼륨에 모드 0600으로 기록하며, 로그에는 절대 남기지 않습니다. 이 토큰은 계정을 한 번 만들고, 그 뒤에도 대시보드의 복구용 로그인으로 남습니다. 복구 문구만큼 소중히 보관하세요:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

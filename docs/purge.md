@@ -90,7 +90,7 @@ hold.
    nothing now.
 
    ```sh
-   docker compose -f deploy/compose/docker-compose.yml exec obsync obsyncd setup-token
+   docker exec obsync-obsync-1 obsyncd setup-token
    ```
 
    [`recovery.md`](recovery.md), "Reading the setup token", has the Kubernetes

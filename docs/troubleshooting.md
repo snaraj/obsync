@@ -21,6 +21,7 @@ server again unless the entry says so.
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
+| **Check** says nothing answered while the server runs, and a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
 | A phone says "A server with the specified hostname could not be found" at home | ["A server with the specified hostname could not be found"](#a-server-with-the-specified-hostname-could-not-be-found) |
 | A phone says "A TLS error caused the secure connection to fail" | ["A TLS error caused the secure connection to fail"](#a-tls-error-caused-the-secure-connection-to-fail) |
 | **Check** answers `403` and a message from your proxy | [Your proxy or access service refuses the plugin](#your-proxy-or-access-service-refuses-the-plugin) |
@@ -234,9 +235,60 @@ turn trust on:
 - **Android:** Settings → Security → Encryption & credentials → Install a
   certificate → CA certificate. Android keeps certificates you install
   separate from the built-in ones, and an app may ignore them; if Obsidian
-  still refuses, the server needs a publicly trusted certificate.
+  still refuses, the server needs a publicly trusted certificate. Issued over
+  the DNS-01 challenge it needs no open port and no public address
+  ([how](server.md#trust-the-certificate-authority-once-per-device)).
 - **macOS, Windows, Linux:** the one command for each is in
   [Trust the certificate authority](server.md#trust-the-certificate-authority-once-per-device).
+
+**On Linux, trusted and still refused.** Obsidian reads the authorities you
+add from your own NSS database, `~/.pki/nssdb`, not from the system store
+`update-ca-certificates` writes. So `curl` on that computer can accept the
+server while Obsidian refuses it. Add the root to that database as the user
+who runs Obsidian, with the `certutil` command in
+[Trust the certificate authority](server.md#trust-the-certificate-authority-once-per-device),
+then restart Obsidian. CI proves that command with the official AppImage, and
+proves an instance without it is refused.
+
+## The certificate is for another name
+
+**What you see.** **Check** under **Connection** ends within about ten seconds
+with "Nothing answered at" your Server URL, and the status bar shows the cloud
+with a line through it, although the server is running. A browser on the same
+device, given the same address, says the certificate is not valid for this
+name (Chromium browsers show `NET::ERR_CERT_COMMON_NAME_INVALID`). On a
+computer the plugin's log names it too: `network=net::ERR_CERT_COMMON_NAME_INVALID`.
+Up to 1.1.3, **Check** itself reads
+`0 unreachable: network=net::ERR_CERT_COMMON_NAME_INVALID`.
+
+**Why it happens.** A certificate lists the names it is valid for, and the
+device refuses one that does not list the name in the **Server URL**. Usually
+the Server URL is not the name the certificate was made for:
+
+- it uses the server's address, such as `https://192.168.1.10`, and the
+  certificate names only the host name (the Compose setup's certificate is for
+  `OBSYNC_HOST` alone);
+- it uses a short name, such as `https://nas`, and the certificate names the
+  full one, or the other way round;
+- the name changed, on the devices or on the server, and the other side still
+  uses the old one;
+- something in front of the server, such as a reverse proxy or a Zero Trust
+  service, shows its own certificate for another name.
+
+**How to fix it.**
+
+1. Put the exact name the certificate is for in the **Server URL**, with
+   `https://`, and the port when it is not 443. For the Compose setup that is
+   the `OBSYNC_HOST` you started it with.
+2. Not sure which names it lists? Open the Server URL in a browser on a
+   computer and view the certificate: its Subject Alternative Name field lists
+   them.
+3. Changed the name on purpose? Start Compose again with the new
+   `OBSYNC_HOST`; Caddy makes a certificate for it as it starts, from the same
+   authority, so the devices need no new root. Then change the Server URL on
+   every device.
+4. Do not turn certificate checks off to get past this. The name check is
+   what keeps another machine from answering in your server's place.
 
 ## "A TLS error caused the secure connection to fail"
 

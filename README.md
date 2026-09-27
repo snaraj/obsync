@@ -115,7 +115,15 @@ so your firewall decides who reaches it. Compose refuses to start until you have
 **3. Read the setup token.** At first boot the server mints a setup token and
 writes it to its journal volume, mode 0600, never logged. It creates your
 account once and remains the dashboard's recovery sign-in. Guard it like the
-recovery phrase:
+recovery phrase. Ask the running server for it, in any shell, PowerShell and
+Command Prompt included:
+
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+If the container is stopped, read the file off it instead, from a POSIX shell
+(macOS, Linux, or WSL on Windows):
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO

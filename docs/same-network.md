@@ -27,32 +27,40 @@ Follow [Compose with Caddy](server.md#any-network-no-provider-compose-with-caddy
 in *Run the server*. It verifies the image and starts it. Three values are
 yours to choose, and on a home network they are:
 
-- **`OBSYNC_HOST`**: a name every device can look up. The simplest is the
-  computer's own local name, which Apple devices and most others resolve on a
-  home network with nothing to configure. On a Mac it is **System Settings →
-  General → Sharing → Local hostname**, and ends in `.local`. If a device
-  cannot look that name up, give the server a name in your router's DNS
-  instead.
-- **`OBSYNC_BIND_ADDRESS`**: the computer's address on the Wi-Fi. On a Mac,
-  `ipconfig getifaddr en0` prints it; on Linux, `hostname -I`; on Windows,
-  `ipconfig`. The server then answers only on that network.
-- **The ports**: on a Mac, Docker Desktop refuses ports 80 and 443 unless
+- **`OBSYNC_HOST`**: a name every device can look up on your network. Either
+  the server computer's own local name, which ends in `.local` and is
+  answered by multicast DNS (mDNS) with nothing to configure, or a name you
+  give the server in your router's DNS. Whether a device can look up a
+  `.local` name depends on the device; if any one of yours cannot, use a
+  router DNS name for all of them.
+- **`OBSYNC_BIND_ADDRESS`**: the server computer's address on your network.
+  The server then answers only on that network.
+- **The ports**: 80 and 443. On a Mac, Docker Desktop refuses them unless
   **Enable privileged port mapping** is on in its settings. Otherwise set
   `OBSYNC_HTTP_PORT=8080` and `OBSYNC_HTTPS_PORT=8443`, and add `:8443` to
   the name everywhere below.
 
+Where to find each, by the server computer's system:
+
+| Server computer | Its address, for `OBSYNC_BIND_ADDRESS` | Let your devices in | Its `.local` name, for `OBSYNC_HOST` |
+| --- | --- | --- | --- |
+| macOS | `ipconfig getifaddr en0` (Wi-Fi) | **System Settings → Network → Firewall → Options**: turn off **Block all incoming connections** and let **Docker** accept incoming connections. Stealth mode can stay on | **System Settings → General → Sharing → Local hostname** |
+| Windows | `ipconfig`: the IPv4 address of the Wi-Fi or Ethernet adapter | In PowerShell as Administrator: `New-NetFirewallRule -DisplayName obsync -Direction Inbound -Protocol TCP -LocalPort 80,443 -Action Allow -Profile Private`, with your home network set to **Private** in Windows' network settings | Not recorded on Windows: use a router DNS name |
+| Linux | `hostname -I`: the first address | If the host firewall drops the phone: `sudo ufw allow 80,443/tcp`, or `sudo firewall-cmd --permanent --add-port=80/tcp --add-port=443/tcp` then `sudo firewall-cmd --reload`. A `ufw` rule cannot keep devices out, because Docker's published ports bypass it ([Docker's firewall notes](https://docs.docker.com/engine/network/packet-filtering-firewalls/)) | `hostname`, followed by `.local`, when Avahi runs (most desktop distributions) |
+
+**Let your devices in.** A computer's firewall can drop every connection from
+the phone even while the server is running; the table's third column says what
+to allow, on the ports you moved them to if you did. Which devices can connect
+at all is decided by `OBSYNC_BIND_ADDRESS`, your router and your firewall,
+never by the name or the certificate
+([Which address it is published on](server.md#which-address-it-is-published-on)).
+
 Use the name you chose for **`OBSYNC_HOST`** in the plugin's **Server URL**.
 The Wi-Fi address used for `OBSYNC_BIND_ADDRESS` is a different setting.
 Replacing the name with that address can cause a TLS error because the
-certificate identifies the name. Keep certificate checks enabled and use
-the matching name.
-
-**Let your devices in.** A computer's firewall can drop every connection from
-the phone even while the server is running. On a Mac, open **System Settings →
-Network → Firewall → Options**. Turn off **Block all incoming connections**,
-and let **Docker** accept incoming connections. Stealth mode can stay on. On
-Linux or Windows, allow incoming connections to ports 80 and 443 (or the ports
-you moved them to) in the host's firewall.
+certificate identifies the name
+([The certificate is for another name](troubleshooting.md#the-certificate-is-for-another-name)).
+Keep certificate checks enabled and use the matching name.
 
 ## Export the certificate
 

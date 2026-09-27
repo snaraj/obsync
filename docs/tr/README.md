@@ -120,6 +120,10 @@ geçmez. Hesabınızı bir kez oluşturur ve panonun kurtarma amaçlı oturum a�
 yolu olarak kalır. Onu kurtarma ifadesi kadar özenle koruyun:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

@@ -97,6 +97,10 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
 **3. セットアップトークンを読む。** 初回起動時に、サーバーはセットアップトークンを発行し、ジャーナルのボリュームにモード 0600 で書き出します。ログには決して出ません。このトークンはアカウントを一度だけ作り、その後もダッシュボードの復旧用サインインとして使えます。リカバリーフレーズと同じように大切に保管してください。
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

@@ -124,6 +124,10 @@ senza mai registrarlo nei log. Crea il tuo account una volta sola e resta
 l'accesso di recupero alla dashboard. Custodiscilo come la frase di recupero:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 

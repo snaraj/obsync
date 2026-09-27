@@ -10,9 +10,24 @@ run; these files are the results and are append-only history. A claim that
 appears in `CHANGELOG.md`, `README.md`, or a pull-request body and is not in a
 run record here has no evidence behind it.
 
-Every recorded device run so far used macOS desktops and an iPhone. No
-Windows, Linux, Android or iPad client has a record yet
+## Clients
+
+What each client of the MVP set ([validation](../validation.md)) has so far. A
+CI job is evidence that the plugin works inside the real application on that
+system; it is not a device run, and only a record below is
 ([Your devices](../setup.md#your-devices)).
+
+| Client | Recorded on a device | Proven in CI |
+| --- | --- | --- |
+| macOS | Every run below | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
+| iPhone | Every run below | Nothing: no CI job runs a phone |
+| iPad | Not yet recorded | Nothing |
+| Windows | Not yet recorded <!-- RUN(1.1.4) Windows 11 VM: the coordinator links the record here --> | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
+| Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
+| Android | Not yet recorded <!-- RUN(1.1.4) Android emulator: the coordinator links the record here --> | Nothing: no CI job runs a phone |
+
+`desktop-matrix.yml` runs nightly and on pull requests that change the plugin
+or its harnesses; a red leg there is a finding to read.
 
 ## The runs
 

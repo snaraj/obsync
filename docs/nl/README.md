@@ -125,6 +125,10 @@ gelogd. Het maakt je account één keer aan en blijft de herstelaanmelding van
 het dashboard. Bewaar het net zo zorgvuldig als de herstelzin:
 
 ```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
