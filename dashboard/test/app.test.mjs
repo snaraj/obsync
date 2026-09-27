@@ -194,6 +194,25 @@ test('Cancel closes the confirmation and sends nothing; Revoke device sends exac
   assert.equal(posts[0].headers['X-Obsync-Csrf'], CSRF);
 });
 
+/* ---- a device still pairing (issue #152) --------------------------------- */
+
+test('a device still pairing says so beside its name, and a paired one does not', async () => {
+  const { document } = await open({
+    hash: '#devices',
+    routes: {
+      [`GET ${ADMIN}/devices`]: reply(200, { devices: [
+        { ...DEVICE, state: 'pending' },
+        { ...DEVICE, device_id: 'dev-2', name: 'phone', state: 'active' },
+      ] }),
+    },
+  });
+  const rows = document.clonesOf('tpl-device');
+  assert.deepEqual(
+    rows.map((row) => [row.field('name').textContent, row.field('pending').hidden]),
+    [['phone', true], ['laptop', false]],
+  );
+});
+
 /* ---- the page starts itself in a browser -------------------------------- */
 
 // Every test above hands `start()` its own stand-ins, which is what makes the

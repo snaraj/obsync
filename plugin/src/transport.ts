@@ -403,6 +403,8 @@ export interface DeviceRecord {
   app_version: string;
   last_seen: number;
   revoked: boolean;
+  /** `pending` until a paired device's claim collects the vault key; absent from a server that predates it. */
+  state?: string;
 }
 
 /**

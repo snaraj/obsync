@@ -1,0 +1,12 @@
+# M2337: Show sync status names this device by its id (iPhone pass)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1181,7 +1181,7 @@
+       ["Server", data.serverUrl === "" ? "not configured" : data.serverUrl],
+       // A person reads the name every other screen uses; the id, smaller
+       // beneath it, is for support (iPhone pass, 2026-09-26).
+-      data.deviceId === null ? ["This device", "not paired"] : ["This device", this.plugin.deviceName(), data.deviceId],
++      ["This device", data.deviceId ?? "not paired"],
+       ["Vault key", data.vrk === null ? "absent" : "present"],
+       ["State", this.plugin.statusText()],
+       // Every file the feed moved past because this device could not write

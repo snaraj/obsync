@@ -653,10 +653,10 @@ test("the device list is read when its row is drawn, once, redrawn when it arriv
   assert.deepEqual(s.calls, ["listDevices"], "drawn twice, read once");
   assert.equal(s.updates(), 1, "the tab is redrawn when the list arrives");
   const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
-  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Old laptop", "Device list"]);
-  assert.equal(s.row("Device list").desc, "3 devices on this account.");
-  assert.equal(s.row("Old laptop").render, undefined, "a revoked device has nothing to click");
-  assert.match(s.row("Old laptop").desc, /revoked/);
+  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Old laptop (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "2 devices on this account, and 1 revoked.");
+  assert.equal(s.row("Old laptop (revoked)").render, undefined, "a revoked device has nothing to click");
+  assert.equal(s.row("Old laptop (revoked)").desc, "linux, plugin 0.1.20", "the name says revoked; the line says the rest");
   const revoke = s.button(s.render("Phone").made, "Revoke");
   assert.equal(revoke.destructive, true);
 
@@ -669,6 +669,120 @@ test("the device list is read when its row is drawn, once, redrawn when it arriv
   assert.equal(s.row("Device list").desc, "Reading the device list…");
   await tick();
   assert.deepEqual(s.calls, ["listDevices", "listDevices"]);
+});
+
+test("a device still pairing is marked beside its name, with what that means, and no other is (#152)", async (t) => {
+  const self = "11".repeat(16);
+  const devices = [
+    { device_id: self, name: "Kitchen", platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active" },
+    { device_id: "22".repeat(16), name: "Mac 7KQ4", platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "pending" },
+    // A server before `state` says nothing, and nothing is claimed.
+    { device_id: "33".repeat(16), name: "Phone", platform: "ios", app_version: "1.1.3", last_seen: 0, revoked: false },
+  ];
+  const s = open(t, { listDevices: async () => devices });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Mac 7KQ4 (not paired yet)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "2 devices on this account, and 1 not paired yet.");
+  assert.equal(s.row("Mac 7KQ4 (not paired yet)").desc, "macos, plugin 1.1.4. It has no vault key until it is approved and " +
+    "collects it, and the server removes it if that has not happened when its pairing code expires.");
+  assert.equal(s.row("Phone").desc, "ios, plugin 1.1.3");
+  assert.equal(s.row("Kitchen (this device)").desc, "macos, plugin 1.1.4");
+});
+
+/*
+ * THE IPHONE PASS, 2026-09-26: Settings opened minutes after sync resumed
+ * said "The device list is unavailable: Your server is not answering." A read
+ * from an earlier showing, its deadline held while the app was in the
+ * background, answered the new showing, which had asked nothing itself.
+ */
+test("a device list read answers only the showing that asked: an outage's error never stands on the next open", async (t) => {
+  const answers = [];
+  let ApiError;
+  const s = open(t, { listDevices: () => new Promise((resolve, reject) => { answers.push({ resolve, reject }); }) });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  s.tab.hide();
+  s.render("Device list");
+  assert.equal(answers.length, 2, "the new showing waited for the old read instead of asking");
+  answers[0].reject(new ApiError(0, "unreachable", "no answer within 10 s"));
+  await tick();
+  assert.equal(s.row("Device list").desc, "Reading the device list…", "the old showing's answer stood on this one");
+  s.render("Device list");
+  assert.equal(answers.length, 2, "the old read's end let a second read start beside this showing's own");
+  answers[1].resolve([{ device_id: "11".repeat(16), name: "iPhone EDVF", platform: "ios", app_version: "1.1.4", last_seen: 0, revoked: false }]);
+  await tick();
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+});
+
+test("an outage's 'not answering' in the device list goes by itself once the server answers again", async (t) => {
+  let status = { kind: "offline" }, answering = false, reads = 0, ApiError;
+  const s = open(t, {
+    currentStatus: () => status,
+    listDevices: async () => {
+      reads++;
+      if (!answering) throw new ApiError(0, "unreachable", "network=ERR_TIMED_OUT");
+      return [{ device_id: "11".repeat(16), name: "iPhone EDVF", platform: "ios", app_version: "1.1.4", last_seen: 0, revoked: false }];
+    },
+  });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.equal(s.row("Device list").desc, "The device list is unavailable: Your server is not answering. Sync resumes by itself when it is back.");
+  assert.equal(s.plugin.watchers.size, 1);
+  s.tab.hide();
+  assert.equal(s.plugin.watchers.size, 0, "a closed tab keeps watching the status");
+  s.render("Device list");
+  await tick();
+  assert.equal(reads, 2);
+  const changed = async () => { for (const watcher of [...s.plugin.watchers]) watcher(); await tick(); };
+  await changed();
+  assert.equal(reads, 2, "still offline: nothing is asked again");
+  status = { kind: "idle" };
+  answering = true;
+  await changed();
+  assert.equal(reads, 3, "the server answered, and the list was not read again");
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+  assert.ok(s.plugin.logs.includes("devices decision=reread reason=answered"));
+  assert.equal(s.plugin.watchers.size, 0, "the watch ends with the error it was for");
+});
+
+/*
+ * THE DESKTOP RIG, 2026-09-26: "Mac ADPQ" left and paired again under its own
+ * name. Its revoked row led the list, beside the live one of the same name,
+ * and "4 devices on this account" counted it.
+ */
+test("the device list puts this device first and the revoked last, and counts each for what it is", async (t) => {
+  const self = "cc".repeat(16);
+  const row = (id, name, extra = {}) => ({ device_id: id, name, platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active", ...extra });
+  const devices = [
+    row("aa".repeat(16), "Mac ADPQ", { revoked: true, state: "revoked" }),
+    row("bb".repeat(16), "iPhone EDVF", { platform: "ios" }),
+    row(self, "Mac W4RC"),
+    row("dd".repeat(16), "Mac ADPQ"),
+  ];
+  const s = open(t, { listDevices: async () => devices });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = () => s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac ADPQ (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "3 devices on this account, and 1 revoked.");
+  assert.equal(devices[0].name, "Mac ADPQ", "the list as read is not reordered in place");
+
+  devices.push(row("ee".repeat(16), "Mac 7KQ4", { state: "pending" }));
+  s.button(s.render("Device list").made, "Refresh").click();
+  await tick();
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac 7KQ4 (not paired yet)", "Mac ADPQ (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "3 devices on this account, 1 not paired yet, and 1 revoked.");
 });
 
 test("an unreadable device list says so once and does not loop", async (t) => {

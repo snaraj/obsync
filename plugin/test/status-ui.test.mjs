@@ -323,21 +323,41 @@ function dialog(t, status) {
     state: { data: { serverUrl: "https://sync.example.invalid", deviceId: KEYS.deviceId, vrk: KEYS.vrk, recoveryPhrase: "confirmed", parked: {}, paused: {}, files: {}, remoteOnly: {}, lastSeq: 7,
       policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 } }, localBytes: () => 0 },
     statusText: () => `${current.status.kind} TEXT`,
+    deviceName: () => "iPhone EDVF",
     currentStatus: () => current.status,
     nextRetryAt: () => current.retryAt ?? null,
     onStatusChange: (watcher) => { watchers.add(watcher); return () => watchers.delete(watcher); },
     retry: () => calls.push("retry"),
     openSettings: () => calls.push("settings"),
   };
-  const element = () => ({ createEl: (tag, attributes = {}) => { drawn.push(attributes.text ?? tag); return element(); }, empty: () => { drawn.length = 0; made.length = 0; } });
+  const classed = [];
+  const element = () => ({ createEl: (tag, attributes = {}) => {
+    drawn.push(attributes.text ?? tag);
+    if (attributes.cls !== undefined) classed.push([attributes.text, attributes.cls]);
+    return element();
+  }, empty: () => { drawn.length = 0; made.length = 0; classed.length = 0; } });
   const modal = new StatusModal({}, plugin);
   modal.contentEl = element();
   modal.setTitle = () => {};
   modal.close = () => { calls.push("close"); modal.onClose(); };
   const change = (next) => { current.status = next; for (const watcher of [...watchers]) watcher(); };
   const button = () => made.at(-1);
-  return { modal, drawn, calls, watchers, change, button, current };
+  return { modal, drawn, calls, watchers, change, button, current, classed, plugin };
 }
+
+test("Show sync status names this device as every other screen does, its id smaller beneath for support (iPhone pass, 2026-09-26)", (t) => {
+  const d = dialog(t, { kind: "idle" });
+  d.modal.onOpen();
+  const at = d.drawn.indexOf("This device");
+  assert.deepEqual(d.drawn.slice(at, at + 3), ["This device", "iPhone EDVF", KEYS.deviceId], "the name first, then the id");
+  const worded = () => d.classed.filter(([text]) => text !== undefined);
+  assert.deepEqual(worded(), [[KEYS.deviceId, "setting-item-description"]], "the id is the smaller line, and only it");
+  d.plugin.state.data.deviceId = null;
+  d.change({ kind: "idle" });
+  const unpaired = d.drawn.indexOf("This device");
+  assert.equal(d.drawn[unpaired + 1], "not paired");
+  assert.deepEqual(worded(), []);
+});
 
 test("Show sync status stays true while open, and offers the next step for the state it shows (#156)", (t) => {
   const d = dialog(t, { kind: "offline" });

@@ -224,7 +224,7 @@ export class PairCreateModal extends Modal {
       void this.refuse(asking, "closed", "Pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
     } else if (this.collecting) {
       this.collecting = false;
-      tell("Approved. The new device finishes pairing by itself, and appears under Devices once it holds the vault key.");
+      tell("Approved. The new device finishes pairing by itself as soon as it collects the vault key.");
     }
   }
 
@@ -1177,9 +1177,11 @@ export class StatusModal extends Modal {
     this.contentEl.empty();
     this.nextStep();
     const data = this.plugin.state.data;
-    const rows: [string, string][] = [
+    const rows: [string, string, string?][] = [
       ["Server", data.serverUrl === "" ? "not configured" : data.serverUrl],
-      ["This device", data.deviceId ?? "not paired"],
+      // A person reads the name every other screen uses; the id, smaller
+      // beneath it, is for support (iPhone pass, 2026-09-26).
+      data.deviceId === null ? ["This device", "not paired"] : ["This device", this.plugin.deviceName(), data.deviceId],
       ["Vault key", data.vrk === null ? "absent" : "present"],
       ["State", this.plugin.statusText()],
       // Every file the feed moved past because this device could not write
@@ -1193,10 +1195,11 @@ export class StatusModal extends Modal {
       ["Total budget", formatBytes(data.policy.totalBudgetBytes)],
     ];
     const table = this.contentEl.createEl("table", { cls: "obsync-table" });
-    for (const [name, value] of rows) {
+    for (const [name, value, detail] of rows) {
       const row = table.createEl("tr");
       row.createEl("td", { text: name });
-      row.createEl("td", { text: value });
+      const cell = row.createEl("td", { text: value });
+      if (detail !== undefined) cell.createEl("div", { text: detail, cls: "setting-item-description" });
     }
     // The one thing to do that nothing else here would show (issue #170).
     if (data.vrk !== null && data.recoveryPhrase !== "confirmed") {

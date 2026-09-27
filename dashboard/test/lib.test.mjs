@@ -406,6 +406,17 @@ test('buildDeviceRows: hostile input', () => {
   assert.equal(row.platform, 'Unknown');
   assert.equal(row.glyph, 'g-device');
   assert.equal(row.revoked, false);
+  assert.equal(row.pending, false);
+});
+
+test('buildDeviceRows: a device still pairing is marked and follows the paired ones; the revoked go last (#152)', () => {
+  const rows = buildDeviceRows([
+    { device_id: '4', name: 'd', state: 'revoked', revoked: true, last_seen: 9 },
+    { device_id: '1', name: 'a', state: 'pending', last_seen: 8 },
+    { device_id: '2', name: 'b', state: 'active' },
+    { device_id: '3', name: 'c' },
+  ]);
+  assert.deepEqual(rows.map((row) => [row.id, row.pending]), [['2', false], ['3', false], ['1', true], ['4', false]]);
 });
 
 test('buildDeviceRows: ties break by name, not by input order', () => {

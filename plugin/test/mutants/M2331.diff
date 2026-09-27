@@ -1,0 +1,11 @@
+# M2331: a new showing waits for the old read instead of asking (iPhone pass)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -286,7 +286,6 @@
+     this.deviceList = null;
+     this.deviceListError = null;
+     this.devicesShown++;
+-    this.readingDevices = false;
+     this.unwatchDevices?.();
+     this.unwatchDevices = null;
+   }

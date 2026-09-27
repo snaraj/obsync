@@ -1,0 +1,11 @@
+# M2332: an old read's end frees the new showing's read (iPhone pass)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -946,7 +946,6 @@
+         if (refusalStatus(error)?.kind === "offline") this.rereadWhenAnswered();
+       })
+       .finally(() => {
+-        if (shown !== this.devicesShown) return;
+         this.readingDevices = false;
+         this.update();
+       });

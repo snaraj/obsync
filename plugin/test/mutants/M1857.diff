@@ -9,4 +9,4 @@
 +      void asking;
      } else if (this.collecting) {
        this.collecting = false;
-       tell("Approved. The new device finishes pairing by itself, and appears under Devices once it holds the vault key.");
+       tell("Approved. The new device finishes pairing by itself as soon as it collects the vault key.");

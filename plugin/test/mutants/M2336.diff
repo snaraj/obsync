@@ -1,0 +1,11 @@
+# M2336: a closed tab keeps watching the status (iPhone pass)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -287,7 +287,6 @@
+     this.deviceListError = null;
+     this.devicesShown++;
+     this.readingDevices = false;
+-    this.unwatchDevices?.();
+     this.unwatchDevices = null;
+   }
+ 

@@ -1,0 +1,12 @@
+# M2314: a device still pairing is listed among the paired (Devices order, desktop rig)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -908,7 +908,7 @@
+     // (desktop rig, 2026-09-26).
+     const self = this.plugin.state.data.deviceId;
+     const rank = (device: DeviceRecord): number =>
+-      device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
++      device.device_id === self ? 0 : device.revoked ? 3 : 1;
+     const rows = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b)).map((device) => this.deviceRow(device));
+     rows.push({
+       name: "Device list",

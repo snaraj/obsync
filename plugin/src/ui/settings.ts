@@ -48,6 +48,19 @@ import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVE
 export const ACCOUNT_NAME = "obsync";
 
 /** What a copied vault, or one whose folder was renamed outside Obsidian, is told (issue #168). */
+/** The devices that sync, then those that do not, each counted for what it is. */
+function deviceCount(devices: DeviceRecord[]): string {
+  const revoked = devices.filter((device) => device.revoked).length;
+  const pending = devices.filter((device) => !device.revoked && device.state === "pending").length;
+  const paired = devices.length - revoked - pending;
+  const rest = [pending > 0 ? `${pending} not paired yet` : "", revoked > 0 ? `${revoked} revoked` : ""].filter((part) => part !== "");
+  const tail = rest.length === 0 ? "" : rest.length === 1 ? `, and ${rest[0]}` : `, ${rest[0]}, and ${rest[1]}`;
+  return `${paired} device${paired === 1 ? "" : "s"} on this account${tail}.`;
+}
+
+/** What a device listed as not paired yet is (issue #152); the dashboard's tag says the same. */
+const STILL_PAIRING = "It has no vault key until it is approved and collects it, and the server removes it if that has not happened when its pairing code expires.";
+
 export const COPIED_VAULT = "This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh.";
 
 /**
@@ -224,6 +237,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
   private readingDevices = false;
+  /**
+   * WHICH SHOWING OF THE TAB A DEVICE LIST READ IS FOR (iPhone pass,
+   * 2026-09-26). A read can outlive the showing that asked -- on a phone its
+   * deadline waits out the app's time in the background -- and the next
+   * showing asked nothing of its own, so an outage's "not answering" stood
+   * minutes after sync had resumed. A read answers only its own showing.
+   */
+  private devicesShown = 0;
+  /** Takes an outage's device list error back once the server answers again. */
+  private unwatchDevices: (() => void) | null = null;
   private draftUrl: string | null = null;
   /** Stops the Connection row following the status, when the tab closes. */
   private unwatch: (() => void) | null = null;
@@ -262,6 +285,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftName = null;
     this.deviceList = null;
     this.deviceListError = null;
+    this.devicesShown++;
+    this.readingDevices = false;
+    this.unwatchDevices?.();
+    this.unwatchDevices = null;
   }
 
   private groups(): Group[] {
@@ -876,13 +903,19 @@ export class ObsyncSettingTab extends PluginSettingTab {
    * app's renderer, not this file, lays the list out.
    */
   private deviceRows(): Row[] {
-    const rows = (this.deviceList ?? []).map((device) => this.deviceRow(device));
+    // This device, the paired ones, those still pairing, the revoked last: a
+    // device paired again under its old name listed its revoked row first
+    // (desktop rig, 2026-09-26).
+    const self = this.plugin.state.data.deviceId;
+    const rank = (device: DeviceRecord): number =>
+      device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
+    const rows = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b)).map((device) => this.deviceRow(device));
     rows.push({
       name: "Device list",
       desc: () => {
         if (this.deviceListError !== null) return this.deviceListError;
         if (this.deviceList === null) return "Reading the device list…";
-        return `${this.deviceList.length} device${this.deviceList.length === 1 ? "" : "s"} on this account.`;
+        return deviceCount(this.deviceList);
       },
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Refresh").onClick(() => {
@@ -901,23 +934,47 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private readDevices(): void {
     if (this.readingDevices) return;
     this.readingDevices = true;
+    const shown = this.devicesShown;
     const { deviceId, serverUrl } = this.plugin.state.data;
-    const current = (): boolean => deviceId === this.plugin.state.data.deviceId && serverUrl === this.plugin.state.data.serverUrl;
+    const current = (): boolean => shown === this.devicesShown && deviceId === this.plugin.state.data.deviceId &&
+      serverUrl === this.plugin.state.data.serverUrl;
     // A person is looking at this list: their patience, not the background's (#182).
     void this.plugin.listDevices({ interactive: true })
-      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => { if (current()) this.deviceListError = `The device list is unavailable: ${refusalText(error)}`; })
+      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => {
+        if (!current()) return;
+        this.deviceListError = `The device list is unavailable: ${refusalText(error)}`;
+        if (refusalStatus(error)?.kind === "offline") this.rereadWhenAnswered();
+      })
       .finally(() => {
+        if (shown !== this.devicesShown) return;
         this.readingDevices = false;
         this.update();
       });
   }
 
+  /** Absence is said until the server answers again, and then the list is read by itself. */
+  private rereadWhenAnswered(): void {
+    this.unwatchDevices?.();
+    const unwatch = this.plugin.onStatusChange(() => {
+      if (this.plugin.currentStatus().kind === "offline") return;
+      unwatch();
+      this.unwatchDevices = null;
+      this.plugin.log("devices decision=reread reason=answered");
+      this.deviceListError = null;
+      this.readDevices();
+      this.update();
+    });
+    this.unwatchDevices = unwatch;
+  }
+
   private deviceRow(device: DeviceRecord): Row {
     const self = device.device_id === this.plugin.state.data.deviceId;
     const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
+    // Enrolled by a pairing code, without the vault key yet (issue #152).
+    const pending = device.state === "pending";
     const row: Row = {
-      name: `${device.name}${self ? " (this device)" : ""}`,
-      desc: `${device.platform}, plugin ${device.app_version}${device.revoked ? ", revoked" : ""}${seen}`,
+      name: `${device.name}${self ? " (this device)" : device.revoked ? " (revoked)" : pending ? " (not paired yet)" : ""}`,
+      desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
     };
     if (!device.revoked) {
       row.render = (setting) => {
