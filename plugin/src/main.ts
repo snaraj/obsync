@@ -76,7 +76,7 @@ import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, r
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
 import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import {
-  LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, awaitApproval,
+  LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired, awaitApproval,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import { Indicator, indicated } from "./ui/indicator";
@@ -2164,6 +2164,20 @@ export default class ObsyncPlugin extends Plugin {
       id: "pair-device",
       name: "Pair a new device (obsync)",
       callback: () => new PairCreateModal(this.app, this).open(),
+    });
+    this.addCommand({
+      id: "pair-this-device",
+      name: "Pair this device (obsync)",
+      // The fresh device's way in (issue #154); one that syncs is told so, and nothing opens.
+      callback: () => {
+        const paired = alreadyPaired(this);
+        if (paired === null) {
+          new PairClaimModal(this.app, this).open();
+          return;
+        }
+        this.log("pairing role=claimant decision=refused reason=already_paired source=palette");
+        new Notice(`obsync: ${paired}`, 12000);
+      },
     });
     this.addCommand({
       id: "show-recovery-phrase",

@@ -148,7 +148,7 @@ test("the stylesheet gives the indicator one width in every state, and Reduce Mo
 
 // --- the plugin: click, commands, Sync now, a phone ------------------------
 
-async function plugin(t, { mobile = false, view = null } = {}) {
+async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   const b = box(t);
   b.obsidian.Platform.isMobile = mobile;
   t.after(() => { b.obsidian.Platform.isMobile = false; });
@@ -169,7 +169,7 @@ async function plugin(t, { mobile = false, view = null } = {}) {
   instance.onload = async () => { await load(); await instance.firstStart; };
   const commands = [], hooks = new Map(), item = statusItem();
   const views = { active: view };
-  instance.loadData = async () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
+  instance.loadData = async () => data ?? ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
   instance.saveData = async () => {};
   instance.addCommand = (command) => commands.push(command);
   instance.addSettingTab = instance.registerObsidianProtocolHandler = () => {};
@@ -211,10 +211,40 @@ test("clicking the indicator opens Show sync status (#156)", async (t) => {
 
 test("the palette finds every command under 'obsync', and their ids have not changed (#156)", async (t) => {
   const p = await plugin(t);
-  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "restore-history", "pair-device", "show-recovery-phrase",
+  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
     "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server"]);
   for (const command of p.commands) assert.match(command.name, /obsync/, command.name);
   assert.equal(p.commands.find((command) => command.id === "status").name, "Show sync status (obsync)");
+});
+
+/*
+ * A FRESH DEVICE FINDS ITS WAY IN FROM THE PALETTE (issue #154): searching
+ * "pair" listed only Pair a new device, the command for the device that
+ * already syncs. Pair this device opens the dialog that takes the code; on a
+ * device that syncs already it opens nothing and says why, and where to go.
+ */
+test("Pair this device in the palette opens the code dialog, and on a device that syncs only says so (#154)", async (t) => {
+  for (const syncing of [false, true]) {
+    const p = await plugin(t, syncing ? {} : { data: { serverUrl: "https://sync.example.invalid", edgeHeaders: [] } });
+    const opened = [], logs = [];
+    p.obsidian.Modal.prototype.open = function open() { opened.push(this.constructor.name); };
+    p.instance.log = (line) => logs.push(line);
+    const before = p.obsidian.notices.length;
+    const command = p.commands.find((candidate) => candidate.id === "pair-this-device");
+    assert.equal(command.name, "Pair this device (obsync)");
+    command.callback();
+    if (!syncing) {
+      assert.deepEqual(opened, ["PairClaimModal"], "a fresh device did not get the code dialog");
+      assert.deepEqual(p.obsidian.notices.slice(before), []);
+      continue;
+    }
+    assert.deepEqual(opened, [], "a device that syncs opened the code dialog");
+    assert.deepEqual(p.obsidian.notices.slice(before), [
+      `obsync: This device already syncs with https://sync.example.invalid as "${p.instance.deviceName()}", so nothing was claimed. ` +
+        "To add another device, choose Pair a new device here. To pair this one again, use Leave this server in obsync's settings first.",
+    ]);
+    assert.deepEqual(logs, ["pairing role=claimant decision=refused reason=already_paired source=palette"]);
+  }
 });
 
 test("Sync now always answers once: sent, nothing to send, or the server not answering (#182)", async (t) => {

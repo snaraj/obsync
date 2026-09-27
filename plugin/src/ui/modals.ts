@@ -581,6 +581,17 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
   }
 }
 
+/**
+ * A DEVICE THAT SYNCS IS NEVER RE-PAIRED IN PLACE (issue #143), whether a code,
+ * a link or the palette asked (issue #154): what it is told instead, or `null`
+ * when it may pair.
+ */
+export function alreadyPaired(plugin: ObsyncPlugin): string | null {
+  if (!plugin.state.paired || plugin.forgottenDevice) return null;
+  return `This device already syncs with ${plugin.state.data.serverUrl} as "${plugin.deviceName()}", so nothing was claimed. ` +
+    "To add another device, choose Pair a new device here. To pair this one again, use Leave this server in obsync's settings first.";
+}
+
 /** Claimant side: paste the code or the link, claim the pairing, wait for approval. */
 export class PairClaimModal extends Modal {
   private code = "";
@@ -650,12 +661,10 @@ export class PairClaimModal extends Modal {
     // sync against another server's records doubled the vault. Leaving first
     // clears all three; a pairing link opened here, even one this device
     // made, claims nothing.
-    if (this.plugin.state.paired && !this.plugin.forgottenDevice) {
+    const paired = alreadyPaired(this.plugin);
+    if (paired !== null) {
       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
-      fail(new Error(
-        `This device already syncs with ${this.plugin.state.data.serverUrl} as "${this.plugin.deviceName()}", ` +
-          "so nothing was claimed. To pair it again, use Leave this server in obsync's settings first.",
-      ));
+      fail(new Error(paired));
       this.close();
       return;
     }

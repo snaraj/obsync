@@ -16,6 +16,7 @@ and each name ends in `(obsync)`, so typing `obsync` there lists them all:
 | Sync now | Checks file contents now, including changes another tool made without changing the file's size or date |
 | Show sync status | What the engine is doing, and why it is not doing more |
 | Pair a new device | Mints a one-time pairing code on this device |
+| Pair this device | Opens the dialog that takes a pairing code from a device that already syncs; on a device that syncs already, it only says so |
 | Show recovery phrase | Re-displays the 24 words, from this device's own key |
 | Restore from history | Browses retained versions and restores one as a copy |
 | Show remote-only files | Lists files above this device's ceilings, to fetch on demand |
