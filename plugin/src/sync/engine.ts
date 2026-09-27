@@ -463,13 +463,20 @@ export type EngineStatus =
 export const REVOKED_DEVICE =
   "This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.";
 export const CLOCK_OFF =
-  "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically; sync resumes by itself.";
+  "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically.";
 export const SERVER_FULL =
-  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota; sync resumes by itself.";
+  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota.";
 export const NOT_OBSYNC_ANSWER =
-  "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings; sync retries by itself.";
-/** The pairing refusal's own words for `421 edge_required` (`transport.ts`), and that sync retries (#228). */
-export const EDGE_REFUSED = `${EDGE_REQUIRED} Sync retries by itself.`;
+  "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.";
+/**
+ * HOW A REFUSAL THAT CLEARS ELSEWHERE ENDS -- a full server, a wrong clock,
+ * something in front of the server, the edge (#155, #228). A running engine
+ * keeps asking, so its sync resumes by itself. A refused START is never asked
+ * again by a timer (#129), so it says what to press. A press -- a Check, the
+ * device list -- answers for itself and promises neither.
+ */
+export const RESUMES = "Sync resumes by itself.";
+export const AFTER_START = "Once that is fixed, select Sync now.";
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
 export const PUSH_REFUSED =
@@ -491,10 +498,11 @@ export const VERIFY_FAILED =
  * retrying`, which sends a person to their Wi-Fi about a revoked device, a
  * wrong clock or a full disk; only absence says offline here.
  */
-export function refusalStatus(error: unknown): EngineStatus | null {
+export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | null {
   if (!(error instanceof ApiError)) return null;
+  const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
   // First: a full server is never absence, whatever carried its answer.
-  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
+  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
   const certificate = certificateRefusal(error);
   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
   if (error.code === "unreachable") return { kind: "offline" };
@@ -502,11 +510,12 @@ export function refusalStatus(error: unknown): EngineStatus | null {
   if (forgottenCredential(error as unknown)) {
     return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
   }
-  if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: CLOCK_OFF };
+  if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: said(CLOCK_OFF) };
   if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
-    return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
+    return { kind: "error", code: "edge", message: said(NOT_OBSYNC_ANSWER) };
   }
-  if (error.code === "edge_required") return { kind: "error", code: "edge", message: EDGE_REFUSED };
+  // Pairing's own words for the edge (`transport.ts`), so the two never disagree.
+  if (error.code === "edge_required") return { kind: "error", code: "edge", message: said(EDGE_REQUIRED) };
   return null;
 }
 
@@ -517,7 +526,7 @@ export function refusalStatus(error: unknown): EngineStatus | null {
  * words. No `0 unreachable: network=...` reaches a person.
  */
 export function refusalText(error: unknown): string {
-  const refused = refusalStatus(error);
+  const refused = refusalStatus(error, "");
   if (refused?.kind === "offline") return NOT_ANSWERING;
   if (refused?.kind === "error") return refused.message;
   if (error instanceof ApiError) return "Your server refused this request; the obsync log names the reason.";

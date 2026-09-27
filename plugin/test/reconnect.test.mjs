@@ -551,6 +551,9 @@ test("a refused start says why in words, and a start that gets through clears wh
   r.plan(() => { throw new r.ApiError(401, "stale_timestamp", "SENTINEL"); });
   await r.instance.restartEngine();
   assert.match(r.instance.statusText(), /clock is more than five minutes off/);
+  // Nothing asks again after a refused start, so it says what to press, not that it resumes.
+  assert.match(r.instance.statusText(), /Once that is fixed, select Sync now\.$/);
+  assert.doesNotMatch(r.instance.statusText(), /by itself/);
   assert.deepEqual(r.win.armed(), [], "a refusal is never knocked on by a timer");
   // The clock is fixed and the person presses Retry: the error goes with the start that gets through.
   r.plan(() => undefined);
@@ -559,12 +562,13 @@ test("a refused start says why in words, and a start that gets through clears wh
 });
 
 test("a start refused because it did not come through the server's edge says so in pairing's words, not 'refused to start' (#228)", async (t) => {
-  const { EDGE_REFUSED } = require("../build/sync/engine.js");
+  const { AFTER_START } = require("../build/sync/engine.js");
+  const { EDGE_REQUIRED } = require("../build/transport.js");
   const r = await fixture(t);
   r.plan((n) => { if (n === 1) throw new r.ApiError(421, "edge_required", "edge connecting-address header missing"); });
   await r.instance.onload();
-  assert.equal(r.instance.statusText(), `error — ${EDGE_REFUSED}`, "the settings row and Show sync status read this");
-  assert.equal(r.bar.at(-1), `obsync: error — ${EDGE_REFUSED}`);
+  assert.equal(r.instance.statusText(), `error — ${EDGE_REQUIRED} ${AFTER_START}`, "the settings row and Show sync status read this");
+  assert.equal(r.bar.at(-1), `obsync: error — ${EDGE_REQUIRED} ${AFTER_START}`);
   assert.ok(r.logs.includes("engine decision=stopped reason=start_failed code=edge_required"), r.logs.join("\n"));
 });
 

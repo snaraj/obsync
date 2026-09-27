@@ -1,13 +1,12 @@
-# M598: misclassify startup authentication refusal
+# M3060: a refused start promises that sync resumes by itself, though no timer asks again (#129)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2934,7 +2934,8 @@
+@@ -2934,7 +2934,7 @@
          // words, its code left in the line above.
          // Never asked again by a timer, so what clears elsewhere ends in what to
          // press (`AFTER_START`), not in a promise that it resumes.
 -        this.setStatus(refusalStatus(error, AFTER_START) ?? {
-+        const mapped = refusalStatus(error, AFTER_START);
-+        this.setStatus((mapped?.kind === "error" && mapped.code === "forgotten_device" ? { kind: "offline" as const } : mapped) ?? {
++        this.setStatus(refusalStatus(error) ?? {
            kind: "error",
            message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
          });

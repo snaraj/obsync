@@ -235,15 +235,14 @@ test("a certificate for another name or out of date is said as that, on every pa
  */
 test("pairing, the status and Check say an edge refusal in the same words (#228)", () => {
   const { ApiError, EDGE_REQUIRED } = require("../build/transport.js");
-  const { EDGE_REFUSED, refusalStatus, refusalText } = require("../build/sync/engine.js");
+  const { RESUMES, refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(EDGE_REQUIRED, "This server only answers through its access-controlled edge, and this request did not come " +
     "through it. Check the Server URL and the Custom request headers in obsync settings, and that your route to the server " +
     "goes through that edge.");
-  assert.equal(EDGE_REFUSED, `${EDGE_REQUIRED} Sync retries by itself.`);
   const error = new ApiError(421, "edge_required", "edge connecting-address header missing");
   assert.equal(pairing.refusalText(error), EDGE_REQUIRED);
-  assert.deepEqual(refusalStatus(error), { kind: "error", code: "edge", message: EDGE_REFUSED });
-  assert.equal(refusalText(error), EDGE_REFUSED, "Check and the device list");
+  assert.deepEqual(refusalStatus(error), { kind: "error", code: "edge", message: `${EDGE_REQUIRED} ${RESUMES}` });
+  assert.equal(refusalText(error), EDGE_REQUIRED, "Check and the device list say pairing's words exactly");
 });
 
 test("a held claim is read back exactly, and anything else is no claim (#153)", () => {

@@ -71,7 +71,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, isNewer, lostMessage } from "./transport";
-import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -2932,7 +2932,9 @@ export default class ObsyncPlugin extends Plugin {
         // The one mapping the running engine uses (#155); a local fault is
         // worded where it was raised, and a refusal no row names is said in
         // words, its code left in the line above.
-        this.setStatus(refusalStatus(error) ?? {
+        // Never asked again by a timer, so what clears elsewhere ends in what to
+        // press (`AFTER_START`), not in a promise that it resumes.
+        this.setStatus(refusalStatus(error, AFTER_START) ?? {
           kind: "error",
           message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
         });

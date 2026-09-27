@@ -15,7 +15,8 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, EDGE_REFUSED, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const polls = (r) => r.server.requests.filter((request) => request.target.startsWith("/v1/changes?since="));
@@ -162,9 +163,9 @@ const proxyPage = () => ({ status: 403, headers: {}, text: "<html>SENTINEL acces
 
 test("a feed refusal names itself on the first read, never as offline, and clears itself on the next answer (#155)", async () => {
   for (const [name, answer, expected] of [
-    ["a wrong clock", (r) => r.server.error(401, "stale_timestamp", "timestamp is outside the window"), { code: "clock", message: CLOCK_OFF }],
-    ["a proxy's page", () => proxyPage(), { code: "edge", message: NOT_OBSYNC_ANSWER }],
-    ["a read around the server's edge (#228)", (r) => r.server.error(421, "edge_required", "edge connecting-address header missing"), { code: "edge", message: EDGE_REFUSED }],
+    ["a wrong clock", (r) => r.server.error(401, "stale_timestamp", "timestamp is outside the window"), { code: "clock", message: `${CLOCK_OFF} ${RESUMES}` }],
+    ["a proxy's page", () => proxyPage(), { code: "edge", message: `${NOT_OBSYNC_ANSWER} ${RESUMES}` }],
+    ["a read around the server's edge (#228)", (r) => r.server.error(421, "edge_required", "edge connecting-address header missing"), { code: "edge", message: `${EDGE_REQUIRED} ${RESUMES}` }],
     ["a refusal no row names", (r) => r.server.error(403, "device_pending", "SENTINEL"), { code: "feed", message: FEED_FAILED }],
   ]) {
     const r = await started();
@@ -204,7 +205,7 @@ test("a full server is said on the first chunk it refuses, stays through answere
   r.host.seed("Big.md", "a note for a full server\n", 5000);
   r.engine.changed("Big.md");
   await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
-  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: SERVER_FULL });
+  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` });
   assert.equal(refused.length, 1, "the first 507 is the answer: never eight tries");
   // The feed is answered: a full server still answers reads, so it stands.
   r.server.releaseFeed();
@@ -228,7 +229,7 @@ test("a change sent around the server's edge says so, not that the server refuse
   await r.timers.run(STEP_MS, () => refused.length === 1);
   await r.timers.run(STEP_MS);
   assert.equal(refused.length, 1, "a refusal is not retried as absence");
-  assert.deepEqual(r.last(), { kind: "error", code: "edge", message: EDGE_REFUSED });
+  assert.deepEqual(r.last(), { kind: "error", code: "edge", message: `${EDGE_REQUIRED} ${RESUMES}` });
   // The route goes through the edge again; the next change is taken, and the status says so by itself.
   around = false;
   r.engine.changed("Edge.md");

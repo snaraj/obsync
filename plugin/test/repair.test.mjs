@@ -760,9 +760,9 @@ test("each cause of a failed repair says its own words, and none of them sends t
   const { ApiError } = require("../build/transport.js");
   const words = require("../build/sync/engine.js");
   const cases = [
-    ["a wrong clock", () => new ApiError(401, "stale_timestamp", "SENTINEL"), { code: "clock", message: words.CLOCK_OFF }, "clock"],
-    ["a full server", () => new ApiError(507, "volume_full", "SENTINEL"), { code: "storage", message: words.SERVER_FULL }, "storage"],
-    ["a proxy's page", () => new ApiError(403, "not_obsync", "SENTINEL"), { code: "edge", message: words.NOT_OBSYNC_ANSWER }, "edge"],
+    ["a wrong clock", () => new ApiError(401, "stale_timestamp", "SENTINEL"), { code: "clock", message: `${words.CLOCK_OFF} ${words.RESUMES}` }, "clock"],
+    ["a full server", () => new ApiError(507, "volume_full", "SENTINEL"), { code: "storage", message: `${words.SERVER_FULL} ${words.RESUMES}` }, "storage"],
+    ["a proxy's page", () => new ApiError(403, "not_obsync", "SENTINEL"), { code: "edge", message: `${words.NOT_OBSYNC_ANSWER} ${words.RESUMES}` }, "edge"],
     ["a revoked device", () => new ApiError(403, "device_revoked", "SENTINEL"), { code: "forgotten_device", message: words.REVOKED_DEVICE }, "forgotten_device"],
     ["a file this device could not read", () => new Error("SENTINEL local fault"), { code: undefined, message: words.VERIFY_FAILED }, "read_or_write_failed"],
     ["absence", () => new ApiError(0, "unreachable", "network=SENTINEL"), null, "unreachable"],
