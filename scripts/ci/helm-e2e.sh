@@ -392,13 +392,21 @@ kubectl create secret tls obsync-tls --namespace "${INGRESS_NAMESPACE}" \
 kubectl wait "deploy/${FRONT}" --namespace "${INGRESS_NAMESPACE}" \
   --for=condition=Available --timeout="${AVAILABLE_BUDGET_SECONDS}s" >/dev/null \
   || deny "the documented TLS front was not Available within ${AVAILABLE_BUDGET_SECONDS}s"
-kubectl port-forward --namespace "${INGRESS_NAMESPACE}" "service/${FRONT}" \
-  "${FRONT_PORT}:443" >"${scratch}/front.log" 2>&1 &
-front_pid=$!
+# The front has no readiness probe, so Available comes before nginx has bound
+# 8443, and kubectl ends a port-forward at the first connection the pod
+# refuses ("lost connection to pod"). A forward that ends before the front
+# has answered is started again, inside the same budget, and counted.
 ready=''
+forwards=0
 for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
-  kill -0 "${front_pid}" 2>/dev/null \
-    || deny "the terminator port-forward exited: $(cat "${scratch}/front.log")"
+  if [ -z "${front_pid}" ] || ! kill -0 "${front_pid}" 2>/dev/null; then
+    [ -n "${front_pid}" ] && printf 'helm-e2e: the terminator port-forward ended before the front answered: %s\n' \
+      "$(tr '\n' ' ' <"${scratch}/front.log")"
+    kubectl port-forward --namespace "${INGRESS_NAMESPACE}" "service/${FRONT}" \
+      "${FRONT_PORT}:443" >"${scratch}/front.log" 2>&1 &
+    front_pid=$!
+    forwards=$((forwards + 1))
+  fi
   body="$(curl --silent --show-error --max-time 3 \
     --cacert "${scratch}/tls.crt" \
     --resolve "${FRONT_HOST}:${FRONT_PORT}:127.0.0.1" \
@@ -412,8 +420,8 @@ for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
   sleep 1
 done
 [ -n "${ready}" ] \
-  || deny "no {\"ready\":true through the documented TLS front within ${READY_BUDGET_SECONDS}s"
-prove "a TLS front: the documented terminator answered ${ready} over HTTPS, on a certificate this run issued"
+  || deny "no {\"ready\":true through the documented TLS front within ${READY_BUDGET_SECONDS}s (${forwards} port-forwards; the last said: $(cat "${scratch}/front.log"))"
+prove "a TLS front: the documented terminator answered ${ready} over HTTPS, on a certificate this run issued (port-forwards=${forwards})"
 
 # (10) The page's token read, and the whole sync flow through the terminator.
 # The token is masked in the runner's log before it is used and is printed by
