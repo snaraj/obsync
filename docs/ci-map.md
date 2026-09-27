@@ -34,7 +34,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
 | `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery — plus the two `docker build` commands `make image` and the `container` job share, and the smoke that follows them. Both sides are read for what they RUN, never for what they mention: the Makefile's tab-indented recipe lines, and every step `run:` value resolved by `scripts/ci/workflow_runs.py` through the fail-closed YAML reader. A step or job carrying an `if:`, and a segment behind a `false &&` or a `||`, are not the battery and do not count. The check can still fail — it mutates a copy of each file thirteen ways (deleting a canonical command, naming it in a comment, neutralizing it as `true # …` or `echo '…'`, and putting it behind a `false &&`, a `||` or an `if:`) and requires the comparison to refuse every one. |
 | `chart` | `helm lint chart`, `helm template smoke chart --kube-version v1.36.0` | The chart renders against the platform's Kubernetes target and satisfies its own required, closed `values.schema.json`. |
-| `chart` | `python3 -B scripts/ci/chart_pins.py all` | The three rendered pins below. |
+| `chart` | `python3 -B scripts/ci/chart_pins.py all` | The seven rendered pins below. |
 | `container` | `docker build --target server --tag obsync-gate:<sha> .` | The release stage builds, natively on the amd64 runner with no emulation, including the `cargo clippy` lint and the `cargo test --workspace --locked` battery that run INSIDE the image on Linux and the musl cross-link. Nothing is pushed and no registry is logged into; `DOCKER_CONFIG` points at an empty directory so no credential helper is consulted for the anonymous digest-pinned base-image pulls. |
 | `container` | `docker create` + `docker cp` + `file` on `/out/obsyncd` | The shipped binary is a static ELF for the runner's OWN architecture — the property that lets the final image be distroless/static with no shell. Asked from outside because distroless has no shell to ask inside, and compared against `uname -m` so an emulated cross-build fails instead of passing. |
 | `container` | `docker build --tag obsync-gate-full:<sha> .` | The whole Dockerfile builds: the plugin stage's own `npm ci`/build/test inside the image, the bundle stage the Release asset is exported from, and the final image with the dashboard it serves. |
@@ -83,6 +83,13 @@ the storage classes are stated in exactly one place.
 - **kubernetes** — the chart renders on the lowest minor `Chart.yaml` claims,
   bare and with the suffixes managed clusters report, and on the newest, and
   refuses the minor below.
+- **platform** — with `platform.annotationDomain` empty, the shipped default,
+  no object carries any annotation; with a domain set, exactly
+  `<domain>/deployment-ready` on the Deployment and `<domain>/volume-capacity`
+  on each claim, mirrors included; a domain that is not a lower-case DNS
+  subdomain of at most 253 characters, or that ends in `kubernetes.io` or
+  `k8s.io`, fails the render with a message naming it.
+  `scripts/validation/platform_annotation_mutations.py` is its kill matrix.
 
 ## `codeql.yml` — pull requests, pushes to `main`, weekly cron
 

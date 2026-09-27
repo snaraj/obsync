@@ -95,7 +95,7 @@ publicUrl: "https://sync.example.org"
 **`storage.*.className`** is your StorageClass, twice, and it is also the label
 the dashboard shows for each volume. `size` is what the claim requests AND what
 the server is told its capacity is, so it must not overstate the volume;
-`capacity` is what you provisioned behind it, recorded as an annotation.
+`capacity` is what you provisioned behind it.
 
 **`ingress.peers`** is the deployment's door, and an empty list is a closed
 one. The NetworkPolicy admits the listed peers on port 8080 and denies
@@ -133,8 +133,11 @@ The NetworkPolicy is what keeps other pods on that network out.
 digest still pins the bytes (verify the signature against that digest);
 `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity` and `podLabels`
 pass through to the pod as written, and none of them can change its security
-context. The chart supports Kubernetes 1.34 and later, suffixed vendor
-versions included.
+context. `platform.annotationDomain` is for a GitOps platform that reads the
+replica switch and each claim's `capacity` off annotations: set it to that
+platform's domain and the chart adds `<domain>/deployment-ready` and
+`<domain>/volume-capacity`; left empty, it adds neither. The chart supports
+Kubernetes 1.34 and later, suffixed vendor versions included.
 
 **`publicUrl`** is the base of every link the server generates, including the
 dashboard sign-in link the plugin asks for. Empty is a working answer, not a

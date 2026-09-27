@@ -20,6 +20,15 @@
 # that is a scale from zero to one replica and nothing else.
 deploymentReady: false
 
+# The prefix of two annotations a GitOps platform may read, and nothing the
+# server reads: `<annotationDomain>/deployment-ready` on the Deployment carries
+# deploymentReady above, and `<annotationDomain>/volume-capacity` on each claim
+# carries that volume's `capacity` below. Empty, the shipped default, renders
+# neither annotation. A value that is not a lower-case DNS subdomain, or that
+# is a prefix Kubernetes reserves (kubernetes.io, k8s.io), fails the render.
+platform:
+  annotationDomain: ""
+
 image:
   # Where the image is pulled from. A registry mirror or a pull-through cache
   # may serve it under another name: the digest below still pins the bytes,
@@ -131,7 +140,8 @@ serverKeySecret:
 #            free-space watermark fire late). The server reads the same
 #            spelling, and its own KiB/MiB/GiB/TiB forms besides.
 #   capacity the capacity the operator provisioned on the volume this claim
-#            binds to. Recorded as an annotation on the claim so growth (250Gi
+#            binds to. Recorded as an annotation on the claim when
+#            platform.annotationDomain is set, so growth (250Gi
 #            -> 500Gi) is ONE values edit that states both the claim and the
 #            volume it must fit, instead of two facts in two repositories that
 #            can disagree silently. It is deliberately NOT what the server is

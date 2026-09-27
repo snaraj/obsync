@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "required": [
     "deploymentReady",
+    "platform",
     "image",
     "imagePullSecrets",
     "service",
@@ -103,6 +104,13 @@
   },
   "properties": {
     "deploymentReady": { "type": "boolean" },
+    "platform": {
+      "type": "object",
+      "description": "The prefix of the two platform annotations; empty renders neither. The templates judge a set value and name it when they refuse it (chart/templates/_helpers.tpl).",
+      "additionalProperties": false,
+      "required": ["annotationDomain"],
+      "properties": { "annotationDomain": { "type": "string" } }
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,

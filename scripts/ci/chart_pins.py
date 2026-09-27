@@ -22,6 +22,10 @@ THE PINS, each named by the property it holds:
   kubernetes
             the chart renders on every Kubernetes minor `Chart.yaml` claims,
             suffixed vendor versions included, and refuses the minor below.
+  platform  the two platform annotations render only under a domain the
+            operator names, on exactly their objects, and a domain the API
+            server would refuse as a key prefix, or that Kubernetes reserves,
+            fails the render by name.
 
 HOW THESE READ THE RENDER -- the security-critical part. They do NOT count
 `- from:` lines and inspect the first: that is bypassable. A second ingress
@@ -104,6 +108,12 @@ ACTIVE = ("deploymentReady=true",)
 same objects with zero application replicas (see `pin_readiness`), so every
 pin that inspects the running shape renders with the gate open."""
 
+DOMAIN = "platform.example.org"
+ANNOTATED = (f"platform.annotationDomain={DOMAIN}",)
+"""A render under a platform domain. The shipped default names none and renders
+neither platform annotation (see `pin_platform`), so every pin that reads what
+an annotation CARRIES renders with one set."""
+
 
 def render(*sets: str) -> list[dict[str, Any]]:
     """Render the COMPLETE chart and read it with the fail-closed reader."""
@@ -120,11 +130,20 @@ def render(*sets: str) -> list[dict[str, Any]]:
     return resolved
 
 
-def refuse(*sets: str, because: str) -> None:
-    """Require a render to FAIL. A gate that cannot fail is not a gate."""
+def refuse(*sets: str, because: str, naming: str | None = None) -> None:
+    """Require a render to FAIL. A gate that cannot fail is not a gate.
+
+    `naming` also requires the refusal to name that value, so a render that
+    fails for some other reason is not mistaken for this refusal.
+    """
     completed = _helm(list(sets))
     if completed.returncode == 0:
         raise PinError(f"render accepted {' '.join(sets)}; it must be refused ({because})")
+    if naming is not None and naming not in completed.stderr:
+        raise PinError(
+            f"render of {' '.join(sets)} was refused without naming {naming!r} ({because}):\n"
+            f"{completed.stderr.strip()}"
+        )
     print(f"  refused as required: {' '.join(sets)} ({because})")
 
 
@@ -146,6 +165,35 @@ def equals(actual: Any, expected: Any, what: str) -> None:
 
 def selector_labels() -> dict[str, str]:
     return {"app.kubernetes.io/name": "obsync", "app.kubernetes.io/instance": RELEASE}
+
+
+def rendered_annotations(documents: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every `metadata.annotations` in a render, keyed by where it stands.
+
+    Anywhere, not only on each document's own metadata: a pod template's
+    annotations are in the render too, and a key moved there is as present as
+    one left on the Deployment. An `annotations:` rendered with nothing under
+    it is recorded as what it is, so an empty block is not read as absent.
+    """
+    found: dict[str, Any] = {}
+
+    def walk(node: Any, where: str) -> None:
+        if isinstance(node, dict):
+            metadata = node.get("metadata")
+            if isinstance(metadata, dict) and "annotations" in metadata:
+                found[where] = metadata["annotations"]
+            for key, value in node.items():
+                if key != "metadata":
+                    walk(value, f"{where}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}[{index}]")
+
+    for document in documents:
+        metadata = document.get("metadata")
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        walk(document, f"{document.get('kind')}/{name}")
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -246,11 +294,6 @@ def _assert_claim(claim: dict[str, Any], *, name: str, spec: dict[str, Any]) -> 
     equals(claim["spec"]["accessModes"], ["ReadWriteOnce"], f"the {name} access modes")
     equals(claim["spec"]["storageClassName"], spec["className"], f"the {name} storage class")
     equals(claim["spec"]["resources"]["requests"]["storage"], spec["size"], f"the {name} size")
-    equals(
-        claim["metadata"]["annotations"]["platform.snaraj.dev/volume-capacity"],
-        spec["capacity"],
-        f"the {name} provisioned-capacity annotation",
-    )
 
 
 def pin_storage() -> None:
@@ -263,6 +306,17 @@ def pin_storage() -> None:
     _assert_claim(
         claims["obsync-journal"], name="obsync-journal", spec=configured["storage"]["journal"]
     )
+    # The provisioned capacity rides on each claim under a platform domain.
+    annotated = {
+        claim["metadata"]["name"]: claim
+        for claim in every(render(*ACTIVE, *ANNOTATED), "PersistentVolumeClaim")
+    }
+    for role in ("blobs", "journal"):
+        equals(
+            annotated[f"obsync-{role}"]["metadata"]["annotations"][f"{DOMAIN}/volume-capacity"],
+            configured["storage"][role]["capacity"],
+            f"the obsync-{role} provisioned-capacity annotation",
+        )
     print("chart-pins storage: (a) exactly two claims, on the classes and sizes values names")
 
     pod = only(documents, "Deployment")["spec"]["template"]["spec"]
@@ -342,7 +396,7 @@ def pin_storage() -> None:
     # Drive a render where they differ -- a volume grown ahead of its claim,
     # the exact situation the distinction exists for -- and require the process
     # to still be told the claim size while the annotation reports the volume.
-    grown = render(*ACTIVE, "storage.blobs.capacity=500Gi")
+    grown = render(*ACTIVE, *ANNOTATED, "storage.blobs.capacity=500Gi")
     grown_pod = only(grown, "Deployment")["spec"]["template"]["spec"]
     grown_environment = {
         entry["name"]: entry.get("value")
@@ -358,7 +412,7 @@ def pin_storage() -> None:
         claim["metadata"]["name"]: claim for claim in every(grown, "PersistentVolumeClaim")
     }["obsync-blobs"]
     equals(
-        grown_claim["metadata"]["annotations"]["platform.snaraj.dev/volume-capacity"],
+        grown_claim["metadata"]["annotations"][f"{DOMAIN}/volume-capacity"],
         "500Gi",
         "the provisioned-capacity annotation when the volume is larger than the claim",
     )
@@ -572,13 +626,15 @@ def pin_readiness() -> None:
     equals(sorted(document["kind"] for document in pending), kinds, "the pending render's document kinds")
     deployment = only(pending, "Deployment")
     equals(deployment["spec"]["replicas"], 0, "the pending replica count")
-    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "false", "the pending readiness annotation")
+    deployment = only(render(*ANNOTATED), "Deployment")
+    equals(deployment["metadata"]["annotations"][f"{DOMAIN}/deployment-ready"], "false", "the pending readiness annotation")
     print("chart-pins readiness: (b) the platform-ready render is the same objects at one replica")
     active = render(*ACTIVE)
     equals(sorted(document["kind"] for document in active), kinds, "the active render's document kinds")
     deployment = only(active, "Deployment")
     equals(deployment["spec"]["replicas"], 1, "the active replica count")
-    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "true", "the active readiness annotation")
+    deployment = only(render(*ACTIVE, *ANNOTATED), "Deployment")
+    equals(deployment["metadata"]["annotations"][f"{DOMAIN}/deployment-ready"], "true", "the active readiness annotation")
     for name in ("obsync-blobs", "obsync-journal"):
         for shape, documents in (("pending", pending), ("active", active)):
             if not any(claim["metadata"]["name"] == name for claim in every(documents, "PersistentVolumeClaim")):
@@ -668,6 +724,70 @@ def pin_kubernetes() -> None:
     print(f"chart-pins kubernetes: (b) refuses {KUBE_BELOW}, the minor below the floor")
 
 
+LONGEST_DOMAIN = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+"""A DNS subdomain of exactly 253 characters, the most a key prefix may hold."""
+
+
+def pin_platform() -> None:
+    """The platform annotations are one deployer's signals, rendered on request.
+
+    A platform that promotes releases may read a readiness flag off the
+    Deployment and a provisioned capacity off each claim, under ITS domain.
+    Nobody else's render may carry that domain, so the shipped default names
+    none and renders no annotation at all; a named domain renders exactly the
+    two keys on exactly their objects; and a domain the API server would refuse
+    as a key prefix, or one Kubernetes reserves for itself, fails the render by
+    name instead of reaching a cluster. What the two annotations CARRY is held
+    by `pin_readiness` and `pin_storage`, under a domain.
+    """
+    configured = values()
+    equals(configured["platform"], {"annotationDomain": ""}, "the shipped platform default")
+    mirror = (
+        "storage.mirrors[0].name=spare",
+        f"storage.mirrors[0].className={configured['storage']['blobs']['className']}",
+        "storage.mirrors[0].size=100Gi",
+        "storage.mirrors[0].capacity=100Gi",
+    )
+    for sets in ((), ACTIVE, (*ACTIVE, *mirror)):
+        equals(rendered_annotations(render(*sets)), {}, f"the annotations of the render {' '.join(sets) or '(defaults)'}")
+    print("chart-pins platform: (a) with no domain, the pending, active and mirrored renders carry no annotation")
+
+    storage = configured["storage"]
+    equals(
+        rendered_annotations(render(*ACTIVE, *mirror, *ANNOTATED)),
+        {
+            "Deployment/obsync": {f"{DOMAIN}/deployment-ready": "true"},
+            "PersistentVolumeClaim/obsync-blobs": {f"{DOMAIN}/volume-capacity": storage["blobs"]["capacity"]},
+            "PersistentVolumeClaim/obsync-journal": {f"{DOMAIN}/volume-capacity": storage["journal"]["capacity"]},
+            "PersistentVolumeClaim/obsync-mirror-spare": {f"{DOMAIN}/volume-capacity": "100Gi"},
+        },
+        "the annotations of a render under a platform domain",
+    )
+    print("chart-pins platform: (b) a named domain renders exactly the two keys, on exactly their objects")
+
+    for domain in (LONGEST_DOMAIN, "cluster.x-k8s.io"):
+        deployment = only(render(f"platform.annotationDomain={domain}"), "Deployment")
+        equals(deployment["metadata"]["annotations"], {f"{domain}/deployment-ready": "false"}, f"the key under {domain}")
+    print("chart-pins platform: (c) a 253-character domain and a domain merely ending in k8s.io render")
+
+    for domain, because in (
+        ("Platform.example.org", "an upper-case letter"),
+        ("platform_example.org", "an underscore"),
+        ("-platform.example.org", "a label that starts with a hyphen"),
+        ("platform-.example.org", "a label that ends with a hyphen"),
+        ("platform..example.org", "an empty label"),
+        ("platform.example.org.", "a trailing dot"),
+        ("platform.example.org/x", "a slash, which would split the key"),
+        (f"{LONGEST_DOMAIN}d", "254 characters, one over the limit"),
+        ("kubernetes.io", "the prefix Kubernetes reserves"),
+        ("k8s.io", "the other prefix Kubernetes reserves"),
+        ("apps.kubernetes.io", "a subdomain of kubernetes.io"),
+        ("node.k8s.io", "a subdomain of k8s.io"),
+    ):
+        refuse(*ACTIVE, f"platform.annotationDomain={domain}", because=because, naming=domain)
+    print("chart-pins platform: (d) an invalid or reserved domain fails the render, naming the value")
+
+
 def emit_environment() -> None:
     """Print the rendered pod environment for a caller that RUNS it.
 
@@ -704,6 +824,7 @@ PINS = {
     "readiness": pin_readiness,
     "environment": pin_environment,
     "kubernetes": pin_kubernetes,
+    "platform": pin_platform,
 }
 
 

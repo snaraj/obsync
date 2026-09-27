@@ -89,6 +89,43 @@ class ExtractionRefusesWhatCountingWouldPass(unittest.TestCase):
             chart_pins.equals(widened, expected, "the ingress rule set")
 
 
+class EveryAnnotationInARenderIsFound(unittest.TestCase):
+    """`rendered_annotations` is what "no annotation anywhere" is judged by, so
+    a key it cannot see is a platform domain that ships unnoticed."""
+
+    def test_a_render_with_no_annotation_reads_as_empty(self):
+        self.assertEqual(
+            chart_pins.rendered_annotations(
+                [{"kind": "Service", "metadata": {"name": "obsync", "labels": {"a": "b"}}}]
+            ),
+            {},
+        )
+
+    def test_annotations_are_found_on_the_object_and_inside_its_pod_template(self):
+        deployment = {
+            "kind": "Deployment",
+            "metadata": {"name": "obsync", "annotations": {"one.example/x": "1"}},
+            "spec": {"template": {"metadata": {"annotations": {"two.example/y": "2"}}}},
+        }
+        claim = {"kind": "PersistentVolumeClaim", "metadata": {"name": "obsync-blobs", "annotations": {}}}
+        self.assertEqual(
+            chart_pins.rendered_annotations([deployment, claim]),
+            {
+                "Deployment/obsync": {"one.example/x": "1"},
+                "Deployment/obsync.spec.template": {"two.example/y": "2"},
+                "PersistentVolumeClaim/obsync-blobs": {},
+            },
+        )
+
+    def test_an_empty_annotations_block_is_recorded_not_skipped(self):
+        # `annotations:` with nothing under it reads as None, and a key that is
+        # present at all is a render that differs from one with no annotation.
+        self.assertEqual(
+            chart_pins.rendered_annotations([{"kind": "Deployment", "metadata": {"name": "o", "annotations": None}}]),
+            {"Deployment/o": None},
+        )
+
+
 class VolumeSourcesAreRefusedByName(unittest.TestCase):
     def test_a_claim_backed_volume_resolves_to_its_claim(self):
         self.assertEqual(
@@ -123,16 +160,16 @@ class TheGateRunsEveryPin(unittest.TestCase):
 
     `test_each_pin_holds` iterates `PINS`, so deleting a registration would
     delete its own test. These pins name the registry independently: exactly
-    the six pins, each bound to its function; `all` invokes every one of
+    the seven pins, each bound to its function; `all` invokes every one of
     them, readiness included; a readiness refusal fails the gate; and the
     hosted gate and `make check` run `all`, never a subset. None of them needs
     helm, so they run everywhere.
     """
 
-    def test_the_registry_names_exactly_the_six_pins_bound_to_their_functions(self):
+    def test_the_registry_names_exactly_the_seven_pins_bound_to_their_functions(self):
         self.assertEqual(
             list(chart_pins.PINS),
-            ["ingress", "storage", "security", "readiness", "environment", "kubernetes"],
+            ["ingress", "storage", "security", "readiness", "environment", "kubernetes", "platform"],
         )
         for name in chart_pins.PINS:
             self.assertIs(chart_pins.PINS[name], getattr(chart_pins, f"pin_{name}"))
@@ -143,7 +180,8 @@ class TheGateRunsEveryPin(unittest.TestCase):
         with mock.patch.dict(chart_pins.PINS, stubs), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(chart_pins.main(["all"]), 0)
         self.assertEqual(
-            calls, ["ingress", "storage", "security", "readiness", "environment", "kubernetes"]
+            calls,
+            ["ingress", "storage", "security", "readiness", "environment", "kubernetes", "platform"],
         )
 
     def test_a_readiness_refusal_fails_the_all_gate_and_the_single_pin(self):
@@ -265,6 +303,16 @@ class TheMustFailHelperCanItselfFail(unittest.TestCase):
         with self.assertRaises(chart_pins.PinError):
             chart_pins.refuse(because="the default render succeeds, so this must raise")
 
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_a_refusal_that_does_not_name_the_value_is_reported_as_a_failure(self):
+        # The render IS refused, but for its own value: a refusal the pin asked
+        # to name something else is not the refusal it asked for.
+        refused = "platform.annotationDomain=Upper.example.org"
+        with contextlib.redirect_stdout(io.StringIO()):
+            chart_pins.refuse(refused, because="an upper-case domain", naming="Upper.example.org")
+            with self.assertRaisesRegex(chart_pins.PinError, "without naming"):
+                chart_pins.refuse(refused, because="an upper-case domain", naming="other.example.org")
+
 
 class ExpectationsComeFromValues(unittest.TestCase):
     def test_the_shipped_values_file_supplies_every_expectation_the_pins_read(self):
@@ -291,6 +339,8 @@ class ExpectationsComeFromValues(unittest.TestCase):
         # name. The shipped peers admit nothing until they are named.
         configured = chart_pins.values()
         self.assertEqual(configured["ingress"], {"peers": []})
+        # Nor one platform's annotation domain: the shipped chart renders none.
+        self.assertEqual(configured["platform"], {"annotationDomain": ""})
         for role in ("blobs", "journal"):
             self.assertEqual(configured["storage"][role]["className"], "unset-storage-class")
 

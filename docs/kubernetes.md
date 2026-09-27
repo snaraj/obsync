@@ -199,7 +199,10 @@ publish the same app name and differ only by instance, so a policy naming two
 of the three reads narrow and behaves wide. List a second entry when a tunnel
 connector reaches the server beside the front, or an `ipBlock` entry for a
 front that is not a pod ([`chart/README.md`](https://github.com/snaraj/obsync/blob/main/chart/README.md)
-section 2).
+section 2). The file leaves `platform.annotationDomain` unset, so the chart adds
+no annotation of any platform's; set it only for a GitOps platform that reads
+its release signals off annotations ([platform onboarding](platform-onboarding.md)
+item 10).
 
 ## 4. A TLS front, inside the cluster
 

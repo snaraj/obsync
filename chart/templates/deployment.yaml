@@ -5,8 +5,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "obsync.labels" . | nindent 4 }}
+  {{- $domain := include "obsync.annotationDomain" . }}
+  {{- if $domain }}
   annotations:
-    platform.snaraj.dev/deployment-ready: {{ .Values.deploymentReady | quote }}
+    {{ $domain }}/deployment-ready: {{ .Values.deploymentReady | quote }}
+  {{- end }}
 spec:
   {{- /* deploymentReady is the platform's gate and it gates THIS number, not
   only the annotation above: zero application replicas until the platform

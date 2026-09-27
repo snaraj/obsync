@@ -70,3 +70,29 @@ no pod this chart renders.
    near its memory, and the server's own budget is in `docs/benchmarks.md`.
 9. **Deploy assurance:** whatever watchdog the platform runs for drift gains
    this workload, so a promotion that never lands is never silent.
+10. **Release signals (optional):** a platform whose release policy reads the
+    replica switch or the provisioned capacity off annotations names its own
+    domain once, in the HelmRelease values:
+
+    ```yaml
+    platform:
+      annotationDomain: platform.example.org
+    ```
+
+    The chart then adds `<domain>/deployment-ready` (the `deploymentReady`
+    value, `"true"` or `"false"`) to the Deployment and
+    `<domain>/volume-capacity` (that volume's `capacity`) to each claim. Left
+    empty, the default from 1.1.4, it adds neither. A domain that is not a
+    lower-case DNS name, or that ends in `kubernetes.io` or `k8s.io`, stops the
+    render and names the value. Releases up to 1.1.3 always added both keys
+    under `platform.snaraj.dev`. A platform whose policy reads those keys adds
+    exactly this line, in the same change that selects 1.1.4:
+
+    ```yaml
+    platform:
+      annotationDomain: platform.snaraj.dev
+    ```
+
+    Without it, 1.1.4 renders no such key and a policy that requires one
+    refuses the release, which fails closed. The line cannot go in earlier:
+    the 1.1.3 chart's schema refuses the unknown `platform` key.
