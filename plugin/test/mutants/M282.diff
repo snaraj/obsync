@@ -5,7 +5,7 @@
       */
      const bind = async (): Promise<void> => {
        const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
--      opened = await handle.stat();
+-      opened = await fstat(handle);
 +      opened = (await walker(fs).lstat(temp)) ?? opened;
        const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
        if (!swapped) return;

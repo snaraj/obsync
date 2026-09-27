@@ -1,0 +1,12 @@
+# M3021: a file's time is truncated to the millisecond instead of Node's own number (Windows file identity, #224)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -253,7 +253,7 @@
+     dev: stat.dev,
+     ino: stat.ino,
+     size: Number(stat.size),
+-    mtimeMs: Number(ns / 1_000_000_000n) * 1000 + Number(ns % 1_000_000_000n) / 1e6,
++    mtimeMs: Number(ns / 1_000_000n),
+   };
+ }
+ 

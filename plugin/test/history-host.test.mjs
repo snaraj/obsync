@@ -27,10 +27,10 @@ function host(t, { mobile = false, wrap = (p) => p } = {}) {
     await fs.writeFile(join(root, p), new Uint8Array(data), { flag: "wx" });
     return { path: p, stat: { mtime: options.mtime, size: data.byteLength } };
   } };
-  const promises = wrap({ ...fs, lstat: async (p) => {
+  const promises = wrap({ ...fs, lstat: async (p, ...options) => {
     calls.push(["lstat", p]);
     assert.ok(!p.startsWith(join(root, "Admin")), "excluded sentinel metadata was accessed");
-    return fs.lstat(p);
+    return fs.lstat(p, ...options);
   } });
   const h = new ObsidianHost({ state, app: { vault }, log: (line) => logs.push(line) }, mobile ? null : { base: root, path, fs: { promises } });
   return { root, h, state, calls, logs, vault, box };
@@ -68,7 +68,7 @@ test("desktop short writes complete and zero progress, size mismatch and file-sy
     const r = host(t, { wrap: (p) => ({ ...p, open: async (...args) => {
       const handle = await p.open(...args);
       if (args[1] !== "wx") return handle;
-      return { stat: () => handle.stat(), close: () => handle.close(), utimes: (...values) => handle.utimes(...values),
+      return { stat: (...options) => handle.stat(...options), close: () => handle.close(), utimes: (...values) => handle.utimes(...values),
         sync: async () => { if (mode === "sync") throw new Error("SYNC SENTINEL"); await handle.sync(); },
         write: async (part) => {
           if (mode === "zero") { assert.equal(++writes, 1, "a zero-byte response was retried"); return { bytesWritten: 0 }; }
@@ -209,13 +209,13 @@ test("desktop publication pins directory and destination identity and syncs the 
   for (const phase of ["chain", "landed", "order"]) {
     let changed = false, fileSynced = false, timed = false, tempOpened = false;
     const r = host(t, { wrap: (p) => ({ ...p,
-      lstat: async (name) => {
-        const stat = await p.lstat(name);
+      lstat: async (name, ...options) => {
+        const stat = await p.lstat(name, ...options);
         const alter = changed && (phase === "chain" ? name.endsWith(`${path.sep}Notes`) : phase === "landed" && name.endsWith(`${path.sep}copy.md`));
-        // An identity no file has. `ino + 1` is not one on Windows: an NTFS
-        // file id is 64 bits, a number keeps 53, and above 2^53 the sum
-        // rounds back to the same id.
-        return alter ? { ...stat, ino: -1, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
+        // The neighbouring id: another file. Exact on Windows too, where an
+        // NTFS file id is 64 bits, now that identity is read as a bigint
+        // (#224); read as a number, past 2^53 it rounded back to the same id.
+        return alter ? { ...stat, ino: stat.ino + 1n, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
       },
       utimes: async () => assert.fail("path-based timestamp changed an unbound file"),
       open: async (...args) => {
@@ -223,7 +223,7 @@ test("desktop publication pins directory and destination identity and syncs the 
         if (args[1] !== "wx") return handle;
         assert.equal(args[2], 0o600);
         tempOpened = true;
-        return { stat: () => handle.stat(), close: () => handle.close(), write: (...values) => handle.write(...values),
+        return { stat: (...options) => handle.stat(...options), close: () => handle.close(), write: (...values) => handle.write(...values),
           utimes: async (...values) => { timed = true; return handle.utimes(...values); },
           sync: async () => { assert.equal(timed, true); fileSynced = true; return handle.sync(); } };
       },
@@ -300,7 +300,7 @@ test("the fallback never replaces a file that took the name, and leaves no parti
     open: async (...args) => {
       const handle = await p.open(...args);
       if (!args[0].endsWith("copy.md")) return handle;
-      return { stat: () => handle.stat(), close: () => handle.close(), sync: () => handle.sync(), utimes: (...v) => handle.utimes(...v),
+      return { stat: (...options) => handle.stat(...options), close: () => handle.close(), sync: () => handle.sync(), utimes: (...v) => handle.utimes(...v),
         write: async () => { throw new Error("DISK FULL SENTINEL"); } };
     },
   }) });

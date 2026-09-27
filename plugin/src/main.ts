@@ -162,8 +162,8 @@ const NESTING_LEVELS = 32;
 interface NodeFileHandle {
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   write(buffer: Uint8Array): Promise<{ bytesWritten: number }>;
-  /** `fstat`: the identity of the OPEN file, which no later swap can change. */
-  stat(): Promise<PathStat>;
+  /** `fstat`: the identity of the OPEN file, which no later swap can change (`fstat` below). */
+  stat(options: { bigint: true }): Promise<NodeBigStat>;
   close(): Promise<void>;
   sync(): Promise<void>;
   utimes(atime: number, mtime: number): Promise<void>;
@@ -182,7 +182,7 @@ interface NodeFs {
     utimes(path: string, atime: number, mtime: number): Promise<void>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
     /** No-follow stat. Rejects when the path does not exist. */
-    lstat(path: string): Promise<PathStat>;
+    lstat(path: string, options: { bigint: true }): Promise<NodeBigStat>;
     /** Entry names only: the walk lstats each one itself, without following. */
     readdir(path: string): Promise<string[]>;
   };
@@ -215,7 +215,7 @@ function walker(fs: NodeFs): PathWalker {
   return {
     lstat: async (path) => {
       try {
-        return await fs.promises.lstat(path);
+        return pathStat(await fs.promises.lstat(path, { bigint: true }));
       } catch (error) {
         const code = (error as { code?: string }).code;
         if (code === "ENOENT" || code === "ENOTDIR") return null;
@@ -223,6 +223,44 @@ function walker(fs: NodeFs): PathWalker {
       }
     },
   };
+}
+
+/** A stat taken with `{ bigint: true }`: every number in it is a bigint. */
+interface NodeBigStat {
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+}
+
+/**
+ * A FILE'S IDENTITY AS THE KERNEL WROTE IT (issue #224). Node hands `dev` and
+ * `ino` over as numbers unless asked for bigints, and a number keeps 53 bits
+ * of an NTFS or ReFS file id's 64: past 2^53 two neighbouring ids were one
+ * number, and `sameFile` took two files for one -- the file a write was bound
+ * to among them (#39). Every stat that proves identity is taken this way.
+ * `size` and `mtimeMs` are the plain stat's numbers to the bit -- Node's own
+ * `sec * 1000 + nsec / 1e6` -- so nothing that compares or records them moves.
+ */
+function pathStat(stat: NodeBigStat): PathStat {
+  const ns = stat.mtimeNs;
+  return {
+    isDirectory: () => stat.isDirectory(),
+    isFile: () => stat.isFile(),
+    isSymbolicLink: () => stat.isSymbolicLink(),
+    dev: stat.dev,
+    ino: stat.ino,
+    size: Number(stat.size),
+    mtimeMs: Number(ns / 1_000_000_000n) * 1000 + Number(ns % 1_000_000_000n) / 1e6,
+  };
+}
+
+/** `fstat` of an open file, the same way. */
+async function fstat(handle: NodeFileHandle): Promise<PathStat> {
+  return pathStat(await handle.stat({ bigint: true }));
 }
 
 /**
@@ -949,7 +987,7 @@ export class ObsidianHost implements VaultHost {
     const found = await this.confine(desktop, path, ["file"]);
     const handle = await desktop.fs.promises.open(found.target, "r");
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
-    if (refusal !== null || !sameFile(found.stat, await handle.stat())) {
+    if (refusal !== null || !sameFile(found.stat, await fstat(handle))) {
       await handle.close();
       throw new VaultPathError(refusal ?? "target_identity");
     }
@@ -964,7 +1002,7 @@ export class ObsidianHost implements VaultHost {
     }
     const handle = await this.openBound(desktop, path);
     try {
-      const size = (await handle.stat()).size;
+      const size = (await fstat(handle)).size;
       const buffer = new Uint8Array(size);
       let filled = 0;
       while (filled < size) {
@@ -1125,7 +1163,7 @@ export class ObsidianHost implements VaultHost {
     const temp = `${parent}${desktop.path.sep}.obsync-restore-${hex(randomBytes(16))}.tmp`;
     const handle = await fs.promises.open(temp, "wx", 0o600);
     let opened: PathStat;
-    try { opened = await handle.stat(); } catch (error) { await handle.close(); throw error; }
+    try { opened = await fstat(handle); } catch (error) { await handle.close(); throw error; }
     this.temps.add(temp);
     let open = true;
     let at = 0;
@@ -1135,7 +1173,7 @@ export class ObsidianHost implements VaultHost {
       this.temps.delete(temp);
       try {
         if (open) {
-          opened = await handle.stat();
+          opened = await fstat(handle);
           await handle.close();
         }
         open = false;
@@ -1145,7 +1183,7 @@ export class ObsidianHost implements VaultHost {
     const bind = async (): Promise<void> => {
       guard();
       const refusal = await chainRefusal(found.chain, walker(fs));
-      opened = await handle.stat();
+      opened = await fstat(handle);
       if (refusal !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(refusal ?? "temp_identity");
       guard();
     };
@@ -1171,7 +1209,7 @@ export class ObsidianHost implements VaultHost {
         // `fstat` of the file we hold open: the metadata of OUR bytes, taken
         // while they are still under a name nothing else knows, and the only
         // metadata this writer will answer with (round 3, finding 2).
-        const wrote = await handle.stat();
+        const wrote = await fstat(handle);
         await bind();
         await handle.close();
         open = false;
@@ -1261,7 +1299,7 @@ export class ObsidianHost implements VaultHost {
     const source = await fs.promises.open(temp, "r");
     let copy: NodeFileHandle | null = null;
     try {
-      if (!sameFile(await source.stat(), proven)) throw new VaultPathError("temp_identity");
+      if (!sameFile(await fstat(source), proven)) throw new VaultPathError("temp_identity");
       copy = await fs.promises.open(target, "wx", 0o600);
       const window = new Uint8Array(Math.max(1, Math.min(size, CHUNK_MAX)));
       for (let at = 0; at < size;) {
@@ -1276,10 +1314,10 @@ export class ObsidianHost implements VaultHost {
       }
       await copy.utimes(mtime / 1000, mtime / 1000);
       await copy.sync();
-      return await copy.stat();
+      return await fstat(copy);
     } catch (error) {
       if (copy !== null) {
-        const mine = await copy.stat().catch(() => null);
+        const mine = await fstat(copy).catch(() => null);
         await copy.close().catch(() => undefined);
         copy = null;
         if (sameFile(mine, await walker(fs).lstat(target).catch(() => null))) await fs.promises.unlink(target).catch(() => undefined);
@@ -1331,12 +1369,12 @@ export class ObsidianHost implements VaultHost {
     const handle = await fs.promises.open(temp, "wx");
     this.temps.add(temp);
     let open = true;
-    let opened = await handle.stat();
+    let opened = await fstat(handle);
 
     /** Close, and remove the temp ONLY while its name still means our file. */
     const discard = async (): Promise<void> => {
       if (open) {
-        opened = await handle.stat();
+        opened = await fstat(handle);
         await handle.close();
       }
       open = false;
@@ -1353,7 +1391,7 @@ export class ObsidianHost implements VaultHost {
      */
     const bind = async (): Promise<void> => {
       const refusal = (await chainRefusal(chain, walker(fs))) ?? undefined;
-      opened = await handle.stat();
+      opened = await fstat(handle);
       const swapped = refusal !== undefined || !sameFile(opened, await walker(fs).lstat(temp));
       if (!swapped) return;
       await discard();
@@ -1975,7 +2013,7 @@ export class ObsidianHost implements VaultHost {
       await fs.promises.mkdir(folder, { recursive: false });
       // A directory the vault's deletion is aimed through, so it joins the
       // chain every later proof walks.
-      const made = await fs.promises.lstat(folder);
+      const made = pathStat(await fs.promises.lstat(folder, { bigint: true }));
       chain = [...found.chain, { path: folder, dev: made.dev, ino: made.ino }];
       await fs.promises.rename(found.target, moved);
     } catch {
@@ -2029,7 +2067,7 @@ export class ObsidianHost implements VaultHost {
       return "removed";
     }
     try {
-      const after = await handle.stat();
+      const after = await fstat(handle);
       if (!holds(after)) {
         // The save reached the inode before the hold was released: it is
         // still named, so it is put back by name, and only a put-back that
@@ -2047,7 +2085,7 @@ export class ObsidianHost implements VaultHost {
       // descriptor is still open on it, so a save that landed in the
       // meantime is read back here and written out under a name of its own
       // rather than lost with the name.
-      const last = await handle.stat();
+      const last = await fstat(handle);
       if (holds(last)) return "removed";
       this.log("host path_class=file decision=kept reason=descriptor_save");
       await this.preserve(desktop, handle, found.target, last.size);

@@ -234,13 +234,20 @@ export function vaultTarget(root: string, path: string, node: PathResolver): str
   return target;
 }
 
-/** What a no-follow stat says about one path component. */
+/**
+ * What a no-follow stat says about one path component.
+ *
+ * `dev` and `ino` are the kernel's own integers, never numbers (issue #224):
+ * an NTFS or ReFS file id has 64 bits and a number keeps 53, so past 2^53 two
+ * ids that differ by one are one number, and two files would be one file to
+ * every comparison below.
+ */
 export interface PathStat {
   isDirectory(): boolean;
   isFile(): boolean;
   isSymbolicLink(): boolean;
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
   readonly size: number;
   readonly mtimeMs: number;
 }
@@ -256,8 +263,8 @@ export type FinalComponent = "absent" | "file" | "directory" | "other";
 /** One directory on the way down, by the identity only the kernel assigns. */
 export interface ChainLink {
   path: string;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 export interface WalkResult {

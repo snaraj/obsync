@@ -13,7 +13,7 @@
 -      return "removed";
 -    }
 -    try {
--      const after = await handle.stat();
+-      const after = await fstat(handle);
 -      if (!holds(after)) {
 -        // The save reached the inode before the hold was released: it is
 -        // still named, so it is put back by name, and only a put-back that
@@ -31,7 +31,7 @@
 -      // descriptor is still open on it, so a save that landed in the
 -      // meantime is read back here and written out under a name of its own
 -      // rather than lost with the name.
--      const last = await handle.stat();
+-      const last = await fstat(handle);
 -      if (holds(last)) return "removed";
 -      this.log("host path_class=file decision=kept reason=descriptor_save");
 -      await this.preserve(desktop, handle, found.target, last.size);

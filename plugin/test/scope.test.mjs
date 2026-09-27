@@ -254,10 +254,10 @@ async function scopedHost(t, mobile) {
     getFiles: () => { throw new Error("whole-vault listing must not run"); },
     getAbstractFileByPath: (p) => { calls.push(["cached", p]); assert.equal(p, "Notes"); return folder; },
   } } };
-  const desktop = { base: root, path, fs: { promises: { ...fs, lstat: async (p) => {
+  const desktop = { base: root, path, fs: { promises: { ...fs, lstat: async (p, ...options) => {
     calls.push(["lstat", p]);
     assert.ok(p === root || p.startsWith(join(root, "Notes")), "excluded filesystem metadata was inspected");
-    return fs.lstat(p);
+    return fs.lstat(p, ...options);
   } } } };
   return { root, calls, state, host: new ObsidianHost(plugin, mobile ? null : desktop) };
 }

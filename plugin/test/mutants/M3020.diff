@@ -1,0 +1,12 @@
+# M3020: a file id is read through a number again, so ids past 2^53 round together (Windows file identity, #224)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -251,7 +251,7 @@
+     isFile: () => stat.isFile(),
+     isSymbolicLink: () => stat.isSymbolicLink(),
+     dev: stat.dev,
+-    ino: stat.ino,
++    ino: BigInt(Number(stat.ino)),
+     size: Number(stat.size),
+     mtimeMs: Number(ns / 1_000_000_000n) * 1000 + Number(ns % 1_000_000_000n) / 1e6,
+   };
