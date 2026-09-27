@@ -34,6 +34,9 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-09-27 hidden-window uploads](2026-09-27-hidden-window.md): native
+  desktop, window hidden over five minutes; obsync's clock kept time (ten
+  chained 100 ms timers in 2.8 s) and a change uploaded in 1.5 s (#221).
 - [2026-09-26 final native phone acceptance](2026-09-26-phone-final.md): exact
   candidate desktop/phone co-typing; reactive rewrite hold, Resume and
   542-second quiet window; automatic fresh-note sync; phone restart;
