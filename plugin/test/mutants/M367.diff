@@ -1,9 +1,9 @@
 # M367: a long poll answered after a stop saves the state, over what a reloaded plugin already holds
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2020,7 +2020,6 @@
-         this.poll = quick ? null : { sent: this.nowFn(), drop };
-         const page = await context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal });
+@@ -2084,7 +2084,6 @@
+         const page = await untilStopped(context.signal, drop, () =>
+           context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
          this.poll = null;
 -        if (!live()) return;
          this.feedAnswered = true;

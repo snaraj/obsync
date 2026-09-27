@@ -1,0 +1,11 @@
+# M1996: the Leave dialog lets a second press start a second leave
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -499,7 +499,6 @@
+   }
+ 
+   private async leave(choice: LeaveChoice): Promise<void> {
+-    if (this.leaving) return;
+     this.leaving = true;
+     // Progress at once, in place of the buttons: the stop, the revoke and a
+     // refusal each take seconds, and a dialog that sat unchanged for them read

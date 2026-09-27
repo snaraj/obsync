@@ -1,0 +1,12 @@
+# M1984: the feed's long poll does not hear the stop
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1889,7 +1889,7 @@
+         if (!live()) return;
+         // Ended by the stop, not waited out: a stopped engine's poll is one more
+         // request against a credential that may be about to be given up (#157).
+-        const page = await context.transport.changes(context.state.data.lastSeq, 55, undefined, { signal: context.signal });
++        const page = await context.transport.changes(context.state.data.lastSeq, 55);
+         if (!live()) return;
+         // A restore the repair pass noticed while this read waited is answered
+         // before anything the read brought is applied.

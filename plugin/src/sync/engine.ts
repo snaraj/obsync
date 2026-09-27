@@ -347,9 +347,37 @@ export interface SyncContext {
    * queue behind it, and then the pull keeps both and settles nothing.
    */
   publish?(path: string): Promise<void>;
+  /**
+   * Aborted the moment the engine that made this context stops (`stop`): the
+   * long poll, a retry asleep in its backoff and a chunk upload end at once,
+   * and a download ends at its next batch (issues #157, #185). Absent where
+   * the pull path runs without an engine behind it.
+   */
+  readonly signal?: AbortSignal;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
+}
+
+/** Work a stop ended: nothing refused it, so nothing about it is reported. */
+export function stopped(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "cancelled";
+}
+
+/**
+ * Runs `read` under `drop`, which the engine's stop aborts too, so one request
+ * ends on whichever comes first: a wake dropping it or a stop (#134, #157).
+ * The listener goes when the read does, so a long run of polls holds none.
+ */
+async function untilStopped<T>(stop: AbortSignal | undefined, drop: AbortController, read: () => Promise<T>): Promise<T> {
+  const abort = (): void => drop.abort();
+  if (stop?.aborted) drop.abort();
+  else stop?.addEventListener("abort", abort, { once: true });
+  try {
+    return await read();
+  } finally {
+    stop?.removeEventListener("abort", abort);
+  }
 }
 
 export type EngineStatus =
@@ -583,6 +611,8 @@ export class SyncEngine {
   private readonly again = new Set<string>();
   private running = false;
   private cancelled = false;
+  /** One per start: `stop` aborts it, which ends every request that start is waiting on. */
+  private halt = new AbortController();
   private heartbeatHandle: unknown = null;
   private repairHandle: unknown = null;
   private scanHandle: unknown = null;
@@ -663,9 +693,9 @@ export class SyncEngine {
    * that declares a domain layout this version cannot honour, therefore
    * stops the engine instead of starting a partial sync.
    */
-  private async openMap(keys: DomainMapKeys): Promise<DomainMap> {
+  private async openMap(keys: DomainMapKeys, signal: AbortSignal): Promise<DomainMap> {
     const host = this.options.host;
-    const existing = await loadDomainMap(this.options.transport, keys);
+    const existing = await loadDomainMap(this.options.transport, keys, { signal });
     if (existing) {
       host.log(`domainmap decision=loaded domains=${existing.domains.length}`);
       return existing;
@@ -679,7 +709,12 @@ export class SyncEngine {
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
   start(): Promise<void> {
     this.cancelled = false;
-    return this.track(this.startLoops());
+    const halt = this.halt = new AbortController();
+    // A start its stop cut short -- the map read of a restart against a server
+    // that is gone -- ends quietly, as one stopped between two steps does.
+    return this.track(this.startLoops(halt.signal).catch((error: unknown) => {
+      if (!(halt.signal.aborted && stopped(error))) throw error;
+    }));
   }
 
   private track<T>(work: Promise<T>): Promise<T> {
@@ -688,14 +723,14 @@ export class SyncEngine {
     return work;
   }
 
-  private async startLoops(): Promise<void> {
+  private async startLoops(signal: AbortSignal): Promise<void> {
     const { state, transport, host } = this.options;
     const vrk = state.data.vrk;
     const deviceId = state.data.deviceId;
     if (vrk === null || deviceId === null) throw new Error("engine: this device is not paired");
     const key = unhex(vrk);
     const mapKeys = await domainMapKeys(key);
-    const map = await this.openMap(mapKeys);
+    const map = await this.openMap(mapKeys, signal);
     const domainId = soleDomain(map);
     if (domainId === null) {
       // v0.1 derives one domain key per engine, so a vault split across
@@ -733,6 +768,7 @@ export class SyncEngine {
       arrivals: new Map<string, number>(),
       forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
+      signal,
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -770,9 +806,19 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Stop, and CANCEL what is waiting rather than wait it out (issues #157,
+   * #185): the long poll, any request asleep in its backoff, and every chunk
+   * upload, which ends at the chunk boundary -- nothing further is read,
+   * encrypted or sent, and a chunk the server already holds is found by its
+   * sid when the push runs again. A stop says nothing about the status:
+   * `idle` while an upload is still stopping was the lie of #185, so the one
+   * word comes from `stopAndWait`, once nothing of this engine's runs.
+   */
   stop(): void {
     this.cancelled = true;
     this.running = false;
+    this.halt.abort();
     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
     this.pending.clear();
     if (this.heartbeatHandle !== null) this.timers.clear(this.heartbeatHandle);
@@ -789,14 +835,21 @@ export class SyncEngine {
     this.repair?.cancel();
     this.repair = null;
     this.options.host.log("engine stop");
-    this.status({ kind: "idle" });
   }
 
   /** Quiesce before changing local scope; retain enough state to retry queued work. */
   async stopAndWait(): Promise<void> {
+    const started = this.nowFn();
     this.stop();
     while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
     await this.options.state.save();
+    this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
+    this.status({ kind: "idle" });
+  }
+
+  /** The paths this engine is pushing now, for a person waiting on its stop. */
+  uploads(): string[] {
+    return [...this.pushing.keys()];
   }
 
   get started(): boolean {
@@ -1653,7 +1706,8 @@ export class SyncEngine {
       // same name.
       this.barriers.clear();
       this.barrierPath = null;
-      this.status(this.resting());
+      // A drain a stop ended has no word on the status: `stopAndWait` says it.
+      if (this.running) this.status(this.resting());
     } finally {
       this.draining = false;
     }
@@ -1821,6 +1875,12 @@ export class SyncEngine {
       // failure is the user's business.
       if (error instanceof VaultPathError) {
         context.host.log(`push path_class=file decision=not_synced reason=${error.refusal}`);
+        return;
+      }
+      // A push the stop cut at a chunk boundary is not a failure: the file is
+      // still unsent, and the next start's pass queues it again.
+      if (!this.running && stopped(error)) {
+        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -2018,7 +2078,11 @@ export class SyncEngine {
         const quick = !this.feedAnswered;
         const drop = new AbortController();
         this.poll = quick ? null : { sent: this.nowFn(), drop };
-        const page = await context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal });
+        // Ended by the stop, not waited out: a stopped engine's poll is one more
+        // request against a credential that may be about to be given up (#157).
+        // A wake drops it too (`wake`), so either ends this one request.
+        const page = await untilStopped(context.signal, drop, () =>
+          context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
         this.poll = null;
         if (!live()) return;
         this.feedAnswered = true;
@@ -3302,11 +3366,11 @@ export class SyncEngine {
       const beat = await context.transport.heartbeat(context.host.appVersion, context.state.data.policy);
       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
       else context.host.log("heartbeat decision=reported policy_schema=v1");
-      const { devices } = await context.transport.devices();
+      const { devices } = await context.transport.devices({ signal: context.signal });
       context.deviceNames.clear();
       for (const device of devices) context.deviceNames.set(device.device_id, device.name);
     } catch (error) {
-      context.host.log(`heartbeat decision=failed reason=${error instanceof Error ? error.message : String(error)}`);
+      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${error instanceof Error ? error.message : String(error)}`);
     }
     if (this.running) {
       this.heartbeatHandle = this.timers.set(() => {

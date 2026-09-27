@@ -1,0 +1,12 @@
+# M1995: a revoke nothing answers is waited for without a deadline
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2600,7 +2600,7 @@
+    * and that read for a person who is waiting (`patiently`, `Patience`).
+    */
+   async revokeDevice(deviceId: string, patience: Patience = {}): Promise<void> {
+-    const sent = await patiently(this.transport.revokeDevice(deviceId), patience);
++    const sent = await this.transport.revokeDevice(deviceId);
+     if (sent.outcome === "lost") {
+       const revoked = (await this.transport.devices(patience)).devices.find((device) => device.device_id === deviceId)?.revoked;
+       this.log(`device decision=reconciled reason=lost_answer revoked=${revoked === true}`);

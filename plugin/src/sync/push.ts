@@ -213,11 +213,24 @@ async function uploadMissing(
   if (missing.size === 0) return;
   const source = context.host.source(path, size);
   const queue: Promise<void>[] = [];
+  const signal = context.signal;
   for await (const plaintext of chunkStream(source)) {
+    // THE CHUNK BOUNDARY IS WHERE A STOP LANDS (issues #157, #185): nothing
+    // after it is encrypted or sent, and what already landed is found by its
+    // sid when the push runs again, so a folder Save or a Leave never waits
+    // for the rest of a large upload.
+    if (signal?.aborted === true) {
+      // The chunks on the wire end by the same signal, at once.
+      await Promise.allSettled(queue);
+      throw new ApiError(0, "cancelled", "sync stopped on this device");
+    }
     const { sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
     if (!missing.has(sid)) continue;
     missing.delete(sid);
-    queue.push(context.transport.putChunk(sid, ciphertext));
+    const upload = context.transport.putChunk(sid, ciphertext, { signal });
+    // Observed by `Promise.all` below; a stop can end it before the loop gets there.
+    upload.catch(() => undefined);
+    queue.push(upload);
     if (queue.length >= context.concurrency) {
       await Promise.all(queue.splice(0, queue.length));
     }
@@ -307,11 +320,11 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   }
 
   const before = context.transport.uploadStats();
-  const missing = new Set(await context.transport.missingChunks(sids));
+  const missing = new Set(await context.transport.missingChunks(sids, { signal: context.signal }));
   const uploads = missing.size;
   if (single !== null) {
     const only = plan[0] as ManifestChunk;
-    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single);
+    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single, { signal: context.signal });
   } else {
     await uploadMissing(context, missing, plan, path, stat.size);
   }

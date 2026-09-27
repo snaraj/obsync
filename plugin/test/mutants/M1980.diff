@@ -1,0 +1,11 @@
+# M1980: a stop cancels nothing: the long poll, a retry's pause and a chunk upload are waited out again
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -706,7 +706,6 @@
+   stop(): void {
+     this.cancelled = true;
+     this.running = false;
+-    this.halt.abort();
+     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
+     this.pending.clear();
+     if (this.heartbeatHandle !== null) this.timers.clear(this.heartbeatHandle);

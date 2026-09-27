@@ -14,7 +14,7 @@
 
 import { App, Modal, Notice, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
-import type { LeaveChoice } from "../main";
+import type { LeaveChoice, LeaveRefusal } from "../main";
 import { formatBytes } from "../policy";
 import { remoteOnlyList, unwritableText } from "../sync/pull";
 import {
@@ -393,9 +393,15 @@ const LEAVE_LOST =
 const LEAVE_AGAIN =
   "Pairing again — with this server or another — is a first sync for this device. Identical notes stay one note. If a local note differs from the server's note at the same path, both versions are kept for you to review.";
 const LEAVE_UNKNOWN_DEVICE =
-  "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave LOCALLY: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
+  "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave on this device only: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
 const LEAVE_LAST_DEVICE =
-  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving locally keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
+  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving on this device only keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
+const LEAVE_ONLY_HERE =
+  "You can leave on this device only: this device forgets the server and its credential and keeps every note, and the 24 words still open the same vault. The server still lists this device until you remove it from another device's Devices list or the dashboard.";
+const LEAVING =
+  "Leaving: stopping sync on this device, then asking the server to remove it. This takes a few seconds. You can close this window; a notice says when it is done.";
+const LEFT_ONLY_HERE =
+  "This device has left. Your server still lists it until you remove it from another device's Devices list or the dashboard.";
 
 /**
  * Leaving a server, with the whole cost stated before the button (issue #79).
@@ -408,8 +414,16 @@ const LEAVE_LAST_DEVICE =
  */
 export class LeaveServerModal extends Modal {
   private live = true;
-  /** Why the server kept this device, when leaving locally is what the user chose. */
-  private refusal: "last_device" | "bad_signature" = "last_device";
+  /** Why the server kept this device, when leaving on this device only is what the user chose. */
+  private refusal: LeaveRefusal = "last_device";
+  /**
+   * Set by the press that starts a leave, before anything is awaited, and the
+   * buttons are gone from the dialog the same moment: one press is one leave
+   * (issue #157, S22).
+   */
+  private leaving = false;
+  /** What the dialog showed before the press, to go back to if the leave fails outright. */
+  private screen: () => void = () => undefined;
 
   constructor(
     app: App,
@@ -455,11 +469,17 @@ export class LeaveServerModal extends Modal {
   }
 
   private draw(unpushed: string[]): void {
+    this.screen = () => this.draw(unpushed);
     this.contentEl.empty();
     for (const text of [LEAVE_KEPT, LEAVE_LOST, LEAVE_AGAIN]) this.contentEl.createEl("p", { text });
     if (unpushed.length > 0) {
+      // Sync now is advice only where it can work: not offline, and not for a
+      // device the server no longer accepts (S40, S80).
+      const now = this.plugin.sendsNow
+        ? "Run Sync now first and they are safe; leave now"
+        : "They cannot be sent now: the server is out of reach or no longer accepts this device. Leave now";
       this.contentEl.createEl("p", {
-        text: `${unpushed.length} file(s) on this device hold changes the server never received. Run Sync now first and they are safe; leave now and they stay in this vault and nowhere else.`,
+        text: `${unpushed.length} file(s) on this device hold changes the server never received. ${now} and they stay in this vault and nowhere else.`,
       });
       const list = this.contentEl.createEl("ul");
       for (const path of unpushed.slice(0, UNPUSHED_SHOWN)) list.createEl("li", { text: path });
@@ -479,12 +499,22 @@ export class LeaveServerModal extends Modal {
   }
 
   private async leave(choice: LeaveChoice): Promise<void> {
+    if (this.leaving) return;
+    this.leaving = true;
+    // Progress at once, in place of the buttons: the stop, the revoke and a
+    // refusal each take seconds, and a dialog that sat unchanged for them read
+    // as a press that did nothing (S22, S40).
+    this.contentEl.empty();
+    this.contentEl.createEl("p", { text: LEAVING });
     let result;
     try {
       result = await this.plugin.leaveServer(choice);
     } catch (error) {
       fail(error);
+      if (this.live) this.screen();
       return;
+    } finally {
+      this.leaving = false;
     }
     // A leave that happened is reported even if the dialog was closed while
     // it ran: the action is done, and only the drawing needs a live dialog.
@@ -500,13 +530,26 @@ export class LeaveServerModal extends Modal {
       this.draw(result.unpushed);
       return;
     }
-    this.contentEl.empty();
     this.refusal = result.reason;
-    this.contentEl.createEl("p", { text: `The server refused to revoke this device: ${result.detail}.` });
-    this.contentEl.createEl("p", { text: result.reason === "last_device" ? LEAVE_LAST_DEVICE : LEAVE_UNKNOWN_DEVICE });
+    this.refused(choice, result.reason, result.detail);
+  }
+
+  /** The revoke did not happen: why, in one sentence, and the local leave. */
+  private refused(choice: LeaveChoice, reason: LeaveRefusal, detail: string): void {
+    this.screen = () => this.refused(choice, reason, detail);
+    this.contentEl.empty();
+    const texts = reason === "bad_signature"
+      ? [LEAVE_UNKNOWN_DEVICE]
+      : [
+        reason === "unreachable"
+          ? "The server did not answer, so it could not remove this device."
+          : `The server refused to revoke this device: ${detail}.`,
+        reason === "last_device" ? LEAVE_LAST_DEVICE : LEAVE_ONLY_HERE,
+      ];
+    for (const text of texts) this.contentEl.createEl("p", { text });
     this.cancel(new Setting(this.contentEl)).addButton((button) =>
       button
-        .setButtonText("Leave locally anyway")
+        .setButtonText("Leave on this device only")
         .setDestructive()
         .onClick(() => {
           void this.leave({ ...choice, localOnly: true });
@@ -520,7 +563,9 @@ export class LeaveServerModal extends Modal {
         ? "This device left the server. Every note is still in this vault."
         : this.refusal === "last_device"
           ? "This device forgot the server, which still holds this device. Every note is still in this vault."
-          : "This device forgot the server, which did not recognise it. Every note is still in this vault.",
+          : this.refusal === "bad_signature"
+            ? "This device forgot the server, which did not recognise it. Every note is still in this vault."
+            : LEFT_ONLY_HERE,
       10000,
     );
     this.onLeft();

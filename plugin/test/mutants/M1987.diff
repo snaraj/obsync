@@ -1,0 +1,12 @@
+# M1987: a chunk of a large upload does not hear the stop
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -227,7 +227,7 @@
+     const { sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+     if (!missing.has(sid)) continue;
+     missing.delete(sid);
+-    const upload = context.transport.putChunk(sid, ciphertext, { signal });
++    const upload = context.transport.putChunk(sid, ciphertext);
+     // Observed by `Promise.all` below; a stop can end it before the loop gets there.
+     upload.catch(() => undefined);
+     queue.push(upload);

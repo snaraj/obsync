@@ -1,0 +1,11 @@
+# M1989: a stopped engine's download runs on past its next batch
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -624,7 +624,6 @@
+     // discards what it held (`materialise`): the feed applies this record again
+     // at the next start (issues #157, #185). A manual read -- a restore runs on
+     // purpose after the stop -- answers to its own control instead.
+-    if (control === undefined && context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+     const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
+     index += batch.length;
+     const bodies =

@@ -132,7 +132,7 @@ export class ChunkRepair {
       this.check(path, record);
       const batch = manifest.chunks.slice(index, index + REPAIR_BATCH_SIDS);
       const sids = [...new Set(batch.map((chunk) => chunk.sid))];
-      const missing = await this.context.transport.missingChunks(sids);
+      const missing = await this.context.transport.missingChunks(sids, { signal: this.context.signal });
       this.check(path, record);
       if (!Array.isArray(missing) || missing.length > sids.length || new Set(missing).size !== missing.length ||
           missing.some((sid) => !sids.includes(sid))) throw new Error("Invalid repair inventory response.");

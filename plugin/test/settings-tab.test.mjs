@@ -17,7 +17,7 @@ class Component {
   constructor(kind) {
     this.kind = kind; this.disabled = false;
     this.inputEl = { listeners: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); } };
-    this.buttonEl = { focus: () => { this.focused = true; } };
+    this.buttonEl = { focus: () => { this.focused = true; }, remove: () => { this.removed = true; } };
   }
   /** Type a value, then leave the field: the input's `change` event. */
   commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
@@ -67,7 +67,9 @@ function stubPlugin(overrides = {}) {
     listDevices: async () => { calls.push("listDevices"); return []; },
     revokeDevice: async (id) => { calls.push(`revoke:${id}`); },
     saveDeviceSettings: async (name) => { calls.push(`saveDevice:${name}`); },
-    saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); },
+    saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); return "saved"; },
+    scopeWaitText: () => "Saving…",
+    cancelScopeChange: () => { calls.push("cancelScopeChange"); },
     setUpAccount: async (token, account) => { calls.push(`setUp:${token}:${account}`); },
     openDashboard: async () => { calls.push("openDashboard"); },
     openSetupGuide: () => { calls.push("openSetupGuide"); },
@@ -508,15 +510,17 @@ test("Save to server sends the drafted name and clears the draft", async (t) => 
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the field reads the saved name again");
 });
 
-for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "success"} settles without assimilating the host button`, async (t) => {
+for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "success"} names what it waits for, offers Cancel, and settles without assimilating the host button`, async (t) => {
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   const s = open(t, {
+    scopeWaitText: () => "Stopping the upload of Attachments/video2.bin…",
     saveSyncFolders: async (folders) => {
       s.calls.push("save");
       assert.deepEqual(folders, ["Notes"]);
       await held;
       if (failure) throw new Error("SAVE FAILURE SENTINEL");
+      return "saved";
     },
   });
   s.plugin.state.data.syncFolders = ["Notes"];
@@ -529,15 +533,39 @@ for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "
   button.click();
   await tick();
   assert.equal(button.disabled, true, "held while the save waits for transfers");
-  assert.equal(button.text, "Waiting for transfers…");
+  assert.equal(button.text, "Stopping the upload of Attachments/video2.bin…", "the wait says what it is for (#185)");
+  const cancel = s.button(s.made, "Cancel");
+  assert.equal(cancel.removed, undefined, "and a Cancel stands beside it while it waits");
   release();
   for (let waited = 0; button.disabled && waited < 20; waited++) await tick();
   assert.equal(thenCalls, 0, "a Promise continuation returned a native thenable component");
   assert.equal(button.disabled, false);
   assert.equal(button.text, "Save");
+  assert.equal(cancel.removed, true, "the Cancel goes with the wait");
   assert.deepEqual(s.calls, ["save"]);
   assert.equal(s.updates(), failure ? 0 : 1);
   assert.deepEqual(s.obsidian.notices, [failure ? "SAVE FAILURE SENTINEL" : "Folder selection saved on this device."]);
+});
+
+test("Cancel while a folder Save waits keeps the selection there was, and says so (#185)", async (t) => {
+  let cancelled;
+  const withdrawn = new Promise((resolve) => { cancelled = resolve; });
+  const s = open(t, {
+    saveSyncFolders: async () => { s.calls.push("save"); await withdrawn; return "withdrawn"; },
+    cancelScopeChange: () => { s.calls.push("cancelScopeChange"); cancelled(); },
+  });
+  s.plugin.state.data.syncFolders = ["Notes"];
+  const button = s.button(s.render("Save on this device").made, "Save");
+  button.click();
+  await tick();
+  const cancel = s.button(s.made, "Cancel");
+  cancel.click();
+  assert.equal(cancel.disabled, true, "one press of Cancel");
+  for (let waited = 0; button.disabled && waited < 20; waited++) await tick();
+  assert.deepEqual(s.calls, ["save", "cancelScopeChange"]);
+  assert.deepEqual(s.obsidian.notices, ["Folder selection unchanged: sync goes on with the folders it had."]);
+  assert.equal(cancel.removed, true);
+  assert.equal(button.text, "Save");
 });
 
 test("the typed folder selection reaches the save through the host's normalizePath", async (t) => {

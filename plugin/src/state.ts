@@ -206,6 +206,13 @@ export interface ObsyncData {
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
+  /**
+   * A selection saved while the transfers under the old one were stopping,
+   * and not yet in force (issue #185): `{}` is the whole vault. Written the
+   * moment Save is pressed, so a quit before the stop finishes loses nothing,
+   * and the next start puts it in force (`main.ts`, `saveSyncFolders`).
+   */
+  pendingScope?: { folders?: string[] };
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -305,6 +312,12 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   // A damaged restriction must never fall back to the whole vault. Refuse
   // loading rather than dropping this field like an optional preference.
   if (Object.hasOwn(loaded, "syncFolders")) data.syncFolders = parseSyncFolders(loaded["syncFolders"]);
+  // Judged like the selection it will become, and refused the same way.
+  if (Object.hasOwn(loaded, "pendingScope")) {
+    const pending = loaded["pendingScope"];
+    if (!isRecord(pending)) throw new Error("obsync: the pending folder selection is damaged; sync is stopped.");
+    data.pendingScope = Object.hasOwn(pending, "folders") ? { folders: parseSyncFolders(pending["folders"]) } : {};
+  }
   data.vrk = typeof loaded["vrk"] === "string" ? loaded["vrk"] : null;
   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;
   data.deviceSecret = typeof loaded["deviceSecret"] === "string" ? loaded["deviceSecret"] : null;

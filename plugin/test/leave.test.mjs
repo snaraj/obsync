@@ -21,6 +21,7 @@ import {
   DEVICE_B,
   FakeHost,
   FakeServer,
+  FakeTimers,
   KEYS,
   SECRET_B,
   SETUP_DEVICE,
@@ -291,7 +292,7 @@ test("what this device would never push is not an unpushed edit", async (t) => {
   assert.deepEqual(vault(r.host).length, 4, "and every one of them is still in the vault");
 });
 
-test("a revoke whose answer never arrived leaves this device paired", async (t) => {
+test("a revoke whose answer never arrived leaves this device paired, and offers the local leave", async (t) => {
   const r = await fixture(t, { devices: 2 });
   const route = r.instance.transport.options.request;
   let lost = false;
@@ -303,13 +304,13 @@ test("a revoke whose answer never arrived leaves this device paired", async (t) 
     return route(request);
   };
 
-  await assert.rejects(
-    () => r.instance.leaveServer({ discardUnpushed: false, localOnly: false }),
-    /the server never answered \(network=network is unreachable\)/,
-  );
+  const refused = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
 
+  assert.equal(refused.decision, "refused");
+  assert.equal(refused.reason, "unreachable", "the device list says the revoke never landed");
+  assert.match(refused.detail, /the server never answered \(network=network is unreachable\)/);
   assert.equal(r.old.devices[0].revoked, false);
-  assert.equal(r.state().deviceId, KEYS.deviceId, "an uncertain revoke never clears the credential");
+  assert.equal(r.state().deviceId, KEYS.deviceId, "an uncertain revoke never clears the credential unasked");
   assert.equal(r.state().serverUrl, OLD);
   assert.ok(r.envelope().includes(KEYS.deviceSecret));
   assert.equal(r.starts(), 1);
@@ -419,4 +420,182 @@ test("a server that does not know this device is offered a local leave, never ta
   assert.equal(r.state().vrk, KEYS.vrk);
   assert.equal(r.instance.state.paired, false, "so pairing is open again");
   assert.match(r.unpair()[1], /decision=left_locally reason=bad_signature unpushed=0 local_cleared=true/);
+});
+
+// ---- issue #157: Leave answers within seconds, and never dead-ends --------
+
+/**
+ * The fixture's device, syncing for real on the virtual clock: a transport
+ * whose retries sleep on `timers`, and an engine with a push and a long poll
+ * of its own. `down()` stops the server the way S40 and S70 did: nothing
+ * answers any more.
+ */
+async function syncing(r) {
+  const timers = new FakeTimers();
+  const { Transport } = r.box.require(join(r.box.home, "build/transport.js"));
+  const { SyncEngine } = r.box.require(join(r.box.home, "build/sync/engine.js"));
+  const route = r.instance.transport.options.request;
+  let gone = false;
+  const transport = r.instance.transport = new Transport({
+    request: async (request) => {
+      if (gone) throw new Error("net::ERR_CONNECTION_REFUSED");
+      return route(request);
+    },
+    serverUrl: () => r.instance.state.data.serverUrl,
+    device: () => {
+      const { deviceId, deviceSecret } = r.instance.state.data;
+      return deviceId && deviceSecret ? { id: deviceId, secret: Uint8Array.from(Buffer.from(deviceSecret, "hex")) } : null;
+    },
+    edgeHeaders: () => r.instance.state.data.edgeHeaders,
+    now: () => timers.now,
+    sleep: (ms) => new Promise((resolve) => timers.set(resolve, ms)),
+    random: () => 0,
+    log: (line) => r.logs.push(line),
+  });
+  const engine = r.instance.engine = new SyncEngine({ state: r.instance.state, host: r.host, transport, timers, now: () => timers.now });
+  await engine.start();
+  await timers.run(10, () => r.old.feedWaiters.length === 1);
+  return { timers, engine, down: () => { gone = true; } };
+}
+
+/** Virtual milliseconds until `work` settles, and what it settled to. */
+async function measured(timers, work, step = 10) {
+  const started = timers.now;
+  let done = false;
+  const outcome = work.finally(() => { done = true; });
+  await timers.run(step, () => done).catch((error) => assert.fail(`the leave never settled: ${error.message}`));
+  return { ms: timers.now - started, value: await outcome };
+}
+
+test("with the server gone, Leave answers in seconds and offers leaving on this device only, which leaves no credential (#157)", async (t) => {
+  // S40: offline with unsent edits, "Discard 3 and leave" sat for three
+  // minutes and then did not leave. S70: 204 s to the first word.
+  const r = await fixture(t, { devices: 2 });
+  const s = await syncing(r);
+  s.down();
+  r.host.seed("Notes/unsent.md", "UNSENT SENTINEL\n");
+  s.engine.changed("Notes/unsent.md");
+  await s.timers.run(10, () => r.logs.some((line) => line.startsWith("http POST /v1/chunks/exists") && line.includes("decision=retry")));
+
+  const refused = await measured(s.timers, r.instance.leaveServer({ discardUnpushed: true, localOnly: false }));
+
+  assert.ok(refused.ms < 2000, `the leave took ${refused.ms} ms of virtual time`);
+  assert.equal(refused.value.decision, "refused");
+  assert.equal(refused.value.reason, "unreachable", "no answer is a reason to offer the local leave, not an error");
+  assert.ok(r.logs.some((line) => /^http GET \/v1\/changes\?\S+ decision=cancelled phase=in_flight/.test(line)), "the long poll was ended");
+  assert.ok(r.logs.some((line) => /^http POST \/v1\/chunks\/exists decision=cancelled/.test(line)), "and the push's retry");
+  assert.equal(r.state().deviceId, KEYS.deviceId, "nothing is cleared without the person's word");
+  assert.match(r.unpair()[0], /^unpair decision=refused reason=unreachable unpushed=1 local_cleared=false /);
+
+  const left = await measured(s.timers, r.instance.leaveServer({ discardUnpushed: true, localOnly: true }));
+
+  assert.deepEqual(left.value, { decision: "left", revoked: false });
+  assert.ok(left.ms < 2000, `the local leave took ${left.ms} ms of virtual time`);
+  // NO CREDENTIAL IS KEPT for a later revoke: in memory, in the data file,
+  // in the native store, or in the previous revision it keeps.
+  for (const data of [r.state(), r.metadata()]) {
+    assert.equal(data.deviceId, null);
+    assert.equal(data.serverUrl, "");
+  }
+  assert.equal(r.state().deviceSecret, null);
+  assert.equal(JSON.stringify(r.metadata()).includes(KEYS.deviceSecret), false);
+  assert.equal(r.envelope().includes(KEYS.deviceSecret), false, "no revision keeps the secret");
+  assert.equal(JSON.parse(r.envelope()).previous, null);
+  await assert.rejects(() => r.instance.transport.account(), /no_server_url/);
+  assert.equal(r.state().vrk, KEYS.vrk, "the vault key is not a credential and stays");
+  assert.match(r.unpair()[1], /^unpair decision=left_locally reason=unreachable unpushed=1 local_cleared=true previous_credential=dropped /);
+});
+
+for (const [name, answer, reason] of [
+  ["an answer that is not obsync's", { status: 403, text: "<html>SIGN IN SENTINEL</html>" }, "unreachable"],
+  ["a refusal of its own", { status: 400, text: JSON.stringify({ error: "bad_request", detail: "DETAIL SENTINEL" }) }, "refused"],
+  ["a server error", { status: 502, text: "" }, "unreachable"],
+]) test(`a revoke met by ${name} offers the local leave, and it works (#157)`, async (t) => {
+  const r = await fixture(t, { devices: 2 });
+  const route = r.instance.transport.options.request;
+  r.instance.transport.options.request = async (request) => request.url.endsWith("/revoke")
+    ? { status: answer.status, headers: {}, text: answer.text, arrayBuffer: new ArrayBuffer(0) }
+    : route(request);
+  const before = r.state();
+
+  const refused = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+
+  assert.equal(refused.decision, "refused");
+  assert.equal(refused.reason, reason);
+  if (reason === "refused") assert.equal(refused.detail, "DETAIL SENTINEL");
+  assert.deepEqual(r.state(), before, "nothing was cleared unasked");
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: false, localOnly: true }), { decision: "left", revoked: false });
+  assert.equal(r.state().deviceId, null);
+  assert.equal(r.envelope().includes(KEYS.deviceSecret), false);
+});
+
+test("a revoke nothing answers is given up after ten seconds, and the local leave is offered (#157)", async (t) => {
+  // An address that swallows packets answers nothing at all: no refusal, no
+  // reset. A person's budget ends it, twice: the revoke, then the read of the
+  // device list that would say whether it landed.
+  const r = await fixture(t, { devices: 2 });
+  const s = await syncing(r);
+  const route = r.instance.transport.options.request;
+  r.instance.transport.options.request = (request) =>
+    request.url.endsWith("/revoke") || request.url.endsWith("/v1/devices") ? new Promise(() => undefined) : route(request);
+  const real = globalThis.window;
+  globalThis.window = { ...real, setTimeout: (fn, ms) => s.timers.set(fn, ms), clearTimeout: (handle) => s.timers.clear(handle) };
+  t.after(() => { globalThis.window = real; });
+
+  const refused = await measured(s.timers, r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), 100);
+
+  assert.equal(refused.value.reason, "unreachable");
+  assert.ok(refused.ms <= 21000, `the leave waited ${refused.ms} ms of virtual time for a server that never answers`);
+  assert.ok(r.logs.some((line) => /^http GET \/v1\/devices decision=gave_up reason=deadline attempts=1 budget_ms=10000/.test(line)), r.logs.join("\n"));
+});
+
+test("one leave at a time: a second one while the first runs is refused, and starts nothing (#157)", async (t) => {
+  // S22: a second press started a second leave, which ended with a notice
+  // about an inactive session beside the first one's success.
+  const r = await fixture(t, { devices: 2 });
+  const route = r.instance.transport.options.request;
+  let release, asked = false;
+  const held = new Promise((resolve) => { release = resolve; });
+  r.instance.transport.options.request = async (request) => {
+    if (request.url.endsWith("/revoke")) { asked = true; await held; }
+    return route(request);
+  };
+  const first = r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  for (let turn = 0; turn < 50 && !asked; turn++) await new Promise(setImmediate);
+  assert.equal(asked, true, "the first leave is asking the server");
+
+  await assert.rejects(r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), /already leaving the server/);
+  assert.equal(r.starts(), 0, "the refused second leave started no engine under the first");
+  assert.match(r.unpair()[0], /^unpair decision=refused reason=already_leaving /);
+  release();
+
+  assert.deepEqual(await first, { decision: "left", revoked: true });
+  assert.equal(r.revokes().length, 1, "one press, one revoke");
+});
+
+test("the start after a refused leave runs on its own: the refusal does not wait for it (#157)", async (t) => {
+  // S70: the refusal waited 89 s behind a start retrying a server that was off.
+  const r = await fixture(t);
+  let starts = 0;
+  r.instance.startEngine = () => { starts++; return new Promise(() => undefined); };
+
+  const refused = await Promise.race([
+    r.instance.leaveServer({ discardUnpushed: false, localOnly: false }),
+    new Promise((resolve) => setTimeout(() => resolve("still waiting on the start"), 2000).unref()),
+  ]);
+
+  assert.equal(refused.reason, "last_device");
+  assert.equal(starts, 1, "and the device goes on syncing");
+});
+
+test("the Leave dialog's Sync now advice follows what this device can reach (#157)", async (t) => {
+  // S40, S80: "Run Sync now first" to a device offline, and to one revoked.
+  const r = await fixture(t);
+  assert.equal(r.instance.sendsNow, true);
+  r.instance.setStatus({ kind: "offline" });
+  assert.equal(r.instance.sendsNow, false, "not while offline");
+  r.instance.setStatus({ kind: "idle" });
+  assert.equal(r.instance.sendsNow, true);
+  r.instance.forgottenDevice = true;
+  assert.equal(r.instance.sendsNow, false, "not once the server no longer accepts this device");
 });

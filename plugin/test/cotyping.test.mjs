@@ -1092,7 +1092,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   await b.engine.start();
   await timers.run(STEP_MS);
   await Promise.all([a.engine.stopAndWait(), b.engine.stopAndWait()]);
-  const left = a.engine.context, right = b.engine.context;
+  // Driven by hand from here: a stopped engine's own signal would end every request.
+  const left = { ...a.engine.context, signal: undefined }, right = { ...b.engine.context, signal: undefined };
   a.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(left, NOTE);
   await applyChange(right, server.journal.at(-1));

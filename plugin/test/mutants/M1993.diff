@@ -1,0 +1,14 @@
+# M1993: a second leave may start while the first is still revoking
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2733,10 +2733,6 @@
+       // ONE LEAVE AT A TIME: a second one, started while the first was still
+       // revoking, ended beside its success with a notice about an inactive
+       // session (S22).
+-      if (this.leaving) {
+-        reason = "already_leaving";
+-        throw new Error("This device is already leaving the server. Wait for that to finish.");
+-      }
+       if (this.changingScope || this.restoring !== null) {
+         reason = "busy";
+         throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");

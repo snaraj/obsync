@@ -1,0 +1,15 @@
+# M1988: a stopped upload reads and encrypts on past its chunk boundary
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -219,11 +219,6 @@
+     // after it is encrypted or sent, and what already landed is found by its
+     // sid when the push runs again, so a folder Save or a Leave never waits
+     // for the rest of a large upload.
+-    if (signal?.aborted === true) {
+-      // The chunks on the wire end by the same signal, at once.
+-      await Promise.allSettled(queue);
+-      throw new ApiError(0, "cancelled", "sync stopped on this device");
+-    }
+     const { sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+     if (!missing.has(sid)) continue;
+     missing.delete(sid);

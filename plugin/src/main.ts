@@ -69,7 +69,7 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, Patience, Transport, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, NOT_ANSWERING, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
@@ -320,10 +320,60 @@ export interface LeaveChoice {
   localOnly: boolean;
 }
 
+/**
+ * Why the server did not remove this device, as the Leave dialog words it:
+ * the last device, a server that does not know it, no answer from the server
+ * (or an answer that was not obsync's), or any other refusal of its own.
+ */
+export type LeaveRefusal = "last_device" | "bad_signature" | "unreachable" | "refused";
+
 export type LeaveResult =
   | { decision: "left"; revoked: boolean }
   | { decision: "refused"; reason: "unpushed_edits"; unpushed: string[] }
-  | { decision: "refused"; reason: "last_device" | "bad_signature"; detail: string };
+  | { decision: "refused"; reason: LeaveRefusal; detail: string };
+
+/**
+ * What a revoke that did not happen offers instead: leaving on this device
+ * only, whatever the server said or failed to say (issue #157). Only `409
+ * last_device` and `401 bad_signature` were offered it before, and a server
+ * that did not answer -- the commonest reason to leave one -- left a device
+ * that could not leave (S40, S70).
+ */
+function leaveRefusal(error: unknown): { reason: LeaveRefusal; detail: string } {
+  if (error instanceof ApiError && (error.code === "last_device" || error.code === "bad_signature")) {
+    return { reason: error.code, detail: error.detail };
+  }
+  if (error instanceof ApiError && error.status !== 0 && error.code !== NOT_OBSYNC) return { reason: "refused", detail: error.detail };
+  return { reason: "unreachable", detail: error instanceof Error ? error.message : String(error) };
+}
+
+/**
+ * A request sent once that a person is waiting on: `lost` when nothing has
+ * answered within `INTERACTIVE_MS` (issue #157). `requestUrl` cannot be
+ * withdrawn, so the request goes on and its late answer is discarded -- a
+ * revoke that lands afterwards has still done what the person asked.
+ */
+function patiently<T>(sent: Promise<Sent<T>>, patience: Patience): Promise<Sent<T>> {
+  if (patience.interactive !== true) return sent;
+  return new Promise((resolve, reject) => {
+    const handle = window.setTimeout(
+      () => resolve({ outcome: "lost", attempts: 1, reason: `no answer within ${INTERACTIVE_MS / 1000} s` }),
+      INTERACTIVE_MS,
+    );
+    sent.then(
+      (value) => { window.clearTimeout(handle); resolve(value); },
+      (error: unknown) => { window.clearTimeout(handle); reject(error); },
+    );
+  });
+}
+
+/** Resolves `true` once `signal` aborts, and never otherwise. */
+function aborted(signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve(true);
+    else signal.addEventListener("abort", () => resolve(true), { once: true });
+  });
+}
 
 export function dashboardTarget(link: string, serverUrl: string): DashboardTarget {
   const base = parseUrl(serverUrl);
@@ -1815,6 +1865,10 @@ export default class ObsyncPlugin extends Plugin {
   /** Retain stopped writers even after the active engine reference is cleared. */
   private readonly engineTeardowns = new Set<Promise<void>>();
   private changingScope = false;
+  /** Ends the wait of the folder Save in progress: its Cancel (issue #185). */
+  private scopeCancel: AbortController | null = null;
+  /** A leave is running: a second press, or a second dialog, is refused (S22). */
+  private leaving = false;
   private readonly manualFetches = new Set<Promise<string>>();
   private readonly histories = new Set<HistoryBrowser>();
   private restoring: HistoryOperation | null = null;
@@ -1981,6 +2035,7 @@ export default class ObsyncPlugin extends Plugin {
       this.placeIndicator();
       listed();
     })).then(async () => {
+      if (this.state.data.pendingScope !== undefined) await this.finishScopeChange(generation);
       if (this.state.paired) await this.startEngine();
       if (this.isCurrent(generation)) void this.checkForUpdate();
     });
@@ -2420,12 +2475,20 @@ export default class ObsyncPlugin extends Plugin {
    * skipped, and local content the server never received is kept beside the
    * incoming version rather than replaced (`sync/pull.ts`). Narrowing keeps
    * its cursor: nothing new is covered, so there is nothing to replay.
+   *
+   * THE CHOICE IS KEPT THE MOMENT SAVE IS PRESSED (issue #185), as the
+   * pending selection, and put in force once the old one's transfers have
+   * stopped. It used to be written only after that wait, so a quit during a
+   * large upload dropped it without a word; now the next start finishes it
+   * (`finishScopeChange`). The stop cuts an upload at its next chunk, so the
+   * wait is the chunks on the wire and not the rest of the file, and Cancel
+   * ends it: `withdrawn`, nothing changed, sync goes on as it was.
    */
-  async saveSyncFolders(value: string[] | undefined): Promise<void> {
+  async saveSyncFolders(value: string[] | undefined): Promise<"saved" | "withdrawn"> {
     const generation = this.lifecycle;
     const assertActive = (): void => {
       if (!this.isCurrent(generation)) {
-        throw new Error("The plugin unloaded during the folder change; restart Obsidian to check the saved selection.");
+        throw new Error("The plugin unloaded during the folder change. The selection is kept, and takes effect when obsync starts again.");
       }
     };
     assertActive();
@@ -2440,51 +2503,122 @@ export default class ObsyncPlugin extends Plugin {
     if (this.changingScope) throw new Error("A folder selection is already being saved.");
     this.changingScope = true;
     this.cancelHistories();
+    const cancel = this.scopeCancel = new AbortController();
+    const started = Date.now();
+    let withdrawn = false;
     try {
-      // Scope changes take effect only after old work is quiescent. A
-      // stopped long poll may finish, but must not advance its cursor.
-      await this.engine?.stopAndWait();
-      assertActive();
-      this.engine = null;
-      // A retry that fired into a failed save would restart sync under a
-      // status that says it is stopped; the start at the end owns resumption.
-      this.cancelReconnect();
-      await Promise.allSettled(this.manualFetches);
-      await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
-      assertActive();
-      const previous = state.data.syncFolders;
-      const cursor = state.data.lastSeq;
-      // Decided after the quiesce, against the selection that was in force
-      // while the stopped work ran.
-      const widened = expandsSyncScope(previous, folders);
-      state.data.syncFolders = folders;
-      if (widened) state.data.lastSeq = 0;
+      const before = state.data.pendingScope;
+      state.data.pendingScope = folders === undefined ? {} : { folders };
       try {
         await state.save();
       } catch (error) {
-        state.data.syncFolders = previous;
-        state.data.lastSeq = cursor;
+        state.data.pendingScope = before;
         throw error;
       }
       assertActive();
-      this.log(
-        `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
-          `replay=${widened ? "from_zero" : "none"} from_seq=${cursor}`,
-      );
-      // Redrawn now: whether the status line names an empty selection is this save's to change.
-      this.setStatus(this.statusValue);
+      // Scope changes take effect only after old work is quiescent. A
+      // stopped long poll may finish, but must not advance its cursor.
+      const previous = this.engine;
+      const quiet = (async (): Promise<boolean> => {
+        await previous?.stopAndWait();
+        await Promise.allSettled(this.manualFetches);
+        await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+        return false;
+      })();
+      withdrawn = await Promise.race([quiet, aborted(cancel.signal)]);
+      assertActive();
+      if (withdrawn) {
+        // The stop goes on by itself; the start below waits for it.
+        void quiet.catch(() => undefined);
+        delete state.data.pendingScope;
+        await state.save();
+        assertActive();
+        this.log(`scope decision=withdrawn reason=cancelled duration_ms=${Date.now() - started}`);
+      } else {
+        this.engine = null;
+        // A retry that fired into a failed save would restart sync under a
+        // status that says it is stopped; the start at the end owns resumption.
+        this.cancelReconnect();
+        await this.applyScope(state, "save", started, assertActive);
+        // Redrawn now: whether the status line names an empty selection is this save's to change.
+        this.setStatus(this.statusValue);
+      }
     } catch (error) {
       if (this.isCurrent(generation)) {
         this.log("scope decision=failed reason=not_saved");
         this.setStatus({ kind: "error", message: "Folder selection was not saved. Sync is stopped; retry before restarting Obsidian." });
       } else {
-        this.log("scope decision=cancelled reason=plugin_unloaded");
+        this.log(`scope decision=deferred reason=plugin_unloaded pending=${state.data.pendingScope !== undefined}`);
       }
       throw error;
     } finally {
+      if (this.scopeCancel === cancel) this.scopeCancel = null;
       if (this.isCurrent(generation)) this.changingScope = false;
     }
+    if (withdrawn) {
+      void this.startEngine().catch(() => this.log("scope decision=sync_pending reason=restart_failed"));
+      return "withdrawn";
+    }
     await this.startEngine();
+    return "saved";
+  }
+
+  /**
+   * Put the pending selection in force and persist it with the cursor it
+   * implies, or leave everything as it was. Decided now, against the selection
+   * that was in force while the stopped work ran.
+   */
+  private async applyScope(state: State, trigger: "save" | "start", started: number, assertActive: () => void): Promise<void> {
+    const pending = state.data.pendingScope;
+    if (pending === undefined) return;
+    const folders = pending.folders;
+    const previous = state.data.syncFolders;
+    const cursor = state.data.lastSeq;
+    const widened = expandsSyncScope(previous, folders);
+    state.data.syncFolders = folders;
+    if (widened) state.data.lastSeq = 0;
+    delete state.data.pendingScope;
+    try {
+      await state.save();
+    } catch (error) {
+      state.data.syncFolders = previous;
+      state.data.lastSeq = cursor;
+      state.data.pendingScope = pending;
+      throw error;
+    }
+    // A session that unloaded meanwhile reports nothing, and a later load reads what was written.
+    assertActive();
+    this.log(
+      `scope decision=saved mode=${folders === undefined ? "whole_vault" : "selected_folders"} folders=${folders?.length ?? 0} ` +
+        `replay=${widened ? "from_zero" : "none"} from_seq=${cursor} trigger=${trigger} duration_ms=${Date.now() - started}`,
+    );
+  }
+
+  /**
+   * A selection saved while transfers were stopping, and never put in force
+   * because Obsidian closed first (issue #185): in force before the first
+   * start, and said so once.
+   */
+  private async finishScopeChange(generation: object | null): Promise<void> {
+    if (!this.isCurrent(generation) || this.changingScope) return;
+    try {
+      await this.applyScope(this.state, "start", Date.now(), () => undefined);
+      new Notice("obsync: the folder selection you saved before Obsidian closed is now in effect.", 8000);
+    } catch {
+      this.log("scope decision=failed reason=not_saved trigger=start");
+    }
+  }
+
+  /** What a folder Save is waiting for, in the words its button shows (issue #185). */
+  scopeWaitText(): string {
+    const [first, ...rest] = this.engine?.uploads() ?? [];
+    if (first === undefined) return "Saving…";
+    return `Stopping the upload of ${first}${rest.length > 0 ? ` and ${rest.length} more` : ""}…`;
+  }
+
+  /** Cancel the folder Save still waiting for its transfers: nothing changes. */
+  cancelScopeChange(): void {
+    this.scopeCancel?.abort();
   }
 
   // --- identity and keys -------------------------------------------------
@@ -2557,12 +2691,13 @@ export default class ObsyncPlugin extends Plugin {
    * guesses are harmful: "it failed" leaves the user believing a device they
    * wanted out still holds the vault, and a blind repeat can meet
    * `last_device` on a revoke that already worked. The device list says which
-   * it was, and reading it is repeatable.
+   * it was, and reading it is repeatable. `interactive` bounds both the send
+   * and that read for a person who is waiting (`patiently`, `Patience`).
    */
-  async revokeDevice(deviceId: string): Promise<void> {
-    const sent = await this.transport.revokeDevice(deviceId);
+  async revokeDevice(deviceId: string, patience: Patience = {}): Promise<void> {
+    const sent = await patiently(this.transport.revokeDevice(deviceId), patience);
     if (sent.outcome === "lost") {
-      const revoked = (await this.listDevices()).find((device) => device.device_id === deviceId)?.revoked;
+      const revoked = (await this.transport.devices(patience)).devices.find((device) => device.device_id === deviceId)?.revoked;
       this.log(`device decision=reconciled reason=lost_answer revoked=${revoked === true}`);
       if (revoked !== true) throw new Error(lostMessage(`revoking that device`, sent));
     }
@@ -2649,14 +2784,26 @@ export default class ObsyncPlugin extends Plugin {
    * device syncing as it was, and the one line this logs says which of the
    * two happened.
    *
-   * The server refuses to revoke the only ACTIVE device (`409 last_device`),
-   * until vault recovery is registered. That refusal is surfaced and the
-   * user may still leave LOCALLY, which is `localOnly`: this device forgets
-   * the server, the server keeps the device. A server that does not know this
-   * device at all (`401 bad_signature`: rebuilt, restored, or another server)
-   * is offered the same local leave, never taken without asking, because a
-   * wrong address answers it too (#143). No other device is touched on
-   * either path; only this device's id is ever sent.
+   * A REVOKE THAT DID NOT HAPPEN OFFERS THE LOCAL LEAVE, whatever stopped it
+   * (issue #157): the server refusing the only ACTIVE device (`409
+   * last_device`) until vault recovery is registered, a server that does not
+   * know this device (`401 bad_signature`: rebuilt, restored, or another
+   * server), no answer at all, or any other refusal. That is `localOnly`: this
+   * device forgets the server and its credential exactly as a leave does, and
+   * the server keeps listing the device until another device or the dashboard
+   * removes it. It is never taken without asking, because a wrong address
+   * answers `401` too (#143); nothing is kept for a later revoke, so the
+   * device holds no usable credential afterwards. A device the server has
+   * already revoked (`403 device_revoked`) has nothing left to ask. No other
+   * device is touched on any path; only this device's id is ever sent.
+   *
+   * NOTHING HERE WAITS OUT THE SERVER. The stop cancels the long poll and
+   * every retry and cuts an upload at its chunk boundary (`SyncEngine.stop`);
+   * the revoke and the read that settles a lost one have a person's budget,
+   * two attempts inside ten seconds; and the start after a refusal runs on
+   * its own, because a start retries a server that is gone for a minute and
+   * a half, and the refusal is what the person is waiting to read (S70:
+   * 204 s of silence, now seconds).
    *
    * PLATFORM. Identical on desktop and mobile: one revoke, one metadata
    * write, one secret write, and no filesystem work of any kind.
@@ -2671,16 +2818,25 @@ export default class ObsyncPlugin extends Plugin {
     let unpushed = 0;
     let cleared = false;
     let previous = "kept";
+    let owned = false;
     try {
       const deviceId = state.data.deviceId;
       if (deviceId === null) {
         reason = "not_paired";
         throw new Error("This device is not paired with a server.");
       }
+      // ONE LEAVE AT A TIME: a second one, started while the first was still
+      // revoking, ended beside its success with a notice about an inactive
+      // session (S22).
+      if (this.leaving) {
+        reason = "already_leaving";
+        throw new Error("This device is already leaving the server. Wait for that to finish.");
+      }
       if (this.changingScope || this.restoring !== null) {
         reason = "busy";
         throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");
       }
+      this.leaving = owned = true;
       // Quiesce first, so the count below is a fact rather than a guess and
       // no push, fetch or restore is still running against the credential
       // this is about to give up.
@@ -2701,16 +2857,17 @@ export default class ObsyncPlugin extends Plugin {
         return { decision: "refused", reason: "unpushed_edits", unpushed: pending };
       }
       try {
-        await this.revokeDevice(deviceId);
+        await this.revokeDevice(deviceId, { interactive: true });
         revoked = true;
       } catch (error) {
         reason = error instanceof ApiError ? error.code : "local_or_lost";
+        // A reload while the server was asked: this session decides nothing.
+        assertCurrent();
         // Revoked already -- from another device or the dashboard (#143, S80):
         // what leaving asks of the server is done, so this device forgets it
         // too, which is the one way back to pairing again.
         if (error instanceof ApiError && error.code === "device_revoked") revoked = true;
-        else if (!(error instanceof ApiError) || (error.code !== "last_device" && error.code !== "bad_signature")) throw error;
-        else if (!choice.localOnly) return { decision: "refused", reason: error.code, detail: error.detail };
+        else if (!choice.localOnly) return { decision: "refused", ...leaveRefusal(error) };
       }
       assertCurrent();
       state.forgetPairing();
@@ -2735,15 +2892,26 @@ export default class ObsyncPlugin extends Plugin {
       if (reason === "unfinished") reason = "ok";
       return { decision: "left", revoked };
     } finally {
+      if (owned) this.leaving = false;
       this.log(
         `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
       );
       // However this ended, a device that is still paired goes on syncing:
       // no refusal here may leave the engine stopped. A device that DID
-      // leave starts nothing, because `startEngine` requires `paired`.
-      await this.startEngine();
+      // leave starts nothing, because `startEngine` requires `paired`. Not
+      // awaited: see NOTHING HERE WAITS OUT THE SERVER above.
+      if (owned) void this.startEngine().catch(() => this.log("unpair decision=sync_pending reason=restart_failed"));
     }
+  }
+
+  /**
+   * Whether edits made here can reach the server now, so the Leave dialog
+   * advises Sync now only where it can work (issue #157): not while offline,
+   * and not once the server has stopped recognising this device.
+   */
+  get sendsNow(): boolean {
+    return !this.forgottenDevice && this.statusValue.kind !== "offline";
   }
 
   /**

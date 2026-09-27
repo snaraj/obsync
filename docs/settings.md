@@ -40,7 +40,7 @@ device can change it for you.
 | --- | --- | --- | --- |
 | **Folder selection** | Whole vault | `Whole vault`, or `Selected folders only`. Its description reads back what this device is syncing NOW, which is the saved selection. Hidden folders (`.obsidian`, `.git`) and symlinked folders are excluded either way. | Before the first sync, if the vault also holds code or private files |
 | **Selected folders** | empty | One relative folder per line. An empty list with `Selected folders only` syncs nothing, and saving one says so. A folder the vault does not have is asked about before it is saved, with Cancel as the default; a folder typed in another case (`notes` for `Notes`) is saved the way the vault spells it, and a notice says so. | With the setting above |
-| **Save on this device** → **Save** | — | Waits for transfers actually running, never for an idle connection to the server, then rescans. **Set up or recover** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
+| **Save on this device** → **Save** | — | Keeps the choice at once, stops any upload at its next chunk (the button names it, with **Cancel** beside it to keep the old selection), then rescans; the stopped upload resumes where it left off. If Obsidian closes first, the next start applies the choice and says so. **Set up or recover** and **Pair this device** do this for you when the selection on screen is not yet saved. | After a change on a device that already syncs |
 
 You can narrow or widen the selection after pairing. Widening replays retained
 history for the newly selected folders and publishes their local files;
@@ -77,7 +77,12 @@ Leaving asks first, and says what it costs. **Kept:** every note, the vault
 key (so pairing again is the SAME vault, never a new one), this device's name,
 its folder selection and both ceilings. **Lost:** this device's sync identity.
 It is refused while this device holds changes the server never received — the
-dialog names them, and either **Sync now** first or discard them on purpose.
+dialog names them, and either **Sync now** first (while the server can be
+reached) or discard them on purpose. When the server cannot remove this device
+— it does not answer, does not know the device, or refuses — the dialog offers
+**Leave on this device only**: this device forgets the server and its
+credential all the same, and the server lists it until you remove it from
+another device's Devices list or the dashboard.
 The last ACTIVE device may leave once account recovery is registered. Keep
 the setup token and recovery phrase first. An older server or unregistered
 account still refuses with `409 last_device`; local leave keeps that credential

@@ -34,6 +34,12 @@ const T0 = Date.UTC(2026, 8, 24, 10, 39, 0);
 const second = (ms) => new Date(ms).toISOString().slice(0, 19);
 const instant = (ms) => new Date(ms).toISOString();
 const FRONT = /^---\nupdated: (\S+)\n---\n/;
+/**
+ * A stopped engine's context, to drive by hand. The engine's own stop signal
+ * ends every request its context makes (issue #157), which is what a stop is
+ * for; a test that stops the loops to take the turns itself carries none.
+ */
+const manual = (engine) => ({ ...engine.need(), signal: undefined });
 const TYPED = "TypedS89xabcdefghijk";
 /** Twenty keystrokes, each typed nowhere else, so each can be found alone. */
 const KEYS = Array.from({ length: 20 }, (_, index) => String.fromCodePoint(0x4e00 + index)).join("");
@@ -693,7 +699,7 @@ for (const typed of [false, true]) test(`a later arrival cannot erase the verdic
   const { a, b, fileId, advance } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   const firstArrival = bc.arrivals.get(NOTE);
   assert.equal(typeof firstArrival, "number");
   await advance(500);
@@ -722,7 +728,7 @@ for (const mode of ["unchanged", "missing", "replaced", "outside"]) test(`arriva
   const { a, b, fileId, advance } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   await advance(500);
   a.host.write(NOTE, "# n10\nremote edit\n", a.host.clock);
   const next = await pushFile(ac, NOTE);
@@ -748,7 +754,7 @@ test("arrival bookkeeping does not inspect an old path outside the selected fold
   const { a, b, fileId } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   b.state.data.syncFolders = ["Inside"];
   const frame = await run.server.publish({ fileId, path: "Inside/moved.md", bytes: new TextEncoder().encode("moved\n"),
     mtime: b.host.clock, parents: [b.state.fileByPath(NOTE).versionId], domainKey: ac.domainKey, manifestKey: ac.manifestKey });
@@ -765,7 +771,7 @@ for (const mode of ["echo", "invalid", "nested"]) test(`a ${mode} version suppli
   const { a, b, advance } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   const before = bc.arrivals.get(NOTE);
   const original = b.host.text(NOTE);
   await advance(ANSWER_MS + 1);
@@ -785,7 +791,7 @@ test("a host plugin can recognize an arrival before the incoming write returns",
   const { a, b, advance } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   await advance(ANSWER_MS + 1);
   a.host.write(NOTE, "# n10\nremote\n", a.host.clock);
   const next = await pushFile(ac, NOTE);
@@ -815,7 +821,7 @@ for (const reverseResume of [false, true]) test(`a peer answer holds an overlapp
   const { a, b, fileId, advance } = run;
   await a.engine.stopAndWait();
   await b.engine.stopAndWait();
-  const ac = a.engine.need(), bc = b.engine.need();
+  const ac = manual(a.engine), bc = manual(b.engine);
   const stampers = [new Stamper(a, run.timers), new Stamper(b, run.timers)];
   t.after(() => { for (const stamper of stampers) stamper.remove(); });
   const editor = new OpenEditor(a, run.timers);

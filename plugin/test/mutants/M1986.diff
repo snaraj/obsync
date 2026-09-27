@@ -1,0 +1,12 @@
+# M1986: a one-chunk upload does not hear the stop
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -324,7 +324,7 @@
+   const uploads = missing.size;
+   if (single !== null) {
+     const only = plan[0] as ManifestChunk;
+-    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single, { signal: context.signal });
++    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single);
+   } else {
+     await uploadMissing(context, missing, plan, path, stat.size);
+   }

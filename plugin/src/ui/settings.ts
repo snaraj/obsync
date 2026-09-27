@@ -34,7 +34,7 @@
 
 import { FORGOTTEN_DEVICE } from "../accountRecovery";
 import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
-import type { App, SettingDefinitionItem, SettingGroupItem } from "obsidian";
+import type { App, ButtonComponent, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
 import { parseSyncFolders } from "../syncScope";
@@ -417,7 +417,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
    * Cancel first: the selection never covers a folder the person did not
    * name without their click.
    */
-  private async saveScopeDraft(): Promise<string[] | null> {
+  private async saveScopeDraft(): Promise<string[] | "withdrawn" | null> {
     const typed = this.scopeValue();
     const told: string[] = [];
     let folders = typed;
@@ -449,9 +449,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
       folders = parseSyncFolders(selection.map((folder, index) => shown[index] ?? folder));
       if (folders.length === 0) told.push("No folder is selected, so nothing syncs on this device.");
     }
-    await this.plugin.saveSyncFolders(folders);
+    const outcome = await this.plugin.saveSyncFolders(folders);
     this.draftScope = null;
-    return told;
+    return outcome === "withdrawn" ? outcome : told;
   }
 
   /**
@@ -499,22 +499,39 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /**
+   * Save, and while the old selection's transfers stop, say which (issue
+   * #185): the button names the upload it is cutting at its next chunk, and a
+   * Cancel beside it keeps the selection there was. The choice itself is kept
+   * the moment Save is pressed (`saveSyncFolders`).
+   */
   private saveScope(): Row {
     return {
       name: "Save on this device",
-      desc: "Waits for active transfers, then rescans. Adding a folder also brings in what the server already holds under it, which can take a while on a large vault; removed folders keep their local files and their history.",
+      desc: "Stops any upload at its next chunk, then rescans; a stopped upload resumes where it left off. Adding a folder also brings in what the server already holds under it, which can take a while on a large vault; removed folders keep their local files and their history.",
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Save").onClick(() => {
-          button.setDisabled(true).setButtonText("Waiting for transfers…");
+          button.setDisabled(true).setButtonText(this.plugin.scopeWaitText());
+          let cancel: ButtonComponent | undefined;
+          setting.addButton((made) => {
+            cancel = made;
+            made.setButtonText("Cancel").onClick(() => {
+              made.setDisabled(true);
+              this.plugin.cancelScopeChange();
+            });
+          });
           void this.saveScopeDraft().then((told) => {
             if (told === null) return;
-            new Notice(["Folder selection saved on this device.", ...told].join(" "));
+            new Notice(told === "withdrawn"
+              ? "Folder selection unchanged: sync goes on with the folders it had."
+              : ["Folder selection saved on this device.", ...told].join(" "));
             this.update();
           }).catch((error: unknown) => {
             new Notice(message(error), 10000);
           }).finally(() => {
             // Obsidian components are thenable. Never return one to a Promise.
             button.setDisabled(false).setButtonText("Save");
+            cancel?.buttonEl.remove();
           });
         }));
       },
@@ -562,8 +579,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
     if (!this.scopeChanged()) return true;
     try {
       const told = await this.saveScopeDraft();
-      if (told !== null && told.length !== 0) new Notice(told.join(" "));
-      return told !== null;
+      if (told === null || told === "withdrawn") return false;
+      if (told.length !== 0) new Notice(told.join(" "));
+      return true;
     } catch (error) {
       new Notice(message(error), 10000);
       return false;

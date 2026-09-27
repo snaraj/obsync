@@ -620,6 +620,11 @@ async function* chunkPlaintexts(context: SyncContext, manifest: Manifest, contro
   let index = 0;
   while (index < manifest.chunks.length) {
     control?.check();
+    // A stopped engine's download ends at the next batch, and the writer
+    // discards what it held (`materialise`): the feed applies this record again
+    // at the next start (issues #157, #185). A manual read -- a restore runs on
+    // purpose after the stop -- answers to its own control instead.
+    if (control === undefined && context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
     const batch = manifest.chunks.slice(index, index + BATCH_SIDS);
     index += batch.length;
     const bodies =

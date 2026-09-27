@@ -1,0 +1,12 @@
+# M1985: a push's chunk-existence check does not hear the stop
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -320,7 +320,7 @@
+   }
+ 
+   const before = context.transport.uploadStats();
+-  const missing = new Set(await context.transport.missingChunks(sids, { signal: context.signal }));
++  const missing = new Set(await context.transport.missingChunks(sids));
+   const uploads = missing.size;
+   if (single !== null) {
+     const only = plan[0] as ManifestChunk;

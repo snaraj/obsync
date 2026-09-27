@@ -40,7 +40,7 @@ import {
   unhex,
   versionId,
 } from "./crypto";
-import { ApiError, Transport } from "./transport";
+import { ApiError, Patience, Transport } from "./transport";
 
 /** One domain and the paths it claims. A path with no slash is a whole file. */
 export interface DomainEntry {
@@ -181,10 +181,11 @@ export function serialiseDomainMap(map: DomainMap): string {
 export async function loadDomainMap(
   transport: Transport,
   keys: DomainMapKeys,
+  patience: Patience = {},
 ): Promise<DomainMap | null> {
   let file;
   try {
-    file = await transport.getFile(keys.fileId);
+    file = await transport.getFile(keys.fileId, patience);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
