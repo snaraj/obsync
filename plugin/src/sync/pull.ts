@@ -85,7 +85,7 @@
  */
 
 import type { MoveResult, SyncContext, VaultStat, VaultWriter } from "./engine";
-import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX } from "../chunker";
+import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
   conflictFileId,
@@ -4375,8 +4375,7 @@ export async function settleBeside(context: SyncContext, seq: number, pass = "pu
  * as it, and nothing is written, published or moved. The proof is the
  * manifest's authenticated digest, exactly as a conflict copy's reuse is
  * proved; a version too large to carry one (`push.ts`, MANIFEST `sha256`) is
- * not recognised this way and takes the ordinary path, which costs a
- * duplicate and never a loss.
+ * proved by its chunks instead (`sameChunks`, issue #232).
  *
  * A file id this device tracks somewhere else never reaches this: the rule
  * hands those to `updateSettled` before asking anything about the name.
@@ -4387,13 +4386,69 @@ async function adopt(
   manifest: Manifest,
   occupant: VaultStat,
 ): Promise<boolean> {
-  const verified = await alreadyCopied(context, manifest, manifest.path, occupant);
+  const started = context.now();
+  const whole = manifest.sha256 !== "";
+  const verified = whole
+    ? await alreadyCopied(context, manifest, manifest.path, occupant)
+    : await sameChunks(context, change.sids, manifest.path, occupant, manifest.size);
   if (verified === null) return false;
+  const proof = whole ? "identical_bytes" : `identical_chunks chunks=${change.sids.length} duration_ms=${context.now() - started}`;
   await recordAt(context, change, manifest.path, verified, undefined, true);
   context.host.log(
-    `pull path_class=file bytes=${manifest.size} decision=adopted reason=identical_bytes file=${change.file_id} seq=${change.seq}`,
+    `pull path_class=file bytes=${manifest.size} decision=adopted reason=${proof} file=${change.file_id} seq=${change.seq}`,
   );
   return true;
+}
+
+/**
+ * Is the local file at `path` the version whose ordered chunk list is `sids`?
+ * The proof for a version with no whole-file digest (issue #232).
+ *
+ * A device paired over a vault that already held the server's attachments
+ * published every one of them again under a new file id, and the same-name
+ * rule then retired one id of each pair on every device. A chunk's sid is a
+ * function of its plaintext and this domain's key alone (`encryptChunk`), and
+ * the chunker cuts the same bytes in the same places (`chunkStream`), so the
+ * push path's own two steps, run over the local file, name exactly the
+ * record's sids -- as many, in the same order -- when the file IS that
+ * version, and not otherwise: an equal sid is an equal ciphertext, so an equal
+ * chunk. The list is authenticated: the record's sids are the manifest's AAD
+ * and bound to its chunk list in order (`bindManifestToRecord`). Nothing is
+ * uploaded or downloaded; the cost is one read of the file, as a push of it
+ * reads it, and it ends at the first chunk that differs.
+ *
+ * THE SIZE FIRST. It costs nothing, and the source is read to the version's
+ * size and no further, so a file holding the version and more would pass
+ * without it. A phone reads the file whole (`main.ts`, `source`), and it
+ * reaches this only for a version admission has already held to its per-file
+ * ceiling (`applyVersion`), which the size just matched.
+ *
+ * A stop lands at the next chunk, as a push's does. A file that cannot be
+ * read proves nothing, and it is stat-ed again afterwards for the reason
+ * `alreadyCopied` gives: what is recorded is true of the bytes proved.
+ */
+async function sameChunks(
+  context: SyncContext,
+  sids: string[],
+  path: string,
+  occupant: VaultStat,
+  size: number,
+): Promise<VaultStat | null> {
+  if (occupant.size !== size) return null;
+  let count = 0;
+  try {
+    for await (const plaintext of chunkStream(context.host.source(path, size))) {
+      if (context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+      if ((await encryptChunk(context.domainKey, plaintext)).sid !== sids[count++]) return null;
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    return null;
+  }
+  if (count !== sids.length) return null;
+  const after = await context.host.stat(path);
+  if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+  return after;
 }
 
 /**

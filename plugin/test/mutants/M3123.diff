@@ -1,0 +1,12 @@
+# M3123: the per-file CEILING no longer stops a phone before the same-name rule, so it reads a file above it whole to prove it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1827,7 +1827,7 @@
+   if (local && local.versionId === change.version_id) return "skipped";
+ 
+   const policy = context.state.data.policy;
+-  const admission = admit(policy, context.state.localBytes(), manifest.size);
++  const admission = admit({ ...policy, perFileMaxBytes: 0 }, context.state.localBytes(), manifest.size);
+   if (!admission.ok) {
+     const started = context.now();
+     // EXCLUDING NEVER DELETES (issue #161). A version this device will not

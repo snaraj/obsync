@@ -2964,6 +2964,12 @@ export class SyncEngine {
     const entry = await decodeRecordManifest(context, change).catch(() => null);
     // Refused by the ordinary apply, which names why.
     if (entry?.v !== 1) return false;
+    // A FILE HELD FOR THE FEED IS SETTLED IN THE FEED'S TURN (issue #232):
+    // most likely it IS this version, which the apply proves by reading it and
+    // fetching nothing (`adopt`). Parked for the lane, it was downloaded, and
+    // the hold let its name go before the lane's turn: published again, under
+    // a new file id.
+    if (this.expected.has(change.file_id)) return false;
     context.state.data.parked[change.file_id] = { path: entry.path, reason: DOWNLOADING };
     context.host.log(
       `feed decision=backgrounded reason=large bytes=${change.bytes} budget=${LARGE_APPLY_BYTES} file=${change.file_id} seq=${change.seq}`,

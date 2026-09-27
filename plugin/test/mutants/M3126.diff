@@ -1,0 +1,12 @@
+# M3126: the file is not stat-ed again after the proof: a save that landed during it is recorded as the version
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4447,7 +4447,7 @@
+   }
+   if (count !== sids.length) return null;
+   const after = await context.host.stat(path);
+-  if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
++  if (after === null) return null;
+   return after;
+ }
+ 

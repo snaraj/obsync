@@ -1,0 +1,13 @@
+# M3127: a stop inside the proof is swallowed as a failed read, and the stopped device publishes the file
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4441,8 +4441,7 @@
+       if (context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+       if ((await encryptChunk(context.domainKey, plaintext)).sid !== sids[count++]) return null;
+     }
+-  } catch (error) {
+-    if (error instanceof ApiError) throw error;
++  } catch {
+     return null;
+   }
+   if (count !== sids.length) return null;

@@ -1,0 +1,11 @@
+# M3128: a large version held for the feed is parked for the lane again: downloaded, and published under a new id before its turn
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2969,7 +2969,6 @@
+     // fetching nothing (`adopt`). Parked for the lane, it was downloaded, and
+     // the hold let its name go before the lane's turn: published again, under
+     // a new file id.
+-    if (this.expected.has(change.file_id)) return false;
+     context.state.data.parked[change.file_id] = { path: entry.path, reason: DOWNLOADING };
+     context.host.log(
+       `feed decision=backgrounded reason=large bytes=${change.bytes} budget=${LARGE_APPLY_BYTES} file=${change.file_id} seq=${change.seq}`,

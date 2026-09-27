@@ -1,0 +1,12 @@
+# M3124: the LOG LINE drops the chunk count and the duration of the proof
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4392,7 +4392,7 @@
+     ? await alreadyCopied(context, manifest, manifest.path, occupant)
+     : await sameChunks(context, change.sids, manifest.path, occupant, manifest.size);
+   if (verified === null) return false;
+-  const proof = whole ? "identical_bytes" : `identical_chunks chunks=${change.sids.length} duration_ms=${context.now() - started}`;
++  const proof = whole ? "identical_bytes" : "identical_chunks";
+   await recordAt(context, change, manifest.path, verified, undefined, true);
+   context.host.log(
+     `pull path_class=file bytes=${manifest.size} decision=adopted reason=${proof} file=${change.file_id} seq=${change.seq}`,

@@ -490,8 +490,11 @@ test("a copied vault publishes none of the notes the server holds, adopts an old
   for (let i = 0; i < 200; i++) assert.equal(d.state.fileByPath(pathOf(i)).fileId, fileIdOf(i));
   assert.equal(d.host.text("Notes/edited.md"), "first words, then more\n");
   assert.equal(d.host.text("Notes/fresh.md"), "FRESH SENTINEL\n");
-  // Many chunks carry no digest: never adopted by what the vault says about the file.
+  // Many chunks carry no digest: adopted by its chunks, never by what the vault says about the file (#232).
   assert.equal(d.host.logs.some((line) => line.includes(`decision=adopted reason=identical_bytes file=${"b1".repeat(16)}`)), false);
+  assert.ok(d.host.logs.some((line) => /^pull path_class=file bytes=\d+ decision=adopted reason=identical_chunks chunks=2 duration_ms=\d+ file=(b1){16} /.test(line)),
+    d.host.logs.join(" | "));
+  assert.equal(published.includes("Files/big.bin"), false, "the copied attachment was published again");
   assert.deepEqual(d.host.files.get("Files/big.bin").bytes, big);
   assert.ok(d.host.logs.some((line) => /^reconcile decision=holding reason=feed_names held=202 budget_ms=600000$/.test(line)), d.host.logs.join(" | "));
   // Nothing was downloaded for a note adopted by its digest.
