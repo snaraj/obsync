@@ -1,0 +1,12 @@
+# M1933: the start-up pass publishes a retired root again before the feed has delivered the rename
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2411,7 +2411,7 @@
+         // refused with a notice blaming the other device, and the two devices
+         // disagreed about the folder from then on. Held until the feed has
+         // caught up (`releaseRetired`); a pass after that publishes it.
+-        if (!this.caughtUp && context.state.data.retiredRoots[folder] !== undefined) {
++        if (!this.caughtUp && context.state.data.retiredRoots[folder] !== undefined && folder === "") {
+           this.retiredHeld.add(folder);
+           context.host.log(`${label} path_class=folder decision=held reason=retired_root`);
+           continue;

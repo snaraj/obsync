@@ -1,0 +1,12 @@
+# M1934: a retired root the start-up pass held is never published again once the feed has caught up
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2223,7 +2223,7 @@
+     let published = 0;
+     for (const folder of held) {
+       if (context.state.data.retiredRoots[folder] === undefined || context.state.folderByPath(folder) !== undefined) continue;
+-      if ((await context.host.spelling(folder).catch(() => null)) !== folder) continue;
++      if ((await context.host.spelling(folder).catch(() => null)) !== "") continue;
+       this.publishFolder(folder, false, false);
+       this.enqueue(folder);
+       published++;

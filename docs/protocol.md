@@ -351,17 +351,23 @@ in the state that rename creates on the wire, and refused in every other:
 > when the tombstone for THAT folder's own record -- the record this device
 > holds for it, by its file id -- has been applied, no record has been written
 > for that folder since, and no folder record has already used that admission.
-> The first record to arrive in that state takes it; anything else is refused
-> as `decision=not_synced reason=outside_sync_scope`, with one notice naming
-> both spellings.
+> The first record WRITTEN in that state takes it -- one the vault refuses, or
+> one that fails and is retried, does not (plugin 1.1.4); anything else is
+> refused as `decision=not_synced reason=outside_sync_scope`, with one notice
+> naming both spellings.
 
 The retirement is a STATE, not a clock. It lasts until a record is written for
 that folder -- by the feed, by the re-case itself, or by this device's own
-republication of that folder at its next start-up pass, which is what happens
-when the tombstone was a DELETION and no rename follows it -- or until a
-folder record takes it. Inside that window one record one capitalisation off
-that folder is admitted, and the vault's own answer still decides what becomes
-of it. The rule grants a sender no authority it did not have: a device that
+republication of that folder, which is what happens when the tombstone was a
+DELETION that found the folder occupied and no rename follows it. That
+republication waits until the feed has caught up past the tombstone (plugin
+1.1.4): a start-up pass holds it, so a device stopped between the tombstone
+and the rename's record still takes the rename when it starts. When the
+tombstone REMOVED the directory, nothing republishes it and the retirement
+stays armed but inert: a record it admits names a folder this vault no longer
+holds, and the vault's answer refuses it. Inside the window one record one
+capitalisation off that folder is admitted, and the vault's own answer still
+decides what becomes of it. The rule grants a sender no authority it did not have: a device that
 can publish a folder record can rename that folder in any case. What it takes
 away is a SECOND device's folder being read as this device's rename.
 

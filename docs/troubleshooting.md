@@ -764,8 +764,8 @@ capitals, `team docs` with your current notes and `Team docs` with copies that
 no longer change, while another device shows one.
 
 **Why it happens.** A Mac or a Windows computer normally treats `Team docs`
-and `team docs` as ONE folder; Linux and Android keep them as two. A version
-before 1.1.0 could send a capitals-only rename as NEW notes
+and `team docs` as ONE folder; Linux, Android, an iPhone and an iPad keep them
+as two. A version before 1.1.0 could send a capitals-only rename as NEW notes
 instead of a rename, so a device that keeps the two apart kept both. From
 1.1.0 a capitals-only rename is sent as a rename, and devices that fold
 capitals rename the folder itself.

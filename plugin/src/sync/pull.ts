@@ -544,8 +544,12 @@ export async function decodeRecordManifest(
  * SO THE ADMISSION RULE IS: the tombstone for the selected folder's own
  * folder file id has been applied, no record has been written for that folder
  * since (`state.ts`, `setFolder`), and no folder record has used that
- * admission since -- the retirement is spent by the first record that takes
- * it. Anything else is refused exactly as it was before the tolerance existed
+ * admission since -- the retirement is spent by the first record WRITTEN
+ * under it (`recaseFolder`), never here: decoding a record is not applying
+ * it, and a re-case the disk refused once -- a file in the folder held open
+ * -- is parked and asked again, where a retirement spent at decode read its
+ * own retry as a second folder and refused it for good (issue #127).
+ * Anything else is refused exactly as it was before the tolerance existed
  * (`decision=not_synced reason=outside_sync_scope`), with one notice naming
  * both spellings. A whole-vault device has no selection and no tolerance to
  * narrow: every folder record is in its scope by the folder rule itself.
@@ -555,13 +559,7 @@ function admitFolderRecord(context: SyncContext, entryPath: string): void {
   const folders = context.state.data.syncFolders;
   if (inFolderScope(path, folders)) return;
   const selected = caseTwinRoot(path, folders);
-  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) {
-    // SPENT HERE. The record the retirement was waiting for has arrived, so a
-    // second record one capitalisation off that folder is a twin again --
-    // including the twin a case-sensitive sender publishes moments later.
-    delete context.state.data.retiredRoots[selected];
-    return;
-  }
+  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) return;
   if (selected !== null) notifyFolderTwin(context, selected, path);
   throw new VaultPathError("outside_sync_scope");
 }
@@ -1138,6 +1136,10 @@ async function recaseFolder(
 ): Promise<ApplyResult> {
   const prefix = `${from}/`;
   const under = (path: string): string => to + path.slice(from.length);
+  // The retirement this record was admitted by, named while the selection
+  // still names it: the host reports the rename below to this plugin's own
+  // handler, which moves the selection before the call returns.
+  const retired = caseTwinRoot(to, context.state.data.syncFolders);
   const files = Object.keys(context.state.data.files).filter((path) => path.startsWith(prefix));
   const folders = Object.keys(context.state.data.folders)
     .filter((path) => path === from || path.startsWith(prefix));
@@ -1207,6 +1209,10 @@ async function recaseFolder(
     context.state.forgetFolder(folder);
   }
   context.state.setFolder(to, { fileId: change.file_id, versionId: change.version_id });
+  // SPENT HERE, WITH THE RECORD IT ADMITTED (`admitFolderRecord`, issue
+  // #127): a second record one capitalisation off this folder is a twin again
+  // -- including the twin a case-sensitive sender publishes moments later.
+  if (retired !== null) delete context.state.data.retiredRoots[retired];
   await context.state.save();
   context.host.log(
     `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,
@@ -1689,10 +1695,12 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       // The vault answers for the name this version wants with a DIFFERENT
       // spelling of it, which is a host that folds case and a directory this
       // record may not re-case. Nothing is moved and nothing is recorded.
+      // The notice asks the server who sent the move, so it is given BEFORE
+      // the decision is logged: whoever reads the decision finds the user told.
+      await notifyFolderCase(context, folderOf(manifest.path), change.device_id);
       context.host.log(
         `pull path_class=file decision=case_move_refused reason=folder_case file=${change.file_id} seq=${change.seq}`,
       );
-      await notifyFolderCase(context, folderOf(manifest.path), change.device_id);
       return "refused";
     }
   }

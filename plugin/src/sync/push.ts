@@ -284,12 +284,12 @@ export async function serialPublication<T>(context: SyncContext, path: string, p
   finally { if (paths.get(path) === current) paths.delete(path); }
 }
 
-export async function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
-  // Resolved BEFORE it is serialised, so a push of either spelling of one
-  // recorded note waits for the other rather than racing it (#166).
-  const at = await recordedSpelling(context, path);
+export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
   // Resume selects and preserves heads only after an earlier upload is acknowledged.
-  return serialPublication(context, at, async () => publishFile(context, at, force, typeof over === "function" ? await over() : over));
+  // The name is resolved BEFORE it is serialised, so a push of either spelling
+  // of one recorded note waits for the other rather than racing it (#166).
+  return recordedSpelling(context, path).then((at) =>
+    serialPublication(context, at, async () => publishFile(context, at, force, typeof over === "function" ? await over() : over)));
 }
 
 /**

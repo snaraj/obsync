@@ -1,12 +1,15 @@
-# M97: the receiver admits a case-twin of a selected folder with no tombstone behind it
+# M1932: a received folder record spends the retirement when it is decoded, before the vault is asked
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -559,7 +559,7 @@
+@@ -559,7 +559,10 @@
    const folders = context.state.data.syncFolders;
    if (inFolderScope(path, folders)) return;
    const selected = caseTwinRoot(path, folders);
 -  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) return;
-+  if (selected !== null) return;
++  if (selected !== null && context.state.data.retiredRoots[selected] !== undefined) {
++    delete context.state.data.retiredRoots[selected];
++    return;
++  }
    if (selected !== null) notifyFolderTwin(context, selected, path);
    throw new VaultPathError("outside_sync_scope");
  }

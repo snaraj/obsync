@@ -638,6 +638,14 @@ export class SyncEngine {
   private barrierPath: string | null = null;
   /** Failed attempts at one folder record's post, against `FOLDER_POST_TRIES`. */
   private readonly folderRetries = new Map<string, number>();
+  /**
+   * Selected folders whose record a tombstone retired and that the start-up
+   * pass did not publish again, because the feed may still carry the record
+   * that renames them (`survey`, issue #127); and whether the feed has caught
+   * up since this start, which is when they are settled (`releaseRetired`).
+   */
+  private readonly retiredHeld = new Set<string>();
+  private caughtUp = false;
   /** Echo marks already armed at the previous scan: what this one expires. */
   private echoSweep = new Set<string>();
   /** The failed-folder-post notice is shown once per engine, like every other. */
@@ -825,6 +833,8 @@ export class SyncEngine {
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
     };
+    this.caughtUp = false;
+    this.retiredHeld.clear();
     this.running = true;
     host.log(
       `engine start platform=${host.platform} concurrency=${this.contextValue.concurrency} seq=${state.data.lastSeq}`,
@@ -2657,6 +2667,7 @@ export class SyncEngine {
       }
     });
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
+    if (!this.caughtUp && page.seq >= page.head_seq) await this.releaseRetired(context);
     if (!this.running) {
       await context.state.save();
       return;
@@ -2669,6 +2680,31 @@ export class SyncEngine {
     // happens to carry a change -- which kept every device reading `offline —
     // retrying` for minutes after its server was back.
     this.status(this.resting());
+  }
+
+  /**
+   * The feed has caught up with the journal as it stood, so a rename whose
+   * tombstone this device applied before it stopped has arrived by now if it
+   * ever will. A retired root the start-up pass held (`survey`, issue #127)
+   * that no record took, and that this vault still shows under that name, is
+   * the other shape -- a DELETION that found the folder occupied -- and is
+   * published again now, which ends its retirement (`docs/protocol.md`).
+   */
+  private async releaseRetired(context: SyncContext): Promise<void> {
+    this.caughtUp = true;
+    const held = [...this.retiredHeld];
+    this.retiredHeld.clear();
+    let published = 0;
+    for (const folder of held) {
+      if (context.state.data.retiredRoots[folder] === undefined || context.state.folderByPath(folder) !== undefined) continue;
+      if ((await context.host.spelling(folder).catch(() => null)) !== folder) continue;
+      this.publishFolder(folder, false, false);
+      this.enqueue(folder);
+      published++;
+    }
+    if (held.length > 0) {
+      context.host.log(`feed path_class=folder decision=released reason=retired_root held=${held.length} published=${published}`);
+    }
   }
 
   /**
@@ -2845,6 +2881,18 @@ export class SyncEngine {
         present.add(folder);
         if (casedFolders.has(folder)) continue;
         if (context.state.folderByPath(folder) !== undefined) continue;
+        // A RETIRED ROOT WAITS FOR THE FEED (issue #127). A device stopped
+        // between a selected folder's tombstone and the record that renames
+        // it published the folder again here, and that record, written, ended
+        // the retirement: the rename then arrived as a second folder, was
+        // refused with a notice blaming the other device, and the two devices
+        // disagreed about the folder from then on. Held until the feed has
+        // caught up (`releaseRetired`); a pass after that publishes it.
+        if (!this.caughtUp && context.state.data.retiredRoots[folder] !== undefined) {
+          this.retiredHeld.add(folder);
+          context.host.log(`${label} path_class=folder decision=held reason=retired_root`);
+          continue;
+        }
         // A FOLDER THAT MERELY HAS NO RECORD HERE IS NOT ONE MADE HERE: a
         // tombstone that found it occupied may have kept it, and bringing it
         // back to the devices that deleted it is not this pass's to decide

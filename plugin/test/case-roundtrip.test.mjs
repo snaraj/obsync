@@ -308,3 +308,132 @@ test("a folder a tombstone found occupied is not brought back to the device that
   const record = server.files.get(await c.folderFileId(keys.manifestKey, "Team docs"));
   assert.equal(record.versions.find((version) => version.version_id === record.heads[0]).deleted, true, story(server, a, b));
 });
+
+// --- the retirement a re-case of a SELECTED folder spends (#127) ----------
+
+const FOREIGN = "ffffffffffffffffffffffffffffffff";
+const DOMAIN = "0123456789abcdef0123456789abcdef";
+
+/** A peer's folder record, exactly as `pushFolder` builds one. */
+const folderRecord = async (server, keys, path, { deleted = false, parents = [] } = {}) =>
+  server.publishManifest({
+    fileId: await c.folderFileId(keys.manifestKey, path),
+    manifest: { v: 2, kind: "directory", path, domain: DOMAIN, size: 0, chunks: [], sha256: "", deleted },
+    sids: [],
+    parents,
+    deviceId: FOREIGN,
+    manifestKey: keys.manifestKey,
+    bytes: 0,
+  });
+
+test("a re-case of the selected folder whose rename fails is admitted again when it is retried (#127)", async () => {
+  const r = await rig({ caseSensitive: false });
+  r.state.data.syncFolders = ["Team docs"];
+  r.host.seed("Team docs/One.md", BODY, 1000);
+  await pushFile(r.context, "Team docs/One.md");
+  const created = await folderRecord(r.server, r.keys, "Team docs");
+  assert.equal(await applyChange(r.context, created), "applied");
+  const retired = await folderRecord(r.server, r.keys, "Team docs", { deleted: true, parents: [created.version_id] });
+  assert.equal(await applyChange(r.context, retired), "skipped", "the folder held a note, so its tombstone keeps it");
+  const recased = await folderRecord(r.server, r.keys, "team docs");
+
+  // The rename is refused by the disk once -- a file in it held open by
+  // another program -- and the feed parks the record and asks again later.
+  const moveFolder = r.host.moveFolder.bind(r.host);
+  r.host.moveFolder = async () => {
+    r.host.moveFolder = moveFolder;
+    throw Object.assign(new Error("fixture: resource busy"), { code: "EBUSY" });
+  };
+  await assert.rejects(applyChange(r.context, recased));
+  assert.deepEqual(Object.keys(r.state.data.retiredRoots), ["Team docs"], "a rename that never happened spent the retirement");
+
+  assert.equal(await applyChange(r.context, recased), "applied", r.host.logs.join(" | "));
+  assert.deepEqual(r.state.data.syncFolders, ["team docs"], "the selection did not follow the retried re-case");
+  assert.deepEqual([...r.host.files.keys()], ["team docs/One.md"], "the directory was not re-cased");
+  assert.deepEqual(r.host.notices, [], `the retried re-case was refused as a second folder: ${r.host.notices.join(" | ")}`);
+  assert.deepEqual(r.state.data.retiredRoots, {}, "the retirement outlived the record written under it");
+});
+
+/** Two notes under a folder the RECEIVING device selects, on two devices that fold case. */
+async function selected(t) {
+  const devices = await pair(t, "immediate", { isMobileB: false, caseSensitiveA: false, caseSensitiveB: false });
+  const { timers, a, b } = devices;
+  b.state.data.syncFolders = ["Team docs"];
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md") &&
+    b.state.folderByPath("Team docs") !== undefined);
+  return { ...devices, ids: ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId) };
+}
+
+test("a device stopped between a folder's tombstone and its re-cased record follows the rename when it starts (#127)", async (t) => {
+  const { server, timers, a, b, ids, keys } = await selected(t);
+  const retiredId = await c.folderFileId(keys.manifestKey, "Team docs");
+  await b.engine.stopAndWait();
+
+  a.host.renameFolder("Team docs", "team docs");
+  // The sender's whole rename on the wire: the old spelling's tombstone, the
+  // new record, and a move of each note.
+  await timers.run(STEP_MS, () => server.journal.some((frame) => frame.file_id === retiredId && frame.deleted) &&
+    ids.every((id) => server.journal.filter((frame) => frame.file_id === id).length >= 2));
+  // The receiving device applied the old spelling's tombstone and stopped
+  // before the record that follows it.
+  const tombstone = server.journal.find((frame) => frame.file_id === retiredId && frame.deleted);
+  assert.equal(await applyChange(b.engine.context, tombstone), "skipped", "the tombstone removed a folder that holds notes");
+  b.state.data.lastSeq = tombstone.seq;
+  b.state.data.feedMark = {
+    seq: tombstone.seq, fileId: tombstone.file_id, versionId: tombstone.version_id, ts: tombstone.ts, replay: false,
+  };
+  await b.state.save();
+  assert.deepEqual(Object.keys(b.state.data.retiredRoots), ["Team docs"], "the tombstone opened no window");
+
+  // Its next start reconciles BEFORE the feed says anything, which is what
+  // used to republish the folder and close the window on the rename.
+  let open = null;
+  const gate = new Promise((resolve) => { open = resolve; });
+  const changes = b.transport.changes.bind(b.transport);
+  b.transport.changes = async (...args) => {
+    await gate;
+    return changes(...args);
+  };
+  const posts = countPosts(b);
+  await b.engine.start();
+  await timers.run(STEP_MS);
+  open();
+  await timers.run(STEP_MS, () => b.state.data.syncFolders[0] === "team docs" && followed(server, b, "team docs", ids))
+    .catch(() => undefined);
+
+  assert.deepEqual(b.state.data.syncFolders, ["team docs"], `the selection did not follow the rename: ${story(server, a, b)}`);
+  assert.deepEqual([...b.host.files.keys()].sort(), ["team docs/One.md", "team docs/Two.md"], story(server, a, b));
+  assert.deepEqual(posts, [], `the start published the retired folder again: ${story(server, a, b)}`);
+  assert.deepEqual(b.host.notices, [], `the rename was refused as a second folder: ${b.host.notices.join(" | ")}`);
+  assert.deepEqual(b.state.data.retiredRoots, {}, story(server, a, b));
+});
+
+test("a folder a tombstone kept is published again once the feed has caught up, and the window closes (#127)", async (t) => {
+  const { server, timers, a, b, keys } = await selected(t);
+  b.host.files.set("Team docs/.kept", { bytes: enc("not synced\n"), mtime: 1000 });
+  a.host.removeFolder("Team docs");
+  await timers.run(STEP_MS, () => b.state.fileByPath("Team docs/One.md") === undefined &&
+    b.state.fileByPath("Team docs/Two.md") === undefined && b.state.data.retiredRoots["Team docs"] !== undefined);
+
+  // A deletion, with no rename behind it: the next start holds the folder
+  // until the feed has shown that nothing follows, then publishes it.
+  b.engine.stop();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => {
+    server.releaseFeed();
+    return b.state.data.retiredRoots["Team docs"] === undefined;
+  }).catch(() => undefined);
+  assert.deepEqual(b.state.data.retiredRoots, {}, `the retirement outlived the start that settles it: ${story(server, a, b)}`);
+  assert.equal(a.host.hasFolder("Team docs"), false, `the deleted folder came back: ${story(server, a, b)}`);
+
+  // And a folder one capitalisation off it is a second folder again.
+  await folderRecord(server, keys, "team docs");
+  await timers.run(STEP_MS, () => b.host.notices.length > 0).catch(() => undefined);
+  assert.deepEqual(b.state.data.syncFolders, ["Team docs"], `a case-twin moved the selection: ${story(server, a, b)}`);
+  assert.equal(b.host.hasFolder("Team docs"), true, story(server, a, b));
+  assert.equal(b.host.notices.filter((notice) => notice.includes("differ only in capitalisation")).length, 1, b.host.notices.join(" | "));
+});
