@@ -1087,7 +1087,11 @@ long poll and needs its timeout raised.
    keystrokes the other had not seen), the two heads share two newest
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to
-   at most three levels, each one single-chunk text.
+   at most three levels, each one single-chunk text. A base found once is
+   remembered (issue #227), because two versions never change: two people
+   typing make each round's criss-cross one level deeper than the last, and a
+   round walks only the levels not found before. The remembered bases are
+   together no longer than one merge input.
 
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor

@@ -813,6 +813,44 @@ test("typing beyond a criss-cross head is published before another merge of that
 });
 
 /**
+ * Two typists, on the first line and the last, who each resolve every fork at
+ * once while holding a keystroke the other has not seen: each round is a
+ * criss-cross one level above the last. `climb(n)` adds `n` rounds and leaves
+ * this device on its own side of the last one, that side's text in the note.
+ * Each word is PREPENDED, so the append-only rule cannot resolve against an
+ * older base: this fixture must exercise recursive bases. `filler` is the
+ * second line, which nobody edits.
+ */
+async function ladder(r, path = NOTE, filler = "two") {
+  const lines = (one, five) => `${one}\n${filler}\nthree\nfour\n${five}\n`;
+  r.host.seed(path, lines("one", "five"), 1000);
+  const base = await pushFile(r.context, path);
+  let mtime = 1000;
+  const publish = (text, parents) => r.server.publish({
+    fileId: base.fileId, path, bytes: enc(text), mtime: (mtime += 1000), parents,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  let [one, five] = ["ONE", "FIVE"];
+  let ours = await publish(lines(one, "five"), [base.versionId]);
+  let theirs = await publish(lines("one", five), [base.versionId]);
+  let level = 0;
+  return async (rounds) => {
+    for (const top = level + rounds; level < top;) {
+      level++;
+      const pair = [ours.version_id, theirs.version_id];
+      ours = await publish(lines(`a${level} ${one}`, five), pair);
+      theirs = await publish(lines(one, `b${level} ${five}`), pair);
+      [one, five] = [`a${level} ${one}`, `b${level} ${five}`];
+    }
+    const mine = r.host.seed(path, lines(one, five.replace(/^b\d+ /, "")), mtime);
+    r.state.setFile(path, {
+      fileId: base.fileId, versionId: ours.version_id, mtime, size: mine.length, sha256: await sidDigest(ours.sids),
+    });
+    return { ours, theirs, one, five, lines, publish, fileId: base.fileId };
+  };
+}
+
+/**
  * AND AGAIN. The two merges of that pair can be merged differently in turn,
  * each device holding one more keystroke, and then the two ancestors of the
  * next pair are themselves a criss-cross: their base is their own two
@@ -822,28 +860,9 @@ test("typing beyond a criss-cross head is published before another merge of that
  * shapes, so three levels merge and a fourth is settled by rule.
  */
 test("merges of merges of one pair merge again, three levels down and no further", async () => {
-  const lines = (one, five) => `${one}\ntwo\nthree\nfour\n${five}\n`;
   for (const levels of [3, 4]) {
     const r = await rig();
-    r.host.seed(NOTE, lines("one", "five"), 1000);
-    const base = await pushFile(r.context, NOTE);
-    let mtime = 1000;
-    const publish = (text, parents) => foreign(r, base.fileId, text, parents, (mtime += 1000));
-    let [one, five] = ["ONE", "FIVE"];
-    let ours = await publish(lines(one, "five"), [base.versionId]);
-    let theirs = await publish(lines("one", five), [base.versionId]);
-    // Prepend each word so the append-only rule cannot resolve directly
-    // against an older base: this fixture must exercise recursive bases.
-    for (let level = 1; level <= levels; level++) {
-      const pair = [ours.version_id, theirs.version_id];
-      ours = await publish(lines(`a${level} ${one}`, five), pair);
-      theirs = await publish(lines(one, `b${level} ${five}`), pair);
-      [one, five] = [`a${level} ${one}`, `b${level} ${five}`];
-    }
-    const mine = r.host.seed(NOTE, lines(one, five.replace(/^b\d+ /, "")), mtime);
-    r.state.setFile(NOTE, {
-      fileId: base.fileId, versionId: ours.version_id, mtime, size: mine.length, sha256: await sidDigest(ours.sids),
-    });
+    const { theirs, one, five, lines } = await (await ladder(r))(levels);
 
     const result = await applyChange(r.context, theirs);
     if (levels === 3) {
@@ -856,6 +875,77 @@ test("merges of merges of one pair merge again, three levels down and no further
     }
     assert.ok(!r.host.logs.some((line) => line.includes("level=4")), pulls(r.host));
   }
+});
+
+/**
+ * THE ROUND AFTER (issue #227). Two people typing on different lines, each
+ * device resolving every fork at once: this device merges a pair three levels
+ * down, and meanwhile the phone merged that SAME pair holding its next
+ * keystroke while the desktop typed its own onto its merge. The next fork's
+ * base is that pair's base one level down, so this walk is four levels deep.
+ * Walked from the bottom again it was refused, and the fork was settled by
+ * rule: one device's saved typing went into a copy and out of the note it was
+ * being typed in (the co-typing run on a busy CI machine, 2026-09-27). The
+ * base of that pair was found one round ago, and a version never changes.
+ */
+test("a criss-cross one level deeper every round keeps merging while both type (#227)", async () => {
+  const r = await rig();
+  const { ours, theirs, one, five, lines, publish, fileId } = await (await ladder(r))(3);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  const phone = await publish(lines(one, `b4 ${five}`), [ours.version_id, theirs.version_id]);
+  r.host.seed(NOTE, lines(`a4 ${one}`, five), 9000);
+  await pushFile(r.context, NOTE);
+
+  assert.equal(await applyChange(r.context, phone), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(`a4 ${one}`, `b4 ${five}`));
+  assert.deepEqual(copies(r.host), []);
+  const file = r.server.files.get(fileId);
+  assert.equal(file.heads.length, 1);
+  assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+  assert.ok(r.host.logs.some((line) => /reason=criss_cross level=2 ok=true found=before/.test(line)), pulls(r.host));
+  assert.ok(!r.host.logs.some((line) => line.includes("ok=false")), pulls(r.host));
+});
+
+/**
+ * The bound is on the levels ONE resolution walks, and a level found before is
+ * no walk: a device that resolved the first round and then met the fourth
+ * finds the rest at the bound itself. A device that never met the first round
+ * still settles a fourth by rule (above).
+ */
+test("a level found in an earlier round is not walked again, even at the bound (#227)", async () => {
+  const r = await rig();
+  const climb = await ladder(r);
+  assert.equal(await applyChange(r.context, (await climb(1)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(3);
+
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+});
+
+/**
+ * What is remembered is bounded by what one merge holds: the newest bases,
+ * together no longer than one chunk of text, the oldest forgotten first. A
+ * note whose base fills a chunk leaves no room for the one found before it,
+ * which is then walked from the bottom again, as a device that never met it.
+ */
+test("remembered bases hold one merge input's worth, the oldest forgotten first (#227)", async () => {
+  const r = await rig();
+  // A 4 KiB base, then one 2 KiB short of a chunk: together over it, while
+  // every text of either ladder stays inside one chunk.
+  const small = await ladder(r, NOTE, "t".repeat(4096));
+  assert.equal(await applyChange(r.context, (await small(1)).theirs), "merged", pulls(r.host));
+  const BIG = "Notes/Big.md";
+  const big = await ladder(r, BIG, "x".repeat(CHUNK_MAX - 2048));
+  assert.equal(await applyChange(r.context, (await big(1)).theirs), "merged", pulls(r.host));
+  const { theirs } = await small(3);
+
+  assert.notEqual(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
+  // The newest is kept: the big note's next rounds find its first one.
+  assert.equal(await applyChange(r.context, (await big(3)).theirs), "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
 });
 
 /**

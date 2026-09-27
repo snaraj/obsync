@@ -1,0 +1,14 @@
+# M3006: a base found before is used without its log line
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3288,10 +3288,6 @@
+   const pair = [left, right].sort().join(" ");
+   const known = bases.get(context)?.get(pair);
+   if (known !== undefined) {
+-    context.host.log(
+-      `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=true found=before ` +
+-        `file=${change.file_id} seq=${change.seq}`,
+-    );
+     return known;
+   }
+   const parents = parentsFrom(file.versions);

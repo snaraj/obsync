@@ -3273,8 +3273,8 @@ async function manifestOf(context: SyncContext, file: FileRecord, change: Change
  * their own ancestor -- what both devices would have posted had neither been
  * typing. When the two merges were themselves merged differently, that pair
  * is a criss-cross too, and its base is found the same way one level down, at
- * most `CRISS_CROSS_LEVELS` of them. Single-chunk text only, and a pair that
- * does not merge cleanly is no base at all.
+ * most `CRISS_CROSS_LEVELS` of them not found before (`bases`). Single-chunk
+ * text only, and a pair that does not merge cleanly is no base at all.
  */
 async function crissCrossBase(
   context: SyncContext,
@@ -3285,6 +3285,15 @@ async function crissCrossBase(
   firstText: string,
   levels = CRISS_CROSS_LEVELS,
 ): Promise<string | null | false> {
+  const pair = [left, right].sort().join(" ");
+  const known = bases.get(context)?.get(pair);
+  if (known !== undefined) {
+    context.host.log(
+      `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=true found=before ` +
+        `file=${change.file_id} seq=${change.seq}`,
+    );
+    return known;
+  }
   const parents = parentsFrom(file.versions);
   const below = reachable(parents, first);
   const fromLeft = reachable(parents, left);
@@ -3312,15 +3321,39 @@ async function crissCrossBase(
     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
       `file=${change.file_id} seq=${change.seq}`,
   );
-  return merged.ok ? merged.text : false;
+  if (!merged.ok) return false;
+  remember(context, pair, merged.text);
+  return merged.text;
 }
 
 /**
- * How deep a criss-cross is followed. Each level is one more fork both devices
- * resolved at once, each holding a keystroke; the chunks it downloads and holds
- * are bounded by it, because the version graph is another device's to shape.
+ * How deep one resolution follows a criss-cross it has not met before. Each
+ * level is one more fork both devices resolved at once, each holding a
+ * keystroke; the chunks it downloads and holds are bounded by it, because the
+ * version graph is another device's to shape.
  */
 const CRISS_CROSS_LEVELS = 3;
+
+/**
+ * THE BASES ALREADY FOUND, by the two versions they are the base of (issue
+ * #227). Two people typing on two devices keep resolving one fork each at
+ * once, so each round is a criss-cross one level above the last, and the pair
+ * one level down is a pair this device resolved the round before. Walked from
+ * the bottom every round, the walk grew a level a round until
+ * `CRISS_CROSS_LEVELS` refused it, and the note was settled by rule: one
+ * device's typing went into a copy while that person was still typing. A
+ * version never changes, so neither does the base of two of them: a round walks
+ * only the levels not found yet, and the bound is on those. The newest are
+ * kept, together no longer than one merge input.
+ */
+const bases = new WeakMap<SyncContext, Map<string, string>>();
+
+function remember(context: SyncContext, pair: string, text: string): void {
+  const found = bases.get(context) ?? new Map<string, string>();
+  bases.set(context, found.set(pair, text));
+  const held = (): number => [...found.values()].reduce((sum, base) => sum + base.length, 0);
+  while (held() > CHUNK_MAX) found.delete(found.keys().next().value as string);
+}
 
 /**
  * The merge breaker. One fork of one note costs at most one merge per device,
