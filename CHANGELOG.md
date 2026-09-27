@@ -307,7 +307,10 @@ refuses to rename by capitals alone. The phone now renames through a hidden
 name in the same folder, with Obsidian's own rename twice, so nothing is
 copied, sent back or deleted. If the phone stops between the two steps, the
 next start puts the note back before anything else and the rename is made
-again. Obsidian on Android still cannot rename by capitals alone itself:
+again. Obsidian's file list on the phone shows the note once, under its new
+capitals; an old-capitals entry it could briefly show is removed, and
+deleting such an entry asks first instead of deleting the note on every
+device. Obsidian on Android still cannot rename by capitals alone itself:
 rename on another device, or to a different name first (#219).
 
 ### Pairing, setup and settings
