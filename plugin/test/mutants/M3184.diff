@@ -1,0 +1,11 @@
+# M3184: the versions listed are not remembered
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2418,7 +2418,6 @@
+     file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
+     known.add(version.version_id);
+   };
+-  for (const version of file.versions) hold(context, file.file_id, version);
+   let recalled = 0;
+   while (true) {
+     const parents = parentsFrom(file.versions);

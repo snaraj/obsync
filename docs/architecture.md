@@ -1100,7 +1100,17 @@ long poll and needs its timeout raised.
    remembered (issue #227), because two versions never change: two people
    typing make each round's criss-cross one level deeper than the last, and a
    round walks only the levels not found before. The remembered bases are
-   together no longer than one merge input.
+   together no longer than one merge input. A base below the versions the
+   server lists is read a version at a time, at most 64 a resolution and
+   never below the two branches' shared frontier; a version read or listed
+   once is remembered too (issue #227). Nothing is written under an editor
+   someone is typing in, so two people typing keep a note forked for as long
+   as both type and its base sinks a version a save: a resolution reads only
+   what none before it did, and the remembered versions are together no
+   longer than one merge input. A device whose own head lost the rule keeps
+   its record on that head until the kept head is written: while someone
+   types there the write waits, and the next save is an edit of the head the
+   note still holds.
 
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor

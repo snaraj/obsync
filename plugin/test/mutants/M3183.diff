@@ -1,0 +1,11 @@
+# M3183: a version read is not remembered
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2468,7 +2468,6 @@
+       }
+       // Preserve child-before-parent order, including a parent fetched from
+       // the other branch in an earlier round. Timestamp order is not ancestry.
+-      hold(context, file.file_id, version);
+       insert(version);
+     }
+   }

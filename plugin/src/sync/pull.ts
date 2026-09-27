@@ -2402,29 +2402,47 @@ export function commonAncestor(
  * the two branches down to their shared frontier, fetching omitted records
  * through the existing version endpoint. Never walk below that frontier.
  * A missing retained version or an exhausted read budget keeps the existing
- * conflict fallback; neither permits inventing a merge base. */
+ * conflict fallback; neither permits inventing a merge base. A version an
+ * earlier resolution read or listed costs no read (`ancestry`, issue #227). */
 async function completeMergeAncestry(
   context: SyncContext, file: FileRecord, left: string, right: string,
 ): Promise<void> {
   const started = context.now(), budget = 64;
   const original = [...file.versions];
   const requested = new Set<string>();
+  const known = new Set(file.versions.map(version => version.version_id));
+  const insert = (version: FileRecord["versions"][number]): void => {
+    // Searched for only when a parent is here: a remembered chain is one pass.
+    const before = version.parents.some(parent => known.has(parent))
+      ? file.versions.findIndex(candidate => version.parents.includes(candidate.version_id)) : -1;
+    file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
+    known.add(version.version_id);
+  };
+  for (const version of file.versions) hold(context, file.file_id, version);
+  let recalled = 0;
   while (true) {
     const parents = parentsFrom(file.versions);
     const a = reachable(parents, left), b = reachable(parents, right);
-    const known = new Set(file.versions.map(version => version.version_id));
     const pending = new Map<string, number>(), visited = new Set<string>();
     const queue = [{ id: left, depth: 0 }, { id: right, depth: 0 }];
+    const before = recalled;
     for (let cursor = 0; cursor < queue.length; cursor++) {
       const { id, depth } = queue[cursor] as { id: string; depth: number };
       if (visited.has(id)) continue;
       visited.add(id);
-      if (!known.has(id)) {
+      const held = known.has(id) ? undefined : ancestry.get(context)?.versions.get(`${file.file_id} ${id}`)?.version;
+      if (held !== undefined) {
+        insert(held);
+        recalled++;
+        queue.push(...held.parents.map(parent => ({ id: parent, depth: depth + 1 })));
+      } else if (!known.has(id)) {
         pending.set(id, depth);
       } else if (id === left || id === right || !a.has(id) || !b.has(id)) {
         queue.push(...parents(id).map(parent => ({ id: parent, depth: depth + 1 })));
       }
     }
+    // What was recalled moves the frontier: find it again before any read.
+    if (recalled > before) continue;
     if (pending.size === 0) break;
     // Catch up the shallower branch before reading beyond the deeper one.
     const nearest = Math.min(...pending.values());
@@ -2450,11 +2468,43 @@ async function completeMergeAncestry(
       }
       // Preserve child-before-parent order, including a parent fetched from
       // the other branch in an earlier round. Timestamp order is not ancestry.
-      const before = file.versions.findIndex(candidate => version.parents.includes(candidate.version_id));
-      file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
+      hold(context, file.file_id, version);
+      insert(version);
     }
   }
-  if (requested.size > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
+  if (requested.size + recalled > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
+}
+
+/**
+ * THE ANCESTRY ALREADY READ, by file and version (issue #227). A note two
+ * people type in stays forked for as long as both type: nothing is written
+ * under an editor someone is typing in (`main.ts`, `assertEditorIdle`), so
+ * neither device merges, each publishes a version a save, and the fork's base
+ * sinks below the ten versions the server lists. Every resolution read that
+ * ancestry again until the read budget refused it, and the fork was settled
+ * by rule: one person's typing went into a copy while they typed (two
+ * desktops, 2026-09-27). A version never changes, so what one resolution read
+ * or listed is the next one's for nothing, and the budget bounds what a
+ * resolution reads that none before it did. The oldest are forgotten first,
+ * together no longer than one merge input, as `bases` are.
+ */
+const ancestry = new WeakMap<SyncContext, {
+  versions: Map<string, { version: FileRecord["versions"][number]; size: number }>; held: number;
+}>();
+
+function hold(context: SyncContext, fileId: string, version: FileRecord["versions"][number]): void {
+  const memory = ancestry.get(context) ?? { versions: new Map(), held: 0 };
+  ancestry.set(context, memory);
+  const key = `${fileId} ${version.version_id}`;
+  if (memory.versions.has(key)) return;
+  const size = JSON.stringify(version).length;
+  memory.versions.set(key, { version, size });
+  memory.held += size;
+  for (const [oldest, forgotten] of memory.versions) {
+    if (memory.held <= CHUNK_MAX) break;
+    memory.versions.delete(oldest);
+    memory.held -= forgotten.size;
+  }
 }
 
 /**
@@ -3199,7 +3249,17 @@ async function converge(
         await release();
         return deferred(context, change, "saved_during_copy");
       }
-      const landed = await landedAt(context, await writer.commit(theirManifest.mtime));
+      // A write refused -- an editor someone is typing in takes none (#227) --
+      // leaves the note holding the losing head and what was typed on it, and
+      // so its record: claimed, the next save was published as a child of the
+      // kept head, taking that head's text out of the note on every device.
+      const started = context.now();
+      const landed = await landedAt(context, await writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
+        await release();
+        context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +
+          `duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+        throw error;
+      }));
       tally.left = stamp(landed);
       await recordAt(context, change, localPath, landed);
     } catch (error) {

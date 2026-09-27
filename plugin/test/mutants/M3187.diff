@@ -1,0 +1,12 @@
+# M3187: the newest remembered version is forgotten first
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2500,7 +2500,7 @@
+   const size = JSON.stringify(version).length;
+   memory.versions.set(key, { version, size });
+   memory.held += size;
+-  for (const [oldest, forgotten] of memory.versions) {
++  for (const [oldest, forgotten] of [...memory.versions].reverse()) {
+     if (memory.held <= CHUNK_MAX) break;
+     memory.versions.delete(oldest);
+     memory.held -= forgotten.size;

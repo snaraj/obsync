@@ -1,0 +1,12 @@
+# M3185: past what was recalled, versions are read before the frontier is found again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2442,7 +2442,7 @@
+       }
+     }
+     // What was recalled moves the frontier: find it again before any read.
+-    if (recalled > before) continue;
++    if (recalled > before && false) continue;
+     if (pending.size === 0) break;
+     // Catch up the shallower branch before reading beyond the deeper one.
+     const nearest = Math.min(...pending.values());

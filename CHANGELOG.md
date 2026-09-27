@@ -212,6 +212,17 @@ keeps combining both people's typing for as long as they type, with no copy.
 Both typing devices need 1.1.4; a 1.1.3 device still settles by rule.
 Desktop and mobile (#227).
 
+**And when both type for a long time without a pause.** obsync writes the
+other device's typing into a note only once the typing there pauses. When two
+people typed without a pause for more than a few seconds, each device had to
+look further back through the note's history than it allows, gave up, and
+settled the note by rule: dozens of conflict copies, and one person's typing
+was in them and not in the note. Each device now remembers the history it has
+already read, so the note combines both people's typing as soon as they
+pause, however long they typed. A device whose note lost that rule while
+someone was typing in it also no longer sends its next save over the other
+device's text. Both typing devices need 1.1.4. Desktop and mobile (#227).
+
 **Deleting many notes at once asks first, and Restore here puts them back.**
 Five or more notes deleted in one go -- a multi-select, or the notes inside
 a deleted folder -- stay on your other devices, and one notice asks: "You

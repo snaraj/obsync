@@ -1,0 +1,12 @@
+# M3186: remembered versions are never forgotten, whatever they hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2501,7 +2501,7 @@
+   memory.versions.set(key, { version, size });
+   memory.held += size;
+   for (const [oldest, forgotten] of memory.versions) {
+-    if (memory.held <= CHUNK_MAX) break;
++    if (memory.held <= Infinity) break;
+     memory.versions.delete(oldest);
+     memory.held -= forgotten.size;
+   }
