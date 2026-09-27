@@ -1,4 +1,4 @@
-# M3140: Leave does not wait for a start under way before it revokes
+# M3163: a leave waits for a start under way however long its registration takes (#157, #233)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
 @@ -3878,10 +3878,7 @@
@@ -9,7 +9,7 @@
 -          Promise.allSettled(starting).then(() => true),
 -          new Promise<boolean>((resolve) => { handle = window.setTimeout(() => resolve(false), START_SETTLE_MS); }),
 -        ]);
-+        const settled = true;
++        const settled = await Promise.allSettled(starting).then(() => true);
          window.clearTimeout(handle);
          this.log(
            `unpair decision=${settled ? "waited" : "gave_up"} reason=start_under_way starts=${starting.length} ` +

@@ -408,6 +408,14 @@ function leaveRefusal(error: unknown): { reason: LeaveRefusal; detail: string } 
 }
 
 /**
+ * How long a leave waits for a start under way before it revokes (#233): its
+ * steps end at the leave's stop in milliseconds, and the one that cannot, a
+ * registration a silent server holds, must not hold a leave past its person's
+ * budget (#157).
+ */
+const START_SETTLE_MS = 500;
+
+/**
  * A request sent once that a person is waiting on: `lost` when nothing has
  * answered within `INTERACTIVE_MS` (issue #157). `requestUrl` cannot be
  * withdrawn, so the request goes on and its late answer is discarded -- a
@@ -3861,11 +3869,24 @@ export default class ObsyncPlugin extends Plugin {
       // begun as Obsidian opened, a reconnect, a Sync now. The stop above
       // ended its requests; from here it makes no engine and starts none
       // (`startEngineOwned` asks at every step whether a leave began), and it
-      // is waited for, so nothing it sent is still out when the revoke goes.
+      // is waited for, so what it sent is answered before the revoke goes.
+      // BUT FOR `START_SETTLE_MS` AT MOST: the one step a stop cannot end is a
+      // recovery registration already sent, which a server that stopped
+      // answering holds for a whole attempt, and a leave answers in seconds
+      // even then (#157). Answered after the revoke, it is refused and
+      // changes nothing (`registerAccountRecovery`).
       if (starting.length > 0) {
         const waited = Date.now();
-        await Promise.allSettled(starting);
-        this.log(`unpair decision=waited reason=start_under_way starts=${starting.length} duration_ms=${Date.now() - waited}`);
+        let handle = 0;
+        const settled = await Promise.race([
+          Promise.allSettled(starting).then(() => true),
+          new Promise<boolean>((resolve) => { handle = window.setTimeout(() => resolve(false), START_SETTLE_MS); }),
+        ]);
+        window.clearTimeout(handle);
+        this.log(
+          `unpair decision=${settled ? "waited" : "gave_up"} reason=start_under_way starts=${starting.length} ` +
+            `budget_ms=${START_SETTLE_MS} duration_ms=${Date.now() - waited}`,
+        );
       }
       assertCurrent();
       this.engine = null;

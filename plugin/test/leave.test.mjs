@@ -695,8 +695,32 @@ for (const [stage, where, made, superseded] of [
   assert.equal(r.instance.statusText(), "not paired");
   assert.equal(r.instance.forgottenDevice, false);
   assert.deepEqual(r.obsidian.notices, [], "a phone says nothing after a successful leave");
-  assert.equal(r.logs.filter((line) => /^unpair decision=waited reason=start_under_way starts=1 duration_ms=\d+$/.test(line)).length, 1);
+  assert.equal(r.logs.filter((line) => /^unpair decision=waited reason=start_under_way starts=1 budget_ms=500 duration_ms=\d+$/.test(line)).length, 1);
   assert.equal(r.logs.filter((line) => /^engine decision=stopped reason=superseded duration_ms=\d+$/.test(line)).length, superseded);
+});
+
+test("a start whose recovery registration nothing answers holds Leave half a second, and its late answer changes nothing (#233, #157)", async (t) => {
+  // CI, 1443ad3: a leave waited on a start's registration for a server that
+  // never answered, and #157's ten-second promise became 22.3 s.
+  const r = await phone(t);
+  r.hold((target) => target === "/v1/account/recovery");
+  const start = r.instance.startEngine();
+  await until(() => r.gate.asked, "the start is registering account recovery");
+
+  const began = Date.now();
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: true, localOnly: false }), { decision: "left", revoked: true });
+  assert.ok(Date.now() - began < 5000, `the leave took ${Date.now() - began} ms behind a registration nothing answered`);
+  assert.equal(r.logs.filter((line) => /^unpair decision=gave_up reason=start_under_way starts=1 budget_ms=500 duration_ms=\d+$/.test(line)).length, 1);
+  assert.equal(r.instance.engine, null);
+
+  // The registration was sent before the leave began; answered now, after the
+  // revoke, it is refused and says nothing.
+  r.gate.release();
+  await start;
+  assert.deepEqual(r.made.filter((engine) => engine.started), [], "no engine outlived the leave");
+  assert.equal(r.instance.statusText(), "not paired");
+  assert.deepEqual(r.obsidian.notices, [], "a phone says nothing after a successful leave");
+  assert.equal(r.logs.filter((line) => /^recovery decision=unavailable reason=\w+ session=ended$/.test(line)).length, 1, r.logs.join("\n"));
 });
 
 test("a folder Save while obsync is still starting leaves one engine running, the Save's own (#233)", async (t) => {
