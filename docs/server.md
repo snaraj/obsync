@@ -74,10 +74,23 @@ docker run -d --name obsync -p 127.0.0.1:8080:8080 \
   -v obsync-blobs:/data/blobs -v obsync-journal:/data/journal \
   -e OBSYNC_BLOBS_CAPACITY=250GiB -e OBSYNC_JOURNAL_CAPACITY=4GiB \
   -e OBSYNC_PUBLIC_URL=https://sync.example.org \
+  -e OBSYNC_TRUSTED_PROXY_CIDRS=172.17.0.1/32 \
   ghcr.io/snaraj/obsync@sha256:<the digest cosign just verified>
 ```
 
 `GET /readyz` answers `{"ready":true,"seq":<n>}` once the server is serving.
+`OBSYNC_TRUSTED_PROXY_CIDRS` is the address your proxy reaches the container
+from (on Docker's default bridge, its gateway `172.17.0.1`). The server reads
+the standard `X-Forwarded-For` and `Forwarded` headers only from there, so the
+dashboard shows each device's address instead of the proxy's; a header from
+anywhere else is ignored. Have the proxy set `X-Forwarded-For` to the address
+that connected to it, and clear any `Forwarded` header a client sent (or the
+reverse). When both arrive and disagree, the server believes neither.
+`deploy/proxies/` has configurations for Caddy, nginx, Traefik and HAProxy that
+do exactly this.
+
+The image is built for 64-bit Linux, `linux/amd64` and `linux/arm64`. There is
+no 32-bit ARM build: on a Raspberry Pi, run the 64-bit Raspberry Pi OS.
 
 ### Volume ownership
 
@@ -128,8 +141,16 @@ repository:
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   OBSYNC_HOST=sync.example.org \
   OBSYNC_BIND_ADDRESS=192.168.1.10 \
+  OBSYNC_BLOBS_CAPACITY=200GiB \
+  OBSYNC_JOURNAL_CAPACITY=4GiB \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
+
+The two capacities are the space each volume may use, and compose refuses to
+start without them. The server cannot measure free space, so it refuses writes
+against these numbers: give what the disk under Docker's volumes can really
+spare, not the size of a disk it shares with the system and everything else.
+On a Pi's SD card that is far less than 200 GiB.
 
 `OBSYNC_HOST` is the name your devices will use, and it needs no public
 existence at all: a name in your own DNS, a router entry, or a hosts file is
@@ -250,6 +271,25 @@ there is no "continue anyway". Export the root certificate:
 docker cp obsync-caddy-1:/data/caddy/pki/authorities/local/root.crt - \
   | tar -xO > obsync-root.crt
 ```
+
+**What trusting it allows.** The authority can sign a certificate for any
+name, not only yours, and Caddy
+cannot limit it: the pinned version has no name-constraint option for its
+local authority. A device that trusts the root therefore trusts every
+certificate made with its key, for your bank's name as much as for your
+server's. The key lives in the `caddy-data` volume, so anyone who can read that
+volume, or a copy of it, can intercept HTTPS on every device that trusts the
+root. Keep it safe:
+
+- Mount `caddy-data` into nothing but this Caddy container, and back it up only
+  where you keep the journal backup.
+- Anything that can reach the Docker socket on this host can read every
+  volume. Treat that access as access to the key.
+- Remove the certificate from a device you retire, and from every device when
+  you move to a public certificate.
+- If the key may have leaked, stop the stack, delete the `caddy-data` volume
+  (Caddy makes a new authority on its next start), remove the old root from
+  every device, and install the new one.
 
 Copy `obsync-root.crt` to each device and install it:
 

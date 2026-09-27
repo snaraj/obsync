@@ -1,0 +1,31 @@
+# obsync behind Traefik: the route. Traefik discards a client's own
+# X-Forwarded-* headers (no trusted IPs are configured) and sets
+# X-Forwarded-For to the address that connected; it passes `Forwarded`
+# through, so the middleware removes it. There is no body ceiling by default.
+http:
+  routers:
+    obsync:
+      rule: "PathPrefix(`/`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - no-client-forwarded
+      service: obsync
+      tls: {}
+  middlewares:
+    no-client-forwarded:
+      headers:
+        customRequestHeaders:
+          Forwarded: ""
+  services:
+    obsync:
+      loadBalancer:
+        servers:
+          - url: "http://obsync:8080"
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /tls/tls.crt
+        keyFile: /tls/tls.key

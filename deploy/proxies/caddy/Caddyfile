@@ -1,0 +1,19 @@
+# obsync behind Caddy, with a certificate you supply. For a certificate Caddy
+# issues itself, deploy/compose is the whole deployment.
+{
+	# No admin endpoint and no trust-store edits: nothing here needs either.
+	admin off
+	skip_install_trust
+	auto_https disable_redirects
+}
+
+{$OBSYNC_HOST}:8443 {
+	tls /tls/tls.crt /tls/tls.key
+	# Caddy sets X-Forwarded-For to the address that connected, discarding a
+	# client's own, and sets no body ceiling or read deadline by default. It
+	# passes a client's `Forwarded` header through untouched, so that one is
+	# removed: a header a client wrote is never the server's to believe.
+	reverse_proxy obsync:8080 {
+		header_up -Forwarded
+	}
+}

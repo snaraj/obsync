@@ -1,0 +1,17 @@
+# obsync behind Traefik: the static configuration. Routes live in dynamic.yml,
+# read from this directory; no Docker socket is mounted or needed.
+entryPoints:
+  websecure:
+    address: ":8443"
+    transport:
+      respondingTimeouts:
+        # Traefik v3 ends a request that takes over 60 s to arrive; a large
+        # file on a slow link takes longer, so the deadline is removed.
+        readTimeout: 0s
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+log:
+  level: WARN

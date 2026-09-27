@@ -153,7 +153,7 @@ readonly READY_BUDGET_SECONDS=120
 readonly PULL_ATTEMPTS=3
 readonly PULL_BACKOFF_SECONDS=5
 # Small enough to configure the same code paths on a laptop or a runner; the
-# compose file's own defaults are the hundreds of gigabytes a deployment wants.
+# compose file has no default for either, and step (1) proves it refuses.
 readonly BLOBS_CAPACITY='1GiB'
 readonly JOURNAL_CAPACITY='256MiB'
 
@@ -245,6 +245,19 @@ fi
 grep -qF -- "${bind_message}" "${scratch}/unbound.log" \
   || deny "compose refused without OBSYNC_BIND_ADDRESS but not with the compose file's own message: $(tr '\n' ' ' < "${scratch}/unbound.log")"
 prove "bind address: both mappings require OBSYNC_BIND_ADDRESS and compose refuses without it -- ${bind_message}"
+
+# The two capacities are required the same way: the free-space watermark is
+# measured against them, so a defaulted number is a watermark that fires after
+# a small disk is already full.
+for capacity in OBSYNC_BLOBS_CAPACITY OBSYNC_JOURNAL_CAPACITY; do
+  if env -u "${capacity}" docker compose --project-name "${project}" \
+       --file "${COMPOSE_FILE}" config >"${scratch}/capacity.log" 2>&1; then
+    deny "docker compose resolved this file with ${capacity} unset: a defaulted capacity makes the free-space watermark lie"
+  fi
+  grep -qF -- "${capacity}" "${scratch}/capacity.log" \
+    || deny "compose refused without ${capacity} but did not name it: $(tr '\n' ' ' < "${scratch}/capacity.log")"
+done
+prove 'capacities: compose refuses without OBSYNC_BLOBS_CAPACITY or OBSYNC_JOURNAL_CAPACITY'
 
 # (2) The DEFAULTS a deployer who sets nothing but the bind address gets. Read
 # out of the rendered model rather than the text, so this is the effective
