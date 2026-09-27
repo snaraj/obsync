@@ -5,60 +5,101 @@
 # Self Hosted Private Sync
 
 [Obsidian](https://obsidian.md) için kendi sunucunuzda barındırılan, uçtan uca
-şifreli canlı eşitleme: kendi çalıştırdığınız, yerleşik panosu olan,
-bağımlılıksız tek bir Rust sunucusu ve bu eklenti. Her boyutta dosya, her
-Obsidian platformu, abonelik yok, üçüncü taraf yok.
+şifreli canlı eşitleme. Notlarınız kendi çalıştırdığınız bir sunucu üzerinden
+eşitlenir. Notlar, ekler ve dosya adları cihazınızda şifrelenir ve sunucu
+anahtarı hiçbir zaman almaz. Eklenti, Obsidian'ın çalıştığı her platformda,
+masaüstünde ve mobilde çalışır. Abonelik yok, başka hiçbir yerde hesap yok.
 
-Ayarlar → Topluluk Eklentileri → Göz at yolundan **Self Hosted Private Sync**
-adıyla kurun (eklenti kimliği `obsync-private-sync`); Obsidian 1.13.0 veya
-daha yenisi gerekir.
+**Bir şey çalışmıyor mu? → [Sorun giderme](https://snaraj.github.io/obsync/troubleshooting/) (İngilizce)**
 
-**Yeni misiniz? [Kurulum kılavuzuyla](https://snaraj.github.io/obsync/setup/) (İngilizce) başlayın.** Cihazlarınızın sunucunuza nasıl ulaşacağını seçmenize yardım eder ve her yolu adım adım anlatır. Obsidian'da: Ayarlar → Self Hosted Private Sync → Setup guide.
+## Aradığınızı bulun
+
+Her sayfa [belge sitesinde](https://snaraj.github.io/obsync/) de var (İngilizce).
+
+### obsync'i kullanmak
+
+| Şunu istiyorum… | Gidilecek yer |
+| --- | --- |
+| Cihazlarımın sunucuma nasıl ulaşacağını seçmek | [Kurulumunuzu seçin](../setup.md) |
+| Her şeyi ev ağımda, telefonun her ekranıyla kurmak | [Aynı ağ, adım adım](../same-network.md) |
+| Eklentiyi kurmak | [Eklentiyi kurun](../community-plugin.md) |
+| İlk cihazımı kurmak | [Hızlı başlangıç](../quickstart.md) |
+| Bir telefonu ya da başka bir bilgisayarı eşlemek | [Telefonunuzu eşleyin](../quickstart.md#pair-your-phone) |
+| Durum simgesinin ve komutların ne anlama geldiğini bilmek | [Günlük kullanım](../daily-use.md) ve [Durum çubuğunu okumak](../troubleshooting.md#reading-the-status-bar) |
+| Bir notun eski bir sürümünü geri almak | [Saklanan bir sürümü geri yükleyin](../daily-use.md#restore-a-retained-version) |
+| Bir ayarın ne yaptığını bilmek | [Ayarlar](../settings.md) |
+| Bir çakışma kopyasıyla başa çıkmak | [Çakışmalar](../conflicts.md) |
+| Bir sorunu düzeltmek | [Sorun giderme](../troubleshooting.md) |
+| Bir cihazı kaybettikten sonra yeniden girmek | [Kurtarma](../recovery.md) |
+| Kasamı başka bir sunucuya taşımak | [Bu kasayı başka bir sunucuya taşımak](../recovery.md#moving-this-vault-to-a-different-server) |
+
+### Sunucu çalıştırmak
+
+| Şunu istiyorum… | Gidilecek yer |
+| --- | --- |
+| Sunucumu Docker ya da Compose ile çalıştırmak | [Sunucuyu çalıştırma](../server.md) |
+| Onu kendi vekil sunucumun arkasına koymak (Caddy, nginx, Traefik, HAProxy) | [Zaten bir TLS sonlandırıcınız var](../server.md#already-have-a-tls-terminator-docker) |
+| Onu konteyner olmadan, systemd altında çalıştırmak | [Statik ikili dosya](../server.md#without-a-container-the-static-binary) |
+| Sunucumu Kubernetes'te çalıştırmak | [Kubernetes](../kubernetes.md) ve [chart başvurusu](../../chart/README.md) |
+| Sunucuma evden uzaktayken kendi VPN'im ya da vekil sunucum üzerinden ulaşmak | [Ona yerel ağınızın dışından ulaşmak](../server.md#reaching-it-from-outside-your-lan) |
+| Cloudflare kullanmak (isteğe bağlı) | [Cloudflare](cloudflare.md) |
+| Sunucumun sertifikasına her cihazda güvenmek | [Sertifika yetkilisine güvenin](../server.md#trust-the-certificate-authority-once-per-device) |
+| Ne kadar bellek ve disk gerektiğini bilmek | [Ne kadar bellek gerekir](../server.md#how-much-memory-it-needs) ve [Depolama](../storage.md) |
+| Sunucumu yedeklemek | [İki birimi yedekleyin](../server.md#back-up-the-two-volumes) |
+| Sunucumu yükseltmek | [Digest ile yükseltin](../server.md#upgrade-by-digest) |
+| Cihazlarımı görmek ve birini iptal etmek | [Pano](../dashboard.md) |
+| Sunucumu silip baştan başlamak | [Bir sunucuyu temizlemek](../purge.md) |
+| Her sürümde neyin değiştiğini görmek | [`CHANGELOG.md`](../../CHANGELOG.md) |
+
+### Güven ve gizlilik
+
+| Şunu istiyorum… | Gidilecek yer |
+| --- | --- |
+| Bu eklentinin cihazımda ve ağımda neye dokunduğunu bilmek | [Bu eklenti neye erişir](#bu-eklenti-neye-erişir) |
+| Neyin şifrelendiğini ve sunucunun neyi görebildiğini anlamak | [Tehdit modeli](../threat-model.md) ve [panonun tehdit modeli](../security/dashboard.md) |
+| Bir güvenlik sorununu bildirmek | [`SECURITY.md`](../../SECURITY.md) |
+
+### Projenin içi
+
+Katkıda bulunanlar ve gözden geçirenler için: [`CONTRIBUTING.md`](../../CONTRIBUTING.md),
+[mimari](../architecture.md), [protokol](../protocol.md),
+[kıyaslamalar](../benchmarks.md), [cihaz doğrulama çalıştırmaları](../validation-runs/)
+ve [tüm sayfalar](../README.md).
+
+## Kurulum
+
+![Eklentinin ayarları Get started ile açılıyor: Setup guide satırı ve Open the guide düğmesi, Server URL alanının üstünde](../assets/settings-get-started.png)
+
+Eklentiyi **Ayarlar → Topluluk Eklentileri → Göz at** yolundan kurun.
+**Self Hosted Private Sync** adını arayın (eklenti kimliği
+`obsync-private-sync`). Obsidian 1.13.0 veya daha yenisi gerekir. Ayarları
+kurulum kılavuzuyla başlar; kılavuzu tek bir düğmeyle açarsınız.
 
 > [!IMPORTANT]
-> - **Sizin** çalıştırdığınız bir sunucuyla eşitlenir: barındırılan bir hizmet
->   yok, başka hiçbir yerde hesap yok.
-> - Önce kasanızı yedekleyin; 24 kelimelik kurtarma ifadesini, onu üreten
->   cihazın dışında saklayın.
-> - Onu tek bir kasa üzerinde başka bir eşitlemenin (Obsidian Sync, bir bulut
->   klasörü, başka bir eklenti) yanında asla çalıştırmayın.
-> - Genç yazılım: sürümünüzün [`CHANGELOG.md`](../../CHANGELOG.md) girdisini
->   okuyun, her cihazı güncelleyin ve her
->   [doğrulama çalıştırmasının](../validation-runs/) neyi kapsadığını bilin.
-
-## Bu eklenti neye erişir
-
-- **Kendi sunucunuz, başka hiçbir yer.** Her istek, yazdığınız **Server URL**
-  adresine gider; telemetri yok, üçüncü taraf yok.
-- **O sunucudaki bir hesap**, kurulum belirtecinden oluşturulur; Obsidian
-  hesabınızın bunda hiçbir rolü yoktur.
-- **Kurulum ve güncelleme için, Obsidian üzerinden GitHub Releases**; Obsidian
-  sürümdeki fazladan dosyaları yok sayar.
-- **Kasanızın dosya listesi**, neyin eşitleneceğine karar vermek için; gizli
-  (`.obsidian`, `.git`) ve sembolik bağlantılı klasörler atlanır.
-- **Kopyalama panosu, yalnızca yazılır**: ona yalnızca **Pair a new device**
-  içindeki **Copy code** ve **Copy link** yazar, asla okunmaz.
-
-Sunucunun neyi görebildiği ve neyi göremediği:
-[`SECURITY.md`](../../SECURITY.md) ve [tehdit modeli](../threat-model.md).
+> - **Sizin** çalıştırdığınız bir sunucuyla eşitlenir: barındırılan bir hizmet yok, başka hiçbir yerde hesap yok.
+> - Önce kasanızı yedekleyin; 24 kelimelik kurtarma ifadesini, onu üreten cihazın dışında saklayın.
+> - Onu tek bir kasa üzerinde başka bir eşitlemenin (Obsidian Sync, bir bulut klasörü, başka bir eklenti) yanında asla çalıştırmayın.
+> - Genç yazılım: sürümünüzün [`CHANGELOG.md`](../../CHANGELOG.md) girdisini okuyun, her cihazı güncelleyin ve her [doğrulama çalıştırmasının](../validation-runs/) neyi kapsadığını bilin.
 
 ## Eşitlemeye başlayın
 
-Sıfırdan, birbiriyle eşitlenen iki cihaza beş adım. `v1.0.6`, bu sayfanın
-yazıldığı sürümdür; kurduğunuz sürümün etiketini kullanın.
+En kısa eksiksiz yol, bu deponun bir kopyasından, kendi ağınızda Caddy ile
+Compose'dur. Size her ağda HTTPS verir; alan adı da, herhangi bir yerde hesap
+da gerekmez. [Aynı ağ, adım adım](../same-network.md) bu yolu her ekranıyla
+anlatır. Aşağıdaki `vX.Y.Z` değerini kurduğunuz sürümle değiştirin: bu,
+[Releases sayfasındaki](https://github.com/snaraj/obsync/releases/latest) en
+yeni etikettir.
 
-### 1. Sunucuyu başlatın
-
-İmzayı doğrulayın, sonra tam olarak yazdırdığı özeti çalıştırın:
+**1. İmajı doğrulayın.** Sonra tam olarak doğrulamanın yazdırdığı özeti
+(digest) çalıştırın:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Basit yol, bu deponun bir çalışma kopyasından Caddy ile Compose: herhangi bir
-ağda HTTPS, alan adı yok, hiçbir yerde hesap yok.
+**2. Sunucuyu başlatın:**
 
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
@@ -67,135 +108,55 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
-`OBSYNC_HOST`, cihazlarınızın yazacağı addır; yalnızca kendi ağınızda
+`OBSYNC_HOST`, cihazlarınızın yazacağı addır. Yalnızca kendi ağınızda
 çözümlenmesi yeterlidir. `OBSYNC_BIND_ADDRESS`, 80 ve 443 portlarının
-yayımlandığı adrestir: bağlanma adresi kaynağı değil hedef arayüzü sınırlar,
-dolayısıyla ona kimin ulaşacağına güvenlik duvarınız karar verir. Siz seçene
-kadar Compose başlamayı reddeder.
+yayımlandığı adrestir: bir bağlama adresi kaynağı değil hedef arayüzü
+sınırlar, bu yüzden ona kimin ulaşacağına güvenlik duvarınız karar verir.
+Siz seçim yapana kadar Compose başlamayı reddeder.
 
-Önünde, güvendiğiniz bir vekil ya da tünel sayesinde, zaten HTTPS var mı? O
-zaman çıplak sunucuyu çalıştırın: [Sunucuyu çalıştırma](../server.md).
-
-### 2. Kurulum belirtecini okuyun
-
-İlk açılışta sunucu bir kurulum belirteci üretir ve onu journal birimine 0600
-kipiyle yazar; hiçbir günlüğe geçmez. Belirteç hesabınızı bir kez oluşturur ve
-sonrasında panonun kurtarma amaçlı oturum açma yolu olarak kalır: kurtarma
-ifadesiyle aynı özenle saklayın. Onu konteynerden okuyun:
+**3. Kurulum belirtecini okuyun.** Sunucu ilk açılışta bir kurulum belirteci
+üretir ve onu journal birimine 0600 kipiyle yazar; belirteç hiçbir günlüğe
+geçmez. Hesabınızı bir kez oluşturur ve panonun kurtarma amaçlı oturum açma
+yolu olarak kalır. Onu kurtarma ifadesi kadar özenle koruyun:
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
-### 3. Sertifikaya güvenin, cihaz başına bir kez
+**4. Her cihazı kurun.** Sunucunun sertifikasına bir kez güvenin
+([nasıl](../server.md#trust-the-certificate-authority-once-per-device)).
+Eklentiyi kurun, ardından [Hızlı başlangıç](../quickstart.md) sayfasını
+izleyin: ilk cihazı kurun, sonra diğerlerini eşleyin.
 
-Caddy, ilk başlangıçta kendi ürettiği bir otoriteyle imzalar; her cihazın ona
-bir kez güvenmesi gerekir. Kök sertifikayı dışa aktarın ve
-[Sunucuyu çalıştırma](../server.md#trust-the-certificate-authority-once-per-device)
-sayfasının gösterdiği gibi her platforma kurun; iOS'ta ona güvenmek, onu
-kurduktan sonra açılacak ikinci bir anahtardır.
+Önünde zaten güvendiğiniz bir vekil sunucudan ya da tünelden gelen HTTPS mi
+var? Bunun yerine
+[yalın sunucuyu](../server.md#already-have-a-tls-terminator-docker)
+çalıştırın.
 
-### 4. İlk cihazı kurun
+## Bu eklenti neye erişir
 
-1. Ayarlar → Topluluk Eklentileri → Göz at → **Self Hosted Private Sync** →
-   İndir → Etkinleştir.
-2. **Server URL** değerini kendi sunucunuza ayarlayın
-   (`https://sync.example.org`, 443 değilse port dahil), sonra **Whole vault**
-   ya da **Selected folders only** seçin; seçim sonradan yalnızca daralabilir.
+- **Kendi sunucunuz, başka hiçbir yer.** Her istek, yazdığınız **Server URL** adresine gider; telemetri yok, üçüncü taraf yok.
+- **O sunucudaki bir hesap**, kurulum belirtecinden oluşturulur; Obsidian hesabınızın bunda hiçbir rolü yoktur.
+- **Kurulum ve güncelleme için, Obsidian üzerinden GitHub Releases**; Obsidian sürümdeki fazladan dosyaları yok sayar.
+- **Kasanızın dosya listesi**, neyin eşitleneceğine karar vermek için; gizli (`.obsidian`, `.git`) ve sembolik bağlantılı klasörler atlanır.
+- **Kopyalama panosu, yalnızca yazılır**: ona yalnızca **Pair a new device** içindeki **Copy code** ve **Copy link** yazar, asla okunmaz.
+- **Kurulum kılavuzunu istediğinizde tarayıcınız.** Projenin kılavuzu orada açılır; eklentinin kendisi hiçbir şey göndermez.
 
-   ![Eklentinin ayarlar sekmesi: örnek bir ana bilgisayar adı taşıyan Server URL alanı, uç nokta başlıkları kutusu ve Check ile Open dashboard düğmelerini taşıyan Connection satırı](../assets/settings-server.png)
+Sunucunun neyi görebildiği ve neyi göremediği: [`SECURITY.md`](../../SECURITY.md) ve [tehdit modeli](../threat-model.md).
 
-3. Kurulum belirtecini **Setup or recover** altına yapıştırın, **Set up or recover**
-   seçin ve 24 kelimelik kurtarma ifadesini yazın.
+## Sürümler
 
-   ![Ayarlar sekmesinin This device bölümü: Pair this device ve Pair a new device düğmeleriyle Pairing satırı, Setup token alanı ve Set up düğmesiyle First-time setup satırı ve Vault key satırı](../assets/settings-setup.png)
-
-### 5. İkinci cihazı eşleştirin
-
-1. Eklentiyi orada da aynı **Server URL** ile kurun; ilk cihazda, on dakika
-   geçerli bir kod için **Pair a new device** komutunu çalıştırın.
-
-   ![İlk cihazdaki Pair a new device iletişim kutusu, kodu okunmaz hâlde, Copy code ve Copy link düğmeleri ve Waiting for the new device satırıyla](../assets/pair-new-device.png)
-
-2. İkinci cihazda **Pair this device** kutusunu açın, kodu yapıştırın ve
-   **Pair** seçin.
-3. İlk cihaza dönüp onu adıyla onaylayın. İkisinden birinde bir notu
-   düzenleyin; saniyeler içinde diğerinde belirir.
-
-   ![İlk cihaz, yeni cihazın adıyla onaylanıp onaylanmayacağını soruyor, Approve ve Reject düğmeleriyle](../assets/pair-approve.png)
-
-![Animasyon: eşleştirme kodu ilk cihazda gösteriliyor, ikincisine yapıştırılıyor, ilkinde onaylanıyor ve ilk not ikincisine ulaşıyor](../assets/pairing.gif)
-
-Tek bir bilgisayarda mı deniyorsunuz? Bilgisayarda `http://127.0.0.1:8080`
-çıplak sunucuya ulaşır; iOS ve Android'deki Obsidian düz HTTP'yi reddeder.
-
-Telefon ekran görüntüleri bu depoda henüz yok; bakımcının kendi cihazlarında
-çekiliyor ve bir doğrulama çalıştırması onları kayda geçirdiğinde ekleniyor.
-
-Her adım tam hâliyle: [Hızlı başlangıç](../quickstart.md).
-
-## İleri düzey: Cloudflare
-
-Referans kurulumun herkese açık bir ana bilgisayar adı yoktur: bir Cloudflare
-Tunnel ve bir özel rota sunucunun ağına ulaşır, her cihazdaki Cloudflare One
-istemcisi de sunucu URL'sini oraya taşır. Cloudflare Access arkasında herkese
-açık bir ana bilgisayar adı da çalışır: **Edge service-token headers** içinde
-bir hizmet belirteci ve `OBSYNC_EDGE=cloudflare` ile. İkisi de, adım adım:
-[Cloudflare](cloudflare.md).
-
-## Sunucunuza ulaşmanın diğer yolları
-
-Ne seçerseniz seçin, eklentinin her cihazın güvendiği bir sertifikayla HTTPS'e
-ihtiyacı vardır; sunucunun kendisi o sonlandırıcının arkasında düz HTTP'de
-kalır.
-
-- **Yalnızca LAN.** Yukarıdaki Compose yolu, yalnızca evde erişilir; evden
-  uzakta eşitleme yok.
-- **WireGuard.** Kendi ağınıza dönen kendi VPN'iniz: en hızlısı, tamamen
-  sizin; her cihazda bir eş yapılandırması.
-- **Tailscale.** Yönetilen bir WireGuard örgüsü: en az kurulum; üçüncü bir
-  taraf onu kendi planının koşullarıyla koordine eder.
-- **Otomatik TLS'li bir ters vekil**, örneğin herkese açık bir adda Caddy:
-  internetten erişilebilir, yamalamak size düşer.
-- **Cloudflare Tunnel.** Yukarıda. Gelen port yok; yolda, kendi koşulları olan
-  bir sağlayıcı.
-
-Dolaşımdaki bir cihazın neye ihtiyaç duyduğu (rota, ad, sertifika, güvenlik
-duvarı, iOS'un yerel ağ sorusu):
-[LAN'ınızın dışından erişme](../server.md#reaching-it-from-outside-your-lan).
-
-## Sorun giderme
-
-| Belirti | Olası neden | İlk denenecek şey |
-| --- | --- | --- |
-| `obsync: offline` | Cihaz, Server URL adresine ulaşamıyor | URL'yi aynı cihazdaki bir tarayıcıda açın; portu, HTTPS'i ve rotayı denetleyin |
-| Bir bilgisayar eşitlerken telefon bağlanmıyor | Özel sertifikaya telefonda güvenilmiyor | Kök sertifikayı kurun; iOS'ta ayrıca "Certificate Trust Settings" altından açın |
-| `401 stale_timestamp` | Bir saat 300 saniyeden fazla şaşmış | Cihazda ya da sunucuda otomatik saati açın |
-| `403 device_pending` | Cihazı henüz kimse onaylamamış | Eşleştirmeyi yaptığınız cihazda onu adıyla onaylayın |
-| Bir dosya hiç ulaşmıyor | Klasör seçiminin dışında ya da telefonun boyut tavanının üstünde | **Sync folders on this device** ayarını denetleyin; telefonda **Show remote-only files** komutunu çalıştırın |
-
-Diğer her belirti, her hata kodu ve birinin nasıl bildirileceği:
-[Sorun giderme](../troubleshooting.md).
-
-## Belgeler
-
-[Hızlı başlangıç](../quickstart.md) · [Sunucuyu çalıştırma](../server.md) ·
-[Cloudflare](cloudflare.md) · [Günlük kullanım](../daily-use.md) ·
-[Ayarlar](../settings.md) · [Sorun giderme](../troubleshooting.md) ·
-[Kurtarma](../recovery.md) · [Değişiklik günlüğü](../../CHANGELOG.md)
-
-Geri kalan her şey: [docs/README.md](../README.md).
+LATEST sürüm, [Releases sayfasındaki](https://github.com/snaraj/obsync/releases/latest)
+en yeni etikettir. Obsidian'ın kurduğu ve güncellediği sürüm budur. `main` ise
+EDGE'dir: birleştirilmiş ama henüz yayımlanmamış iş, kaynaktan derleyenler
+için. Beta kanalı ve ön sürüm etiketi yoktur. Değişiklik günlüğünün
+Unreleased bölümü EDGE'in kaydıdır.
 
 ## Sorular, hatalar ve güvenlik
 
-- **Bir soru ya da hata olduğundan emin olmadığınız bir şey:**
-  [Discussions](https://github.com/snaraj/obsync/discussions).
-- **Bir hata:** [Sorun giderme](../troubleshooting.md) sayfasının anlattığı
-  raporla [bir issue açın](https://github.com/snaraj/obsync/issues/new/choose);
-  belirteç, kurtarma ifadesi ve yayımlamayacağınız bir adres olmasın.
-- **Şüphelendiğiniz bir güvenlik açığı:** gizlice,
-  [`SECURITY.md`](../../SECURITY.md) üzerinden; asla herkese açık bir issue
-  olarak değil.
+- **Bir soru ya da hata olup olmadığından emin değilseniz:** [Discussions](https://github.com/snaraj/obsync/discussions).
+- **Bir hata:** [Sorun giderme](../troubleshooting.md#how-to-collect-a-report) sayfasının anlattığı raporla [bir issue açın](https://github.com/snaraj/obsync/issues/new/choose). Yayımlamayacağınız hiçbir belirteci, ifadeyi ya da adresi eklemeyin.
+- **Şüphelenilen bir güvenlik açığı:** gizlice, [`SECURITY.md`](../../SECURITY.md) üzerinden; asla herkese açık bir issue ile değil.
 
 ## Lisans
 
