@@ -16,8 +16,8 @@ server again unless the entry says so.
 
 | What you see | Go to |
 | --- | --- |
-| The status bar icon is not the check mark TODO(1.1.4-text) | [Reading the status bar](#reading-the-status-bar) |
-| The status bar shows the device is offline, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
+| The status bar icon is not the check mark | [Reading the status bar](#reading-the-status-bar) |
+| The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
@@ -75,17 +75,23 @@ server again unless the entry says so.
 
 ## Reading the status bar
 
-<!-- CAPTURE(1.1.4): the four status bar icons, one after another, on a desktop -->
+From 1.1.4 the status bar shows one icon, always the same width. Hover over
+it on a computer to read its words; click it, or tap it in a phone's note
+header, for **Show sync status**. The icons below were captured from a
+desktop status bar in the dark theme; yours follow your theme's colours.
 
-From 1.1.4 the status bar shows one icon. Hover over it, or tap it on a phone,
-to read what it means.
+| Icon | Its words | What it means | What to do |
+| --- | --- | --- | --- |
+| <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3` | Files are uploading or downloading; the number counts them | Nothing. A large file can take a while; **Show sync status** names the file that is moving |
+| <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
+| <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
+| <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
+| <img src="assets/status-quiet.png" alt="faint cloud" width="36" height="31"> | `obsync: not paired`, or `obsync: idle — syncing no folders` | This device is not paired yet, or **Selected folders** is empty | [The plugin says this device is not paired](#the-plugin-says-this-device-is-not-paired), or choose folders in the plugin's settings |
 
-| Icon | What it means | What to do |
-| --- | --- | --- |
-| TODO(1.1.4-text) check mark | Everything is in sync | Nothing |
-| TODO(1.1.4-text) turning wheel | Notes are uploading or downloading | Nothing. A large file can take a while; **Show sync status** says what is moving |
-| TODO(1.1.4-text) cloud with a line through it | The device cannot reach the server; it keeps trying | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
-| TODO(1.1.4-text) alert | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
+The wheel appears only when syncing lasts longer than half a second, so a
+note that saves and syncs while you type leaves the check where it is. With
+Reduce Motion on, the wheel stands still.
 
 **Show sync status**, in the command palette, always says in words what sync is
 doing and why it is not doing more.
@@ -290,8 +296,8 @@ no access of any kind.
 
 ## The plugin says this device is not paired
 
-**What you see.** `obsync: not paired` (TODO(1.1.4-text)), or an error naming
-`not_paired`.
+**What you see.** A faint cloud in the status bar whose words read
+`obsync: not paired`, or an error naming `not_paired`.
 
 **Why it happens.** This device holds no credential: setup was never completed
 here, or its stored credential was removed.
