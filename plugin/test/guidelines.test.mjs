@@ -48,6 +48,14 @@ const RULES = [
   // The global `app` is deprecated and is not this vault's App in every
   // context; `this.app` is.
   ["this.app, never the global app", /(^|[^.\w$])app\s*\.\s*(vault|workspace|fileManager|metadataCache)\b/m],
+  // The community directory's scorecard, 2026-09-27: the config folder is the
+  // user's to choose (`Vault#configDir`), a regular expression holding a
+  // control character is refused, and `globalThis` is not the popout
+  // window's (`window` or `activeWindow`). A string that STARTS with the
+  // default name is the hard-coding; a comment naming it in backticks is not.
+  ["Vault#configDir, never a hard-coded .obsidian", /["']\.obsidian\b/],
+  ["no control character in a regular expression", /(?:^|[=(,:!&|?;{}[]|\breturn)\s*\/(?![*/])(?:\\(?!x[01]|u00[01]|x7[fF]|u007[fF]).|[^/\\\n])*\\(?:x[01][0-9a-fA-F]|u00[01][0-9a-fA-F]|x7[fF]|u007[fF])/m],
+  ["window or activeWindow, never globalThis", /\bglobalThis\b/],
 ];
 
 function violations(files) {
@@ -82,6 +90,19 @@ test("each rule catches the shape it names, and leaves the correct one alone", (
   assert.equal(caught("if (navigator.platform === 'iPhone') return;").length, 1);
   assert.equal(caught("const re = /(?<=a)b/;").length, 1);
   assert.equal(caught("const file = app.vault.getFileByPath(path);").length, 1);
+  assert.equal(caught(`const at = ".obsidian/plugins";`).length, 1);
+  assert.equal(caught("const parts = ['.obsidian', 'plugins'];").length, 1);
+  assert.equal(caught("if (/[\\u0000-\\u001f]/.test(name)) return;").length, 1);
+  assert.equal(caught("const bad = /a\\x1fb/;").length, 1);
+  assert.equal(caught("return /[\\x7f]/.test(name);").length, 1);
+  assert.equal(caught("const scope = globalThis;").length, 1);
+
+  assert.deepEqual(caught("const at = `${this.app.vault.configDir}/plugins`;"), []);
+  assert.deepEqual(caught("/** Held under `.obsidian/plugins/` by default. */"), []);
+  assert.deepEqual(caught("const key = `twin\\u0000${selected}`;"), []);
+  assert.deepEqual(caught("  /** `from\\u0000to` of renames, awaiting their event. */"), []);
+  assert.deepEqual(caught("const ok = /[\\u0020-\\u007e]/.test(name);"), []);
+  assert.deepEqual(caught("const scope = window;"), []);
 
   assert.deepEqual(caught("el.setText(value);"), []);
   assert.deepEqual(caught("window.setTimeout(fn, 5);"), []);

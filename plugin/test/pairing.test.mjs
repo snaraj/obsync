@@ -395,6 +395,12 @@ test("claimant vault validation bounds names, counts and sealed wire data (#141)
     { name: "a\u202e", notes: 0 }, { name: 7, notes: 0 }, { name: "a", notes: -1 }, { name: "a", notes: 0.5 }, { name: "a", notes: 2 ** 53 }]) {
     await assert.rejects(() => pairing.sealPairingVault(secret, PAIRING_ID, value), /invalid vault details/);
   }
+  // Each edge of the refused characters, and the neighbour just outside it.
+  for (const char of ["\u0000", "\u001f", "\u007f", "\u202a", "\u2066", "\u2069"]) {
+    await assert.rejects(() => pairing.sealPairingVault(secret, PAIRING_ID, { name: `a${char}b`, notes: 0 }), /invalid vault details/, JSON.stringify(char));
+  }
+  const shown = "a ~\u2029\u202f\u2065\u2070\u{1F600}";
+  assert.equal((await pairing.openPairingVault(secret, PAIRING_ID, await pairing.sealPairingVault(secret, PAIRING_ID, { name: shown, notes: 0 }))).name, shown);
   const sealed = await pairing.sealPairingVault(secret, PAIRING_ID, { name: "a".repeat(256), notes: 0 });
   assert.equal((await pairing.openPairingVault(secret, PAIRING_ID, sealed)).name.length, 256);
   for (const value of [null, {}, { ...sealed, envelope: 12 }, { ...sealed, envelope: "A".repeat(2049) }, { ...sealed, nonce: "00" }, { ...sealed, nonce: "Z".repeat(24) }]) {

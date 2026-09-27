@@ -731,10 +731,13 @@ test("the nested-vault answer is kept per folder for one pass and asked afresh o
   const present = new Set();
   const asked = [];
   const adapter = { exists: async (path) => { asked.push(path); return present.has(path); } };
-  const plugin = { state: { data: {} }, log: () => undefined, app: { vault: { adapter } } };
+  // The phone asks for this plugin's own folder under each folder, at the
+  // path Obsidian gives the loaded plugin (`manifest.dir`).
+  const manifest = { dir: ".obsidian/plugins/obsync-private-sync" };
+  const plugin = { state: { data: {} }, log: () => undefined, manifest, app: { vault: { adapter } } };
   const host = new ObsidianHost(plugin, null);
   host.notify = () => undefined;
-  const plugged = (folder) => `${folder}/.obsidian/plugins/obsync-private-sync`;
+  const plugged = (folder) => `${folder}/${manifest.dir}`;
 
   host.pass(true);
   for (let i = 0; i < 20; i++) assert.equal(await host.inNestedVault(`A/B/n${i}.md`), false);

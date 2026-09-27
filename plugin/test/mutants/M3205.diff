@@ -1,0 +1,12 @@
+# M3205: on a phone with no manifest dir, another plugin's folder in a config folder makes a vault of its own
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -746,7 +746,7 @@
+       return false;
+     }
+     for (const child of folders) {
+-      if (child.slice(child.lastIndexOf("/") + 1).startsWith(".") && (await adapter.exists(`${child}/plugins/${PAIRING_ACTION}`))) return true;
++      if (child.slice(child.lastIndexOf("/") + 1).startsWith(".") && (await adapter.exists(`${child}/plugins`))) return true;
+     }
+     return false;
+   }

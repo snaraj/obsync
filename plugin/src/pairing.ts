@@ -168,10 +168,24 @@ export interface PairingVault { name: string; notes: number }
 export interface SealedPairingVault { envelope: string; nonce: string }
 const VAULT_LABEL = "obsync/v1/pair-vault";
 
+/**
+ * A character no vault name shown to a person may hold: a control character,
+ * or a bidirectional override or isolate that would make the name read as
+ * another. Decided by code point, not by a regular expression over control
+ * characters, which Obsidian's review rules refuse.
+ */
+function unshowable(name: string): boolean {
+  for (const char of name) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)) return true;
+  }
+  return false;
+}
+
 function checkedVault(value: unknown): PairingVault {
   const vault = value as PairingVault | null;
   if (!vault || typeof vault.name !== "string" || vault.name.length === 0 || vault.name.length > 256 ||
-      /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(vault.name) ||
+      unshowable(vault.name) ||
       !Number.isSafeInteger(vault.notes) || vault.notes < 0) {
     throw new Error("pairing: invalid vault details; start pairing again");
   }

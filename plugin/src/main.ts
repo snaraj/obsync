@@ -143,14 +143,6 @@ const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
 const NO_FOLDER_SYNC = new Set(["EPERM", "EISDIR"]);
 
 /**
- * What makes a folder a vault that syncs with this plugin (issue #180):
- * Obsidian's config folder holding this plugin's own folder, which the
- * community installer names after the directory identity. Only the names are
- * looked at, never what is in them.
- */
-const PLUGIN_FOLDER = [".obsidian", "plugins", PAIRING_ACTION];
-
-/**
  * How many folders above the vault root the nested-vault check looks at. A
  * bound on an absurd path rather than a defence: the walk ends at the
  * filesystem root long before this on any real disk.
@@ -640,7 +632,8 @@ export class ObsidianHost implements VaultHost {
    * those downloads as new notes under `Sub/` and published them, and `Sub`
    * downloaded them again one level deeper: `Sub/Sub/Sub/…`, 98 levels deep
    * on every device within seconds (S96). So a folder holding
-   * `PLUGIN_FOLDER` is out of sync in both directions, as `.obsidian` is:
+   * this plugin in a config folder of its own (`holdsPlugin`) is out of sync
+   * in both directions, as this vault's config folder is:
    * nothing in it is published from here, and the feed writes, moves and
    * removes nothing in it -- whichever vault was paired first, on whichever
    * computer. It is never excluded silently, and never loudly once per note:
@@ -667,7 +660,7 @@ export class ObsidianHost implements VaultHost {
     if (desktop === null) {
       for (let depth = 1; depth <= segments.length; depth++) {
         const folder = segments.slice(0, depth).join("/");
-        if (await answer(folder, () => this.plugin.app.vault.adapter.exists(`${folder}/${PLUGIN_FOLDER.join("/")}`))) return this.named(folder);
+        if (await answer(folder, () => this.holdsPluginHere(folder))) return this.named(folder);
       }
       return false;
     }
@@ -699,14 +692,63 @@ export class ObsidianHost implements VaultHost {
     return true;
   }
 
-  /** Does the directory `dir` hold `PLUGIN_FOLDER`, each step a real directory? No-follow, names only. */
+  /**
+   * What makes a folder a vault that syncs with this plugin (issue #180): a
+   * HIDDEN folder in it holding `plugins/` and this plugin's own folder, which
+   * the community installer names after the directory identity. That hidden
+   * folder is the other vault's config folder, and its name is that vault's
+   * to choose (`.obsidian` unless its owner picked another in Obsidian's
+   * settings), so no one name is assumed: every hidden folder is asked. Only
+   * names are looked at, never what is in them; a folder that cannot be
+   * listed is not known to be a vault, and the walk skips it as unreadable.
+   */
   private async holdsPlugin(desktop: DesktopVault, dir: string): Promise<boolean> {
-    let at = dir;
-    for (const name of PLUGIN_FOLDER) {
-      at = desktop.path.resolve(at, name);
-      if ((await walker(desktop.fs).lstat(at))?.isDirectory() !== true) return false;
+    let names: string[];
+    try {
+      names = await desktop.fs.promises.readdir(dir);
+    } catch {
+      return false;
     }
-    return true;
+    next: for (const name of names) {
+      if (!name.startsWith(".")) continue;
+      let at = desktop.path.resolve(dir, name);
+      for (const step of ["plugins", PAIRING_ACTION, null]) {
+        // A hidden entry the system will not stat (macOS answers `/.resolve`
+        // with EINVAL) is no config folder; the question moves on.
+        const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+        if (stat?.isDirectory() !== true) continue next;
+        if (step !== null) at = desktop.path.resolve(at, step);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The phone's `holdsPlugin`, through the adapter, which confines every
+   * question to the vault. ONE QUESTION PER FOLDER, AS BEFORE: does the folder
+   * hold this plugin's own folder at the path this vault holds it
+   * (`manifest.dir`, the config folder's name included)? Listing each folder
+   * to ask every hidden one instead answers a turn later on Android, and that
+   * extra turn let a capitals-only folder rename received from another device
+   * be published back (android-recase.test.mjs, 5 of 20 runs under load).
+   * Only a manifest without `dir`, which Obsidian always sets, is asked by
+   * listing.
+   */
+  private async holdsPluginHere(folder: string): Promise<boolean> {
+    const adapter = this.plugin.app.vault.adapter;
+    const own = this.plugin.manifest.dir;
+    if (own !== undefined) return adapter.exists(`${folder}/${own}`);
+    let folders: string[];
+    try {
+      folders = (await adapter.list(folder)).folders;
+    } catch {
+      return false;
+    }
+    for (const child of folders) {
+      if (child.slice(child.lastIndexOf("/") + 1).startsWith(".") && (await adapter.exists(`${child}/plugins/${PAIRING_ACTION}`))) return true;
+    }
+    return false;
   }
 
   /**

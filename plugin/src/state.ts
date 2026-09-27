@@ -611,7 +611,9 @@ function indexFiles(files: Record<string, FileRecord>): Indexes {
 }
 
 export function dataLease(app: object, pluginId: string): Lease {
-  const scope = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
+  // The renderer's `window`, not module state: a reloaded plugin is a new
+  // module, and its data file must wait for the old one's last write.
+  const scope = window as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
   const windows = scope[Symbol.for("obsync.dataLease")] ??= new WeakMap();
   const leases = windows.get(app) ?? new Map<string, Lease>();
   windows.set(app, leases);

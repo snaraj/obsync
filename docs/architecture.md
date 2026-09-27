@@ -926,8 +926,14 @@ long poll and needs its timeout raised.
    pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in. So is a folder
-   holding its own `.obsidian/plugins/obsync-private-sync/`, a vault of its
-   own that syncs with obsync, named once by a notice; and a desktop vault
+   holding a hidden folder with `plugins/obsync-private-sync/` in it, a vault
+   of its own that syncs with obsync, named once by a notice. That hidden
+   folder is the other vault's config folder, `.obsidian` unless its owner
+   named it otherwise (`Vault#configDir`). A computer asks every hidden
+   folder, by name only; a phone asks each folder once for this plugin's
+   own folder at the path Obsidian loaded it from (`manifest.dir`), because
+   listing folders there answers a turn later and opened a race (#244)
+   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). A desktop vault
    that sits inside such a vault refuses to be set up, paired or started.
    Synced from both sides, each pass copied the outer vault into the inner
    one a level deeper, on every device (issue #180).

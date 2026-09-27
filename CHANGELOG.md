@@ -532,6 +532,17 @@ an IPv4 and an IPv6 cluster (#226).
 
 ### The project
 
+**The plugin directory's scorecard warnings are fixed.** A folder inside your
+vault that is a vault of its own with obsync installed is now recognised
+whatever its settings folder is called, not only `.obsidian`: Obsidian lets
+you name that folder yourself. A vault name received while pairing is checked
+for control characters without a regular expression that holds them, and the
+plugin keeps its data-file lock on Obsidian's window rather than on
+`globalThis`. A test over the plugin's source now refuses all three shapes.
+A phone asks each folder for obsync where this vault keeps it, so on a phone
+the folder inside must use the same settings-folder name as this vault; a
+computer finds it whatever its name. Desktop and mobile (#243).
+
 **Speed is measured.** A benchmark harness and a nightly CI run time a
 10,000-note first sync, an edit reaching a listening device, a 2 GiB
 transfer and an idle minute, reading the server's own CPU, memory, disk

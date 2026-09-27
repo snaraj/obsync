@@ -71,7 +71,8 @@ async function phone(t, r, fresh = false) {
   Object.assign(plugin, {
     app: { vault, fileManager: vault.fileManager, workspace: { getLeavesOfType: () => [] } },
     state,
-    manifest: { id: "obsync-private-sync", version: "1.1.4" },
+    // Obsidian gives every loaded plugin the vault path it was loaded from.
+    manifest: { id: "obsync-private-sync", version: "1.1.4", dir: ".obsidian/plugins/obsync-private-sync" },
     log: (line) => logs.push(line),
     registerEvent: () => undefined,
     platformName: () => "android",
