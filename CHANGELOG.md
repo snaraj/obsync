@@ -150,6 +150,17 @@ are unchanged (#221).
 
 ### Your notes stay safe
 
+**Two people typing in one note on two devices keep all of each other's
+typing.** When both devices merged each other's changes at the same moment,
+round after round, obsync stopped after three rounds and settled the note by
+rule: one device's version stayed and the other's went into a conflict copy,
+so words someone had just typed left the note they were still typing in
+(they were in the copy). It was rare, and most likely on a busy computer or
+phone. Each device now remembers the merges it has already worked out, so it
+keeps combining both people's typing for as long as they type, with no copy.
+Both typing devices need 1.1.4; a 1.1.3 device still settles by rule.
+Desktop and mobile (#227).
+
 **Deleting many notes at once asks first, and Restore here puts them back.**
 Five or more notes deleted in one go -- a multi-select, or the notes inside
 a deleted folder -- stay on your other devices, and one notice asks: "You
