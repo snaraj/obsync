@@ -1,0 +1,12 @@
+# M1896: the side that moved the note loses: the merging device's own name is posted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4229,7 +4229,7 @@
+  */
+ function settledName(context: SyncContext, change: ChangeRecord, base: string | undefined, ours: string, theirs: string): string {
+   if (ours === theirs || theirs === base) return ours;
+-  if (ours === base) return theirs;
++  if (ours === base) return ours;
+   const kept = ours < theirs ? ours : theirs;
+   context.host.log(
+     `pull decision=renamed_twice kept=${kept === ours ? "ours" : "theirs"} base=${base === undefined ? "unknown" : "known"} ` +

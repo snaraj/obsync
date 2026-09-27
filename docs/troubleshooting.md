@@ -49,6 +49,7 @@ server again unless the entry says so.
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
+| A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
 | **Restore a copy** fails on a USB stick or memory card | [Restoring a copy fails on a USB stick or memory card](#restoring-a-copy-fails-on-a-usb-stick-or-memory-card) |
 | I copied or renamed my vault, and obsync says credential storage could not be verified | [A copied or renamed vault shows a storage error](#a-copied-or-renamed-vault-shows-a-storage-error) |
 
@@ -758,6 +759,20 @@ Settings, obsync, **Deletions held back**.
 That is obsync refusing to throw away an edit, not a failure. See
 [Conflicts](conflicts.md).
 
+## A note or folder took the other device's name
+
+**What you see.** A note or folder you renamed now has the name another device
+gave it, and a notice says it `was renamed differently on two devices`.
+
+**Why it happens.** Two devices renamed the same note or folder differently
+before either of them synced. So that every device ends with the same name,
+each one picks the same one of the two names, by the same fixed rule, moves the
+notes there, and says in the notice which name it kept. Edits made under either
+name are kept. Nothing is copied or deleted.
+
+**How to fix it.** Nothing needs fixing. If you prefer the other name, rename
+the note or folder again on any one device and let it sync.
+
 ## Two folders that differ only in capitalisation
 
 **What you see.** One device shows two folders whose names differ only in
@@ -795,7 +810,8 @@ below), and let each device sync once.
 **Two devices renaming the same folder to two different capitalisations at
 once** end with copies of its notes on both. Nothing is lost: rename the
 folder on ONE device, let every device sync once, then delete the copies you
-do not want.
+do not want. Two different NAMES settle on one name by themselves: see
+[A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name).
 
 **How to fix it: do not delete the stale folder first.** On a device that
 folds capitals, the old spelling IS the live folder, so deleting it too early

@@ -1,0 +1,11 @@
+# M1901: a merge moves a note whose last write the vault has not reported
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4265,7 +4265,6 @@
+  */
+ async function takeName(context: SyncContext, change: ChangeRecord, localPath: string, target: string): Promise<string> {
+   if (target === localPath || context.state.fileByPath(localPath) === undefined) return localPath;
+-  for (const mark of context.written) if (mark.startsWith(`${localPath}:`)) return localPath;
+   const outcome = await relocate(context, localPath, target).catch((error: unknown) =>
+     error instanceof VaultPathError ? error.refusal : "failed");
+   context.host.log(

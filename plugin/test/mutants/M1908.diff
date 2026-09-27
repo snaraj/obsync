@@ -1,0 +1,12 @@
+# M1908: a push that left the selection records its version anyway (#91)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -411,7 +411,7 @@
+   // left exactly as they are.
+   const inScope = inSyncScope(path, context.state.data.syncFolders);
+   if (!inScope || (await context.host.stat(path)) === null) {
+-    const moved = inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined;
++    const moved = record !== undefined ? context.state.pathByFileId(fileId) : undefined;
+     const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+     const follows = carried !== undefined && carried.versionId === record?.versionId;
+     if (follows) {

@@ -116,7 +116,7 @@ import {
 } from "../syncScope";
 import { pauseId, publishPause } from "./pause";
 import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, reviveFile, retire, serialPublication, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, pushFolderDelete, reviveFile, retire, serialPublication, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -1793,6 +1793,16 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       if (decided !== null) return decided;
     } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
       return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+    } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
+      // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
+      // #151, #174). What this device holds there and has not published -- an
+      // edit, or a rename of its own, whose record is dirty until its push --
+      // descends from the same version the move does. Written beside it as a
+      // copy, a pure rename made a conflict copy of identical bytes, and a
+      // folder renamed two ways split note by note. So nothing is written: the
+      // push publishes what is here, the server holds the fork, and its
+      // reconciliation merges the text and the name alike (`settledName`).
+      return await deferToPush(context, change, localPath as string);
     } else {
       return await keepBoth(context, change, manifest);
     }
@@ -2342,6 +2352,18 @@ async function resolve(
   const baseId = ahead ? localVersionId : commonAncestor(file.versions, localVersionId, change.version_id);
   const before = await context.host.stat(localPath);
   const mine = await context.host.read(localPath);
+  // The name this device gives the note: where it is, or where it waits to be
+  // once that name is free (`settleBeside`).
+  const here = context.state.fileByPath(localPath)?.name ?? localPath;
+  // A NAME NOT PUBLISHED YET IS PUBLISHED FIRST (issue #151). A note moved
+  // here since its head was posted holds a rename no version carries, and the
+  // other device settles the pair from that head's name: deciding from this
+  // one instead, the two could each close the fork under a different name and
+  // fork it again. So the rename goes out first, as the fast-forward case
+  // below lets an unpushed edit, and the fork it makes is settled from names
+  // both devices can read.
+  const recorded = ahead ? null : await manifestOf(context, file, change, localVersionId).catch(() => null);
+  if (recorded !== null && recorded.path !== here) return await deferToPush(context, change, localPath, "unpublished_rename");
   // TWO HEADS, ONE CONTENT.
   //
   // This is where the storm ended up. A and B each merge the same pair to the
@@ -2382,13 +2404,27 @@ async function resolve(
     // closures name the same parents and chunks; postMerged offers the
     // existing version and authenticates its manifest before adopting it.
     // Exactly these two heads and no others, or convergence stands alone.
+    //
+    // AND THE SAME NAME (issue #151). Two heads of one content that differ
+    // only in where they put the note are a rename against a rename, or
+    // against nothing: the closing version carries the name `settledName`
+    // gives, which both devices compute alike, so the second closure is still
+    // the first one's twin -- and the note here goes there. A device older
+    // than this rule closes under its own name, which is no twin of this one,
+    // and each closing is a new fork for the other to close: bounded here as
+    // merges are (`closingAllowed`), since agreeing on the bytes already holds.
     if (
       held !== undefined &&
       file.heads.length === 2 &&
       file.heads.includes(localVersionId) &&
-      file.heads.includes(change.version_id)
+      file.heads.includes(change.version_id) &&
+      closingAllowed(context, change, localPath)
     ) {
-      await postMerged(context, change, localPath, localVersionId, mine, held.mtime, [...file.heads].sort());
+      const base = baseId === null ? undefined : (await manifestOf(context, file, change, baseId).catch(() => null))?.path;
+      const target = settledName(context, change, base, here, theirManifest.path);
+      const at = await takeName(context, change, localPath, target);
+      await postMerged(context, change, at, target, localVersionId, mine, held.mtime, [...file.heads].sort());
+      await retireLostFolders(context, base, target, target === here ? theirManifest.path : here);
       context.host.log(
         `pull decision=resolved reason=identical_heads file=${change.file_id} seq=${change.seq}`,
       );
@@ -2469,6 +2505,13 @@ async function resolve(
         // forks the file, which its own reconciliation merges from this same
         // base. A version the merge could not take keeps both, as before.
         if (ahead && !sameBytes(text, theirs)) return await deferToPush(context, change, localPath);
+        // THE MERGE HAS A NAME AS WELL AS A TEXT (issue #151): the one the side
+        // that moved the note chose, three-way against the same base the text
+        // took. Posted under this device's own name, it renamed the note back
+        // on the device that had moved it. The note goes there first, so the
+        // merged text is written where it is published.
+        const target = settledName(context, change, baseManifest.path, here, theirManifest.path);
+        localPath = await takeName(context, change, localPath, target);
         const writer = await context.host.writer(localPath);
         await writer.write(text);
         // A new background rewrite may still be waiting for the watcher's
@@ -2505,7 +2548,7 @@ async function resolve(
         // enqueue a push during commit, and that push must inherit this merge's
         // receipt rather than publish the new bytes onto the old parent.
         context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
-        return await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
+        const settled = await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
           const stat = await writer.commit(context.now());
           tally.left = stamp(stat);
           context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
@@ -2523,6 +2566,7 @@ async function resolve(
               mtime: stat.mtime,
               size: stat.size,
               sha256: await sidDigest(change.sids),
+              ...(target === localPath ? {} : { name: target }),
               ts: change.ts,
             });
             await context.state.save();
@@ -2541,11 +2585,13 @@ async function resolve(
             context.answering.set(change.file_id, { arrived: answer, mtime: stat.mtime });
             context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
           }
-          await postMerged(context, change, localPath, localVersionId, text, stat.mtime);
-          if (ours) context.host.notify(`obsync merged concurrent edits to ${localPath}.`);
+          await postMerged(context, change, localPath, target, localVersionId, text, stat.mtime);
+          if (ours) context.host.notify(`obsync merged concurrent edits to ${target}.`);
           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
           return "merged";
         });
+        await retireLostFolders(context, baseManifest.path, target, target === here ? theirManifest.path : here);
+        return settled;
       }
       context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
     }
@@ -2630,11 +2676,11 @@ async function editAnswer(context: SyncContext, fileId: string, path: string, st
  * come back `unchanged`, and it forks the file, which its own reconciliation
  * then settles from this same base.
  */
-async function deferToPush(context: SyncContext, change: ChangeRecord, localPath: string): Promise<ApplyResult> {
+async function deferToPush(context: SyncContext, change: ChangeRecord, localPath: string, reason = "unpushed_edit"): Promise<ApplyResult> {
   const held = context.state.fileByPath(localPath);
   if (held) context.state.setFile(localPath, { ...held, sha256: "" });
   await context.state.save();
-  return deferred(context, change, "unpushed_edit");
+  return deferred(context, change, reason);
 }
 
 /** Publish a peer-held editor without silently consuming another live head. */
@@ -3062,6 +3108,45 @@ const CRISS_CROSS_LEVELS = 3;
  */
 const MERGE_STORM_LIMIT = 5;
 const MERGE_STORM_MS = 60_000;
+
+/**
+ * HOW OFTEN ONE FILE'S IDENTICAL HEADS ARE CLOSED FROM HERE (issue #151).
+ *
+ * Two closings of one pair are one version when they carry the same name --
+ * the server answers the second with the first -- and two heads again when
+ * they do not, which is what a device older than `settledName` makes: it
+ * closes under its own name whatever this one computes. Each side then closes
+ * the other's closing, and the breaker in `reconcile` never trips on it,
+ * because each such version is new progress by its author. So closings are
+ * counted apart, in the breaker's own window: past `MERGE_STORM_LIMIT` of one
+ * file, this device closes no more of it until the window has passed, and
+ * says so once. Nothing is lost -- both heads hold the same bytes.
+ */
+const closings = new WeakMap<SyncContext, Map<string, { since: number; count: number }>>();
+
+function closingAllowed(context: SyncContext, change: ChangeRecord, path: string): boolean {
+  let files = closings.get(context);
+  if (files === undefined) closings.set(context, (files = new Map()));
+  const now = context.now();
+  const seen = files.get(change.file_id);
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
+  files.set(change.file_id, tally);
+  if (tally.count < MERGE_STORM_LIMIT) {
+    tally.count++;
+    return true;
+  }
+  context.host.log(
+    `pull decision=refused reason=closing_storm file=${change.file_id} count=${tally.count + 1} window_ms=${MERGE_STORM_MS} seq=${change.seq}`,
+  );
+  if (!context.refused.has(`closing\u0000${change.file_id}`)) {
+    context.refused.add(`closing\u0000${change.file_id}`);
+    context.host.notify(
+      `obsync stopped settling ${path}: another device keeps giving it a different name. Every device keeps the ` +
+        "same text and nothing was deleted. Update obsync on every device, and the name settles at the next edit.",
+    );
+  }
+  return false;
+}
 
 /** Byte equality over plaintext this device already holds; nothing secret. */
 function sameBytes(a: Bytes, b: Bytes): boolean {
@@ -4164,11 +4249,16 @@ async function keepBothAt(
   return { path: copy.path, stat: copy.stat };
 }
 
-/** Post the merge result as one version whose parents are BOTH heads. */
+/**
+ * Post the merge result as one version whose parents are BOTH heads, under the
+ * name the merge settled (`settledName`) -- which is where the note is here, or
+ * where it moves as soon as that name is free (`settleBeside`).
+ */
 async function postMerged(
   context: SyncContext,
   change: ChangeRecord,
   path: string,
+  target: string,
   localVersionId: string,
   text: Bytes,
   mtime: number,
@@ -4180,7 +4270,7 @@ async function postMerged(
   if (missing.length > 0) await context.transport.putChunk(sid, ciphertext);
   const manifest: Manifest = {
     v: 1,
-    path,
+    path: target,
     size: text.length,
     mtime,
     domain: context.domainId,
@@ -4210,8 +4300,103 @@ async function postMerged(
     mtime,
     size: text.length,
     sha256: digest,
+    ...(target === path ? {} : { name: target }),
   });
   await context.state.save();
+}
+
+/**
+ * WHERE A SETTLED NOTE LIVES (issue #151): three-way on the name, as the merge
+ * is on the text, against the same common ancestor.
+ *
+ * A side that did not move the note says nothing about its name, so the side
+ * that moved it is kept -- the rename survives the edit it met, where posting
+ * the merging device's own name renamed it back on both devices. Two sides
+ * that moved it DIFFERENTLY are settled by one rule every device computes from
+ * the same two names without asking another: the name that sorts first. Two
+ * names for one renamed folder differ at that folder and nowhere else, so every
+ * note in it takes the same side and the folder does not split (issue #174).
+ * The user is told which name that was, because nothing else would say it.
+ */
+function settledName(context: SyncContext, change: ChangeRecord, base: string | undefined, ours: string, theirs: string): string {
+  if (ours === theirs || theirs === base) return ours;
+  if (ours === base) return theirs;
+  const kept = ours < theirs ? ours : theirs;
+  context.host.log(
+    `pull decision=renamed_twice kept=${kept === ours ? "ours" : "theirs"} base=${base === undefined ? "unknown" : "known"} ` +
+      `file=${change.file_id} seq=${change.seq}`,
+  );
+  // What was renamed is what is left once the names shed the trailing parts
+  // they share: the folder, when a folder was renamed, so that a folder of two
+  // thousand notes is one notice and not two thousand.
+  const names = [ours, theirs, ...(base === undefined ? [] : [base])].map((name) => name.split("/"));
+  let shared = 0;
+  const part = (parts: string[]): string | undefined => parts[parts.length - 1 - shared];
+  while (names.every((parts) => parts.length - shared > 1 && part(parts) === part(names[0] as string[]))) shared++;
+  const unit = (name: string): string => name.split("/").slice(0, name.split("/").length - shared).join("/");
+  const key = `renamed\u0000${unit(base ?? kept)}`;
+  if (!context.refused.has(key)) {
+    context.refused.add(key);
+    context.host.notify(
+      `obsync: ${base === undefined ? "a note or folder" : `"${unit(base)}"`} was renamed differently on two devices: ` +
+        `"${unit(ours)}" here and "${unit(theirs)}" on another. Every device now uses "${unit(kept)}"; no note was ` +
+        "copied or deleted. To use the other name, rename it again.",
+    );
+  }
+  return kept;
+}
+
+/**
+ * The note, moved to the name its settlement carries (`settledName`), when that
+ * name is free: the host's guarded rename, marked as this device's own echo, the
+ * record following it (`relocate`). Anything else leaves the note where it is,
+ * and the record the post writes remembers the name, so it moves the moment it
+ * can (`settleBeside`, issue #149) -- including a write the vault has not
+ * reported yet, which a move must never overtake (`movable`).
+ */
+async function takeName(context: SyncContext, change: ChangeRecord, localPath: string, target: string): Promise<string> {
+  if (target === localPath || context.state.fileByPath(localPath) === undefined) return localPath;
+  for (const mark of context.written) if (mark.startsWith(`${localPath}:`)) return localPath;
+  const outcome = await relocate(context, localPath, target).catch((error: unknown) =>
+    error instanceof VaultPathError ? error.refusal : "failed");
+  context.host.log(
+    `pull path_class=file decision=${outcome === "moved" ? "renamed" : "rename_waits"} reason=settled_name ` +
+      `outcome=${outcome} file=${change.file_id} seq=${change.seq}`,
+  );
+  return outcome === "moved" ? target : localPath;
+}
+
+/**
+ * THE FOLDERS THE LOSING NAME MADE GO WITH IT (issue #174).
+ *
+ * A folder renamed two ways leaves each device holding both new folders: its
+ * own, and the other's, made by that device's folder record. The notes settle
+ * under one name, and the other folder is left empty with a record, which only
+ * its own tombstone removes -- one folder, two names, on every device. So the
+ * folders on the losing path that neither the kept name nor the common
+ * ancestor has, deepest first, are removed where they are EMPTY on this
+ * device's disk (`removeFolder`, the only removal a folder ever gets) and
+ * tombstoned, which is the rename the losing device would have published had it
+ * chosen the other name. Every device that settles the pair tombstones the same
+ * record the same way, so the server keeps one. A folder still holding
+ * anything stops the walk and keeps its record; one never removed here keeps it
+ * too, and a tombstone that cannot be posted now is posted by the next start's
+ * reconciliation, which tombstones every record whose folder is gone.
+ */
+async function retireLostFolders(context: SyncContext, base: string | undefined, kept: string, lost: string): Promise<void> {
+  if (base === undefined) return;
+  const keep = new Set([...ancestors(kept), ...ancestors(base)]);
+  for (const folder of ancestors(lost)) {
+    if (keep.has(folder) || !inSyncScope(folder, context.state.data.syncFolders)) return;
+    const shown = await context.host.spelling(folder);
+    if (shown === null) continue;
+    if ((await removeFolder(context, folder, shown)) !== "removed") return;
+    const tombstone = await pushFolderDelete(context, folder).catch(() => "failed");
+    if (tombstone !== null && tombstone !== "failed") context.authored.add(tombstone);
+    context.host.log(
+      `folder path_class=folder decision=removed reason=lost_name tombstone=${tombstone === null ? "none" : tombstone === "failed" ? "failed" : "posted"}`,
+    );
+  }
 }
 
 /**

@@ -10,6 +10,7 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { STEP_MS, pair, settled } from "./fake.mjs";
 
 const BASE = "one\ntwo\nthree\n";
@@ -389,4 +390,208 @@ for (const holder of ["smaller", "larger", "both"]) {
     );
     assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
   });
+}
+
+/*
+ * THE MERGE'S NAME (issue #151). A merge and a closing version carry a path
+ * too, and posting the merging device's own path renamed the note back on the
+ * device that had moved it: S03 ended with the renamed note under its old
+ * name on both devices. The name is merged three ways against the same
+ * ancestor the text is.
+ */
+const NAMED = "Notes/p1.md";
+const MOVED = "Notes/p1 renamed.md";
+
+/** A note at `from`, one version of this device's own on it, and one of the other's. */
+async function renamedFork({ ours, theirs, from = NAMED, mine = BASE, other = BASE }) {
+  const { rig, published } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const r = await rig();
+  r.host.seed(from, BASE, 1000);
+  const base = await pushFile(r.context, from);
+  if (ours !== from) {
+    // This device moved the note, as the rename handler records it.
+    r.host.files.set(ours, r.host.files.get(from));
+    r.host.files.delete(from);
+    r.state.setFile(ours, { ...r.state.fileByPath(from), mtime: -1, sha256: "" });
+    r.state.forgetPath(from);
+  }
+  r.host.seed(ours, mine, 2000);
+  const own = await pushFile(r.context, ours, true);
+  const frame = await r.server.publish({
+    fileId: base.fileId, path: theirs, bytes: new TextEncoder().encode(other), mtime: 3000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const newest = async () => (await published(r.server, base.fileId, r.keys.manifestKey)).at(-1);
+  return { r, base, own, frame, newest, apply: () => applyChange(r.context, frame) };
+}
+
+test("a merge carries the name the other device moved the note to, and the note moves here (#151)", async () => {
+  const { r, base, newest, apply } = await renamedFork({ ours: NAMED, theirs: MOVED, mine: DESKTOP });
+
+  assert.equal(await apply(), "merged");
+
+  const merged = await newest();
+  assert.equal(merged.path, MOVED, "the merge renamed the note back");
+  assert.equal(merged.sha256, digestOf(DESKTOP));
+  assert.equal(r.host.text(MOVED), DESKTOP, "the note is not under the name its merge carries");
+  assert.equal(r.host.text(NAMED), null, "the note stayed under its old name too");
+  assert.equal(r.state.pathByFileId(base.fileId), MOVED);
+  assert.equal(r.state.fileByPath(MOVED).name, undefined, "a note at its own name waits for it");
+  assert.deepEqual(r.server.files.get(base.fileId).heads.length, 1);
+  assert.ok(r.host.notices.includes(`obsync merged concurrent edits to ${MOVED}.`), r.host.notices.join(" | "));
+  assert.ok(!r.host.notices.some((notice) => notice.includes("renamed differently")), "one move is no disagreement");
+});
+
+test("a merge whose name is taken here still carries it, and the note waits beside it (#151)", async () => {
+  const { r, base, newest, apply } = await renamedFork({ ours: NAMED, theirs: MOVED, mine: DESKTOP });
+  r.host.seed(MOVED, "an unrelated note already wearing that name\n", 500);
+
+  assert.equal(await apply(), "merged");
+
+  assert.equal((await newest()).path, MOVED, "the merge carried the name it could not take here");
+  assert.equal(r.host.text(MOVED), "an unrelated note already wearing that name\n", "the other note was replaced");
+  assert.equal(r.host.text(NAMED), DESKTOP);
+  assert.equal(r.state.fileByPath(NAMED).name, MOVED, "the note does not remember the name it waits for");
+  assert.equal(r.state.fileByPath(NAMED).fileId, base.fileId);
+});
+
+test("a merge that comes out as the other device's bytes, under a name taken here, waits beside it (#151)", async () => {
+  const { r, base, frame, apply } = await renamedFork({ ours: NAMED, theirs: MOVED, other: DESKTOP });
+  r.host.seed(MOVED, "an unrelated note already wearing that name\n", 500);
+
+  assert.equal(await apply(), "applied");
+
+  assert.equal(r.host.text(NAMED), DESKTOP);
+  assert.equal(r.state.fileByPath(NAMED).versionId, frame.version_id);
+  assert.equal(r.state.fileByPath(NAMED).name, MOVED, "the note will publish its old name back at its next edit");
+  assert.equal(r.state.fileByPath(NAMED).fileId, base.fileId);
+});
+
+test("a note whose last write the vault has not reported yet is not moved by the merge (#151)", async () => {
+  const { r, base, newest, apply } = await renamedFork({ ours: NAMED, theirs: MOVED });
+  // A write of this device's own at that name, not reported back yet: a move
+  // now would let that report describe whatever takes the name next (#149).
+  r.context.written.add(`${NAMED}:2000:${BASE.length}`);
+
+  assert.equal(await apply(), "skipped");
+
+  assert.equal((await newest()).path, MOVED, "the closing version still carries the settled name");
+  assert.equal(r.host.text(NAMED), BASE, "the note moved before the vault reported its write");
+  assert.equal(r.state.fileByPath(NAMED).name, MOVED);
+  assert.equal(r.state.pathByFileId(base.fileId), NAMED);
+});
+
+test("identical heads that differ only by a rename close the fork under the moved name (#151)", async () => {
+  const { r, base, own, frame, newest, apply } = await renamedFork({ ours: NAMED, theirs: MOVED });
+
+  assert.equal(await apply(), "skipped");
+
+  const closing = await newest();
+  assert.equal(closing.path, MOVED, "the closing version renamed the note back");
+  assert.deepEqual(r.server.files.get(base.fileId).versions[0].parents, [own.versionId, frame.version_id].sort());
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
+  assert.equal(r.host.text(MOVED), BASE);
+  assert.equal(r.host.text(NAMED), null);
+  assert.equal(r.state.pathByFileId(base.fileId), MOVED);
+  assert.deepEqual(r.host.trashed, [], "a rename trashed the note");
+});
+
+for (const [ours, theirs] of [["Jobs/p1.md", "Work/p1.md"], ["Work/p1.md", "Jobs/p1.md"]]) {
+  test(`two renames of one note settle on the name that sorts first, from either side (ours ${ours}, #151 #174)`, async () => {
+    const { r, base, newest, apply } = await renamedFork({ ours, theirs, from: "Beta/p1.md" });
+
+    assert.equal(await apply(), "skipped");
+
+    assert.equal((await newest()).path, "Jobs/p1.md", "the devices can settle on different names");
+    assert.equal(r.host.text("Jobs/p1.md"), BASE);
+    assert.equal(r.host.text("Work/p1.md"), null);
+    assert.equal(r.state.pathByFileId(base.fileId), "Jobs/p1.md");
+    const told = r.host.notices.filter((notice) => notice.includes("renamed differently"));
+    assert.deepEqual(told, [`obsync: "Beta" was renamed differently on two devices: "${ours.split("/")[0]}" here and ` +
+      `"${theirs.split("/")[0]}" on another. Every device now uses "Jobs"; no note was copied or deleted. To use the other ` +
+      "name, rename it again."]);
+    assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=renamed_twice kept=${ours.startsWith("Jobs") ? "ours" : "theirs"} base=known`)),
+      r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  });
+}
+
+test("a rename this device has not published yet goes out before the pair is settled (#151)", async () => {
+  const { r, base, frame, apply } = await renamedFork({ ours: NAMED, theirs: MOVED });
+  // Moved again here, after this device's head was posted, and not pushed.
+  r.host.files.set("Notes/Mine.md", r.host.files.get(NAMED));
+  r.host.files.delete(NAMED);
+  r.state.setFile("Notes/Mine.md", { ...r.state.fileByPath(NAMED), mtime: -1, sha256: "" });
+  r.state.forgetPath(NAMED);
+  const before = r.server.journal.length;
+
+  assert.equal(await apply(), "skipped");
+
+  assert.equal(r.server.journal.length, before, "the pair was closed under a name the other device never saw");
+  assert.equal(r.host.text("Notes/Mine.md"), BASE, "the note was moved");
+  assert.equal(r.state.fileByPath("Notes/Mine.md").sha256, "", "the rename can no longer be pushed");
+  assert.ok(r.host.logs.includes(`pull decision=deferred reason=unpublished_rename file=${base.fileId} seq=${frame.seq}`),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+});
+
+/*
+ * AND A BOUND ON CLOSING. A device older than the rule closes a pair under its
+ * own name, which is no twin of this device's closing, so each side closes
+ * the other's closing for ever -- and every one of those versions is new
+ * progress by its author, which the merge breaker does not count. Closings of
+ * one file are counted on their own.
+ */
+test("one file's identical heads are closed at most five times in a minute from here (#151)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const r = await rig();
+  const SHARED = "the bytes every head carries\n";
+  r.host.seed(NAMED, SHARED, 1000);
+  const { fileId } = await pushFile(r.context, NAMED);
+  const round = async (mtime) => {
+    const head = r.state.fileByPath(NAMED).versionId;
+    await pushFile(r.context, NAMED, true);
+    const theirs = await r.server.publish({
+      fileId, path: NAMED, bytes: new TextEncoder().encode(SHARED), mtime, parents: [head],
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    return await settle(theirs);
+  };
+  const settle = async (theirs) => {
+    const before = r.server.journal.length;
+    assert.equal(await applyChange(r.context, theirs), "skipped");
+    return r.server.journal.length - before;
+  };
+
+  const closed = [];
+  for (let n = 1; n <= 6; n++) closed.push(await round(4000 + n));
+  assert.deepEqual(closed, [1, 1, 1, 1, 1, 0], r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 window_ms=60000`)));
+  assert.equal(r.host.text(NAMED), SHARED, "nothing was lost");
+  const told = r.host.notices.filter((notice) => notice.startsWith("obsync stopped settling"));
+  assert.deepEqual(told, [`obsync stopped settling ${NAMED}: another device keeps giving it a different name. Every ` +
+    "device keeps the same text and nothing was deleted. Update obsync on every device, and the name settles at the next edit."]);
+
+  // The window passes, and the next pair is closed again.
+  r.host.clock += 60_001;
+  const open = [...r.server.files.get(fileId).heads];
+  assert.equal(open.length, 2, "round six left no pair open");
+  await pushFile(r.context, NAMED, true, open);
+  const theirs = await r.server.publish({
+    fileId, path: NAMED, bytes: new TextEncoder().encode(SHARED), mtime: 6000, parents: open,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  assert.equal(await settle(theirs), 1);
+  assert.equal(r.server.files.get(fileId).heads.length, 1);
+});
+
+/** The digest a single-chunk manifest carries. */
+function digestOf(text) {
+  return createHash("sha256").update(text).digest("hex");
 }

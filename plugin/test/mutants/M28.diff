@@ -1,7 +1,7 @@
 # M28: any held answer enters the rule, not only one about the destination
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1454,14 +1454,8 @@
+@@ -1720,24 +1720,8 @@
      // does, the rule hands the version to `updateSettled`, which re-checks
      // that source before writing a byte. Trashing a source that holds an
      // unpushed edit is the loss issue #98 is about.
@@ -10,6 +10,16 @@
 -      if (decided !== null) return decided;
 -    } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
 -      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+-    } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
+-      // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
+-      // #151, #174). What this device holds there and has not published -- an
+-      // edit, or a rename of its own, whose record is dirty until its push --
+-      // descends from the same version the move does. Written beside it as a
+-      // copy, a pure rename made a conflict copy of identical bytes, and a
+-      // folder renamed two ways split note by note. So nothing is written: the
+-      // push publishes what is here, the server holds the fork, and its
+-      // reconciliation merges the text and the name alike (`settledName`).
+-      return await deferToPush(context, change, localPath as string);
 -    } else {
 -      return await keepBoth(context, change, manifest);
 -    }

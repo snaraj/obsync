@@ -451,10 +451,29 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   // the record here would put that path back and arm exactly that tombstone.
   // The version itself is published and stays published; what this device
   // declines to do is claim it still tracks a path it no longer syncs.
+  //
+  // BUT A NOTE THAT ONLY MOVED IS STILL THIS DEVICE'S, AND ITS NEXT VERSION
+  // DESCENDS FROM THIS ONE (issue #151). A rename landing while the manifest
+  // posts carries the record to the new name with the parent this push read,
+  // so the next push named that stale parent beside the version just posted
+  // and forked the file: a swap made in one call lost a name on every device.
+  // The record the rename carried -- found by file id, still naming the version
+  // this push was made on -- learns the posted version, and nothing else about
+  // it changes: the path it waits to publish is still unpublished. A record a
+  // pull has moved on since, and a path that left the selection (#91), are
+  // left exactly as they are.
   const inScope = inSyncScope(path, context.state.data.syncFolders);
   if (!inScope || (await context.host.stat(path)) === null) {
+    const moved = inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined;
+    const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+    const follows = carried !== undefined && carried.versionId === record?.versionId;
+    if (follows) {
+      context.state.setFile(moved as string, { ...carried, versionId: ack.versionId });
+      await context.state.save();
+    }
     context.host.log(
-      `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} file=${fileId}`,
+      `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} ` +
+        `parent=${follows ? "advanced" : "kept"} file=${fileId}`,
     );
     return { status: "pushed", fileId, versionId: ack.versionId };
   }

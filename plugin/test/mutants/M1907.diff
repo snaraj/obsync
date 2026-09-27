@@ -1,0 +1,12 @@
+# M1907: a push that outlives its path records nothing, so the next one forks
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -414,7 +414,7 @@
+     const moved = inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined;
+     const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+     const follows = carried !== undefined && carried.versionId === record?.versionId;
+-    if (follows) {
++    if ((false as boolean) && follows) {
+       context.state.setFile(moved as string, { ...carried, versionId: ack.versionId });
+       await context.state.save();
+     }

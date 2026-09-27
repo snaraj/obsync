@@ -971,7 +971,12 @@ long poll and needs its timeout raised.
    unresolvable or over-depth shared base refuses the merge; it cannot fall
    back to just one ancestor and replay the other's text.
    Replacements of existing characters and multi-line overlaps stay conflicts.
-   A clean merge posts a new version with both heads as parents.
+   A clean merge posts a new version with both heads as parents, under a name
+   merged the same way against the same ancestor: the side that moved the
+   note keeps its name, and two different moves keep, on every device, the
+   name that sorts first, which the user is told (issue #151). A folder
+   renamed two ways is that rule once per note, so every note takes the same
+   side, and the losing folder, emptied, is tombstoned (issue #174).
    Two heads that do not merge (binary, no
    ancestor, overlapping hunks) are settled by a rule every device computes
    alike without asking another: the head with the lower version id is the
@@ -986,8 +991,8 @@ long poll and needs its timeout raised.
    note is replaced only if it is exactly as it was read. A head that a later
    version has replaced is settled against that version instead. Delete
    versus edit keeps the live edit as one current head, with the deletion in
-   history. A pair the rule cannot see (a rename against an edit, a copy name
-   already taken) keeps both: the foreign head is written as
+   history. A pair the rule cannot see (a rename against an edit that does
+   not merge, a copy name already taken) keeps both: the foreign head is written as
    `<name> (conflict from <device>, <date>).<ext>` and the user is told.
    The status reads `syncing` while a note waits on this device's own push to
    settle a fork, and only while that push is in flight; a parked file is
