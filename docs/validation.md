@@ -1,14 +1,17 @@
 # Device validation plan
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-12. The MVP is validated when every step below passes on
-iPhone, iPad, Windows, and macOS against the reference deployment, plus the
-LAN path from a desktop.
+iPhone, iPad, Windows, and macOS against a private deployment on either route
+under "Routes" below, plus the LAN path from a desktop. Android and Linux are
+not in this definition; no recorded run covers them yet.
 
 ## What readiness means (owner ruling, 2026-09-07)
 
-The reference deployment is PRIVATE and owner-only: no public application,
+The deployment readiness is judged on is PRIVATE: no public application,
 no public DNS record, no public route. Readiness is real sync between the
-owner's own devices -- including OFF-LAN connectivity over a private path --
+maintainer's own devices -- including OFF-LAN connectivity over a private path --
 together with the authentication, revocation, isolation and recovery checks
 below. **Public reachability is not an acceptance criterion**, and no
 scenario here passes or fails on whether this server can be reached from the
@@ -184,13 +187,14 @@ readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Kubernetes route | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) lives in its platform's runbook, not here | private, owner-only: the LAN, or a private route back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` for the chart, terminator and device flow; V1-V14 by hand on a real deployment |
-| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
+| Kubernetes route | an in-cluster TLS terminator the deployer trusts, in front of the pod, as `docs/kubernetes.md` builds one; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) stays with whoever runs it, not here | private: the LAN, or a private route (a VPN or an overlay network) back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` on every pull request: the chart, the terminator and an API device flow on a throwaway cluster. Real devices on that route: V1-V14, by hand, in a run record |
+| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh` and `.github/workflows/compose-e2e.yml`, on every pull request |
 
 The Compose path is the no-provider route: it needs no account with anybody
-and nothing reachable from the internet, and unlike the reference deployment
-its serving path is re-proven on every pull request rather than by hand. Its
-"no public exposure" is an assertion and not a hope: the smoke reads back the
+and nothing reachable from the internet. Both routes' serving paths are
+re-proven on every pull request by a synthetic client; neither CI job drives
+the real plugin or a real device, which is what the run records are for. The
+Compose path's "no public exposure" is an assertion and not a hope: the smoke reads back the
 `HostIp` Docker published 80 and 443 on and refuses any address but the one
 `OBSYNC_BIND_ADDRESS` selected, and refuses the compose file itself if that
 variable is optional. V15 is where a person confirms on real devices what
@@ -200,7 +204,7 @@ Every run records device models, OS versions, app versions, the server
 commit, and timings in one file per run under
 [`docs/validation-runs/`](validation-runs/README.md), named `<date>.md` for
 the date the run started; that README holds the required fields and the
-redaction rules. The README's five captures are taken during the run -- 01 from
+redaction rules. The quickstart's five captures are taken during the run -- 01 from
 the production-path install above, 02 and 03 from V1, 04 from V2, 05 from V3
 -- and are committed under [`docs/captures/`](captures/README.md) by
 the convention recorded there.

@@ -1,5 +1,7 @@
 # Same network, step by step
 
+*For people using obsync.*
+
 One computer at home runs the server; your phone and your other computers sync
 with it whenever they are on the same Wi-Fi. There is no tunnel, no VPN, no
 domain and no account with anybody. When a device is away from home, its edits
@@ -12,9 +14,10 @@ and codes are obscured.
 
 ## What you need
 
-- A computer that stays on while you sync, with Docker. A Mac, a Windows PC, a
-  Linux box or a Raspberry Pi all work; the run below used a Mac with Docker
-  Desktop.
+- A computer that stays on while you sync, with Docker. The server image is
+  built for 64-bit Intel and ARM machines, a 64-bit Raspberry Pi included.
+  The run below used a Mac with Docker Desktop, and CI runs the same Compose
+  file on Linux; a Windows host has not been recorded yet.
 - Obsidian on each device.
 - About twenty minutes, most of it the phone's certificate.
 
@@ -27,10 +30,12 @@ yours to choose, and on a home network they are:
 - **`OBSYNC_HOST`**: a name every device can look up. The simplest is the
   computer's own local name, which Apple devices and most others resolve on a
   home network with nothing to configure. On a Mac it is **System Settings →
-  General → Sharing → Local hostname**, and ends in `.local`.
+  General → Sharing → Local hostname**, and ends in `.local`. If a device
+  cannot look that name up, give the server a name in your router's DNS
+  instead.
 - **`OBSYNC_BIND_ADDRESS`**: the computer's address on the Wi-Fi. On a Mac,
-  `ipconfig getifaddr en0` prints it. The server then answers only on that
-  network.
+  `ipconfig getifaddr en0` prints it; on Linux, `hostname -I`; on Windows,
+  `ipconfig`. The server then answers only on that network.
 - **The ports**: on a Mac, Docker Desktop refuses ports 80 and 443 unless
   **Enable privileged port mapping** is on in its settings. Otherwise set
   `OBSYNC_HTTP_PORT=8080` and `OBSYNC_HTTPS_PORT=8443`, and add `:8443` to
@@ -45,7 +50,9 @@ the matching name.
 **Let your devices in.** A computer's firewall can drop every connection from
 the phone even while the server is running. On a Mac, open **System Settings →
 Network → Firewall → Options**. Turn off **Block all incoming connections**,
-and let **Docker** accept incoming connections. Stealth mode can stay on.
+and let **Docker** accept incoming connections. Stealth mode can stay on. On
+Linux or Windows, allow incoming connections to ports 80 and 443 (or the ports
+you moved them to) in the host's firewall.
 
 ## Export the certificate
 

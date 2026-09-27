@@ -1,10 +1,31 @@
 # Threat model
 
+*For anyone deciding whether to trust obsync, and for reviewers.*
+
 Dated 2026-09-20. Assets, adversaries, what holds, what does not.
 
 The dashboard is one surface with its own entry points, session rules and
 residuals; [`security/dashboard.md`](security/dashboard.md) is that page and
 this one does not repeat it.
+
+## In plain words
+
+- **Encrypted on your device, before anything is sent:** the contents of
+  your notes and attachments, and their file and folder names. The server
+  stores only that ciphertext and never holds the key that opens it.
+- **What the server can see**, and so anyone who runs it or takes its disks:
+  how many files there are, their sizes, when they change, how their versions
+  relate, and which devices use it, with the names you gave them, their
+  network addresses and when they last signed in.
+- **What sits in front of the server** (your HTTPS proxy, or a tunnel
+  provider) sees the same, plus the sign-in credentials that pass through it.
+  It never sees note contents or the key.
+- **A paired device can read the whole vault.** If one is lost, revoke it
+  ([Recovery](recovery.md)).
+- **Not hidden from the server:** the number of files, their sizes and their
+  timing.
+
+The rest of this page is the precise version, for reviewers.
 
 ## Assets
 

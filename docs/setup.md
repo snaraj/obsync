@@ -1,8 +1,10 @@
 # Choose your setup
 
+*For people using obsync.*
+
 Every setup has the same three parts:
 
-- **The server:** one container you run on a computer or a Raspberry Pi that stays on.
+- **The server:** one container you run on a computer or a 64-bit Raspberry Pi that stays on.
 - **HTTPS in front of it,** with a certificate every device trusts.
 - **A way for each device to reach it.**
 
@@ -12,7 +14,7 @@ Not sure? Start with **Same network**: [Same network, step by step](same-network
 
 ## Start with your homelab
 
-Yes: obsync can live on a Raspberry Pi, mini PC, or home server you already
+Yes: obsync can live on a 64-bit Raspberry Pi, mini PC, or home server you already
 own. You do not need Cloudflare, a public website, or an account with a sync
 provider. Your notes stay as ordinary files in your Obsidian vault; your server
 stores their encrypted copies and history.
@@ -71,6 +73,22 @@ and [Recovery](recovery.md). No provider is required to hold your plaintext.
 | **A public name:** your HTTPS reverse proxy, or an optional [tunnel and access policy](cloudflare.md#shape-b-a-public-hostname-behind-access) | The device has internet | A domain. For an access policy, its service token in the plugin | Not yet recorded |
 
 In every recorded run so far, the devices were on the server's own network or its private route. Syncing from somewhere else entirely has not been recorded yet: [Reaching it from outside your LAN](server.md#reaching-it-from-outside-your-lan) lists what that needs.
+
+## Ways to reach your server
+
+Whichever you choose, the plugin needs HTTPS with a certificate every device
+trusts; the server stays on plain HTTP behind that terminator. Changing the
+route later changes nothing about your vault or its keys.
+
+- **LAN only.** The Compose path, reached only at home; no sync while you are away.
+- **WireGuard.** Your own VPN home: fastest, entirely yours; a peer configuration on every device.
+- **Tailscale.** A managed WireGuard mesh: least setup; a third party coordinates it, on its plan's terms.
+- **A reverse proxy with automatic TLS**, such as Caddy on a public name: reachable from the internet, yours to patch.
+- **A tunnel,** such as [Cloudflare's](cloudflare.md): no inbound port; a provider on the path, on its terms.
+
+Of these, only the LAN and one private route to a cluster have recorded
+device runs so far (the table above); the others are not yet proven on real
+devices.
 
 ## Your devices
 

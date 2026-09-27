@@ -1,5 +1,7 @@
 # Run the server on Kubernetes
 
+*For people running an obsync server.*
+
 This is the advanced path. [Docker and Compose](server.md) is the simple one,
 and it is the right answer for almost every deployment: one host, one command,
 two volumes you back up with a copy. Take this page when you already run a
@@ -438,11 +440,13 @@ front end authenticates users: the server reads the standard
 Authentication at the edge does not require Cloudflare; the plugin's optional
 service-token headers can serve another front end too.
 
-## 7. One reference deployment, end to end
+## 7. One example deployment, end to end
 
-The sections above are decisions taken one at a time. This is the shape they
+The sections above are decisions taken one at a time. This is one shape they
 add up to, written as a deployment a reader would build rather than as an
-account of anyone's own:
+account of anyone's own. It is an example, not a requirement: a multi-node
+cluster, another ingress controller or a public name behind your own proxy
+are all your choice.
 
 - A **single-node cluster** with a solid-state disk. One node, so the `local`
   volumes of section 2 have exactly one place to be; the same page works on a

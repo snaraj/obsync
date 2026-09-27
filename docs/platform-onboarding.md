@@ -1,5 +1,7 @@
 # Platform onboarding (what a GitOps platform repository must add)
 
+*Internals, for contributors and for operators wiring obsync into a GitOps platform.*
+
 Dated 2026-09-07. This page is for a deployer who runs obsync the way this
 project is delivered: a signed image and OCI chart from this repository's
 publisher, a change in a platform repository selecting an exact digest, and a
@@ -12,8 +14,10 @@ deployer's own choice (requirement 11).
 reached over private connectivity, LAN or VPN, with no public hostname, no
 public access application and no public route, which is `OBSYNC_EDGE=none`.
 Items 1 to 3 describe the published-hostname path for a deployer who wants
-one: they are optional, and taking them means moving to
-`OBSYNC_EDGE=cloudflare` at the same time, because in that mode the server
+one, and they are optional. Behind your own reverse proxy the server stays at
+`OBSYNC_EDGE=none` and trusts forwarded addresses only from
+`OBSYNC_TRUSTED_PROXY_CIDRS`. Only when the edge is Cloudflare's does the
+deployment move to `OBSYNC_EDGE=cloudflare`, and in that mode the server
 refuses any request without the edge's connecting-address and request-id
 headers.
 
@@ -57,9 +61,9 @@ no pod this chart renders.
    host follows whatever procedure the platform already uses for host paths.
 6. **Secret:** `OBSYNC_SERVER_KEY` as an encrypted, reconciler-managed Secret
    consumed by `secretKeyRef`; never a literal in a repository.
-7. **Promoter:** if the platform cuts releases from an acquisition profile,
-   one profile for the publisher `snaraj/obsync`, with its receipt contract
-   extended to this identity tuple.
+7. **Promotion:** if the platform promotes new releases automatically, it
+   watches the publisher `snaraj/obsync` and verifies the same signing
+   identity the OCIRepository in item 4 does.
 8. **Resources:** a single replica with the `Recreate` strategy (the volumes
    are `ReadWriteOnce`), and requests and limits sized to the node -- a small
    single-board machine wants a floor in the tens of mebibytes and a ceiling

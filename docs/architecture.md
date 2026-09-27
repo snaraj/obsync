@@ -1,5 +1,7 @@
 # obsync architecture
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. This is the design every lane builds from. Where a number
 here is a default, `docs/protocol.md` and `docs/storage.md` carry the exact
 contract; where it is a benchmark target, `docs/benchmarks.md` does.
@@ -79,8 +81,8 @@ per approved device, and a device that has not been paired and approved --
 however local it is -- can do nothing but be refused.
 
 **2. The hop from that terminator to this process is plain HTTP.** The server
-listens on plain HTTP and never links TLS (requirement 7), so on the
-reference deployment the connector-to-pod hop is unencrypted. What limits who
+listens on plain HTTP and never links TLS (requirement 7), so on a
+cluster deployment the terminator-to-pod hop is unencrypted. What limits who
 can reach it is a default-deny NetworkPolicy admitting exactly one peer and a
 restricted Pod Security level, which withholds the capabilities a
 neighbouring pod would need to read another pod's traffic. That is
@@ -175,9 +177,12 @@ decision, not a default.
 Files up to 8 MiB are one chunk. Larger files use content-defined chunking
 (gear-hash rolling window, homegrown, identical constants on both sides):
 minimum 1 MiB, target 4 MiB, maximum 8 MiB. Editing the middle of a 20 GB
-archive re-uploads a handful of chunks, not the file. The chunk cap keeps
-every request far below the 100 MB body limit a free Cloudflare zone
-imposes and bounds memory on mobile.
+archive re-uploads a handful of chunks, not the file. The chunk cap bounds
+every request body, which keeps it under the body limits edge providers
+commonly impose (100 MB on a free Cloudflare zone, for one) and bounds memory
+on mobile. It is still above some reverse proxies' defaults, such as nginx's
+1 MiB, which is why the terminator in `docs/kubernetes.md` section 4 lifts
+that limit.
 
 ### 3.4 File manifests and versions
 
@@ -319,7 +324,7 @@ a conflict the user never made.
 The server stores `wrapped = device_secret XOR HKDF(server_key,
 "obsync/v1/wrap", device_id)` — a one-time pad from a per-device HKDF
 output. A stolen journal without the server key yields nothing; the server
-key is a Kubernetes Secret on the reference deployment, or a first-boot
+key is a Kubernetes Secret on a cluster deployment, or a first-boot
 file with mode 0600 elsewhere.
 
 ## 4. Devices, pairing, identity
@@ -678,8 +683,11 @@ computed id -- every 1.0.x client -- is stored as posted.
 
 The **change feed** is the journal's version and tombstone frames, in
 sequence order, exposed by `GET /v1/changes?since=<seq>&wait=<s>`.
-`wait` long-polls up to 55 s (inside the edge's 100 s idle limit) and
-returns immediately when a new frame lands.
+`wait` long-polls up to 55 s and returns immediately when a new frame lands.
+55 s sits inside the idle limits of common terminators (60 s is nginx's
+default read timeout, 100 s a tunnel edge's); a proxy configured with a
+shorter one, such as the 30 s common in HAProxy examples, closes a healthy
+long poll and needs its timeout raised.
 
 ### 6.2 Plugin loops
 
@@ -1094,6 +1102,49 @@ returns immediately when a new frame lands.
    version graph is another device's to shape, the file a conflict lands on
    is the file with the longest history, and this runs on Obsidian's UI
    thread while the user waits.
+
+   Merge eligibility, which `docs/conflicts.md` states for users in plain
+   words. A merge happens only when ALL of these hold, and any one of them
+   failing gives a conflict copy instead:
+
+   - **It is a text format**: `.md`, `.markdown`, `.txt`, `.csv`, `.json`,
+     `.yaml`/`.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`, `.ini`,
+     `.log` — and the local file holds no NUL byte.
+   - **Both sides are under 8 MiB**, the chunk ceiling: a merge input is held
+     whole in memory, so the incoming version must be a single chunk, and so
+     must the version the two devices last agreed on. A 12 MiB `.csv` or `.log`
+     is never merged, extension notwithstanding; the log line says
+     `reason=base_above_one_chunk` when it was the common ancestor that was too
+     large.
+   - **The two versions share a common ancestor.** Two devices that
+     independently created the same path have none — there is nothing to
+     merge against, and neither side is a later version of the other.
+   - **The two sides are close enough to align.** The merge lines up each side
+     against the common ancestor with a table bounded at 4,000,000 cells,
+     counted after the shared opening and closing lines are trimmed. Two
+     versions that differ by thousands of lines in the middle exceed it, the
+     merge answers `too_large`, and a conflict copy results.
+   - **The changes can be combined.** Edits in different parts of the file
+     merge. Additions to one line can merge when its original characters
+     remain in order on both devices and its beginning is unchanged. Shared
+     added text appears once; different additions at the same position use a
+     consistent order. Character alignment has the same 4,000,000-cell bound.
+     Competing prefixes, replacements and deletions of the same text remain
+     conflicts.
+
+   An identical note is adopted from another file identity only while that
+   incoming version is the server's sole current head. Replaying an old
+   version of a note that has since been deleted or changed does not retire a
+   later independent note. An edit or replacement of the local record during
+   that check also stops adoption. The selected keeper is saved before the
+   duplicate identity is retired.
+
+   When one device deletes a note while another edits it, the edit stays. The
+   settlement incorporates the deletion as a parent, so the server holds one
+   current note and keeps the deletion only in history. Later edits do not
+   reopen the same deletion conflict, and successful settlement produces no
+   notice. An unpublished edit that cannot yet be sent remains on its device
+   with a warning until it can be published.
 5. **Policy.** Per device: `perFileMaxBytes` (desktop 0 = unlimited; mobile
    512 MiB, the practical whole-file read ceiling in a WebView) and
    `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a
@@ -1588,13 +1639,16 @@ never enter a repository. Edge mode follows the posture: `OBSYNC_EDGE=none`
 while nothing but private connectivity reaches the deployment, so a forwarded
 address is trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
 
-Publishing a hostname later is a configuration change, not a redesign: a
-tunnel for one hostname (`sync.example.org` standing in for the deployer's
-own) with an access policy in front -- identity policy for the dashboard
-paths, service-token policy for `/v1/*` -- and `OBSYNC_EDGE=cloudflare`, which
-makes the edge's connecting-address and request-id headers mandatory on every
-request and refuses one that lacks them. `docs/platform-onboarding.md` lists
-what a GitOps platform repository has to add.
+Publishing a hostname later is a configuration change, not a redesign. Behind
+the deployer's own reverse proxy (`sync.example.org` standing in for the
+deployer's own name) the edge mode stays `none` and
+`OBSYNC_TRUSTED_PROXY_CIDRS` names that proxy. Behind a tunnel provider with
+an access policy in front -- identity policy for the dashboard paths,
+service-token policy for `/v1/*` -- the Cloudflare form is
+`OBSYNC_EDGE=cloudflare`, which makes the edge's connecting-address and
+request-id headers mandatory on every request and refuses one that lacks
+them. `docs/platform-onboarding.md` lists what a GitOps platform repository
+has to add.
 
 Every other deployment differs from it in the terminator and in which
 proxies, if any, may speak for a client's address; the edge mode is `none`
