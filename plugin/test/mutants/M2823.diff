@@ -1,0 +1,12 @@
+# M2823: the half second restarts on every count: a page counted down never shows the wheel
+--- a/plugin/src/ui/indicator.ts
++++ b/plugin/src/ui/indicator.ts
+@@ -93,7 +93,7 @@
+   update(state: Indicated, label: string): void {
+     const now = this.now();
+     this.latest = { state, label };
+-    if (state === "syncing") this.busySince ??= now;
++    if (state === "syncing") this.busySince = now;
+     else this.busySince = null;
+     const wait = state === "syncing" && calm(this.shown)
+       ? SYNCING_AFTER_MS - (now - (this.busySince ?? now))

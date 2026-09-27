@@ -87,9 +87,17 @@ class TFolder {}
 class TAbstractFile {}
 // The editor view the host asks about an open note (issue #146); a test gives
 // an instance its \`file\` and \`getViewData\`, which is all the host reads.
-class MarkdownView {}
+class ItemView {}
+class MarkdownView extends ItemView {}
+// An icon is recorded, never drawn: the element's one child is a marker named
+// for it, as the real \`setIcon\` leaves one \`<svg>\` (the status indicator's
+// fixed width rests on that). Every Lucide name is known here.
+function setIcon(el, icon) { el.icon = icon; el.children = [{ svg: icon }]; }
+function getIcon(icon) { return { icon }; }
+function setTooltip(el, text) { (el.tooltips ??= []).push(text); }
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, MarkdownView, notices, raised,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, ItemView, MarkdownView, notices, raised,
+  setIcon, getIcon, setTooltip,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,
@@ -124,6 +132,26 @@ const sameSet = (a, b) => {
   const right = [...new Set(b)].sort();
   return left.length === right.length && left.every((id, index) => id === right[index]);
 };
+
+/**
+ * A status bar item, or a view-header action, as far as the plugin touches
+ * one: classes, attributes, listeners, and whatever the stub's \`setIcon\` and
+ * \`setTooltip\` record. \`tooltips\` is what the person would read on hover.
+ */
+export function statusItem() {
+  return {
+    classes: new Set(), attributes: {}, listeners: {}, texts: [], tooltips: [], children: [], removed: false,
+    addClass(...names) { for (const name of names) this.classes.add(name); },
+    setAttr(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    setText(text) { this.texts.push(text); },
+    addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
+    click() { for (const handler of this.listeners.click ?? []) handler({}); },
+    remove() { this.removed = true; },
+    /** The words on it now. */
+    get label() { return this.tooltips.at(-1); },
+  };
+}
 
 /** A vault of files in memory, with the `VaultHost` surface the engine needs. */
 export class FakeHost {

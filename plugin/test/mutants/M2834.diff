@@ -1,0 +1,11 @@
+# M2834: Sync now against a server not answering is silent
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2295,7 +2295,6 @@
+     const away = this.shown().kind === "offline";
+     if (away) {
+       this.wake("sync_now");
+-      new Notice(`obsync: ${NOT_ANSWERING}`);
+     }
+     let sent = 0;
+     if (!this.engine) await this.startEngine();

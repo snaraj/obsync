@@ -1,0 +1,12 @@
+# M2824: the words are drawn as text: the indicator's width follows them again
+--- a/plugin/src/ui/indicator.ts
++++ b/plugin/src/ui/indicator.ts
+@@ -128,7 +128,7 @@
+       setIcon(el, this.icon(state));
+       el.setAttr("data-state", state);
+     }
+-    setTooltip(el, this.label, { placement: "top" });
++    el.setText(this.label);
+   }
+ 
+   private icon(state: Indicated): string {

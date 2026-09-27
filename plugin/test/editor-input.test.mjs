@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { memorySecrets, sandbox } from "./fake.mjs";
+import { memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 function surface() {
   const handlers = new Map();
@@ -26,7 +26,7 @@ async function fixture(t) {
   instance.loadData = async () => null;
   instance.saveData = async () => {};
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: {
     on: (event, callback) => { hooks.set(event, callback); return {}; },
     getLeavesOfType: () => leaves, onLayoutReady: (ready) => ready(),

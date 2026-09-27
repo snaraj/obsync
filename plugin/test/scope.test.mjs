@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { FakeTimers, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets } from "./fake.mjs";
+import { FakeTimers, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inFolderScope, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
@@ -395,14 +395,17 @@ test("a failed save of a widening restores the cursor the device had", async (t)
 test("a device that syncs no folders says so in the status bar, not a bare idle (#150)", async (t) => {
   // S30d: `[]` was stored and the status bar read `obsync: idle`.
   const { instance } = await plugin(t);
-  const bar = { setText(text) { this.text = text; } };
-  instance.statusEl = bar;
+  // The indicator's words, and its icon: a device that syncs nothing is not a green check (#156).
+  const bar = statusItem();
+  instance.indicator.attach(bar);
   instance.engine = { stopAndWait: async () => undefined };
   await instance.saveSyncFolders([]);
-  assert.equal(bar.text, "obsync: idle — syncing no folders", "the bar still shows what it said before the save");
+  assert.equal(bar.label, "obsync: idle — syncing no folders", "the bar still shows what it said before the save");
+  assert.equal(bar.attributes["data-state"], "quiet");
   assert.equal(instance.statusText(), "idle — syncing no folders");
   await instance.saveSyncFolders(["Notes"]);
-  assert.equal(bar.text, "obsync: idle");
+  assert.equal(bar.label, "obsync: idle");
+  assert.equal(bar.attributes["data-state"], "synced");
 });
 
 test("an unused device can select folders or an explicit empty scope before pairing", async (t) => {
@@ -769,7 +772,7 @@ async function lifecyclePlugin(t) {
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
-  instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
+  instance.addStatusBarItem = () => { mounts.push("status"); return statusItem(); };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);
   }

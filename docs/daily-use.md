@@ -8,7 +8,8 @@ does not touch, how to get an older version of a note back, and the dashboard.
 
 ## Commands and the status bar
 
-Every command is under **Self Hosted Private Sync** in the command palette:
+Every command is under **Self Hosted Private Sync** in the command palette,
+and each name ends in `(obsync)`, so typing `obsync` there lists them all:
 
 | Command | What it does |
 | --- | --- |
@@ -21,11 +22,28 @@ Every command is under **Self Hosted Private Sync** in the command palette:
 | Open dashboard | Mints a one-time dashboard sign-in link |
 | Open the setup guide | Opens the setup guide in your browser |
 
-The status bar reads `obsync: not paired` before pairing, then `obsync: idle`
-(`obsync: idle — syncing no folders` when **Selected folders** is empty),
-`obsync: syncing <n>` while `n` files are in flight, `obsync: offline —
-retrying` when the server cannot be reached, and `obsync: error — <reason>`
-when sync has stopped and needs you.
+The status bar shows one icon, always the same width: a check when this
+device is up to date, a turning wheel while it syncs (it stands still under
+Reduce Motion), a cloud struck through while the server does not answer, an
+alert in your theme's error colour when sync has stopped and needs you, and a
+pause sign for a paused note. A faint cloud means the device is not paired yet,
+or syncs no folders. A save that syncs within half a second leaves the check
+where it is, so the bar does not flicker while you type.
+
+Hover the icon for its words: `obsync: not paired` before pairing, then
+`obsync: idle` (`obsync: idle — syncing no folders` when **Selected folders**
+is empty), `obsync: syncing <n>` while `n` files are in flight, `obsync:
+offline — retrying` when the server cannot be reached, and `obsync: error —
+<reason>` when sync has stopped and needs you. Click it for **Show sync
+status**, which says the same in full, stays current while it is open, and
+offers the one thing to do next: **Retry now**, **Pair again** or **Open
+settings**. **Sync now** always answers with a notice: what it sent, that
+nothing needed sending, or why it could not.
+
+On a phone or tablet, where Obsidian hides the status bar, the same icon sits
+in the header of the note in front; tap it for **Show sync status**. A refusal
+that needs you there -- this device removed from the account, a clock that is
+off, a full server -- is also said once in a notice.
 
 An incoming update may also stay pending while you type in its note. After
 your text saves and you pause typing for ten seconds, obsync retries it

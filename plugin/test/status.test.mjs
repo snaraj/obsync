@@ -312,6 +312,28 @@ test("a sending device never reads idle while pushes are still queued, echo page
   await stopped(r);
 });
 
+test("Sync now answers with how many changes it sent, and 0 when there was nothing to send (#182)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // Written while nothing watched: the press's own look at the vault finds them.
+  r.host.seed("Now a.md", "first\n", 4000);
+  r.host.seed("Now b.md", "second\n", 4001);
+  const press = async () => {
+    let sent;
+    void r.engine.syncNow().then((count) => { sent = count; });
+    await r.timers.run(STEP_MS, () => sent !== undefined);
+    return sent;
+  };
+  assert.equal(await press(), 2);
+  assert.ok(r.state.fileByPath("Now a.md") && r.state.fileByPath("Now b.md"), "and they were sent");
+  assert.equal(await press(), 0);
+  // A note deleted while nothing watched: its tombstone is a change sent too.
+  r.host.files.delete("Now b.md");
+  assert.equal(await press(), 1);
+  assert.ok(r.server.journal.some((frame) => frame.deleted), "and the server has it");
+  await stopped(r);
+});
+
 test("the next answered read takes back the feed's offline, even an empty page (#158)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
@@ -321,10 +343,13 @@ test("the next answered read takes back the feed's offline, even an empty page (
   await r.timers.run(0, () => r.last()?.kind === "offline");
   down = false;
   const from = r.statuses.length;
+  const asked = polls(r).length;
   r.engine.wake("answered");
   await r.timers.run(0, () => r.last()?.kind === "idle");
-  const page = polls(r).at(-2) ?? polls(r).at(-1);
-  assert.match(page.target, /wait=0/, "an empty quick read, not a page carrying a change");
+  assert.equal(r.last()?.kind, "idle");
+  // The read that took offline back is the wake's quick one: nothing changed
+  // since, so its page was empty. A long poll may already follow it.
+  assert.match(polls(r)[asked].target, /wait=0/, "an empty quick read, not a page carrying a change");
   assert.ok(r.statuses.slice(from).length >= 1);
   await stopped(r);
 });

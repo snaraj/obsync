@@ -97,7 +97,7 @@ the other. There is no third state and no silent overwrite.
 ## Avoiding them
 
 - Let a device finish syncing before editing the same note on another one. The
-  status bar reads `obsync: idle` when there is nothing in flight. This is the
+  status bar shows a check (`obsync: idle`) when there is nothing in flight. This is the
   only one of these that helps with a large file or a file two devices created
   independently, because neither of those can ever merge.
 - Do not run a second sync tool on the same vault. Two writers produce

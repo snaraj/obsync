@@ -1,0 +1,11 @@
+# M2844: a phone's indicator stays on the view left behind
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2010,7 +2010,6 @@
+     if (this.mobileIndicator?.view === view) return;
+     if (this.mobileIndicator !== null) {
+       this.indicator.detach(this.mobileIndicator.el);
+-      this.mobileIndicator.el.remove();
+       this.mobileIndicator = null;
+     }
+     if (view === null) return;

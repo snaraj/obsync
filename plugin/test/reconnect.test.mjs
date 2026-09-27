@@ -28,7 +28,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { FakeTimers, KEYS, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, KEYS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -105,11 +105,13 @@ async function fixture(t) {
   const load = instance.onload.bind(instance);
   instance.onload = async () => { await load(); await instance.firstStart; };
   let metadata = identity();
-  const logs = [], bar = [];
+  const logs = [];
+  // What the status indicator says on hover: its words, never a text node (#156).
+  const item = statusItem(), bar = item.tooltips;
   instance.loadData = async () => structuredClone(metadata);
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
+  instance.addStatusBarItem = () => item;
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "1.1.1" };
   instance.checkForUpdate = async () => {};

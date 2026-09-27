@@ -1,0 +1,12 @@
+# M2826: Show sync status is not found in the palette under obsync
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1916,7 +1916,7 @@
+     });
+     this.addCommand({
+       id: "status",
+-      name: "Show sync status (obsync)",
++      name: "Show sync status",
+       callback: () => this.showStatus(),
+     });
+     this.addCommand({

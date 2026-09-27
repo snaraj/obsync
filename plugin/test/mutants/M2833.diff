@@ -1,0 +1,12 @@
+# M2833: Sync now answers nothing when the server answered
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2300,7 +2300,7 @@
+     let sent = 0;
+     if (!this.engine) await this.startEngine();
+     else sent = (await this.engine.syncNow()) ?? 0;
+-    if (away) return;
++    if (away || sent >= 0) return;
+     const status = this.shown();
+     new Notice(status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
+       : status.kind === "error" ? `obsync: ${status.message}`

@@ -22,7 +22,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { DEVICE_B, FakeTimers, KEYS, SECRET_B, memorySecrets, published, rig, sandbox } from "./fake.mjs";
+import { DEVICE_B, FakeTimers, KEYS, SECRET_B, memorySecrets, published, rig, sandbox, statusItem } from "./fake.mjs";
 import { parseManifest as decoder10x } from "./fixtures/decoder-1.0.x.mjs";
 
 const require = createRequire(import.meta.url);
@@ -67,7 +67,7 @@ function vaultWindow(t) {
     plugin.loadData = async () => { reads++; return structuredClone(metadata); };
     plugin.saveData = async (value) => { if (hooks.save) await hooks.save(); metadata = structuredClone(value); };
     plugin.addCommand = plugin.addSettingTab = plugin.registerEvent = plugin.registerObsidianProtocolHandler = () => {};
-    plugin.addStatusBarItem = () => ({ setText() {} });
+    plugin.addStatusBarItem = () => statusItem();
     plugin.checkForUpdate = async () => {};
     plugin.startEngine = async () => {};
     plugin.log = (line) => logs.push(line);

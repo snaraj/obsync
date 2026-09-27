@@ -1,0 +1,11 @@
+# M2836: a deletion the server took is not counted as sent
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1775,7 +1775,6 @@
+         const outcome = await pushDelete(context, path);
+         if (outcome !== null) {
+           context.authored.add(outcome.versionId);
+-          this.accepted(true);
+           return;
+         }
+         // No tombstone was posted: either nothing was recorded to delete, or

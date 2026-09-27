@@ -1,0 +1,12 @@
+# M2839: Check against a server not answering loses the address and what to try
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -312,7 +312,7 @@
+             // Check is how a wrong address or a switched-off server is found.
+             const url = this.plugin.state.data.serverUrl;
+             const unanswered = (error: unknown): string =>
+-              refusalStatus(error)?.kind === "offline"
++              false
+                 ? `Nothing answered at ${url}. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.`
+                 : refusalText(error);
+             void check

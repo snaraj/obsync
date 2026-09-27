@@ -512,6 +512,12 @@ test("Show sync status lists every parked file with its reason", (t) => {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { StatusModal } = box.require(join(box.home, "build/ui/modals.js"));
   const drawn = [];
+  // The next step it offers is a row of its own, recorded like the table (#156).
+  Object.assign(box.require("obsidian").Setting.prototype, {
+    setName(value) { drawn.push(value); return this; },
+    setDesc(value) { drawn.push(value); return this; },
+    addButton(make) { make({ setButtonText(value) { drawn.push(value); return this; }, setCta() { return this; }, onClick() { return this; } }); return this; },
+  });
   const element = () => ({ createEl: (tag, attributes = {}) => { drawn.push(attributes.text ?? tag); return element(); }, empty: () => {} });
   const data = parseData({}, false);
   data.parked = {
@@ -521,6 +527,8 @@ test("Show sync status lists every parked file with its reason", (t) => {
   const modal = new StatusModal({}, {
     state: { data, localBytes: () => 0 },
     statusText: () => "error — Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)",
+    currentStatus: () => ({ kind: "error", message: "Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)" }),
+    onStatusChange: () => () => undefined,
   });
   modal.contentEl = element();
   modal.setTitle = () => {};

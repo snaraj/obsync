@@ -73,6 +73,8 @@ function stubPlugin(overrides = {}) {
     openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
     wake: (reason) => { calls.push(`wake:${reason}`); },
+    watchers: new Set(),
+    onStatusChange(watcher) { this.watchers.add(watcher); return () => { this.watchers.delete(watcher); }; },
     logs: [],
     log(line) { this.logs.push(line); },
     ...overrides,
@@ -317,6 +319,59 @@ test("Check asks the server without a credential before setup, and says to type 
   assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
 });
 
+test("Check reads 'Checking…' at once, asks with a person's patience, and answers in words, never a code (#182)", async (t) => {
+  let answer;
+  const asked = [];
+  const s = open(t, {
+    transport: { account: (patience) => { asked.push(patience); return new Promise((resolve, reject) => { answer = { resolve, reject }; }); } },
+  });
+  const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  s.plugin.state.paired = true;
+  const press = () => {
+    const drawn = s.render("Connection");
+    const check = s.button(drawn.made, "Check");
+    check.click();
+    return { setting: drawn.setting, check };
+  };
+  let { setting, check } = press();
+  assert.equal(setting.desc, "Checking…", "the press shows at once");
+  assert.equal(check.disabled, true, "and is not pressed twice");
+  assert.deepEqual(asked, [{ interactive: true }], "two attempts inside ten seconds, not the background's minute and a half");
+  answer.reject(new ApiError(0, "unreachable", "network=ERR_CONNECTION_REFUSED SENTINEL"));
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1),
+    "Nothing answered at https://sync.example.org. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.");
+  assert.doesNotMatch(s.obsidian.notices.join("\n"), /unreachable|SENTINEL|^0 /);
+  assert.equal(setting.desc, "idle", "the row says the status again");
+  assert.equal(check.disabled, false);
+
+  ({ setting, check } = press());
+  answer.reject(new ApiError(403, "device_revoked", "REVOKED SENTINEL"));
+  await tick(); await tick();
+  assert.match(s.obsidian.notices.at(-1), /removed/i, "a refusal is named for what it is");
+  assert.doesNotMatch(s.obsidian.notices.at(-1), /device_revoked|SENTINEL|403/);
+
+  ({ setting, check } = press());
+  answer.reject(new ApiError(418, "teapot", "TEAPOT SENTINEL"));
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1), "Your server refused this request; the obsync log names the reason.");
+});
+
+test("the Connection row says what the status bar says while Settings is open, and stops following when it closes (#182)", (t) => {
+  let words = "idle";
+  const s = open(t, { statusText: () => words });
+  const { setting } = s.render("Connection");
+  assert.equal(s.plugin.watchers.size, 1);
+  words = "offline — retrying";
+  for (const watcher of s.plugin.watchers) watcher();
+  assert.equal(setting.desc, "offline — retrying", "it used to read idle for as long as the tab was open");
+  s.render("Connection");
+  assert.equal(s.plugin.watchers.size, 1, "a redraw replaces its watcher, not adds one");
+  s.tab.hide();
+  assert.equal(s.plugin.watchers.size, 0);
+});
+
 test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {
   const s = open(t);
   const row = () => s.rows().find((item) => item.name === "Leave this server");
@@ -408,7 +463,10 @@ test("the device list is read when its row is drawn, once, redrawn when it arriv
   s.render("Device list");
   await tick();
   assert.deepEqual(s.calls, ["listDevices"], "a drawn list is not read again");
+  const updated = s.updates();
   s.button(s.render("Device list").made, "Refresh").click();
+  assert.equal(s.updates(), updated + 1, "Refresh redraws at once: 'Reading the device list…' replaces what was shown (#182)");
+  assert.equal(s.row("Device list").desc, "Reading the device list…");
   await tick();
   assert.deepEqual(s.calls, ["listDevices", "listDevices"]);
 });
@@ -424,6 +482,18 @@ test("an unreadable device list says so once and does not loop", async (t) => {
   assert.deepEqual(s.calls, ["listDevices"]);
   assert.equal(s.row("Device list").desc, "The device list is unavailable: LIST FAILURE SENTINEL");
   assert.equal(s.updates(), 1);
+});
+
+test("the device list is read with a person's patience, and a server not answering is said in words (#182)", async (t) => {
+  const asked = [];
+  const s = open(t, { listDevices: async (patience) => { asked.push(patience); throw new ApiError(0, "unreachable", "network=ERR_TIMED_OUT SENTINEL"); } });
+  const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.deepEqual(asked, [{ interactive: true }]);
+  assert.equal(s.row("Device list").desc, "The device list is unavailable: Your server is not answering. Sync resumes by itself when it is back.");
 });
 
 test("Save to server sends the drafted name and clears the draft", async (t) => {

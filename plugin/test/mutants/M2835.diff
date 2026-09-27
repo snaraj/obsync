@@ -1,0 +1,12 @@
+# M2835: Sync now counts every note it looked at as sent
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3190,7 +3190,7 @@
+     // What this press sent, for the one notice it answers with (`main.ts`,
+     // #182): versions the server took, not paths looked at -- the press
+     // re-reads every note, and most are unchanged.
+-    return this.written - written;
++    return queued + inFlight;
+   }
+ 
+   /** One worker shared by the timer and Sync now; dispatched writes are drained on stop. */

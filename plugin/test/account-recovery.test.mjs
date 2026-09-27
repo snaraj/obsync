@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { hkdfSync, createHash } from "node:crypto";
-import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys } from "./fake.mjs";
+import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } = require("../build/accountRecovery.js");
 const { ApiError, Transport } = require("../build/transport.js");
@@ -28,7 +28,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}), getName: () => "Recovery QA", getMarkdownFiles: () => [...host.files.keys()].filter((path) => path.endsWith(".md")) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};

@@ -52,10 +52,10 @@
  * `.obsidian/plugins/`.
  */
 
-import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
-import { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } from "./accountRecovery";
+import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource } from "./chunker";
 import { State, StateStorageError, dataLease, isPushed } from "./state";
@@ -69,14 +69,15 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, Transport, lostMessage } from "./transport";
-import { EngineStatus, MoveResult, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { ApiError, DeviceRecord, Patience, Transport, lostMessage } from "./transport";
+import { EngineStatus, MoveResult, NOT_ANSWERING, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newVaultKey, PAIRING_ACTION } from "./pairing";
 import { ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import { LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
+import { Indicator, indicated } from "./ui/indicator";
 import {
   ChainLink,
   FinalComponent,
@@ -1797,6 +1798,14 @@ export default class ObsyncPlugin extends Plugin {
   /** Whether this session has already raised the update notice. */
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
+  /** The status at a glance, drawn on the status bar item and, on mobile, a view's header (#156, #209). */
+  private readonly indicator = new Indicator();
+  /** The header action a phone shows the indicator on, and the view it is in (`placeIndicator`). */
+  private mobileIndicator: { el: HTMLElement; view: ItemView } | null = null;
+  /** The refusal a phone was last told about in a notice, once each (#209). */
+  private noticed: string | null = null;
+  /** Show sync status and the settings tab, re-drawn on every status change while open (#156). */
+  private readonly watchers = new Set<() => void>();
   private statusValue: EngineStatus = { kind: "idle" };
   forgottenDevice = false;
   private enrolling = false;
@@ -1816,7 +1825,7 @@ export default class ObsyncPlugin extends Plugin {
    * one (`null` while that start is running). Absent whenever the engine
    * runs, and whenever it stopped for a reason a later start cannot fix.
    */
-  private reconnect: { attempt: number; handle: number | null } | null = null;
+  private reconnect: { attempt: number; handle: number | null; at: number } | null = null;
 
   get isMobile(): boolean {
     return Platform.isMobile;
@@ -1880,41 +1889,44 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.transport = transport;
     this.statusEl = this.addStatusBarItem();
+    this.indicator.attach(this.statusEl);
+    // The indicator is the way in: a click opens what it cannot say (#156).
+    this.registerDomEvent(this.statusEl, "click", () => this.showStatus());
     this.setStatus({ kind: "idle" });
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
 
-    this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
-    this.addCommand({ id: "restore-history", name: "Restore from history", callback: () => new HistoryModal(this.app, this).open() });
+    this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
+    this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
-      name: "Pair a new device",
+      name: "Pair a new device (obsync)",
       callback: () => new PairCreateModal(this.app, this).open(),
     });
     this.addCommand({
       id: "show-recovery-phrase",
-      name: "Show recovery phrase",
+      name: "Show recovery phrase (obsync)",
       callback: () => new RecoveryPhraseModal(this.app, this, false).open(),
     });
-    this.addCommand({ id: "open-dashboard", name: "Open dashboard", callback: () => void this.openDashboard() });
-    this.addCommand({ id: "open-setup-guide", name: "Open the setup guide", callback: () => this.openSetupGuide() });
+    this.addCommand({ id: "open-dashboard", name: "Open dashboard (obsync)", callback: () => void this.openDashboard() });
+    this.addCommand({ id: "open-setup-guide", name: "Open the setup guide (obsync)", callback: () => this.openSetupGuide() });
     this.addCommand({
       id: "remote-only",
-      name: "Show remote-only files",
+      name: "Show remote-only files (obsync)",
       callback: () => new RemoteOnlyModal(this.app, this).open(),
     });
     this.addCommand({
       id: "status",
-      name: "Show sync status",
-      callback: () => new StatusModal(this.app, this).open(),
+      name: "Show sync status (obsync)",
+      callback: () => this.showStatus(),
     });
     this.addCommand({
       id: "leave-server",
-      name: "Leave this server",
+      name: "Leave this server (obsync)",
       callback: () => new LeaveServerModal(this.app, this, "leave").open(),
     });
     this.addCommand({
       id: "switch-server",
-      name: "Switch server",
+      name: "Switch server (obsync)",
       callback: () => new LeaveServerModal(this.app, this, "switch").open(),
     });
 
@@ -1930,6 +1942,8 @@ export default class ObsyncPlugin extends Plugin {
     this.registerVaultEvents();
     this.host.trackInput(window);
     this.registerEvent(this.app.workspace.on("window-open", (_workspaceWindow, opened) => this.host.trackInput(opened)));
+    // A phone has no status bar: the indicator follows the view in front (#209).
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.placeIndicator()));
     // The device's own word that something changed is the cheapest signal
     // there is (`wake`): its network is back (`online`, which a laptop lid or
     // a phone leaving a tunnel raises), or the app is in front of the person
@@ -1964,6 +1978,7 @@ export default class ObsyncPlugin extends Plugin {
         const opened = view.containerEl.ownerDocument.defaultView;
         if (opened !== null) this.host.trackInput(opened);
       }
+      this.placeIndicator();
       listed();
     })).then(async () => {
       if (this.state.paired) await this.startEngine();
@@ -1975,6 +1990,38 @@ export default class ObsyncPlugin extends Plugin {
     this.lifecycle = null;
     this.cancelHistories();
     this.teardownEngine();
+    this.mobileIndicator?.el.remove();
+    this.mobileIndicator = null;
+    this.indicator.stop();
+    this.watchers.clear();
+  }
+
+  /**
+   * WHERE A PHONE SHOWS THE INDICATOR (#209). Obsidian's mobile app hides the
+   * status bar, and ribbon actions there live in a menu that has to be opened,
+   * so nothing on a phone said what obsync was doing outside Settings. The
+   * header of the view in front is on screen whenever a note is: the
+   * indicator is an action there, the same icon and states as the desktop
+   * item, and a tap opens Show sync status. It moves with the view in front.
+   */
+  private placeIndicator(): void {
+    if (!Platform.isMobile) return;
+    const view = this.app.workspace.getActiveViewOfType(ItemView);
+    if (this.mobileIndicator?.view === view) return;
+    if (this.mobileIndicator !== null) {
+      this.indicator.detach(this.mobileIndicator.el);
+      this.mobileIndicator.el.remove();
+      this.mobileIndicator = null;
+    }
+    if (view === null) return;
+    const el = view.addAction("refresh-cw", "Show sync status (obsync)", () => this.showStatus());
+    this.mobileIndicator = { el, view };
+    this.indicator.attach(el);
+  }
+
+  /** Show sync status: from the indicator, the palette, and a phone's view header (#156). */
+  showStatus(): void {
+    new StatusModal(this.app, this).open();
   }
 
   private registerVaultEvents(): void {
@@ -2193,7 +2240,7 @@ export default class ObsyncPlugin extends Plugin {
    */
   private scheduleReconnect(attempt: number, status: number): void {
     const delay = Math.min(RECONNECT_CAP_MS, RECONNECT_START_MS * 2 ** (attempt - 1));
-    this.reconnect = { attempt, handle: window.setTimeout(() => this.retryNow("timer"), delay) };
+    this.reconnect = { attempt, handle: window.setTimeout(() => this.retryNow("timer"), delay), at: Date.now() + delay };
     this.log(`engine decision=retry_scheduled attempt=${attempt} delay_ms=${delay} status=${status}`);
   }
 
@@ -2236,13 +2283,28 @@ export default class ObsyncPlugin extends Plugin {
     await this.startEngine();
   }
 
+  /**
+   * Sync now ALWAYS ANSWERS, once (#182): it said nothing at all, so a press
+   * against a server that was off looked ignored. A server that is not
+   * answering is said at once, and the retry goes on in the background;
+   * otherwise the press answers when its work is done -- what it sent, that
+   * nothing needed sending, or what stopped it.
+   */
   async syncNow(): Promise<void> {
     if (this.changingScope || this.restoring !== null) return;
-    if (!this.engine) {
-      await this.startEngine();
-      return;
+    const away = this.shown().kind === "offline";
+    if (away) {
+      this.wake("sync_now");
+      new Notice(`obsync: ${NOT_ANSWERING}`);
     }
-    await this.engine.syncNow();
+    let sent = 0;
+    if (!this.engine) await this.startEngine();
+    else sent = (await this.engine.syncNow()) ?? 0;
+    if (away) return;
+    const status = this.shown();
+    new Notice(status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
+      : status.kind === "error" ? `obsync: ${status.message}`
+      : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.` : "obsync: nothing to send; this device is up to date.");
   }
 
   /** Resume in Show sync status: sync one paused note again (issue #179). */
@@ -2480,8 +2542,8 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   /** Every device paired to this vault, for the settings tab's device list. */
-  async listDevices(): Promise<DeviceRecord[]> {
-    return (await this.transport.devices()).devices;
+  async listDevices(patience: Patience = {}): Promise<DeviceRecord[]> {
+    return (await this.transport.devices(patience)).devices;
   }
 
   /**
@@ -3019,7 +3081,56 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private render(): void {
-    this.statusEl?.setText(`obsync: ${this.statusText()}`);
+    const status = this.shown();
+    const quiet = !this.state.paired || this.state.data.syncFolders?.length === 0;
+    this.indicator.update(indicated(status, quiet), `obsync: ${this.statusText()}`);
+    // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
+    // needs the person is said once in a notice there, as it turns to it.
+    const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
+    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) new Notice(`obsync: ${refusal}`, 15000);
+    this.noticed = refusal;
+    for (const watcher of this.watchers) watcher();
+  }
+
+  /** Be told of every status change until the returned function is called (#156). */
+  onStatusChange(watcher: () => void): () => void {
+    this.watchers.add(watcher);
+    return () => { this.watchers.delete(watcher); };
+  }
+
+  /** The status the person reads, for Show sync status to choose its next step by. */
+  currentStatus(): EngineStatus {
+    return this.shown();
+  }
+
+  /** When the next attempt runs by itself: a request asleep in its backoff, or the pending reconnect. */
+  nextRetryAt(): number | null {
+    const at = [this.transport.retryAt(), this.reconnect?.handle === null ? null : this.reconnect?.at ?? null]
+      .filter((time): time is number => time !== null);
+    return at.length === 0 ? null : Math.min(...at);
+  }
+
+  /**
+   * Retry now, from Show sync status (#156): everything waiting on a timer
+   * goes at once, and a stopped engine -- a refusal the person has just
+   * fixed, a clock set right -- starts again.
+   */
+  retry(): void {
+    this.log("engine decision=retry_now reason=pressed");
+    this.wake("retry_now");
+    if (this.engine !== null) void this.syncNow();
+    else if (this.reconnect === null) void this.startEngine();
+  }
+
+  /** obsync's own settings tab: where Pair this device and the edge headers are. */
+  openSettings(): void {
+    const settings = (this.app as App & SettingsHost).setting;
+    if (settings === undefined) {
+      this.log("status decision=refused reason=settings_window_unavailable");
+      return;
+    }
+    settings.open();
+    settings.openTabById(this.manifest.id);
   }
 
   statusText(): string {

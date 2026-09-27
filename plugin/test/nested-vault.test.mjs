@@ -35,7 +35,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -339,7 +339,9 @@ async function loaded(t, root, metadata) {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
   obsidian.notices.length = 0;
-  const requests = [], logs = [], bar = [];
+  const requests = [], logs = [];
+  // What the status indicator says on hover: its words, never a text node (#156).
+  const item = statusItem(), bar = item.tooltips;
   obsidian.requestUrl = async (request) => {
     requests.push(request.url);
     return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) };
@@ -350,7 +352,7 @@ async function loaded(t, root, metadata) {
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
+  instance.addStatusBarItem = () => item;
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: { getBasePath: () => root }, on: () => ({}) } };
   instance.manifest = { version: "1.1.3" };
   instance.checkForUpdate = async () => {};
@@ -381,7 +383,9 @@ test("a vault paired before the check existed stops at every start inside a sync
   assert.deepEqual(p.requests, [], "nothing reached the server");
   assert.equal(p.instance.engine, null);
   assert.equal(p.instance.statusText(), `error — ${refusal("Outer")}`);
-  assert.deepEqual(p.notices, [`obsync: ${refusal("Outer")}`], "one notice, not one per start");
+  // One notice for the refusal, not one per start -- and the Sync now press
+  // answers once, with the same reason, because a press always answers (#182).
+  assert.deepEqual(p.notices, [`obsync: ${refusal("Outer")}`, `obsync: ${refusal("Outer")}`], "one per start, plus the press's answer");
   assert.equal(p.logs.filter((line) => /^engine decision=refused reason=nested_vault duration_ms=\d+$/.test(line)).length, 3, p.logs.join(" | "));
   assert.ok(!p.logs.some((line) => line.startsWith("engine decision=retry_scheduled")), "no timer knocks again");
 });

@@ -1,0 +1,12 @@
+# M2827: Show sync status renders once and goes stale while open
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -754,7 +754,7 @@
+   override onOpen(): void {
+     this.setTitle("Sync status");
+     this.render();
+-    this.unwatch = this.plugin.onStatusChange(() => this.render());
++    this.unwatch = this.plugin.onStatusChange(() => undefined);
+   }
+ 
+   private render(): void {

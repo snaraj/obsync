@@ -27,6 +27,7 @@ import {
   memorySecrets,
   rig,
   sandbox,
+  statusItem,
 } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
@@ -130,7 +131,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};

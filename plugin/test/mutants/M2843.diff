@@ -1,0 +1,11 @@
+# M2843: an unnamed refusal is shown with its raw code
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -418,7 +418,6 @@
+   const refused = refusalStatus(error);
+   if (refused?.kind === "offline") return NOT_ANSWERING;
+   if (refused?.kind === "error") return refused.message;
+-  if (error instanceof ApiError) return "Your server refused this request; the obsync log names the reason.";
+   return error instanceof Error ? error.message : String(error);
+ }
+ 

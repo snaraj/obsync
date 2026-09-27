@@ -28,6 +28,7 @@ import {
   SETUP_TOKEN,
   memorySecrets,
   sandbox,
+  statusItem,
 } from "./fake.mjs";
 
 const OLD = "https://sync.example.invalid";
@@ -75,7 +76,7 @@ async function fixture(t, { devices = 1, isMobile = false } = {}) {
   instance.loadData = async () => structuredClone(metadata);
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { secretStorage: secrets, vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { id: "obsync-private-sync", version: "1.0.6" };
   instance.checkForUpdate = async () => {};

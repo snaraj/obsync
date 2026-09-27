@@ -38,6 +38,7 @@ import type { App, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
 import { parseSyncFolders } from "../syncScope";
+import { refusalStatus, refusalText } from "../sync/engine";
 import type { DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, VaultKeyModal, confirmFirst } from "./modals";
@@ -143,6 +144,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private deviceListError: string | null = null;
   private readingDevices = false;
   private draftUrl: string | null = null;
+  /** Stops the Connection row following the status, when the tab closes. */
+  private unwatch: (() => void) | null = null;
 
   constructor(
     app: App,
@@ -169,6 +172,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
     // Closing Settings is leaving the field: what was typed is adopted, not lost.
     this.adoptServerUrl();
     super.hide();
+    this.unwatch?.();
+    this.unwatch = null;
     this.draftScope = null;
     this.draftToken = "";
     this.draftName = null;
@@ -264,28 +269,59 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /**
+   * The Connection row, and Check (#182).
+   *
+   * THE ROW SAYS WHAT THE STATUS BAR SAYS, while Settings is open: it follows
+   * every status change, where it used to read `idle` for as long as the tab
+   * had been open under a bar reading `offline — retrying`.
+   *
+   * CHECK ANSWERS AT ONCE AND WITHIN SECONDS. It reads "Checking…" as it is
+   * pressed, asks with a person's patience -- two attempts inside ten seconds
+   * (`Patience`) -- rather than the background's minute and a half, and says
+   * the answer in words: against a server that was off it was silent for 103 s
+   * and then showed `0 unreachable: network=...`.
+   */
   private connection(): Row {
     return {
       name: "Connection",
       desc: () => this.plugin.statusText(),
       render: (setting) => {
+        let checking = false;
+        const describe = (): void => { if (!checking) setting.setDesc(this.plugin.statusText()); };
+        this.unwatch?.();
+        this.unwatch = this.plugin.onStatusChange(describe);
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
             if (this.plugin.state.data.serverUrl === "") {
               new Notice("Type your server's address in Server URL first.");
               return;
             }
+            checking = true;
+            button.setDisabled(true);
+            setting.setDesc("Checking…");
             // Before setup there is no device to sign with, and the signed
             // read answered "not paired" without asking the server anything:
             // the one moment a person most needs to know whether the address
             // works (2026-09-24 battery, S08; #137). The plugin manifest is the
             // route that needs no credential.
             const check = this.plugin.state.paired
-              ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
-              : this.plugin.transport.pluginManifest().then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+              ? this.plugin.transport.account({ interactive: true }).then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
+              : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+            // Nothing answering is said with the address and what to try: a
+            // Check is how a wrong address or a switched-off server is found.
+            const url = this.plugin.state.data.serverUrl;
+            const unanswered = (error: unknown): string =>
+              refusalStatus(error)?.kind === "offline"
+                ? `Nothing answered at ${url}. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.`
+                : refusalText(error);
             void check
-              .then((text) => { new Notice(text); })
-              .catch((error: unknown) => { new Notice(message(error), 8000); });
+              .then((text) => { new Notice(text); }, (error: unknown) => { new Notice(unanswered(error), 8000); })
+              .finally(() => {
+                checking = false;
+                button.setDisabled(false);
+                describe();
+              });
           }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));
       },
@@ -697,6 +733,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
           this.deviceList = null;
           this.deviceListError = null;
           this.readDevices();
+          // Drawn at once: "Reading the device list…" replaces the old error (#182).
+          this.update();
         }));
         if (this.deviceList === null && this.deviceListError === null) this.readDevices();
       },
@@ -709,8 +747,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.readingDevices = true;
     const { deviceId, serverUrl } = this.plugin.state.data;
     const current = (): boolean => deviceId === this.plugin.state.data.deviceId && serverUrl === this.plugin.state.data.serverUrl;
-    void this.plugin.listDevices()
-      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => { if (current()) this.deviceListError = `The device list is unavailable: ${message(error)}`; })
+    // A person is looking at this list: their patience, not the background's (#182).
+    void this.plugin.listDevices({ interactive: true })
+      .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => { if (current()) this.deviceListError = `The device list is unavailable: ${refusalText(error)}`; })
       .finally(() => {
         this.readingDevices = false;
         this.update();

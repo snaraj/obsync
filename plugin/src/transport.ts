@@ -154,7 +154,8 @@ export function lostMessage(what: string, lost: Lost): string {
   if (lost.attempts === 1 && REFUSED.test(lost.reason)) {
     return (
       `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
-      "Check the Server URL, port included: it is the port your server publishes HTTPS on."
+      "Check the Server URL, port included: it is the port your server publishes HTTPS on. If this address has worked " +
+      "before, your server may be switched off."
     );
   }
   return (

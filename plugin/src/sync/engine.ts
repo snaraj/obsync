@@ -375,6 +375,8 @@ export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
 export const PUSH_REFUSED =
   "Your server refused a change from this device. It is sent again when the note next changes, or within a minute; if this stays, check your server's log.";
+/** Said for a press, a Check or Sync now, that met a server not answering (#182). */
+export const NOT_ANSWERING = "Your server is not answering. Sync resumes by itself when it is back.";
 export const VERIFY_FAILED =
   "Server repair could not verify a file this device keeps: the file could not be read here, or the server's copy did not check out. It tries again within five minutes; if this stays, check the server's scrub report.";
 
@@ -404,6 +406,20 @@ export function refusalStatus(error: unknown): EngineStatus | null {
     return { kind: "error", code: "edge", message: NOT_OBSYNC_ANSWER };
   }
   return null;
+}
+
+/**
+ * A failed press in words (#182): a Check, a device list read. Absence and
+ * the refusals `refusalStatus` names say what they say; any other refusal is
+ * said without its code, which stays in the log; a local fault keeps its own
+ * words. No `0 unreachable: network=...` reaches a person.
+ */
+export function refusalText(error: unknown): string {
+  const refused = refusalStatus(error);
+  if (refused?.kind === "offline") return NOT_ANSWERING;
+  if (refused?.kind === "error") return refused.message;
+  if (error instanceof ApiError) return "Your server refused this request; the obsync log names the reason.";
+  return error instanceof Error ? error.message : String(error);
 }
 
 export interface Timers {
@@ -626,6 +642,8 @@ export class SyncEngine {
   private absent = false;
   /** Records of the page being applied that are not yet written: work the status counts (#158). */
   private pulls = 0;
+  /** Versions the server has taken from this device since it started: what a Sync now press reports (#182). */
+  private written = 0;
   /** Paths already sent again under a new vault key (`rekeyed`): once each. */
   private readonly republished = new Set<string>();
   private rekeyNoticeShown = false;
@@ -815,6 +833,7 @@ export class SyncEngine {
    * answers reads, so only a change it takes clears that one.
    */
   private accepted(write: boolean): void {
+    if (write) this.written++;
     const refused = this.refused;
     if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
     this.refused = null;
@@ -1712,7 +1731,10 @@ export class SyncEngine {
       // folder sets are the only ones that can name a path with no stat.
       if (this.folderRemovals.delete(path)) {
         const versionId = await pushFolderDelete(context, path);
-        if (versionId !== null) context.authored.add(versionId);
+        if (versionId !== null) {
+          context.authored.add(versionId);
+          this.accepted(true);
+        }
         return;
       }
       if (this.folderPublishes.delete(path)) {
@@ -1753,6 +1775,7 @@ export class SyncEngine {
         const outcome = await pushDelete(context, path);
         if (outcome !== null) {
           context.authored.add(outcome.versionId);
+          this.accepted(true);
           return;
         }
         // No tombstone was posted: either nothing was recorded to delete, or
@@ -3135,7 +3158,7 @@ export class SyncEngine {
    * the queue again, so one more drain follows. That second drain is a no-op
    * when nothing is left, which is why one is enough.
    */
-  async syncNow(): Promise<void> {
+  async syncNow(): Promise<number> {
     const started = this.nowFn();
     const joined = this.draining;
     const pending = this.heldDeletions.length > 0;
@@ -3154,6 +3177,7 @@ export class SyncEngine {
     }
     const queued = this.queue.length;
     const inFlight = this.active;
+    const written = this.written;
     await this.drain();
     const followUp = this.queue.length > 0 || this.draining;
     if (followUp) await this.drain();
@@ -3163,6 +3187,10 @@ export class SyncEngine {
     );
     await this.retryParked("sync_now");
     await this.repairTick();
+    // What this press sent, for the one notice it answers with (`main.ts`,
+    // #182): versions the server took, not paths looked at -- the press
+    // re-reads every note, and most are unchanged.
+    return this.written - written;
   }
 
   /** One worker shared by the timer and Sync now; dispatched writes are drained on stop. */

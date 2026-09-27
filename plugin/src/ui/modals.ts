@@ -729,8 +729,21 @@ export class VaultKeyModal extends Modal {
   }
 }
 
-/** What the status bar cannot say in four words. */
+/**
+ * What the status indicator cannot say, and the one thing to do next (#156).
+ *
+ * IT STAYS TRUE WHILE IT IS OPEN. It rendered once, so a window opened while
+ * a device was offline still said so thirteen minutes after the status bar
+ * had moved on (S74); it now redraws on every status change until it closes.
+ * And a state that needs the person carries its next step as a button: Retry
+ * now while the server is not answering, with when the next try runs by
+ * itself; Pair again for a device the server no longer knows; Open settings
+ * for something in front of the server; Retry now once a clock or a full
+ * server has been fixed.
+ */
 export class StatusModal extends Modal {
+  private unwatch: (() => void) | null = null;
+
   constructor(
     app: App,
     private readonly plugin: ObsyncPlugin,
@@ -740,6 +753,13 @@ export class StatusModal extends Modal {
 
   override onOpen(): void {
     this.setTitle("Sync status");
+    this.render();
+    this.unwatch = this.plugin.onStatusChange(() => this.render());
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    this.nextStep();
     const data = this.plugin.state.data;
     const rows: [string, string][] = [
       ["Server", data.serverUrl === "" ? "not configured" : data.serverUrl],
@@ -776,7 +796,39 @@ export class StatusModal extends Modal {
     }
   }
 
+  /** The state that needs doing something about, what it is, and the button that does it. */
+  private nextStep(): void {
+    const status = this.plugin.currentStatus();
+    if (status.kind === "offline") {
+      const at = this.plugin.nextRetryAt();
+      new Setting(this.contentEl)
+        .setName("Your server is not answering")
+        .setDesc(at === null
+          ? "obsync tries again by itself, and at once when this device's network comes back."
+          : `obsync tries again by itself at ${new Date(at).toLocaleTimeString()}, and at once when this device's network comes back.`)
+        .addButton((button) => button.setButtonText("Retry now").setCta().onClick(() => { this.plugin.retry(); }));
+      return;
+    }
+    if (status.kind !== "error") return;
+    const pair = status.code === "forgotten_device";
+    const settings = pair || status.code === "edge";
+    new Setting(this.contentEl)
+      .setName("What to do")
+      .setDesc(status.message)
+      .addButton((button) => button
+        .setButtonText(pair ? "Pair again" : settings ? "Open settings" : "Retry now")
+        .setCta()
+        .onClick(() => {
+          if (settings) {
+            this.close();
+            this.plugin.openSettings();
+          } else this.plugin.retry();
+        }));
+  }
+
   override onClose(): void {
+    this.unwatch?.();
+    this.unwatch = null;
     this.contentEl.empty();
   }
 }
