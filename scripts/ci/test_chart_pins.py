@@ -15,6 +15,7 @@ import re
 import io
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -365,6 +366,64 @@ class TheChartReadmeShipsThisVersion(unittest.TestCase):
                     f"chart/README.md must name {version} wherever it names a version "
                     "(the release step moves it with the locks)",
                 )
+
+
+class TheStaticVolumeExample(unittest.TestCase):
+    """`chart/examples/static-local-volumes.yaml` (#74): what an operator with
+    no provisioner applies before the chart, so each fact in it is one the
+    server or the chart depends on."""
+
+    def documents(self) -> list[dict]:
+        return miniyaml.loads(chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8"))
+
+    def test_the_class_waits_for_the_pod_and_keeps_the_data(self):
+        storage_class = chart_pins.only(self.documents(), "StorageClass")
+        self.assertEqual(storage_class["provisioner"], "kubernetes.io/no-provisioner")
+        self.assertEqual(storage_class["volumeBindingMode"], "WaitForFirstConsumer")
+        self.assertEqual(storage_class["reclaimPolicy"], "Retain")
+
+    def test_each_volume_is_one_nodes_directory_bound_to_its_claim_at_its_size(self):
+        documents = self.documents()
+        storage_class = chart_pins.only(documents, "StorageClass")["metadata"]["name"]
+        configured = chart_pins.values()["storage"]
+        volumes = chart_pins.every(documents, "PersistentVolume")
+        self.assertEqual(
+            sorted(volume["spec"]["claimRef"]["name"] for volume in volumes),
+            ["obsync-blobs", "obsync-journal"],
+        )
+        for volume in volumes:
+            spec = volume["spec"]
+            role = spec["claimRef"]["name"].rsplit("-", 1)[1]
+            with self.subTest(role=role):
+                self.assertEqual(spec["storageClassName"], storage_class)
+                self.assertEqual(spec["capacity"]["storage"], configured[role]["size"])
+                self.assertEqual(spec["accessModes"], ["ReadWriteOnce"])
+                self.assertEqual(spec["persistentVolumeReclaimPolicy"], "Retain")
+                self.assertEqual(spec["local"]["path"], f"<{role.upper()}_PATH>")
+                self.assertEqual(
+                    spec["nodeAffinity"]["required"]["nodeSelectorTerms"],
+                    [{"matchExpressions": [{
+                        "key": "kubernetes.io/hostname", "operator": "In", "values": ["<NODE_NAME>"],
+                    }]}],
+                )
+
+    def test_each_directory_is_prepared_for_the_server_user_and_closed(self):
+        text = chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8")
+        for path in ("<BLOBS_PATH>", "<JOURNAL_PATH>"):
+            with self.subTest(path=path):
+                self.assertIn(f"#   install -d -o 65532 -g 65532 -m 0700 {path}\n", text)
+
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_the_storage_pin_refuses_an_example_bound_to_a_claim_the_chart_lacks(self):
+        text = chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8")
+        self.assertEqual(text.count("    name: obsync-journal\n"), 1)
+        with tempfile.TemporaryDirectory() as scratch:
+            stale = Path(scratch) / "static-local-volumes.yaml"
+            stale.write_text(text.replace("    name: obsync-journal\n", "    name: obsidian-journal\n"))
+            with mock.patch.object(chart_pins, "STATIC_VOLUME_EXAMPLE", stale), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(chart_pins.PinError, "pre-binds"):
+                    chart_pins.pin_storage()
 
 
 if __name__ == "__main__":

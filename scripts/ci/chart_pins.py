@@ -9,7 +9,8 @@ THREE PINS, each named by the property it holds:
   storage   the render carries exactly the claims docs/storage.md defines, on
             the classes and sizes chart/values.yaml names, and the workload
             mounts NOTHING but those claims -- no hostPath, no emptyDir, no
-            Secret or ConfigMap volume, no CSI inline volume.
+            Secret or ConfigMap volume, no CSI inline volume -- and the
+            static-volume example pre-binds exactly those claims.
   security  the pod and container security context is the one requirement 4
             fixes, and a values override cannot weaken any part of it.
   environment
@@ -66,6 +67,8 @@ MIRROR_ROOT = "/data/mirrors"
 # and the workload then waits forever on storage that exists.
 CLAIM_DOCUMENTS = (Path("docs/storage.md"), Path("docs/platform-onboarding.md"))
 CLAIM_IN_PROSE = re.compile(r"`([a-z0-9][a-z0-9-]*-(?:blobs|journal))`")
+# The same defect in YAML: the example PersistentVolumes pre-bind by claim name.
+STATIC_VOLUME_EXAMPLE = CHART_DIR / "examples" / "static-local-volumes.yaml"
 
 
 class PinError(AssertionError):
@@ -380,6 +383,16 @@ def pin_storage() -> None:
     if _unknown_claim_names(mutated, known) != [f"stale-{role}"]:
         raise PinError("the document check can no longer fail: it would pass a wrong claim name")
     print("chart-pins storage: (f) the operating documents name the claims the chart creates")
+
+    # (g) chart/examples/static-local-volumes.yaml pre-binds each volume to a
+    # claim by name, so a claim renamed here and not there binds nothing.
+    example = miniyaml.loads(STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8"))
+    equals(
+        sorted(volume["spec"]["claimRef"]["name"] for volume in every(example, "PersistentVolume")),
+        sorted(known),
+        f"the claims {STATIC_VOLUME_EXAMPLE} pre-binds",
+    )
+    print("chart-pins storage: (g) the static-volume example pre-binds the claims the chart creates")
 
 
 def pin_security() -> None:

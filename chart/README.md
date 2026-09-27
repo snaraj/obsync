@@ -42,6 +42,9 @@ your volume is not one this project runs. So, before `deploymentReady: true`:
 - **A static local volume or `hostPath`:** create the two PersistentVolumes and
   their directories as `65532:65532`, mode `0700`, with root-owned, closed
   parents and no symlink on the path.
+  [`examples/static-local-volumes.yaml`](examples/static-local-volumes.yaml)
+  is that pair for one node's disk, with its StorageClass, each volume bound to
+  its claim, and the two `install -d` commands that prepare the directories.
 - **A dynamic provisioner:** naming your StorageClass below is NOT enough
   unless that provisioner honours the pod's `runAsUser` when it presents the
   volume. Many hand over a root-owned `0755` or a world-writable root, and the

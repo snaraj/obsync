@@ -1,0 +1,81 @@
+# Static local volumes for this chart, on one node with its own disk: a
+# StorageClass and the two PersistentVolumes behind the chart's claims. The
+# chart creates the claims (obsync-blobs, obsync-journal) and never a
+# PersistentVolume, so on a cluster with no provisioner you apply these first.
+#
+# Replace before applying:
+#   <NODE_NAME>     the node's kubernetes.io/hostname label
+#   <BLOBS_PATH>    an absolute directory on that node for the encrypted chunks
+#   <JOURNAL_PATH>  an absolute directory on that node for the journal
+#   obsidian        in both claimRefs: the namespace you install the release into
+#
+# Ownership: the server runs as uid and gid 65532 with no fsGroup, and takes
+# ownership of nothing. It refuses to start on a directory uid 65532 cannot
+# write (reason=unwritable) or one its group or others can write
+# (writable_by_group, writable_by_others). So create both directories on the
+# node, as root, before the release is set to deploymentReady: true, with
+# root-owned, closed parents and no symlink on the path:
+#
+#   install -d -o 65532 -g 65532 -m 0700 <BLOBS_PATH>
+#   install -d -o 65532 -g 65532 -m 0700 <JOURNAL_PATH>
+#
+# Then set storage.blobs.className and storage.journal.className to
+# obsync-local in your values. Each capacity is the chart's default claim size;
+# a larger claim does not bind, so grow both together.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: obsync-local
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: obsync-blobs
+spec:
+  capacity:
+    storage: 250Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: obsync-local
+  claimRef:
+    namespace: obsidian
+    name: obsync-blobs
+  local:
+    path: <BLOBS_PATH>
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - <NODE_NAME>
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: obsync-journal
+spec:
+  capacity:
+    storage: 4Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: obsync-local
+  claimRef:
+    namespace: obsidian
+    name: obsync-journal
+  local:
+    path: <JOURNAL_PATH>
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - <NODE_NAME>
