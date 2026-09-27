@@ -497,17 +497,19 @@ second device paired, one file pushed and pulled back — larger than the 1 MiB
 a stock proxy would have refused — and every unsigned, altered, stale or
 replayed request refused by name. Then it upgrades the release on the digest
 and rolls it back, and finds the account, both devices and the file unharmed by
-two pod replacements. An edit to any of those blocks that nobody carries into
-the gate fails the build.
+two pod replacements. Last, it asks the cluster's own network whether the
+NetworkPolicy holds: `kind`'s network plugin enforces NetworkPolicy, so a pod
+carrying the three peer labels connects, while a pod with another instance
+label and a pod in another namespace are refused. An edit to any of those
+blocks that nobody carries into the gate fails the build.
 
 What it does NOT prove, because a `kind` cluster on a runner cannot: the
 DNS-01 issuance of section 4 (the leaf the terminator serves there is one the
 job issues, so what is proven is the terminator and its wiring, never the
-certificate), the private route of section 6, and the NetworkPolicy's
-refusals, which are proven instead against the RENDERED policy by
-`scripts/ci/chart_pins.py`. What the gate does hold is that the three peer
-labels on this page and the peer in its `ingress.peers` stay the same three
-facts, and that the front stays as hardened as section 4 shows.
+certificate), and the private route of section 6. What the gate does hold is
+that the three peer labels on this page and the peer in its `ingress.peers`
+stay the same three facts, and that the front stays as hardened as section 4
+shows.
 
 ## Next
 

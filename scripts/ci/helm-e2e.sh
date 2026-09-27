@@ -67,16 +67,22 @@
 #                   account, both devices and the file are still there after
 #                   two pod replacements -- which is what section 8 of the page
 #                   promises an operator.
-#  12. teardown     the cluster is deleted. It runs from a trap, so a failure
+#  12. the policy   `scripts/ci/np-probe.sh`: a pod carrying the peer labels
+#      holds        the values name connects to the server, and a pod with
+#                   another instance label, and one in another namespace, are
+#                   refused. kind's own CNI (kindnetd) enforces NetworkPolicy,
+#                   so these are the cluster's refusals, not the render's.
+#  13. teardown     the cluster is deleted. It runs from a trap, so a failure
 #                   at any step above deletes it too: a kind cluster left
 #                   behind holds a container, a network and a volume on the
 #                   runner.
 #
-# WHAT IT DOES NOT PROVE, stated rather than implied: the NetworkPolicy's
-# refusals (kind's CNI does not enforce policy, so they are proven against the
-# RENDERED policy by scripts/ci/chart_pins.py), the DNS-01 certificate ceremony
-# (the leaf here is issued by the job, and what is proven is the terminator and
-# the wiring, never the issuance), and the private route.
+# `OBSYNC_E2E_IP_FAMILY=ipv6` runs all of it on an IPv6-only cluster, which is
+# where a server listening on an IPv4 wildcard alone is unreachable.
+#
+# WHAT IT DOES NOT PROVE, stated rather than implied: the DNS-01 certificate
+# ceremony (the leaf here is issued by the job, and what is proven is the
+# terminator and the wiring, never the issuance), and the private route.
 # docs/kubernetes.md section 9 says the same thing to a reader.
 #
 # Requires: kind, helm, kubectl, docker, curl, openssl, python3.
@@ -203,8 +209,17 @@ documented() {
   python3 -B "${here}/docs_blocks.py" "${GUIDE}" "$@"
 }
 
-printf 'helm-e2e: START image=%s guide=%s cluster=%s kind=%s node_image=%s\n' \
-  "${image}" "${GUIDE}" "${CLUSTER}" "${kind_version}" "${node_image}"
+# The cluster's IP family. IPv4 by default; `ipv6` makes every pod, Service
+# and probe IPv6-only, which is the cluster a server bound to 0.0.0.0 cannot
+# serve.
+ip_family="${OBSYNC_E2E_IP_FAMILY:-ipv4}"
+case "${ip_family}" in
+  ipv4 | ipv6) ;;
+  *) printf 'helm-e2e: OBSYNC_E2E_IP_FAMILY must be ipv4 or ipv6, not %s\n' "${ip_family}" >&2; exit 2 ;;
+esac
+
+printf 'helm-e2e: START image=%s guide=%s cluster=%s kind=%s node_image=%s ip_family=%s\n' \
+  "${image}" "${GUIDE}" "${CLUSTER}" "${kind_version}" "${node_image}" "${ip_family}"
 
 # (1) Preflight.
 for tool in kind helm kubectl docker curl openssl python3; do
@@ -233,13 +248,18 @@ trap cleanup EXIT
 # Set BEFORE the command that creates anything: a cluster that fails half-way
 # through still leaves a container, a network and a volume behind, and those
 # are ours to delete.
+# The API server stays on IPv4 loopback for kubectl on the HOST, whatever the
+# cluster's own family: that is how this script reaches the cluster, not how
+# the cluster reaches the server under test.
+printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnetworking:\n  ipFamily: %s\n  apiServerAddress: 127.0.0.1\n' \
+  "${ip_family}" > "${scratch}/kind.yaml"
 created='cluster'
-kind create cluster --name "${CLUSTER}" --image "${node_image}" \
+kind create cluster --name "${CLUSTER}" --image "${node_image}" --config "${scratch}/kind.yaml" \
   --kubeconfig "${KUBECONFIG}" --wait "${CLUSTER_BUDGET_SECONDS}s" \
   || deny "kind could not create ${CLUSTER} within ${CLUSTER_BUDGET_SECONDS}s"
 kubectl get node "${NODE}" >/dev/null 2>&1 \
   || deny "the cluster has no node called ${NODE}; the documented volumes name it"
-prove "cluster: ${CLUSTER} is up on ${node_image} with a kubeconfig in this run's scratch directory"
+prove "cluster: ${CLUSTER} is up on ${node_image}, ${ip_family}, with a kubeconfig in this run's scratch directory"
 
 # (3) The page's directory preparation, run on the node. `sudo` is dropped
 # because `docker exec` is already root there, and that is the ONE difference
@@ -453,7 +473,24 @@ python3 -B "${here}/api_flow.py" verify \
   || deny 'the upgraded and rolled-back release lost the account, the devices or the data'
 prove "upgrade and rollback: two pod replacements on ${digest}, and the account, both devices and the file came through both"
 
-# (12) Teardown, proven rather than assumed. The trap runs it again and finds
+# (12) The policy, asked of the cluster's own network. The peer identity is
+# read out of the documented values this run installed -- the first entry of
+# `ingress.peers` -- and the probe pods run the image the page pins for the
+# front, so the probe asks about the peer the page names rather than one
+# written here.
+peer_value() {
+  awk -v key="$1" '/^  peers:/ {inside = 1; next}
+    inside && /^[^ ]/ {exit}
+    inside {sub(/^[ -]*/, ""); if ($1 == key":") {print $2; exit}}' "${scratch}/values.yaml"
+}
+probe_image="$(printf '%s\n' "${front}" | awk '$1 == "image:" {print $2; exit}')"
+[ -n "${probe_image}" ] || deny "${GUIDE}'s TLS-front block names no image for the probe pods"
+"${here}/np-probe.sh" "http://${RELEASE}.${NAMESPACE}.svc.cluster.local:8080/livez" \
+  "$(peer_value namespace)" "$(peer_value appName)" "$(peer_value instance)" "${probe_image}" \
+  || deny 'the cluster does not enforce the NetworkPolicy the chart renders'
+prove 'the policy holds: the named peer connects, a sibling instance and another namespace are refused'
+
+# (13) Teardown, proven rather than assumed. The trap runs it again and finds
 # nothing, which is what an always-run cleanup is for.
 kill "${forward_pid}" >/dev/null 2>&1 || true
 wait "${forward_pid}" 2>/dev/null || true

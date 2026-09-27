@@ -143,7 +143,12 @@ DISPOSABLE = (
     "compose-e2e.sh",
     "helm-e2e.sh",
     "distro-smoke.sh",
+    "proxy-e2e.sh",
     "bench.sh",
+    "k3d-e2e.sh",
+    "podman-e2e.sh",
+    "binary-e2e.sh",
+    "obsidian-host.sh",
 )
 
 

@@ -26,6 +26,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kube-versions:
+    # The chart rendered for every Kubernetes version its `kubeVersion`
+    # claims, in the spellings managed clusters report (EKS, GKE, k3s), and
+    # refused just below the floor. Seconds, and no cluster.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Render across the claimed range
+        run: scripts/ci/chart-kube-versions.sh
+
   helm:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

@@ -1,0 +1,140 @@
+name: Proxy matrix
+
+# The image this commit builds, behind each reverse proxy
+# `deploy/proxies/compose.yml` ships, as that file runs it. docs/server.md
+# tells a reader to put the server behind the HTTPS reverse proxy they already
+# operate; this is the evidence that the four common ones, configured as
+# committed, keep out of the way. Two harnesses, one stack definition:
+#
+#   scripts/ci/proxy-e2e.sh           the LIMITS, from a client on a network
+#                                     of its own: the largest chunk the
+#                                     protocol admits, a full 32 MiB batch, a
+#                                     55 s long poll held and one woken by a
+#                                     write, the client's real address despite
+#                                     a forged X-Forwarded-For, and the
+#                                     server's own port unreachable from there.
+#   scripts/validation/proxy_matrix.sh  the FORWARDED HEADERS: a client's forged
+#                                     X-Forwarded-For and Forwarded refused
+#                                     through the proxy and around it, and the
+#                                     edge mode's headers admitted only from
+#                                     the trusted peer. Its own long poll is
+#                                     skipped here, because proxy-e2e.sh holds
+#                                     the same poll and also wakes one.
+#
+# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
+# release publisher authorizes against the job inventories of pr-gate.yml and
+# codeql.yml alone. Whether it becomes a REQUIRED check is the owner's ruleset
+# decision, not this file's.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: proxy-matrix-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  proxy:
+    strategy:
+      # Each proxy is reported. A failure behind one is a fact about that
+      # proxy's configuration, and cancelling the others would hide whether it
+      # is the proxy or the server.
+      fail-fast: false
+      matrix:
+        proxy: [caddy, nginx, traefik, haproxy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the shipped image
+        run: docker build --tag "obsync-proxy-e2e:${GITHUB_SHA}" .
+      - name: The sync path's limits through the proxy
+        env:
+          PROXY: ${{ matrix.proxy }}
+        run: scripts/ci/proxy-e2e.sh "obsync-proxy-e2e:${GITHUB_SHA}" "${PROXY}"
+      - name: The forwarded headers through and around the proxy
+        env:
+          PROXY: ${{ matrix.proxy }}
+          SKIP_LONGPOLL: '1'
+        run: bash scripts/validation/proxy_matrix.sh "obsync-proxy-e2e:${GITHUB_SHA}" "${PROXY}"
+      - name: Remove anything the run left behind
+        # Both scripts tear their stacks down from a trap; this runs whatever
+        # happened to them, and names only THIS run's compose project.
+        if: always()
+        run: |
+          set -uo pipefail
+          project="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          docker ps --all --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker rm --force
+          docker volume ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker volume rm --force
+          docker network ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker network rm
+          exit 0
+
+  proxy-arm64:
+    # The one arm64 leg: nginx, the most common of the four, on the free
+    # `ubuntu-24.04-arm` runner, natively. The Caddy path already runs on arm64
+    # in compose-e2e.yml.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Prove the runner is arm64
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            aarch64 | arm64) ;;
+            *) printf 'DENY: this leg claims arm64 and runs on %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+      - name: Build the shipped image
+        run: docker build --tag "obsync-proxy-e2e:${GITHUB_SHA}" .
+      - name: The sync path's limits through nginx
+        run: scripts/ci/proxy-e2e.sh "obsync-proxy-e2e:${GITHUB_SHA}" nginx
+      - name: The forwarded headers through and around nginx
+        env:
+          SKIP_LONGPOLL: '1'
+        run: bash scripts/validation/proxy_matrix.sh "obsync-proxy-e2e:${GITHUB_SHA}" nginx
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          project="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          docker ps --all --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker rm --force
+          docker volume ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker volume rm --force
+          docker network ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker network rm
+          exit 0

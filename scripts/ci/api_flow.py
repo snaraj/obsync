@@ -37,6 +37,12 @@ PHASES, because a restart happens between them:
           still byte-for-byte, the nonce spent before the restart is still
           refused (the journal remembers it), and a freshly signed request
           still works.
+  proxy   after `enroll`, the properties a reverse proxy in front can break
+          while `/readyz` stays green: the largest chunk the protocol admits,
+          a full 32 MiB batch download, a 55 s long poll held open and a
+          long poll woken by a write, the client address the server records
+          when the client forges `X-Forwarded-For`, and the server's own port
+          unreachable from where the client stands.
   bench   the numbers docs/benchmarks.md names (B1, B2, B3, B7) against a
           fresh deployment, with the server's CPU, memory, write bytes and --
           optionally -- fsync calls read from its /proc entry. It proves
@@ -104,6 +110,10 @@ BATCH_MAX_BYTES = 32 * 1024 * 1024
 # well past it so the proxy, never this client, is what a cut measures.
 LONG_POLL_SECS = 55
 LONG_POLL_CLIENT_TIMEOUT = 75
+# A documentation address (RFC 5737, TEST-NET-3): what a client forges in
+# `X-Forwarded-For`. A deployment that records it lets any device name its own
+# address on the dashboard.
+FORGED_ADDRESS = "203.0.113.9"
 
 
 class Denied(Exception):
@@ -202,9 +212,13 @@ class Server:
         skew: int = 0,
         corrupt: bool = False,
         timeout: int | None = None,
+        extra: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         """One request, signed as `docs/protocol.md` says, or unsigned."""
         headers = {"Content-Length": str(len(body))}
+        # Headers outside the signed string -- a forged `X-Forwarded-For` --
+        # which is exactly why the server must not believe them.
+        headers.update(extra or {})
         if body:
             # A chunk body is ciphertext the server stores without reading;
             # every other body on this API is JSON.
@@ -642,6 +656,129 @@ def multipart_parts(headers: dict[str, str], body: bytes) -> list[tuple[str, byt
     return parts
 
 
+def proxy(flow: Flow, expect_address: str, bypass: str) -> None:
+    """What a reverse proxy in front can break while `/readyz` stays green."""
+    server = flow.server
+    state = flow.load()
+    first = Credential(state["first"]["device_id"], state["first"]["secret"])
+    second = Credential(state["second"]["device_id"], state["second"]["secret"])
+
+    # (1) The largest chunk the protocol admits, both ways. A stock proxy's
+    # 1 MiB body ceiling, or an 8 MiB one written as `8m`, refuses it.
+    chunk = secrets.token_bytes(CHUNK_MAX_BYTES)
+    sid = put_chunk(flow, first, chunk, "the largest admissible chunk")
+    status, _, body = server.call("GET", f"/v1/chunks/{sid}", cred=second)
+    flow.expect(status, 200, "GET of the largest admissible chunk", body)
+    if body != chunk:
+        raise Denied(f"the largest chunk came back {len(body)} bytes, not {len(chunk)}")
+    flow.prove(f"the largest chunk: {len(chunk)} bytes (8 MiB + 16) up through the proxy and back, hash for hash")
+
+    # (2) A full batch: four chunks summing to exactly the 32 MiB ceiling, in
+    # one multipart answer the proxy has to pass through whole.
+    batch = [secrets.token_bytes(BATCH_MAX_BYTES // 4) for _ in range(4)]
+    sids = [put_chunk(flow, first, part, "a batch chunk") for part in batch]
+    file_id = secrets.token_hex(16)
+    post_version(flow, first, file_id, [], sids, BATCH_MAX_BYTES)
+    status, headers, body = server.call(
+        "POST", "/v1/chunks/get", body=json.dumps({"sids": sids}).encode("utf-8"), cred=second, timeout=60
+    )
+    flow.expect(status, 200, "POST /v1/chunks/get", body)
+    parts = multipart_parts(headers, body)
+    if [p[0] for p in parts] != sids or [p[1] for p in parts] != batch:
+        raise Denied("the batch answer does not carry the four chunks, in request order, byte for byte")
+    flow.prove(f"a full batch: {sum(len(p[1]) for p in parts)} bytes of chunks in one multipart answer, in order, byte for byte")
+
+    # (3) The long poll, held for the whole wait. A proxy read timeout under
+    # 55 s answers 502/504 here, which a device reads as offline. A page that
+    # comes back early and empty because a non-change frame landed between
+    # reading the head and asking (see `await_change`) is not a hold, so the
+    # poll is re-asked from the page's cursor, a bounded number of times.
+    since = head_seq(flow, second)
+    held = 0.0
+    for _ in range(5):
+        started = time.monotonic()
+        status, _, answer = server.call(
+            "GET", f"/v1/changes?since={since}&wait={LONG_POLL_SECS}", cred=second, timeout=LONG_POLL_CLIENT_TIMEOUT
+        )
+        held = time.monotonic() - started
+        flow.expect(status, 200, f"a {LONG_POLL_SECS}s long poll", answer)
+        page = flow.parse(answer, "the long poll")
+        if page.get("changes"):
+            raise Denied("the long poll answered with changes nobody made")
+        if held >= LONG_POLL_SECS - 5:
+            break
+        since = int(page["seq"])
+    else:
+        raise Denied(f"no long poll was held: the last answered after {held:.1f}s of a {LONG_POLL_SECS}s wait")
+    flow.prove(f"the long poll: held {held:.1f}s of a {LONG_POLL_SECS}s wait and answered 200, not a proxy timeout")
+
+    # (4) ...and woken by a write. A proxy that buffers the response delays the
+    # wake to the end of the wait, which is every edit arriving 55 s late. The
+    # chunk goes up first, so the waiting device knows which sid it waits for
+    # and the timer covers the version post alone.
+    note = secrets.token_bytes(1024)
+    note_sid = put_chunk(flow, first, note)
+    woken: dict = {}
+
+    def poll() -> None:
+        try:
+            await_change(flow, second, head_seq(flow, second), note_sid, LONG_POLL_CLIENT_TIMEOUT)
+            woken["at"] = time.monotonic()
+        except (Denied, OSError) as error:
+            woken["error"] = error
+
+    poller = threading.Thread(target=poll)
+    poller.start()
+    time.sleep(2)
+    written = time.monotonic()
+    post_version(flow, first, secrets.token_hex(16), [], [note_sid], len(note))
+    poller.join(LONG_POLL_CLIENT_TIMEOUT + 5)
+    if "at" not in woken:
+        raise Denied(f"the write never reached the waiting device: {woken.get('error', 'no answer')}")
+    delay = woken["at"] - written
+    if delay > 5:
+        raise Denied(f"the write reached the waiting device {delay:.1f}s late: the proxy held the answer")
+    flow.prove(f"the woken long poll: a write reached the device already waiting {delay * 1000:.0f} ms after it was posted")
+
+    # (5) The address the server records. The client forges X-Forwarded-For;
+    # a proxy that passes it through unchanged -- or adds a SECOND header, of
+    # which the server reads the first -- makes the forgery the device's
+    # address on the dashboard.
+    status, _, answer = server.call(
+        "POST",
+        "/v1/devices/heartbeat",
+        body=json.dumps({"app_version": APP_VERSION}).encode("utf-8"),
+        cred=first,
+        extra={"X-Forwarded-For": FORGED_ADDRESS},
+    )
+    flow.expect(status, 204, "POST /v1/devices/heartbeat", answer)
+    status, _, answer = server.call("GET", "/v1/devices", cred=first)
+    flow.expect(status, 200, "GET /v1/devices", answer)
+    devices = flow.parse(answer, "GET /v1/devices").get("devices", [])
+    recorded = next((d.get("address") for d in devices if d.get("device_id") == first.device_id), None)
+    if recorded != expect_address:
+        raise Denied(
+            f"the server recorded {recorded!r} for this device, not the client address {expect_address!r} "
+            f"(the forged value was {FORGED_ADDRESS!r})"
+        )
+    flow.prove(f"the client address: the server recorded {recorded}, the address the proxy saw, not the forged {FORGED_ADDRESS}")
+
+    # (6) The server's own port, from where the client stands. Only the proxy
+    # may reach it; a connection here is a path around every rule above. A
+    # client on the server's own host always can, so a single-host run says
+    # `--bypass none` and proves the listener's address its own way.
+    if bypass == "none":
+        print("api-flow: the bypass is not asked here: client and server share a host", flush=True)
+        return
+    host, _, port = bypass.rpartition(":")
+    try:
+        socket.create_connection((host, int(port)), timeout=5).close()
+    except OSError as error:
+        flow.prove(f"the bypass is closed: a direct connection to the server at {bypass} failed ({type(error).__name__})")
+    else:
+        raise Denied(f"the client reached the server directly at {bypass}, around the proxy")
+
+
 class ServerProcess:
     """The server's own counters, read from its /proc entry (bench only).
 
@@ -945,12 +1082,15 @@ def bench(flow: Flow, token: str, arguments: argparse.Namespace) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", choices=("enroll", "verify", "bench"))
+    parser.add_argument("phase", choices=("enroll", "verify", "proxy", "bench"))
     parser.add_argument("--host", required=True, help="the name the certificate carries")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--address", required=True, help="the address that name is reached on")
     parser.add_argument("--cacert", required=True, help="the authority that signed the deployment's certificate")
     parser.add_argument("--state", required=True, help="where the two credentials rest between phases")
+    proxied = parser.add_argument_group("proxy phase")
+    proxied.add_argument("--expect-address", help="the client address the proxy must hand the server")
+    proxied.add_argument("--bypass", help="host:port of the server's own listener, which must be unreachable")
     measured = parser.add_argument_group("bench phase")
     measured.add_argument("--scenarios", default="b7,b1,b2,b3", help="comma-separated: b1, b2, b3, b7")
     measured.add_argument("--files", type=int, default=10_000, help="B1: notes pushed")
@@ -965,6 +1105,8 @@ def main(argv: list[str]) -> int:
     measured.add_argument("--strace", action="store_true", help="count fsync calls in separate, untimed passes")
     measured.add_argument("--results", help="where the JSON results are written")
     arguments = parser.parse_args(argv)
+    if arguments.phase == "proxy" and not (arguments.expect_address and arguments.bypass):
+        parser.error("the proxy phase needs --expect-address and --bypass")
 
     server = Server(
         arguments.host, arguments.port, arguments.address, arguments.cacert, keepalive=arguments.phase == "bench"
@@ -987,6 +1129,8 @@ def main(argv: list[str]) -> int:
                 enroll(flow, token)
             else:
                 bench(flow, token, arguments)
+        elif arguments.phase == "proxy":
+            proxy(flow, arguments.expect_address, arguments.bypass)
         else:
             verify(flow)
     except Denied as error:

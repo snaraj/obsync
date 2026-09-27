@@ -127,7 +127,7 @@ class Recording:
         self.calls = calls
 
 
-def drive(script: str, argument: str, environment: dict[str, str]) -> Recording:
+def drive(script: str, argument: str, environment: dict[str, str], *more: str) -> Recording:
     """Run one script with shimmed tools, and record what it called."""
     with tempfile.TemporaryDirectory() as scratch:
         binaries = Path(scratch) / "bin"
@@ -148,7 +148,7 @@ def drive(script: str, argument: str, environment: dict[str, str]) -> Recording:
         # recording free of workflow syntax either way.
         env.pop("GITHUB_ACTIONS", None)
         completed = subprocess.run(
-            [str(HERE / script), argument],
+            [str(HERE / script), argument, *more],
             capture_output=True,
             text=True,
             cwd=ROOT,
@@ -344,6 +344,39 @@ class HelmRefusalsPreserveWhatTheyRefuseAbout(unittest.TestCase):
         self.assertIn(EXPECTED_PREFIX, recording.output)
 
 
+class ProxyRefusalsPreserveWhatTheyRefuseAbout(unittest.TestCase):
+    """`proxy-e2e.sh`, driven to its preflight refusals.
+
+    It removes containers, volumes and networks by name from its trap, so a
+    refusal ABOUT one of those names must reach none of that.
+    """
+
+    def assert_harmless(self, recording: Recording) -> None:
+        self.assertEqual(recording.status, 1, recording.output)
+        self.assertEqual(destructive_calls(recording), [], recording.output)
+
+    def test_a_refusal_about_an_existing_container_removes_nothing(self):
+        recording = drive(
+            "proxy-e2e.sh", "obsync-e2e-fixture:local", {"SHIM_CONTAINER_EXISTS": "1"}, "caddy"
+        )
+        self.assert_harmless(recording)
+        self.assertIn("already exists", recording.output)
+        # Non-vacuity: the refusal names THIS run's container.
+        self.assertIn(EXPECTED_PREFIX, recording.output)
+
+    def test_a_refusal_about_a_missing_image_removes_nothing(self):
+        recording = drive(
+            "proxy-e2e.sh", "obsync-e2e-fixture:local", {"SHIM_IMAGE_MISSING": "1"}, "caddy"
+        )
+        self.assert_harmless(recording)
+        self.assertIn("this script builds nothing", recording.output)
+
+    def test_an_unknown_proxy_is_refused_before_anything_runs(self):
+        recording = drive("proxy-e2e.sh", "obsync-e2e-fixture:local", {}, "not-a-proxy")
+        self.assertEqual(recording.status, 2, recording.output)
+        self.assertEqual(recording.calls, [], recording.output)
+
+
 class TheScriptsBindTeardownToWhatTheyCreated(unittest.TestCase):
     """Order and ownership, read off the source the cases above executed."""
 
@@ -354,7 +387,12 @@ class TheScriptsBindTeardownToWhatTheyCreated(unittest.TestCase):
     SCRIPTS = (
         "compose-e2e.sh",
         "helm-e2e.sh",
+        "proxy-e2e.sh",
         "bench.sh",
+        "k3d-e2e.sh",
+        "podman-e2e.sh",
+        "binary-e2e.sh",
+        "obsidian-host.sh",
     )
 
     def source(self, name: str) -> str:

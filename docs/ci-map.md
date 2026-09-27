@@ -266,16 +266,40 @@ clean runner.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `helm` | `install-tools.sh`, `install-kind.sh`, `docker build`, then `scripts/ci/helm-e2e.sh` | The chart installs and SERVES. A throwaway `kind` cluster at the node image pinned beside kind; the two node directories prepared `0700` and owned by 65532, the StorageClass and both `local` PersistentVolumes, the values file, the TLS front and the setup-token read, all read out of [`docs/kubernetes.md`](kubernetes.md); the image loaded and deployed by the digest containerd actually holds, with `pullPolicy: Never` so the cluster can only run those bytes; both claims `Bound`, the Deployment `Available`, `/readyz` answered through a port-forward AND through the documented terminator over HTTPS; then the same `api_flow.py` device flow through that terminator — including a file larger than a stock proxy's 1 MiB body ceiling — and a `helm upgrade` on the digest followed by a `helm rollback`, after which the account, both devices and the file are still there |
+| `helm` | `install-tools.sh`, `install-kind.sh`, `docker build`, then `scripts/ci/helm-e2e.sh` | The chart installs and SERVES. A throwaway `kind` cluster at the node image pinned beside kind; the two node directories prepared `0700` and owned by 65532, the StorageClass and both `local` PersistentVolumes, the values file, the TLS front and the setup-token read, all read out of [`docs/kubernetes.md`](kubernetes.md); the image loaded and deployed by the digest containerd actually holds, with `pullPolicy: Never` so the cluster can only run those bytes; both claims `Bound`, the Deployment `Available`, `/readyz` answered through a port-forward AND through the documented terminator over HTTPS; then the same `api_flow.py` device flow through that terminator — including a file larger than a stock proxy's 1 MiB body ceiling — and a `helm upgrade` on the digest followed by a `helm rollback`, after which the account, both devices and the file are still there. Last, `scripts/ci/np-probe.sh` opens connections from three one-shot pods: one carrying the three peer labels the values name connects, one with another instance label and one in another namespace are refused. kind's own network plugin (kindnetd) enforces NetworkPolicy, so these are the cluster's refusals, not the render's |
+| `kube-versions` | `install-tools.sh`, then `scripts/ci/chart-kube-versions.sh` | The chart renders for every minor its `kubeVersion` claims, from the floor to the kind node image's, in the spellings managed clusters report (`v1.36.3-eks-…`, `v1.36.3-gke.…`, `v1.36.3+k3s1`), and `helm template` REFUSES the version just below the floor, which is what makes the other lines mean the floor is enforced |
 
-What it does not prove, stated rather than implied: the NetworkPolicy's
-refusals, which are proven against the RENDERED policy by
-`scripts/ci/chart_pins.py`, because kind's CNI does not enforce policy; and the
-DNS-01 issuance, because the leaf the terminator serves is one the job issues.
-What the terminator step does prove is the wiring a first activation of this
-chart gets wrong — the three peer labels, the upstream Service, and the body
-ceiling. An
+What it does not prove, stated rather than implied: the DNS-01 issuance,
+because the leaf the terminator serves is one the job issues. What the
+terminator step does prove is the wiring a first activation of this chart gets
+wrong — the three peer labels, the upstream Service, and the body ceiling. An
 `if: always()` step deletes the cluster whatever happened to the script.
+
+## `proxy-matrix.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `proxy` (caddy, nginx, traefik, haproxy) | `docker build`, then `scripts/ci/proxy-e2e.sh <image> <proxy>` and `scripts/validation/proxy_matrix.sh <image> <proxy>` | `deploy/proxies/compose.yml`, run as shipped with the proxy's profile, keeps out of the sync path's way. `proxy-e2e.sh` adds only a second network for the client, then from a client container there `api_flow.py` enrols, pairs and syncs, and proves: an 8 MiB + 16 B chunk up and back, a full 32 MiB `POST /v1/chunks/get` answer in order, a 55 s long poll held to its end (a 30 s proxy timeout answers 504 here) and a long poll woken by a write within 5 s rather than at the end of its wait, the client's own address recorded although it sent a forged `X-Forwarded-For`, and a direct connection to the server's port refused from where the client stands. `proxy_matrix.sh` then proves a client's forged `X-Forwarded-For` and `Forwarded` are not believed through the proxy or around it, and the edge mode's headers are admitted only from the trusted peer; its own long poll is skipped (`SKIP_LONGPOLL=1`) because the first script holds the same poll |
+| `proxy-arm64` | the same, nginx, on `ubuntu-24.04-arm` | The same properties natively on arm64 |
+
+## `generic-paths.yml` — nightly, manual dispatch, and pull requests that change what it runs
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `binary` | `docker build --target server-dist`, then `scripts/ci/binary-e2e.sh` | The static server tarball's tree with no container: the binary, dashboard and plugin, installed as its own `obsyncd.service` header says, and that unit run AS SHIPPED with only its names moved to the run's (user, `/opt`, `/var/lib`, `/etc`), so every hardening line it carries is the one that runs; systemd makes both state directories `0700` under a root-owned parent, and the server listens on `127.0.0.1:8080` and nowhere else. The runner's own Ubuntu nginx binary is in front, as `www-data` in a unit of its own, with `deploy/proxies/nginx/nginx.conf` (its upstream, certificate and temporary paths moved, `error_log /dev/stderr` made nginx's own `stderr`, and on nginx older than 1.25.1 its `http2 on;` line dropped, which the step's log says), passing `nginx -t`; then `api_flow.py` enrol and the proxy properties (without the bypass probe, since client and server share the host), and a restart that keeps everything |
+| `podman` | `docker build`, `docker save`, then `scripts/ci/podman-e2e.sh` | The unmodified Compose file under ROOTLESS Podman (`podman compose` with the runner's Compose v2 plugin as its provider, netavark and aardvark-dns for name resolution), published on 8080/8443; `/readyz` through Caddy, the sync flow, a restart |
+| `k3d` | `install-tools.sh`, `install-k3d.sh`, `docker build`, then `scripts/ci/k3d-e2e.sh` | The chart on k3s as k3s ships: local-path volumes, which the server REFUSES as provisioned (`reason=writable_by_others`) until the documented administrator step (chown to 65532, `0700`, on the node) is taken; k3s's own Traefik as the ingress, its labels read off the running Deployment into the peer values; the sync flow through it; the NetworkPolicy enforced by k3s's controller (`np-probe.sh`); a replacement pod on the same volumes |
+| `kind-ipv6` | `helm-e2e.sh` with `OBSYNC_E2E_IP_FAMILY=ipv6` | The whole Kubernetes guide on an IPv6-only cluster, where a server listening on the IPv4 wildcard alone never answers its startup probe; the chart's `[::]` listener is what this leg holds |
+
+## `desktop-matrix.yml` — nightly, manual dispatch, and pull requests that change the plugin or these harnesses
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `obsidian-linux` | the plugin built with `npm`, `docker build`, then `scripts/ci/proxy-e2e.sh <image> caddy --then scripts/ci/obsidian-e2e.sh` | The plugin inside the REAL Obsidian, through `deploy/proxies/compose.yml`'s Caddy: the official AppImage (pinned by SHA-256) under Xvfb, two instances with their own `--user-data-dir` and their own `HOME`, each trusting the throwaway authority through an NSS database of its own and nothing else. `scripts/ci/obsidian-drive.mjs` drives them over the DevTools port: the vault trusted, Server URL, the setup token and the recovery-phrase check on the first, the pairing code carried to the second and approved, then notes both ways, a rename, a nested folder and an empty folder, read off the other instance's disk, and ten timed edits (B2 end to end). A third instance with no trust must be refused. The token is read from a file and deleted; the pairing code and the phrase are never printed |
+| `obsidian-macos` | the plugin, `cargo build --release -p obsyncd`, then `scripts/ci/obsidian-host.sh` | The same journeys with the official dmg, the server built natively, Caddy 2.10.2 (pinned) in front with `deploy/proxies/caddy/Caddyfile` (its paths, port and upstream moved), and the authority in the System keychain |
+| `static-binary` | `docker build --target server`, the binary uploaded | The static linux/amd64 server for the Windows leg, from this commit |
+| `obsidian-windows` | the plugin, that binary, then `scripts/ci/obsidian-host.sh` (Git Bash) | The same journeys with the official installer run silently, the server under WSL 1 in an Alpine distribution imported for the run, Caddy in front, the authority in the machine Root store; plus a rename by capitalisation alone, a note moved to the trash, and an edit to a note another process holds open |
+| `plugin-tests` (windows-2025, macos-15) | `npm ci`, `npm run build`, `npm test` | The plugin suite on NTFS and APFS, not only on the ext4 of the gate |
 
 ## `bench.yml` — nightly, manual dispatch, and pull requests that change the harness
 
@@ -283,8 +307,9 @@ ceiling. An
 | --- | --- | --- |
 | `bench` (amd64, arm64) | `docker build`, then `scripts/ci/bench.sh` | Nothing: it MEASURES. [Benchmarks](benchmarks.md) B1, B2 (wire), B3 and B7 against the Compose deployment, with the server's CPU, memory, bytes written and fsync calls read from its own `/proc` entry; full scale on the schedule, smoke scale on a pull request. The results are the run's artifact for 90 days and the step summary; nothing is committed |
 
-It is not in the release chain, for the reason `docs-site.yml` gives, and it
-is not a required check unless the owner enters it into `Protect-Main`.
+None of these four workflows is in the release chain, for the reason
+`docs-site.yml` gives, and none is a required check unless the owner enters it
+into `Protect-Main`.
 
 ## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch
 
@@ -350,14 +375,19 @@ missing is only the ruleset's refusal to merge around a red one.
 ## Zero-spend guardrails
 
 Top-level `permissions: {}` with narrow per-job grants; `persist-credentials:
-false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`, and
-`ubuntu-24.04-arm` for the architecture matrix and the benchmarks, both free for public
+false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`,
+`ubuntu-24.04-arm`, `macos-15` and `windows-2025`, all free for public
 repositories; every third-party action pinned to a full commit SHA with a
 version comment; every third-party tool installed only through a
-checksum-verifying installer (`scripts/ci/install-tools.sh`, and
-`scripts/ci/install-kind.sh` for the one job that creates a cluster), and
-strace for the benchmarks refused by `scripts/ci/bench.sh` unless its SHA-256
-matches the pin beside it. `scripts/ci/test_workflow_integrity.py` refuses
+checksum-verifying installer (`scripts/ci/install-tools.sh`,
+`scripts/ci/install-kind.sh` and `scripts/ci/install-k3d.sh` for the jobs that
+create a cluster), and every other download -- Obsidian, Caddy, the Alpine
+root filesystem, strace -- refused by the script that fetches it unless its
+SHA-256 matches the pin beside it. Two exceptions are stated rather than
+hidden: the Podman job's `netavark` and `aardvark-dns` come from Ubuntu's
+archive at exact versions, checked by apt against the archive's signed index,
+and k3d starts its own helper image at the tag of its pinned release.
+`scripts/ci/test_workflow_integrity.py` refuses
 any workflow that breaks the pinning, permissions, `pull_request_target`, or
 `persist-credentials` rules, and its allowlist ratchets shut rather than
 accumulating excuses. The `container` job builds and never publishes: no
