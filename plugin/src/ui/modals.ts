@@ -16,6 +16,7 @@ import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { formatBytes } from "../policy";
+import { KEYS_LOST } from "../state";
 import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
@@ -1238,6 +1239,17 @@ export class StatusModal extends Modal {
 
   /** The state that needs doing something about, what it is, and the button that does it. */
   private nextStep(): void {
+    // A crash left this device with no keys (issue #230): what Settings says, and the one way back.
+    if (this.plugin.state.keysLost) {
+      new Setting(this.contentEl)
+        .setName("What to do")
+        .setDesc(KEYS_LOST)
+        .addButton((button) => button.setButtonText("Pair this device").setCta().onClick(() => {
+          this.close();
+          new PairClaimModal(this.app, this.plugin).open();
+        }));
+      return;
+    }
     const status = this.plugin.currentStatus();
     if (status.kind === "offline") {
       const at = this.plugin.nextRetryAt();

@@ -424,7 +424,11 @@ A missing entry this vault never held -- a copied vault, or a folder renamed
 outside Obsidian, which Obsidian registers as a new vault id with empty
 secret storage -- loads as a device that never paired, never as the device
 the reference names, and nothing is written until the person pairs it or
-starts fresh. Which reference a vault last opened is kept in Obsidian's
+starts fresh. So does metadata exactly one revision past the entry's current
+record, which a desktop killed between the two writes leaves because its
+secret storage reaches disk after the data file: that device keeps its name
+and holds no credential, never one taken from an older record, until it pairs
+again. Which reference a vault last opened is kept in Obsidian's
 per-vault local storage; it is not a secret. Key-only recovery and
 credential-only enrollment are preserved as incomplete states. A pairing
 claim waiting for its key is held in a second owned entry, beside the

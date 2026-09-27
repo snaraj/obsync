@@ -1,0 +1,11 @@
+# M3105: a save no longer ends the keys-lost state
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -807,7 +807,6 @@
+     } catch { throw new StateStorageError("metadata_write_failed"); }
+     this.record = selected;
+     this.copied = false;
+-    this.keysLost = null;
+   }
+ 
+   async save(): Promise<void> {

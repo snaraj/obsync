@@ -59,7 +59,7 @@ import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
-import { State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
+import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -2549,6 +2549,12 @@ export default class ObsyncPlugin extends Plugin {
     if (state.copied) {
       this.log("state decision=not_paired reason=copied_vault");
       new Notice(`obsync: ${COPIED_VAULT} Both are in obsync's settings, under This device.`, 15000);
+    }
+    // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
+    if (state.keysLost) {
+      const { dataRevision, secretRevision } = state.keysLost;
+      this.log(`state decision=recovered reason=credential_behind data_revision=${dataRevision} secret_revision=${secretRevision}`);
+      new Notice(`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`, 15000);
     }
     // ONE reminder, at the start after a confirmation was skipped, and never
     // a recurring popup: Settings and Show sync status keep saying it

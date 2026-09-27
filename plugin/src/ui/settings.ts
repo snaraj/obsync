@@ -40,7 +40,7 @@ import { formatBytes, parseBytes, type Policy } from "../policy";
 import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
-import type { EdgeHeader } from "../state";
+import { KEYS_LOST, type EdgeHeader } from "../state";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
@@ -688,6 +688,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         if (waiting) {
           return `Pairing: waiting for approval on the other device${waiting.code === null ? "" : `, whose prompt shows the code ${waiting.code}`}.`;
         }
+        if (this.plugin.state.keysLost) return KEYS_LOST;
         if (data.deviceId === null) {
           return "Not paired yet. On a device that already syncs this vault, choose Pair a new device, then paste its code here with Pair this device. For a new server, use Setup or recover below.";
         }

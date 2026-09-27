@@ -56,6 +56,7 @@ server again unless the entry says so.
 | A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
 | **Restore a copy** fails on a USB stick or memory card | [Restoring a copy fails on a USB stick or memory card](#restoring-a-copy-fails-on-a-usb-stick-or-memory-card) |
 | I copied or renamed my vault, and obsync says it is a copy (up to 1.1.3: that credential storage could not be verified) | [A copied or renamed vault says it is a copy](#a-copied-or-renamed-vault-says-it-is-a-copy) |
+| obsync says Obsidian closed while it was saving this device's keys (up to 1.1.3: the plugin did not load, and its log read `identity_mismatch`) | [Obsidian closed while obsync was saving this device's keys](#obsidian-closed-while-obsync-was-saving-this-devices-keys) |
 
 **Sync stopped**
 
@@ -847,6 +848,36 @@ untouched.
    is not a way to add one.
 
 ![This device on a copied vault: Pairing reads This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh. Pair this device and Start fresh beside it](assets/settings-copied-vault.png)
+
+## Obsidian closed while obsync was saving this device's keys
+
+**What you see.** Once as Obsidian starts, then beside **Pairing** in obsync's
+settings and in **Show sync status**: "Obsidian closed while obsync was saving
+this device's keys, so it holds none. Pair this device again from a device
+that syncs; nothing was deleted." The status bar reads `obsync: not paired`.
+Up to 1.1.3 the plugin did not load at all, and its log read
+`state decision=stopped reason=identity_mismatch`; from 1.1.4 it loads as
+described here.
+
+**Why it happens.** obsync saves this device's keys in Obsidian's secret
+storage, then records which keys it holds in its own settings file. On a
+computer, secret storage can reach the disk after the settings file does.
+Obsidian killed, crashed or powered off in between, right after pairing or
+another change to how this device connects, leaves a settings file naming keys
+that were never kept. obsync never guesses keys, so the device holds none.
+Your notes, and everything on the server, are untouched.
+
+**How to fix it.**
+
+1. Select **Pair this device** and pair it from a device that still syncs. It
+   joins as a new device. If your server needs custom request headers, enter
+   them again first.
+2. If no other device syncs, select **Restore or create** under **Vault key**
+   and enter this vault's 24-word recovery phrase, then use **Setup or
+   recover** with the server's setup token ([Recovery](recovery.md)).
+3. Once it syncs, the entry it had before may still be in the **Devices**
+   list under the same name. Revoke that entry: the one not marked
+   (this device).
 
 ## A file is not syncing
 

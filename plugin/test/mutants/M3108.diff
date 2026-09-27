@@ -1,0 +1,12 @@
+# M3108: the recovery's structured log line is dropped
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2498,7 +2498,7 @@
+     // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
+     if (state.keysLost) {
+       const { dataRevision, secretRevision } = state.keysLost;
+-      this.log(`state decision=recovered reason=credential_behind data_revision=${dataRevision} secret_revision=${secretRevision}`);
++      void [dataRevision, secretRevision];
+       new Notice(`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`, 15000);
+     }
+     // ONE reminder, at the start after a confirmation was skipped, and never

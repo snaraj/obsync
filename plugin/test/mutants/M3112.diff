@@ -1,0 +1,11 @@
+# M3112: Show sync status's Pair this device closes and opens nothing
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1246,7 +1246,6 @@
+         .setDesc(KEYS_LOST)
+         .addButton((button) => button.setButtonText("Pair this device").setCta().onClick(() => {
+           this.close();
+-          new PairClaimModal(this.app, this.plugin).open();
+         }));
+       return;
+     }

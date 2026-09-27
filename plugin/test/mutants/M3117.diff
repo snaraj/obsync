@@ -1,0 +1,13 @@
+# M3117: the envelope's installation binding is dropped, so another installation's entry can be one behind
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -370,8 +370,7 @@
+   const envelope: unknown = JSON.parse(raw);
+   const fields = ["version", "installationId", "current", "previous"];
+   if (!isRecord(envelope) || Object.keys(envelope).length !== fields.length ||
+-    fields.some((key) => !Object.hasOwn(envelope, key)) || envelope["version"] !== 1 ||
+-    envelope["installationId"] !== installationId) throw new StateStorageError("invalid_envelope");
++    fields.some((key) => !Object.hasOwn(envelope, key)) || envelope["version"] !== 1) throw new StateStorageError("invalid_envelope");
+   const record = (value: unknown): CredentialRevision => {
+     const fields = ["revision", "serverUrl", "deviceId", "deviceSecret", "vrk", "edgeHeaders"];
+     if (!isRecord(value) || Object.keys(value).length !== fields.length || fields.some((key) => !Object.hasOwn(value, key)) ||

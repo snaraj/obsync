@@ -15,7 +15,9 @@
  * reload to select the revision named by metadata after an interrupted write;
  * an unknown revision or identity mismatch stops loading. A reference this
  * vault never held, with no secret behind it, loads as a copy: unpaired,
- * never as the device it names (`Held`).
+ * never as the device it names (`Held`). So does metadata exactly one
+ * revision past the entry's newest, the secret write a crash lost: it keeps
+ * its name and says why (`keysLost`), and holds no credential.
  */
 
 import { Policy, defaultPolicy } from "./policy";
@@ -43,6 +45,9 @@ export class StateStorageError extends Error {
     super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your 24-word recovery phrase or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
   }
 }
+
+/** What a device a crash left with no keys is told (issue #230; `State.keysLost`). */
+export const KEYS_LOST = "Obsidian closed while obsync was saving this device's keys, so it holds none. Pair this device again from a device that syncs; nothing was deleted.";
 
 /**
  * What this vault, as Obsidian registers it NOW, remembers holding: the
@@ -659,6 +664,19 @@ export class State {
    */
   copied = false;
 
+  /**
+   * Set while this device's keys were lost to a crash (issue #230): its data
+   * file names the credential revision one past the newest its secret entry
+   * holds. It loads holding no credential, as a copy does, but keeps its
+   * name, since it is still this device. AN INSTALLATION OF ITS OWN, because
+   * the data file names the lost revision until the first save lands: a save
+   * into the old entry that a crash cut off before its data file would be a
+   * mismatch at a revision that entry holds, which stops, where a new entry
+   * leaves this state to load again. The two revisions are the log line's;
+   * the first save ends it, as it ends `copied`.
+   */
+  keysLost: { dataRevision: number; secretRevision: number } | null = null;
+
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
@@ -701,17 +719,25 @@ export class State {
         const ref = secretRef(id);
         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
         const raw = secrets.getSecret(ref);
-        if (raw === null) {
-          if (held.holds(ref)) throw new StateStorageError("missing_secret");
-          // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device
-          // the reference names, and never a stop with nothing to press.
+        if (raw === null && held.holds(ref)) throw new StateStorageError("missing_secret");
+        const envelope = raw === null ? null : readEnvelope(raw, id);
+        // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device the
+        // reference names, and never a stop with nothing to press. OR THE ONE
+        // WRITE A CRASH LOSES (issue #230): the data file landed naming the
+        // revision just past this installation's newest, and the secret entry
+        // it follows was still on its way to disk. That credential is nowhere,
+        // and none is guessed or taken from an older revision.
+        if (envelope === null || revision === envelope.current.revision + 1) {
           state = fresh(data);
           const { serverUrl } = data;
           state.forgetPairing();
-          Object.assign(data, { vrk: null, deviceName: null, serverUrl, recoveryPhrase: "unconfirmed" });
-          state.copied = true;
+          Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
+          if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
+          else {
+            data.deviceName = null;
+            state.copied = true;
+          }
         } else {
-          const envelope = readEnvelope(raw, id);
           const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
           if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
             throw new StateStorageError("identity_mismatch");
@@ -781,6 +807,7 @@ export class State {
     } catch { throw new StateStorageError("metadata_write_failed"); }
     this.record = selected;
     this.copied = false;
+    this.keysLost = null;
   }
 
   async save(): Promise<void> {

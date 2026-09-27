@@ -1,0 +1,12 @@
+# M3113: the recovery records its two revisions the wrong way round
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -732,7 +732,7 @@
+           const { serverUrl } = data;
+           state.forgetPairing();
+           Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
+-          if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
++          if (envelope !== null) state.keysLost = { dataRevision: envelope.current.revision, secretRevision: revision };
+           else {
+             data.deviceName = null;
+             state.copied = true;

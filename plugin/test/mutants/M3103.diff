@@ -1,4 +1,4 @@
-# M1893: a copy keeps the original device's identity and server records (#168)
+# M3103: the recovered device keeps its pairing, records and cursor (no forgetPairing)
 --- a/plugin/src/state.ts
 +++ b/plugin/src/state.ts
 @@ -730,7 +730,7 @@
@@ -6,7 +6,7 @@
            state = fresh(data);
            const { serverUrl } = data;
 -          state.forgetPairing();
-+          if (envelope !== null) state.forgetPairing();
++          if (envelope === null) state.forgetPairing();
            Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
            if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
            else {

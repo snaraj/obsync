@@ -1,0 +1,16 @@
+# M3107: a device a crash left with no keys loses its name, as a copy does
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -733,10 +733,8 @@
+           state.forgetPairing();
+           Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
+           if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
+-          else {
+-            data.deviceName = null;
+-            state.copied = true;
+-          }
++          else state.copied = true;
++          data.deviceName = null;
+         } else {
+           const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
+           if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {

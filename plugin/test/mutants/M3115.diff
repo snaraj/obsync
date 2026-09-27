@@ -1,0 +1,12 @@
+# M3115: fake fidelity: the lazy secret store's crash loses nothing
+--- a/plugin/test/keys-lost.test.mjs
++++ b/plugin/test/keys-lost.test.mjs
+@@ -42,7 +42,7 @@
+     getSecret: (id) => memory.has(id) ? memory.get(id) : disk.get(id) ?? null,
+     setSecret: (id, value) => { memory.set(id, value); },
+     flush: () => { for (const [id, value] of memory) disk.set(id, value); memory.clear(); },
+-    crash: () => { memory.clear(); },
++    crash: () => {},
+   };
+ }
+ 

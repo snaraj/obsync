@@ -1,0 +1,11 @@
+# M3118: the settings Pairing row says keys lost over a pairing under way
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -684,6 +684,7 @@
+         const data = this.plugin.state.data;
+         if (this.plugin.forgottenDevice) return FORGOTTEN_DEVICE;
+         if (this.plugin.state.copied) return COPIED_VAULT;
++        if (this.plugin.state.keysLost) return KEYS_LOST;
+         const waiting = this.plugin.waiting;
+         if (waiting) {
+           return `Pairing: waiting for approval on the other device${waiting.code === null ? "" : `, whose prompt shows the code ${waiting.code}`}.`;

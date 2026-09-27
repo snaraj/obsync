@@ -1,0 +1,12 @@
+# M3100: any revision ahead of the secret entry recovers, not only the next one
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -727,7 +727,7 @@
+         // revision just past this installation's newest, and the secret entry
+         // it follows was still on its way to disk. That credential is nowhere,
+         // and none is guessed or taken from an older revision.
+-        if (envelope === null || revision === envelope.current.revision + 1) {
++        if (envelope === null || revision > envelope.current.revision) {
+           state = fresh(data);
+           const { serverUrl } = data;
+           state.forgetPairing();

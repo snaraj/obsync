@@ -1,0 +1,12 @@
+# M3102: the recovered device keeps the older revision's credential instead of holding none
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -732,7 +732,7 @@
+           const { serverUrl } = data;
+           state.forgetPairing();
+           Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
+-          if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
++          if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision }, Object.assign(data, credentials({ ...envelope.current }));
+           else {
+             data.deviceName = null;
+             state.copied = true;
