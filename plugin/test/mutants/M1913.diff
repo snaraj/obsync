@@ -1,0 +1,12 @@
+# M1913: at push time a note that itself waits beside a name is moved aside
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4033,7 +4033,7 @@
+   const found = context.state.fileByPath(path);
+   // A note itself waiting for another name has no claim to this one, and
+   // `settleBeside` moves it (issue #149).
+-  if (waiting === undefined || found?.name !== undefined) return false;
++  if (waiting === undefined) return false;
+   const stat = await context.host.stat(path);
+   if (stat === null || context.state.fileByPath(path) !== found) return false;
+   let ours = found;

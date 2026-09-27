@@ -1,0 +1,12 @@
+# M1914: a phone chooses an id for the push-time rule it cannot act on
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4024,7 +4024,7 @@
+  * so again. The lower id keeps the name and publishes nothing new here.
+  */
+ export async function yieldName(context: SyncContext, path: string): Promise<boolean> {
+-  if (context.host.bindsRemoval !== true || identifying.get(context)?.has(path)) return false;
++  if (identifying.get(context)?.has(path)) return false;
+   let waiting: FileState | undefined;
+   for (const at in context.state.data.files) {
+     const record = context.state.data.files[at] as FileState;

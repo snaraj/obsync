@@ -95,6 +95,7 @@ import {
   encryptChunk,
   hex,
   isHex,
+  randomBytes,
   sha256,
   unbase64,
   unhex,
@@ -4129,15 +4130,78 @@ async function adopt(
  */
 async function identify(context: SyncContext, path: string, fileId: string): Promise<boolean> {
   if (context.publish === undefined) return false;
+  const marks = identifying.get(context) ?? new Set<string>();
+  identifying.set(context, marks);
+  marks.add(path);
   try {
     await context.publish(path);
   } catch {
     // The reason is not logged: a host or transport error names a path.
     context.host.log(`pull path_class=file decision=not_identified file=${fileId}`);
     return false;
+  } finally {
+    marks.delete(path);
   }
   const record = context.state.fileByPath(path);
   return record !== undefined && record.fileId !== fileId;
+}
+
+/** Names `identify` is publishing: the pull that asked settles those itself. */
+const identifying = new WeakMap<SyncContext, Set<string>>();
+
+/**
+ * THE SAME-NAME RULE, AGAIN AT PUSH TIME (issue #122).
+ *
+ * The rule needs this device's own id for the note at the name, so a note it
+ * could not publish when the collision arrived -- offline, and `identify`
+ * failing with it -- kept the name here while the other note waited beside it
+ * for that name (`keepBothRecorded`). Holding the higher id, this device owed
+ * the rename and had no occasion to make it: the other device, holding the
+ * lower, kept the name too, and the two showed the pair under different names
+ * until a later edit. The push is that occasion. The note waiting here for
+ * this name, lowest id first, is compared with the note at it -- whose id is
+ * chosen now and kept (`versionId` empty) when it has none yet -- and the
+ * higher id moves aside exactly as it would have on the feed (`moveAside`), the
+ * waiting note takes the name (`settleBeside`), and the push of the moved note
+ * is the one rename published. `true` means that happened, and the push this
+ * was asked for has nothing left to publish at `path`.
+ *
+ * A host that cannot move a note aside (mobile, `bindsRemoval`) settled this
+ * pair by keeping both already, and asking again at every push would only say
+ * so again. The lower id keeps the name and publishes nothing new here.
+ */
+export async function yieldName(context: SyncContext, path: string): Promise<boolean> {
+  if (context.host.bindsRemoval !== true || identifying.get(context)?.has(path)) return false;
+  let waiting: FileState | undefined;
+  for (const at in context.state.data.files) {
+    const record = context.state.data.files[at] as FileState;
+    if (record.name === path && (waiting === undefined || record.fileId < waiting.fileId)) waiting = record;
+  }
+  const found = context.state.fileByPath(path);
+  // A note itself waiting for another name has no claim to this one, and
+  // `settleBeside` moves it (issue #149).
+  if (waiting === undefined || found?.name !== undefined) return false;
+  const stat = await context.host.stat(path);
+  if (stat === null || context.state.fileByPath(path) !== found) return false;
+  let ours = found;
+  if (ours === undefined) {
+    // Unpublished, so `mtime` says so: a push that fails from here is queued
+    // again by the next scan, as it would have been with no record at all.
+    ours = { fileId: hex(randomBytes(16)), versionId: "", mtime: -1, size: stat.size, sha256: "" };
+    context.state.setFile(path, ours);
+    await context.state.save();
+  }
+  if (ours.fileId < waiting.fileId) return false;
+  // The copy keeps the note's own modification time, whatever the record says.
+  const moved = await moveAside(context, path, { ...ours, mtime: stat.mtime }, new Date(context.now()));
+  if (moved === null) return false;
+  context.host.log(`push decision=same_name_tiebreak winner=${waiting.fileId} role=rename file=${ours.fileId}`);
+  context.host.notify(
+    `obsync found two different notes named ${path}. This device's is now "${moved}", ` +
+      `and the other device's keeps the name.`,
+  );
+  await settleBeside(context, context.state.data.lastSeq, "push");
+  return true;
 }
 
 /**

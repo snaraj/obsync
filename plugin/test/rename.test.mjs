@@ -38,7 +38,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
+import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, keys, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -1099,6 +1099,68 @@ for (const [order, n11] of [["lower", LOW], ["higher", HIGH]]) {
     assert.equal(a.state.pathByFileId(n11), before, `a later edit renamed the note back: ${story(server, a, b)}`);
     assert.equal(a.host.text(before), `${N11}an edit on the laptop\n`, story(server, a, b));
     assert.deepEqual(nameMap(b), nameMap(a), story(server, a, b));
+  });
+}
+
+/**
+ * THE SAME-NAME RULE AT PUSH TIME (issue #122). The laptop reads the feed but
+ * cannot publish when the desktop's note of the same name arrives, so it has no
+ * id of its own to compare and keeps both, its own note at the name. When it
+ * can publish again, the push is where the rule is applied: holding the higher
+ * id, the laptop moves its note aside there and publishes it once, already
+ * under the new name, and the desktop's note takes the name; holding the lower,
+ * it keeps the name and the desktop moves its own note, as the feed's rule
+ * says. Both vantage points; the names agree either way.
+ */
+for (const [order, desktopId] of [["higher", LOW], ["lower", HIGH]]) {
+  test(`a note that could not be published at a collision is settled at its push, holding the ${order} id (#122)`, async (t) => {
+    const { ApiError } = require("../build/transport.js");
+    const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+    a.host.write("Anchor.md", N11, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () => b.host.text("Anchor.md") === N11 && settled(b, "Anchor.md"));
+
+    const post = b.transport.postVersion.bind(b.transport);
+    b.transport.postVersion = async () => { throw new ApiError(0, "unreachable", "offline"); };
+    b.host.write("Notes/Same.md", FROM_LAPTOP, 2000);
+    a.host.write("Notes/Same.md", DRAFT, 3000);
+    pin(a, "Notes/Same.md", desktopId);
+    await timers.run(STEP_MS, () => b.state.pathByFileId(desktopId) !== undefined);
+    // Kept both, and nothing was decided: the laptop's note has no id yet.
+    assert.equal(b.state.fileByPath("Notes/Same.md"), undefined, story(server, a, b));
+    assert.equal(b.state.fileByPath(b.state.pathByFileId(desktopId)).name, "Notes/Same.md");
+
+    b.transport.postVersion = post;
+    await timers.run(STEP_MS, () => quiet(server, a, b) && Object.keys(b.state.data.files).length === 3 &&
+      JSON.stringify(nameMap(a)) === JSON.stringify(nameMap(b))).catch(() => undefined);
+    await timers.run(STEP_MS);
+
+    assert.deepEqual(nameMap(b), nameMap(a), `the two devices name the notes differently: ${story(server, a, b)}`);
+    const laptopId = Object.values(b.state.data.files).find((record) => ![desktopId, a.state.fileByPath("Anchor.md").fileId]
+      .includes(record.fileId))?.fileId;
+    assert.ok(laptopId !== undefined, story(server, a, b));
+    assert.equal(laptopId > desktopId, order === "higher", "the fixture's ids are not in the order this case is about");
+    assert.equal(a.state.pathByFileId(desktopId) === "Notes/Same.md", order === "higher", "the lower id did not keep the name");
+    for (const device of [a, b]) {
+      const texts = [...device.host.files.keys()].map((path) => device.host.text(path));
+      assert.ok(texts.includes(DRAFT) && texts.includes(FROM_LAPTOP), `a note is missing: ${story(server, a, b)}`);
+    }
+    const laptopVersions = await published(server, laptopId, (await keys()).manifestKey);
+    if (order === "higher") {
+      // Published once, already under the name it moved to: no rename at all.
+      assert.equal(laptopVersions.length, 1, story(server, a, b));
+      assert.notEqual(laptopVersions[0].path, "Notes/Same.md");
+      assert.ok(b.host.logs.includes(`push decision=same_name_tiebreak winner=${LOW} role=rename file=${laptopId}`),
+        b.host.logs.filter((line) => line.startsWith("push")).join(" | "));
+    } else {
+      assert.deepEqual(laptopVersions.map((manifest) => manifest.path), ["Notes/Same.md"], "the lower id moved");
+      assert.equal(b.host.text("Notes/Same.md"), FROM_LAPTOP);
+      assert.ok(!b.host.logs.some((line) => line.includes("same_name_tiebreak") && line.includes("role=rename")),
+        b.host.logs.filter((line) => line.includes("same_name")).join(" | "));
+      // The desktop published the one rename.
+      assert.equal((await published(server, desktopId, (await keys()).manifestKey)).length, 2, story(server, a, b));
+    }
   });
 }
 

@@ -1,0 +1,12 @@
+# M1911: at push time the lower id moves aside instead of the higher
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4044,7 +4044,7 @@
+     context.state.setFile(path, ours);
+     await context.state.save();
+   }
+-  if (ours.fileId < waiting.fileId) return false;
++  if (ours.fileId > waiting.fileId) return false;
+   // The copy keeps the note's own modification time, whatever the record says.
+   const moved = await moveAside(context, path, { ...ours, mtime: stat.mtime }, new Date(context.now()));
+   if (moved === null) return false;

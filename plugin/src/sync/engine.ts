@@ -74,7 +74,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, NOT_OBSYNC, Transport } from "../transport";
 import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, unwritableText } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, EDITING_WINDOW_MS, HeldNote, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS } from "./repair";
@@ -2017,6 +2017,10 @@ export class SyncEngine {
         if ((await context.host.stat(path)) === null) return;
       }
       const forced = this.renames.delete(path);
+      // A note another one is waiting to take the name of settles that first
+      // (issue #122, `yieldName`): when it moves aside, its own push is the
+      // one that publishes it.
+      if (await yieldName(context, path)) return;
       const asked = context.now();
       const outcome = await pushFile(context, path, forced);
       if (outcome.status !== "growing") this.recheck(context, path, asked);
