@@ -562,7 +562,10 @@ test("one leave at a time: a second one while the first runs is refused, and sta
     return route(request);
   };
   const first = r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
-  for (let turn = 0; turn < 50 && !asked; turn++) await new Promise(setImmediate);
+  // On the outcome and a wall clock, never a number of turns (`FakeTimers.run`
+  // says why): the leave signs its revoke first, WebCrypto answers on the
+  // threadpool, and a loaded machine gets there in more turns, not never.
+  for (const deadline = Date.now() + 10_000; !asked && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 1));
   assert.equal(asked, true, "the first leave is asking the server");
 
   await assert.rejects(r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), /already leaving the server/);
