@@ -415,6 +415,14 @@ Obsidian says so with a notice from its next start, and what to do (#217).
 
 ### Running a server
 
+**The readiness check no longer tells anyone how much you write.** `/readyz`
+answered `{"ready":true,"seq":<n>}` to any caller, and `seq` is the count of
+changes your server holds: anyone who could reach the server could watch it
+grow and see when you write. The server already kept that number to devices
+and dashboard sessions that proved themselves; readiness now answers
+`{"ready":true}` and nothing else. A monitor of your own that read `seq` there
+reads it no more; health probes and the chart's checks are unaffected (#235).
+
 **Run obsync behind the reverse proxy you already have.** The server reads
 the standard `Forwarded` header and every `X-Forwarded-For` line, as one
 list from the proxy's end, only from addresses in
