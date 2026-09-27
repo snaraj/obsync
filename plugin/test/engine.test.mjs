@@ -1102,7 +1102,10 @@ test("a second save of the same size inside one coarse mtime step is still sent"
 
   host.seed("Notes/n05.md", "LINE 3\nline 4\n", STEP);
   await engine.start();
-  await timers.run(100, () => state.fileByPath("Notes/n05.md") !== undefined);
+  // The start's push needs no timer, so the clock is held while it runs: it
+  // reads 300 ms into the step however long the machine takes to push, and
+  // the step closes exactly 1700 ms later.
+  await timers.run(0, () => state.fileByPath("Notes/n05.md") !== undefined);
   const first = state.fileByPath("Notes/n05.md");
 
   // 0.6 s later, the same number of bytes, and the volume stamps it with the
@@ -1116,7 +1119,7 @@ test("a second save of the same size inside one coarse mtime step is still sent"
   assert.notEqual(now.sha256, first.sha256, "and the bytes that were sent are the second save's");
   assert.deepEqual(reads, ["Notes/n05.md", "Notes/n05.md"], "one read to publish, one when the step closed");
   assert.equal(rechecks(host).length, 1, host.logs.join(" | "));
-  assert.match(rechecks(host)[0], /reason=coarse_mtime delay_ms=1[0-9]{3}$/);
+  assert.match(rechecks(host)[0], /reason=coarse_mtime delay_ms=1700$/);
   engine.stop();
 });
 
