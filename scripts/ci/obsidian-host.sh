@@ -35,7 +35,7 @@
 # Requires: curl, openssl, node, tar/unzip; plugin/dist built.
 set -euo pipefail
 
-readonly OBSIDIAN_DMG='Obsidian-1.13.7.dmg 05daa54f1a4458f75da29f8faaa17e8e37ae16998432537f674c626db99bce'
+readonly OBSIDIAN_DMG='Obsidian-1.13.7.dmg 05daa54f5e1a4458f75da29f8faaa17e8e37ae16998432537f674c626db99bce'
 readonly OBSIDIAN_EXE='Obsidian-1.13.7.exe f233dc24896b3f2d5f9e4b01111181a561d0760b2105f0a474024c5f3143a9bc'
 readonly CADDY_MAC='caddy_2.10.2_mac_arm64.tar.gz cc9ad20742ea7bfee5dd1d435d42ab7fcf8592294f9ec43bf08fd21cbe448bc4'
 readonly CADDY_WINDOWS='caddy_2.10.2_windows_amd64.zip 9fd1ef9be5d9b05852b66ccc25f96f23d8651bcab20779861a745bdffa273722'
