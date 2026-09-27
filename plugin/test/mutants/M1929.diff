@@ -1,0 +1,12 @@
+# M1929: the folder-capitalisation notice tells the user to update a device that is not older
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1415,7 +1415,7 @@
+   } catch {
+     context.host.log("pull path_class=folder decision=device_unread reason=folder_case");
+   }
+-  const behind = sender !== undefined && isNewer(context.host.appVersion, sender.app_version) ? sender : undefined;
++  const behind = sender;
+   context.host.log(`pull path_class=folder decision=notified reason=folder_case sender=${behind === undefined ? "not_older" : "older"}`);
+   context.host.notify(
+     `obsync: another device spells the folder "${folder}" with different capitalisation than this one shows. ` +

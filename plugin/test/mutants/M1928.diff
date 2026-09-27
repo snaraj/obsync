@@ -1,0 +1,12 @@
+# M1928: the start-up pass brings a folder a tombstone kept back to the devices that deleted it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2372,7 +2372,7 @@
+         // tombstone that found it occupied may have kept it, and bringing it
+         // back to the devices that deleted it is not this pass's to decide
+         // (`push.ts`, `pushFolder`).
+-        this.publishFolder(folder, false, false);
++        this.publishFolder(folder, false, true);
+         this.enqueue(folder);
+         folderQueued++;
+       }

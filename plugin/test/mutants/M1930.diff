@@ -1,0 +1,12 @@
+# M1930: a record a note's own capitals left behind raises the notice about a folder
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2906,7 +2906,7 @@
+     // ghost whose difference is the note's own name is a folder of nothing: a
+     // record the note's capitals rename left behind, whose forgetting is the
+     // whole of the repair and which the user cannot act on.
+-    if (!this.caseGhostNoticeShown && folderOf(path) !== folderOf(to)) {
++    if (!this.caseGhostNoticeShown) {
+       this.caseGhostNoticeShown = true;
+       context.host.notify(
+         "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +

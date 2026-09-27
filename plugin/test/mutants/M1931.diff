@@ -1,0 +1,12 @@
+# M1931: a received folder re-case arms no echo marks for the notes it carries
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1143,7 +1143,7 @@
+   // Unmarked, this device publishes the peer's own rename straight back at it
+   // (`engine.ts`, ECHOES; issue #96).
+   const echoes = files.map((path) => `${path}\u0000${under(path)}`);
+-  for (const echo of echoes) context.moved.add(echo);
++  for (const echo of echoes) void echo;
+   // AND THE DIRECTORY ITSELF, record or none (#166). The old spelling's
+   // tombstone arrives first and forgets this folder's own record, so the
+   // records alone left the host's report of this very rename unmarked: this

@@ -404,6 +404,25 @@ export interface DeviceRecord {
   revoked: boolean;
 }
 
+/**
+ * `1.2.3` is newer than `1.2.2`; anything unparseable is not newer. Two
+ * callers compare a version the server reports: the plugin release it
+ * advertises (`main.ts`) and the one a device last reported (`app_version`,
+ * `sync/pull.ts`).
+ */
+export function isNewer(candidate: string, current: string): boolean {
+  const parse = (value: string): number[] => value.split(".").map((part) => Number.parseInt(part, 10));
+  const a = parse(candidate);
+  const b = parse(current);
+  if (a.some(Number.isNaN) || b.some(Number.isNaN)) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const left = a[i] ?? 0;
+    const right = b[i] ?? 0;
+    if (left !== right) return left > right;
+  }
+  return false;
+}
+
 export interface PairingCreated {
   pairing_id: string;
   enroll_token: string;

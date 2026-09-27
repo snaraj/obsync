@@ -63,7 +63,7 @@ import {
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { VaultPathError, assertVaultPath } from "../vaultPath";
+import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
 
 export interface ManifestChunk {
   sid: string;
@@ -284,9 +284,39 @@ export async function serialPublication<T>(context: SyncContext, path: string, p
   finally { if (paths.get(path) === current) paths.delete(path); }
 }
 
-export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+export async function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
+  // Resolved BEFORE it is serialised, so a push of either spelling of one
+  // recorded note waits for the other rather than racing it (#166).
+  const at = await recordedSpelling(context, path);
   // Resume selects and preserves heads only after an earlier upload is acknowledged.
-  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
+  return serialPublication(context, at, async () => publishFile(context, at, force, typeof over === "function" ? await over() : over));
+}
+
+/**
+ * The name this device RECORDS for the entry `path` resolves to, when that
+ * is `path` under other capitals (issue #166); otherwise `path`.
+ *
+ * A VAULT THAT FOLDS CASE ANSWERS FOR BOTH SPELLINGS, and Obsidian's index,
+ * keyed by exact spelling, keeps reporting and listing the one an entry had
+ * before the pull path re-cased it (S24, S93). A push of that old name found
+ * no record under it -- the record moved with the entry -- and published the
+ * note's bytes under a brand-new file id: one duplicate per note in a
+ * re-cased folder, live on the server and tracked by no device, which a device
+ * paired later adopted and then tried to delete. The vault is asked which
+ * entry the name is, and an entry this device records under another spelling
+ * is published as THAT record, never as a new file. A host that keeps the two
+ * spellings apart answers with the name itself, which is a different file.
+ *
+ * Asked only when some record differs from `path` by case alone, so a new
+ * note costs one pass over the records and no vault walk.
+ */
+async function recordedSpelling(context: SyncContext, path: string): Promise<string> {
+  if (context.state.fileByPath(path) !== undefined) return path;
+  if (!Object.keys(context.state.data.files).some((recorded) => caseOnly(recorded, path))) return path;
+  const shown = await context.host.spelling(path);
+  if (shown === null || shown === path || context.state.fileByPath(shown) === undefined) return path;
+  context.host.log("push path_class=file decision=resolved reason=case_variant");
+  return shown;
 }
 
 /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
@@ -595,15 +625,36 @@ export function folderManifest(context: SyncContext, path: string, deleted: bool
  * re-posting it would buy a request and a second head for no change. That
  * early return is also what makes startup reconciliation and the vault's own
  * echo of a pull-created folder free (`engine.ts`).
+ *
+ * A FOLDER MADE AGAIN WHERE ONE WAS DELETED IS A NEW VERSION (issue #165).
+ * The record's file id is derived from its path and its manifest carries no
+ * time, so the record for a path that ever had one is byte-for-byte that
+ * path's FIRST version -- and the server answers a version it already holds
+ * with a `200` that writes nothing (`docs/protocol.md`). Renaming `team docs`
+ * back to `Team docs` therefore published the old spelling's tombstone and
+ * the moves, and never the record that re-cases the directory on a device
+ * that folds case: that device refused every move and blamed a version
+ * difference the pair did not have. The answer names the file's heads, and a
+ * creation (`recreate`) that is not among them is posted again over them,
+ * which every device doing the same computes identically. The start-up
+ * pass's publication of a folder that merely has no record here does not
+ * recreate: a folder a tombstone found occupied and KEPT is nobody's to bring
+ * back to the devices that deleted it (`docs/architecture.md` 6.2.0).
  */
-export async function pushFolder(context: SyncContext, path: string): Promise<string | null> {
+export async function pushFolder(context: SyncContext, path: string, recreate = false): Promise<string | null> {
   assertFolderScope(path, context.state.data.syncFolders);
   if (context.state.folderByPath(path) !== undefined) return null;
   const fileId = await folderFileId(context.manifestKey, path);
-  const ack = await postManifest(context, fileId, [], [], folderManifest(context, path, false), 0, false);
+  const manifest = folderManifest(context, path, false);
+  let ack = await postManifest(context, fileId, [], [], manifest, 0, false);
+  let reason = "created";
+  if (recreate && !ack.ack.heads.includes(ack.versionId)) {
+    ack = await postManifest(context, fileId, ack.ack.heads, [], manifest, 0, false);
+    reason = "recreated";
+  }
   context.state.setFolder(path, { fileId, versionId: ack.versionId });
   await context.state.save();
-  context.host.log(`folder path_class=folder decision=published reason=created version=${ack.versionId}`);
+  context.host.log(`folder path_class=folder decision=published reason=${reason} version=${ack.versionId}`);
   return ack.versionId;
 }
 

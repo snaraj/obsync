@@ -99,7 +99,7 @@ import {
   unbase64,
   unhex,
 } from "../crypto";
-import { ApiError, ChangeRecord, FileRecord, ReadControl, Transport } from "../transport";
+import { ApiError, ChangeRecord, DeviceRecord, FileRecord, ReadControl, Transport, isNewer } from "../transport";
 // The per-path record this device keeps, named apart from the SERVER's file
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
@@ -1149,13 +1149,19 @@ async function recaseFolder(
   // (`engine.ts`, ECHOES; issue #96).
   const echoes = files.map((path) => `${path}\u0000${under(path)}`);
   for (const echo of echoes) context.moved.add(echo);
-  for (const folder of folders) {
+  // AND THE DIRECTORY ITSELF, record or none (#166). The old spelling's
+  // tombstone arrives first and forgets this folder's own record, so the
+  // records alone left the host's report of this very rename unmarked: this
+  // device published the folder's tombstone and its record straight back, and
+  // armed a wire barrier for a rename it only applied.
+  const marked = folders.includes(from) ? folders : [from, ...folders];
+  for (const folder of marked) {
     context.trashed.add(folder);
     context.createdFolders.add(under(folder));
   }
   const unmark = (): void => {
     for (const echo of echoes) context.moved.delete(echo);
-    for (const folder of folders) {
+    for (const folder of marked) {
       context.trashed.delete(folder);
       context.createdFolders.delete(under(folder));
     }
@@ -1401,15 +1407,32 @@ function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: st
  * the folder here. Keyed by the FOLDER and not by the file id `refused`
  * otherwise holds, so a folder of two hundred notes is one notice and not two
  * hundred; a vault path and a file id cannot collide.
+ *
+ * "UPDATE THAT DEVICE" ONLY WHEN IT IS BEHIND (issue #165). The advice was
+ * given to a pair on one version, which no update could help. The device that
+ * sent the move reported its version with its last heartbeat, so it is asked
+ * for once, with the notice; a device that is not older, or that cannot be
+ * found, gets the advice that is true whatever it runs.
  */
-function notifyFolderCase(context: SyncContext, folder: string): void {
+async function notifyFolderCase(context: SyncContext, folder: string, deviceId: string): Promise<void> {
   if (context.refused.has(folder)) return;
   context.refused.add(folder);
+  let sender: DeviceRecord | undefined;
+  try {
+    sender = (await context.transport.devices()).devices.find((device) => device.device_id === deviceId);
+  } catch {
+    context.host.log("pull path_class=folder decision=device_unread reason=folder_case");
+  }
+  const behind = sender !== undefined && isNewer(context.host.appVersion, sender.app_version) ? sender : undefined;
+  context.host.log(`pull path_class=folder decision=notified reason=folder_case sender=${behind === undefined ? "not_older" : "older"}`);
   context.host.notify(
     `obsync: another device spells the folder "${folder}" with different capitalisation than this one shows. ` +
-      "Notes under it are kept where they are; nothing was written, moved or deleted here. Update every device " +
-      "to this version and let each sync once, or rename the folder here to match -- see Troubleshooting, " +
-      '"Two folders that differ only in capitalisation".',
+      "Notes under it are kept where they are; nothing was written, moved or deleted here. " +
+      (behind === undefined
+        ? "Rename the folder on one device so both spell it the same way, and let each sync once"
+        : `"${behind.name}" runs obsync ${behind.app_version} and this device runs ${context.host.appVersion}: update ` +
+          "it and let it sync once, or rename the folder here to match") +
+      ' -- see Troubleshooting, "Two folders that differ only in capitalisation".',
   );
 }
 
@@ -1669,7 +1692,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       context.host.log(
         `pull path_class=file decision=case_move_refused reason=folder_case file=${change.file_id} seq=${change.seq}`,
       );
-      notifyFolderCase(context, folderOf(manifest.path));
+      await notifyFolderCase(context, folderOf(manifest.path), change.device_id);
       return "refused";
     }
   }

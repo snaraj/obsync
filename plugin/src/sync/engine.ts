@@ -616,8 +616,13 @@ export class SyncEngine {
   private readonly deletions = new Set<string>();
   /** Paths whose NAME changed: their bytes are identical, so the push must be forced. */
   private readonly renames = new Set<string>();
-  /** Queued folder paths to publish a record for, and to tombstone. */
-  private readonly folderPublishes = new Set<string>();
+  /**
+   * Queued folder paths to publish a record for, each with whether it is a
+   * CREATION -- a folder made or renamed here, which is published again over a
+   * tombstone the server still holds for that path (`push.ts`, `pushFolder`,
+   * issue #165) -- and queued paths to tombstone.
+   */
+  private readonly folderPublishes = new Map<string, boolean>();
   private readonly folderRemovals = new Set<string>();
   /**
    * Queued paths that must reach the server BEFORE anything queued behind
@@ -1624,8 +1629,8 @@ export class SyncEngine {
    * note: the next reconcile pass lists the vault, finds the folder without a
    * record and publishes it before any file work (`survey`).
    */
-  private publishFolder(path: string, barrier: boolean): void {
-    this.folderPublishes.add(path);
+  private publishFolder(path: string, barrier: boolean, recreate = true): void {
+    this.folderPublishes.set(path, recreate || this.folderPublishes.get(path) === true);
     if (!barrier) return;
     this.barriers.add(path);
     const held = this.options.state.data.folderBarriers;
@@ -1681,7 +1686,7 @@ export class SyncEngine {
     if (held.length === 0) return;
     // In reverse, so the stored order is the order at the front of the queue.
     for (const path of [...held].reverse()) {
-      this.folderPublishes.add(path);
+      this.folderPublishes.set(path, true);
       this.barriers.add(path);
       const queued = this.queue.indexOf(path);
       if (queued !== -1) this.queue.splice(queued, 1);
@@ -1949,7 +1954,9 @@ export class SyncEngine {
         }
         return;
       }
-      if (this.folderPublishes.delete(path)) {
+      const recreate = this.folderPublishes.get(path);
+      if (recreate !== undefined) {
+        this.folderPublishes.delete(path);
         // THE BARRIER IS THIS POST'S, NOT THIS ATTEMPT'S (review round 3,
         // finding 3). `takeBatch` took it as it took the path, and a post
         // that fails here is the one case where letting it go is wrong:
@@ -1958,7 +1965,7 @@ export class SyncEngine {
         const barrier = this.barrierPath === path;
         this.barrierPath = null;
         try {
-          const versionId = await pushFolder(context, path);
+          const versionId = await pushFolder(context, path, recreate);
           if (versionId !== null) {
             context.authored.add(versionId);
             this.accepted(true);
@@ -1972,7 +1979,7 @@ export class SyncEngine {
           // (review round 4, finding 3).
           this.releaseFolderHold(path);
         } catch (error) {
-          this.retryFolder(context, path, barrier, error);
+          this.retryFolder(context, path, barrier, recreate, error);
         }
         return;
       }
@@ -2129,7 +2136,7 @@ export class SyncEngine {
    * hold expires with its own decision and one notice, and the next start's
    * reconcile pass republishes the record.
    */
-  private retryFolder(context: SyncContext, path: string, barrier: boolean, error: unknown): void {
+  private retryFolder(context: SyncContext, path: string, barrier: boolean, recreate: boolean, error: unknown): void {
     const attempt = (this.folderRetries.get(path) ?? 0) + 1;
     const message = error instanceof Error ? error.message : String(error);
     // A POST THAT FAILS AFTER THIS ENGINE STOPPED HAS NO QUEUE TO GO BACK
@@ -2169,7 +2176,7 @@ export class SyncEngine {
       return;
     }
     this.folderRetries.set(path, attempt);
-    this.publishFolder(path, barrier);
+    this.publishFolder(path, barrier, recreate);
     // In FRONT: what this record orders is already queued behind it.
     if (!this.queue.includes(path)) this.queue.unshift(path);
     context.host.log(
@@ -2838,7 +2845,11 @@ export class SyncEngine {
         present.add(folder);
         if (casedFolders.has(folder)) continue;
         if (context.state.folderByPath(folder) !== undefined) continue;
-        this.publishFolder(folder, false);
+        // A FOLDER THAT MERELY HAS NO RECORD HERE IS NOT ONE MADE HERE: a
+        // tombstone that found it occupied may have kept it, and bringing it
+        // back to the devices that deleted it is not this pass's to decide
+        // (`push.ts`, `pushFolder`).
+        this.publishFolder(folder, false, false);
         this.enqueue(folder);
         folderQueued++;
       }
@@ -3379,7 +3390,11 @@ export class SyncEngine {
       context.host.log(`${label} decision=failed reason=state_not_saved`);
     });
     context.host.log(`${label} path_class=file decision=case_ghost_forgotten`);
-    if (!this.caseGhostNoticeShown) {
+    // THE NOTICE IS ABOUT A FOLDER, and is given only for one (issue #165). A
+    // ghost whose difference is the note's own name is a folder of nothing: a
+    // record the note's capitals rename left behind, whose forgetting is the
+    // whole of the repair and which the user cannot act on.
+    if (!this.caseGhostNoticeShown && folderOf(path) !== folderOf(to)) {
       this.caseGhostNoticeShown = true;
       context.host.notify(
         "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +

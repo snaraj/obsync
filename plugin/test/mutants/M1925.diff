@@ -1,0 +1,12 @@
+# M1925: a folder made again where one was deleted is posted as its first version, which the server already holds and writes nothing for
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -625,7 +625,7 @@
+   const manifest = folderManifest(context, path, false);
+   let ack = await postManifest(context, fileId, [], [], manifest, 0, false);
+   let reason = "created";
+-  if (recreate && !ack.ack.heads.includes(ack.versionId)) {
++  if (recreate && false) {
+     ack = await postManifest(context, fileId, ack.ack.heads, [], manifest, 0, false);
+     reason = "recreated";
+   }

@@ -319,6 +319,16 @@ nonce derived from the message, two devices publishing the same folder produce
 the same `version_id`, so the second post is the `200` no-op this document
 already specifies for a version the server holds.
 
+That also makes a folder CREATED AGAIN where one was deleted -- a rename back
+to an earlier spelling is one -- the folder's first version, which the server
+holds and appends nothing for. So from plugin 1.1.4 a device that creates or
+renames a folder here, and is answered with `heads` that do not include the
+record it posted, posts it once more with those heads as its parents; every
+device doing the same computes the same version. A device's start-up
+publication of a folder it merely has no record for does not: a folder a
+tombstone found occupied and kept is not brought back to the devices that
+deleted it. A 1.1.3 device applies such a record as any other create.
+
 **Whose folders a device publishes and receives records for.** A device that
 syncs only some folders (`syncFolders`, local-only, above) publishes a folder
 record for each SELECTED folder and for every folder inside it, and receives

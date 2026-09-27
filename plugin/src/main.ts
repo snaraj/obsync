@@ -69,7 +69,7 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, isNewer, lostMessage } from "./transport";
 import { EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
@@ -293,19 +293,8 @@ export function updateMessage(server: string, local: string): string {
   );
 }
 
-/** `1.2.3` is newer than `1.2.2`; anything unparseable is not newer. */
-export function isNewer(candidate: string, current: string): boolean {
-  const parse = (value: string): number[] => value.split(".").map((part) => Number.parseInt(part, 10));
-  const a = parse(candidate);
-  const b = parse(current);
-  if (a.some(Number.isNaN) || b.some(Number.isNaN)) return false;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const left = a[i] ?? 0;
-    const right = b[i] ?? 0;
-    if (left !== right) return left > right;
-  }
-  return false;
-}
+/** Re-exported where it always was: the update check and its tests read it here. */
+export { isNewer };
 
 /**
  * Where **Open dashboard** may send the browser, decided on this device.
