@@ -52,7 +52,9 @@
 #                   answer, from the volumes prepared in step 3.
 #   9. a TLS front  the `<!-- ci: k8s-tls-front -->` block is applied with a
 #                   leaf this job issues, and `/readyz` is answered THROUGH it
-#                   over HTTPS. Requirement 7 says the server never terminates
+#                   over HTTPS, by a port-forward and by its Service (an IPv6
+#                   cluster first uncomments the IPv6 listen line, as the page
+#                   tells it to). Requirement 7 says the server never terminates
 #                   TLS, so the deployment a reader ends up with is this one,
 #                   not the port-forward above.
 #  10. it syncs      the `<!-- ci: k8s-token -->` block reads the setup token
@@ -387,8 +389,15 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "${scratch}/tls.key" -out "${scratch}/tls.crt" -days 1 \
   -subj "/CN=${FRONT_HOST}" -addext "subjectAltName=DNS:${FRONT_HOST}" >/dev/null 2>&1 \
   || deny 'openssl could not issue the leaf this run terminates with'
-front="$(documented k8s-tls-front)" \
-  || deny "${GUIDE} no longer shows the TLS-front block this gate substitutes into"
+# The block as a reader of THIS cluster pastes it: as shown in an IPv4
+# cluster, and with the one line the page tells an IPv6 cluster to uncomment.
+if [ "${ip_family}" = ipv6 ]; then
+  front="$(documented k8s-tls-front --substitute '# listen [::]:8443 ssl;=listen [::]:8443 ssl;')" \
+    || deny "${GUIDE} no longer shows the TLS-front block with the IPv6 listen line an IPv6 cluster uncomments"
+else
+  front="$(documented k8s-tls-front)" \
+    || deny "${GUIDE} no longer shows the TLS-front block this gate substitutes into"
+fi
 printf 'helm-e2e: applying, from %s:\n%s\n' "${GUIDE}" "${front}"
 printf '%s\n' "${front}" | kubectl apply -f - \
   || deny 'the documented TLS front was refused by the API server'
@@ -427,7 +436,34 @@ for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
 done
 [ -n "${ready}" ] \
   || deny "no {\"ready\":true through the documented TLS front within ${READY_BUDGET_SECONDS}s (${forwards} port-forwards; the last said: $(cat "${scratch}/front.log"))"
-prove "a TLS front: the documented terminator answered ${ready} over HTTPS, on a certificate this run issued (port-forwards=${forwards})"
+# And through its Service, which is how anything in the cluster reaches it. A
+# port-forward reaches the pod's own loopback, which answers on IPv4 whatever
+# the cluster's family, so it cannot tell a front listening on the cluster's
+# family from one that is not; the Service's address can. The node asks, as a
+# workload would, trusting only this run's leaf.
+service_ip="$(kubectl get service "${FRONT}" --namespace "${INGRESS_NAMESPACE}" \
+  --output jsonpath='{.spec.clusterIP}')"
+case "${service_ip}" in *:*) service_ip="[${service_ip}]" ;; esac
+# Through the node's own shell: kind mounts a tmpfs on the node's /tmp, and
+# `docker cp` writes beneath it, where nothing inside the node can see it.
+docker exec -i "${NODE}" sh -c 'cat > /tmp/front.crt' <"${scratch}/tls.crt" \
+  || deny "could not hand ${NODE} the leaf it verifies the front's Service with"
+through_service=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  body="$(docker exec "${NODE}" curl --silent --show-error --max-time 3 \
+    --cacert /tmp/front.crt --resolve "${FRONT_HOST}:443:${service_ip}" \
+    "https://${FRONT_HOST}/readyz" 2>"${scratch}/service.log" || true)"
+  case "${body}" in
+    '{"ready":true'*)
+      through_service="${body}"
+      break
+      ;;
+  esac
+  sleep 1
+done
+[ -n "${through_service}" ] \
+  || deny "the documented TLS front answered its port-forward but not its Service at ${service_ip}:443 within ${READY_BUDGET_SECONDS}s (${ip_family}); curl said: $(cat "${scratch}/service.log")"
+prove "a TLS front: the documented terminator answered ${ready} over HTTPS, through a port-forward (${forwards}) and through its Service at ${service_ip}:443, on a certificate this run issued"
 
 # (10) The page's token read, and the whole sync flow through the terminator.
 # The token is masked in the runner's log before it is used and is printed by

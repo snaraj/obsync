@@ -110,6 +110,13 @@ K8S_TOKEN_READ = re.compile(r"^sudo cat (?P<path>/\S+)/v1/setup-token$", re.MULT
 # body limit is a refusal the server never made.
 FRONT_UPSTREAM = "http://obsync.obsidian.svc.cluster.local.:8080"
 FRONT_BODY_CEILING = "client_max_body_size 0;"
+# The front's sockets. As pasted it listens on IPv4 alone, the one form every
+# node starts: nginx cannot open an IPv6 socket where the kernel has no IPv6.
+# The IPv6 line is shown commented out, once, for a dual-stack or IPv6-only
+# cluster to uncomment, which is what helm-e2e.sh's IPv6 leg does.
+FRONT_LISTEN = re.compile(r"^\s*(?P<comment>#\s*)?listen\s+(?P<address>[^;]*);", re.MULTILINE)
+FRONT_LISTENS_AS_PASTED = ["8443 ssl"]
+FRONT_LISTENS_TO_UNCOMMENT = ["[::]:8443 ssl"]
 # The three facts an `ingress.peers` pod entry injects into the chart's
 # NetworkPolicy. A terminator that does not carry all three is a connection
 # that policy drops.
@@ -422,6 +429,25 @@ def _front_refusals(guide: str, blocks: dict, values: list) -> list[str]:
         found.append(
             f"{guide}: the terminator no longer carries `{FRONT_BODY_CEILING}`, so a stock 1 MiB "
             "body ceiling refuses a large file the server would have taken (requirement 8)"
+        )
+    # Read off the block's text: miniyaml drops a `#` line even inside a block
+    # scalar, and the line to uncomment is one.
+    listens = [
+        (bool(m.group("comment")), m.group("address"))
+        for m in FRONT_LISTEN.finditer(blocks["k8s-tls-front"][1])
+    ]
+    as_pasted = [address for commented, address in listens if not commented]
+    if as_pasted != FRONT_LISTENS_AS_PASTED:
+        found.append(
+            f"{guide}: the terminator listens on {as_pasted} as pasted, not {FRONT_LISTENS_AS_PASTED}: "
+            "an IPv6 socket stops nginx on a node whose kernel has no IPv6, so the block as "
+            "shown must be IPv4 alone"
+        )
+    if [address for commented, address in listens if commented] != FRONT_LISTENS_TO_UNCOMMENT:
+        found.append(
+            f"{guide}: the terminator no longer shows `listen {FRONT_LISTENS_TO_UNCOMMENT[0]};` "
+            "commented out, once: without it a dual-stack or IPv6-only cluster has no line to "
+            "uncomment, and its front answers a port-forward but not its Service"
         )
     return found
 
@@ -801,6 +827,20 @@ class MutatedGuidesAreRefused(unittest.TestCase):
             "      client_max_body_size 1m;",
         )
         self.kills(found, "body ceiling refuses a large file")
+
+    def test_a_front_that_opens_an_ipv6_socket_as_pasted_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      # listen [::]:8443 ssl;", "      listen [::]:8443 ssl;")
+        self.kills(found, "must be IPv4 alone")
+
+    def test_a_front_that_listens_without_tls_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      listen 8443 ssl;", "      listen 8443;")
+        self.kills(found, "must be IPv4 alone")
+
+    def test_dropping_the_ipv6_line_to_uncomment_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      # listen [::]:8443 ssl;\n", "")
+        self.kills(found, "has no line to uncomment")
+        # And the IPv6 leg, which uncomments it, can no longer read the block.
+        self.kills(found, "helm-e2e.sh: docs/kubernetes.md: block 'k8s-tls-front' does not show")
 
     def test_a_token_read_that_needs_a_shell_in_the_container_is_refused(self):
         found = self.mutate(

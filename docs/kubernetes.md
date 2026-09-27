@@ -262,7 +262,25 @@ a warning anywhere, it is a connection the NetworkPolicy drops. It is also the
 only workload that reaches obsync, so it runs as hardened as the server does:
 no root, no capabilities, the runtime's default seccomp profile, a read-only
 root filesystem, and an image pinned by digest. A minimal one, with the
-certificate arriving as the `obsync-tls` Secret the ceremony above produces:
+certificate arriving as the `obsync-tls` Secret the ceremony above produces.
+
+Its `listen` lines follow the addresses your cluster gives pods:
+
+| Cluster | `listen` lines |
+|---|---|
+| IPv4 only | `listen 8443 ssl;` alone, as the block shows |
+| Dual-stack | both: delete the `# ` before `listen [::]:8443 ssl;` |
+| IPv6 only | both, as dual-stack |
+
+The block ships with the IPv4 line alone because every node can start it: on a
+node whose kernel has no IPv6 at all (booted with `ipv6.disable=1`), nginx
+cannot open the IPv6 socket and does not start. Left that way in an IPv6-only
+cluster, the front answers a port-forward, which reaches the pod's own
+loopback, and nothing else, because its Service's address is IPv6. Not sure
+which you run? After applying the block,
+`kubectl get service tls-front --namespace obsync-ingress --output jsonpath='{.spec.clusterIPs}'`
+names the Service's addresses; one with a colon in it is IPv6 and needs the
+second line.
 
 <!-- ci: k8s-tls-front -->
 ```yaml
@@ -279,7 +297,11 @@ metadata:
 data:
   obsync.conf: |
     server {
+      # Every cluster: IPv4.
       listen 8443 ssl;
+      # Dual-stack and IPv6-only clusters: delete the `# ` below. Leave it on
+      # a node whose kernel has no IPv6, where nginx could not start.
+      # listen [::]:8443 ssl;
       ssl_certificate /tls/tls.crt;
       ssl_certificate_key /tls/tls.key;
       # Requirement 8: files of any size take one path. A stock proxy caps a
