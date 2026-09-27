@@ -7,9 +7,10 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::hex;
@@ -334,54 +335,31 @@ impl NonceCache {
                 return settled.map_err(|_| unavailable());
             }
             state = match state.durable.take() {
-                Some(file) => self.flush(state, file, now),
+                // A flush that panics has settled its batch on the way out
+                // (`Flight`), this request's own included, so the leader is
+                // answered like every other member rather than with the panic.
+                Some(file) => catch_unwind(AssertUnwindSafe(|| self.flush(state, file, now)))
+                    .unwrap_or_else(|_| self.state()),
                 None => self.settled.wait(state).expect("nonce cache"),
             };
         }
     }
 
-    /// Lead one flush: take the open batch and the file, write and fsync
-    /// with the mutex released, then settle every member at once.
-    ///
-    /// The file is rewritten before the batch joins it, never after: a
-    /// volume that refuses the rewrite refuses the batch too, and every
-    /// nonce in it is still unspent. The rewrite holds what was durable
-    /// before this batch and not the batch itself, because a batch the
-    /// append then refuses must not survive in the rewritten file.
+    /// Lead one flush: take the open batch and the file, and land them.
     fn flush<'a>(
         &'a self,
         mut state: MutexGuard<'a, NonceState>,
-        mut file: NonceLog,
+        file: NonceLog,
         now: u64,
     ) -> MutexGuard<'a, NonceState> {
         let batch = std::mem::take(&mut state.open);
-        let rewrite = (file.lines() > self.capacity * 2).then(|| {
-            state.sweep(now);
-            let pending: HashSet<&Nonce> = batch.entries.iter().map(|(_, e)| e).collect();
-            window(state.seen.iter().filter(|(e, _)| !pending.contains(e)))
-        });
-        drop(state);
-        let written = rewrite
-            .map_or(Ok(()), |(body, lines)| file.compact(&body, lines))
-            .and_then(|()| file.append(&batch.entries));
-        let mut state = self.state();
-        if let Err(e) = &written {
-            self.log.error(
-                "nonce_log",
-                &[
-                    ("decision", Val::word("refused")),
-                    ("io", Val::io(e)),
-                    ("batch", Val::count(batch.entries.len() as u64)),
-                ],
-            );
-            for (ts, entry) in &batch.entries {
-                state.unspend(*ts, entry);
-            }
+        Flight {
+            cache: self,
+            batch,
+            file: Some(file),
+            state: Some(state),
         }
-        state.durable = Some(file);
-        let _ = batch.outcome.set(written.map_err(|e| e.kind()));
-        self.settled.notify_all();
-        state
+        .land(now)
     }
 
     /// Drop expired entries, returning how many went.
@@ -426,6 +404,94 @@ impl NonceCache {
             *counted.entry(owner.clone()).or_default() += 1;
         }
         (counted == state.held, state.held_by(device))
+    }
+}
+
+/// A flush in flight: the batch it took, the file, and the mutex while it
+/// holds it. Dropped with the file still inside -- which only a flush
+/// unwinding from a panic is -- it settles the batch as a refused one: a
+/// panic anywhere between taking the batch and publishing its outcome would
+/// otherwise leave every member waiting for an outcome nobody sets, and
+/// every later request waiting for a file nobody hands back.
+struct Flight<'a> {
+    cache: &'a NonceCache,
+    batch: Batch,
+    file: Option<NonceLog>,
+    state: Option<MutexGuard<'a, NonceState>>,
+}
+
+impl<'a> Flight<'a> {
+    /// Write and fsync with the mutex released, then settle every member at
+    /// once.
+    ///
+    /// The file is rewritten before the batch joins it, never after: a
+    /// volume that refuses the rewrite refuses the batch too, and every
+    /// nonce in it is still unspent. The rewrite holds what was durable
+    /// before this batch and not the batch itself, because a batch the
+    /// append then refuses must not survive in the rewritten file.
+    fn land(mut self, now: u64) -> MutexGuard<'a, NonceState> {
+        let cache = self.cache;
+        let file = self.file.as_mut().expect("a flight holds the file");
+        let state = self.state.as_mut().expect("a flight starts locked");
+        let rewrite = (file.lines() > cache.capacity * 2).then(|| {
+            state.sweep(now);
+            let pending: HashSet<&Nonce> = self.batch.entries.iter().map(|(_, e)| e).collect();
+            window(state.seen.iter().filter(|(e, _)| !pending.contains(e)))
+        });
+        self.state = None;
+        let written = rewrite
+            .map_or(Ok(()), |(body, lines)| file.compact(&body, lines))
+            .and_then(|()| file.append(&self.batch.entries));
+        let state = self.state.insert(cache.state());
+        if let Err(e) = &written {
+            cache.log.error(
+                "nonce_log",
+                &[
+                    ("decision", Val::word("refused")),
+                    ("io", Val::io(e)),
+                    ("batch", Val::count(self.batch.entries.len() as u64)),
+                ],
+            );
+            for (ts, entry) in &self.batch.entries {
+                state.unspend(*ts, entry);
+            }
+        }
+        state.durable = self.file.take();
+        let _ = self.batch.outcome.set(written.map_err(|e| e.kind()));
+        cache.settled.notify_all();
+        self.state.take().expect("a flight ends locked")
+    }
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        let Some(mut file) = self.file.take() else {
+            return;
+        };
+        let cache = self.cache;
+        file.abandon();
+        let mut state = self
+            .state
+            .take()
+            .unwrap_or_else(|| cache.state.lock().unwrap_or_else(PoisonError::into_inner));
+        cache.log.error(
+            "nonce_log",
+            &[
+                ("decision", Val::word("refused")),
+                ("reason", Val::word("flush_panicked")),
+                ("batch", Val::count(self.batch.entries.len() as u64)),
+            ],
+        );
+        for (ts, entry) in &self.batch.entries {
+            state.unspend(*ts, entry);
+        }
+        state.durable = Some(file);
+        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));
+        drop(state);
+        // A guard dropped while unwinding poisons the mutex. What it guards
+        // is whole again, so nothing that locks it next should fail for it.
+        cache.state.clear_poison();
+        cache.settled.notify_all();
     }
 }
 
@@ -1340,6 +1406,92 @@ mod tests {
             "no refused nonce ever reached the volume"
         );
         exact(&reloaded, DEVICE, 3);
+    }
+
+    /// A panic inside a flush is a bug, and it costs one refusal per member
+    /// and nothing more: the whole batch is answered `503`, the leader
+    /// included, every nonce in it is unspent now and after a restart, the
+    /// half a batch that landed is cut back, and the next request is served.
+    /// Both places a flush can die: holding the cache's mutex, and not.
+    #[test]
+    fn a_flush_that_panics_answers_every_member_and_blocks_nobody() {
+        flush_panics(false, "nonce-panic-write");
+        flush_panics(true, "nonce-panic-locked");
+    }
+
+    fn flush_panics(locked: bool, name: &str) {
+        const REQUESTS: u8 = 6;
+        let dir = volume(name);
+        let log = Log::buffered(LogLevel::Debug);
+        let c = Arc::new(cache(&dir, 1_000, NONCE_CACHE_MAX, &log));
+        c.set_fault(NonceFault::SlowSyncThenPanic { ms: 200, locked });
+        // Detached threads and a deadline: a member left waiting fails the
+        // test instead of hanging it.
+        let (done, answers) = std::sync::mpsc::channel();
+        let requests: Vec<_> = (1..=REQUESTS)
+            .map(|n| {
+                let (c, done) = (Arc::clone(&c), done.clone());
+                std::thread::spawn(move || {
+                    // The first request's flush is slow and lands; everyone
+                    // who arrives meanwhile forms the next batch, whose flush
+                    // panics.
+                    if n > 1 {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    let _ = done.send((n, c.remember(DEVICE, &nonce(n), 1_000)));
+                })
+            })
+            .collect();
+        let mut settled = Vec::new();
+        while settled.len() < usize::from(REQUESTS) {
+            settled.push(
+                answers
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("a member was left waiting on a flush that panicked"),
+            );
+        }
+        for request in requests {
+            request.join().expect("no request panicked");
+        }
+        settled.sort_by_key(|(n, _)| *n);
+        assert!(settled[0].1.is_ok(), "{name}: the first batch landed");
+        for (n, answer) in &settled[1..] {
+            let e = answer.as_ref().expect_err("the panicked batch is refused");
+            assert_eq!(
+                (e.status, e.code),
+                (503, "nonce_log_unavailable"),
+                "{name}: request {n}"
+            );
+        }
+        assert!(
+            log.captured()
+                .contains("event=nonce_log decision=refused reason=flush_panicked batch=5"),
+            "{}",
+            log.captured()
+        );
+        assert_eq!(c.len(), 1, "{name}: only the batch that landed is held");
+        assert_eq!(
+            lines_on_disk(&dir),
+            1,
+            "{name}: none of the panicked batch stays"
+        );
+        c.remember(DEVICE, &nonce(7), 1_000)
+            .expect("the next request is served");
+
+        drop(c);
+        let restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        assert_eq!(
+            restarted
+                .remember(DEVICE, &nonce(1), 1_000)
+                .expect_err("spent")
+                .code,
+            "replayed_nonce"
+        );
+        for n in 2..=REQUESTS {
+            restarted
+                .remember(DEVICE, &nonce(n), 1_000)
+                .expect("a nonce the panicked batch carried was never spent");
+        }
     }
 
     #[test]

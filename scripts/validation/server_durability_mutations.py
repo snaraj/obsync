@@ -23,6 +23,7 @@ SERVE = "crates/obsyncd/src/cli/serve.rs"
 GROUP = "concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own"
 PENDING = "a_nonce_in_flight_is_already_a_replay_and_the_check_does_not_wait_for_the_volume"
 REFUSED = "a_refused_batch_answers_every_member_and_leaves_every_nonce_unspent"
+PANIC = "a_flush_that_panics_answers_every_member_and_blocks_nobody"
 FSYNC = "a_writer_s_fsync_holds_the_journal_and_never_the_index_and_nothing_is_applied_before_it"
 GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_snapshot"
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
@@ -34,9 +35,9 @@ CASES = [
         "None => return Ok(()),",
     )], GROUP),
     ("answer-before-the-flush", AUTH, [(
-        "        drop(state);\n        let written = rewrite",
-        "        let _ = batch.outcome.set(Ok(()));\n        self.settled.notify_all();\n"
-        "        drop(state);\n        let written = rewrite",
+        "        self.state = None;\n        let written = rewrite",
+        "        let _ = self.batch.outcome.set(Ok(()));\n        cache.settled.notify_all();\n"
+        "        self.state = None;\n        let written = rewrite",
     )], GROUP),
     ("unspent-on-failure", AUTH, [(
         "            self.seen.remove(entry);\n",
@@ -52,9 +53,9 @@ CASES = [
         ("        state.open.entries.push((now, entry));\n", ""),
     ], "a_refused_batch_gives_every_device_its_share_back"),
     ("nonce-fsync-inside-the-lock", AUTH, [
-        ("        drop(state);\n        let written = rewrite", "        let written = rewrite"),
-        ("        let mut state = self.state();\n        if let Err(e) = &written {",
-         "        let mut state = state;\n        if let Err(e) = &written {"),
+        ("        self.state = None;\n        let written = rewrite", "        let written = rewrite"),
+        ("        let state = self.state.insert(cache.state());\n",
+         "        let state = self.state.as_mut().expect(\"still locked\");\n"),
     ], PENDING),
     ("rewrite-excludes-the-batch", AUTH, [(
         "window(state.seen.iter().filter(|(e, _)| !pending.contains(e)))",
@@ -64,6 +65,32 @@ CASES = [
         "        self.file.set_len(self.durable_len)?;\n",
         "",
     )], "a_refused_batch_is_cut_back_so_the_next_one_lands_on_a_clean_line"),
+    # --- a flush that panics settles its batch (drop guard) -----------------
+    ("panicked-flight-settles", AUTH, [(
+        "        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));\n", "",
+    )], PANIC),
+    ("panicked-flight-unspends", AUTH, [(
+        "        for (ts, entry) in &self.batch.entries {\n            state.unspend(*ts, entry);\n"
+        "        }\n        state.durable = Some(file);\n",
+        "        state.durable = Some(file);\n",
+    )], PANIC),
+    ("panicked-flight-wakes", AUTH, [(
+        "        cache.state.clear_poison();\n        cache.settled.notify_all();\n",
+        "        cache.state.clear_poison();\n",
+    )], PANIC),
+    ("panicked-flight-clears-poison", AUTH, [(
+        "        cache.state.clear_poison();\n", "",
+    )], PANIC),
+    ("panicked-flight-cuts-back", NONCE_LOG, [(
+        "    pub fn abandon(&mut self) {\n        if let Err(e) = self.rollback() {\n"
+        "            self.faulted = Some(e.kind());\n        }\n",
+        "    pub fn abandon(&mut self) {\n",
+    )], PANIC),
+    ("panicked-leader-answered", AUTH, [(
+        "                Some(file) => catch_unwind(AssertUnwindSafe(|| self.flush(state, file, now)))\n"
+        "                    .unwrap_or_else(|_| self.state()),\n",
+        "                Some(file) => self.flush(state, file, now),\n",
+    )], PANIC),
     # --- journal fsync outside the index guard (#191) -----------------------
     ("journal-fsync-inside-the-index-lock", STORE, [
         ("        drop(index);\n        let written = journal.append_all(&records);",

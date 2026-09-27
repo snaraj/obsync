@@ -240,7 +240,10 @@ and the nonces the refused requests carried were never recorded, so each is
 unspent and the device may send it again. A cut that itself fails leaves the
 log refusing every request until a restart truncates the torn tail. The
 compaction threshold is still outstanding, so the next batch attempts the
-rewrite again.
+rewrite again. A flush that panics, which only a bug does, settles the same
+way: its whole batch is answered `503 nonce_log_unavailable`, cut back and
+unspent, with one `event=nonce_log decision=refused reason=flush_panicked
+batch=<n>` line, and no request is left waiting on it.
 
 The boundary is the one "One writer" states below. These steps defend
 against what a crash and a restored volume leave behind. A process

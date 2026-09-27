@@ -94,6 +94,20 @@ pub enum NonceFault {
     },
     /// The batch is durable and the process dies before anyone is answered.
     CrashAfterSync,
+    /// Slow and successful, as `SlowSync`, and then the NEXT batch's flush
+    /// panics: a bug in the flush, landing on a batch whose members all
+    /// queued behind this one.
+    SlowSyncThenPanic {
+        /// The extra time.
+        ms: u64,
+        /// Whether the panic comes while the flush holds the cache's mutex
+        /// (deciding on a compaction) or half way through the write.
+        locked: bool,
+    },
+    /// Half the batch lands, then the flush panics. Once.
+    PanicMidWrite,
+    /// The flush panics while it holds the cache's mutex. Once.
+    PanicUnderLock,
     /// Half the batch lands, the write refuses, and so does the cut that
     /// would take it back off the volume.
     ShortWriteStuck {
@@ -317,6 +331,11 @@ impl NonceLog {
                 .file
                 .write_all(&text.as_bytes()[..text.len() / 2])
                 .and(Err(io::Error::from_raw_os_error(code))),
+            NonceFault::PanicMidWrite => {
+                let _ = self.file.write_all(&text.as_bytes()[..text.len() / 2]);
+                self.set_fault(NonceFault::None);
+                panic!("injected panic part way through a nonce batch");
+            }
             _ => self.file.write_all(text.as_bytes()),
         };
         #[cfg(not(test))]
@@ -346,6 +365,18 @@ impl NonceLog {
         self.lines += entries.len();
         self.appended += entries.len() as u64;
         Ok(())
+    }
+
+    /// A flush that unwound part way, which only a bug does: cut the file
+    /// back to what it had made durable, as a refused batch is cut, so the
+    /// next batch starts on a clean line and no start ever loads a line of a
+    /// batch that was never answered. A cut that fails faults the log, as it
+    /// does after a refusal.
+    pub fn abandon(&mut self) {
+        if let Err(e) = self.rollback() {
+            self.faulted = Some(e.kind());
+        }
+        self.publish();
     }
 
     /// Cut a refused batch back off the volume, and make the cut durable.
@@ -413,7 +444,12 @@ impl NonceLog {
     }
 
     /// Lines the file holds, for the caller's compaction threshold.
-    pub const fn lines(&self) -> usize {
+    pub fn lines(&self) -> usize {
+        #[cfg(test)]
+        if self.armed() == NonceFault::PanicUnderLock {
+            self.set_fault(NonceFault::None);
+            panic!("injected panic while the flush holds the cache");
+        }
         self.lines
     }
 
@@ -430,12 +466,23 @@ impl NonceLog {
         #[cfg(test)]
         match self.armed() {
             NonceFault::SyncFails { code } => return Err(io::Error::from_raw_os_error(code)),
-            NonceFault::SlowSync { ms } | NonceFault::SlowSyncFails { ms, .. } => {
+            NonceFault::SlowSync { ms }
+            | NonceFault::SlowSyncFails { ms, .. }
+            | NonceFault::SlowSyncThenPanic { ms, .. } => {
                 self.syncing.store(true, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(ms));
                 self.syncing.store(false, Ordering::SeqCst);
-                if let NonceFault::SlowSyncFails { code, .. } = self.armed() {
-                    return Err(io::Error::from_raw_os_error(code));
+                match self.armed() {
+                    NonceFault::SlowSyncFails { code, .. } => {
+                        return Err(io::Error::from_raw_os_error(code));
+                    }
+                    NonceFault::SlowSyncThenPanic { locked: true, .. } => {
+                        self.set_fault(NonceFault::PanicUnderLock);
+                    }
+                    NonceFault::SlowSyncThenPanic { locked: false, .. } => {
+                        self.set_fault(NonceFault::PanicMidWrite);
+                    }
+                    _ => {}
                 }
             }
             _ => {}
