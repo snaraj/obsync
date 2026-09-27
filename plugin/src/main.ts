@@ -2975,14 +2975,11 @@ export default class ObsyncPlugin extends Plugin {
       this.teardownEngine();
     } else if (this.forgottenDevice) return;
     this.statusValue = status;
-    this.statusEl?.setText(`obsync: ${this.statusText()}`);
+    this.render();
   }
 
-  /**
-   * The `offline` this session's transport raised, and the status it covered.
-   * Held by identity, so an answer takes back only the `offline` it caused.
-   */
-  private unanswered: { shown: EngineStatus; covered: EngineStatus } | null = null;
+  /** Whether this session's transport's latest attempt went unanswered. */
+  private unanswered = false;
 
   /**
    * What the transport learned on its last attempt, shown at once.
@@ -2992,47 +2989,57 @@ export default class ObsyncPlugin extends Plugin {
    * minute and a half -- before anything is thrown, and until then the engine
    * said nothing, so a device opened away from its server read `idle` for that
    * long before `offline — retrying` appeared (measured in the 2026-09-23 run).
-   * An unanswered attempt now shows `offline — retrying` at once, which is what
-   * the transport is doing, and the next answer puts back what it covered.
+   * An unanswered attempt now shows `offline — retrying` at once, over an
+   * `idle` or a `syncing`: an `error` needs the person and is never hidden,
+   * and an unpaired device has no sync to be offline from.
    *
-   * Only `idle` and `syncing` are covered: an `error` needs the person and is
-   * never hidden, and an unpaired device has no sync to be offline from. An
-   * answer takes back only the `offline` this raised, never the engine's own
-   * or the reconnect cycle's, whose start clears it when it succeeds.
+   * AND ANY ANSWER TAKES IT BACK (issue #158), whoever said it. The engine's
+   * own offline goes with the feed's next read, which the answer hurries
+   * (`wake`), and a start that could not reach the server runs again now. An
+   * answer used to take back only the offline this raised, so a device whose
+   * feed had said it read `offline — retrying` for minutes after its server
+   * was back. Said once per change, not per attempt.
    */
   private reachability(answered: boolean): void {
-    if (!answered) {
-      const kind = this.statusValue.kind;
-      if (!this.state.paired || (kind !== "idle" && kind !== "syncing")) return;
-      const shown: EngineStatus = { kind: "offline" };
-      this.unanswered = { shown, covered: this.statusValue };
-      this.log("engine decision=offline reason=unanswered");
-      this.setStatus(shown);
-      return;
+    if (this.unanswered !== answered) return;
+    this.unanswered = !answered;
+    this.log(answered ? "engine decision=online reason=answered" : "engine decision=offline reason=unanswered");
+    this.render();
+    if (answered) {
+      this.engine?.wake("answered");
+      this.retryNow("answered");
     }
-    const raised = this.unanswered;
-    this.unanswered = null;
-    if (raised === null || this.statusValue !== raised.shown) return;
-    this.log("engine decision=online reason=answered");
-    this.setStatus(raised.covered);
+  }
+
+  /** The status the person reads: the transport's silence over a calm one (`reachability`). */
+  private shown(): EngineStatus {
+    const status = this.statusValue;
+    const calm = status.kind === "idle" || status.kind === "syncing";
+    return this.unanswered && calm && this.state?.paired === true ? { kind: "offline" } : status;
+  }
+
+  private render(): void {
+    this.statusEl?.setText(`obsync: ${this.statusText()}`);
   }
 
   statusText(): string {
-    switch (this.statusValue.kind) {
+    const status = this.shown();
+    switch (status.kind) {
       case "idle":
         // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
         if (!this.state.paired) return "not paired";
         return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
       case "syncing":
-        return `syncing ${this.statusValue.pending}`;
+        // Nothing counted, but the feed has not answered yet: not idle either.
+        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending}`;
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.
         return "offline — retrying";
       case "error":
-        return `error — ${this.statusValue.message}`;
+        return `error — ${status.message}`;
       case "paused":
-        return `paused — ${this.statusValue.message}`;
+        return `paused — ${status.message}`;
     }
   }
 

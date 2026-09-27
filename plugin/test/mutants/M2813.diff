@@ -1,0 +1,12 @@
+# M2813: idle before the feed has answered once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2208,7 +2208,7 @@
+     // device is checking, which is not idle either.
+     if (this.absent) return { kind: "offline" };
+     const work = this.queue.length + this.active + this.pulls + waiting;
+-    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work };
++    if (work > 0) return { kind: "syncing", pending: work };
+     return { kind: "idle" };
+   }
+ 

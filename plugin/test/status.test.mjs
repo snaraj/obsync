@@ -48,6 +48,7 @@ async function stopped(r) {
 
 test("the feed asks without waiting first, then long-polls (#158, #195)", async () => {
   const r = await started();
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 0 }, "checking, not idle, until the feed has answered");
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
   const asked = polls(r).map((request) => /wait=(\d+)/.exec(request.target)[1]);
   assert.deepEqual(asked.slice(-2), ["0", "55"], "one quick read, then the long poll");
@@ -240,4 +241,86 @@ test("after a new vault key, an edit the server refuses for the old vault is sen
   await r.timers.run(STEP_MS);
   assert.equal(posts.length, before);
   await stopped(r);
+});
+
+// --- the status is derived from facts (#158) -------------------------------
+
+/** Land notes on the server without the waiting poll hearing of them, then answer it. */
+async function arriving(r, count) {
+  const deaf = r.server.feedWaiters;
+  r.server.feedWaiters = [];
+  for (let i = 0; i < count; i++) {
+    await r.server.publish({ fileId: (10 + i).toString(16).padStart(32, "0"), path: `In/${i}.md`, bytes: enc(`arrived ${i}\n`),
+      mtime: 1000 + i, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  }
+  r.server.feedWaiters = deaf;
+  r.server.releaseFeed();
+}
+
+test("a receiving device counts what arrives down to 0, and never reads idle before the last note is written (#158)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1 && r.last()?.kind === "idle");
+  const from = r.statuses.length;
+  await arriving(r, 3);
+  await r.timers.run(STEP_MS, () => r.host.text("In/2.md") !== null && r.last()?.kind === "idle");
+  const all = r.statuses.slice(from).map((status) => status.kind === "syncing" ? status.pending : status.kind);
+  // The answered poll's own empty page may come first; the page that carries the notes starts at 3.
+  const seen = all.slice(all.indexOf(3));
+  assert.equal(seen.at(-1), "idle");
+  const during = seen.slice(0, -1);
+  assert.ok(during.length >= 3 && during.every((value) => typeof value === "number" && value > 0), `syncing the whole page: ${seen}`);
+  assert.deepEqual(during.slice(0, 3), [3, 2, 1], "counted down as each note lands");
+  await stopped(r);
+});
+
+test("a sending device never reads idle while pushes are still queued, echo pages or not (#158)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const from = r.statuses.length;
+  for (let i = 0; i < 12; i++) r.host.seed(`Out/${i}.md`, `sent ${i}\n`, 2000 + i);
+  // Queued as a find-and-replace or a pasted folder does: all at once, then drained in batches.
+  const queued = () => r.engine.queue.length + r.engine.active;
+  const seen = [];
+  const said = r.engine.onStatus;
+  r.engine.onStatus = (status) => { said(status); seen.push([status.kind, queued()]); };
+  for (let i = 0; i < 12; i++) r.engine.changed(`Out/${i}.md`);
+  await r.timers.run(STEP_MS, () => Array.from({ length: 12 }, (_, i) => r.state.fileByPath(`Out/${i}.md`)).every(Boolean) && queued() === 0);
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+  assert.ok(seen.some(([kind]) => kind === "syncing"), "the drain said so");
+  assert.deepEqual(seen.filter(([kind, left]) => kind === "idle" && left > 0), [], `no idle with pushes left: ${JSON.stringify(seen)}`);
+  assert.ok(r.statuses.length > from);
+  await stopped(r);
+});
+
+test("the next answered read takes back the feed's offline, even an empty page (#158)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  let down = true;
+  refuse(r, (sent) => down && sent.url.includes("/v1/changes?"), () => { throw new Error("net::ERR_CONNECTION_REFUSED"); });
+  r.server.releaseFeed();
+  await r.timers.run(0, () => r.last()?.kind === "offline");
+  down = false;
+  const from = r.statuses.length;
+  r.engine.wake("answered");
+  await r.timers.run(0, () => r.last()?.kind === "idle");
+  const page = polls(r).at(-2) ?? polls(r).at(-1);
+  assert.match(page.target, /wait=0/, "an empty quick read, not a page carrying a change");
+  assert.ok(r.statuses.slice(from).length >= 1);
+  await stopped(r);
+});
+
+test("a device starting with an unfinished upload reads checking, then syncing, never idle before it is sent (#158)", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  const statuses = [];
+  r.host.seed("Unsent.md", "written while Obsidian was closed\n", 3000);
+  const engine = new SyncEngine({ ...r, timers, now: () => r.host.clock, onStatus: (status) => statuses.push(status) });
+  await engine.start();
+  await timers.run(STEP_MS, () => r.state.fileByPath("Unsent.md") !== undefined && statuses.at(-1)?.kind === "idle");
+  const before = statuses.slice(0, statuses.findIndex((status) => status.kind === "idle"));
+  assert.ok(before.some((status) => status.kind === "syncing" && status.pending > 0), JSON.stringify(statuses));
+  assert.ok(r.server.journal.some((frame) => frame.file_id === r.state.fileByPath("Unsent.md").fileId), "idle came after the upload");
+  engine.stop();
+  r.server.releaseFeed();
+  await engine.stopAndWait();
 });

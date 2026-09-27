@@ -529,3 +529,25 @@ test("a refused start says why in words, and a start that gets through clears wh
   await r.instance.restartEngine();
   assert.equal(r.instance.statusText(), "idle");
 });
+
+test("any answered attempt takes back the offline, whoever said it, and hurries the feed and a pending start (#158)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const engine = r.instance.engine;
+  report(r, false);
+  assert.equal(r.instance.statusText(), "offline — retrying");
+  report(r, true);
+  assert.equal(r.instance.statusText(), "idle");
+  assert.deepEqual(engine.woken, ["answered"], "the feed's own offline goes with its next read, which the answer hurries");
+  // A start that could not reach the server runs again at the first answer, not at its timer.
+  r.plan(() => { throw r.unreachable(); });
+  await r.instance.restartEngine();
+  assert.deepEqual(r.win.armed(), [5000]);
+  report(r, false);
+  r.plan(() => undefined);
+  report(r, true);
+  await settle();
+  assert.ok(r.logs.includes("engine decision=retrying attempt=1 reason=answered"), r.logs.join("\n"));
+  assert.deepEqual(r.win.armed(), []);
+  assert.equal(r.instance.statusText(), "idle");
+});

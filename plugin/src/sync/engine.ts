@@ -622,6 +622,10 @@ export class SyncEngine {
    * It is what the status says first, and it clears itself.
    */
   private refused: EngineStatus | null = null;
+  /** Whether the feed's latest read went unanswered: the status is `offline` until one is (#158). */
+  private absent = false;
+  /** Records of the page being applied that are not yet written: work the status counts (#158). */
+  private pulls = 0;
   /** Paths already sent again under a new vault key (`rekeyed`): once each. */
   private readonly republished = new Set<string>();
   private rekeyNoticeShown = false;
@@ -1619,8 +1623,8 @@ export class SyncEngine {
       const context = this.need();
       while (this.queue.length > 0 && this.running) {
         const batch = this.takeBatch(context.concurrency);
-        this.status({ kind: "syncing", pending: this.queue.length + batch.length });
         this.active = batch.length;
+        this.status(this.resting());
         await Promise.all(batch.map((path) => this.pushOne(path)));
         this.active = 0;
       }
@@ -1995,6 +1999,7 @@ export class SyncEngine {
         this.poll = null;
         if (!live()) return;
         this.feedAnswered = true;
+        this.absent = false;
         this.accepted(false);
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
@@ -2025,7 +2030,11 @@ export class SyncEngine {
         verify = true;
         const message = error instanceof Error ? error.message : String(error);
         context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
-        this.report(refused);
+        // Absence is the feed's to say until its next read is answered, and
+        // no longer than that (`resting`).
+        this.absent = refused.kind === "offline";
+        if (this.absent) this.status(this.resting());
+        else this.report(refused);
         await new Promise<void>((resolve) => {
           this.feedPause = resolve;
           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);
@@ -2191,7 +2200,15 @@ export class SyncEngine {
       const more = paused.length > 1 ? ` and ${paused.length - 1} more` : "";
       return { kind: "paused", message: `${last.path}${more} (Show sync status)` };
     }
-    if (waiting > 0) return { kind: "syncing", pending: waiting };
+    // FROM FACTS, NOT FROM WHICHEVER LOOP SPOKE LAST (issue #158): absence
+    // until the feed is answered again; then the work still to do -- pushes
+    // queued and in flight, records arrived and not yet written, notes waiting
+    // on their own push or on an editor -- and `idle` only when there is none
+    // AND the feed's latest read was answered. Before that first answer the
+    // device is checking, which is not idle either.
+    if (this.absent) return { kind: "offline" };
+    const work = this.queue.length + this.active + this.pulls + waiting;
+    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work };
     return { kind: "idle" };
   }
 
@@ -2360,15 +2377,25 @@ export class SyncEngine {
   private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
     let replayed = 0;
     await this.exclusive(async () => {
-      for (const change of page.changes) {
-        if (!this.running) break;
-        // Re-reading a rebuilt journal from zero (issue #145): what this
-        // device already processed is not news, and applied again it is
-        // yesterday's note over today's, a deletion undone, a rename reverted.
-        const mark = context.state.data.feedMark;
-        if (mark?.replay === true && seenBefore(change, mark)) replayed++;
-        else this.processed(context, change, await this.receive(context, change));
-        context.state.data.lastSeq = change.seq;
+      // What arrived and is not yet written is work, and the status counts it
+      // down as it lands: a receiving device read `idle` through a thousand
+      // notes and a gigabyte (issue #158, S46, S26).
+      this.pulls = page.changes.length;
+      try {
+        for (const change of page.changes) {
+          if (!this.running) break;
+          if (this.pulls > 0) this.status(this.resting());
+          // Re-reading a rebuilt journal from zero (issue #145): what this
+          // device already processed is not news, and applied again it is
+          // yesterday's note over today's, a deletion undone, a rename reverted.
+          const mark = context.state.data.feedMark;
+          if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+          else this.processed(context, change, await this.receive(context, change));
+          context.state.data.lastSeq = change.seq;
+          this.pulls--;
+        }
+      } finally {
+        this.pulls = 0;
       }
     });
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
@@ -2378,7 +2405,11 @@ export class SyncEngine {
     }
     context.state.data.lastSeq = page.seq;
     await context.state.save();
-    if (page.changes.length > 0) this.status(this.resting());
+    // EVERY ANSWERED PAGE, EMPTY OR NOT (issue #158): an `offline` the feed
+    // said is taken back by the next answer, not by the next page that
+    // happens to carry a change -- which kept every device reading `offline —
+    // retrying` for minutes after its server was back.
+    this.status(this.resting());
   }
 
   /**

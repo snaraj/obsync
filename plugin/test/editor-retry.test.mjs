@@ -44,7 +44,8 @@ test("an active editor stays pending, other notes arrive, and its latest head re
   const r = await setup(t);
   await r.server.publish({ fileId: "ab".repeat(16), path: "Notes/Other.md", bytes: enc("OTHER"), mtime: 4000,
     domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
-  await r.timers.run(STEP_MS, () => r.host.text("Notes/Other.md") === "OTHER");
+  // The page is counted down as it lands (#158): wait for its last record, not its first write.
+  await r.timers.run(STEP_MS, () => r.host.text("Notes/Other.md") === "OTHER" && r.statuses.at(-1).pending === 1);
   assert.equal(r.host.text(NOTE), "BASE");
   assert.equal(r.statuses.at(-1).kind, "syncing", "a saved but active editor is not idle");
   assert.equal(r.statuses.at(-1).pending, 1);
