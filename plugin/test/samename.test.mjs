@@ -1851,6 +1851,40 @@ test("the note waiting at a name steps aside to the next free name when the firs
   assert.deepEqual(copies(r.host).sort(), [...taken].sort());
 });
 
+/**
+ * A PUSH THAT READ A NOTE BEFORE THE SWAP GAVE ITS NAME AWAY. The push of
+ * Draft reads Draft's bytes; while it is still working, the second version
+ * moves that note to Final and the note waiting beside takes Draft. The
+ * bytes are the ones the push's record names, so it has nothing to publish --
+ * and nothing to write: the record at Draft is now the other note's, and
+ * putting the one the push read back over it files that note under the
+ * wrong id. The two-device tests met this only through the start's pass
+ * pushing a note the feed was about to rename; that pass now holds such a
+ * note until the feed has named it (#194), so this drives the push and the
+ * pull directly.
+ */
+test("a push that read a note before a swap gave its name away leaves the other note's record there", async () => {
+  const { r, second } = await swapped();
+  const read = r.host.read.bind(r.host);
+  let entered = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  r.host.read = async (path) => {
+    const bytes = await read(path);
+    if (path === "Notes/Draft.md" && !entered) { entered = true; await gate; }
+    return bytes;
+  };
+
+  const pushing = pushFile(r.context, "Notes/Draft.md");
+  for (const deadline = Date.now() + 10_000; !entered && Date.now() < deadline;) await new Promise(setImmediate);
+  assert.ok(entered, "the push never read the note, so this proves nothing");
+  assert.equal(await applyChange(r.context, second), "applied");
+  release();
+
+  assert.equal((await pushing).status, "unchanged", "the push read bytes other than the ones its record names");
+  swappedNames(r);
+});
+
 test("a note waiting at a name that holds an unpushed edit is not moved for the version that wants the name", async () => {
   const { r, second } = await swapped();
   r.host.seed("Notes/Final.md", `${FINAL_TEXT}typed here\n`, 9000);

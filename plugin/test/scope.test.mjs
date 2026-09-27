@@ -9,7 +9,7 @@ import { FakeTimers, KEYS, STEP_MS, fakeState, pair, rig, sandbox, settled, memo
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inFolderScope, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
 const { parseData } = require("../build/state.js");
-const { SyncEngine } = require("../build/sync/engine.js");
+const { FEED_ERROR_BACKOFF_MS, SyncEngine } = require("../build/sync/engine.js");
 const { pushFile, pushDelete, postManifest } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, decryptRecordManifest, assembleBytes } = require("../build/sync/pull.js");
 const { folderFileId } = require("../build/crypto.js");
@@ -812,6 +812,59 @@ test("an engine started again after a stop runs one feed, never the stopped poll
   await timers.run(1000, () => r.server.feedWaiters.length !== 0);
   for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
   assert.equal(r.server.feedWaiters.length, 1, "two feeds are polling one cursor");
+  const finished = engine.stopAndWait();
+  r.server.releaseFeed();
+  await finished;
+});
+
+/*
+ * AND A STOPPED FEED STILL WAITING OUT A FAILED READ. Since #157 a stop ends
+ * the long poll at once, so the feed the test above stops is gone before the
+ * new start begins. The pause after a failed read is not ended by a stop: it
+ * ends on the clock both starts share, and the feed it wakes belongs to the
+ * start before. Going on, that feed would ask the journal about its mark
+ * (`probeFeed`) and read beside the new one. That ask is the first request
+ * such a feed sends, and it is held here, so a feed that wrongly goes on is
+ * counted there.
+ */
+test("an engine started again while its stopped feed waits out a failed read runs one feed", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  // A note from another device, so a read after a failure asks about its mark first.
+  await publish(r, "marked.md");
+  const real = r.transport.options.request;
+  let failing = false;
+  let restarted = false;
+  let polls = 0;
+  let asks = 0;
+  r.transport.options.request = async (request) => {
+    const feed = request.url.includes("/v1/changes?");
+    if (feed && failing) return { status: 503, headers: {}, text: "", arrayBuffer: new ArrayBuffer(0) };
+    if (feed && restarted && request.url.includes("&wait=55&")) polls++;
+    if (feed && restarted && polls > 0 && request.url.includes("&limit=2")) {
+      asks++;
+      return new Promise(() => undefined);
+    }
+    return real(request);
+  };
+  await engine.start();
+  await timers.run(0, () => r.state.data.feedMark !== null && r.server.feedWaiters.length !== 0);
+  // The poll is dropped, and the read that replaces it fails: the feed pauses.
+  failing = true;
+  engine.wake("sync_now");
+  await timers.run(0, () => r.host.logs.some((line) => line.startsWith("feed decision=retry ")));
+  await engine.stopAndWait();
+
+  failing = false;
+  restarted = true;
+  await engine.start();
+  await timers.run(0, () => polls === 1);
+  // The pause is due, and what it wakes has a real quiet window to act in.
+  await timers.run(FEED_ERROR_BACKOFF_MS, () => true);
+  await timers.run(0);
+  assert.equal(asks, 0, "the stopped feed read again beside the new one");
+  assert.equal(polls, 1, "two feeds are polling one cursor");
   const finished = engine.stopAndWait();
   r.server.releaseFeed();
   await finished;
