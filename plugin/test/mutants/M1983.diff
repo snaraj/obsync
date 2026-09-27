@@ -1,7 +1,7 @@
 # M1983: a push the stop cut short is reported as a failure, with an error status
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1725,10 +1725,6 @@
+@@ -2057,10 +2057,6 @@
        }
        // A push the stop cut at a chunk boundary is not a failure: the file is
        // still unsent, and the next start's pass queues it again.
@@ -9,6 +9,6 @@
 -        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
 -        return;
 -      }
-       const message = error instanceof Error ? error.message : String(error);
-       context.host.log(`push path_class=file decision=failed reason=${message}`);
-       this.status(error instanceof ApiError && error.code === "unreachable" ? { kind: "offline" } : { kind: "error", message });
+       // Nor is a path that went away while it waited its turn (issue #164):
+       // what happened to it is its own event's to publish.
+       if (error instanceof PathGone) {

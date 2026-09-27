@@ -1,8 +1,8 @@
 # M1980: a stop cancels nothing: the long poll, a retry's pause and a chunk upload are waited out again
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -706,7 +706,6 @@
-   stop(): void {
+@@ -886,7 +886,6 @@
+     if (this.contextValue !== null) announceCopies(this.contextValue, true);
      this.cancelled = true;
      this.running = false;
 -    this.halt.abort();
