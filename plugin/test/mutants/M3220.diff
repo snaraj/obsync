@@ -1,0 +1,11 @@
+# M3220: the held-deletions question stays on screen once nothing is held
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1406,7 +1406,6 @@
+     const { state, host } = this.options;
+     state.data.heldDeletions = paths;
+     // Answered, released or put back: no question is left asking about it.
+-    if (paths.length === 0) host.closeQuestion?.();
+     void this.track(state.save()).catch(() => {
+       this.stop();
+       host.log("reconcile decision=failed reason=state_not_saved");

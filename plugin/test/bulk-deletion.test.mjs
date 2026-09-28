@@ -102,6 +102,7 @@ test("the user's confirmation publishes exactly what was held", async (t) => {
   await engine.reconcile();
   await timers.run(1000);
   assert.deepEqual(tombstones(server), [], "the deletion was published before it was confirmed");
+  assert.equal(host.questionsClosed ?? 0, 0, "the question went away while the notes were still held");
 
   // A folder the user really did delete still reaches every device.
   engine.confirmHeldDeletions();
@@ -109,6 +110,7 @@ test("the user's confirmation publishes exactly what was held", async (t) => {
 
   assert.equal(tombstones(server).length, NOTES.length, "the confirmed deletions never reached the server");
   assert.equal(engine.heldDeletionCount, 0, "the hold outlived the confirmation");
+  assert.ok((host.questionsClosed ?? 0) >= 1, "the answered question was left on screen");
   assert.ok(
     host.logs.some((line) => line.includes(`decision=confirmed reason=bulk_deletion queued=${NOTES.length}`)),
     host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),

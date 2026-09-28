@@ -812,6 +812,27 @@ test("the device list puts this device first and the revoked last, and counts ea
   assert.equal(s.row("Device list").desc, "3 devices on this account, 1 not paired yet, and 1 revoked.");
 });
 
+test("two devices under one name are two rows a reader, and Obsidian, can tell apart (rig, 2026-09-27)", async (t) => {
+  // Obsidian keys each row by its name, and logged "duplicate setting key"
+  // at every draw of a list holding a phone paired twice under one name.
+  const self = "cc".repeat(16);
+  const row = (id, name, extra = {}) => ({ device_id: id, name, platform: "android", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active", ...extra });
+  const s = open(t, { listDevices: async () => [
+    row(self, "Mac W4RC", { platform: "macos" }),
+    row("a1".repeat(16), "Android RFV2", { revoked: true, state: "revoked" }),
+    row("b2".repeat(16), "Android RFV2", { revoked: true, state: "revoked" }),
+    row("d4".repeat(16), "Android RFV2"),
+  ] });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names, ["Mac W4RC (this device)", "Android RFV2", "Android RFV2 (revoked) · a1a1a1a1", "Android RFV2 (revoked) · b2b2b2b2", "Device list"]);
+  const every = s.rows().map((item) => item.name);
+  assert.equal(new Set(every).size, every.length, `two rows share a name: ${every.join(" | ")}`);
+});
+
 test("the Pairing row names this device and what it is, never its id (iPhone pass, 2026-09-26)", (t) => {
   const s = open(t);
   s.plugin.state.data.deviceId = "e1".repeat(16);

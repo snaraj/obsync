@@ -1,8 +1,8 @@
 # M2956: unload leaves the session's worker running
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2253,7 +2253,6 @@
-     this.lifecycle = null;
+@@ -3057,7 +3057,6 @@
+     this.host?.closeQuestion();
      this.cancelHistories();
      this.teardownEngine();
 -    this.clock?.stop();

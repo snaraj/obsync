@@ -320,6 +320,8 @@ export interface VaultHost {
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
   notify(message: string, actions?: NoticeAction[]): void;
+  /** Take the held-deletions question off the screen once nothing is held (`hold`). */
+  closeQuestion?(): void;
   log(line: string): void;
   /**
    * A pass over many paths -- a feed page, a reconcile or scan -- begins
@@ -1403,6 +1405,8 @@ export class SyncEngine {
   private hold(paths: string[]): void {
     const { state, host } = this.options;
     state.data.heldDeletions = paths;
+    // Answered, released or put back: no question is left asking about it.
+    if (paths.length === 0) host.closeQuestion?.();
     void this.track(state.save()).catch(() => {
       this.stop();
       host.log("reconcile decision=failed reason=state_not_saved");

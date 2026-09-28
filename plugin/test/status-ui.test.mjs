@@ -158,6 +158,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   let verified = { checked: 0, sent: 0 };
   b.require(join(b.home, "build/sync/engine.js")).SyncEngine = class {
     constructor(options) { this.options = options; }
+    get context() { return { state: this.options.state }; }
     async start() {}
     stop() {}
     async stopAndWait() {}
@@ -258,6 +259,17 @@ test("Sync now always answers once: sent, nothing to send, or the server not ans
   p.sending(0);
   await p.instance.syncNow();
   assert.equal(notices().at(-1), "obsync: nothing to send; this device is up to date.");
+  // Deletions still held back: the engine's question about them answers the
+  // press (#172), and "up to date" beside it was false (the rig, 2026-09-27).
+  p.instance.state.data.heldDeletions = ["Notes/gone.md"];
+  const holding = notices().length;
+  await p.instance.syncNow();
+  assert.deepEqual(notices().slice(holding), [], "up to date, beside deletions it still holds back");
+  p.sending(2);
+  await p.instance.syncNow();
+  assert.deepEqual(notices().slice(holding), ["obsync: sent 2 changes."]);
+  p.instance.state.data.heldDeletions = [];
+  p.sending(0);
   // The server stops answering: the press answers at once, and only once.
   p.instance.transport.options.reachable(false);
   const before = notices().length;

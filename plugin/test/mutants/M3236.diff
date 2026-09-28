@@ -1,0 +1,12 @@
+# M3236: one file syncing is counted as files
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4555,7 +4555,7 @@
+       case "syncing":
+         // Nothing counted, but the feed has not answered yet: not idle either.
+         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
+-        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
++        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending} files`;
+       case "offline":
+         // True of both places that set it: the running engine polls again
+         // in seconds, and a stopped one is on the reconnect timer.

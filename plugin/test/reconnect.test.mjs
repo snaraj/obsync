@@ -482,12 +482,12 @@ test("an answer puts back the syncing it covered, and never a status raised sinc
   report(r, false);
   assert.equal(r.instance.statusText(), "offline — retrying");
   report(r, true);
-  assert.equal(r.instance.statusText(), "syncing 3", "the work still pending is not called idle");
+  assert.equal(r.instance.statusText(), "syncing 3 files", "the work still pending is not called idle");
 
   report(r, false);
   r.instance.setStatus({ kind: "syncing", pending: 1 });
   report(r, true);
-  assert.equal(r.instance.statusText(), "syncing 1", "the engine's newer word stands");
+  assert.equal(r.instance.statusText(), "syncing 1 file", "the engine's newer word stands");
 });
 
 test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {

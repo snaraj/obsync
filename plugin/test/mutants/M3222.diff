@@ -1,0 +1,12 @@
+# M3222: Sync now never says there was nothing to send
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3443,7 +3443,7 @@
+       : status.kind === "error" ? `obsync: ${status.message}`
+       : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
+       : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.`
+-      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "obsync: nothing to send; this device is up to date.";
++      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) >= 0 ? null : "obsync: nothing to send; this device is up to date.";
+     if (answer !== null) new Notice(answer);
+   }
+ 

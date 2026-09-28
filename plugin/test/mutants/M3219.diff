@@ -1,0 +1,11 @@
+# M3219: a plugin that unloads leaves its held-deletions question on screen
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3054,7 +3054,6 @@
+   override onunload(): void {
+     this.lifecycle = null;
+     // A question this load asked is not left on screen for the next load to ask again.
+-    this.host?.closeQuestion();
+     this.cancelHistories();
+     this.teardownEngine();
+     this.clock?.stop();

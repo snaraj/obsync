@@ -912,7 +912,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const self = this.plugin.state.data.deviceId;
     const rank = (device: DeviceRecord): number =>
       device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
-    const rows = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b)).map((device) => this.deviceRow(device));
+    const devices = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b));
+    const rows = devices.map((device) => this.deviceRow(device));
+    // A phone paired twice under one name left two rows nobody could tell
+    // apart, and Obsidian keys each row by its name: a console error at every
+    // draw (rig, 2026-09-27). Such a row carries the start of its device id.
+    const names = rows.map((row) => row.name);
+    rows.forEach((row, at) => {
+      if (names.indexOf(row.name) !== names.lastIndexOf(row.name)) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
+    });
     rows.push({
       name: "Device list",
       desc: () => {

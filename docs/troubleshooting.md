@@ -17,6 +17,7 @@ server again unless the entry says so.
 | What you see | Go to |
 | --- | --- |
 | The status bar icon is not the check mark | [Reading the status bar](#reading-the-status-bar) |
+| A second sync icon, red with a line through it, sits beside obsync's | [Reading the status bar](#reading-the-status-bar) |
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
@@ -94,7 +95,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | Icon | Its words | What it means | What to do |
 | --- | --- | --- | --- |
 | <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
-| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3` | Files are uploading or downloading; the number counts them | Nothing. A large file can take a while; **Show sync status** names the file that is moving |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files` | Files are uploading, downloading or being checked | Nothing. A large file can take a while; **Show sync status** names the file that is moving |
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
@@ -106,6 +107,12 @@ Reduce Motion on, the wheel stands still.
 
 **Show sync status**, in the command palette, always says in words what sync is
 doing and why it is not doing more.
+
+A second sync icon beside obsync's, red with a line through it, is Obsidian's
+own **Sync** core plugin, not obsync; hovering over it reads `Uninitialized`
+when it was never set up. obsync works the same either way. If you do not use
+Obsidian Sync, turn it off under **Settings**, **Core plugins**, **Sync**, and
+never run both on one vault.
 
 <a id="the-status-bar-says-offline--retrying"></a><a id="the-status-bar-says-offline-retrying"></a>
 

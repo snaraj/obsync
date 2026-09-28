@@ -568,6 +568,11 @@ export class FakeHost {
     if (actions.length > 0) this.asked.push({ message, actions });
   }
 
+  /** How many times the engine took the held-deletions question away (`hold`). */
+  closeQuestion() {
+    this.questionsClosed = (this.questionsClosed ?? 0) + 1;
+  }
+
   log(line) {
     this.logs.push(line);
   }

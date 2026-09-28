@@ -12,7 +12,9 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, rig } from "./fake.mjs";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -207,4 +209,34 @@ test("a merge of an edit made here is still announced", async () => {
 
   assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
   assert.deepEqual(r.host.notices, ["obsync merged concurrent edits to Notes/Shared.md."]);
+});
+
+test("one question about held deletions is on screen at a time, and it goes when nothing is held or the plugin unloads", async (t) => {
+  // The owner's rig, 2026-09-27: eight "holding back N deletions" notices
+  // stacked down the screen, one per engine start and Sync now.
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  const main = box.require(join(box.home, "build", "main.js"));
+  const { raised } = box.require("obsidian");
+  const plugin = { state: { data: {} }, log: () => undefined, act: () => undefined };
+  const host = new main.ObsidianHost(plugin, null);
+  const held = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+  const from = raised.length;
+  host.notify("obsync: you deleted 119 notes. Delete them on your other devices too?", held);
+  host.notify("obsync is still holding back 119 deletions from your other devices. Delete them there too?", held);
+  host.notify("obsync put 2 note(s) back on this device, and deleted nothing anywhere.");
+  host.notify("obsync is still holding back 227 deletions from your other devices. Delete them there too?", held);
+  const shown = () => raised.slice(from).map((notice) => !notice.hidden);
+  assert.deepEqual(shown(), [false, false, true, true], "only the newest question, and the statement, are on screen");
+  host.closeQuestion();
+  assert.deepEqual(shown(), [false, false, true, false], "nothing held, no question");
+  // An offer to fetch a file asks something else, and a held-deletions question never takes it away.
+  host.notify("obsync: a file is waiting on the server.", [{ kind: "fetch", fileId: "ab".repeat(16) }]);
+  host.notify("obsync is still holding back 1 deletions from your other devices. Delete them there too?", held);
+  assert.deepEqual(shown().slice(-2), [true, true]);
+  // A plugin that unloads takes its question with it; the next load asks afresh.
+  const loaded = new main.default();
+  loaded.host = host;
+  loaded.onunload();
+  assert.deepEqual(shown().slice(-2), [true, false]);
 });

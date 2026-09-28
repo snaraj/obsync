@@ -483,6 +483,8 @@ const WRITE_AGAIN = 2;
 
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
+  /** The held-deletions question on screen now, if any: at most one (`notify`). */
+  private question: Notice | null = null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
@@ -2750,7 +2752,15 @@ export class ObsidianHost implements VaultHost {
    * notice loses nothing.
    */
   notify(message: string, actions: NoticeAction[] = []): void {
+    // ONE QUESTION ABOUT HELD DELETIONS IS ON SCREEN AT A TIME. Obsidian keeps
+    // an asking notice until it is clicked, and every engine start, Sync now
+    // and new burst asked again, so the same question stacked down the screen
+    // (owner's rig, 2026-09-27: eight at once). A new one replaces the last;
+    // `closeQuestion` takes it away once nothing is held any more.
+    const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
+    if (asks) this.closeQuestion();
     const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
+    if (asks) this.question = notice;
     for (const action of actions) {
       const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
       button.addEventListener("click", () => {
@@ -2758,6 +2768,12 @@ export class ObsidianHost implements VaultHost {
         this.plugin.act(action);
       });
     }
+  }
+
+  /** Take the held-deletions question off the screen: answered, released, or this plugin unloading. */
+  closeQuestion(): void {
+    this.question?.hide();
+    this.question = null;
   }
 
   log(line: string): void {
@@ -3037,6 +3053,8 @@ export default class ObsyncPlugin extends Plugin {
 
   override onunload(): void {
     this.lifecycle = null;
+    // A question this load asked is not left on screen for the next load to ask again.
+    this.host?.closeQuestion();
     this.cancelHistories();
     this.teardownEngine();
     this.clock?.stop();
@@ -3418,10 +3436,15 @@ export default class ObsyncPlugin extends Plugin {
     if (away) return;
     const status = this.shown();
     const files = `${checked} file${checked === 1 ? "" : "s"}`;
-    new Notice(status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
+    // Deletions still held: the question the press raised about them is its
+    // answer, and "up to date" beside it would be false (the rig, 2026-09-27).
+    // Asked of the engine, which an unload has taken away, never of the state.
+    const answer = status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
       : status.kind === "error" ? `obsync: ${status.message}`
       : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
-      : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.` : "obsync: nothing to send; this device is up to date.");
+      : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.`
+      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "obsync: nothing to send; this device is up to date.";
+    if (answer !== null) new Notice(answer);
   }
 
   /** Resume in Show sync status: sync one paused note again (issue #179). */
@@ -4532,7 +4555,8 @@ export default class ObsyncPlugin extends Plugin {
         return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
       case "syncing":
         // Nothing counted, but the feed has not answered yet: not idle either.
-        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending}`;
+        // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
+        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.
