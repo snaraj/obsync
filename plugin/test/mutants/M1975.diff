@@ -1,8 +1,8 @@
 # M1975: the rename of a pulled note is never made durable
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1594,7 +1594,6 @@
-         const text = shown === null ? null : await fs.promises.readFile(temp, "utf8");
+@@ -1601,7 +1601,6 @@
+         }
          await fs.promises.rename(temp, target);
          this.temps.delete(temp);
 -        await this.syncFolder(fs, parent);

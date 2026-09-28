@@ -1182,11 +1182,18 @@ long poll and needs its timeout raised.
    was then held as unsaved (`active_editor`) behind "syncing 1", and a
    keystroke there would have saved the old text over the new. So a write
    judged safe remembers what the note's editors showed at that moment, which
-   was its file's text. After the write lands as written, each view still
-   showing exactly that text loads the written text (`setViewData`), with no
-   await between the look and the load. On a desktop that text is the bytes
-   renamed into place; on a phone it is the bytes handed to the adapter. A
-   view typed in since shows something else and is left alone. A view that
+   was its file's text. Nothing awaits between that judgment and the write:
+   on a desktop the bytes to show are read from the temp before the editor
+   is judged, not between the judgment and the rename. After the write lands,
+   the file is read back, and only if it holds exactly the written text (a
+   save of the same size, even the same mtime, can land after the write)
+   does each view still of this note and still showing that text load it
+   (`setViewData`), with no await after the read; each view is judged at its
+   own load, because a load can rebind another leaf. On a desktop that text
+   is the bytes renamed into place; on a phone it is the bytes handed to the
+   adapter. A view typed in since shows something else and is left alone. A
+   load that fails is logged (`decision=failed reason=editor_refresh`) and
+   never fails the write, which has landed. A view that
    differs from its file still holds the note: nothing on the view says
    whether the difference is typing. `TextFileView.data` follows every
    keystroke (Obsidian 1.13.4), and a build that read it as "what the view

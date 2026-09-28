@@ -1192,7 +1192,10 @@ export class ObsidianHost implements VaultHost {
         // recorded as this version's (round 3, finding 2).
         const stat = await this.landed(path, bytes, mtime);
         if (stat !== null && stat.size === size) {
-          if (shown !== null) this.refreshEditors(path, shown, new TextDecoder().decode(bytes));
+          if (shown !== null) {
+            await this.refreshEditors(path, shown, new TextDecoder().decode(bytes),
+              async () => new TextDecoder().decode(await adapter.readBinary(path)));
+          }
           return { path, mtime: stat.mtime, size };
         }
         if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
@@ -1583,15 +1586,19 @@ export class ObsidianHost implements VaultHost {
         // 3, finding 2).
         const wrote = await walker(fs).lstat(temp);
         if (wrote === null) throw new VaultPathError("temp_identity");
+        // What an open editor may be given is exactly the bytes renamed into
+        // place, read BEFORE the editor is judged: nothing awaits between that
+        // judgment and the rename, or typing begun in between is written
+        // under (review of dec081c, finding 1).
+        let text: string | null;
         let shown: string | null;
         try {
+          text = this.views(path).length > 0 ? await fs.promises.readFile(temp, "utf8") : null;
           shown = await this.assertEditorIdle(path);
         } catch (error) {
           await discard();
           throw error;
         }
-        // What an open editor is given is exactly the bytes renamed into place.
-        const text = shown === null ? null : await fs.promises.readFile(temp, "utf8");
         await fs.promises.rename(temp, target);
         this.temps.delete(temp);
         await this.syncFolder(fs, parent);
@@ -1617,7 +1624,7 @@ export class ObsidianHost implements VaultHost {
         if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
           this.log("host path_class=file decision=write_superseded");
         } else if (shown !== null && text !== null) {
-          this.refreshEditors(path, shown, text);
+          await this.refreshEditors(path, shown, text, () => fs.promises.readFile(target, "utf8"));
         }
         return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
       },
@@ -2732,20 +2739,37 @@ export class ObsidianHost implements VaultHost {
    * old text over the new. So each view still showing `shown`, the text every
    * view showed when the write was judged safe, loads the written text, as
    * Obsidian's own reload would. A view typed in since shows something else
-   * and is left alone. The look and the load run with no await between them.
-   * `TextFileView.data` follows every keystroke (Obsidian 1.13.4), so it can
-   * say nothing of typing (live, 2026-09-28).
+   * and is left alone. `TextFileView.data` follows every keystroke (Obsidian
+   * 1.13.4), so it can say nothing of typing (live, 2026-09-28).
+   *
+   * Only while the file still holds exactly what was written: a save of the
+   * same size can land after the write, so the file is read and compared,
+   * and the loads follow with no await after that read. Each view is judged
+   * as it is at its own load, because a load can rebind another leaf. The
+   * write has landed and stands: a failure here is logged, never thrown
+   * (review of dec081c, finding 3).
    */
-  private refreshEditors(path: string, shown: string, text: string): void {
-    const written = lines(text);
-    let views = 0;
-    for (const view of this.views(path)) {
-      const now = lines(view.getViewData());
-      if (now !== shown || now === written) continue;
-      view.setViewData(written, false);
-      views++;
+  private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>): Promise<void> {
+    const started = Date.now();
+    try {
+      const written = lines(text);
+      if (lines(await read()) !== written) {
+        this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
+        return;
+      }
+      let views = 0;
+      for (const view of this.views(path)) {
+        if (view.file?.path !== path) continue;
+        const now = lines(view.getViewData());
+        if (now !== shown || now === written) continue;
+        view.setViewData(written, false);
+        views++;
+      }
+      if (views > 0) this.log(`host path_class=file decision=editor_refreshed views=${views}`);
+    } catch (error) {
+      const kind = error instanceof Error ? error.name : "unknown";
+      this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
     }
-    if (views > 0) this.log(`host path_class=file decision=editor_refreshed views=${views}`);
   }
 
   /** The note's editors. A leaf Obsidian has not loaded yet is not a `MarkdownView` and holds nothing typed. */

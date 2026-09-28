@@ -12,6 +12,8 @@ import copy
 import gzip
 import hashlib
 import io
+import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -290,8 +292,48 @@ class HostileArchives(TempRoot):
         info.mode = info.mode or 0o644
         return pack(entries(self.good[AMD64]) + [(info, data)])
 
+    def extractor_names(self, data: bytes) -> list[str]:
+        """What the host's own tar lists, the extractor docs/server.md unpacks with."""
+        tar = shutil.which("tar")
+        if tar is None:
+            self.skipTest("no tar on this host to read the archive with")
+        listed = subprocess.run([tar, "-tzf", "-"], input=data, capture_output=True, check=True).stdout
+        return [name.rstrip("/") for name in listed.decode().splitlines()]
+
+    def assert_extractor_agrees(self, data: bytes) -> None:
+        """An archive the audit accepts names, to the extractor, exactly the entries the audit judged."""
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            judged = [item.name for item in archive]
+        self.assertEqual(self.extractor_names(data), judged)
+
     def test_the_good_archives_are_accepted(self):
         self.assertEqual(set(self.records(self.good[AMD64])), {AMD64, ARM64})
+        self.assert_extractor_agrees(self.good[AMD64])
+
+    def test_a_prefix_only_this_reader_applies_cannot_place_a_file_elsewhere(self):
+        """Python's tarfile applies a header's prefix field whatever its magic; bsdtar and GNU tar
+        apply it only under POSIX USTAR. So a V7 or GNU header could put an audited dashboard file
+        at `obsyncd` when unpacked with --strip-components=1 (review of dec081c, finding 2)."""
+        raw = gzip.decompress(self.added(tarfile.TarInfo("dashboard/obsyncd"), b"#!/bin/sh\necho SENTINEL\n"))
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            start = archive.getmembers()[-1].offset_data - tarfile.BLOCKSIZE
+
+        def shaped(magic: bytes) -> bytes:
+            shape = bytearray(raw)
+            shape[start + 345:start + 500] = self.top.encode().ljust(155, b"\0")
+            shape[start + 257:start + 265] = magic
+            shape[start + 148:start + 156] = b" " * 8
+            shape[start + 148:start + 155] = b"%06o\0" % sum(shape[start:start + tarfile.BLOCKSIZE])
+            return gzip.compress(bytes(shape))
+
+        for label, magic in (("v7", bytes(8)), ("gnu", tarfile.GNU_MAGIC), ("version 99", b"ustar\x0099")):
+            with self.subTest(magic=label), self.assertRaisesRegex(contract.ContractError, "not plain USTAR"):
+                self.records(shaped(magic))
+        # Under POSIX USTAR every reader applies the prefix: a dashboard file, where the audit saw it.
+        posix = shaped(tarfile.POSIX_MAGIC)
+        self.records(posix)
+        self.assertIn(f"{self.top}/dashboard/obsyncd", self.extractor_names(posix))
+        self.assert_extractor_agrees(posix)
 
     def test_entries_outside_the_one_directory_or_repeated_are_refused(self):
         for name in ("../escape", f"{self.top}/../escape", "/etc/passwd", "other/obsyncd",
@@ -396,6 +438,7 @@ class HostileArchives(TempRoot):
 
         refused = {
             "one zero byte after the last entry (the reviewer's)": ending_at(0) + b"\0",
+            "511 zero bytes after the last entry": ending_at(0) + bytes(511),
             "nothing after the last entry, at a record's end": ending_at(0),
             "one zero block, then the record's end": ending_at(block) + bytes(block),
             "two zero blocks, short of the record's end": ending_at(3 * block) + bytes(2 * block),
@@ -405,7 +448,9 @@ class HostileArchives(TempRoot):
                 with self.assertRaisesRegex(contract.ContractError, "two zero blocks and whole records"):
                     self.records(gzip.compress(shape))
         # Two zero blocks that end the record exactly are the end, as are the publisher's.
-        self.records(gzip.compress(ending_at(2 * block) + bytes(2 * block)))
+        exact = gzip.compress(ending_at(2 * block) + bytes(2 * block))
+        self.records(exact)
+        self.assert_extractor_agrees(exact)
         self.records(self.good[AMD64])
 
     def test_owner_and_mode_must_keep_the_program_unwritable_by_its_user(self):

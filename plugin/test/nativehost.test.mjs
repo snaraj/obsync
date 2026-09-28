@@ -113,6 +113,10 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
       await fsPromises.link(from, to);
       if (hooks.afterLink) await hooks.afterLink(root, from, to);
     },
+    readFile: async (path, ...rest) => {
+      if (hooks.readFile) await hooks.readFile(root, path);
+      return fsPromises.readFile(path, ...rest);
+    },
     rename: async (from, to) => {
       // Before the rename lands is the only window left in which a save can
       // reach the file the removal is about; the hooks open it on purpose.
@@ -313,9 +317,11 @@ for (const mobile of [false, true]) {
  * note that nothing may load; `during` runs as each write lands. `arrive`
  * publishes and applies the next version.
  */
-async function openIdle(t, mobile, disk, during) {
+async function openIdle(t, mobile, disk, during, readingTemp) {
   const act = async () => during?.(r);
-  const r = await native(t, { afterRename: act, afterWrite: act }, { mobile });
+  // Every read but the note's own is of the temp obsync is about to rename.
+  const readFile = async (root, path) => { if (path !== join(root, NOTE)) await readingTemp?.(r); };
+  const r = await native(t, { afterRename: act, afterWrite: act, readFile }, { mobile });
   r.seed(NOTE, disk, 1000);
   const base = await pushFile(r.context, NOTE);
   // An editor keeps one `\n` where its file has `\r\n`.
@@ -326,14 +332,16 @@ async function openIdle(t, mobile, disk, during) {
   r.view.setViewData = (data, clear) => { r.loaded.push([data, clear]); r.shown.value = data; };
   r.seed("Notes/Other.md", "OTHER NOTE SENTINEL\n", 1000);
   const other = r.openEditor("Notes/Other.md", { value: "OTHER NOTE SENTINEL\n" });
-  other.setViewData = () => assert.fail("an editor of another note was loaded");
+  // Recorded, not thrown: a throw inside a load is the refresh's own failure to log.
+  r.foreign = [];
+  other.setViewData = (data) => r.foreign.push(data);
   let parent = base.versionId;
   r.arrive = async (text, mtime) => {
     const incoming = await r.server.publish({
       fileId: base.fileId, path: NOTE, bytes: enc(text), mtime,
       parents: [parent], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
     });
-    parent = incoming.version_id;
+    parent = r.version = incoming.version_id;
     return r.applyIncoming(incoming);
   };
   return r;
@@ -354,6 +362,8 @@ for (const mobile of [false, true]) {
         r.loaded.length = 0;
       }
       assert.equal(r.logs.filter((line) => line === "host path_class=file decision=editor_refreshed views=1").length, 2, r.logs.join(" | "));
+      assert.deepEqual(r.foreign, [], "an editor of another note was loaded");
+      assert.ok(!r.logs.some((line) => line.includes("reason=editor_refresh")), r.logs.join(" | "));
     });
   }
 
@@ -399,9 +409,64 @@ test("an editor is not given a version another write replaced before its rename 
   const r = await openIdle(t, false, "lost one\nlost two\n",
     (r) => writeFileSync(join(r.root, NOTE), "SAVE THAT LANDED SENTINEL, longer than ours\n"));
   await r.arrive("lost one\nnewer\nlost two\n", 3000);
-  assert.ok(r.logs.includes("host path_class=file decision=write_superseded"), r.logs.join(" | "));
+  assert.deepEqual(r.logs.filter((line) => line.startsWith("host path_class=file decision=")),
+    ["host path_class=file decision=write_superseded"], "one outcome, one line");
   assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
 });
+
+// REVIEW OF dec081c: each window the refresh opened, pinned where it opened.
+test("typing begun while obsync reads what it will write holds the version back (desktop, review of dec081c)", async (t) => {
+  const typed = "read one\nread two\ntyped while it read\n";
+  const r = await openIdle(t, false, "read one\nread two\n", undefined, (r) => { r.shown.value = typed; });
+  await assert.rejects(r.arrive("read one\nnewer\nread two\n", 3000), { name: "Unwritable", reason: "active_editor" });
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "read one\nread two\n", "the version was written under typing");
+  assert.deepEqual(r.loaded, []);
+  assert.equal(r.shown.value, typed);
+});
+
+for (const mobile of [false, true]) {
+  const on = mobile ? "mobile" : "desktop";
+
+  test(`a load that fails leaves the landed version standing, and says so (${on}, review of dec081c)`, async (t) => {
+    const r = await openIdle(t, mobile, "fail one\nfail two\n");
+    r.view.setViewData = () => { throw new Error("LOAD FAILURE SENTINEL"); };
+    const next = "fail one\nnewer\nfail two\n";
+    await r.arrive(next, 3000);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
+    assert.equal(r.state.fileByPath(NOTE).versionId, r.version, "the applied version was not recorded");
+    assert.ok(r.logs.some((line) => /^host path_class=file decision=failed reason=editor_refresh error=Error duration_ms=\d+$/.test(line)), r.logs.join(" | "));
+  });
+
+  test(`a leaf a load moves to another note is not loaded with this one (${on}, review of dec081c)`, async (t) => {
+    const r = await openIdle(t, mobile, "two one\ntwo two\n");
+    const second = r.openEditor(NOTE, { value: "two one\ntwo two\n" });
+    const wrong = [];
+    second.setViewData = (data) => wrong.push(data);
+    const load = r.view.setViewData;
+    r.view.setViewData = (data, clear) => { load(data, clear); second.file = { path: "Notes/Other.md" }; };
+    await r.arrive("two one\nnewer\ntwo two\n", 3000);
+    assert.equal(r.loaded.length, 1);
+    assert.deepEqual(wrong, [], "a leaf that now shows another note was loaded with this one");
+  });
+
+  test(`an editor is not given a version a same-size save replaced after it landed (${on}, review of dec081c)`, async (t) => {
+    const same = "SIZE ONE\nNEWER\nSIZE TWO\n";
+    const r = await openIdle(t, mobile, "size one\nsize two\n", (r) => {
+      // Same size and, on a desktop, the same mtime: nothing but the bytes differ.
+      const target = join(r.root, NOTE);
+      const { mtimeMs } = statSync(target);
+      writeFileSync(target, same);
+      utimesSync(target, mtimeMs / 1000, mtimeMs / 1000);
+    });
+    const next = "size one\nnewer\nsize two\n";
+    assert.equal(same.length, next.length);
+    await r.arrive(next, 3000);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), same);
+    assert.ok(!r.logs.includes("host path_class=file decision=write_superseded"), "the identity check caught it, so this pins nothing");
+    assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
+    assert.ok(r.logs.some((line) => /^host path_class=file decision=editor_left reason=file_changed duration_ms=\d+$/.test(line)), r.logs.join(" | "));
+  });
+}
 
 for (const mobile of [false, true]) {
   test(`a saved native editor with recent input defers until that input settles (${mobile ? "mobile" : "desktop"})`, async (t) => {

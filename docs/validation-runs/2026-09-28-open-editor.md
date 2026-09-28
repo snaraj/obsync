@@ -96,6 +96,26 @@ screen (its **Show sync status** read `idle`, 7,724 files, before the checks);
 the desktop `idle`, its icon at the check mark, nothing waiting to be written,
 and no notice open.
 
+## After the review of the fix
+
+The review of the replacing fix found three windows around the refresh: a
+desktop awaited a read between judging the editor and renaming the file; one
+view's load could reach a tab another load had moved to another note; and a
+save of the same size could land after the write and be loaded over. They are
+closed in code and pinned by unit tests. On two macOS desktops sharing the lab
+vault, at that build:
+
+1. **One edits, the other idle: passed.** Each desktop's edit reached the
+   other's open editor within about 1.4 s (`editor_refreshed views=1` on
+   each), and both read `idle`.
+2. **Both type, on different lines: passed.** One desktop typed at the end of
+   a note while the other typed into its first line, 85 characters each over
+   30 s, with trusted keystrokes. Both statuses named the note while they
+   typed, both went idle, and both disks and both editors ended exactly as
+   typed, each with one refresh and no conflict copy.
+
+The iPhone and the emulator were not run again at this build.
+
 ## Not covered here
 
 - Windows and Linux desktops: the same code path, not run on a device here.
