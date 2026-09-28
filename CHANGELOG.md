@@ -216,7 +216,7 @@ note this already emptied can be restored from history
 ([troubleshooting](docs/troubleshooting.md#a-note-became-empty-on-every-device)).
 Mobile; seen on Android (#242).
 
-**Two people typing in one note on two devices keep all of each other's
+**Two people typing in one note on two devices keep each other's
 typing.** When both devices merged each other's changes at the same moment,
 round after round, obsync stopped after three rounds and settled the note by
 rule: one device's version stayed and the other's went into a conflict copy,
@@ -236,7 +236,10 @@ was in them and not in the note. Each device now remembers the history it has
 already read, so the note combines both people's typing as soon as they
 pause, however long they typed. A device whose note lost that rule while
 someone was typing in it also no longer sends its next save over the other
-device's text. Both typing devices need 1.1.4. Desktop and mobile (#227).
+device's text. It can still happen on a computer too busy to keep up: in a
+test of two desktops typing for a minute beside six busy processes, 2 runs in
+11 moved one person's line into conflict copies, which kept it. Both typing
+devices need 1.1.4. Desktop and mobile (#227, which stays open).
 
 **Deleting many notes at once asks first, and Restore here puts them back.**
 Five or more notes deleted in one go -- a multi-select, or the notes inside
