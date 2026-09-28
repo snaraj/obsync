@@ -87,8 +87,8 @@ records each archive's name, digest and size under `server_archives`, and the
 contract reads an archive as untrusted input before recording it: bounded
 before decompression and, as one gzip member with nothing after it, bounded
 again when inflated, before tar parses any of it, headers included; every entry
-one plain USTAR file or directory, with no extended header, under its one top
-directory, owned by root and writable by no one else, carrying an
+one plain USTAR file or directory, with no extended header, back to back from
+the first byte and followed by nothing but zeros, under its one top directory, owned by root and writable by no one else, carrying an
 executable for its own platform (the ELF machine) and plugin files identical
 to the released plugin's. Both archives join the build-provenance attestation
 below and the Release, as `application/gzip`, making seven assets. Releases

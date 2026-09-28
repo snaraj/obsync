@@ -1259,13 +1259,20 @@ def server_archive_records(
                 raise ContractError("server archive exceeds its budget once decompressed")
             if not inflater.eof or inflater.unused_data:
                 raise ContractError("server archive is unreadable")
+            # THE PUBLISHER WRITES ONE USTAR HEADER BLOCK PER ENTRY, BACK TO
+            # BACK FROM BYTE ZERO, THEN ZEROS (reviews of c4668d4 and 510a7af).
+            # Tar skips what it does not report -- an extension header, an
+            # empty global one -- and stops at its first end marker, and an
+            # extractor may read on. So every entry's data starts one header
+            # block after the entry before it ended (tar reads no header
+            # sooner, so nothing lies between), a directory holds no data, and
+            # nothing but zeros follows the last entry.
+            expected = 0
             with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
                 for item in archive:
-                    # The publisher writes USTAR: one header block per entry.
-                    # A PAX or GNU extension header renames or resizes what
-                    # an extractor makes of the entry, so none is read.
-                    if item.offset_data != item.offset + tarfile.BLOCKSIZE or archive.pax_headers:
+                    if item.offset_data != expected + tarfile.BLOCKSIZE or (item.isdir() and item.size):
                         raise ContractError("server archive entry is not plain USTAR")
+                    expected = item.offset_data + -(-item.size // tarfile.BLOCKSIZE) * tarfile.BLOCKSIZE
                     parts = item.name.split("/")
                     inner = "/".join(parts[1:])
                     if (parts[0] != top or item.name in seen or len(seen) >= SERVER_ARCHIVE_MAX_ENTRIES
@@ -1286,6 +1293,8 @@ def server_archive_records(
                         raise ContractError("server archive carries a foreign, linked or sparse entry")
                     stream = archive.extractfile(item)
                     files[inner] = stream.read() if stream else b""
+            if raw[expected:].strip(b"\0"):
+                raise ContractError("server archive carries bytes after its entries")
         except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
             raise ContractError("server archive is unreadable") from exc
         if any(not files.get(member) for member in SERVER_ARCHIVE_FILES):

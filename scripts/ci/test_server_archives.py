@@ -333,6 +333,30 @@ class HostileArchives(TempRoot):
             with self.subTest(shape=label), self.assertRaisesRegex(contract.ContractError, "not plain USTAR"):
                 self.records(packed.getvalue())
 
+    def test_only_zeros_follow_the_entries_and_nothing_precedes_them(self):
+        """Tar skips an empty global header and stops at its first end marker; an extractor may not (review of 510a7af)."""
+        raw = gzip.decompress(self.good[AMD64])
+        header = tarfile.TarInfo("pax_global_header")
+        header.type = tarfile.XGLTYPE
+        second = io.BytesIO()
+        with tarfile.open(fileobj=second, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            info = tarfile.TarInfo(f"{self.top}/dashboard/sentinel.js")
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+        folder = tarfile.TarInfo(f"{self.top}/dashboard/held")
+        folder.type, folder.mode = tarfile.DIRTYPE, 0o755
+        shapes = {
+            "an empty global header at byte zero": (header.tobuf(tarfile.USTAR_FORMAT) + raw, "not plain USTAR"),
+            "a second archive after the end blocks": (raw + second.getvalue(), "bytes after its entries"),
+            "other bytes after the end blocks": (raw + b"sentinel", "bytes after its entries"),
+            "a directory holding data": (gzip.decompress(self.added(folder, b"x" * 600)), "not plain USTAR"),
+        }
+        for label, (shape, refusal) in shapes.items():
+            with self.subTest(shape=label), self.assertRaisesRegex(contract.ContractError, refusal):
+                self.records(gzip.compress(shape))
+        # The publisher's own padding, zeros to a whole record, is the end.
+        self.records(gzip.compress(raw + bytes(tarfile.RECORDSIZE)))
+
     def test_owner_and_mode_must_keep_the_program_unwritable_by_its_user(self):
         for name, change in (("LICENSE", {"uid": 65532}), ("LICENSE", {"gid": 65532}),
                              ("dashboard/index.html", {"mode": 0o664}), ("LICENSE", {"mode": 0o646}),
