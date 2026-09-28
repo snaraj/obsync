@@ -1266,11 +1266,18 @@ def server_archive_records(
             # extractor may read on. So every entry's data starts one header
             # block after the entry before it ended (tar reads no header
             # sooner, so nothing lies between), a directory holds no data, and
-            # nothing but zeros follows the last entry.
+            # nothing but zeros follows the last entry. Every header says
+            # POSIX USTAR, as the publisher's do: tar also reads V7 and GNU
+            # headers, which the claim does not cover. And the archive ends as
+            # the publisher's `close` ends it, two zero blocks and zeros to a
+            # whole record: a shorter end is a truncated archive to an
+            # extractor, whatever this reader made of it (review of 0f783ba).
             expected = 0
             with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
                 for item in archive:
-                    if item.offset_data != expected + tarfile.BLOCKSIZE or (item.isdir() and item.size):
+                    header = expected + 257
+                    if (item.offset_data != expected + tarfile.BLOCKSIZE or (item.isdir() and item.size)
+                            or raw[header:header + len(tarfile.POSIX_MAGIC)] != tarfile.POSIX_MAGIC):
                         raise ContractError("server archive entry is not plain USTAR")
                     expected = item.offset_data + -(-item.size // tarfile.BLOCKSIZE) * tarfile.BLOCKSIZE
                     parts = item.name.split("/")
@@ -1295,6 +1302,8 @@ def server_archive_records(
                     files[inner] = stream.read() if stream else b""
             if raw[expected:].strip(b"\0"):
                 raise ContractError("server archive carries bytes after its entries")
+            if len(raw) - expected < 2 * tarfile.BLOCKSIZE or len(raw) % tarfile.RECORDSIZE:
+                raise ContractError("server archive does not end in two zero blocks and whole records")
         except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
             raise ContractError("server archive is unreadable") from exc
         if any(not files.get(member) for member in SERVER_ARCHIVE_FILES):

@@ -77,8 +77,9 @@ def entries(data: bytes) -> list[tuple[tarfile.TarInfo, bytes | None]]:
 
 
 def pack(members: list[tuple[tarfile.TarInfo, bytes | None]]) -> bytes:
+    """The publisher's own format, so each hostile shape is refused for what it changes and nothing else."""
     raw = io.BytesIO()
-    with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.GNU_FORMAT) as archive:
+    with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.USTAR_FORMAT) as archive:
         for info, data in members:
             info = copy.copy(info)
             if data is not None:
@@ -356,6 +357,56 @@ class HostileArchives(TempRoot):
                 self.records(gzip.compress(shape))
         # The publisher's own padding, zeros to a whole record, is the end.
         self.records(gzip.compress(raw + bytes(tarfile.RECORDSIZE)))
+
+    def test_every_header_says_posix_ustar(self):
+        """Tar reads V7 and GNU headers too; the publisher writes POSIX USTAR (review of 0f783ba)."""
+        raw = gzip.decompress(self.good[AMD64])
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            starts = [item.offset_data - tarfile.BLOCKSIZE for item in archive]
+        for label, magic in (("v7", bytes(8)), ("gnu", tarfile.GNU_MAGIC), ("another version", b"ustar\x00  ")):
+            for which, chosen in (("every header", starts), ("the last header", starts[-1:])):
+                shape = bytearray(raw)
+                for start in chosen:
+                    shape[start + 257:start + 265] = magic
+                    shape[start + 148:start + 156] = b" " * 8
+                    shape[start + 148:start + 155] = b"%06o\0" % sum(shape[start:start + tarfile.BLOCKSIZE])
+                with self.subTest(magic=label, headers=which):
+                    # Tar still reads it, so only this check can refuse it.
+                    with tarfile.open(fileobj=io.BytesIO(bytes(shape)), mode="r:") as archive:
+                        self.assertEqual(len(archive.getmembers()), len(starts))
+                    with self.assertRaisesRegex(contract.ContractError, "not plain USTAR"):
+                        self.records(gzip.compress(bytes(shape)))
+
+    def test_the_archive_ends_as_the_publisher_ends_it(self):
+        """Two zero blocks, then zeros to a whole record. A shorter end is a truncated archive to an extractor (review of 0f783ba)."""
+        block, record = tarfile.BLOCKSIZE, tarfile.RECORDSIZE
+
+        def ending_at(residue: int) -> bytes:
+            """The good entries plus one dashboard file, cut where the entries end, `residue` bytes short of a record."""
+            raw = gzip.decompress(self.good[AMD64])
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                last = archive.getmembers()[-1]
+            end = last.offset_data + -(-last.size // block) * block
+            size = (record - residue - end - block) % record or record
+            info = tarfile.TarInfo(f"{self.top}/dashboard/fill.css")
+            shaped = gzip.decompress(self.added(info, b"f" * size))
+            cut = end + block + size
+            self.assertEqual((cut + residue) % record, 0)
+            return shaped[:cut]
+
+        refused = {
+            "one zero byte after the last entry (the reviewer's)": ending_at(0) + b"\0",
+            "nothing after the last entry, at a record's end": ending_at(0),
+            "one zero block, then the record's end": ending_at(block) + bytes(block),
+            "two zero blocks, short of the record's end": ending_at(3 * block) + bytes(2 * block),
+        }
+        for label, shape in refused.items():
+            with self.subTest(shape=label):
+                with self.assertRaisesRegex(contract.ContractError, "two zero blocks and whole records"):
+                    self.records(gzip.compress(shape))
+        # Two zero blocks that end the record exactly are the end, as are the publisher's.
+        self.records(gzip.compress(ending_at(2 * block) + bytes(2 * block)))
+        self.records(self.good[AMD64])
 
     def test_owner_and_mode_must_keep_the_program_unwritable_by_its_user(self):
         for name, change in (("LICENSE", {"uid": 65532}), ("LICENSE", {"gid": 65532}),
