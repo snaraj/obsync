@@ -24,7 +24,7 @@ system; it is not a device run, and only a record below is
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
-| Android | Not yet recorded <!-- RUN(1.1.4) Android emulator: the coordinator links the record here --> | Nothing: no CI job runs a phone |
+| Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build | Nothing: no CI job runs a phone |
 
 `desktop-matrix.yml` runs nightly and on pull requests that change the plugin
 or its harnesses; a red leg there is a finding to read.
@@ -34,6 +34,13 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-09-27 Android emulator and desktop](2026-09-27-android-emulator.md):
+  the first Android record, an Android 15 emulator against a macOS desktop.
+  J1 to J9 pass. J10 did not complete: #245 (a phone's stale file index), an
+  operator interruption and #241's old-name copies each stopped it, and
+  pairing again completed with nothing uploaded. #242: 2,400 files written
+  with no empty version published, and the forced refusal (E5) passes.
+  #234 and #235 are proven live.
 - [2026-09-27 Windows 11 desktop](2026-09-27-windows-11-vm.md): the first
   Windows run, Windows 11 on ARM64 against a macOS desktop. 9 of 10 journeys
   pass: notes, a folder rename, case-only renames on NTFS, the trash, a
