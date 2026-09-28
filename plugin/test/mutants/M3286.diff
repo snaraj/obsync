@@ -1,0 +1,12 @@
+# M3286: a view typed in while the version was written is loaded over
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2741,7 +2741,7 @@
+     let views = 0;
+     for (const view of this.views(path)) {
+       const now = lines(view.getViewData());
+-      if (now !== shown || now === written) continue;
++      if (now === written) continue;
+       view.setViewData(written, false);
+       views++;
+     }

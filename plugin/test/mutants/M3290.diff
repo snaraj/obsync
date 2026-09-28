@@ -1,0 +1,11 @@
+# M3290: a phone does not refresh the editor it wrote under
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1192,7 +1192,6 @@
+         // recorded as this version's (round 3, finding 2).
+         const stat = await this.landed(path, bytes, mtime);
+         if (stat !== null && stat.size === size) {
+-          if (shown !== null) this.refreshEditors(path, shown, new TextDecoder().decode(bytes));
+           return { path, mtime: stat.mtime, size };
+         }
+         if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);

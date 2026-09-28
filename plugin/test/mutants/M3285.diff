@@ -1,0 +1,12 @@
+# M3285: the write guard says no editor is open, so none is refreshed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2720,7 +2720,7 @@
+     if (open === "unsaved" || this.typing(path)) throw new EditorBusy();
+     // No await since `editing` compared every view with the file.
+     const view = this.views(path)[0];
+-    return open === null || view === undefined ? null : lines(view.getViewData());
++    return null;
+   }
+ 
+   /**

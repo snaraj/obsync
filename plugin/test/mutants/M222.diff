@@ -1,8 +1,8 @@
 # M222: a parked file with a damaged reason is named as "Cannot write X here: undefined"
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -201,7 +201,7 @@
-   if (reason === "active_editor") return `Waiting for typing to settle in ${path}`;
+@@ -204,7 +204,7 @@
+   if (reason === "active_editor") return `Waiting for unsaved changes in ${path} to be saved; its newer version follows`;
    if (reason === "downloading") return `Downloading ${path}`;
    if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
 -  return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;

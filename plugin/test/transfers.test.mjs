@@ -533,6 +533,7 @@ test("a note behind a large incoming version is applied before that download com
   assert.equal(d.host.files.has("Media/film.bin"), false, "the download is still in flight");
   assert.ok(d.host.logs.some((line) => line.startsWith(`feed decision=backgrounded reason=large bytes=${bytes.length} budget=${LARGE_APPLY_BYTES}`)), d.host.logs.join(" | "));
   assert.equal(d.engine.current().kind, "syncing", "and the status says so");
+  assert.equal(d.engine.current().held, undefined, "a download is not named as waiting for unsaved changes (#252)");
   assert.equal(d.state.data.parked["5e".repeat(16)]?.reason, "downloading");
 
   release.resolve();

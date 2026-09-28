@@ -34,6 +34,13 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-09-28 an open note and the stale editor](2026-09-28-open-editor.md):
+  #252 on the owner's iPhone, the Android emulator and a macOS desktop. A
+  starved file watcher left an open note stale behind "syncing 1". The first
+  fix passed an idle editor both ways and failed when both devices typed at
+  once (it read `TextFileView.data`, which follows every keystroke); the fix
+  that replaced it passes all three on the iPhone, both devices typing into
+  one note included, and ends exact on the emulator and the desktop.
 - [2026-09-27 Android emulator and desktop](2026-09-27-android-emulator.md):
   the first Android record, an Android 15 emulator against a macOS desktop.
   J1 to J9 pass. J10 did not complete: #245 (a phone's stale file index), an

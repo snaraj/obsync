@@ -460,7 +460,7 @@ async function untilStopped<T>(stop: AbortSignal | undefined, drop: AbortControl
 
 export type EngineStatus =
   | { kind: "idle" }
-  | { kind: "syncing"; pending: number }
+  | { kind: "syncing"; pending: number; held?: string }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
   | { kind: "paused"; message: string };
@@ -2821,7 +2821,10 @@ export class SyncEngine {
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
     const work = this.queue.length + this.active + this.pulls + waiting;
-    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work };
+    // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
+    // alone read "syncing 1" for minutes and said nothing of what to do.
+    const held = records.find((entry) => entry.reason === "active_editor")?.path;
+    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }) };
     return { kind: "idle" };
   }
 

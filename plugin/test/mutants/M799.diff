@@ -1,11 +1,12 @@
 # M799: Desktop writes beneath an active native editor.
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1080,7 +1080,6 @@
-         const wrote = await walker(fs).lstat(temp);
+@@ -1585,7 +1585,7 @@
          if (wrote === null) throw new VaultPathError("temp_identity");
+         let shown: string | null;
          try {
--          await this.assertEditorIdle(path);
+-          shown = await this.assertEditorIdle(path);
++          shown = null;
          } catch (error) {
            await discard();
            throw error;

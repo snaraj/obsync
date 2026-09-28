@@ -147,6 +147,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
     writeBinary: async (path, data, options) => {
       writeFileSync(join(root, path), new Uint8Array(data));
       if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
+      if (hooks.afterWrite) await hooks.afterWrite(root, path);
     },
     // The adapter's three removals. The system bin can be refused -- it is
     // absent or disabled on some hosts -- and says so with `false`, or here
@@ -230,13 +231,17 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
       .filter((name) => !name.startsWith("."))
       .map((name) => readFileSync(join(root, "Notes", name), "utf8"));
   const hidden = () => readdirSync(join(root, "Notes")).filter((name) => name.startsWith("."));
+  const leaves = [];
   const openEditor = (path, text) => {
     const { MarkdownView } = box.require("obsidian");
     const view = new MarkdownView();
     view.file = { path };
     view.getViewData = () => text.value;
-    vault.read = async (file) => readFileSync(join(root, file.path), "utf8");
-    plugin.app.workspace.getLeavesOfType = () => [{ view }];
+    // What the editor shows becomes what it was given, as Obsidian's does.
+    view.setViewData = (data) => { text.value = data; };
+    vault.read =async (file) => readFileSync(join(root, file.path), "utf8");
+    leaves.push({ view });
+    plugin.app.workspace.getLeavesOfType = () => leaves;
     return view;
   };
   const applyIncoming = (change) => box.require(join(box.home, "build/sync/pull.js")).applyChange(r.context, change);
@@ -294,6 +299,109 @@ for (const mobile of [false, true]) {
     }
   }
 }
+
+// AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252).
+// A starved file watcher left an open note's editor on the text it showed
+// before obsync's write: every later version was held as unsaved, behind
+// "syncing 1", and a keystroke would have saved the old text over the new.
+// Each view still showing what it showed when the write was judged safe loads
+// the written text. `TextFileView.data` follows every keystroke (measured on
+// Obsidian 1.13.4), as it does here, so it says nothing of typing: a view that
+// differs from its file holds typing, and the version waits for it.
+/**
+ * `disk` synced and open, idle, in an editor, beside an editor of another
+ * note that nothing may load; `during` runs as each write lands. `arrive`
+ * publishes and applies the next version.
+ */
+async function openIdle(t, mobile, disk, during) {
+  const act = async () => during?.(r);
+  const r = await native(t, { afterRename: act, afterWrite: act }, { mobile });
+  r.seed(NOTE, disk, 1000);
+  const base = await pushFile(r.context, NOTE);
+  // An editor keeps one `\n` where its file has `\r\n`.
+  r.shown = { value: disk.replace(/\r\n/g, "\n") };
+  r.view = r.openEditor(NOTE, r.shown);
+  Object.defineProperty(r.view, "data", { get: () => r.shown.value, set: () => {}, configurable: true });
+  r.loaded = [];
+  r.view.setViewData = (data, clear) => { r.loaded.push([data, clear]); r.shown.value = data; };
+  r.seed("Notes/Other.md", "OTHER NOTE SENTINEL\n", 1000);
+  const other = r.openEditor("Notes/Other.md", { value: "OTHER NOTE SENTINEL\n" });
+  other.setViewData = () => assert.fail("an editor of another note was loaded");
+  let parent = base.versionId;
+  r.arrive = async (text, mtime) => {
+    const incoming = await r.server.publish({
+      fileId: base.fileId, path: NOTE, bytes: enc(text), mtime,
+      parents: [parent], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    parent = incoming.version_id;
+    return r.applyIncoming(incoming);
+  };
+  return r;
+}
+
+for (const mobile of [false, true]) {
+  const on = mobile ? "mobile" : "desktop";
+  // Compared line endings aside, or every CRLF note open anywhere reads as typed in.
+  for (const eol of ["\n", "\r\n"]) {
+    test(`an open editor nothing was typed into takes each incoming version, and shows it (${on}, ${eol === "\n" ? "LF" : "CRLF"})`, async (t) => {
+      const r = await openIdle(t, mobile, `idle one${eol}idle two${eol}`);
+      for (const [n, next] of [`idle one${eol}newer${eol}idle two${eol}`, `idle one${eol}newer${eol}newest${eol}idle two${eol}`].entries()) {
+        assert.equal(await r.host.editing(NOTE), "saved");
+        await r.arrive(next, 3000 + n);
+        assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
+        // A starved watcher reloads nothing: the editor shows it because obsync loaded it.
+        assert.deepEqual(r.loaded, [[next.replace(/\r\n/g, "\n"), false]], `the editor did not load version ${n + 1}`);
+        r.loaded.length = 0;
+      }
+      assert.equal(r.logs.filter((line) => line === "host path_class=file decision=editor_refreshed views=1").length, 2, r.logs.join(" | "));
+    });
+  }
+
+  test(`an editor Obsidian already reloaded is not loaded again (${on})`, async (t) => {
+    const next = "again one\nnewer\nagain two\n";
+    const r = await openIdle(t, mobile, "again one\nagain two\n", (r) => { r.shown.value = next; });
+    await r.arrive(next, 3000);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
+    assert.deepEqual(r.loaded, [], "a second load puts the cursor back at the start of a note already shown");
+    assert.ok(!r.logs.some((line) => line.includes("editor_refreshed")), r.logs.join(" | "));
+  });
+
+  test(`a version that changes only line endings is written, and the editor showing it is not loaded again (${on})`, async (t) => {
+    const r = await openIdle(t, mobile, "ends one\r\nends two\r\n");
+    await r.arrive("ends one\nends two\n", 3000);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "ends one\nends two\n");
+    assert.deepEqual(r.loaded, [], "a second load puts the cursor back at the start of a note already shown");
+  });
+
+  test(`typing that starts while the version lands is not loaded over (${on})`, async (t) => {
+    const typed = "race one\nrace two\ntyped now\n";
+    const r = await openIdle(t, mobile, "race one\nrace two\n", (r) => { r.shown.value = typed; });
+    await r.arrive("race one\nnewer\nrace two\n", 3000);
+    assert.deepEqual(r.loaded, []);
+    assert.equal(r.shown.value, typed);
+  });
+
+  // Live, 2026-09-28: a build that read `data` as "what the view last loaded
+  // or saved" took every view for untouched, wrote a merge under typing on an
+  // iPhone, and the note came back interleaved.
+  test(`unsaved typing holds the version back though the view's data follows it (${on}, live 2026-09-28)`, async (t) => {
+    const r = await openIdle(t, mobile, "kept one\nkept two\n");
+    r.shown.value = "kept one\nkept two\ntyped\n";
+    assert.equal(r.view.data, r.shown.value, "the fake's data follows typing, as Obsidian's does");
+    assert.equal(await r.host.editing(NOTE), "unsaved");
+    await assert.rejects(r.arrive("kept one\nnewer\nkept two\n", 3000), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "kept one\nkept two\n");
+    assert.deepEqual(r.loaded, []);
+  });
+}
+
+test("an editor is not given a version another write replaced before its rename was checked (desktop)", async (t) => {
+  const r = await openIdle(t, false, "lost one\nlost two\n",
+    (r) => writeFileSync(join(r.root, NOTE), "SAVE THAT LANDED SENTINEL, longer than ours\n"));
+  await r.arrive("lost one\nnewer\nlost two\n", 3000);
+  assert.ok(r.logs.includes("host path_class=file decision=write_superseded"), r.logs.join(" | "));
+  assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
+});
 
 for (const mobile of [false, true]) {
   test(`a saved native editor with recent input defers until that input settles (${mobile ? "mobile" : "desktop"})`, async (t) => {

@@ -1,12 +1,13 @@
-# M3236: one file syncing is counted as files
+# M3296: the status words do not name the held note
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4621,7 +4621,7 @@
+@@ -4621,8 +4621,7 @@
          // Nothing counted, but the feed has not answered yet: not idle either.
          // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
          if (status.pending === 0) return "checking for changes";
 -        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
-+        return `syncing ${status.pending} files` +
-           (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
+-          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
++        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
        case "offline":
          // True of both places that set it: the running engine polls again
+         // in seconds, and a stopped one is on the reconnect timer.

@@ -1,12 +1,12 @@
 # M3237: the syncing count says nothing of what it counts
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4555,7 +4555,7 @@
-       case "syncing":
+@@ -4621,7 +4621,7 @@
          // Nothing counted, but the feed has not answered yet: not idle either.
          // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
--        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
-+        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending}`;
+         if (status.pending === 0) return "checking for changes";
+-        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
++        return `syncing ${status.pending}` +
+           (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
        case "offline":
          // True of both places that set it: the running engine polls again
-         // in seconds, and a stopped one is on the reconnect timer.

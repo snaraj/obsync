@@ -172,6 +172,8 @@ interface NodeFs {
     /** Remove an EMPTY directory; the caller proves it is empty first. */
     rmdir(path: string): Promise<void>;
     utimes(path: string, atime: number, mtime: number): Promise<void>;
+    /** A note's own text, to load into an editor the write went under (`refreshEditors`). */
+    readFile(path: string, encoding: "utf8"): Promise<string>;
     stat(path: string): Promise<{ size: number; mtimeMs: number }>;
     /** No-follow stat. Rejects when the path does not exist. */
     lstat(path: string, options: { bigint: true }): Promise<NodeBigStat>;
@@ -284,6 +286,11 @@ const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed
  */
 const RECONNECT_START_MS = 5000;
 const RECONNECT_CAP_MS = 5 * 60 * 1000;
+
+/** An editor keeps one `\n` for a file that has `\r\n`: text is compared line endings aside. */
+function lines(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
 
 /**
  * Whether a failed start is the server's ABSENCE rather than its DECISION.
@@ -1176,7 +1183,7 @@ export class ObsidianHost implements VaultHost {
         const before = await adapter.stat(path);
         if (before?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
-        await this.assertEditorIdle(path);
+        const shown = await this.assertEditorIdle(path);
         await adapter.writeBinary(path, bytes.buffer, { mtime });
         // The SIZE is ours: the bytes handed to the adapter, not what a look
         // at the name says a moment later. The mtime is taken from the name
@@ -1184,7 +1191,10 @@ export class ObsidianHost implements VaultHost {
         // between the write and the lookup must not have its metadata
         // recorded as this version's (round 3, finding 2).
         const stat = await this.landed(path, bytes, mtime);
-        if (stat !== null && stat.size === size) return { path, mtime: stat.mtime, size };
+        if (stat !== null && stat.size === size) {
+          if (shown !== null) this.refreshEditors(path, shown, new TextDecoder().decode(bytes));
+          return { path, mtime: stat.mtime, size };
+        }
         if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
         return { path, mtime, size };
       },
@@ -1573,12 +1583,15 @@ export class ObsidianHost implements VaultHost {
         // 3, finding 2).
         const wrote = await walker(fs).lstat(temp);
         if (wrote === null) throw new VaultPathError("temp_identity");
+        let shown: string | null;
         try {
-          await this.assertEditorIdle(path);
+          shown = await this.assertEditorIdle(path);
         } catch (error) {
           await discard();
           throw error;
         }
+        // What an open editor is given is exactly the bytes renamed into place.
+        const text = shown === null ? null : await fs.promises.readFile(temp, "utf8");
         await fs.promises.rename(temp, target);
         this.temps.delete(temp);
         await this.syncFolder(fs, parent);
@@ -1603,6 +1616,8 @@ export class ObsidianHost implements VaultHost {
         const ours = landed as PathStat;
         if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
           this.log("host path_class=file decision=write_superseded");
+        } else if (shown !== null && text !== null) {
+          this.refreshEditors(path, shown, text);
         }
         return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
       },
@@ -2688,7 +2703,12 @@ export class ObsidianHost implements VaultHost {
     return 0;
   }
 
-  private async assertEditorIdle(path: string): Promise<void> {
+  /**
+   * The text the note's open editors show, which is its file's, or null when
+   * none is open; one holding unsaved typing, or being typed in, refuses the
+   * write.
+   */
+  private async assertEditorIdle(path: string): Promise<string | null> {
     // A stable disk stat does not include the keystrokes still waiting in
     // Obsidian's two-second save debounce. Writing under that buffer invokes
     // a second, host-app merge of text obsync has already merged (#135).
@@ -2696,7 +2716,44 @@ export class ObsidianHost implements VaultHost {
     // external reload queued. Leave recent trusted typing alone too; the
     // engine retries this note after input settles, without blocking others.
     // Check after downloads and filesystem preparation have waited.
-    if (await this.editing(path) === "unsaved" || this.typing(path)) throw new EditorBusy();
+    const open = await this.editing(path);
+    if (open === "unsaved" || this.typing(path)) throw new EditorBusy();
+    // No await since `editing` compared every view with the file.
+    const view = this.views(path)[0];
+    return open === null || view === undefined ? null : lines(view.getViewData());
+  }
+
+  /**
+   * AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252).
+   * Obsidian loads an outside change into an open note when its file watcher
+   * reports one, and a starved watcher reported nothing for minutes: the
+   * editor kept the old text, every later version of the note was held as
+   * unsaved behind "syncing 1", and a keystroke there would have saved the
+   * old text over the new. So each view still showing `shown`, the text every
+   * view showed when the write was judged safe, loads the written text, as
+   * Obsidian's own reload would. A view typed in since shows something else
+   * and is left alone. The look and the load run with no await between them.
+   * `TextFileView.data` follows every keystroke (Obsidian 1.13.4), so it can
+   * say nothing of typing (live, 2026-09-28).
+   */
+  private refreshEditors(path: string, shown: string, text: string): void {
+    const written = lines(text);
+    let views = 0;
+    for (const view of this.views(path)) {
+      const now = lines(view.getViewData());
+      if (now !== shown || now === written) continue;
+      view.setViewData(written, false);
+      views++;
+    }
+    if (views > 0) this.log(`host path_class=file decision=editor_refreshed views=${views}`);
+  }
+
+  /** The note's editors. A leaf Obsidian has not loaded yet is not a `MarkdownView` and holds nothing typed. */
+  private views(path: string): MarkdownView[] {
+    return this.plugin.app.workspace
+      .getLeavesOfType("markdown")
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
   }
 
   /**
@@ -2708,18 +2765,12 @@ export class ObsidianHost implements VaultHost {
    * editor alone. What a view's save would write is `getViewData`, compared
    * here with the file as the vault reads it, line endings aside: the editor
    * keeps one `\n` for a file that has `\r\n`. Public API only -- the markdown
-   * leaves and `MarkdownView` -- identical on desktop and mobile. A leaf
-   * Obsidian has not loaded yet is not a `MarkdownView` and holds nothing
-   * typed.
+   * leaves and `MarkdownView` -- identical on desktop and mobile.
    */
   async editing(path: string): Promise<"unsaved" | "saved" | null> {
-    const views = this.plugin.app.workspace
-      .getLeavesOfType("markdown")
-      .map((leaf) => leaf.view)
-      .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === path);
+    const views = this.views(path);
     const file = views[0]?.file;
     if (!file) return null;
-    const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
     const disk = lines(await this.plugin.app.vault.read(file));
     return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
   }
@@ -4568,7 +4619,9 @@ export default class ObsyncPlugin extends Plugin {
       case "syncing":
         // Nothing counted, but the feed has not answered yet: not idle either.
         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-        return status.pending === 0 ? "checking for changes" : `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
+        if (status.pending === 0) return "checking for changes";
+        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
+          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.

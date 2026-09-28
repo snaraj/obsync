@@ -490,6 +490,13 @@ test("an answer puts back the syncing it covered, and never a status raised sinc
   assert.equal(r.instance.statusText(), "syncing 1 file", "the engine's newer word stands");
 });
 
+test("a note waiting on unsaved changes here is named in the status (issue #252)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "syncing", pending: 1, held: "Notes/open.md" });
+  assert.equal(r.instance.statusText(), "syncing 1 file, waiting for unsaved changes in Notes/open.md");
+});
+
 test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {
   const r = await fixture(t);
   await r.instance.onload();

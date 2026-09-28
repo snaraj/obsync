@@ -48,6 +48,7 @@ server again unless the entry says so.
 | A note came back as a conflict copy | [A conflict copy appeared](#a-conflict-copy-appeared) |
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
+| The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
@@ -96,7 +97,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | Icon | Its words | What it means | What to do |
 | --- | --- | --- | --- |
 | <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
-| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files` | Files are uploading, downloading or being checked | Nothing. A large file can take a while; **Show sync status** names the file that is moving |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files` | Files are uploading, downloading or being checked | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
@@ -983,6 +984,36 @@ does not slow.
    Obsidian on this computer did not let obsync start its worker, so a change
    made in the background can again take minutes, and uploads at once when the
    window comes forward. Open an issue with that line.
+
+## A note stays at syncing 1 file
+
+**What you see.** The status stays at `obsync: syncing 1 file` for minutes,
+and a change another device made to one note does not appear here. From 1.1.4
+the words go on `, waiting for unsaved changes in <note>`, and **Show sync
+status** lists that note under **Waiting to be written**.
+
+**Why it happens.** obsync never writes a note over text you typed that
+Obsidian has not saved yet. It holds that one note, keeps syncing the others,
+and brings the newer version once your typing is saved. Up to 1.1.3 a note
+could be held with nothing typed in it: on a busy computer (Spotlight
+indexing, for one) Obsidian can miss obsync's change to a note that is open,
+keep showing the old text, and obsync took that old text for unsaved typing.
+From 1.1.4 obsync puts what it writes into an open note itself, so its own
+changes no longer leave one showing old text. A change another program made
+that Obsidian missed still can, and obsync cannot tell that old text from
+typing, so it waits.
+
+**How to fix it.**
+
+1. Open the note the status names. If you typed in it, wait a few seconds for
+   Obsidian to save it. The newer version then arrives merged with your typing.
+2. If you typed nothing there, do not type in it now: a keystroke saves the
+   old text it shows over the newer version. Close that note's tab instead
+   (Cmd+W on a Mac, Ctrl+W elsewhere) and open the note again. It shows the
+   newer version, and the status returns to idle. On 1.1.3 or earlier, then
+   update to 1.1.4.
+3. If a keystroke already saved the old text, the newer version is still in
+   **Restore from history**.
 
 ## A large file did not arrive on a phone
 

@@ -72,6 +72,10 @@ notes reads syncing with a count that goes down, a device starts on
 "checking for changes", and "offline — retrying" clears as soon as the
 server answers (#158).
 
+**A note waiting for your typing is named.** "syncing 1 file" goes on
+", waiting for unsaved changes in" and the note's name, and Show sync status
+says its newer version follows once that typing is saved (#252).
+
 **A refusal says what it is, the first time.** A removed device, a wrong
 clock, a full server or a proxy answering instead of obsync each say what
 happened and what to do, and clear by themselves once fixed; if Obsidian
@@ -217,6 +221,19 @@ moved, or its deletion. A note this already
 emptied can be restored from history
 ([troubleshooting](docs/troubleshooting.md#a-note-became-empty-on-every-device)).
 Mobile; seen on Android (#242).
+
+**A note open on screen shows another device's change as soon as it
+arrives.** On a busy computer, Obsidian could miss obsync writing a note
+that was open and keep showing the old text. obsync took that old text for
+unsaved typing and held every later version of the note, so the status read
+"syncing 1" for as long as the note stayed open, and a keystroke there saved
+the old text over the newer one. obsync now puts what it writes into the open
+note itself, instead of waiting for Obsidian to notice the change. A note
+holding unsaved typing still waits for it to be saved, and the newer version
+is merged in.
+On 1.1.3, closing the note's tab and opening it again clears it
+([troubleshooting](docs/troubleshooting.md#a-note-stays-at-syncing-1-file)).
+Desktop and mobile (#252).
 
 **Two people typing in one note on two devices keep each other's
 typing.** When both devices merged each other's changes at the same moment,

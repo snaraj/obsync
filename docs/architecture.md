@@ -1175,6 +1175,25 @@ long poll and needs its timeout raised.
    types there the write waits, and the next save is an edit of the head the
    note still holds.
 
+   AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252). Obsidian
+   loads an outside change into an open note when its file watcher reports
+   one. On a Mac whose file-event daemon was starved for minutes it reported
+   nothing, so the editor kept the old text. Every later version of the note
+   was then held as unsaved (`active_editor`) behind "syncing 1", and a
+   keystroke there would have saved the old text over the new. So a write
+   judged safe remembers what the note's editors showed at that moment, which
+   was its file's text. After the write lands as written, each view still
+   showing exactly that text loads the written text (`setViewData`), with no
+   await between the look and the load. On a desktop that text is the bytes
+   renamed into place; on a phone it is the bytes handed to the adapter. A
+   view typed in since shows something else and is left alone. A view that
+   differs from its file still holds the note: nothing on the view says
+   whether the difference is typing. `TextFileView.data` follows every
+   keystroke (Obsidian 1.13.4), and a build that read it as "what the view
+   last loaded or saved" wrote merges under typing on an iPhone and garbled
+   the note (live, 2026-09-28). The status names a held note
+   (`waiting for unsaved changes in <note>`).
+
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor
    input, is marked inside its encrypted manifest as a background answer.
