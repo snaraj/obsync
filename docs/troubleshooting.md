@@ -1240,7 +1240,10 @@ again. If the file stays empty, the status names it:
 
 > Cannot write Notes/Plan.md here: it stayed empty when it was written
 
-The phone tries that file again later and never sends the empty file.
+The phone tries that file again later and never sends the empty file; until
+then the note shows empty on the phone. If the note was renamed on another
+device meanwhile, an empty note under its old name can reach your other
+devices: delete it.
 
 **How to fix it.**
 

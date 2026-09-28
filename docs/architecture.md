@@ -855,17 +855,23 @@ long poll and needs its timeout raised.
    time. The empty file was taken for a save landing after the write, and
    the watcher published it, so the note was empty on every device. A phone
    now looks at a file it has just written with bytes: an empty one is
-   written again, up to twice more, each logged (`decision=written_again`);
-   one that stays empty is refused as that one file's (`write_dropped`),
-   parked and tried again like any other, never recorded as written, and
-   removed if the write had made it. Only emptiness is judged; a file holding
-   other bytes is still a save that landed (`decision=write_superseded`,
-   which names both sizes). Where such a write replaced a note already
-   there, the empty file it leaves is not an edit (`droppedWrite`, pull.ts):
-   the push skips it (`push decision=skipped reason=write_dropped`), and the
-   parked retry writes the version over it, however its own write attempt
-   leaves the file. Text typed into that empty note meanwhile is an edit, and
-   is sent.
+   written again, up to twice more, each logged (`decision=written_again`)
+   and each under the first write's rule: never beneath text an editor holds
+   unsaved (#135). One that stays empty, or whose editor became busy, is
+   refused as that one file's (`write_dropped`, the log naming the `cause`),
+   parked and tried again like any other, and never recorded as written.
+   Only emptiness is judged; a file holding other bytes is still a save that
+   landed (`decision=write_superseded`, which names both sizes). The empty
+   file stays at the name: nothing on a phone can remove it without racing a
+   save that lands after the last look at it. It is no edit, and where the
+   download was new no note of its own (`droppedWrite`, pull.ts): the push
+   skips it (`push decision=skipped reason=write_dropped`), the parked retry
+   writes the version over it rather than beside it, and the record stays
+   `write_dropped` whatever stops that retry -- a busy editor, a lock --
+   with the log naming what it met (`met=`). Text typed into that empty note
+   meanwhile is an edit, and is sent. One case is left: a note renamed on
+   another device before its retry lands leaves the empty file under the old
+   name, which then syncs as an empty note.
 
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a

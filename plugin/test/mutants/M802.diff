@@ -1,11 +1,11 @@
 # M802: The feed consumes an active editor update without arming its retry.
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1953,7 +1953,6 @@
-     const known = parked[fileId] !== undefined;
-     parked[fileId] = { path: error.path, reason: error.reason };
+@@ -2743,7 +2743,6 @@
+     const reason = known?.reason === "write_dropped" ? known.reason : error.reason;
+     parked[fileId] = { path: error.path, reason };
      this.armParkRetry();
 -    this.armEditorRetry();
      // The file id and the reason, never the path: a name is vault content.
      context.host.log(
-       `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
+       `feed decision=parked reason=${reason}${reason === error.reason ? "" : ` met=${error.reason}`} file=${fileId} ` +

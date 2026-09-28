@@ -1,0 +1,12 @@
+# M3226: a retry writes beneath a keystroke still inside the editing window
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1219,7 +1219,7 @@
+     const adapter = this.plugin.app.vault.adapter;
+     let stat = await this.stat(path);
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+-      const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
++      const busy = (await this.editing(path)) === "unsaved";
+       if (busy || again > WRITE_AGAIN) {
+         this.log(
+           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +

@@ -104,34 +104,49 @@ async function refusals(host) {
  * A phone whose adapter keeps each file's size, and leaves the first `drops`
  * writes EMPTY, as Obsidian's `writeBinary` did on Android (live,
  * 2026-09-27): it resolved over 993 bytes and the file held none, for good.
- * `landing` is the size a save leaves when it lands right after a write.
+ * `landing` is the size a save leaves when it lands right after a write;
+ * `late` the size one leaves once the host has looked at the third empty
+ * write, before the host hears the answer (review of e27eccb, finding 1).
+ * `typing` opens the note in an editor that turns busy during the first
+ * write (finding 2): text the file does not hold, or a keystroke.
  */
-async function dropping(t, drops, { existing = null, landing = null } = {}) {
+async function dropping(t, drops, { existing = null, landing = null, late = null, typing = null } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const { MarkdownView } = box.require("obsidian");
   const { state } = await fakeState(true);
   const files = new Map(existing === null ? [] : [["Notes/a.md", existing]]);
   const writes = [], removed = [], logs = [];
   let left = drops;
+  const view = Object.assign(new MarkdownView(), {
+    file: { path: "Notes/a.md" },
+    getViewData: () => (typing === "unsaved" && writes.length > 0 ? "typed here\n" : ""),
+  });
   const adapter = {
-    stat: async (path) => (files.has(path) ? { type: "file", ...files.get(path) } : null),
+    stat: async (path) => {
+      const found = files.has(path) ? { type: "file", ...files.get(path) } : null;
+      if (late !== null && writes.length === 3 && found?.size === 0) queueMicrotask(() => files.set(path, { size: late, mtime: 5 }));
+      return found;
+    },
     exists: async () => true,
     mkdir: async () => undefined,
     writeBinary: async (path, data, options) => {
       writes.push(data.byteLength);
       const size = left > 0 ? (left--, 0) : landing ?? data.byteLength;
       files.set(path, { size, mtime: options.mtime });
+      if (typing === "keystroke") host.inputAt.set(view, { path, at: Date.now() });
     },
     remove: async (path) => { removed.push(path); files.delete(path); },
   };
   const plugin = {
     state,
     log: (line) => logs.push(line),
-    app: { vault: { adapter }, workspace: { getLeavesOfType: () => [] } },
+    app: { vault: { adapter, read: async () => "" }, workspace: { getLeavesOfType: () => (typing === null ? [] : [{ view }]) } },
     manifest: { version: "1.1.4" },
   };
-  return { host: new ObsidianHost(plugin, null), writes, removed, logs };
+  const host = new ObsidianHost(plugin, null);
+  return { host, writes, removed, logs, files };
 }
 
 const HELLO = new TextEncoder().encode("hello");
@@ -147,15 +162,30 @@ test("a phone writes a download again when the write left the file empty, and re
   assert.equal(logs.some((line) => line.includes("write_superseded")), false, "an empty write is not a save that landed");
 });
 
-test("a download a phone keeps leaving empty is refused as that file's, removed if the write made it, and never recorded", async (t) => {
-  for (const existing of [null, { size: 7, mtime: 1 }]) {
-    const { host, writes, removed, logs } = await dropping(t, 99, { existing });
+test("a download a phone keeps leaving empty is refused as that file's, never recorded, and nothing is removed", async (t) => {
+  // Nothing on a phone can remove the empty file without racing a save that
+  // lands after the last look at it, as the third case's does.
+  for (const [existing, late, left] of [[null, null, 0], [{ size: 7, mtime: 1 }, null, 0], [null, 12, 12]]) {
+    const { host, writes, removed, logs, files } = await dropping(t, 99, { existing, late });
     const writer = await host.writer("Notes/a.md", 5);
     await writer.write(HELLO);
     await assert.rejects(writer.commit(1000), (error) => error.code === "write_dropped", `existing=${JSON.stringify(existing)}`);
+    await new Promise(setImmediate);
     assert.deepEqual(writes, [5, 5, 5], "three writes, then no more");
-    assert.deepEqual(removed, existing === null ? ["Notes/a.md"] : [], "only the empty file this write made is removed");
-    assert.ok(logs.includes(`host path_class=file decision=refused reason=write_dropped bytes=5 removed=${existing === null} budget_writes=3`), logs.join(" | "));
+    assert.deepEqual(removed, []);
+    assert.equal(files.get("Notes/a.md")?.size, left, "the name holds what the platform or the late save left");
+    assert.ok(logs.includes("host path_class=file decision=refused reason=write_dropped cause=budget writes=3 bytes=5 budget_writes=3"), logs.join(" | "));
+  }
+});
+
+test("a phone never writes a download again beneath an editor that became busy during the first write (#135)", async (t) => {
+  for (const typing of ["unsaved", "keystroke"]) {
+    const { host, writes, logs } = await dropping(t, 99, { typing });
+    const writer = await host.writer("Notes/a.md", 5);
+    await writer.write(HELLO);
+    await assert.rejects(writer.commit(1000), (error) => error.code === "write_dropped" && /editor is busy/.test(error.message), typing);
+    assert.deepEqual(writes, [5], `${typing}: the first write only`);
+    assert.ok(logs.includes("host path_class=file decision=refused reason=write_dropped cause=editor_busy writes=1 bytes=5 budget_writes=3"), logs.join(" | "));
   }
 });
 

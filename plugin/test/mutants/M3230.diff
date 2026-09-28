@@ -1,0 +1,12 @@
+# M3230: a busy editor or a lock at the retry turns a dropped write into a sendable empty note
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2740,7 +2740,7 @@
+     // A dropped write stays one until its version lands, whatever stops the
+     // retry -- an editor busy with the note, a lock: the empty file is still
+     // no edit, and still never sent (#242).
+-    const reason = known?.reason === "write_dropped" ? known.reason : error.reason;
++    const reason = error.reason;
+     parked[fileId] = { path: error.path, reason };
+     this.armParkRetry();
+     this.armEditorRetry();

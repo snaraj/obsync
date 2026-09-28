@@ -1,4 +1,4 @@
-# M3212: the empty file a dropped write left is sent as an edit when the watcher reports it
+# M3229: any dropped write holds back every empty note the person makes elsewhere
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -2301,7 +2301,7 @@
@@ -6,7 +6,7 @@
        const here = await context.host.stat(path);
        const dropped = Object.keys(context.state.data.parked)
 -        .find((fileId) => context.state.data.parked[fileId]?.path === path && droppedWrite(context, fileId, here));
-+        .find((fileId) => context.state.data.parked[fileId]?.path === path && droppedWrite(context, "", here));
++        .find((fileId) => droppedWrite(context, fileId, here));
        if (dropped !== undefined) {
          context.host.log(`push path_class=file decision=skipped reason=write_dropped file=${dropped}`);
          return;

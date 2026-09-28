@@ -32,7 +32,8 @@ SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
     ("wait-for-durable", AUTH, [(
-        'None => self.settled.wait(state).expect("nonce cache"),',
+        "None => self\n                    .settled\n                    .wait(state)\n"
+        "                    .unwrap_or_else(PoisonError::into_inner),",
         "None => return Ok(()),",
     )], GROUP),
     ("answer-before-the-flush", AUTH, [(
@@ -76,12 +77,12 @@ CASES = [
         "        state.durable = Some(file);\n",
     )], PANIC),
     ("panicked-flight-wakes", AUTH, [(
-        "        cache.state.clear_poison();\n        cache.settled.notify_all();\n",
-        "        cache.state.clear_poison();\n",
+        "        drop(state);\n        cache.settled.notify_all();\n",
+        "        drop(state);\n",
     )], PANIC),
-    ("panicked-flight-clears-poison", AUTH, [(
-        "        cache.state.clear_poison();\n", "",
-    )], PANIC),
+    # Retired: panicked-flight-clears-poison. 6821028 removed its subject,
+    # `clear_poison()`, which raced a woken member; both lock sites now take
+    # the guard out of the poison, probed by ci_green_mutations.py.
     ("panicked-flight-cuts-back", NONCE_LOG, [(
         "    pub fn abandon(&mut self) {\n        if let Err(e) = self.rollback() {\n"
         "            self.faulted = Some(e.kind());\n        }\n",

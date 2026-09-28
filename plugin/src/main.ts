@@ -1181,7 +1181,7 @@ export class ObsidianHost implements VaultHost {
         // only while the name still holds that many bytes -- a save landing
         // between the write and the lookup must not have its metadata
         // recorded as this version's (round 3, finding 2).
-        const stat = await this.landed(path, bytes, mtime, before === null);
+        const stat = await this.landed(path, bytes, mtime);
         if (stat !== null && stat.size === size) return { path, mtime: stat.mtime, size };
         if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
         return { path, mtime, size };
@@ -1204,20 +1204,27 @@ export class ObsidianHost implements VaultHost {
    * the download's size, and the watcher then found an empty note and
    * published it: the note was empty on every device, its author's too. A
    * file just written with bytes that reads EMPTY is written again, up to
-   * `WRITE_AGAIN` times. One that stays empty is refused as this one file's
-   * (`write_dropped`: parked, said once, tried again) and never recorded as
-   * written; if this write made the file, it is removed, so no empty note is
-   * left to be taken for a new one. Only emptiness is judged: a file holding
-   * other bytes is a save that landed, as before.
+   * `WRITE_AGAIN` times, each time under the first write's rule: never
+   * beneath text an editor holds unsaved (#135). One that stays empty, or
+   * whose editor became busy, is refused as this one file's (`write_dropped`:
+   * parked, said once, tried again) and never recorded as written. The empty
+   * file is left where it is: nothing on a phone can remove it without
+   * racing a save that lands after the last look, so it is never sent
+   * instead (`droppedWrite`, pull.ts). Only emptiness is judged: a file
+   * holding other bytes is a save that landed, as before.
    */
-  private async landed(path: string, bytes: Uint8Array<ArrayBuffer>, mtime: number, made: boolean): Promise<VaultStat | null> {
+  private async landed(path: string, bytes: Uint8Array<ArrayBuffer>, mtime: number): Promise<VaultStat | null> {
     const adapter = this.plugin.app.vault.adapter;
     let stat = await this.stat(path);
     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
-      if (again > WRITE_AGAIN) {
-        if (made) await adapter.remove(path);
-        this.log(`host path_class=file decision=refused reason=write_dropped bytes=${bytes.length} removed=${made} budget_writes=${WRITE_AGAIN + 1}`);
-        throw Object.assign(new Error("The file stayed empty when it was written."), { code: "write_dropped" });
+      const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
+      if (busy || again > WRITE_AGAIN) {
+        this.log(
+          `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
+            `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,
+        );
+        const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";
+        throw Object.assign(new Error(said), { code: "write_dropped" });
       }
       const started = Date.now();
       await adapter.writeBinary(path, bytes.buffer, { mtime });

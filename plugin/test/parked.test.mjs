@@ -37,7 +37,7 @@ const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { parseData } = require("../build/state.js");
-const { Unwritable, applyChange, unwritableText } = require("../build/sync/pull.js");
+const { EditorBusy, Unwritable, applyChange, unwritableText } = require("../build/sync/pull.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -233,6 +233,60 @@ test("a note a phone's write keeps leaving empty stays parked, is never sent, an
   assert.equal(r.host.text("Notes/n17.md"), "n17 edited on the other device\n");
   assert.deepEqual(r.state.data.parked, {});
   assert.equal(mine(), sent, "and nothing was sent for it on the way");
+});
+
+test("a new note a phone's write keeps leaving empty is no note of its own: never sent, and the retry writes over it (#242)", async (t) => {
+  // The phone removes nothing (review of e27eccb, finding 1): the platform's
+  // empty file stays at the name, and stays a dropped write while an editor
+  // is busy with it (finding 2), until the version lands over it.
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  // Its folder is this device's already, so a frame it sends later can only
+  // be the empty file's.
+  r.host.seed("Notes/n05.md", "n05, made here\n", 1000);
+  await d.engine.start();
+  await d.timers.run(1000, () => r.state.fileByPath("Notes/n05.md") !== undefined);
+  const real = r.host.writer.bind(r.host);
+  let busy = false;
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      if (busy) throw new EditorBusy();
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const made = await foreign(r, N17, "Notes/n17.md", "n17, new on the other device\n");
+  await d.timers.run(1000, () => r.state.data.lastSeq === made.seq);
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } });
+  assert.equal(r.host.text("Notes/n17.md"), "", "the platform's empty file stays where it is");
+
+  const ours = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId).length;
+  const sent = ours();
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000, () => r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`));
+  busy = true;
+  await d.engine.syncNow();
+  await d.timers.run(1000);
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } }, "a busy editor did not wash the dropped write out");
+  assert.ok(r.host.logs.includes(`feed decision=parked reason=write_dropped met=active_editor file=${N17} parked=1 retry_ms=60000`), r.host.logs.join(" | "));
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000);
+  assert.equal(ours(), sent, "the empty file was never published as a note of its own");
+  // An empty note the person makes elsewhere meanwhile is theirs, and is sent.
+  r.host.seed("Notes/n06.md", "", 9500);
+  d.engine.changed("Notes/n06.md");
+  await d.timers.run(1000, () => r.state.fileByPath("Notes/n06.md") !== undefined);
+  assert.equal(ours(), sent + 1, "the person's own empty note was held back with the dropped write");
+
+  busy = false;
+  r.host.writer = real;
+  await d.timers.run(10000, () => Object.keys(r.state.data.parked).length === 0);
+  assert.equal(r.host.text("Notes/n17.md"), "n17, new on the other device\n");
+  assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("conflict")), [], "written over, not beside");
+  assert.equal(ours(), sent + 1);
 });
 
 test("text typed into a note whose download stayed empty is an edit, and is sent (#242)", async (t) => {

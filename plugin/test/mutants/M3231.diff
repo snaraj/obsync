@@ -1,0 +1,12 @@
+# M3231: a parked line names a failure it met that is the reason itself
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2746,7 +2746,7 @@
+     this.armEditorRetry();
+     // The file id and the reason, never the path: a name is vault content.
+     context.host.log(
+-      `feed decision=parked reason=${reason}${reason === error.reason ? "" : ` met=${error.reason}`} file=${fileId} ` +
++      `feed decision=parked reason=${reason}${false ? "" : ` met=${error.reason}`} file=${fileId} ` +
+         `parked=${Object.keys(parked).length} ` +
+         `retry_ms=${reason === "active_editor" ? 1000 : this.parkDelay}`,
+     );
