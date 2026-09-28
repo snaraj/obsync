@@ -1,4 +1,4 @@
-# M3226: a retry writes beneath a keystroke still inside the editing window
+# M3240: a retry asks about keystrokes before reading the editor, and misses one that arrived meanwhile (review of 90d2042, finding 3)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
 @@ -1223,7 +1223,7 @@
@@ -6,7 +6,7 @@
      let stat = await this.stat(path);
      for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
 -      const busy = (await this.editing(path)) === "unsaved" || this.typing(path);
-+      const busy = (await this.editing(path)) === "unsaved";
++      const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
        if (busy || again > WRITE_AGAIN) {
          this.log(
            `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +

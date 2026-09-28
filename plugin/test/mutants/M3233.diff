@@ -1,7 +1,7 @@
 # M3233: a write refused for its busy editor does not say the editor stopped it
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1225,7 +1225,7 @@
+@@ -1229,7 +1229,7 @@
            `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
              `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,
          );
@@ -9,4 +9,4 @@
 +        const said = "The file stayed empty when it was written.";
          throw Object.assign(new Error(said), { code: "write_dropped" });
        }
-       const started = Date.now();
+       const now = await this.stat(path);

@@ -108,9 +108,12 @@ async function refusals(host) {
  * `late` the size one leaves once the host has looked at the third empty
  * write, before the host hears the answer (review of e27eccb, finding 1).
  * `typing` opens the note in an editor that turns busy during the first
- * write (finding 2): text the file does not hold, or a keystroke.
+ * write (finding 2): text the file does not hold, a keystroke, or a keystroke
+ * that arrives while the editor is read (review of 90d2042, finding 3).
+ * `saved` is the size a save leaves when it lands while the host takes its
+ * first look at the empty write (finding 1).
  */
-async function dropping(t, drops, { existing = null, landing = null, late = null, typing = null } = {}) {
+async function dropping(t, drops, { existing = null, landing = null, late = null, typing = null, saved = null } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
@@ -127,6 +130,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
     stat: async (path) => {
       const found = files.has(path) ? { type: "file", ...files.get(path) } : null;
       if (late !== null && writes.length === 3 && found?.size === 0) queueMicrotask(() => files.set(path, { size: late, mtime: 5 }));
+      if (saved !== null && writes.length === 1 && found?.size === 0) queueMicrotask(() => files.set(path, { size: saved, mtime: 5 }));
       return found;
     },
     exists: async () => true,
@@ -142,7 +146,13 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
   const plugin = {
     state,
     log: (line) => logs.push(line),
-    app: { vault: { adapter, read: async () => "" }, workspace: { getLeavesOfType: () => (typing === null ? [] : [{ view }]) } },
+    app: {
+      vault: { adapter, read: async () => {
+        if (typing === "during-read" && writes.length === 1) queueMicrotask(() => host.inputAt.set(view, { path: "Notes/a.md", at: Date.now() }));
+        return "";
+      } },
+      workspace: { getLeavesOfType: () => (typing === null ? [] : [{ view }]) },
+    },
     manifest: { version: "1.1.4" },
   };
   const host = new ObsidianHost(plugin, null);
@@ -179,7 +189,7 @@ test("a download a phone keeps leaving empty is refused as that file's, never re
 });
 
 test("a phone never writes a download again beneath an editor that became busy during the first write (#135)", async (t) => {
-  for (const typing of ["unsaved", "keystroke"]) {
+  for (const typing of ["unsaved", "keystroke", "during-read"]) {
     const { host, writes, logs } = await dropping(t, 99, { typing });
     const writer = await host.writer("Notes/a.md", 5);
     await writer.write(HELLO);
@@ -187,6 +197,16 @@ test("a phone never writes a download again beneath an editor that became busy d
     assert.deepEqual(writes, [5], `${typing}: the first write only`);
     assert.ok(logs.includes("host path_class=file decision=refused reason=write_dropped cause=editor_busy writes=1 bytes=5 budget_writes=3"), logs.join(" | "));
   }
+});
+
+test("a save that lands while a phone looks at its empty write is kept, and no retry writes over it (review of 90d2042)", async (t) => {
+  const { host, writes, files, logs } = await dropping(t, 99, { saved: 36 });
+  const writer = await host.writer("Notes/a.md", 5);
+  await writer.write(HELLO);
+  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  assert.deepEqual(writes, [5], "the first write only");
+  assert.equal(files.get("Notes/a.md").size, 36, "the save was written over");
+  assert.ok(logs.includes("host path_class=file decision=write_superseded size=5 found=36"), logs.join(" | "));
 });
 
 test("an empty download is written once, and a file holding other bytes is a save that landed, not written again", async (t) => {

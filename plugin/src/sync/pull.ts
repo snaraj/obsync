@@ -925,7 +925,7 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
   try {
     if (staged === undefined) await writeVerified(context, manifest, writer);
     const now = over === undefined ? null : await context.host.stat(manifest.path);
-    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, over.fileId, now)) {
+    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, now)) {
       await writer.abort();
       return null;
     }
@@ -1626,7 +1626,7 @@ async function competing(
   fileId: string,
 ): Promise<"no_record" | "other_file" | "local_edit" | null> {
   const stat = await context.host.stat(path);
-  if (stat === null || droppedWrite(context, fileId, stat)) return null;
+  if (stat === null || droppedWrite(context, stat)) return null;
   const record = context.state.fileByPath(path);
   if (record === undefined) return "no_record";
   if (record.fileId !== fileId) return "other_file";
@@ -1636,13 +1636,14 @@ async function competing(
 
 /**
  * Does the name hold the platform's EMPTY file where this phone could not
- * write a download of `fileId` (`write_dropped`, #242)? That file is no edit,
- * and no note of its own where the download was new: the version is written
- * over it (`competing`, `materialise`) and it is never sent (the engine's
- * push). Text typed into it since makes it an edit again.
+ * write a download (`write_dropped`, #242; `state.dropped`)? That file is no
+ * edit, and no note of its own where the download was new: the version is
+ * written over it (`competing`, `materialise`) and it is never sent (the
+ * engine's push), whatever becomes of the parked record. Text typed into it
+ * since makes it an edit again.
  */
-export function droppedWrite(context: SyncContext, fileId: string, stat: VaultStat | null): boolean {
-  return stat !== null && stat.size === 0 && context.state.data.parked[fileId]?.reason === "write_dropped";
+export function droppedWrite(context: SyncContext, stat: VaultStat | null): boolean {
+  return stat !== null && stat.size === 0 && context.state.data.dropped[stat.path] !== undefined;
 }
 
 /**

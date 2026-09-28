@@ -1,8 +1,8 @@
 # M2964: a phone gets a worker clock too
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2094,7 +2094,7 @@
-     this.state = state;
+@@ -2883,7 +2883,7 @@
+     this.host?.closeQuestion();
      this.host = new ObsidianHost(this);
      this.clock?.stop();
 -    const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;

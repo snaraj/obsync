@@ -1,10 +1,10 @@
 # M3195: a phone writes an empty-landing download once more than its budget
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1220,7 +1220,7 @@
+@@ -1224,7 +1224,7 @@
      let stat = await this.stat(path);
      for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
-       const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
+       const busy = (await this.editing(path)) === "unsaved" || this.typing(path);
 -      if (busy || again > WRITE_AGAIN) {
 +      if (busy || again > WRITE_AGAIN + 1) {
          this.log(

@@ -222,6 +222,9 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // And a parked record, which names a version on the server being left
     // (`sync/engine.ts`, `park`; issue #144).
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
+    // A dropped write's mark describes a file here, not a version there, and
+    // is kept: pairing again must not send the empty file it names (#242).
+    dropped: { "Notes/empty.md": "f7" },
     // And a paused note (#179), which names a file id on that server too.
     paused: { f6: { path: "Notes/stamped.md" } },
     // And a held deletion (#162), a question about records being dropped.
@@ -243,8 +246,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
-      syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
+      retiredRoots: {}, folderBarriers: [], parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {}, heldDeletions: [],
+      feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
     },
   );
   assert.equal(state.paired, false);

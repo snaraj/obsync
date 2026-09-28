@@ -301,3 +301,15 @@ test("a phone keeps the page's own clock and makes no worker", async (t) => {
   assert.equal(r.instance.transport.options.timers, timers);
   r.instance.onunload();
 });
+
+test("a reload of the same plugin instance closes the question its old host asked (review of 90d2042)", async (t) => {
+  const r = await loaded(t);
+  t.after(() => r.instance.onunload());
+  r.instance.host.notify("Holding deletions", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
+  const question = r.instance.host.question;
+  assert.equal(question.hidden, false);
+  await r.instance.onload();
+  await r.instance.firstStart;
+  r.instance.host.notify("Holding deletions again", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
+  assert.equal(question.hidden, true, "the replaced host left its question on screen beside the new one");
+});

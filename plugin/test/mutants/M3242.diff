@@ -1,0 +1,12 @@
+# M3242: a lock or a full disk marks the file as a dropped write
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2737,7 +2737,7 @@
+     parked[fileId] = { path: error.path, reason: error.reason };
+     // The empty file a dropped write left is marked by its name, apart from
+     // the reason a later retry may give this record (#242, `state.dropped`).
+-    if (error.reason === "write_dropped") context.state.data.dropped[error.path] = fileId;
++    if (error.reason !== "active_editor") context.state.data.dropped[error.path] = fileId;
+     this.armParkRetry();
+     this.armEditorRetry();
+     // The file id and the reason, never the path: a name is vault content.

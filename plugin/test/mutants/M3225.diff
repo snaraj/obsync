@@ -1,11 +1,11 @@
 # M3225: a retry writes a download again beneath an editor that became busy during the first write (review of e27eccb, finding 2)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1219,7 +1219,7 @@
+@@ -1223,7 +1223,7 @@
      const adapter = this.plugin.app.vault.adapter;
      let stat = await this.stat(path);
      for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
--      const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
+-      const busy = (await this.editing(path)) === "unsaved" || this.typing(path);
 +      const busy = false;
        if (busy || again > WRITE_AGAIN) {
          this.log(

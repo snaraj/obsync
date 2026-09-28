@@ -1,0 +1,11 @@
+# M3247: a reload of the same instance leaves its old host's question on screen (review of 90d2042, finding 4)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2880,7 +2880,6 @@
+     if (!this.isCurrent(generation) || state === null) return;
+     this.state = state;
+     // A reload of this instance keeps no question the old host asked.
+-    this.host?.closeQuestion();
+     this.host = new ObsidianHost(this);
+     this.clock?.stop();
+     const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;

@@ -261,6 +261,7 @@ test("a new note a phone's write keeps leaving empty is no note of its own: neve
   const made = await foreign(r, N17, "Notes/n17.md", "n17, new on the other device\n");
   await d.timers.run(1000, () => r.state.data.lastSeq === made.seq);
   assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } });
+  assert.deepEqual(r.state.data.dropped, { "Notes/n17.md": N17 });
   assert.equal(r.host.text("Notes/n17.md"), "", "the platform's empty file stays where it is");
 
   const ours = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId).length;
@@ -270,8 +271,10 @@ test("a new note a phone's write keeps leaving empty is no note of its own: neve
   busy = true;
   await d.engine.syncNow();
   await d.timers.run(1000);
-  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } }, "a busy editor did not wash the dropped write out");
-  assert.ok(r.host.logs.includes(`feed decision=parked reason=write_dropped met=active_editor file=${N17} parked=1 retry_ms=60000`), r.host.logs.join(" | "));
+  // The record now waits on the editor; the empty file keeps its mark by
+  // name all the same (review of 90d2042, finding 2).
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "active_editor" } });
+  assert.deepEqual(r.state.data.dropped, { "Notes/n17.md": N17 }, "the empty file lost its guard with the parked reason");
   d.engine.changed("Notes/n17.md");
   await d.timers.run(1000);
   assert.equal(ours(), sent, "the empty file was never published as a note of its own");
@@ -287,6 +290,7 @@ test("a new note a phone's write keeps leaving empty is no note of its own: neve
   assert.equal(r.host.text("Notes/n17.md"), "n17, new on the other device\n");
   assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("conflict")), [], "written over, not beside");
   assert.equal(ours(), sent + 1);
+  assert.deepEqual(r.state.data.dropped, {}, "the record made at the name ends the mark");
 });
 
 test("text typed into a note whose download stayed empty is an edit, and is sent (#242)", async (t) => {
@@ -331,6 +335,8 @@ test("a read-only folder parks only its own notes, and Sync now applies them onc
 
   assert.equal(r.host.text("Projects/Beta/b3.md"), null);
   assert.deepEqual(r.state.data.parked, { [B3]: { path: "Projects/Beta/b3.md", reason: "EACCES" } });
+  // Nothing is recorded at that name while it waits, so a mark here would stand (#242).
+  assert.deepEqual(r.state.data.dropped, {}, "a read-only folder is not a dropped write");
   assert.deepEqual(d.last(), { kind: "error", message: "Cannot write Projects/Beta/b3.md here: the folder is read-only" });
   assert.equal(notices(r, "Projects/Beta/b3.md").length, 1);
 
@@ -630,6 +636,13 @@ test("a parked entry in the data file is input: a file id and a vault path, or i
   });
   assert.equal(unwritableText("Notes/new1.md", ""), "Cannot write Notes/new1.md here: it could not be written");
   assert.deepEqual(parseData({ parked: [] }, false).parked, {});
+});
+
+test("a dropped-write mark in the data file is input: a vault path and a file id, or it is dropped (#242)", () => {
+  const data = parseData({ dropped: { "Notes/n17.md": N17, "../outside.md": N18, "Notes/x.md": "not-a-file-id", "Notes/y.md": 7 } }, false);
+  assert.deepEqual(data.dropped, { "Notes/n17.md": N17 });
+  assert.deepEqual(parseData({ dropped: [] }, false).dropped, {});
+  assert.deepEqual(parseData({}, false).dropped, {});
 });
 
 test("Show sync status lists every parked file with its reason", (t) => {

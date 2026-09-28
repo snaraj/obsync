@@ -1206,8 +1206,12 @@ export class ObsidianHost implements VaultHost {
    * the download's size, and the watcher then found an empty note and
    * published it: the note was empty on every device, its author's too. A
    * file just written with bytes that reads EMPTY is written again, up to
-   * `WRITE_AGAIN` times, each time under the first write's rule: never
-   * beneath text an editor holds unsaved (#135). One that stays empty, or
+   * `WRITE_AGAIN` times, each time under the first write's rule in its
+   * order: never beneath text an editor holds unsaved, nor a keystroke that
+   * arrived while it was read (#135). Its last look is taken after every
+   * await before the write, and anything but the empty file there is a save
+   * that landed, kept and sent as an edit: the one await left before the
+   * write is the floor every write on a phone has. One that stays empty, or
    * whose editor became busy, is refused as this one file's (`write_dropped`:
    * parked, said once, tried again) and never recorded as written. The empty
    * file is left where it is: nothing on a phone can remove it without
@@ -1219,7 +1223,7 @@ export class ObsidianHost implements VaultHost {
     const adapter = this.plugin.app.vault.adapter;
     let stat = await this.stat(path);
     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
-      const busy = this.typing(path) || (await this.editing(path)) === "unsaved";
+      const busy = (await this.editing(path)) === "unsaved" || this.typing(path);
       if (busy || again > WRITE_AGAIN) {
         this.log(
           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
@@ -1228,6 +1232,8 @@ export class ObsidianHost implements VaultHost {
         const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";
         throw Object.assign(new Error(said), { code: "write_dropped" });
       }
+      const now = await this.stat(path);
+      if (now === null || now.size !== 0) return now;
       const started = Date.now();
       await adapter.writeBinary(path, bytes.buffer, { mtime });
       stat = await this.stat(path);
@@ -2873,6 +2879,8 @@ export default class ObsyncPlugin extends Plugin {
     if (this.stateLoad === loading) this.stateLoad = null;
     if (!this.isCurrent(generation) || state === null) return;
     this.state = state;
+    // A reload of this instance keeps no question the old host asked.
+    this.host?.closeQuestion();
     this.host = new ObsidianHost(this);
     this.clock?.stop();
     const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;

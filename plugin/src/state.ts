@@ -237,6 +237,15 @@ export interface ObsyncData {
    */
   parked: Record<string, ParkedRecord>;
   /**
+   * Path to the file id whose download this phone could not write there: the
+   * platform's empty file stands at the name (`write_dropped`, issue #242).
+   * It is no edit and never sent, whatever becomes of the parked record -- a
+   * larger head moved to the download lane, a rename elsewhere -- until a
+   * record is made at that name (`setFile`). Kept across leaving a server: it
+   * describes a file here, not a version there.
+   */
+  dropped: Record<string, string>;
+  /**
    * File id to a note this device stopped syncing because something here
    * rewrote it right after another device's version arrived, on the lines
    * that device changed too -- two plugins stamping it, as a rule
@@ -302,6 +311,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     retiredRoots: {},
     folderBarriers: [],
     parked: {},
+    dropped: {},
     paused: {},
     heldDeletions: [],
     feedMark: null,
@@ -494,6 +504,12 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // the reason only chooses words, so a damaged one keeps the record.
       if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
       data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+    }
+  }
+  const dropped = loaded["dropped"];
+  if (isRecord(dropped)) {
+    for (const [path, fileId] of Object.entries(dropped)) {
+      if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
     }
   }
   const paused = loaded["paused"];
@@ -998,6 +1014,8 @@ export class State {
     // A file id recorded again is alive here: its old tombstone is no
     // deletion to re-send.
     delete this.data.graves[record.fileId];
+    // A record made at a name ends what a dropped write left there.
+    delete this.data.dropped[path];
   }
 
   forgetPath(path: string): void {

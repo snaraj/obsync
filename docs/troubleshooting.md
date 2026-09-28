@@ -56,6 +56,7 @@ server again unless the entry says so.
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
+| On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -1249,8 +1250,8 @@ again. If the file stays empty, the status names it:
 
 The phone tries that file again later and never sends the empty file; until
 then the note shows empty on the phone. If the note was renamed on another
-device meanwhile, an empty note under its old name can reach your other
-devices: delete it.
+device meanwhile, an empty note under its old name stays on the phone: delete
+it there.
 
 **How to fix it.**
 
@@ -1260,6 +1261,24 @@ devices: delete it.
 3. Select **Restore a copy** beside that version, then copy its text back
    into the note, or delete the empty note and rename the copy
    ([Restore a retained version](daily-use.md#restore-a-retained-version)).
+
+## Leave lists files your other devices already have
+
+**What you see.** On a phone, **Leave this server** says some files "hold
+changes the server never received", but your other devices show the same
+files with the same text.
+
+**Why it happens.** Android sometimes writes a downloaded file's bytes a
+moment after Obsidian has looked at it. Obsidian's list of the vault's files
+keeps the size it saw first, often empty, until it restarts, and obsync reads
+that list (issue #245). The file's text is already on the server.
+
+**How to fix it.**
+
+1. Select **Cancel**. Leaving then changes nothing.
+2. Close Obsidian on the phone completely and open it again.
+3. Select **Leave this server** again. The list now names only files that
+   really changed here; for those, run **Sync now** first.
 
 ## Two folders that differ only in capitalisation
 

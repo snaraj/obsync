@@ -2299,11 +2299,8 @@ export class SyncEngine {
       // parked retry writes the version (`competing` in pull.ts), and a
       // deletion the person makes still goes out above. Text typed into it
       // since is an edit, and is sent as one.
-      const here = await context.host.stat(path);
-      const dropped = Object.keys(context.state.data.parked)
-        .find((fileId) => context.state.data.parked[fileId]?.path === path && droppedWrite(context, fileId, here));
-      if (dropped !== undefined) {
-        context.host.log(`push path_class=file decision=skipped reason=write_dropped file=${dropped}`);
+      if (droppedWrite(context, await context.host.stat(path))) {
+        context.host.log(`push path_class=file decision=skipped reason=write_dropped file=${context.state.data.dropped[path]}`);
         return;
       }
       const forced = this.renames.delete(path);
@@ -2736,23 +2733,21 @@ export class SyncEngine {
   private park(context: SyncContext, fileId: string, error: unknown): void {
     if (!(error instanceof Unwritable)) throw error;
     const parked = context.state.data.parked;
-    const known = parked[fileId];
-    // A dropped write stays one until its version lands, whatever stops the
-    // retry -- an editor busy with the note, a lock: the empty file is still
-    // no edit, and still never sent (#242).
-    const reason = known?.reason === "write_dropped" ? known.reason : error.reason;
-    parked[fileId] = { path: error.path, reason };
+    const known = parked[fileId] !== undefined;
+    parked[fileId] = { path: error.path, reason: error.reason };
+    // The empty file a dropped write left is marked by its name, apart from
+    // the reason a later retry may give this record (#242, `state.dropped`).
+    if (error.reason === "write_dropped") context.state.data.dropped[error.path] = fileId;
     this.armParkRetry();
     this.armEditorRetry();
     // The file id and the reason, never the path: a name is vault content.
     context.host.log(
-      `feed decision=parked reason=${reason}${reason === error.reason ? "" : ` met=${error.reason}`} file=${fileId} ` +
-        `parked=${Object.keys(parked).length} ` +
-        `retry_ms=${reason === "active_editor" ? 1000 : this.parkDelay}`,
+      `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
+        `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
     );
-    if (known === undefined && reason !== "active_editor") {
+    if (!known && error.reason !== "active_editor") {
       context.host.notify(
-        `obsync: ${unwritableText(error.path, reason)}. Every other change keeps arriving. This file is ` +
+        `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
           "tried again by itself, and at once when you run Sync now after fixing it.",
       );
     }
