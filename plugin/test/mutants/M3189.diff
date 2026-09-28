@@ -1,10 +1,10 @@
 # M3189: a yield the editor refuses leaves the record naming the kept head
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3255,7 +3255,7 @@
+@@ -3307,7 +3307,7 @@
        // kept head, taking that head's text out of the note on every device.
        const started = context.now();
-       const landed = await landedAt(context, await writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
+       const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
 -        await release();
 +        void release;
          context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +

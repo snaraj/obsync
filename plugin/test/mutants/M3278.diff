@@ -1,0 +1,12 @@
+# M3278: a resumed copy commits unmarked, and the empty file a phone leaves is sent as the copy
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3172,7 +3172,7 @@
+     try {
+       await writer.write(mine);
+       if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
+-      await landedAt(context, await commitMarked(context, id, path, () => writer.commit(mtime)));
++      await landedAt(context, await writer.commit(mtime));
+     } finally { await writer.abort(); }
+     return file.heads;
+   });

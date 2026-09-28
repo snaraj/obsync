@@ -2337,7 +2337,9 @@ export class SyncEngine {
       if (outcome.status === "unchanged") return;
       if (outcome.status === "growing") {
         // The file moved while it was read: nothing was published, so this is
-        // the debounce's case again and not a failure (issue #99).
+        // the debounce's case again and not a failure (issue #99). So is a
+        // download dropped after the guard above looked (#242): the next look
+        // sees its empty file.
         if (forced) this.renames.add(path);
         this.debounce(path, 0);
         return;
@@ -2758,9 +2760,10 @@ export class SyncEngine {
     const parked = context.state.data.parked;
     const known = parked[fileId] !== undefined;
     parked[fileId] = { path: error.path, reason: error.reason };
-    // The empty file a dropped write left is marked by its name, apart from
-    // the reason a later retry may give this record (#242, `state.dropped`).
-    if (error.reason === "write_dropped") context.state.data.dropped[error.path] = fileId;
+    // Nothing is marked here. The empty file a dropped write left was marked
+    // by the write itself, at the name it wrote, before it committed (#242,
+    // `commitMarked`): apart from the reason a later retry may give this
+    // record, and before any push could read it.
     this.armParkRetry();
     this.armEditorRetry();
     // The file id and the reason, never the path: a name is vault content.

@@ -1,0 +1,26 @@
+# M3274: the mark is read before the bytes, and a download dropped during the read is judged against the stale mark
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -422,21 +422,21 @@
+   const plan: ManifestChunk[] = [];
+   let single: Bytes | null = null;
+   let plaintextHash = "";
+   let uploads = 0;
+   const before = context.transport.uploadStats();
+   if (stat.size <= CHUNK_MAX) {
++    const mark = context.state.data.dropped[path];
+     const plaintext = await context.host.read(path);
+     // THE BYTES READ ARE WHAT IS JUDGED (#242; review of c4668d4). The engine
+     // asks `droppedWrite` of a look taken before this push, and a download
+     // dropped while that look was awaited left its empty file after it: read
+     // here, it was published as the note. The name is marked before the
+     // download writes (`materialise`), so empty bytes read at a marked name
+     // are the drop's. Nothing is sent, and the caller looks again, as for a
+     // file that changed while it was read.
+-    const mark = context.state.data.dropped[path];
+     if (plaintext.length === 0 && mark !== undefined) {
+       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+       return { status: "growing", fileId, versionId: "" };
+     }
+     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+     plan.push({ sid, cid: hex(cid), len: plaintext.length });

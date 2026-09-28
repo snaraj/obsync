@@ -1,9 +1,9 @@
 # M802: The feed consumes an active editor update without arming its retry.
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2739,7 +2739,6 @@
-     // the reason a later retry may give this record (#242, `state.dropped`).
-     if (error.reason === "write_dropped") context.state.data.dropped[error.path] = fileId;
+@@ -2765,7 +2765,6 @@
+     // `commitMarked`): apart from the reason a later retry may give this
+     // record, and before any push could read it.
      this.armParkRetry();
 -    this.armEditorRetry();
      // The file id and the reason, never the path: a name is vault content.

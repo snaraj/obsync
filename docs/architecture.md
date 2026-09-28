@@ -871,11 +871,14 @@ long poll and needs its timeout raised.
    racing a save that lands after the last look at it. It is marked by its
    name (`state.dropped`), apart from the parked record, whose reason a later
    retry may change (a larger head sent to the download lane, a lock) and
-   which a rename elsewhere releases. The name is marked before the download's
-   first write (`materialise`), not at the refusal: a loaded phone's three
-   writes took seconds, and the watcher pushed the empty file between them
-   (E6, live). A write that fails for any other reason takes back only a mark
-   it set itself. It follows the file through every move
+   which a rename elsewhere releases. The name is marked before the first
+   write of every write a phone can refuse so -- a download, a merge, the head
+   a yield writes back, a resumed copy (`commitMarked`) -- not at the refusal:
+   a loaded phone's three writes took seconds, and the watcher pushed the
+   empty file between them (E6, live). A write that fails for any other reason
+   takes back only a mark it set itself. A push judges the bytes it read, not
+   an earlier look: empty bytes read at a marked name are sent as nothing, and
+   the file is looked at again (`publishFile`). It follows the file through every move
    `renamed` is told of here: a rename, each file of a folder's rename (the
    marked names among them), and a move into or out of the selected folders.
    A record moved is no download landed, and an empty file is no content on

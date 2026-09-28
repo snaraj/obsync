@@ -1,9 +1,9 @@
 # M638: the newer held snapshot forks instead of advancing the preserved baseline
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2369,7 +2369,7 @@
+@@ -3174,7 +3174,7 @@
        if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
-       await landedAt(context, await writer.commit(mtime));
+       await landedAt(context, await commitMarked(context, id, path, () => writer.commit(mtime)));
      } finally { await writer.abort(); }
 -    return file.heads;
 +    return [];

@@ -1,11 +1,12 @@
-# M3241: a dropped write's empty file is guarded only by its parked reason (review of 90d2042, finding 2)
---- a/plugin/src/sync/engine.ts
-+++ b/plugin/src/sync/engine.ts
-@@ -2737,7 +2737,6 @@
-     parked[fileId] = { path: error.path, reason: error.reason };
-     // The empty file a dropped write left is marked by its name, apart from
-     // the reason a later retry may give this record (#242, `state.dropped`).
--    if (error.reason === "write_dropped") context.state.data.dropped[error.path] = fileId;
-     this.armParkRetry();
-     this.armEditorRetry();
-     // The file id and the reason, never the path: a name is vault content.
+# M3241: a refused write leaves no mark of its own, and a yield's put-back record strands its empty file unmarked (recut: the mark moved from park into commitMarked)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -914,7 +914,7 @@
+   try {
+     return await commit();
+   } catch (error) {
+-    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
++    if (unwritable(error) === "write_dropped") void fileId;
+     else if (marked && dropped[path] === fileId) delete dropped[path];
+     throw error;
+   }

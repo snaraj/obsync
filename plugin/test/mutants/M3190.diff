@@ -1,12 +1,12 @@
 # M3190: a yield the editor refuses is not logged
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3256,8 +3256,6 @@
+@@ -3308,8 +3308,6 @@
        const started = context.now();
-       const landed = await landedAt(context, await writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
+       const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
          await release();
 -        context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +
 -          `duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
          throw error;
-       }));
+       })));
        tally.left = stamp(landed);

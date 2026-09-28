@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import gzip
 import hashlib
 import io
 import tarfile
@@ -299,7 +300,8 @@ class HostileArchives(TempRoot):
                     self.records(self.added(tarfile.TarInfo(name), b"x"))
 
     def test_links_devices_and_foreign_files_are_refused(self):
-        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE):
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE,
+                     tarfile.GNUTYPE_SPARSE, tarfile.CONTTYPE, tarfile.AREGTYPE):
             info = tarfile.TarInfo(f"{self.top}/dashboard/extra.js")
             info.type, info.linkname = kind, f"{self.top}/LICENSE"
             with self.subTest(kind=kind), self.assertRaisesRegex(contract.ContractError, "foreign, linked"):
@@ -310,6 +312,26 @@ class HostileArchives(TempRoot):
         # A dashboard file the release has not seen before is the dashboard's
         # own business: new stylesheets ship without a contract edit.
         self.records(self.added(tarfile.TarInfo(f"{self.top}/dashboard/new.css"), b"x"))
+
+    def test_extension_headers_are_refused(self):
+        """The publisher writes USTAR; a PAX or GNU header would rename or resize an entry."""
+        member = tarfile.TarInfo(f"{self.top}/dashboard/extra.css")
+        member.mode, member.pax_headers = 0o644, {"comment": "x"}
+        shapes = {
+            "pax member": (tarfile.PAX_FORMAT, {}, member),
+            "pax global": (tarfile.PAX_FORMAT, {"comment": "x"}, tarfile.TarInfo(f"{self.top}/dashboard/extra.css")),
+            "gnu long name": (tarfile.GNU_FORMAT, {}, tarfile.TarInfo(f"{self.top}/dashboard/{'x' * 120}.css")),
+        }
+        for label, (form, overall, info) in shapes.items():
+            info.mode = 0o644
+            packed = io.BytesIO()
+            with tarfile.open(fileobj=packed, mode="w:gz", format=form, pax_headers=overall) as archive:
+                for entry, data in entries(self.good[AMD64]) + [(info, b"x")]:
+                    entry = copy.copy(entry)
+                    entry.size = len(data) if data is not None else 0
+                    archive.addfile(entry, io.BytesIO(data) if data is not None else None)
+            with self.subTest(shape=label), self.assertRaisesRegex(contract.ContractError, "not plain USTAR"):
+                self.records(packed.getvalue())
 
     def test_owner_and_mode_must_keep_the_program_unwritable_by_its_user(self):
         for name, change in (("LICENSE", {"uid": 65532}), ("LICENSE", {"gid": 65532}),
@@ -343,19 +365,35 @@ class HostileArchives(TempRoot):
                     self.records(self.edited(f"plugin/{name}", data=b"another plugin"))
 
     def test_unreadable_and_oversized_archives_are_refused(self):
-        for data in (b"not gzip", self.good[AMD64][:-40], b""):
-            with self.subTest(size=len(data)), self.assertRaises(contract.ContractError):
+        # A stream cut short of its gzip trailer still inflates to the whole
+        # tar, and an extractor reports it as damaged all the same.
+        for data in (b"not gzip", self.good[AMD64][:-40], self.good[AMD64][:-8], b"",
+                     self.good[AMD64] + gzip.compress(b"x")):
+            with self.subTest(size=len(data)), self.assertRaisesRegex(contract.ContractError, "unreadable|empty"):
                 self.records(data)
         budgets = contract.SERVER_ARCHIVE_MAX_BYTES, contract.SERVER_ARCHIVE_MAX_ENTRIES
         try:
             contract.SERVER_ARCHIVE_MAX_BYTES = len(self.good[AMD64]) - 1
-            with self.assertRaisesRegex(contract.ContractError, "exceeds its budget"):
+            with self.assertRaisesRegex(contract.ContractError, "is empty or exceeds its budget"):
                 self.records(self.good[AMD64])
             contract.SERVER_ARCHIVE_MAX_BYTES = budgets[0]
             big = self.added(tarfile.TarInfo(f"{self.top}/dashboard/big.bin"), bytes(4096))
             contract.SERVER_ARCHIVE_MAX_BYTES = len(big) + 1
-            with self.assertRaisesRegex(contract.ContractError, "foreign, linked or oversized"):
+            with self.assertRaisesRegex(contract.ContractError, "exceeds its budget once decompressed"):
                 self.records(big)
+            # Metadata counts as well as files (review of c4668d4): every
+            # file fits the budget and only the header describing one breaks it.
+            contract.SERVER_ARCHIVE_MAX_BYTES = budgets[0]
+            extra = tarfile.TarInfo(f"{self.top}/dashboard/extra.css")
+            extra.mode, extra.size, extra.pax_headers = 0o644, 1, {"comment": "x" * (1 << 20)}
+            packed = io.BytesIO()
+            with tarfile.open(fileobj=packed, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+                for info, data in entries(self.good[AMD64]) + [(extra, b"x")]:
+                    archive.addfile(info, io.BytesIO(data) if data is not None else None)
+            contract.SERVER_ARCHIVE_MAX_BYTES = len(gzip.decompress(self.good[AMD64])) + 4096
+            self.assertLess(len(packed.getvalue()), contract.SERVER_ARCHIVE_MAX_BYTES)
+            with self.assertRaisesRegex(contract.ContractError, "exceeds its budget once decompressed"):
+                self.records(packed.getvalue())
             contract.SERVER_ARCHIVE_MAX_BYTES = budgets[0]
             contract.SERVER_ARCHIVE_MAX_ENTRIES = len(entries(self.good[AMD64])) - 1
             with self.assertRaisesRegex(contract.ContractError, "outside its directory or repeated"):

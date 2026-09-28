@@ -151,7 +151,10 @@ export interface FolderManifest {
 }
 
 export interface PushOutcome {
-  /** `growing`: the file moved while it was being read, so no version exists. */
+  /**
+   * `growing`: the file moved while it was being read, or what was read is the
+   * empty file a dropped download left (#242), so no version exists.
+   */
   status: "pushed" | "unchanged" | "growing";
   fileId: string;
   versionId: string;
@@ -423,6 +426,18 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   const before = context.transport.uploadStats();
   if (stat.size <= CHUNK_MAX) {
     const plaintext = await context.host.read(path);
+    // THE BYTES READ ARE WHAT IS JUDGED (#242; review of c4668d4). The engine
+    // asks `droppedWrite` of a look taken before this push, and a download
+    // dropped while that look was awaited left its empty file after it: read
+    // here, it was published as the note. The name is marked before the
+    // download writes (`materialise`), so empty bytes read at a marked name
+    // are the drop's. Nothing is sent, and the caller looks again, as for a
+    // file that changed while it was read.
+    const mark = context.state.data.dropped[path];
+    if (plaintext.length === 0 && mark !== undefined) {
+      context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+      return { status: "growing", fileId, versionId: "" };
+    }
     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });
     plaintextHash = hex(await sha256(plaintext));

@@ -237,8 +237,9 @@ export interface ObsyncData {
    */
   parked: Record<string, ParkedRecord>;
   /**
-   * Path to the file id whose download this phone could not write there: the
-   * platform's empty file stands at the name (`write_dropped`, issue #242).
+   * Path to the file id whose write this phone could not make there -- a
+   * download, a merge, a copy -- marked before it committed (`commitMarked`):
+   * the platform's empty file stands at the name (`write_dropped`, issue #242).
    * It is no edit and never sent, whatever becomes of the parked record -- a
    * larger head moved to the download lane, a rename elsewhere -- until a
    * record is made at that name (`setFile`). Kept across leaving a server: it

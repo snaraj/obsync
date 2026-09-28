@@ -730,9 +730,14 @@ test("a start whose recovery registration nothing answers holds Leave half a sec
   const start = r.instance.startEngine();
   await until(() => r.gate.asked, "the start is registering account recovery");
 
+  // Raced against the bound, so a leave held for good fails here rather than
+  // leaving the test to be cancelled (M3163).
   const began = Date.now();
-  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: true, localOnly: false }), { decision: "left", revoked: true });
-  assert.ok(Date.now() - began < 5000, `the leave took ${Date.now() - began} ms behind a registration nothing answered`);
+  let bound;
+  const left = await Promise.race([r.instance.leaveServer({ discardUnpushed: true, localOnly: false }),
+    new Promise((resolve) => { bound = setTimeout(() => resolve("held"), 5000); })]);
+  clearTimeout(bound);
+  assert.deepEqual(left, { decision: "left", revoked: true }, `the leave took ${Date.now() - began} ms behind a registration nothing answered`);
   assert.equal(r.logs.filter((line) => /^unpair decision=gave_up reason=start_under_way starts=1 budget_ms=500 duration_ms=\d+$/.test(line)).length, 1);
   assert.equal(r.instance.engine, null);
 

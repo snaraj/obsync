@@ -1,12 +1,13 @@
-# M3266: a refused write takes back its early mark, and a push before the refusal is parked sends the empty file
+# M3266: a refused write takes back its early mark, and a push after the refusal sends the empty file
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -945,7 +945,7 @@
-     try {
-       return await landedAt(context, await writer.commit(manifest.mtime));
-     } catch (error) {
--      if (marked && unwritable(error) !== "write_dropped" && dropped[manifest.path] === fileId) delete dropped[manifest.path];
-+      if (marked && dropped[manifest.path] === fileId) delete dropped[manifest.path];
-       throw error;
-     }
+@@ -914,8 +914,7 @@
+   try {
+     return await commit();
    } catch (error) {
+-    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
+-    else if (marked && dropped[path] === fileId) delete dropped[path];
++    if (marked && dropped[path] === fileId) delete dropped[path];
+     throw error;
+   }
+ }

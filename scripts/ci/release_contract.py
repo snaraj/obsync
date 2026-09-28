@@ -1246,10 +1246,26 @@ def server_archive_records(
         top = name.removesuffix(".tar.gz")
         files: dict[str, bytes] = {}
         seen: set[str] = set()
-        expanded = 0
         try:
-            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            # INFLATED WHOLE, AND BOUNDED, BEFORE TAR PARSES A BYTE (review of
+            # c4668d4). Counting the files tar handed back left tar's own
+            # parsing unbounded: an extended header is metadata read in full
+            # ahead of its member, and 64 KiB of gzip carried a 64 MiB one.
+            # One gzip member and nothing after it, because an extractor reads
+            # on into what follows and this audit would not.
+            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            raw = inflater.decompress(data, SERVER_ARCHIVE_MAX_BYTES + 1)
+            if len(raw) > SERVER_ARCHIVE_MAX_BYTES:
+                raise ContractError("server archive exceeds its budget once decompressed")
+            if not inflater.eof or inflater.unused_data:
+                raise ContractError("server archive is unreadable")
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
                 for item in archive:
+                    # The publisher writes USTAR: one header block per entry.
+                    # A PAX or GNU extension header renames or resizes what
+                    # an extractor makes of the entry, so none is read.
+                    if item.offset_data != item.offset + tarfile.BLOCKSIZE or archive.pax_headers:
+                        raise ContractError("server archive entry is not plain USTAR")
                     parts = item.name.split("/")
                     inner = "/".join(parts[1:])
                     if (parts[0] != top or item.name in seen or len(seen) >= SERVER_ARCHIVE_MAX_ENTRIES
@@ -1263,10 +1279,11 @@ def server_archive_records(
                     seen.add(item.name)
                     if item.isdir():
                         continue
-                    expanded += item.size
-                    if (not item.isreg() or expanded > SERVER_ARCHIVE_MAX_BYTES or
+                    # A plain file's bytes are all inside `raw`; a sparse one
+                    # would be read back at a size it never stored.
+                    if (item.type != tarfile.REGTYPE or
                             (inner not in SERVER_ARCHIVE_FILES and not inner.startswith("dashboard/"))):
-                        raise ContractError("server archive carries a foreign, linked or oversized entry")
+                        raise ContractError("server archive carries a foreign, linked or sparse entry")
                     stream = archive.extractfile(item)
                     files[inner] = stream.read() if stream else b""
         except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:

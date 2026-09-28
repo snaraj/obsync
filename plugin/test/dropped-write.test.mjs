@@ -20,7 +20,7 @@ const require = createRequire(import.meta.url);
 const { SyncEngine, LARGE_APPLY_BYTES } = require("../build/sync/engine.js");
 const { Transport } = require("../build/transport.js");
 const { decodeRecordManifest } = require("../build/sync/pull.js");
-const { pushDelete } = require("../build/sync/push.js");
+const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { bytesSource, chunkStream } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
 
@@ -393,6 +393,59 @@ for (const pushAt of ["commit", "abort"]) {
       assert.equal(r.state.data.dropped[PATH], ID);
     });
   }
+}
+
+// The reviewer's interleaving (review of c4668d4): a push looks at a note that
+// holds text, and a newer download of it is dropped while that look is
+// awaited -- the guard's stat, or the push's own read. What the push sends is
+// judged by the bytes it read and the mark as it stands after them.
+for (const at of ["stat", "read"]) {
+  test(`a download dropped while a push looks at the note sends nothing (${at}, review of c4668d4)`, async (t) => {
+    const r = await dropped(t, true);
+    const dropping = r.host.writer;
+    r.host.writer = r.writer;
+    await r.engine.syncNow();
+    await r.timers.run(1000, () => Object.keys(r.state.data.parked).length === 0 && r.host.text(PATH) === "new remote text");
+    r.host.writer = dropping;
+    const look = r.host[at].bind(r.host);
+    let armed = true, next = null;
+    const drop = async () => {
+      armed = false;
+      next = await r.foreign(PATH, "newer remote text", [r.first.version_id]);
+      await r.timers.run(1000, () => r.state.data.lastSeq >= next.seq && r.state.data.parked[ID]?.reason === "write_dropped");
+    };
+    r.host[at] = async (path, ...rest) => {
+      if (at === "read" && path === PATH && armed) await drop();
+      const seen = await look(path, ...rest);
+      if (at === "stat" && path === PATH && armed) await drop();
+      return seen;
+    };
+    const before = r.server.journal.length;
+    await r.engine.pushOne(PATH);
+    r.host[at] = look;
+    assert.ok(next !== null && r.host.text(PATH) === "", "the download was not dropped under the push's look");
+    const abandoned = r.host.logs.findIndex((line) => line.startsWith(`push path_class=file decision=abandoned reason=write_dropped file=${ID} `));
+    assert.ok(abandoned >= 0, r.host.logs.join(" | "));
+    // Nothing was sent, so the engine looks again, and this time sees the drop.
+    const skipped = `push path_class=file decision=skipped reason=write_dropped file=${ID}`;
+    await r.timers.run(10, () => r.host.logs.slice(abandoned).includes(skipped));
+    assert.ok(r.host.logs.slice(abandoned).includes(skipped), "the push that read the drop was not looked at again");
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+  });
+}
+
+// Not every publication passes the engine's guard: restore's re-send, a held
+// note's publication and a conflict copy call `pushFile` directly. It answers
+// a dropped write's empty file itself: nothing is sent, and the caller is told
+// to look again rather than that the note was published or unchanged.
+for (const existing of [false, true]) {
+  test(`pushFile itself sends nothing of a dropped write's empty file, and says to look again (existing=${existing}, review of c4668d4)`, async (t) => {
+    const r = await dropped(t, existing);
+    const before = r.server.journal.length;
+    const outcome = await pushFile(r.engine.context, PATH, true);
+    assert.deepEqual([outcome.status, outcome.versionId], ["growing", ""]);
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+  });
 }
 
 // A write takes back only a mark it set itself: a retry that fails for another

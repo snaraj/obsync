@@ -1429,6 +1429,54 @@ test("a losing note whose editor refuses the kept head keeps its record, and its
   assert.deepEqual(r.server.files.get(ours.fileId).versions[0].parents, [ours.versionId], "the save went out over the kept head");
 });
 
+/** A phone whose write of `path` stays empty however often it is made (#242, `write_dropped` in main.ts). */
+function dropping(host, path) {
+  const writer = host.writer.bind(host);
+  host.writer = async (at, size) => {
+    const output = await writer(at, size);
+    return at !== path ? output : { ...output, commit: async () => {
+      host.seed(path, "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+}
+
+/**
+ * A MERGE OR A KEPT HEAD THE PHONE COULD NOT WRITE (#242; M3241). Not only a
+ * download: every write a phone can leave empty marks its name before it
+ * commits, and the empty file it leaves is never sent as the note -- not by
+ * the push that finds it, which no refusal has reached yet.
+ */
+test("a merge the phone leaves empty marks its note, and none of the empty file is sent (#242)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  const other = await foreign(r, base.fileId, "one\ntwo\nTHREE\n", [base.versionId], 3000);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  await pushFile(r.context, NOTE);
+  dropping(r.host, NOTE);
+  const head = { ...other, heads: r.server.files.get(base.fileId).heads, conflicted: true };
+  await assert.rejects(applyChange(r.context, head), (error) => error.reason === "write_dropped");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=publishing reason=merge_receipt")), pulls(r.host));
+  assert.equal(r.host.text(NOTE), "");
+  assert.equal(r.state.data.dropped[NOTE], base.fileId, "the merge's empty file was left unmarked");
+  const journal = r.server.journal.length;
+  assert.equal((await pushFile(r.context, NOTE)).status, "growing");
+  assert.equal(r.server.journal.length, journal, "the merge's empty file was sent as the note");
+});
+
+test("a kept head the phone leaves empty marks its note, and none of the empty file is sent (#242)", async () => {
+  const { r, ours, head } = await losing();
+  dropping(r.host, NOTE);
+  await assert.rejects(applyChange(r.context, head), (error) => error.reason === "write_dropped");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=released reason=not_written role=yield")), pulls(r.host));
+  assert.equal(r.host.text(NOTE), "");
+  assert.equal(r.state.data.dropped[NOTE], ours.fileId, "the kept head's empty file was left unmarked");
+  const journal = r.server.journal.length;
+  assert.equal((await pushFile(r.context, NOTE)).status, "growing");
+  assert.equal(r.server.journal.length, journal, "the kept head's empty file was sent as the note");
+});
+
 /**
  * The losing device keeps its note in the copy BEFORE the kept version takes
  * the name, and looks again between the two: a save landing while the copy

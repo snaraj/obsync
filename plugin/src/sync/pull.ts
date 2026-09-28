@@ -895,6 +895,32 @@ export async function pruneEmptyParents(context: SyncContext, path: string): Pro
 }
 
 /**
+ * A write at a name this device syncs, MARKED BEFORE IT COMMITS (#242; E6,
+ * live under load). A phone's commit that leaves the file empty writes it
+ * again before refusing it (`write_dropped`, main.ts), and the watcher can read
+ * that empty file and push it meanwhile: a mark set once the refusal was parked
+ * came after that push had passed its guard. So every write a phone can refuse
+ * so -- a download, a merge, the head a yield writes back, a resumed copy --
+ * marks the name it writes, with the id of the file it writes, from the first
+ * write. A record made at it ends the mark (`setFile`). A refused write leaves
+ * it marked as this write's, whatever the commit's own clean-up recorded
+ * meanwhile -- a yield puts back the record it claimed (M3241) -- and any
+ * other failure takes back a mark this write set.
+ */
+async function commitMarked(context: SyncContext, fileId: string, path: string, commit: () => Promise<VaultStat>): Promise<VaultStat> {
+  const dropped = context.state.data.dropped;
+  const marked = dropped[path] === undefined;
+  if (marked) dropped[path] = fileId;
+  try {
+    return await commit();
+  } catch (error) {
+    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
+    else if (marked && dropped[path] === fileId) delete dropped[path];
+    throw error;
+  }
+}
+
+/**
  * Write a manifest's content into the vault atomically and return the stat
  * of what landed, which becomes the echo-suppression key.
  *
@@ -929,25 +955,10 @@ async function materialise(context: SyncContext, fileId: string, manifest: Manif
       await writer.abort();
       return null;
     }
-    // THE MARK COMES BEFORE THE WRITE (#242; E6, live under load). A phone's
-    // commit that leaves the file empty writes it again before refusing it,
-    // and the watcher can read that empty file and push it meanwhile: the
-    // mark set at the refusal came after that push had passed its guard. So
-    // the name is marked from the first write. A record made at it ends the
-    // mark (`setFile`), a refused write keeps it for `park`, and any other
-    // failure takes back a mark this write set.
-    const dropped = context.state.data.dropped;
-    const marked = dropped[manifest.path] === undefined;
-    if (marked) dropped[manifest.path] = fileId;
     // The commit's own stat, handed back rather than looked up again: it is
     // the metadata of the bytes THIS write put there, and a second stat would
     // describe whatever the user saved a moment later instead (finding 2).
-    try {
-      return await landedAt(context, await writer.commit(manifest.mtime));
-    } catch (error) {
-      if (marked && unwritable(error) !== "write_dropped" && dropped[manifest.path] === fileId) delete dropped[manifest.path];
-      throw error;
-    }
+    return await landedAt(context, await commitMarked(context, fileId, manifest.path, () => writer.commit(manifest.mtime)));
   } catch (error) {
     await writer.abort();
     throw error;
@@ -2909,7 +2920,7 @@ async function resolve(
         // receipt rather than publish the new bytes onto the old parent.
         context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
         const settled = await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
-          const stat = await writer.commit(context.now());
+          const stat = await commitMarked(context, change.file_id, localPath, () => writer.commit(context.now()));
           tally.left = stamp(stat);
           context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
           // The result is the INCOMING version's own bytes: that version already
@@ -3161,7 +3172,7 @@ async function keepResumed(
     try {
       await writer.write(mine);
       if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
-      await landedAt(context, await writer.commit(mtime));
+      await landedAt(context, await commitMarked(context, id, path, () => writer.commit(mtime)));
     } finally { await writer.abort(); }
     return file.heads;
   });
@@ -3295,12 +3306,12 @@ async function converge(
       // so its record: claimed, the next save was published as a child of the
       // kept head, taking that head's text out of the note on every device.
       const started = context.now();
-      const landed = await landedAt(context, await writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
+      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
         await release();
         context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +
           `duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
         throw error;
-      }));
+      })));
       tally.left = stamp(landed);
       await recordAt(context, change, localPath, landed);
     } catch (error) {
