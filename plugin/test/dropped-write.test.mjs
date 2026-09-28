@@ -14,7 +14,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, rig } from "./fake.mjs";
+import { FakeTimers, KEYS, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { SyncEngine, LARGE_APPLY_BYTES } = require("../build/sync/engine.js");
@@ -28,9 +28,25 @@ const PATH = "Notes/n17.md";
 const NEXT = "Notes/renamed.md";
 const enc = (text) => new TextEncoder().encode(text);
 
+/**
+ * What this device published after journal position `before` that would take
+ * a note's text from every other device -- an empty version or a tombstone --
+ * decrypted from the frames themselves.
+ */
+async function emptied(r, before) {
+  const empty = [];
+  for (const frame of r.server.journal.slice(before)) {
+    if (frame.device_id !== KEYS.deviceId) continue;
+    const manifest = await decodeRecordManifest(r.context, frame);
+    if (manifest.v === 1 && (manifest.deleted || manifest.size === 0)) empty.push({ path: manifest.path, fileId: frame.file_id, deleted: !!manifest.deleted });
+  }
+  return empty;
+}
+
 /** A phone whose writes of `PATH` stay empty, with a download of it parked as `write_dropped`. */
-async function dropped(t, existing) {
+async function dropped(t, existing, syncFolders = null) {
   const r = await rig({ isMobile: true });
+  if (syncFolders !== null) r.state.data.syncFolders = syncFolders;
   const timers = new FakeTimers();
   let block = false, blocked = false, release;
   const wire = new Promise((done) => { release = done; });
@@ -79,12 +95,7 @@ for (const existing of [false, true]) {
     r.host.writer = r.writer;
     const before = r.server.journal.length;
     if (r.host.text(PATH) !== null) await r.engine.pushOne(PATH);
-    const empty = [];
-    for (const frame of r.server.journal.slice(before)) {
-      if (frame.device_id !== KEYS.deviceId) continue;
-      const manifest = await decodeRecordManifest(r.context, frame);
-      if (manifest.v === 1 && !manifest.deleted && manifest.size === 0) empty.push({ path: manifest.path, fileId: frame.file_id });
-    }
+    const empty = await emptied(r, before);
     assert.deepEqual(empty, [], `parked=${JSON.stringify(r.state.data.parked)} files=${JSON.stringify([...r.host.files.keys()])}`);
   });
 }
@@ -97,12 +108,7 @@ for (const existing of [false, true]) {
     assert.equal(await r.host.move(PATH, NEXT), "moved");
     r.engine.renamed(PATH, NEXT);
     await r.timers.run(1000);
-    const empty = [];
-    for (const frame of r.server.journal.slice(before)) {
-      if (frame.device_id !== KEYS.deviceId) continue;
-      const manifest = await decodeRecordManifest(r.context, frame);
-      if (manifest.v === 1 && !manifest.deleted && manifest.size === 0) empty.push({ path: manifest.path, fileId: frame.file_id });
-    }
+    const empty = await emptied(r, before);
     assert.deepEqual(empty, [], `marked=${JSON.stringify(r.state.data.dropped)}`);
     assert.deepEqual(r.state.data.dropped, { [NEXT]: ID });
     assert.deepEqual((await r.reload()).data.dropped, { [NEXT]: ID }, "the moved mark was not saved for the next start");
@@ -134,3 +140,95 @@ test("a larger head sent to the download lane keeps the empty file unsent", asyn
   assert.ok(r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${ID}`), r.host.logs.join(" | "));
   await pushing;
 });
+
+for (const existing of [false, true]) {
+  test(`a folder renamed here takes the mark with the empty file under it (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing, ["Notes"]);
+    const before = r.server.journal.length;
+    const selection = r.state.data.syncFolders;
+    assert.equal(await r.host.moveFolder("Notes", "Renamed"), "moved");
+    r.engine.renamedFolder("Notes", "Renamed", selection);
+    r.engine.folderRenamed("Notes", "Renamed", selection);
+    await r.timers.run(1000);
+    await r.engine.syncNow();
+    await r.timers.run(1000);
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    assert.equal(r.state.data.dropped["Renamed/n17.md"], ID);
+    assert.equal((await r.reload()).data.dropped["Renamed/n17.md"], ID, "the moved mark was not saved for the next start");
+  });
+
+  test(`a move out of the selected folders and back takes the mark with the empty file (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing, ["Notes"]);
+    const before = r.server.journal.length;
+    assert.equal(await r.host.move(PATH, "Outside/n17.md"), "moved");
+    r.engine.renamed(PATH, "Outside/n17.md");
+    await r.timers.run(10);
+    assert.deepEqual((await r.reload()).data.dropped, { "Outside/n17.md": ID }, "the mark did not leave the selection with its file, saved");
+    assert.equal(await r.host.move("Outside/n17.md", NEXT), "moved");
+    r.engine.renamed("Outside/n17.md", NEXT);
+    await r.timers.run(1000);
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    assert.deepEqual((await r.reload()).data.dropped, { [NEXT]: ID }, "the mark did not come back with its file, saved");
+  });
+}
+
+test("deleting the empty file a dropped write left deletes nothing on other devices (review of 2e4cdca)", async (t) => {
+  const r = await dropped(t, true);
+  const before = r.server.journal.length;
+  r.host.files.delete(PATH);
+  r.engine.deleted(PATH);
+  await r.timers.run(1000);
+  assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+  const next = await r.reload();
+  assert.equal(next.fileByPath(PATH), undefined, "the placeholder's record was kept");
+  assert.deepEqual(next.data.dropped, {}, "the placeholder's mark was kept");
+});
+
+test("a note whose folder was renamed here, and whose retry the selection then released, is not deleted everywhere with its empty file (review of 2e4cdca)", async (t) => {
+  const r = await dropped(t, true, ["Notes"]);
+  const selection = r.state.data.syncFolders;
+  assert.equal(await r.host.moveFolder("Notes", "Renamed"), "moved");
+  r.engine.renamedFolder("Notes", "Renamed", selection);
+  r.engine.folderRenamed("Notes", "Renamed", selection);
+  await r.timers.run(1000);
+  r.host.writer = r.writer;
+  await r.engine.syncNow();
+  await r.timers.run(2000, () => Object.keys(r.state.data.parked).length === 0);
+  assert.equal(r.state.fileByPath("Renamed/n17.md")?.fileId, ID, "the record did not move with the folder");
+  assert.equal(r.host.text("Renamed/n17.md"), "");
+  const before = r.server.journal.length;
+  r.host.files.delete("Renamed/n17.md");
+  r.engine.deleted("Renamed/n17.md");
+  await r.timers.run(1000);
+  assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+});
+
+test("a folder deleted on a phone ends the marks of the empty files under it, and sends nothing for them (review of 2e4cdca)", async (t) => {
+  const devices = await pair(t);
+  const phone = devices.b;
+  phone.host.write("Drop/n17.md", "", 1000);
+  phone.host.write("Notes/kept.md", "a note that stays\n", 1000);
+  // What a new download's dropped write leaves: an empty file, its mark, no record.
+  phone.state.data.dropped["Drop/n17.md"] = ID;
+  await devices.a.engine.start();
+  await phone.engine.start();
+  await devices.timers.run(STEP_MS, () => devices.a.host.text("Notes/kept.md") !== null);
+  assert.equal(devices.a.host.text("Drop/n17.md"), null, "the marked empty file was sent");
+  phone.host.removeFolder("Drop");
+  await devices.timers.run(STEP_MS);
+  assert.deepEqual(phone.state.data.dropped, {}, "a mark outlived its file");
+  assert.equal(devices.a.host.text("Drop/n17.md"), null, "the marked empty file was sent");
+  assert.equal(devices.a.host.text("Notes/kept.md"), "a note that stays\n");
+});
+
+for (const existing of [false, true]) {
+  test(`a delete reported while the empty file is still there keeps its mark, and it stays unsent (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing);
+    const before = r.server.journal.length;
+    r.engine.deleted(PATH);
+    await r.timers.run(1000);
+    assert.equal(r.host.text(PATH), "");
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    assert.equal(r.state.data.dropped[PATH], ID, "the mark ended while its empty file stood");
+  });
+}

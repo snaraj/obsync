@@ -662,6 +662,18 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
   // is refused without the vault being touched at all (`scope.test.mjs`).
   assertSyncPath(path, context.state.data.syncFolders);
   const record = context.state.fileByPath(path);
+  // THE EMPTY FILE A DROPPED WRITE LEFT HELD NOTHING OF THE NOTE (#242;
+  // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+  // whose text is on the server and on every other device: a tombstone would
+  // take it from them all. This device forgets the mark, and any record.
+  const mark = context.state.data.dropped[path];
+  if (mark !== undefined && (await context.host.stat(path)) === null) {
+    if (record) context.state.forgetPath(path);
+    delete context.state.data.dropped[path];
+    await context.state.save();
+    context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);
+    return null;
+  }
   if (!record) return null;
   if ((await context.host.stat(path)) !== null) {
     context.host.log("push path_class=tombstone decision=refused reason=file_present");

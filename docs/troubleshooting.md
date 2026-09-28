@@ -1251,7 +1251,8 @@ again. If the file stays empty, the status names it:
 The phone tries that file again later and never sends the empty file; until
 then the note shows empty on the phone. If the note was renamed on another
 device meanwhile, an empty note under its old name stays on the phone: delete
-it there.
+it there. Moving or renaming that empty note on the phone does not send it
+either, and deleting it on the phone deletes nothing on your other devices.
 
 **How to fix it.**
 

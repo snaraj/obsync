@@ -211,8 +211,9 @@ phone took the empty file for an edit and sent it back, so the note became
 empty on every device, including the one that wrote it; its text stayed only
 in the note's history. In a test, 4 of 1,600 files a desktop wrote came back
 empty this way. A phone now writes such a download again. If it stays empty,
-the phone names it in the status, tries it again later and never sends it. A
-note this already emptied can be restored from history
+the phone names it in the status, tries it again later, and never sends the
+empty file, wherever it is moved, or its deletion. A note this already
+emptied can be restored from history
 ([troubleshooting](docs/troubleshooting.md#a-note-became-empty-on-every-device)).
 Mobile; seen on Android (#242).
 

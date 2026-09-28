@@ -1496,32 +1496,21 @@ export class SyncEngine {
     // destination is an unselected folder or a path no device syncs at all:
     // the file is ALIVE at `to`, and a tombstone for a live file is obeyed
     // by every other device (issue #91).
+    const context = this.need();
     if (!source || !target) {
       if (target) this.changed(to);
       else if (source) this.leftScope(from);
+      if (this.carryMark(context, from, to)) this.saveMoved(context);
       return;
     }
-    const context = this.need();
     const record = context.state.fileByPath(from);
-    const mark = context.state.data.dropped[from];
     if (record) {
       // Persist the need to publish the new name. A stopped/failed queue
       // must not make a restart mistake an unposted rename for unchanged bytes.
       context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
       context.state.forgetPath(from);
     }
-    // The mark a dropped write left goes with its file, after the record: a
-    // record moved is no download landed (#242; review of d62f201).
-    if (mark !== undefined) {
-      delete context.state.data.dropped[from];
-      context.state.data.dropped[to] = mark;
-    }
-    if (record || mark !== undefined) {
-      void this.track(context.state.save()).catch(() => {
-        this.stop();
-        this.options.host.log("rename decision=failed reason=state_not_saved");
-      });
-    }
+    if (this.carryMark(context, from, to) || record) this.saveMoved(context);
     this.unschedule(from);
     // Straight into the queue: the debounce and the unchanged-content check
     // would both drop a rename, whose only change is the path in the manifest.
@@ -1571,10 +1560,35 @@ export class SyncEngine {
     // the note stayed on this device alone until something else triggered a
     // reconciliation. Pending work moves with the folder like everything
     // else under it, and so does a first post in flight (issue #213).
+    // A dropped write's empty file may have no record and no work at all, only
+    // its mark (#242; review of 2e4cdca).
+    const { files, dropped } = this.options.state.data;
     const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
-    for (const path of new Set([...Object.keys(this.options.state.data.files), ...pending])) {
+    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
     }
+  }
+
+  /**
+   * The mark a dropped write left (#242) goes with its file wherever this
+   * device moves it, into, out of or within the selection: an empty file is
+   * no content on either side (reviews of d62f201 and 2e4cdca). It moves
+   * after any record, because a record made at `to` ends a mark there, and a
+   * record moved is no download landed.
+   */
+  private carryMark(context: SyncContext, from: string, to: string): boolean {
+    const mark = context.state.data.dropped[from];
+    if (mark === undefined) return false;
+    delete context.state.data.dropped[from];
+    context.state.data.dropped[to] = mark;
+    return true;
+  }
+
+  private saveMoved(context: SyncContext): void {
+    void this.track(context.state.save()).catch(() => {
+      this.stop();
+      this.options.host.log("rename decision=failed reason=state_not_saved");
+    });
   }
 
   /**
@@ -2305,8 +2319,8 @@ export class SyncEngine {
       // (`write_dropped`); what stands at the name is the platform's empty
       // file, and publishing it would empty the note on every device -- or,
       // where the download was new, add an empty one. It is never sent: the
-      // parked retry writes the version (`competing` in pull.ts), and a
-      // deletion the person makes still goes out above. Text typed into it
+      // parked retry writes the version (`competing` in pull.ts), and its
+      // deletion publishes nothing either (`pushDelete`). Text typed into it
       // since is an edit, and is sent as one.
       if (droppedWrite(context, await context.host.stat(path))) {
         context.host.log(`push path_class=file decision=skipped reason=write_dropped file=${context.state.data.dropped[path]}`);

@@ -3204,7 +3204,9 @@ export default class ObsyncPlugin extends Plugin {
 
   private pathsUnder(folder: string): string[] {
     const prefix = `${folder}/`;
-    return Object.keys(this.state.data.files).filter((path) => path.startsWith(prefix));
+    // A dropped write's empty file may have only its mark (#242).
+    const { files, dropped } = this.state.data;
+    return [...new Set([...Object.keys(files), ...Object.keys(dropped)])].filter((path) => path.startsWith(prefix));
   }
 
   /** The folder itself and every folder record beneath it, deepest first. */

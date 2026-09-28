@@ -1,0 +1,15 @@
+# M3252: a folder rename moves only records and pending work, and a dropped write's empty file with only its mark goes out under the new folder (review of 2e4cdca, finding 1)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1562,9 +1562,9 @@
+     // else under it, and so does a first post in flight (issue #213).
+     // A dropped write's empty file may have no record and no work at all, only
+     // its mark (#242; review of 2e4cdca).
+-    const { files, dropped } = this.options.state.data;
++    const { files } = this.options.state.data;
+     const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
+-    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
++    for (const path of new Set([...Object.keys(files), ...pending])) {
+       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
+     }
+   }

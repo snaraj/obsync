@@ -1,0 +1,14 @@
+# M3259: a folder deleted on a phone reports only the records under it, and the marks of the empty files there are stranded
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3205,8 +3205,8 @@
+   private pathsUnder(folder: string): string[] {
+     const prefix = `${folder}/`;
+     // A dropped write's empty file may have only its mark (#242).
+-    const { files, dropped } = this.state.data;
+-    return [...new Set([...Object.keys(files), ...Object.keys(dropped)])].filter((path) => path.startsWith(prefix));
++    const { files } = this.state.data;
++    return [...new Set([...Object.keys(files)])].filter((path) => path.startsWith(prefix));
+   }
+ 
+   /** The folder itself and every folder record beneath it, deepest first. */

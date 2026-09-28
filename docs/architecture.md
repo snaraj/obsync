@@ -871,12 +871,23 @@ long poll and needs its timeout raised.
    racing a save that lands after the last look at it. It is marked by its
    name (`state.dropped`), apart from the parked record, whose reason a later
    retry may change (a larger head sent to the download lane, a lock) and
-   which a rename elsewhere releases. It follows the file through a rename
-   here, because a record moved is no download landed. The mark ends when a
-   record is made at that name. While it stands, the file is no edit, and where the download
-   was new it is no note of its own (`droppedWrite`, pull.ts):
+   which a rename elsewhere releases. It follows the file through every move
+   `renamed` is told of here: a rename, each file of a folder's rename (the
+   marked names among them), and a move into or out of the selected folders.
+   A record moved is no download landed, and an empty file is no content on
+   either side of the selection. The mark ends when a record is made at that
+   name. While it stands, the file is no edit, and where the download was new
+   it is no note of its own (`droppedWrite`, pull.ts):
    - the push skips it (`push decision=skipped reason=write_dropped`);
-   - the parked retry writes the version over it rather than beside it.
+   - the parked retry writes the version over it rather than beside it;
+   - deleting it publishes no tombstone (`pushDelete`, `path_class=tombstone
+     decision=skipped`): it held nothing of the note, whose text is on the
+     server and on every other device. This device forgets the mark, and the
+     record if there is one; a folder deleted here reports its marked files
+     with its recorded ones (`pathsUnder`, main.ts). A delete reported while
+     the empty file still stands changes nothing. A move can leave the record
+     on the empty file where the retry no longer reaches it, as when the
+     selection follows a renamed folder.
    Text typed into that empty note meanwhile is an edit, and is sent. A note
    renamed on another device before its retry lands leaves the empty file
    under the old name, on this phone only.

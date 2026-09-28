@@ -1,9 +1,9 @@
 # M3212: the empty file a dropped write left is sent as an edit when the watcher reports it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2299,7 +2299,7 @@
-       // parked retry writes the version (`competing` in pull.ts), and a
-       // deletion the person makes still goes out above. Text typed into it
+@@ -2322,7 +2322,7 @@
+       // parked retry writes the version (`competing` in pull.ts), and its
+       // deletion publishes nothing either (`pushDelete`). Text typed into it
        // since is an edit, and is sent as one.
 -      if (droppedWrite(context, await context.host.stat(path))) {
 +      if (droppedWrite(context, null)) {
