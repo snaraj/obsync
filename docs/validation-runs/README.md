@@ -39,7 +39,8 @@ observed from what was still outstanding.
   J1 to J9 pass. J10 did not complete: #245 (a phone's stale file index), an
   operator interruption and #241's old-name copies each stopped it, and
   pairing again completed with nothing uploaded. #242: 2,400 files written
-  with no empty version published, and the forced refusal (E5) passes.
+  with no empty version published, and the forced refusal passes, alone
+  (E5) and through a folder rename and deletions on the phone (E6).
   #234 and #235 are proven live.
 - [2026-09-27 Windows 11 desktop](2026-09-27-windows-11-vm.md): the first
   Windows run, Windows 11 on ARM64 against a macOS desktop. 9 of 10 journeys

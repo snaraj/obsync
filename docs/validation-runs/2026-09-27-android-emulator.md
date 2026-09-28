@@ -8,15 +8,17 @@ Android phone, and every line below says so where it matters.
 ## Build and devices
 
 - Source: the 1.1.4 train. J1 to J9 ran on the build at `c6ce1d2`. J10 ran
-  in parts, at `90d2042` and `d62f201`, and E5 at `5a53c7a`: see their rows.
+  in parts, at `90d2042` and `d62f201`, and E5 and E6 at `f1143ea`: see
+  their rows.
 - Server: `obsyncd` 1.1.4 built at `48334a5`, SHA-256 `14b07141c78ae123…`
   (no server change after it), with disposable journal and blob volumes. It
   ran on this computer's loopback address over plain HTTP, with
   `OBSYNC_EDGE=none`.
 - Plugin: 1.1.4, `main.js` SHA-256 `82a7576665307fcb…` at `c6ce1d2` and
   `098ac74dd59daeac…` at `90d2042` on both devices. The later builds went to
-  the phone alone: `03d9388872387d9e…` at `d62f201` and
-  `ab3c52324c0ca956…` at `5a53c7a`, while the desktop kept `098ac74d…`.
+  the phone alone: `03d9388872387d9e…` at `d62f201`, `ab3c52324c0ca956…`
+  at `5a53c7a` and `140cf8fabc5c66d3…` at `f1143ea`, while the desktop kept
+  `098ac74d…`.
   Their changes act where a write lands empty, which is the phone. Every copy
   was installed by a manual file copy and a reload, which is not a
   production-path install.
@@ -57,7 +59,8 @@ for the acts and the vault manager's own menu for J3.
 | J8 | pass | desktop 2.0 s, phone 6.6 s | Both apps quit and relaunched with no tap and no Sync now: the desktop idle by 2.0 s after its window loaded, 0 prompts, paired; the phone idle by 6.6 s after its window loaded, 0 prompts, paired (host clock, launch to both idle: 6.8 s, includes reattaching DevTools). |
 | J9 | pass | phone 487.0 s, relaunch 1.9 s | A tree of 2000 non-note files (2.0 MiB, 40 folders) written on the desktop in 38.8 s; the phone held all 2000 after 487.0 s; after a relaunch with the tree present, the desktop was idle by 1.9 s after its window loaded (3.0 s on the host clock). |
 | J10 | fail (#241) | pair to idle 49 s | Leave and pair again, repeated at the final builds, was not completed in one run. A clean run at `d62f201` left, and pairing again then asked about 3 notes the server did not hold: the phone's copies of notes under names their folders had before earlier renames (#241, 1.1.5). The journey stops there by design. At `90d2042` it stopped before Leave: the phone listed 4 files as holding unsent changes that the server already had (#245, below). Restarting Obsidian cleared that. The rerun's pairing was then interrupted by the operator installing a new build on the phone mid-run. That left the phone unpaired and asked about 2 notes the server did not hold, #241's old-name copies. **Cancel** uploaded nothing; the copies were trashed as the workaround says. Pairing again at `d62f201` (plugin `03d93888`) completed: the phone was idle 49 s after pairing (100 s from the pair command, beside a six-shard mutation run), created 0 versions (195 posts answered "already held"), uploaded 0 chunks, and every file present on both devices had identical bytes. |
-| E5 | pass | 124.3 s to land | A probe made every write under a folder land empty on the phone, for a note new to it and for an edit of one it held (#242; review of `90d2042`). At `5a53c7a` the phone refused both after three writes and parked them as `write_dropped`, leaving both files at 0 bytes and removing nothing. It skipped sending them 4 times and made 0 versions of any file. With writes working again, Sync now landed both 124.3 s after the desktop's edit, byte for byte on both devices, with no conflict copy; afterwards the phone held no dropped-write marks and no parked records. Earlier builds passed the same probe (`d62f201`, 130.9 s; `90d2042`, 124.1 s). |
+| E5 | pass | 126.1 s to land | A probe made every write under a folder land empty on the phone, for a note new to it and for an edit of one it held (#242; review of `90d2042`). At `f1143ea` the phone refused both after three writes and parked them as `write_dropped`, leaving both files at 0 bytes and removing nothing. It skipped sending them 4 times and made 0 versions of any file. With writes working again, Sync now landed both 126.1 s after the desktop's edit, byte for byte on both devices, with no conflict copy. Earlier builds passed the same probe (`5a53c7a`, 124.3 s; `d62f201`, 130.9 s; `90d2042`, 124.1 s). |
+| E6 | pass | 199.9 s to land | E5's empty writes, then a folder rename and a deletion on the phone (review of `2e4cdca`). At `f1143ea` the phone refused both notes. It then renamed their folder, and both marks followed to the new name. A Sync now with writes still dropping had left a second empty copy of the held note under the old folder. The phone deleted the held note's empty file under the new folder and skipped its tombstone. It never posted either note: its 4 posts in the probe were folder records (#174). The desktop kept both texts throughout. With writes working again, both notes landed on the phone at their names on the server. The new note's empty file stayed under the renamed folder, marked; deleting that folder on the phone sent nothing for either note and left no mark. At `c294186d`, the build before, the same run passed but left that mark, which is why the probe now checks it. |
 
 ## Also observed during the run
 
@@ -122,8 +125,9 @@ for the acts and the vault manager's own menu for J3.
   - at `242b8c4`, 2,400 files over six rounds had 3 writes Android left
     empty; each was written again once, the phone published 0 versions, and
     it recorded 0 files empty;
-  - at `d62f201` and `5a53c7a`, probe E5 forced the refusal path (the E5
-    row above).
+  - at `d62f201`, `5a53c7a` and `f1143ea`, probe E5 forced the refusal
+    path, and at `f1143ea` probe E6 followed it through a folder rename and
+    deletions on the phone (the E5 and E6 rows above).
 - **A phone's file index kept a size Android corrected later (#245, 1.1.5).**
   Four files that an E1 run emptied before the #242 fix held 993 bytes on disk
   and in their records. Obsidian's in-memory index still listed them at 0, and
