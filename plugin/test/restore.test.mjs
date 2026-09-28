@@ -191,6 +191,10 @@ test("a server restored from last night's backup gets the day's notes, rename an
     caughtUp(server, a));
   server.unreachable.delete(DEVICE_B);
   await recovered(timers, () => caughtUp(server, b) && caughtUp(server, a) && strays(server, b).length === 0);
+  // The replay of the rebuilt journal skips what a device already processed
+  // rather than receiving it again: yesterday is not applied over today.
+  assert.ok([...a.host.logs, ...b.host.logs].some((line) => /^feed decision=skipped reason=seen_before_restore entries=[1-9]/.test(line)),
+    `no entry of the replay was skipped as seen before the restore: ${story(server, a, b)}`);
 
   // What a device paired now would be given: the day, not yesterday.
   const now = await heads(server, k);
