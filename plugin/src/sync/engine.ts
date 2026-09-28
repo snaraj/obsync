@@ -1503,11 +1503,20 @@ export class SyncEngine {
     }
     const context = this.need();
     const record = context.state.fileByPath(from);
+    const mark = context.state.data.dropped[from];
     if (record) {
       // Persist the need to publish the new name. A stopped/failed queue
       // must not make a restart mistake an unposted rename for unchanged bytes.
       context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
       context.state.forgetPath(from);
+    }
+    // The mark a dropped write left goes with its file, after the record: a
+    // record moved is no download landed (#242; review of d62f201).
+    if (mark !== undefined) {
+      delete context.state.data.dropped[from];
+      context.state.data.dropped[to] = mark;
+    }
+    if (record || mark !== undefined) {
       void this.track(context.state.save()).catch(() => {
         this.stop();
         this.options.host.log("rename decision=failed reason=state_not_saved");

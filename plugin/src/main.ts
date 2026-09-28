@@ -1208,10 +1208,11 @@ export class ObsidianHost implements VaultHost {
    * file just written with bytes that reads EMPTY is written again, up to
    * `WRITE_AGAIN` times, each time under the first write's rule in its
    * order: never beneath text an editor holds unsaved, nor a keystroke that
-   * arrived while it was read (#135). Its last look is taken after every
-   * await before the write, and anything but the empty file there is a save
-   * that landed, kept and sent as an edit: the one await left before the
-   * write is the floor every write on a phone has. One that stays empty, or
+   * arrived while it was read (#135). Its last look at the file comes after
+   * the editor's read, and anything but the empty file there is a save that
+   * landed, kept and sent as an edit; the keystrokes are asked after that
+   * look, with no await between them and the write. The look's own await is
+   * the floor every write on a phone has. One that stays empty, or
    * whose editor became busy, is refused as this one file's (`write_dropped`:
    * parked, said once, tried again) and never recorded as written. The empty
    * file is left where it is: nothing on a phone can remove it without
@@ -1223,7 +1224,10 @@ export class ObsidianHost implements VaultHost {
     const adapter = this.plugin.app.vault.adapter;
     let stat = await this.stat(path);
     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
-      const busy = (await this.editing(path)) === "unsaved" || this.typing(path);
+      const unsaved = (await this.editing(path)) === "unsaved";
+      const now = await this.stat(path);
+      if (now === null || now.size !== 0) return now;
+      const busy = unsaved || this.typing(path);
       if (busy || again > WRITE_AGAIN) {
         this.log(
           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
@@ -1232,8 +1236,6 @@ export class ObsidianHost implements VaultHost {
         const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";
         throw Object.assign(new Error(said), { code: "write_dropped" });
       }
-      const now = await this.stat(path);
-      if (now === null || now.size !== 0) return now;
       const started = Date.now();
       await adapter.writeBinary(path, bytes.buffer, { mtime });
       stat = await this.stat(path);

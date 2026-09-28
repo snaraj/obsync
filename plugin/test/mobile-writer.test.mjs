@@ -108,8 +108,10 @@ async function refusals(host) {
  * `late` the size one leaves once the host has looked at the third empty
  * write, before the host hears the answer (review of e27eccb, finding 1).
  * `typing` opens the note in an editor that turns busy during the first
- * write (finding 2): text the file does not hold, a keystroke, or a keystroke
- * that arrives while the editor is read (review of 90d2042, finding 3).
+ * write (finding 2): text the file does not hold, a keystroke, a keystroke
+ * that arrives while the editor is read (review of 90d2042, finding 3), or
+ * one that arrives during the retry's last look at the file (review of
+ * d62f201, finding 2).
  * `saved` is the size a save leaves when it lands while the host takes its
  * first look at the empty write (finding 1).
  */
@@ -121,7 +123,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
   const { state } = await fakeState(true);
   const files = new Map(existing === null ? [] : [["Notes/a.md", existing]]);
   const writes = [], removed = [], logs = [];
-  let left = drops;
+  let left = drops, emptyLooks = 0;
   const view = Object.assign(new MarkdownView(), {
     file: { path: "Notes/a.md" },
     getViewData: () => (typing === "unsaved" && writes.length > 0 ? "typed here\n" : ""),
@@ -131,6 +133,9 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
       const found = files.has(path) ? { type: "file", ...files.get(path) } : null;
       if (late !== null && writes.length === 3 && found?.size === 0) queueMicrotask(() => files.set(path, { size: late, mtime: 5 }));
       if (saved !== null && writes.length === 1 && found?.size === 0) queueMicrotask(() => files.set(path, { size: saved, mtime: 5 }));
+      if (typing === "during-stat" && writes.length === 1 && found?.size === 0 && ++emptyLooks === 2) {
+        queueMicrotask(() => host.inputAt.set(view, { path, at: Date.now() }));
+      }
       return found;
     },
     exists: async () => true,
@@ -174,22 +179,31 @@ test("a phone writes a download again when the write left the file empty, and re
 
 test("a download a phone keeps leaving empty is refused as that file's, never recorded, and nothing is removed", async (t) => {
   // Nothing on a phone can remove the empty file without racing a save that
-  // lands after the last look at it, as the third case's does.
-  for (const [existing, late, left] of [[null, null, 0], [{ size: 7, mtime: 1 }, null, 0], [null, 12, 12]]) {
-    const { host, writes, removed, logs, files } = await dropping(t, 99, { existing, late });
+  // lands after the last look at it.
+  for (const existing of [null, { size: 7, mtime: 1 }]) {
+    const { host, writes, removed, logs, files } = await dropping(t, 99, { existing });
     const writer = await host.writer("Notes/a.md", 5);
     await writer.write(HELLO);
     await assert.rejects(writer.commit(1000), (error) => error.code === "write_dropped", `existing=${JSON.stringify(existing)}`);
-    await new Promise(setImmediate);
     assert.deepEqual(writes, [5, 5, 5], "three writes, then no more");
     assert.deepEqual(removed, []);
-    assert.equal(files.get("Notes/a.md")?.size, left, "the name holds what the platform or the late save left");
+    assert.equal(files.get("Notes/a.md")?.size, 0, "the platform's empty file stays at the name");
     assert.ok(logs.includes("host path_class=file decision=refused reason=write_dropped cause=budget writes=3 bytes=5 budget_writes=3"), logs.join(" | "));
   }
+  // A save that lands while the phone looks at its third empty write is met
+  // by the last look before the refusal: kept, and the write stands down.
+  const { host, writes, removed, logs, files } = await dropping(t, 99, { late: 12 });
+  const writer = await host.writer("Notes/a.md", 5);
+  await writer.write(HELLO);
+  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  assert.deepEqual(writes, [5, 5, 5]);
+  assert.deepEqual(removed, []);
+  assert.equal(files.get("Notes/a.md").size, 12, "the late save was not kept");
+  assert.ok(logs.includes("host path_class=file decision=write_superseded size=5 found=12"), logs.join(" | "));
 });
 
 test("a phone never writes a download again beneath an editor that became busy during the first write (#135)", async (t) => {
-  for (const typing of ["unsaved", "keystroke", "during-read"]) {
+  for (const typing of ["unsaved", "keystroke", "during-read", "during-stat"]) {
     const { host, writes, logs } = await dropping(t, 99, { typing });
     const writer = await host.writer("Notes/a.md", 5);
     await writer.write(HELLO);

@@ -1,12 +1,12 @@
 # M3199: a write that stays empty is recorded as written instead of refused
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1230,7 +1230,7 @@
+@@ -1234,7 +1234,7 @@
              `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,
          );
          const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";
 -        throw Object.assign(new Error(said), { code: "write_dropped" });
 +        return stat;
        }
-       const now = await this.stat(path);
-       if (now === null || now.size !== 0) return now;
+       const started = Date.now();
+       await adapter.writeBinary(path, bytes.buffer, { mtime });

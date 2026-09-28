@@ -1,12 +1,12 @@
 # M3239: a retry's last look stops only for a file that went away, and writes over a save
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1233,7 +1233,7 @@
-         throw Object.assign(new Error(said), { code: "write_dropped" });
-       }
+@@ -1226,7 +1226,7 @@
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+       const unsaved = (await this.editing(path)) === "unsaved";
        const now = await this.stat(path);
 -      if (now === null || now.size !== 0) return now;
 +      if (now === null) return now;
-       const started = Date.now();
-       await adapter.writeBinary(path, bytes.buffer, { mtime });
-       stat = await this.stat(path);
+       const busy = unsaved || this.typing(path);
+       if (busy || again > WRITE_AGAIN) {
+         this.log(

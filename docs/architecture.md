@@ -856,12 +856,12 @@ long poll and needs its timeout raised.
    the watcher published it, so the note was empty on every device. A phone
    now looks at a file it has just written with bytes: an empty one is
    written again, up to twice more, each logged (`decision=written_again`).
-   Each write again follows the first write's rule in its order: never
-   beneath text an editor holds unsaved, nor a keystroke that arrived while
-   the editor was read (#135). Its last look at the file comes after every
-   other await, and anything there but the empty file is a save that landed.
-   That save is kept and sent as an edit. The one await left before the
-   write is the floor every write on a phone has.
+   Each write again follows the first write's rule: never beneath text an
+   editor holds unsaved, nor beneath a keystroke (#135). Its last look at the
+   file comes after the editor's read, and anything there but the empty file
+   is a save that landed. That save is kept and sent as an edit. The
+   keystrokes are asked after that look, with no await between them and the
+   write. The look's own await is the floor every write on a phone has.
    One that stays empty, or whose editor became busy, is refused as that one
    file's (`write_dropped`, the log naming the `cause`), parked and tried
    again like any other, and never recorded as written. Only emptiness is
@@ -871,8 +871,9 @@ long poll and needs its timeout raised.
    racing a save that lands after the last look at it. It is marked by its
    name (`state.dropped`), apart from the parked record, whose reason a later
    retry may change (a larger head sent to the download lane, a lock) and
-   which a rename elsewhere releases. The mark ends when a record is made at
-   that name. While it stands, the file is no edit, and where the download
+   which a rename elsewhere releases. It follows the file through a rename
+   here, because a record moved is no download landed. The mark ends when a
+   record is made at that name. While it stands, the file is no edit, and where the download
    was new it is no note of its own (`droppedWrite`, pull.ts):
    - the push skips it (`push decision=skipped reason=write_dropped`);
    - the parked retry writes the version over it rather than beside it.

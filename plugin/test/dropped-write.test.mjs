@@ -89,6 +89,26 @@ for (const existing of [false, true]) {
   });
 }
 
+for (const existing of [false, true]) {
+  test(`a local rename takes the mark with the empty file, and it stays unsent (existing=${existing}, review of d62f201)`, async (t) => {
+    const r = await dropped(t, existing);
+    assert.equal(r.state.data.dropped[PATH], ID);
+    const before = r.server.journal.length;
+    assert.equal(await r.host.move(PATH, NEXT), "moved");
+    r.engine.renamed(PATH, NEXT);
+    await r.timers.run(1000);
+    const empty = [];
+    for (const frame of r.server.journal.slice(before)) {
+      if (frame.device_id !== KEYS.deviceId) continue;
+      const manifest = await decodeRecordManifest(r.context, frame);
+      if (manifest.v === 1 && !manifest.deleted && manifest.size === 0) empty.push({ path: manifest.path, fileId: frame.file_id });
+    }
+    assert.deepEqual(empty, [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    assert.deepEqual(r.state.data.dropped, { [NEXT]: ID });
+    assert.deepEqual((await r.reload()).data.dropped, { [NEXT]: ID }, "the moved mark was not saved for the next start");
+  });
+}
+
 test("a larger head sent to the download lane keeps the empty file unsent", async (t) => {
   const r = await dropped(t, true);
   const bytes = new Uint8Array(LARGE_APPLY_BYTES + 1).fill(73);
