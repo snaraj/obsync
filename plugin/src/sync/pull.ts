@@ -908,9 +908,9 @@ export async function pruneEmptyParents(context: SyncContext, path: string): Pro
  * and the note comes back, as it always has -- which is what a deletion
  * still waiting to be sent then finds (issue #173).
  */
-async function materialise(context: SyncContext, manifest: Manifest): Promise<VaultStat>;
-async function materialise(context: SyncContext, manifest: Manifest, over: FileState | undefined): Promise<VaultStat | null>;
-async function materialise(context: SyncContext, manifest: Manifest, over?: FileState): Promise<VaultStat | null> {
+async function materialise(context: SyncContext, fileId: string, manifest: Manifest): Promise<VaultStat>;
+async function materialise(context: SyncContext, fileId: string, manifest: Manifest, over: FileState | undefined): Promise<VaultStat | null>;
+async function materialise(context: SyncContext, fileId: string, manifest: Manifest, over?: FileState): Promise<VaultStat | null> {
   // The single choke point for every byte this device writes: the decoded
   // manifest's path was checked at decode, a conflict copy's derived path is
   // checked here, and neither reaches a writer unchecked.
@@ -929,10 +929,25 @@ async function materialise(context: SyncContext, manifest: Manifest, over?: File
       await writer.abort();
       return null;
     }
+    // THE MARK COMES BEFORE THE WRITE (#242; E6, live under load). A phone's
+    // commit that leaves the file empty writes it again before refusing it,
+    // and the watcher can read that empty file and push it meanwhile: the
+    // mark set at the refusal came after that push had passed its guard. So
+    // the name is marked from the first write. A record made at it ends the
+    // mark (`setFile`), a refused write keeps it for `park`, and any other
+    // failure takes back a mark this write set.
+    const dropped = context.state.data.dropped;
+    const marked = dropped[manifest.path] === undefined;
+    if (marked) dropped[manifest.path] = fileId;
     // The commit's own stat, handed back rather than looked up again: it is
     // the metadata of the bytes THIS write put there, and a second stat would
     // describe whatever the user saved a moment later instead (finding 2).
-    return await landedAt(context, await writer.commit(manifest.mtime));
+    try {
+      return await landedAt(context, await writer.commit(manifest.mtime));
+    } catch (error) {
+      if (marked && unwritable(error) !== "write_dropped" && dropped[manifest.path] === fileId) delete dropped[manifest.path];
+      throw error;
+    }
   } catch (error) {
     await writer.abort();
     throw error;
@@ -2203,7 +2218,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
   }
 
   const started = context.now();
-  const landed = await materialise(context, manifest, localPath === manifest.path ? local : undefined);
+  const landed = await materialise(context, change.file_id, manifest, localPath === manifest.path ? local : undefined);
   if (landed === null) {
     context.host.log(
       `pull path_class=file bytes=${manifest.size} decision=local_edit_kept reason=saved_during_pull file=${change.file_id} seq=${change.seq}`,
@@ -2299,7 +2314,7 @@ export async function fetchRemoteOnly(context: SyncContext, fileId: string): Pro
     throw new Error(`Another file is already at ${manifest.path}, so obsync did not replace it. Move it, then fetch again.`);
   }
   const over = present ? context.state.fileByPath(manifest.path) : undefined;
-  const written = await materialise(context, manifest, over);
+  const written = await materialise(context, fileId, manifest, over);
   if (written === null) throw new Error(`${manifest.path} changed while the newer version downloaded, so obsync did not replace it. Fetch again.`);
   if (localPath !== undefined && localPath !== written.path) context.state.forgetPath(localPath);
   context.refused.delete(`older\u0000${fileId}`);
@@ -3099,7 +3114,7 @@ export async function resumePaused(context: SyncContext, fileId: string): Promis
     context.host.log(`pull decision=refused reason=resume_peer_shape file=${fileId} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
     throw new ManifestError("resume_peer_shape");
   }
-  const landed = await materialise(context, restore, { ...record, mtime: before.mtime, size: before.size });
+  const landed = await materialise(context, fileId, restore, { ...record, mtime: before.mtime, size: before.size });
   if (landed === null) return "saved_meanwhile";
   await recordAt(context, { ...restored, file_id: fileId }, path, landed);
   context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
@@ -4212,7 +4227,7 @@ async function takeEditedTwin(
   const was = await decryptRecordManifest(context, { ...parent, file_id: change.file_id, domain_id: file.domain_id })
     .catch(() => null);
   if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
-  const landed = await materialise(context, manifest);
+  const landed = await materialise(context, change.file_id, manifest);
   await recordAt(context, change, landed.path, landed);
   const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
   context.host.log(
@@ -4373,7 +4388,7 @@ async function updateSettled(
   const local = context.state.fileByPath(settled) as FileState;
   const beside = local.sha256 === (await sidDigest(change.sids))
     ? (await context.host.stat(settled)) ?? { path: settled, mtime: local.mtime, size: local.size }
-    : await materialise(context, { ...manifest, path: settled });
+    : await materialise(context, change.file_id, { ...manifest, path: settled });
   await recordAt(context, change, beside.path, beside, manifest.path);
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=applied_beside file=${change.file_id} seq=${change.seq}`,

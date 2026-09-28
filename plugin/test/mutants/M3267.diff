@@ -1,0 +1,11 @@
+# M3267: a write that fails for another reason keeps its early mark, stranded on a file it never wrote
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -945,7 +945,6 @@
+     try {
+       return await landedAt(context, await writer.commit(manifest.mtime));
+     } catch (error) {
+-      if (marked && unwritable(error) !== "write_dropped" && dropped[manifest.path] === fileId) delete dropped[manifest.path];
+       throw error;
+     }
+   } catch (error) {

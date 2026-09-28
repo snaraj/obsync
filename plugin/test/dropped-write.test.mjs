@@ -14,12 +14,13 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, STEP_MS, pair, rig } from "./fake.mjs";
+import { DEVICE_B, FakeTimers, KEYS, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { SyncEngine, LARGE_APPLY_BYTES } = require("../build/sync/engine.js");
 const { Transport } = require("../build/transport.js");
 const { decodeRecordManifest } = require("../build/sync/pull.js");
+const { pushDelete } = require("../build/sync/push.js");
 const { bytesSource, chunkStream } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
 
@@ -43,8 +44,14 @@ async function emptied(r, before) {
   return empty;
 }
 
-/** A phone whose writes of `PATH` stay empty, with a download of it parked as `write_dropped`. */
-async function dropped(t, existing, syncFolders = null) {
+/**
+ * A phone whose writes of `PATH` stay empty, with a download of it parked as
+ * `write_dropped`. With `pushAt`, the watcher reads the empty file and its push
+ * decides while the write is still under way: inside the commit, before the
+ * refusal ("commit"), or inside the abort that follows it, before `park`
+ * ("abort") -- where a loaded phone's slow writes let it happen (E6, live).
+ */
+async function dropped(t, existing, syncFolders = null, pushAt = null, code = "write_dropped") {
   const r = await rig({ isMobile: true });
   if (syncFolders !== null) r.state.data.syncFolders = syncFolders;
   const timers = new FakeTimers();
@@ -70,19 +77,34 @@ async function dropped(t, existing, syncFolders = null) {
   await engine.start();
   await timers.run(1000, () => r.state.fileByPath("Notes/starter.md") !== undefined &&
     (!existing || r.host.text(PATH) === "original remote text"));
+  const pushes = async () => {
+    const logged = r.host.logs.length, posted = r.server.journal.length;
+    engine.changed(PATH);
+    for (let turn = 0; !r.host.logs.slice(logged).some((line) => line.startsWith("push ")) && r.server.journal.length === posted; turn++) {
+      if (turn > 200000) throw new Error("the watcher's push never decided");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
   const writer = r.host.writer.bind(r.host);
   r.host.writer = async (path, size) => {
     const pending = await writer(path, size);
     if (path !== PATH) return pending;
-    return { ...pending, commit: async () => {
-      r.host.seed(PATH, "", 9000);
-      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
-    } };
+    return { ...pending,
+      commit: async () => {
+        if (code === "write_dropped") r.host.seed(PATH, "", 9000);
+        if (pushAt === "commit") await pushes();
+        throw Object.assign(new Error(`${code}: sentinel`), { code });
+      },
+      abort: async () => {
+        if (pushAt === "abort") await pushes();
+        return pending.abort();
+      } };
   };
+  const beforeDrop = r.server.journal.length;
   const first = await foreign(PATH, "new remote text", base ? [base.version_id] : []);
-  await timers.run(1000, () => r.state.data.lastSeq >= first.seq && r.state.data.parked[ID]?.reason === "write_dropped");
-  assert.equal(r.host.text(PATH), "");
-  return { ...r, timers, engine, foreign, first, writer,
+  await timers.run(1000, () => r.state.data.lastSeq >= first.seq && r.state.data.parked[ID]?.reason === code);
+  if (code === "write_dropped") assert.equal(r.host.text(PATH), "");
+  return { ...r, timers, engine, foreign, first, writer, beforeDrop,
     block: () => { block = true; }, blocked: () => blocked,
     ours: () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId && frame.file_id === ID) };
 }
@@ -172,16 +194,92 @@ for (const existing of [false, true]) {
   });
 }
 
-test("deleting the empty file a dropped write left deletes nothing on other devices (review of 2e4cdca)", async (t) => {
-  const r = await dropped(t, true);
+for (const existing of [false, true]) {
+  test(`deleting the empty file a dropped write left deletes nothing on other devices (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing);
+    const before = r.server.journal.length;
+    r.host.files.delete(PATH);
+    r.engine.deleted(PATH);
+    await r.timers.run(1000);
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    const next = await r.reload();
+    assert.equal(next.fileByPath(PATH), undefined, "the placeholder's record was kept");
+    assert.deepEqual(next.data.dropped, {}, "the placeholder's mark was kept");
+  });
+
+  // While the mark stands, deleting the file is local cleanup: text typed into
+  // it and deleted before it was sent never left this device, and the note
+  // stays on the server and every other device as they hold it.
+  test(`text typed into the empty file and deleted before it was sent never leaves the device (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing);
+    const before = r.server.journal.length;
+    r.host.seed(PATH, "typed here, never sent", 9500);
+    r.engine.changed(PATH);
+    r.host.files.delete(PATH);
+    r.engine.deleted(PATH);
+    await r.timers.run(1000);
+    assert.deepEqual(r.server.journal.slice(before).filter((frame) => frame.device_id === KEYS.deviceId), [], "this device posted something");
+    const next = await r.reload();
+    assert.equal(next.fileByPath(PATH), undefined);
+    assert.deepEqual(next.data.dropped, {});
+  });
+
+  // Once a landed retry or a sent edit ends the mark, deletion is ordinary.
+  test(`once the retry lands, deleting the note publishes its deletion (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing);
+    r.host.writer = r.writer;
+    await r.engine.syncNow();
+    await r.timers.run(1000, () => Object.keys(r.state.data.parked).length === 0 && r.host.text(PATH) === "new remote text");
+    assert.deepEqual(r.state.data.dropped, {}, "the landed retry left its mark");
+    const before = r.server.journal.length;
+    r.host.files.delete(PATH);
+    r.engine.deleted(PATH);
+    await r.timers.run(1000, () => r.server.journal.length > before);
+    assert.deepEqual((await emptied(r, before)).map((entry) => [entry.fileId, entry.deleted]), [[ID, true]]);
+  });
+
+  test(`once typed text is sent, deleting the note publishes its deletion (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const r = await dropped(t, existing);
+    // Writes work again, as they do between Android's drops. With every write
+    // still dropped, a held note's edit settles against the other device's
+    // version by writing the merge, which drops and marks the file again:
+    // the rule applying once more, not this case.
+    r.host.writer = r.writer;
+    const typed = r.server.journal.length;
+    r.host.seed(PATH, "typed here and sent", 9500);
+    r.engine.changed(PATH);
+    // Sent, and everything it settles posted, before the deletion: a held
+    // note's record exists throughout, so the mark ending alone is too early.
+    // Small steps keep the virtual clock short of the parked retry.
+    await r.timers.run(10, () => r.state.data.dropped[PATH] === undefined && r.server.journal.length > typed);
+    await r.timers.run(10);
+    assert.equal(r.state.data.dropped[PATH], undefined, "the file was marked again before the deletion");
+    const sent = r.state.fileByPath(PATH).fileId;
+    const before = r.server.journal.length;
+    r.host.files.delete(PATH);
+    r.engine.deleted(PATH);
+    await r.timers.run(10, () => r.server.journal.length > before);
+    await r.timers.run(10);
+    assert.deepEqual((await emptied(r, before)).map((entry) => [entry.fileId, entry.deleted]), [[sent, true]]);
+  });
+}
+
+test("with a mark standing at another name, a recorded note and an intentionally empty one each publish their deletion (review of 2e4cdca)", async (t) => {
+  const r = await dropped(t, false);
+  r.host.seed("Notes/blank.md", "", 9100);
+  r.engine.changed("Notes/blank.md");
+  await r.timers.run(1000, () => r.state.fileByPath("Notes/blank.md") !== undefined);
+  const paths = ["Notes/starter.md", "Notes/blank.md"];
+  const ids = paths.map((path) => r.state.fileByPath(path).fileId).sort();
   const before = r.server.journal.length;
-  r.host.files.delete(PATH);
-  r.engine.deleted(PATH);
-  await r.timers.run(1000);
-  assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
-  const next = await r.reload();
-  assert.equal(next.fileByPath(PATH), undefined, "the placeholder's record was kept");
-  assert.deepEqual(next.data.dropped, {}, "the placeholder's mark was kept");
+  for (const path of paths) {
+    r.host.files.delete(path);
+    r.engine.deleted(path);
+  }
+  await r.timers.run(1000, () => r.server.journal.length >= before + 2);
+  const deleted = (await emptied(r, before)).filter((entry) => entry.deleted).map((entry) => entry.fileId).sort();
+  assert.deepEqual(deleted, ids);
+  assert.equal(r.state.data.dropped[PATH], ID, "a deletion elsewhere ended the standing mark");
 });
 
 test("a note whose folder was renamed here, and whose retry the selection then released, is not deleted everywhere with its empty file (review of 2e4cdca)", async (t) => {
@@ -203,23 +301,45 @@ test("a note whose folder was renamed here, and whose retry the selection then r
   assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
 });
 
-test("a folder deleted on a phone ends the marks of the empty files under it, and sends nothing for them (review of 2e4cdca)", async (t) => {
-  const devices = await pair(t);
-  const phone = devices.b;
-  phone.host.write("Drop/n17.md", "", 1000);
-  phone.host.write("Notes/kept.md", "a note that stays\n", 1000);
-  // What a new download's dropped write leaves: an empty file, its mark, no record.
-  phone.state.data.dropped["Drop/n17.md"] = ID;
-  await devices.a.engine.start();
-  await phone.engine.start();
-  await devices.timers.run(STEP_MS, () => devices.a.host.text("Notes/kept.md") !== null);
-  assert.equal(devices.a.host.text("Drop/n17.md"), null, "the marked empty file was sent");
-  phone.host.removeFolder("Drop");
-  await devices.timers.run(STEP_MS);
-  assert.deepEqual(phone.state.data.dropped, {}, "a mark outlived its file");
-  assert.equal(devices.a.host.text("Drop/n17.md"), null, "the marked empty file was sent");
-  assert.equal(devices.a.host.text("Notes/kept.md"), "a note that stays\n");
-});
+// A folder deleted on the phone decides each dropped write's empty file under
+// it as a file deletion does, through the plugin's own vault events: recorded
+// or not, nothing is sent, and the mark and any record end, saved.
+for (const existing of [false, true]) {
+  test(`a folder deleted on a phone agrees with a file deletion for a dropped write's empty file (existing=${existing}, review of 2e4cdca)`, async (t) => {
+    const devices = await pair(t);
+    const { a: desk, b: phone, timers } = devices;
+    const NOTE = "Drop/n17.md";
+    if (existing) desk.host.write(NOTE, "first text\n", 1000);
+    desk.host.write("Notes/kept.md", "a note that stays\n", 1000);
+    await desk.engine.start();
+    await phone.engine.start();
+    await timers.run(STEP_MS, () => phone.host.text("Notes/kept.md") !== null && (!existing || phone.host.text(NOTE) === "first text\n"));
+    const writer = phone.host.writer.bind(phone.host);
+    phone.host.writer = async (path, size) => {
+      const pending = await writer(path, size);
+      if (path !== NOTE) return pending;
+      return { ...pending, commit: async () => {
+        phone.host.seed(NOTE, "", 9000);
+        throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+      } };
+    };
+    desk.host.write(NOTE, "the desktop's text\n", 2000);
+    await timers.run(STEP_MS, () => phone.state.data.dropped[NOTE] !== undefined && phone.host.text(NOTE) === "");
+    const before = devices.server.journal.length;
+    phone.host.removeFolder("Drop");
+    await timers.run(STEP_MS, () => phone.host.logs.some((line) => line.includes("path_class=tombstone decision=skipped reason=write_dropped")));
+    await timers.run(STEP_MS);
+    const context = phone.engine.context;
+    for (const frame of devices.server.journal.slice(before).filter((entry) => entry.device_id === DEVICE_B)) {
+      const manifest = await decodeRecordManifest(context, frame);
+      assert.notEqual(manifest.path, NOTE, `the phone posted ${JSON.stringify(manifest)}`);
+    }
+    assert.equal(desk.host.text(NOTE), "the desktop's text\n", "the note left the desktop");
+    const next = await phone.reload();
+    assert.equal(next.fileByPath(NOTE), undefined, "the placeholder's record was kept");
+    assert.deepEqual(next.data.dropped, {}, "the placeholder's mark was kept");
+  });
+}
 
 for (const existing of [false, true]) {
   test(`a delete reported while the empty file is still there keeps its mark, and it stays unsent (existing=${existing}, review of 2e4cdca)`, async (t) => {
@@ -230,5 +350,77 @@ for (const existing of [false, true]) {
     assert.equal(r.host.text(PATH), "");
     assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
     assert.equal(r.state.data.dropped[PATH], ID, "the mark ended while its empty file stood");
+    assert.equal((await r.reload()).data.dropped[PATH], ID, "the standing mark was not kept for the next start");
+  });
+}
+
+// The reviewer's interleaving: the person deletes the empty file while the
+// deletion's own look at it is awaited. That look saw the file, so nothing is
+// decided yet; the real delete event that follows is local cleanup.
+for (const existing of [false, true]) {
+  test(`a marked file deleted while the deletion looks at it stays local: one look decides (existing=${existing}, review of 5c9dc82)`, async (t) => {
+    const r = await dropped(t, existing);
+    const before = r.server.journal.length;
+    const stat = r.host.stat.bind(r.host);
+    let looks = 0;
+    r.host.stat = async (path) => {
+      const seen = await stat(path);
+      if (path === PATH && looks++ === 0) {
+        r.host.files.delete(PATH);
+        r.engine.deleted(PATH);
+      }
+      return seen;
+    };
+    assert.equal(await pushDelete(r.engine.context, PATH), null);
+    r.host.stat = stat;
+    await r.timers.run(1000);
+    assert.deepEqual(await emptied(r, before), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+    const next = await r.reload();
+    assert.equal(next.fileByPath(PATH), undefined, "the placeholder's record was kept");
+    assert.deepEqual(next.data.dropped, {}, "the placeholder's mark was kept");
+  });
+}
+
+// E6, live under load: the phone's three writes of an empty download took
+// seconds, the watcher pushed the empty file between them, and the mark set at
+// the refusal came too late. The name is marked from the first write.
+for (const pushAt of ["commit", "abort"]) {
+  for (const existing of [false, true]) {
+    test(`a push that reads the empty file while the phone is still writing it sends nothing (${pushAt}, existing=${existing}, review of 5c9dc82)`, async (t) => {
+      const r = await dropped(t, existing, null, pushAt);
+      assert.ok(r.host.logs.some((line) => line.startsWith("push ") && line.includes("reason=write_dropped")), "the push under the write never decided");
+      assert.deepEqual(await emptied(r, r.beforeDrop), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+      assert.equal(r.state.data.dropped[PATH], ID);
+    });
+  }
+}
+
+// A write takes back only a mark it set itself: a retry that fails for another
+// reason leaves the first drop's mark on the empty file, which stays unsent.
+for (const existing of [false, true]) {
+  test(`a retry that fails for another reason keeps the mark the first drop left (existing=${existing}, review of 5c9dc82)`, async (t) => {
+    const r = await dropped(t, existing);
+    const writer = r.writer;
+    r.host.writer = async (path, size) => {
+      const pending = await writer(path, size);
+      if (path !== PATH) return pending;
+      return { ...pending, commit: async () => { throw Object.assign(new Error("EBUSY: sentinel"), { code: "EBUSY" }); } };
+    };
+    await r.engine.syncNow();
+    await r.timers.run(10, () => r.state.data.parked[ID]?.reason === "EBUSY");
+    assert.equal(r.state.data.dropped[PATH], ID, "the failed retry took the first drop's mark");
+    r.engine.changed(PATH);
+    await r.timers.run(10, () => r.host.logs.some((line) => line.startsWith("push ") && line.includes("reason=write_dropped")));
+    assert.deepEqual(await emptied(r, r.beforeDrop), [], `marked=${JSON.stringify(r.state.data.dropped)}`);
+  });
+}
+
+// The early mark is this write's alone: a download that fails for another
+// reason takes it back, and no mark is left on a name it never wrote.
+for (const existing of [false, true]) {
+  test(`a download that fails for another reason leaves no mark on its name (existing=${existing}, review of 5c9dc82)`, async (t) => {
+    const r = await dropped(t, existing, null, null, "EBUSY");
+    assert.equal(r.state.data.parked[ID]?.reason, "EBUSY");
+    assert.deepEqual(r.state.data.dropped, {}, "a failed write left its early mark");
   });
 }

@@ -1610,7 +1610,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
   const { SyncEngine } = require("../build/sync/engine.js");
   const obsidian = box.require("obsidian");
   const host = new EventVault({ delivery, obsidian, isMobile, deviceName: name, caseSensitive });
-  const { state } = await fakeState(isMobile);
+  const { state, reload } = await fakeState(isMobile);
   state.data.deviceId = id;
   state.data.deviceSecret = secret;
   const transport = new Transport({
@@ -1633,7 +1633,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
   plugin.state = state;
   plugin.engine = engine;
   plugin.registerVaultEvents();
-  return { host, state, transport, engine, plugin };
+  return { host, state, transport, engine, plugin, reload };
 }
 
 /**

@@ -1,0 +1,37 @@
+# M3264: the deletion looks at the file twice, and a file deleted between the looks skips the mark's rule and takes the ordinary tombstone (review of 5c9dc82)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -662,28 +662,20 @@
+   // is refused without the vault being touched at all (`scope.test.mjs`).
+   assertSyncPath(path, context.state.data.syncFolders);
+   const record = context.state.fileByPath(path);
+   const mark = context.state.data.dropped[path];
+-  if (!record && mark === undefined) return null;
+-  // ONE LOOK DECIDES (review of 5c9dc82). Asked twice, a file deleted
+-  // between the looks skipped the mark's rule below at the first and took
+-  // the ordinary tombstone at the second.
+-  if ((await context.host.stat(path)) !== null) {
+-    if (record) context.host.log("push path_class=tombstone decision=refused reason=file_present");
+-    return null;
+-  }
+-  // THE EMPTY FILE A DROPPED WRITE LEFT HELD NOTHING OF THE NOTE (#242;
+-  // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+-  // whose text is on the server and on every other device: a tombstone would
+-  // take it from them all. This device forgets the mark, and any record.
+-  if (mark !== undefined) {
++  if (mark !== undefined && (await context.host.stat(path)) === null) {
+     if (record) context.state.forgetPath(path);
+     delete context.state.data.dropped[path];
+     await context.state.save();
+     context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);
+     return null;
+   }
+   if (!record) return null;
++  if ((await context.host.stat(path)) !== null) {
++    context.host.log("push path_class=tombstone decision=refused reason=file_present");
++    return null;
++  }
+   const manifest: Manifest = {
+     v: 1,
+     path,
+     size: 0,

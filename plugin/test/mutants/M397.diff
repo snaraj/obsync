@@ -1,9 +1,9 @@
 # M397: the retirement names a version this device never held, so it no longer forks where the id moved on
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3078,7 +3078,7 @@
+@@ -4229,7 +4229,7 @@
    if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
-   const landed = await materialise(context, manifest);
+   const landed = await materialise(context, change.file_id, manifest);
    await recordAt(context, change, landed.path, landed);
 -  const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
 +  const retired = await retire(context, ours.fileId, change.version_id, manifest.path, change.file_id);

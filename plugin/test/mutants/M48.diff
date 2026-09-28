@@ -1,14 +1,14 @@
 # M48: a tombstone is posted without asking whether the file is still there
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -675,10 +675,6 @@
-     return null;
-   }
-   if (!record) return null;
+@@ -667,10 +667,6 @@
+   // ONE LOOK DECIDES (review of 5c9dc82). Asked twice, a file deleted
+   // between the looks skipped the mark's rule below at the first and took
+   // the ordinary tombstone at the second.
 -  if ((await context.host.stat(path)) !== null) {
--    context.host.log("push path_class=tombstone decision=refused reason=file_present");
+-    if (record) context.host.log("push path_class=tombstone decision=refused reason=file_present");
 -    return null;
 -  }
-   const manifest: Manifest = {
-     v: 1,
-     path,
+   // THE EMPTY FILE A DROPPED WRITE LEFT HELD NOTHING OF THE NOTE (#242;
+   // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+   // whose text is on the server and on every other device: a tombstone would

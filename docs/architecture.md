@@ -871,7 +871,11 @@ long poll and needs its timeout raised.
    racing a save that lands after the last look at it. It is marked by its
    name (`state.dropped`), apart from the parked record, whose reason a later
    retry may change (a larger head sent to the download lane, a lock) and
-   which a rename elsewhere releases. It follows the file through every move
+   which a rename elsewhere releases. The name is marked before the download's
+   first write (`materialise`), not at the refusal: a loaded phone's three
+   writes took seconds, and the watcher pushed the empty file between them
+   (E6, live). A write that fails for any other reason takes back only a mark
+   it set itself. It follows the file through every move
    `renamed` is told of here: a rename, each file of a folder's rename (the
    marked names among them), and a move into or out of the selected folders.
    A record moved is no download landed, and an empty file is no content on
@@ -884,8 +888,14 @@ long poll and needs its timeout raised.
      decision=skipped`): it held nothing of the note, whose text is on the
      server and on every other device. This device forgets the mark, and the
      record if there is one; a folder deleted here reports its marked files
-     with its recorded ones (`pathsUnder`, main.ts). A delete reported while
-     the empty file still stands changes nothing. A move can leave the record
+     with its recorded ones (`pathsUnder`, main.ts). One look at the file
+     decides: a delete reported while the empty file still stands changes
+     nothing, and its real deletion is decided when it comes, so no file
+     removed between two looks can take the ordinary tombstone (review of
+     `5c9dc82`). While the mark stands,
+     deletion is local cleanup, even of text typed into the file and deleted
+     before it was sent: that text never left this device. Once a landed
+     retry or a sent edit ends the mark, deletion is ordinary. A move can leave the record
      on the empty file where the retry no longer reaches it, as when the
      selection follows a renamed folder.
    Text typed into that empty note meanwhile is an edit, and is sent. A note
