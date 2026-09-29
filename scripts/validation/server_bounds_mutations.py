@@ -41,6 +41,7 @@ CLAIMS = "claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budg
 PARSE = "a_token_body_and_its_parse_fit_the_reservation"
 BOUND = "the_record_bound_keeps_every_head_and_the_newest_versions_that_fit"
 SETUP_HELD = "a_setup_token_is_compared_while_its_body_is_reserved"
+PARSED = "a_token_body_is_parsed_with_its_reservation_held"
 PAST = "a_record_at_the_bound_is_whole_and_one_byte_past_it_leaves_out_what_passes_it"
 MEASURE = "a_records_measure_is_its_rendering_length"
 LENGTH = "a_versions_length_is_its_rendering_length"
@@ -146,6 +147,12 @@ CASES = [
      "    let (_, (account_name, enrolment)) =\n"
      "        unverified::read_body(app, req, 0)?.accept(|_, held| setup_fields(app, &body, held))?;\n",
      SETUP_HELD),
+    # The reviewer's own mutant at 834e3c5: release, parse, reserve again.
+    ("preauth-token-parse-lifetime", SERVER, UNVERIFIED,
+     "    Ok(Unverified {\n        value: parse(&value)?,\n        reserved,\n    })\n",
+     "    drop(reserved);\n    let value = parse(&value)?;\n"
+     "    let reserved = app.bodies.reserve(TOKEN_BODY_RESERVE).map_err(|_| ApiError::bad_request(\"full\"))?;\n"
+     "    Ok(Unverified { value, reserved })\n", PARSED),
     ("preauth-token-reserve", SERVER, UNVERIFIED,
      "    let bytes = reserve.unwrap_or(declared.unwrap_or(limit));",
      "    let _ = reserve;\n    let bytes = declared.unwrap_or(limit);", CLAIMS),
@@ -236,7 +243,7 @@ CASES = [
     ("slow-body-chunk", SERVER, CHUNKS, "    if upload.slow {", "    if false {",
      "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
     ("slow-body-json", SERVER, UNVERIFIED,
-     "        Err(e) if e.kind() == ErrorKind::TimedOut => Err(render::slow_body(app, &req.body)),\n", "",
+     "        Err(e) if e.kind() == ErrorKind::TimedOut => Err(render::slow_body(app, body)),\n", "",
      "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
     ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
      "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
@@ -249,11 +256,11 @@ CASES = [
      "matches!(line.decision, \"slow_body\" | \"body_incomplete\")",
      "matches!(line.decision, \"slow_body\")", INCOMPLETE),
     ("incomplete-is-not-too-large", SERVER, UNVERIFIED,
-     "        Err(e) => Err(render::incomplete_body(app, &req.body, &e)),",
+     "        Err(e) => Err(render::incomplete_body(app, body, &e)),",
      "        Err(_) => Err(ApiError::new(413, \"body_too_large\", \"request body exceeds the limit\")),",
      INCOMPLETE),
     ("too-large-needs-the-ceiling", SERVER, UNVERIFIED,
-     " if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(",
+     " if e.kind() == ErrorKind::InvalidData && body.received() > limit => Err(",
      " if e.kind() == ErrorKind::InvalidData => Err(", INCOMPLETE),
     ("incomplete-retried", SERVER, RENDER, "        503,\n        \"body_incomplete\",",
      "        400,\n        \"body_incomplete\",", INCOMPLETE),

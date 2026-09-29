@@ -14,7 +14,7 @@
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use obsync_core::http::Request;
+use obsync_core::http::{Body, Request};
 use obsync_core::json::Value;
 
 use crate::log::Val;
@@ -120,7 +120,7 @@ pub fn read_body<'a>(
     req: &mut Request,
     limit: u64,
 ) -> Result<Unverified<'a, Vec<u8>>, ApiError> {
-    read(app, req, limit, None)
+    read(app, &mut req.body, limit, None)
 }
 
 /// Read and parse a body whose credential rides inside it (setup, pairing
@@ -134,10 +134,21 @@ pub fn read_body<'a>(
 /// # Errors
 /// As [`read_body`], and `400 bad_json` when the body does not parse.
 pub fn token_body<'a>(app: &'a App, req: &mut Request) -> Result<Unverified<'a, Value>, ApiError> {
+    parsed(app, &mut req.body, render::parse_json)
+}
+
+/// [`token_body`], parsing with `parse`: the reservation is held across the
+/// parse, which is what it is for. Its test passes a parse that reads the
+/// budget while it runs (review of 834e3c5).
+fn parsed<'a>(
+    app: &'a App,
+    body: &mut Body,
+    parse: impl FnOnce(&[u8]) -> Result<Value, ApiError>,
+) -> Result<Unverified<'a, Value>, ApiError> {
     let Unverified { value, reserved } =
-        read(app, req, TOKEN_BODY_LIMIT, Some(TOKEN_BODY_RESERVE))?;
+        read(app, body, TOKEN_BODY_LIMIT, Some(TOKEN_BODY_RESERVE))?;
     Ok(Unverified {
-        value: render::parse_json(&value)?,
+        value: parse(&value)?,
         reserved,
     })
 }
@@ -146,11 +157,11 @@ pub fn token_body<'a>(app: &'a App, req: &mut Request) -> Result<Unverified<'a, 
 /// when `None`.
 fn read<'a>(
     app: &'a App,
-    req: &mut Request,
+    body: &mut Body,
     limit: u64,
     reserve: Option<u64>,
 ) -> Result<Unverified<'a, Vec<u8>>, ApiError> {
-    let declared = req.body.declared_len();
+    let declared = body.declared_len();
     if let Some(declared) = declared
         && declared > limit
     {
@@ -178,18 +189,18 @@ fn read<'a>(
         )
         .bare()
     })?;
-    match req.body.read_to_vec(limit as usize) {
+    match body.read_to_vec(limit as usize) {
         Ok(value) => Ok(Unverified { value, reserved }),
-        Err(e) if e.kind() == ErrorKind::TimedOut => Err(render::slow_body(app, &req.body)),
+        Err(e) if e.kind() == ErrorKind::TimedOut => Err(render::slow_body(app, body)),
         // The body refuses its ceiling once more than `limit` bytes of it
         // have arrived, and only then; the same kind below that is framing.
-        Err(e) if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(
+        Err(e) if e.kind() == ErrorKind::InvalidData && body.received() > limit => Err(
             ApiError::new(413, "body_too_large", "request body exceeds the limit"),
         ),
         Err(e) if e.kind() == ErrorKind::InvalidData => Err(ApiError::bad_request(
             "the chunked request body is not framed as HTTP",
         )),
-        Err(e) => Err(render::incomplete_body(app, &req.body, &e)),
+        Err(e) => Err(render::incomplete_body(app, body, &e)),
     }
 }
 
@@ -219,5 +230,26 @@ mod tests {
         });
         assert!(refused.is_err());
         assert_eq!(budget.held(), 0, "and given back after a refusal");
+    }
+
+    /// Review of 834e3c5: a token body is parsed with its reservation held.
+    /// The body is read through the real path, and the parse passed here
+    /// notes the budget while it runs.
+    #[test]
+    fn a_token_body_is_parsed_with_its_reservation_held() {
+        let dir = crate::storage::testutil::TempDir::new("unverified-parse");
+        let log = crate::log::Log::buffered(crate::log::LogLevel::Debug);
+        let app = crate::api::app_test::app(&dir, &log);
+        let mut body = Body::from_bytes(br#"{"setup_token":"00"}"#.to_vec());
+        let during = std::cell::Cell::new(0);
+        let sealed = parsed(&app, &mut body, |raw| {
+            during.set(app.bodies.held());
+            render::parse_json(raw)
+        })
+        .expect("parses");
+        assert_eq!(during.get(), TOKEN_BODY_RESERVE, "reserved while it parsed");
+        assert_eq!(app.bodies.held(), TOKEN_BODY_RESERVE, "and until its check");
+        drop(sealed);
+        assert_eq!(app.bodies.held(), 0, "and given back after");
     }
 }

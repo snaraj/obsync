@@ -20,7 +20,7 @@ const NOW: u64 = 1_757_200_000;
 /// The state `serve` assembles, without a listener: the posture pass,
 /// the store, then the application over it. Dropping it releases the
 /// journal, so a test can build the next one over the same volumes.
-fn app(dir: &TempDir, log: &Log) -> App {
+pub(super) fn app(dir: &TempDir, log: &Log) -> App {
     let pairs: Vec<(String, String)> = [
         (
             "OBSYNC_BLOBS_DIR",
