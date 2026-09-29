@@ -58,6 +58,12 @@ pub(crate) type ConnReader = BufReader<Box<dyn Read + Send>>;
 /// Size of every connection read buffer and copy buffer.
 pub(crate) const BUFFER_BYTES: usize = 8192;
 
+/// The copy buffer of a streamed response body (a chunk, a batch): one read
+/// of the file and one write to the socket per 64 KiB instead of per 8 KiB.
+/// Allocated per streamed response and dropped with it, so an idle
+/// connection still holds only its [`BUFFER_BYTES`].
+pub(crate) const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+
 /// How a line read ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LineEnd {
