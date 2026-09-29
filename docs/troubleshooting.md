@@ -920,8 +920,10 @@ Your notes stay encrypted either way; the server cannot read them.
 3. Ask whoever runs the server to clear the recovery key with
    `obsyncd recovery reset plan`, then `obsyncd recovery reset apply`, with the
    server stopped ([Clearing the recovery key](recovery.md#clearing-the-recovery-key)).
+   The reset also rotates the setup token; `obsyncd setup-token` prints the new
+   one after the next start.
 4. Start the server and let this device sync: it registers its key and the
-   warning clears. Keep the setup token and the 24-word phrase.
+   warning clears. Keep the new setup token and the 24-word phrase.
 
 ## The dashboard signs itself out on every page load
 
@@ -1000,9 +1002,14 @@ was restored from a backup older than this pairing.
 2. Pair from a device that still syncs. Or, with no syncing device left, use
    **Setup or recover** with the server's setup token, after restoring the
    24-word phrase if this is a new installation. Local notes are kept.
-3. An empty, rebuilt server can simply be set up again. An existing account
-   needs recovery to have been registered before the credentials were lost:
-   [Recovery](recovery.md) explains the limits, and
+3. An empty, rebuilt server can simply be set up again. If the phrase is
+   refused because no recovery key is registered, and no device is left, whoever
+   runs a server 1.1.5 or later can reset its recovery, which rotates the setup
+   token and lets you recover once with the new token and the phrase:
+   [Getting the owner back in after a
+   clear](recovery.md#getting-the-owner-back-in-after-a-clear). A server before
+   1.1.5 needs recovery to have been registered before the credentials were
+   lost; [Recovery](recovery.md) explains the limits, and
    [moving to a different server](recovery.md#moving-this-vault-to-a-different-server).
 
 ## The server has run out of storage

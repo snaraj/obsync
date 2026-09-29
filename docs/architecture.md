@@ -502,11 +502,21 @@ Account recovery uses a domain-separated 32-byte HKDF output from VRK,
 proof. The server stores only its SHA-256 verifier in the account journal frame
 and snapshot. An authenticated client registers it after a successful engine
 start; initial setup writes it atomically with the account. Registration is
-immutable: a different verifier is refused. Re-enrollment requires both the
-standing setup token and the proof, creates a new credential, and retains the
-same account and ciphertext. Accounts upgraded after losing every credential
-have no verifier and cannot use this route. The server still refuses their
-last active device's revocation while a credential remains.
+immutable while it stands: a different verifier is refused, and only the
+operator's offline `obsyncd recovery reset` clears it. Re-enrollment requires
+both a valid setup token and the proof, creates a new credential, and retains
+the same account and ciphertext. An account that carries no verifier refuses
+recovery with `recovery_unavailable`, because the setup token alone proves
+nothing about the vault, until the operator's offline reset arms it. That reset
+rotates the setup token and journals one armed re-enrolment: the setup token it
+minted and a proof then register the verifier the proof derives (timed, so the
+last-device hold applies from then) and enrol. The server cannot check that
+proof, so the offline reset and the rotated token are the authority and the
+proof only chooses the verifier; a wrong phrase locks out only whoever used it,
+and the operator can reset again. The first verifier registered after the
+reset spends the arm, whoever registers it, and no device-authenticated request
+can arm it. A client sends the proof only when its key was restored, never when
+freshly made, so a new key cannot re-enrol over the vault the server holds.
 
 The server cannot tell a verifier the vault key produced from one it did not,
 and any device credential can register the first one. Since 1.1.5 two things

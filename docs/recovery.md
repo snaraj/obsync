@@ -97,10 +97,15 @@ With server and plugin 1.1.3 or later, use the **setup token and the vault's
 **Upgrade boundary:** recovery must be registered before the last credential
 is lost. New 1.1.3 setups register it with account creation. An updated paired
 plugin registers it after successfully opening the vault on an updated server.
-Older accounts that lost every credential before that registration cannot
-prove ownership through this route. They still need a working device or a
-backup containing one. The error says recovery is unavailable; it does not
-claim the phrase can grant access by itself.
+With a server **before 1.1.5**, an account that lost every credential before
+that registration cannot prove ownership through this route: it answers that
+recovery is unavailable, and the account still needs a working device or a
+backup containing one. A server **1.1.5 or later** answers the same until
+whoever runs it resets recovery: `obsyncd recovery reset apply` rotates the
+setup token and arms one re-enrolment from the phrase, as
+["Getting the owner back in after a clear"](#getting-the-owner-back-in-after-a-clear)
+describes. The phrase alone still grants nothing, and neither does a setup
+token from before that reset.
 
 The plugin persists its vault key before sending first setup. If the answer
 is lost, it does not retry automatically: check the result, then explicitly
@@ -161,21 +166,29 @@ with `journal_locked` and changes nothing. There is no route for it: a device
 cannot ask for it.
 
 - `obsyncd recovery reset plan` says whether a recovery key is registered, since
-  when, and until when it keeps the only active device, and changes nothing.
-- `obsyncd recovery reset apply` clears it. The account then has no recovery
-  key: its only active device cannot be revoked (`409 last_device`) until a
-  device registers one again, which the next device that opens the vault does
-  by itself.
+  when, and until when it keeps the only active device, and what `apply` would
+  do; it changes nothing.
+- `obsyncd recovery reset apply` does three things. It **clears the key**, if
+  one is registered. It **rotates the setup token**: the standing one is
+  removed, the next start mints a new one, and the old one stops working, for
+  recovery and for the dashboard's recovery sign-in alike. And it **arms one
+  re-enrolment**: the first recovery key registered after the next start
+  becomes the account's, whether a device that still syncs registers its own
+  when it opens the vault or the owner recovers with the new token and the
+  phrase (below). Until then the account's only active device cannot be
+  revoked (`409 last_device`).
 - `--output json` prints one JSON object on standard output instead of
   sentences, refusals included: `schema_version`, `operation`
   (`recovery.reset.plan` or `recovery.reset.apply`), `state` (`planned`,
   `completed` or `refused`), `data` (`recovery_key`, `registered_at` and
-  `hold_ends_at` as the command found them, and `change`: `clear` or `none`
-  for a plan, `cleared` or `none` for an apply), `error` (`code`,
-  `message`), `next_actions`, `observed_at` and `duration_ms`. Times are UTC
-  RFC 3339.
-- Exit status: `0` the step did what was asked, including a reset with nothing
-  to clear; `1` refused, with the reason in the output; `2` the command or the
+  `hold_ends_at` as the command found them; `change`: `clear` or `none` for a
+  plan, `cleared` or `none` for an apply; `setup_token`: `rotate` for a plan,
+  `rotated` for an apply; `re_enrolment`: `arm` for a plan, `armed` for an
+  apply), `error` (`code`, `message`), `next_actions`, `observed_at` and
+  `duration_ms`. Times are UTC RFC 3339.
+- Exit status: `0` the step did what was asked, including a reset with no key
+  to clear, which still rotates the token and arms; `1` refused, with the
+  reason in the output and nothing changed; `2` the command or the
   configuration is malformed. Each run logs one
   `event=recovery_reset mode=… decision=…` line. Nothing either step prints or
   logs is a secret.
@@ -193,6 +206,53 @@ On Kubernetes, scale the Deployment to zero
 (`kubectl scale deploy/obsync --namespace obsidian --replicas=0`), run the same
 two commands in a pod that mounts the server's two claims and its key Secret
 the way the Deployment does, then scale it back to one.
+
+### Getting the owner back in after a clear
+
+The same reset is the way back for an owner with no working device. With no
+key registered, the server has nothing to check a phrase against, so the
+authority is the operator's: the offline reset, and the setup token it rotated,
+which only someone who can read the journal volume since then holds. The
+owner's phrase only chooses the key that is registered. Neither a device on the
+server nor its credential can do any of it: the reset runs only on the server's
+volumes, and the re-enrolment is authenticated by the setup token, never by a
+device.
+
+1. **Reset** as above (`recovery reset apply`, server stopped). It clears the
+   key, rotates the setup token and arms one re-enrolment.
+2. **Start the server and read the new token** with `obsyncd setup-token`
+   (["Reading the setup token"](#reading-the-setup-token)). Give it to the owner
+   privately; the token from before the reset no longer works.
+3. **The owner recovers on a device:** install and enable obsync, set the
+   **Server URL**, then **Vault key → Restore** with the 24 words, and **Setup
+   or recover** with the new token. The recovery registers the key the phrase
+   derives — timed, so the seven-day hold starts now — and enrols this device
+   on the same account. Its history and encrypted files stay; previously
+   revoked devices stay revoked; nothing is renamed.
+4. **Revoke the devices the owner does not recognise** from **Devices** in the
+   plugin or the dashboard, so no credential that should not be there remains.
+
+The first recovery key registered after the reset becomes the account's. If a
+device that still syncs registers its own first, the owner's recovery is the
+ordinary one and succeeds only with the phrase for that key. If that device is
+not the owner's, or the owner restored the wrong words — which locks out
+nobody but the owner — reset again, and the owner recovers with the next token.
+
+Once a recovery key is registered again, the ordinary rules return: a later
+recovery must prove that key, and the last active device is held for the key's
+first seven days.
+
+**Compatibility.** This re-enrolment is a server-1.1.5 behaviour. An account
+with no recovery key that has not been reset answers
+`409 recovery_unavailable`, on 1.1.5 as on every server before it; a server
+before 1.1.5 has no reset, so an account that lost every credential while it
+ran one needs the server upgraded, then the reset above. A 1.1.4 server
+reading a journal a reset wrote ignores the arm, so it still refuses. A plugin
+before 1.1.5 recovers against a 1.1.5 server through the same setup token and
+phrase, so the owner's device need not be updated first. A device recovering
+with a **freshly made** vault key, rather than a restored phrase, is told to
+pair or restore instead: a new key never re-enrols over the vault the server
+holds.
 
 ## This server no longer recognises this device
 
@@ -321,6 +381,8 @@ It mints a new 64-hex token, writes it mode 0600, and logs
 `event=setup_token_ready … state=recovery_login` — never the token itself. The
 old token stops working the moment the file is replaced. Existing devices are
 unaffected: they authenticate with their own secrets, not with this token.
+`obsyncd recovery reset apply` rotates it the same way, as part of the reset
+([Clearing the recovery key](#clearing-the-recovery-key)).
 
 **How to tell it has been used.** A sign-in with this token logs
 `event=dashboard_login decision=recovery_login` at `warn` — never the token,

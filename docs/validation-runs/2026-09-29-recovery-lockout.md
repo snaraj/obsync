@@ -5,9 +5,13 @@ last active device: the server holds that device for seven days after the key
 is registered. A device whose own registration meets a different key says so
 in a security notice and at the top of Show sync status and of its settings,
 until its own key is registered. Whoever runs the server can clear the key
-with `obsyncd recovery reset plan|apply`, with the server stopped. This is an
-author implementation record, not an independent security verdict; the
-adversarial run against the composed head belongs to its security review.
+with `obsyncd recovery reset plan|apply`, with the server stopped. The reset
+also rotates the setup token and arms one re-enrolment: the new token and a
+restored vault key then re-enrol the owner on that account, while an account
+with no key that nobody has reset still refuses. Nothing a device holds on its
+own can arm or perform it. This is an author implementation
+record, not an independent security verdict; the adversarial run against the
+composed head belongs to its security review.
 
 ## Builds
 
@@ -89,11 +93,93 @@ pairing code or recovery word was recorded.
   `warning=shown` line, and the held Leave's `409 recovery_too_new` with its
   `unpair decision=refused reason=recovery_too_new` line. No error line.
 
+## Re-enrolment after an operator reset
+
+An account with no recovery key answers `409 recovery_unavailable` to the setup
+token, whatever proof comes with it, until the operator resets its recovery.
+`obsyncd recovery reset apply` clears any key, rotates the setup token, and
+arms one re-enrolment. The new token with a proof then registers the key that
+proof derives, timed so the seven-day hold begins again, and enrols the device,
+as an ordinary recovery does otherwise. The server cannot check that proof, so
+the authority is the offline reset and the token it rotated; the proof only
+chooses the key. The first key registered after the reset spends the arm,
+whoever registers it. Nothing a device holds on its own can arm or perform it.
+
+Both runs used a fresh disposable loopback server on the build below, isolated
+Obsidian 1.13.4 profiles each under its own HOME on macOS, synthetic vaults and
+real clicks through the plugin's own dialogs. No key, setup token, pairing code
+or note content was recorded; the token moved only through 0600 files.
+
+| | `obsyncd` SHA-256 | `main.js` SHA-256 |
+| --- | --- | --- |
+| Lane head | `e78d8d7a7ff8371b33b80c9e7bd5f9b5337db539adb3ea2af37de919304bb406` | `b549e1e05876f8bd856c69eb000fa632eac3575f07fc548072a34f26525b1bd2` |
+
+The negative run used an earlier build of this work that differed only in the
+wording of `recovery reset` and of one settings description, both changed
+after that run's sweep.
+
+1. **An account never reset refuses.** An account was set up the way a client
+   before 1.1.3 did, with no recovery key (`201`). The setup token with a
+   well-formed proof then answered `409 recovery_unavailable` over the wire.
+   A third profile, C, used Set up or recover twice: its first attempt made a
+   new key and sent no proof (`409 already_set_up`, told to pair); its second
+   sent that key's proof (`409 recovery_unavailable`), stayed unpaired, and
+   showed "This server holds a vault with no recovery key registered, so these
+   words cannot re-enrol this device on their own", naming pairing and the
+   operator's reset. The log held no `account_recovered`, `recovery_registered`
+   or `recovery_reestablished` line, and the offline `recovery reset plan`
+   afterwards said no recovery key is registered.
+2. **The reset rotates and arms.** On a fresh server, device A (the owner) set
+   up with its key registered and wrote a note; device B (a device the owner
+   does not recognise) paired from A. A then left the server on this device
+   only, keeping its vault key, and B was stopped. With the server stopped,
+   `recovery reset plan` stated all three effects and changed nothing;
+   `recovery reset apply --output json` answered `change` `cleared`,
+   `setup_token` `rotated`, `re_enrolment` `armed`, exit 0, and the token file
+   was gone. The next start minted a token different from the one before.
+3. **The old token is refused; the new one re-enrols once.** On A, Set up or
+   recover with the token from before the reset showed "This server did not
+   accept that setup token" and left A unpaired. With the new token, A
+   re-enrolled in 2.4 s: `event=recovery_registered decision=registered`, one
+   `event=recovery_reestablished decision=reestablished` line naming the
+   account and the arm's time, then `event=account_recovered` for a new active
+   device, idle and synced.
+4. **The re-enrolled device is live, and B is revoked.** B, still active, came
+   back and pushed the note it had written while A was unpaired, which A had
+   never held; it reached A 14 ms later. From A, B was revoked
+   (`event=device_revoked decision=revoked`, `by_device` the re-enrolled
+   device). B then showed "This device was removed from your server. Your
+   notes and vault key are safe here." with the attention status item, its
+   local notes untouched. (B was first stopped before its push had left: the
+   status item reads calm before a push starts, so the rig now waits on the
+   note's file record instead.)
+
+## Whole-app sweep (re-enrolment)
+
+- A: settings idle with no stale text; Show sync status named the re-enrolled
+  device, the vault key present, two files tracked, and nothing recent.
+- B: the removed-from-server status and the attention item, and nothing else.
+- C: the refusal notice above, the setup token field empty after it.
+- The Setup or recover description said recovery must have been registered
+  before the last credential was lost, which the reset now contradicts; it now
+  says the operator resets recovery first when the server has no key. The
+  plan's sentence about arming was split in two. Both were changed after the
+  negative run and are in the lane head above.
+- A pairing dialog stayed open on A after the approval (Copy code and Copy link,
+  no code shown) until the rig closed it; the screenshot guard refused to
+  capture while it was open. Not investigated here.
+- Each profile bound its own Obsidian CLI socket under its own HOME; teardown
+  left no rig process, listener or state directory and found no setup token in
+  any rig file.
+
 ## Automated evidence
 
-Full plugin suite, Rust workspace suite, `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings` and the contract suites passed at the lane head.
-All 34 server probes in `scripts/validation/account_recovery_mutations.py`
-compiled and were killed, including one #142 probe whose replacement text no
-longer compiled and was restated. The plugin mutants M3600 to M3615 are
-reproducible individually with `plugin/test/mutants/run.sh`.
+At the lane head: the full plugin suite (1861 tests), the Rust workspace suite
+(152 and 487 tests), `cargo fmt --check`, `cargo clippy --all-targets -- -D
+warnings` and the contract suites (845 tests) passed. All 44 server probes in
+`scripts/validation/account_recovery_mutations.py` compiled and were killed,
+among them the ones that drop the arm check, leave the arm unspent after a
+registration, skip the token's rotation, rotate before the journal lock or in
+a plan, and lose the arm in a journal frame, a snapshot or its reading. The
+plugin mutants M3600 to M3621 are reproducible individually with
+`plugin/test/mutants/run.sh`.
