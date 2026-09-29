@@ -123,15 +123,18 @@ only takes a device off the list):
 
 ![Forgotten-device explanation and Set up or recover action, with the token field empty](assets/account-recovery/142-forgotten-device-recovery.png)
 
-After recovery, the new active device leads the list and the revoked
-predecessor waits behind the **1 revoked device** row that **Show** opens
-(this capture predates that row):
+After recovery, the new active device leads the list, and the revoked
+predecessor waits behind the **1 revoked device** row; **Show** opens it, as
+here:
 
-![One replacement device and its revoked predecessor](assets/account-recovery/142-recovered-device.png)
+![The replacement device first, then the 1 revoked device row opened on its revoked predecessor with Forget, then Device list reading 1 device on this account, and 1 revoked](assets/account-recovery/142-recovered-device-fold.png)
 
 These desktop captures use a disposable vault. The
 [native recovery record](validation-runs/2026-09-24-account-recovery.md)
 names the tested build and confirms that all 217 local files were unchanged.
+The last capture was taken again, by the same journey, once revoked devices
+were folded; [its record](validation-runs/2026-09-29-revoked-devices.md#the-recovery-capture-again)
+names that build.
 
 ## The server is rebuilt from a volume backup
 

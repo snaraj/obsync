@@ -112,6 +112,36 @@ left three **Sync status** dialogs stacked, and the oldest still showed the
 message the status had when it was opened. Opened once, the dialog says what
 the status item says.
 
+## The recovery capture, again
+
+[Recovery](../recovery.md) showed a recovered device beside its revoked
+predecessor in one list; with the fold, the predecessor is behind **1
+revoked device**. The capture was taken again by the journey that page
+describes, on one isolated instance and a disposable loopback server built
+from this lane's later head (`obsyncd` SHA-256 `bba35b68a79e2e2e…`,
+`main.js` SHA-256 `e02dea26a7b5bf5e…`):
+
+1. Set up on an empty server; the recovery phrase confirmed in the dialog, so
+   recovery was registered.
+2. The device named **Laptop** by its **Name** row and **Save**.
+3. **Revoke** on its own row: the dialog read "Revoke Laptop?", the server
+   accepted revoking the only device because recovery was registered, and
+   the plugin offered **Set up or recover**.
+4. **Set up or recover** with the server's setup token and the vault key the
+   vault kept: re-enrolled under a new device id (`event=account_recovered`
+   on the server), and the status returned to idle.
+5. Settings → **Devices**, **Show** on the fold, framed at 900 × 700 at the
+   device's 1× scale, as the capture it follows was.
+
+The two rows share the name Laptop and are told apart by "(this device)"
+and "(revoked)", so no id is drawn and nothing needed covering. Read pixel by
+pixel against the capture rules: no address, token, phrase, identifier or
+note content; the window title names the disposable vault. The server logged
+no sign-in and no dashboard link, and the rig's guard recorded nothing opened.
+The file is `142-recovered-device-fold.png`, beside the capture it follows:
+that one stays, because the [2026-09-24 record](2026-09-24-account-recovery.md)
+shows the build it observed.
+
 ## Not covered
 
 A phone (the settings tab was driven at 375 px through Obsidian's own mobile
