@@ -12,9 +12,12 @@
 //! index alone. A write holds the journal for its whole life -- validate,
 //! append, fsync, apply -- and the index only to validate and to apply, never
 //! across the volume, so one writer's fsync stalls the next writer and no
-//! reader. A fixed table of SID locks serializes chunk mutation before either
-//! lock; GC takes the table in order. Streaming and hashing hold only a SID
-//! lock, so a slow upload never blocks the feed.
+//! reader. Version posts that queue behind an fsync are made durable by the
+//! next one together (`Store::append`, group commit), so a burst of posts
+//! costs one fsync per turn of the journal rather than one each. A fixed
+//! table of SID locks serializes chunk mutation before either lock; GC takes
+//! the table in order. Streaming and hashing hold only a SID lock, so a slow
+//! upload never blocks the feed.
 //!
 //! Free space: the standard library exposes no `statvfs`, and running `df`
 //! from library code would make the server depend on a shell. The watermark
@@ -37,7 +40,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -69,6 +72,76 @@ pub use self::types::{
 /// The domain separator device secrets rest under
 /// (docs/architecture.md §3.6).
 const WRAP_SALT: &[u8] = b"obsync/v1/wrap";
+
+/// The most posts one group commit carries (`Store::append_grouped`), and
+/// the most bytes of manifest and chunk list it adds up before it stops
+/// taking more: a batch's frames are encoded into one buffer, which this
+/// keeps near one ordinary post's size however many connections queue. The
+/// first post of a turn is always taken, whatever its size.
+const GROUP_MAX_POSTS: usize = 64;
+const GROUP_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// One version post waiting for the journal.
+struct Queued {
+    v: NewVersion,
+    accept_existing: bool,
+    edit: Option<SeenEvent>,
+}
+
+impl Queued {
+    /// What this post adds to a batch's frame buffer, roughly: its manifest
+    /// and its id lists.
+    fn weight(&self) -> usize {
+        self.v.manifest_ct.len() + 32 * (self.v.sids.len() + self.v.parents.len())
+    }
+}
+
+/// A post's answer, and how many posts the fsync that answered it carried.
+type Answer = (Result<AppendOutcome, StoreError>, usize);
+
+/// The group commit's shared state (`Store::append_grouped`): posts waiting
+/// for a turn of the journal, in arrival order, each under its ticket, and
+/// the answers a leader has made that their threads have not collected.
+#[derive(Default)]
+struct VersionQueue {
+    next: u64,
+    waiting: VecDeque<(u64, Queued)>,
+    answered: HashMap<u64, Answer>,
+}
+
+impl VersionQueue {
+    fn enqueue(&mut self, post: Queued) -> u64 {
+        let ticket = self.next;
+        self.next += 1;
+        self.waiting.push_back((ticket, post));
+        ticket
+    }
+
+    /// The next batch: waiting posts in arrival order, at most one per file
+    /// and within the caps. A post whose file an EARLIER waiting post names
+    /// stays queued, in its place, for a later turn -- whether that earlier
+    /// post was taken or itself left for the caps -- so one file's posts are
+    /// always made durable in the order they arrived.
+    fn batch(&mut self) -> Vec<(u64, Queued)> {
+        let mut files = HashSet::new();
+        let mut batch: Vec<(u64, Queued)> = Vec::new();
+        let mut weight = 0;
+        let mut rest = VecDeque::new();
+        for (ticket, post) in self.waiting.drain(..) {
+            let first_of_file = files.insert(post.v.file_id);
+            let fits = batch.is_empty()
+                || (batch.len() < GROUP_MAX_POSTS && weight + post.weight() <= GROUP_MAX_BYTES);
+            if first_of_file && fits {
+                weight += post.weight();
+                batch.push((ticket, post));
+            } else {
+                rest.push_back((ticket, post));
+            }
+        }
+        self.waiting = rest;
+        batch
+    }
+}
 
 /// A crash point, armed by a test so recovery can be proven rather than
 /// argued (AGENTS.md, "Testing doctrine": injected fault points).
@@ -196,6 +269,10 @@ pub struct Store {
     /// striped table avoids an unbounded map of locks controlled by uploads.
     chunk_locks: [Mutex<()>; 256],
     journal: Mutex<Journal>,
+    /// Version posts waiting for the journal, and the answers of those a
+    /// group commit has made durable (`Store::append`). Taken after the
+    /// journal, never before it.
+    versions: Mutex<VersionQueue>,
     index: Mutex<Index>,
     changed: Condvar,
     /// Set once the server is stopping: every long-poll answers at once
@@ -291,6 +368,7 @@ impl Store {
             blobs,
             chunk_locks: std::array::from_fn(|_| Mutex::new(())),
             journal: Mutex::new(journal),
+            versions: Mutex::new(VersionQueue::default()),
             index: Mutex::new(index),
             changed: Condvar::new(),
             stopping: AtomicBool::new(false),
@@ -544,7 +622,8 @@ impl Store {
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
         ];
-        match self.append_version_inner(v, accept_existing, edit) {
+        let (answer, batch) = self.append_grouped(v, accept_existing, edit);
+        match answer {
             Ok(outcome) => {
                 fields.push(("seq", Val::seq(outcome.seq)));
                 fields.push(("conflicted", Val::flag(outcome.conflicted)));
@@ -553,6 +632,11 @@ impl Store {
                     // The id the caller did NOT post, and the one it is now
                     // expected to store: the only line that states it.
                     fields.push(("version", Val::version(&outcome.version_id)));
+                }
+                if outcome.decision == AppendDecision::Appended {
+                    // How many posts the one fsync that made this one durable
+                    // carried: the group commit, visible on every post.
+                    fields.push(("batch", Val::count(batch as u64)));
                 }
                 timed.done(&fields);
                 Ok(outcome)
@@ -566,21 +650,192 @@ impl Store {
         }
     }
 
-    fn append_version_inner(
+    /// Queue one post for the journal and wait for its answer: GROUP COMMIT.
+    ///
+    /// Posts that arrive while an fsync is in flight are made durable by the
+    /// next one, together. The journal mutex elects the leader: whoever holds
+    /// it takes the queued posts (at most one per file, in arrival order),
+    /// checks each against the index as it stands, writes the frames of every
+    /// one that appends, fsyncs ONCE, applies them, and leaves every member
+    /// its answer. A member reads its answer only while it holds the journal
+    /// mutex, and the leader keeps that mutex until the fsync has returned and
+    /// the index shows the frames: no post is answered before it is durable,
+    /// and no reader sees a frame that is not (`docs/storage.md`, durability
+    /// rule 6). A batch the volume refuses is rolled back whole by the
+    /// journal, and each member is then tried alone.
+    ///
+    /// Batched posts name DISTINCT files, which is what makes checking them
+    /// together the same as checking them one after another: a post reads its
+    /// own file's graph, the device, the account and the chunk inventory, and
+    /// its frames change only its own file's graph and the device's activity,
+    /// so no member's check can depend on another member's frames. A second
+    /// post for a file already in the batch waits for the next turn, and sees
+    /// the first.
+    ///
+    /// Returns the answer and how many posts its fsync carried.
+    fn append_grouped(
         &self,
         v: NewVersion,
         accept_existing: bool,
         edit: Option<SeenEvent>,
-    ) -> Result<AppendOutcome, StoreError> {
+    ) -> Answer {
         let expected = version_id_of(&v.file_id, &v.parents, &v.manifest_ct, &v.sids);
         if expected != v.version_id {
-            return Err(StoreError::VersionIdMismatch {
-                expected,
-                actual: v.version_id,
-            });
+            let actual = v.version_id;
+            return (Err(StoreError::VersionIdMismatch { expected, actual }), 0);
         }
+        let ticket = self.versions().enqueue(Queued {
+            v,
+            accept_existing,
+            edit,
+        });
         let mut journal = self.journal();
+        loop {
+            let batch = {
+                let mut queue = self.versions();
+                if let Some(answer) = queue.answered.remove(&ticket) {
+                    return answer;
+                }
+                queue.batch()
+            };
+            // Never empty: this post has no answer, and while this thread
+            // holds the journal no other leader is part way through a batch,
+            // so the post is still queued and a batch takes the oldest post.
+            assert!(!batch.is_empty(), "an unanswered post left the queue");
+            let answers = self.commit_batch(&mut journal, batch);
+            self.versions().answered.extend(answers);
+        }
+    }
+
+    fn versions(&self) -> MutexGuard<'_, VersionQueue> {
+        self.versions.lock().expect("version queue lock")
+    }
+
+    /// Posts waiting for the journal right now. Tests only.
+    #[cfg(test)]
+    pub(crate) fn queued_versions(&self) -> usize {
+        self.versions().waiting.len()
+    }
+
+    /// One turn of the journal: check every member, make the frames of those
+    /// that append durable with one fsync, and answer them all.
+    fn commit_batch(&self, journal: &mut Journal, batch: Vec<(u64, Queued)>) -> Vec<(u64, Answer)> {
         let index = self.index();
+        let mut answers = Vec::with_capacity(batch.len());
+        let mut writers = Vec::new();
+        for (ticket, post) in batch {
+            match Self::check_version(&index, &post.v, post.accept_existing) {
+                Ok(None) => writers.push((ticket, post)),
+                Ok(Some(held)) => answers.push((ticket, (Ok(held), 0))),
+                Err(e) => answers.push((ticket, (Err(e), 0))),
+            }
+        }
+        if writers.is_empty() {
+            return answers;
+        }
+        match self.write_versions(journal, index, &writers) {
+            Ok(outcomes) => {
+                let carried = writers.len();
+                answers.extend(
+                    writers
+                        .into_iter()
+                        .zip(outcomes)
+                        .map(|((ticket, _), outcome)| (ticket, (Ok(outcome), carried))),
+                );
+            }
+            // A batch refused -- by the watermark, by the volume -- was
+            // rolled back whole (durability rule 3). Each post is then tried
+            // alone, as it would have been without a batch: refused only when
+            // its OWN frames do not fit, told its OWN failure, and a journal
+            // the refusal faulted refuses each at once without touching the
+            // volume again.
+            Err(_) if writers.len() > 1 => {
+                for member in writers {
+                    answers.extend(self.commit_batch(journal, vec![member]));
+                }
+            }
+            Err(e) => {
+                let (ticket, _) = writers.pop().expect("one writer");
+                answers.push((ticket, (Err(e), 0)));
+            }
+        }
+        answers
+    }
+
+    /// Append the checked posts' frames with one fsync for all of them, and
+    /// read their outcomes from the index they were then applied to.
+    fn write_versions(
+        &self,
+        journal: &mut Journal,
+        index: MutexGuard<'_, Index>,
+        writers: &[(u64, Queued)],
+    ) -> Result<Vec<AppendOutcome>, StoreError> {
+        let now = UnixMs::now();
+        let first = self.commit(journal, index, |first| {
+            let mut seq = first;
+            let mut frames = Vec::with_capacity(writers.len() * 2);
+            for (_, post) in writers {
+                let v = &post.v;
+                frames.push(Frame::Version(VersionRecord {
+                    file_id: v.file_id,
+                    domain_id: v.domain_id,
+                    version_id: v.version_id,
+                    parents: v.parents.clone(),
+                    sids: v.sids.clone(),
+                    bytes: v.bytes,
+                    manifest_ct: v.manifest_ct.clone(),
+                    manifest_nonce: v.manifest_nonce,
+                    device_id: v.device_id,
+                    ts: now,
+                    deleted: v.deleted,
+                    seq,
+                }));
+                seq = seq.next();
+                if let Some(event) = &post.edit {
+                    frames.push(Frame::Seen {
+                        device_id: v.device_id,
+                        event: event.clone(),
+                    });
+                    seq = seq.next();
+                }
+            }
+            frames
+        })?;
+        let index = self.index();
+        let mut seq = first;
+        let outcomes = writers
+            .iter()
+            .map(|(_, post)| {
+                let entry = index
+                    .files
+                    .get(&post.v.file_id)
+                    .expect("the version's file");
+                let outcome = AppendOutcome {
+                    seq,
+                    version_id: post.v.version_id,
+                    heads: entry.heads.clone(),
+                    conflicted: entry.conflicted,
+                    decision: AppendDecision::Appended,
+                };
+                seq = Seq(seq.0 + if post.edit.is_some() { 2 } else { 1 });
+                outcome
+            })
+            .collect();
+        drop(index);
+        self.changed.notify_all();
+        Ok(outcomes)
+    }
+
+    /// Whether one post may append against the index as it stands:
+    /// `Ok(None)` when it may, `Ok(Some(_))` for a version the store already
+    /// holds (or, for a caller that accepts one, its twin), and the refusal
+    /// otherwise. Reads nothing a version frame of ANOTHER file changes
+    /// (`Store::append_grouped`).
+    fn check_version(
+        index: &Index,
+        v: &NewVersion,
+        accept_existing: bool,
+    ) -> Result<Option<AppendOutcome>, StoreError> {
         match index.account_id() {
             Some(id) if id == v.account_id => {}
             _ => return Err(StoreError::NotSetUp),
@@ -611,13 +866,13 @@ impl Store {
         }
         if let Some(existing) = index.version(&v.file_id, &v.version_id) {
             let entry = index.files.get(&v.file_id).expect("the version's file");
-            return Ok(AppendOutcome {
+            return Ok(Some(AppendOutcome {
                 seq: existing.seq,
                 version_id: v.version_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
                 decision: AppendDecision::Existed,
-            });
+            }));
         }
         // A DIFFERENT ID FOR A POSITION THE GRAPH ALREADY HOLDS.
         //
@@ -633,13 +888,13 @@ impl Store {
             && let Some((seq, version_id)) = index.twin(&v.file_id, &v.parents, &v.sids, v.deleted)
         {
             let entry = index.files.get(&v.file_id).expect("the twin's file");
-            return Ok(AppendOutcome {
+            return Ok(Some(AppendOutcome {
                 seq,
                 version_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
                 decision: AppendDecision::Deduplicated,
-            });
+            }));
         }
         let missing: Vec<Sid> = v
             .sids
@@ -662,41 +917,7 @@ impl Store {
                 max: FILE_MAX_HEADS,
             });
         }
-        let now = UnixMs::now();
-        let file_id = v.file_id;
-        let version_id = v.version_id;
-        let device_id = v.device_id;
-        let seq = self.commit(&mut journal, index, |seq| {
-            let mut frames = vec![Frame::Version(VersionRecord {
-                file_id: v.file_id,
-                domain_id: v.domain_id,
-                version_id: v.version_id,
-                parents: v.parents,
-                sids: v.sids,
-                bytes: v.bytes,
-                manifest_ct: v.manifest_ct,
-                manifest_nonce: v.manifest_nonce,
-                device_id,
-                ts: now,
-                deleted: v.deleted,
-                seq,
-            })];
-            frames.extend(edit.map(|event| Frame::Seen { device_id, event }));
-            frames
-        })?;
-        let index = self.index();
-        let entry = index.files.get(&file_id).expect("the version's file");
-        let outcome = AppendOutcome {
-            seq,
-            version_id,
-            heads: entry.heads.clone(),
-            conflicted: entry.conflicted,
-            decision: AppendDecision::Appended,
-        };
-        drop(index);
-        drop(journal);
-        self.changed.notify_all();
-        Ok(outcome)
+        Ok(None)
     }
 
     /// A file with its heads and its retained versions, newest first.

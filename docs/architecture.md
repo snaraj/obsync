@@ -1856,6 +1856,19 @@ data before the disk fills. Replication is application-level: optional
 mirror volumes today (write-all, read-primary, scrub cross-checks), a
 replica server following the journal when a second node exists.
 
+Where the time goes (1.1.5 measurement, `docs/benchmarks.md`): on the data
+path the server's own code is a small share; a request's time is its
+fsyncs. A version post waits for the nonce log's fsync and then the
+journal's; a new chunk for the nonce log's, its own file's and its
+directory's. Both logs therefore commit in groups: requests that arrive
+while an fsync is in flight share the next one (the nonce log since 1.1.4,
+version posts since 1.1.5, `docs/storage.md` durability rule 2). A post is
+still answered only once its own frames are durable and applied, so a
+group changes how many fsyncs a burst costs, never what any one answer
+promises. The CPU that remains is hashing: every uploaded byte is hashed
+once (the sid check) and again by each scrub pass, so SHA-256 is written
+for the scalar pipeline this dependency-free, `unsafe`-free crate can use.
+
 ## 8. Dashboard
 
 Static HTML, CSS, and JavaScript shipped beside the binary (read from

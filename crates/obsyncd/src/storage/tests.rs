@@ -3295,6 +3295,362 @@ fn concurrent_posts_are_journalled_applied_and_numbered_in_one_order() {
     }
 }
 
+// --- Group commit: posts queued behind an fsync share the next one ---------
+
+/// Hold the journal's FIRST fsync until `queued` posts wait behind it, then
+/// let every fsync through. Returns the count of fsyncs begun, and how many
+/// of `watched` the index showed at the moment the SECOND fsync began.
+fn hold_first_fsync(
+    store: &Arc<Store>,
+    queued: usize,
+    watched: Vec<(FileId, VersionId)>,
+) -> (Arc<AtomicU64>, Arc<AtomicU64>) {
+    let weak = Arc::downgrade(store);
+    let syncs = Arc::new(AtomicU64::new(0));
+    let at_second = Arc::new(AtomicU64::new(u64::MAX));
+    let (begun, seen) = (Arc::clone(&syncs), Arc::clone(&at_second));
+    store.journal().set_mid_sync(Arc::new(move || {
+        let store = weak.upgrade().expect("store");
+        match begun.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                let started = std::time::Instant::now();
+                while store.queued_versions() < queued {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(20),
+                        "the posts never queued"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            1 => {
+                let visible = watched
+                    .iter()
+                    .filter(|(file, version)| store.version(file, version).is_some())
+                    .count();
+                seen.store(visible as u64, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }));
+    (syncs, at_second)
+}
+
+/// `posts[0]` first, alone, held in its fsync until every other post is
+/// queued behind it; then the rest. Answers in `posts` order.
+fn post_behind_a_held_fsync(
+    store: &Arc<Store>,
+    posts: Vec<NewVersion>,
+    syncs: &Arc<AtomicU64>,
+) -> Vec<Result<AppendOutcome, StoreError>> {
+    thread::scope(|s| {
+        let mut posts = posts.into_iter();
+        let post = |v: NewVersion| {
+            let store = Arc::clone(store);
+            move || store.post_version(v, false, edit_event())
+        };
+        let lead = s.spawn(post(posts.next().expect("a leader")));
+        while syncs.load(Ordering::SeqCst) == 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let rest: Vec<_> = posts.map(|v| s.spawn(post(v))).collect();
+        std::iter::once(lead)
+            .chain(rest)
+            .map(|h| h.join().expect("a post thread"))
+            .collect()
+    })
+}
+
+#[test]
+fn posts_queued_behind_an_fsync_share_the_next_one_and_none_is_visible_before_it() {
+    // One more than a batch holds, so the cap shows as a third fsync.
+    let queued = GROUP_MAX_POSTS + 1;
+    let dir = TempDir::new("store-group-commit");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let before = setup.store.head_seq();
+    let posts: Vec<NewVersion> = (0..=queued)
+        .map(|n| {
+            let mut id = [0xc0u8; 16];
+            id[..2].copy_from_slice(&u16::try_from(n).expect("small").to_be_bytes());
+            version(&setup, FileId::new(id), "grouped", &[], &[sid], false)
+        })
+        .collect();
+    let ids: Vec<VersionId> = posts.iter().map(|v| v.version_id).collect();
+    let watched: Vec<(FileId, VersionId)> = posts[1..]
+        .iter()
+        .map(|v| (v.file_id, v.version_id))
+        .collect();
+    let store = Arc::new(setup.store);
+    let (syncs, at_second) = hold_first_fsync(&store, queued, watched);
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+
+    assert_eq!(
+        syncs.load(Ordering::SeqCst),
+        3,
+        "the leader's fsync, one for a full batch of {GROUP_MAX_POSTS}, one for the post past the cap"
+    );
+    // While the batch's fsync ran, none of the queued posts was readable:
+    // not the 64 it carried, and not the one waiting past the cap.
+    assert_eq!(
+        at_second.load(Ordering::SeqCst),
+        0,
+        "a post was applied before the fsync that carries it"
+    );
+    // Every post landed with its edit event, each at its own pair of seqs.
+    let total = queued as u64 + 1;
+    assert_eq!(store.head_seq(), Seq(before.0 + 2 * total));
+    let index = store.index();
+    let mut seqs = Vec::new();
+    for (answer, id) in answers.iter().zip(&ids) {
+        let outcome = answer.as_ref().expect("every post lands");
+        assert_eq!(outcome.decision, AppendDecision::Appended);
+        assert_eq!(outcome.version_id, *id);
+        assert!(!outcome.conflicted);
+        let (_, _, applied) = index
+            .feed
+            .iter()
+            .find(|(at, _, _)| *at == outcome.seq)
+            .expect("an answered seq is in the feed");
+        assert_eq!(
+            applied, id,
+            "the seq a post was answered with holds its version"
+        );
+        seqs.push(outcome.seq);
+    }
+    drop(index);
+    seqs.sort_unstable();
+    seqs.dedup();
+    assert_eq!(seqs.len() as u64, total, "no two posts share a seq");
+    // The journal holds what a one-post-per-fsync server would have written:
+    // each version followed by its own edit event, at consecutive seqs.
+    let records: Vec<Record> = journal_records(&store)
+        .into_iter()
+        .filter(|r| r.seq > before)
+        .collect();
+    assert!(records.windows(2).all(|w| w[1].seq == w[0].seq.next()));
+    for pair in records.chunks(2) {
+        assert_eq!(
+            (pair[0].frame.kind(), pair[1].frame.kind()),
+            ("version", "seen")
+        );
+    }
+    // Each line names the fsync that carried it.
+    let captured = store.log().captured();
+    assert!(
+        captured.contains(&format!("batch={GROUP_MAX_POSTS}")),
+        "{captured}"
+    );
+    assert!(captured.contains("batch=1"), "{captured}");
+}
+
+#[test]
+fn two_posts_for_one_file_never_share_a_batch_so_a_repost_is_recognised() {
+    // A retry of a post whose answer was lost, queued beside the post
+    // itself: checked in one batch, both would pass and the version would be
+    // journalled twice. The second waits a turn and is recognised.
+    let dir = TempDir::new("store-group-one-file");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let root = version(&setup, file(1), "root", &[], &[sid], false);
+    let child = version(&setup, file(1), "child", &[root.version_id], &[sid], false);
+    let other = version(&setup, file(2), "other", &[], &[sid], false);
+    let before = setup.store.head_seq();
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 3, Vec::new());
+    let answers = post_behind_a_held_fsync(
+        &store,
+        vec![other, root.clone(), root.clone(), child.clone()],
+        &syncs,
+    );
+    let decisions: Vec<AppendDecision> = answers
+        .iter()
+        .map(|a| a.as_ref().expect("lands").decision)
+        .collect();
+    // Which of the two reposts of `root` arrived first is the scheduler's;
+    // that exactly one appends is not.
+    assert_eq!(decisions[0], AppendDecision::Appended);
+    let root_answers = [decisions[1], decisions[2]];
+    assert!(
+        root_answers.contains(&AppendDecision::Appended)
+            && root_answers.contains(&AppendDecision::Existed),
+        "{root_answers:?}"
+    );
+    assert_eq!(decisions[3], AppendDecision::Appended);
+    let versions: Vec<Record> = journal_records(&store)
+        .into_iter()
+        .filter(|r| r.seq > before && r.frame.kind() == "version")
+        .collect();
+    assert_eq!(versions.len(), 3, "other, root once, child");
+    let child_outcome = answers[3].as_ref().expect("child");
+    assert_eq!(
+        child_outcome.heads,
+        vec![child.version_id],
+        "the child replaced its parent"
+    );
+    assert!(!child_outcome.conflicted);
+}
+
+#[test]
+fn a_batch_stops_taking_posts_at_its_byte_ceiling() {
+    // Two posts whose manifests together pass the ceiling: one batch each,
+    // so the frame buffer of a turn stays near one large post however many
+    // queue. A small one behind them still rides with the first.
+    let dir = TempDir::new("store-group-bytes");
+    let mut cfg = config(&dir);
+    cfg.journal_capacity = 64 * 1024 * 1024;
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let heavy = |n: u8| {
+        let manifest = vec![n; GROUP_MAX_BYTES / 2 + 1];
+        let version_id = version_id_of(&file(n), &[], &manifest, &[sid]);
+        NewVersion {
+            manifest_ct: manifest,
+            version_id,
+            ..version(&setup, file(n), "heavy", &[], &[sid], false)
+        }
+    };
+    let posts = vec![
+        version(&setup, file(50), "lead", &[], &[sid], false),
+        heavy(51),
+        heavy(52),
+        version(&setup, file(53), "light", &[], &[sid], false),
+    ];
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 3, Vec::new());
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+    assert!(answers.iter().all(Result::is_ok), "{answers:?}");
+    assert_eq!(
+        syncs.load(Ordering::SeqCst),
+        3,
+        "the leader, then one heavy post with the light one, then the other heavy post"
+    );
+}
+
+#[test]
+fn a_batch_the_volume_refuses_answers_every_member_and_keeps_none() {
+    let dir = TempDir::new("store-group-refused");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let posts: Vec<NewVersion> = (0..4)
+        .map(|n| version(&setup, file(30 + n), "refused", &[], &[sid], false))
+        .collect();
+    let refused: Vec<(FileId, VersionId)> = posts[1..]
+        .iter()
+        .map(|v| (v.file_id, v.version_id))
+        .collect();
+    let store = Arc::new(setup.store);
+    let fault = store.journal().fault_handle();
+    // Held as the other harness holds it, and the fault armed for the
+    // batch's fsync only once the leader's own fsync is past its check.
+    let weak = Arc::downgrade(&store);
+    let syncs = Arc::new(AtomicU64::new(0));
+    let begun = Arc::clone(&syncs);
+    store.journal().set_mid_sync(Arc::new(move || {
+        if begun.fetch_add(1, Ordering::SeqCst) == 0 {
+            let store = weak.upgrade().expect("store");
+            while store.queued_versions() < 3 {
+                thread::sleep(Duration::from_millis(1));
+            }
+            *fault.lock().expect("fault") = Fault::JournalAppendErrno {
+                code: 5,
+                at: AppendPhase::Sync,
+            };
+        }
+    }));
+    let head = store.head_seq();
+    let answers = post_behind_a_held_fsync(&store, posts.clone(), &syncs);
+    assert_eq!(
+        answers[0].as_ref().expect("the leader lands").decision,
+        AppendDecision::Appended
+    );
+    for answer in &answers[1..] {
+        match answer {
+            Err(StoreError::Io(e)) => assert_eq!(e.raw_os_error(), Some(5)),
+            other => panic!("every member of the refused batch is told: {other:?}"),
+        }
+    }
+    assert_eq!(
+        store.head_seq(),
+        Seq(head.0 + 2),
+        "only the leader's two frames"
+    );
+    for (file_id, version_id) in &refused {
+        assert!(
+            store.version(file_id, version_id).is_none(),
+            "nothing of the batch applied"
+        );
+    }
+    // The rollback left a clean journal: the same posts land once the volume
+    // takes them, and a restart replays exactly what was answered.
+    store.set_fault(Fault::None);
+    for v in posts[1..].iter().cloned() {
+        store
+            .post_version(v, false, edit_event())
+            .expect("lands after the fault");
+    }
+    let live = fingerprint(&store);
+    drop(store);
+    assert_eq!(fingerprint(&open(&cfg)), live);
+}
+
+#[test]
+fn a_batch_past_the_watermark_is_tried_post_by_post() {
+    // Room for two more posts and not three: the batch of two queued behind
+    // the leader does not fit whole, and each alone does, until the second.
+    let dir = TempDir::new("store-group-watermark");
+    let cfg = config(&dir);
+    let (account, device, sid, one_post) = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        let used = journal_used(&setup.store);
+        setup
+            .store
+            .post_version(
+                version(&setup, file(40), "measure", &[], &[sid], false),
+                false,
+                edit_event(),
+            )
+            .expect("measure one post");
+        (
+            setup.account,
+            setup.device,
+            sid,
+            journal_used(&setup.store) - used,
+        )
+    };
+    let used = journal_used(&open(&cfg));
+    let mut tight = cfg.clone();
+    tight.journal_capacity = used + WATERMARK + one_post * 2 + one_post / 2;
+    let setup = Setup {
+        store: open_with(&tight, [7u8; 32], Log::buffered(LogLevel::Debug)),
+        account,
+        device,
+    };
+    let posts: Vec<NewVersion> = (0..3)
+        .map(|n| version(&setup, file(41 + n), "tight", &[], &[sid], false))
+        .collect();
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 2, Vec::new());
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+    assert_eq!(
+        answers[0].as_ref().expect("the leader fits").decision,
+        AppendDecision::Appended
+    );
+    let landed = answers[1..].iter().filter(|a| a.is_ok()).count();
+    let full = answers[1..]
+        .iter()
+        .filter(|a| matches!(a, Err(StoreError::JournalFull { .. })))
+        .count();
+    assert_eq!(
+        (landed, full),
+        (1, 1),
+        "the one that fits lands: {answers:?}"
+    );
+}
+
 #[test]
 fn a_post_made_durable_before_a_crash_is_there_after_it() {
     // The moment between the fsync and the answer: the frames are on the

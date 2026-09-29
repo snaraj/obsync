@@ -105,9 +105,12 @@ CASES = [
         "        let mut index = index;\n        for record in &records {\n            index.apply(record);\n"
         "        }\n        drop(index);\n        let written = journal.append_all(&records);",
     )], FSYNC),
+    # Retargeted in 1.1.5: the frames are built for a whole group commit now
+    # (`Store::write_versions`); the subject, the post's own edit event, is
+    # the same.
     ("edit-event-folded-into-the-post", STORE, [(
-        "            frames.extend(edit.map(|event| Frame::Seen { device_id, event }));\n",
-        "",
+        "                if let Some(event) = &post.edit {\n",
+        "                if let Some(event) = post.edit.as_ref().filter(|_| false) {\n",
     )], "a_post_journals_the_frames_it_always_did_and_every_replay_derives_the_same_device"),
     # --- snapshots (#192) ----------------------------------------------------
     ("growth-trigger", STORE, [(

@@ -307,7 +307,15 @@ requires the refusal.
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first
    torn or CRC-failing frame, truncates the segment there, and logs the
-   count of frames recovered.
+   count of frames recovered. Version posts that arrive while an `fsync` is
+   in flight are appended together and share the next one (group commit,
+   1.1.5): at most 64 posts or 4 MiB of manifests a turn, one post per file,
+   each checked against the index as it stands and answered only after that
+   `fsync` returns and its frames are applied. A turn the watermark or the
+   volume refuses is rolled back whole under rule 3, and each of its posts is
+   then tried alone, as it would have been without the turn: refused only
+   when its own frames do not fit or its own write fails. Each
+   `version_append` line says how many posts its `fsync` carried (`batch=`).
 3. Failed journal append: the journal records the length it has made durable
    before it writes, and any failure of the write or of its `fsync` cuts the
    segment back to that length and fsyncs the cut before the error returns.
@@ -348,7 +356,8 @@ requires the refusal.
 domain the post named), `gc` (a list of sids collected), `scrub` (a step
 that found a mismatch, or completed a pass), `seen` (device sign-in and edit
 events, retention-bounded; an accepted version post appends its `version`
-frame and its `seen` edit frame together, with one fsync). There
+frame and its `seen` edit frame together, with one fsync, which posts queued
+behind the previous fsync share; durability rule 2). There
 is no `domain` frame: a domain exists because a file record names it
 (`docs/architecture.md` 5.1 item 4). Pairings live in memory only, so a
 start destroys every pending device no pairing is holding any more, through
