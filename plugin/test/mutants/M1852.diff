@@ -1,12 +1,12 @@
 # M1852: the approval prompt drops the match code (#152)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -318,7 +318,7 @@
+@@ -350,7 +350,7 @@
      if (this.closed) return;
      statusEl.setText(
        `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
 -        `Approve only if the new device shows the code ${code}.` +
 +        "" +
          (claimantKey === undefined
-           ? " That device, or your obsync server, runs an older obsync; update it so pairing can protect the code you shared."
+           ? " That device runs an older obsync; update it so pairing can protect the code you shared."
            : "") +

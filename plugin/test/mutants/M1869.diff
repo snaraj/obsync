@@ -1,7 +1,7 @@
 # M1869: a resumed claim is taken for one that never collected (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -530,7 +530,7 @@
+@@ -612,7 +612,7 @@
    const secret = unhex(claim.pairingSecret);
    const kex = waiting.keyExchange;
    // Whether the server may hold this device as ACTIVE: collection activates.

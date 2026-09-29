@@ -1,7 +1,7 @@
 # M1857: closing the creator dialog leaves a claim on screen waiting (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -183,7 +183,7 @@
+@@ -250,7 +250,7 @@
      const asking = this.asking;
      this.asking = null;
      if (asking !== null) {
@@ -9,4 +9,4 @@
 +      void asking;
      } else if (this.collecting) {
        this.collecting = false;
-       tell("Approved. The new device finishes pairing by itself as soon as it collects the vault key.");
+       tell("Approved. The new device finishes pairing by itself; its own screen says when it has.");

@@ -1,9 +1,9 @@
 # M520: creator ignores sealed claimant vault details
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -322,7 +322,7 @@
+@@ -354,7 +354,7 @@
          (claimantKey === undefined
-           ? " That device, or your obsync server, runs an older obsync; update it so pairing can protect the code you shared."
+           ? " That device runs an older obsync; update it so pairing can protect the code you shared."
            : "") +
 -        (vault === null ? "" : ` It will sync vault "${vault.name}" (${notes(vault.notes)}) with this server's vault.`),
 +        "",

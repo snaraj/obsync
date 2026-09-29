@@ -1,7 +1,7 @@
 # M522: claim does not send sealed vault details
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -767,7 +767,7 @@
+@@ -849,7 +849,7 @@
            name,
            platform: this.plugin.platformName(),
            app_version: this.plugin.manifest.version,

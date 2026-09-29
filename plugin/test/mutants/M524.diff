@@ -1,7 +1,7 @@
 # M524: claim reports no notes
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -754,7 +754,7 @@
+@@ -836,7 +836,7 @@
        const parsed = decodePairingCode(this.code);
        const name = await this.plugin.nameThisDevice();
        const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
