@@ -1514,6 +1514,11 @@ export class SyncEngine {
     }
     if (this.carryMark(context, from, to) || record) this.saveMoved(context);
     this.unschedule(from);
+    // And its queued push (issue #264): on a host that folds case the old name
+    // resolves to the record just moved, and that push -- the move itself --
+    // went out ahead of the folder record a re-case must follow.
+    const queued = this.queue.indexOf(from);
+    if (queued !== -1) this.queue.splice(queued, 1);
     // Straight into the queue: the debounce and the unchanged-content check
     // would both drop a rename, whose only change is the path in the manifest.
     this.renames.add(to);

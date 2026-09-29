@@ -2043,6 +2043,58 @@ test("a folder record reported twice whose post then fails is retried in front o
 });
 
 /**
+ * A NOTE ALREADY QUEUED UNDER THE OLD CAPITALS (issue #264).
+ *
+ * Every slot busy, an edit inside the folder waits in the queue under the old
+ * spelling when the folder is re-cased. That entry stood AHEAD of the new
+ * record's barrier, and on a host that folds case the old name resolves to
+ * the record just moved: its push was the move itself, journaled before the
+ * record, and the folding receiver refused it. The rename carries the queued
+ * push to the new name, behind the record.
+ */
+test("a note queued under the old capitals when its folder is re-cased is sent behind the folder record", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  const busy = ["Other/N1.md", "Other/N2.md", "Other/N3.md", "Other/N4.md"];
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  for (const path of busy) a.host.write(path, `${path}\n`, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => ["Team docs/One.md", "Team docs/Two.md", ...busy].every((path) => settled(b, path)));
+  const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
+  const busyIds = busy.map((path) => b.state.fileByPath(path).fileId);
+  const folderId = await c.folderFileId(keys.manifestKey, "team docs");
+  const post = b.transport.postVersion.bind(b.transport);
+  const holds = [];
+  b.transport.postVersion = async (fileId, body) => {
+    if (busyIds.includes(fileId)) await new Promise((resolve) => holds.push(resolve));
+    return post(fileId, body);
+  };
+  // Four uploads in flight fill a desktop's four slots; the edit waits in the queue.
+  for (const path of busy) b.host.write(path, `${path} edited\n`, 2000);
+  await timers.run(STEP_MS, () => holds.length === 4);
+  b.host.write("Team docs/One.md", EDITED_B, 2000);
+  await timers.run(STEP_MS, () => b.engine.queue.includes("Team docs/One.md"));
+  const before = server.journal.length;
+  const at = (id) => server.journal.findIndex((frame, index) => index >= before && frame.file_id === id && !frame.deleted);
+
+  b.host.renameFolder("Team docs", "team docs");
+  assert.equal(b.engine.queue.includes("Team docs/One.md"), false, `the old name's push is still queued: ${JSON.stringify(b.engine.queue)}`);
+  for (const release of holds) release();
+  await timers.run(STEP_MS, () => [folderId, ...ids].every((id) => at(id) !== -1));
+  await timers.run(STEP_MS, () => a.state.data.lastSeq >= server.journal[server.journal.length - 1].seq);
+
+  for (const id of ids) assert.ok(at(folderId) < at(id), `a move was journaled before the folder record: ${story(server, a, b)}`);
+  assert.equal(a.host.logs.some((line) => line.includes("case_move_refused")), false, a.host.logs.join(" | "));
+  assert.deepEqual(a.host.notices.filter((message) => message.includes("spells the folder")), [], a.host.notices.join(" | "));
+  assert.equal(a.host.text("team docs/One.md"), EDITED_B, `the queued edit never arrived: ${story(server, a, b)}`);
+  assert.equal(a.state.fileByPath("team docs/One.md")?.fileId, ids[0], "the note kept its file id");
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 6, `a note was published under a second identity: ${story(server, a, b)}`);
+});
+
+/**
  * AND THE QUEUE NEVER STALLS FOREVER. A retry that could be taken again for
  * ever would stop this device publishing anything under that folder, so the
  * hold is bounded: `FOLDER_POST_TRIES` attempts, then one decision, one
