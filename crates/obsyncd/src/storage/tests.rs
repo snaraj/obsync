@@ -2825,7 +2825,7 @@ fn only_a_revoked_device_is_archived_and_the_record_survives() {
     let store = &setup.store;
     let revoked = spare_device(store, setup.account);
     store
-        .revoke_device_unless_last(&revoked)
+        .revoke_device_unless_last(&revoked, UnixMs::now())
         .expect("two active devices, so one may go");
     let pending = store
         .create_device(NewDevice {
