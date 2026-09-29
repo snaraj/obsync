@@ -41,7 +41,6 @@ CLAIMS = "claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budg
 PARSE = "a_token_body_and_its_parse_fit_the_reservation"
 BOUND = "the_record_bound_keeps_every_head_and_the_newest_versions_that_fit"
 SETUP_HELD = "a_setup_token_is_compared_while_its_body_is_reserved"
-PARSED = "a_token_body_is_parsed_with_its_reservation_held"
 PAST = "a_record_at_the_bound_is_whole_and_one_byte_past_it_leaves_out_what_passes_it"
 MEASURE = "a_records_measure_is_its_rendering_length"
 LENGTH = "a_versions_length_is_its_rendering_length"
@@ -56,7 +55,8 @@ PROBE_BODY = """    match std::fs::remove_file(&path) {
         .mode(0o600)
         .open(&path)?;"""
 CLAIM_CHECK = """    let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|body, held| {
+        unverified::token_body(app, req)?.accept(|raw, held| {
+            let body = &render::parse_json(raw)?;
             let enroll = render::field_str(body, "enroll_token")?.to_string();
             let enrolment = devices::enrolment_fields(body)?;
             let vault = vault_details(body)?;
@@ -65,8 +65,28 @@ CLAIM_CHECK = """    let (_, (enrolment, vault, mut pairings)) =
             Ok((enrolment, vault, pairings))
         })?;
 """
-SETUP_CHECK = """    let (body, (account_name, enrolment)) =
-        unverified::token_body(app, req)?.accept(|body, held| setup_fields(app, body, held))?;
+SETUP_CHECK = """    let (_, (body, (account_name, enrolment))) =
+        unverified::token_body(app, req)?.accept(|raw, held| {
+            let body = render::parse_json(raw)?;
+            let fields = setup_fields(app, &body, held)?;
+            Ok((body, fields))
+        })?;
+"""
+# The setup check, run inside `accept` on what SEALED names.
+SEALED_SETUP = """        .accept(|raw, held| {
+            let body = render::parse_json(raw)?;
+            let fields = setup_fields(app, &body, held)?;
+            Ok((body, fields))
+        })?;
+"""
+# The claim's fields and table lock inside `accept`, and `begin_claim` after it.
+CLAIM_AFTER = """    let (_, (enroll, enrolment, vault, mut pairings)) =
+        unverified::token_body(app, req)?.accept(|raw, _| {
+            let body = &render::parse_json(raw)?;
+            let enroll = render::field_str(body, "enroll_token")?.to_string();
+            let pairings = app.pairings.lock().expect("pairings");
+            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))
+        })?;
 """
 CASES = [
     ("accept-blocks", CORE, HTTP, "            match listener.accept() {",
@@ -133,7 +153,8 @@ CASES = [
      "            proof(&hex::encode(&sha256::sha256(&raw)))?;\n            raw\n",
      SIGNED),
     ("preauth-claim-laundered", SERVER, PAIRING, CLAIM_CHECK,
-     "    let (_, (enroll, enrolment, vault)) = unverified::token_body(app, req)?.accept(|body, _| {\n"
+     "    let (_, (enroll, enrolment, vault)) = unverified::token_body(app, req)?.accept(|raw, _| {\n"
+     "        let body = &render::parse_json(raw)?;\n"
      "        let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
      "        Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?))\n    })?;\n"
      "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
@@ -142,17 +163,19 @@ CASES = [
      "        pairings.begin_claim(id, &enroll, now, held)?;\n        Ok(pairings)\n    })?;\n",
      CLAIMS),
     ("preauth-setup-laundered", SERVER, SETUP, SETUP_CHECK,
-     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let body = render::parse_json(&raw)?;\n"
      "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
      "    let (_, (account_name, enrolment)) =\n"
      "        unverified::read_body(app, req, 0)?.accept(|_, held| setup_fields(app, &body, held))?;\n",
      SETUP_HELD),
-    # The reviewer's own mutant at 834e3c5: release, parse, reserve again.
-    ("preauth-token-parse-lifetime", SERVER, UNVERIFIED,
-     "    Ok(Unverified {\n        value: parse(&value)?,\n        reserved,\n    })\n",
-     "    drop(reserved);\n    let value = parse(&value)?;\n"
-     "    let reserved = app.bodies.reserve(TOKEN_BODY_RESERVE).map_err(|_| ApiError::bad_request(\"full\"))?;\n"
-     "    Ok(Unverified { value, reserved })\n", PARSED),
+    # `token_body` itself, the entry both token routes call (review of c78ef46).
+    ("preauth-token-wrapper-reserve", SERVER, UNVERIFIED,
+     "        TOKEN_BODY_LIMIT,\n        Some(TOKEN_BODY_RESERVE),\n",
+     "        TOKEN_BODY_LIMIT,\n        None,\n", CLAIMS),
+    ("preauth-token-wrapper-ceiling", SERVER, UNVERIFIED,
+     "        TOKEN_BODY_LIMIT,\n        Some(TOKEN_BODY_RESERVE),\n",
+     "        super::JSON_BODY_LIMIT,\n        Some(TOKEN_BODY_RESERVE),\n", INCOMPLETE),
     ("preauth-token-reserve", SERVER, UNVERIFIED,
      "    let bytes = reserve.unwrap_or(declared.unwrap_or(limit));",
      "    let _ = reserve;\n    let bytes = declared.unwrap_or(limit);", CLAIMS),
@@ -285,16 +308,16 @@ CASES = [
 # must be refused by `cargo check` of the server as it ships, with this error.
 ESCAPES = [
     ("escape-reseal", SETUP, SETUP_CHECK,
-     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
-     "    let (body, (account_name, enrolment)) =\n"
-     "        unverified::Unverified::new(body, app.reserve_body(super::TOKEN_BODY_RESERVE)?)\n"
-     "            .accept(|body, held| setup_fields(app, body, held))?;\n",
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (_, (body, (account_name, enrolment))) =\n"
+     "        unverified::Unverified::new(raw, app.reserve_body(super::TOKEN_BODY_RESERVE)?)\n"
+     + SEALED_SETUP,
      "named `new` found for struct `Unverified"),
     ("escape-reseal-fields", SETUP, SETUP_CHECK,
-     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
      "    let sealed = unverified::token_body(app, req)?;\n"
-     "    let (body, (account_name, enrolment)) = unverified::Unverified { value: body, ..sealed }\n"
-     "        .accept(|body, held| setup_fields(app, body, held))?;\n",
+     "    let (_, (body, (account_name, enrolment))) = unverified::Unverified { value: raw, ..sealed }\n"
+     + SEALED_SETUP,
      "fields `value` and `reserved` of struct `Unverified` are private"),
     ("escape-reserve", SETUP, SETUP_CHECK,
      "    let _reserved = app.bodies.reserve(super::TOKEN_BODY_RESERVE);\n" + SETUP_CHECK,
@@ -302,32 +325,23 @@ ESCAPES = [
     ("escape-release", SETUP, SETUP_CHECK,
      "    app.bodies.held.store(0, std::sync::atomic::Ordering::SeqCst);\n" + SETUP_CHECK,
      "field `held` of struct `BodyBudget` is private"),
+    # The parse moved out of `accept` takes the token check with it.
     ("escape-setup-check-after", SETUP, SETUP_CHECK,
-     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let body = render::parse_json(&raw)?;\n"
      "    let (account_name, enrolment) = setup_fields(app, &body, held)?;\n",
      "cannot find value `held` in this scope"),
     ("escape-claim-check-after", PAIRING, CLAIM_CHECK,
-     "    let (_, (enroll, enrolment, vault, mut pairings)) =\n"
-     "        unverified::token_body(app, req)?.accept(|body, _| {\n"
-     "            let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
-     "            let pairings = app.pairings.lock().expect(\"pairings\");\n"
-     "            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))\n"
-     "        })?;\n"
-     "    pairings.begin_claim(id, &enroll, now, held)?;\n",
+     CLAIM_AFTER + "    pairings.begin_claim(id, &enroll, now, held)?;\n",
      "cannot find value `held` in this scope"),
     ("escape-test-held", PAIRING, CLAIM_CHECK,
-     "    let (_, (enroll, enrolment, vault, mut pairings)) =\n"
-     "        unverified::token_body(app, req)?.accept(|body, _| {\n"
-     "            let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
-     "            let pairings = app.pairings.lock().expect(\"pairings\");\n"
-     "            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))\n"
-     "        })?;\n"
-     "    pairings.begin_claim(id, &enroll, now, &unverified::HELD_FOR_TESTS)?;\n",
+     CLAIM_AFTER + "    pairings.begin_claim(id, &enroll, now, &unverified::HELD_FOR_TESTS)?;\n",
      "cannot find value `HELD_FOR_TESTS` in module `unverified`"),
     ("escape-keep-held", SETUP, SETUP_CHECK,
      "    let mut kept = None;\n"
-     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, held| {\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, held| {\n"
      "        kept = Some(held);\n        Ok(())\n    })?;\n"
+     "    let body = render::parse_json(&raw)?;\n"
      "    let (account_name, enrolment) = setup_fields(app, &body, kept.expect(\"held\"))?;\n",
      "borrowed data escapes outside of closure"),
 ]

@@ -7,11 +7,20 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.4 - Unreleased
 
-1.1.4 closes every issue that was open when it began -- found by people
-running obsync and by a review of the whole plugin and server -- and every
-one found while testing it on real computers, phones and CI runners. Update
-the server and every device; each works with the other's 1.1.3 meanwhile,
-and the notes below say where a mixed pair behaves differently.
+1.1.4 fixes the issues that were open when its scope was set on
+2026-09-27 -- found by people running obsync and by a review of the whole
+plugin and server -- and those found while testing it on real computers,
+phones and CI runners until then, with three found after (#242, #243, #252).
+One is better but not fixed: two devices typing in one note for a long time
+can still, on a very busy computer, move one person's line into a conflict
+copy, which keeps it (#227, below). Issues found after the scope was set
+wait for 1.1.5 (#238 to #241, #244 to #248, #253). Among them: on a Mac whose
+file-event service is overloaded, Obsidian may not list a note obsync
+downloaded until it catches up or restarts (`docs/troubleshooting.md`, "A
+note that synced does not show in Obsidian").
+
+Update the server and every device; each works with the other's 1.1.3
+meanwhile, and the notes below say where a mixed pair behaves differently.
 
 ### Before you update
 

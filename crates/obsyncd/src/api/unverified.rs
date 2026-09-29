@@ -15,7 +15,6 @@ use std::io::ErrorKind;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use obsync_core::http::{Body, Request};
-use obsync_core::json::Value;
 
 use crate::log::Val;
 
@@ -123,34 +122,28 @@ pub fn read_body<'a>(
     read(app, &mut req.body, limit, None)
 }
 
-/// Read and parse a body whose credential rides inside it (setup, pairing
-/// claim), under [`TOKEN_BODY_LIMIT`].
+/// Read a body whose credential rides inside it (setup, pairing claim),
+/// under [`TOKEN_BODY_LIMIT`].
 ///
-/// The reservation covers the body AND its parse ([`TOKEN_BODY_RESERVE`]),
-/// and it stays with the value until the token verifies, so what an
-/// unverified caller makes this process keep, waiting included, stays inside
+/// The reservation covers the body AND its parse ([`TOKEN_BODY_RESERVE`]).
+/// The caller parses it inside [`Unverified::accept`], the one place it can
+/// reach the bytes, so the parse runs with the reservation held by
+/// construction (review of c78ef46), and what an unverified caller makes
+/// this process keep, waiting included, stays inside
 /// [`PREAUTH_BODY_BUDGET`].
 ///
 /// # Errors
-/// As [`read_body`], and `400 bad_json` when the body does not parse.
-pub fn token_body<'a>(app: &'a App, req: &mut Request) -> Result<Unverified<'a, Value>, ApiError> {
-    parsed(app, &mut req.body, render::parse_json)
-}
-
-/// [`token_body`], parsing with `parse`: the reservation is held across the
-/// parse, which is what it is for. Its test passes a parse that reads the
-/// budget while it runs (review of 834e3c5).
-fn parsed<'a>(
+/// As [`read_body`].
+pub fn token_body<'a>(
     app: &'a App,
-    body: &mut Body,
-    parse: impl FnOnce(&[u8]) -> Result<Value, ApiError>,
-) -> Result<Unverified<'a, Value>, ApiError> {
-    let Unverified { value, reserved } =
-        read(app, body, TOKEN_BODY_LIMIT, Some(TOKEN_BODY_RESERVE))?;
-    Ok(Unverified {
-        value: parse(&value)?,
-        reserved,
-    })
+    req: &mut Request,
+) -> Result<Unverified<'a, Vec<u8>>, ApiError> {
+    read(
+        app,
+        &mut req.body,
+        TOKEN_BODY_LIMIT,
+        Some(TOKEN_BODY_RESERVE),
+    )
 }
 
 /// [`read_body`], reserving `reserve` bytes, or the body's declared length
@@ -230,26 +223,5 @@ mod tests {
         });
         assert!(refused.is_err());
         assert_eq!(budget.held(), 0, "and given back after a refusal");
-    }
-
-    /// Review of 834e3c5: a token body is parsed with its reservation held.
-    /// The body is read through the real path, and the parse passed here
-    /// notes the budget while it runs.
-    #[test]
-    fn a_token_body_is_parsed_with_its_reservation_held() {
-        let dir = crate::storage::testutil::TempDir::new("unverified-parse");
-        let log = crate::log::Log::buffered(crate::log::LogLevel::Debug);
-        let app = crate::api::app_test::app(&dir, &log);
-        let mut body = Body::from_bytes(br#"{"setup_token":"00"}"#.to_vec());
-        let during = std::cell::Cell::new(0);
-        let sealed = parsed(&app, &mut body, |raw| {
-            during.set(app.bodies.held());
-            render::parse_json(raw)
-        })
-        .expect("parses");
-        assert_eq!(during.get(), TOKEN_BODY_RESERVE, "reserved while it parsed");
-        assert_eq!(app.bodies.held(), TOKEN_BODY_RESERVE, "and until its check");
-        drop(sealed);
-        assert_eq!(app.bodies.held(), 0, "and given back after");
     }
 }

@@ -26,11 +26,15 @@ use super::{ApiError, App, auth, devices};
 /// that does not match, `409 already_set_up` without proof,
 /// `409 recovery_unavailable` without registration, or `403 bad_recovery_proof`.
 pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    // The body is an unverified caller's until the token has matched, so its
-    // fields are read and the token compared inside `accept`, with the body
-    // still reserved (`Unverified`).
-    let (body, (account_name, enrolment)) =
-        unverified::token_body(app, req)?.accept(|body, held| setup_fields(app, body, held))?;
+    // The body is an unverified caller's until the token has matched, so it
+    // is parsed, its fields read and the token compared inside `accept`, with
+    // the body still reserved (`Unverified`).
+    let (_, (body, (account_name, enrolment))) =
+        unverified::token_body(app, req)?.accept(|raw, held| {
+            let body = render::parse_json(raw)?;
+            let fields = setup_fields(app, &body, held)?;
+            Ok((body, fields))
+        })?;
     // The token matched in constant time, so this caller holds the
     // first-boot credential. The `409` below is answered to a caller that
     // proved it, and the `401` above to one that did not.

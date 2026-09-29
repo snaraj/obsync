@@ -482,13 +482,15 @@ pub fn claim(
     id: &str,
 ) -> Result<Response, ApiError> {
     let now = app.clock.unix_secs();
-    // The fields are read and the token checked inside `accept`, with the body
-    // still reserved, the wait for the table's lock included: nothing an
-    // unverified claimant sent is kept outside the pre-authentication budget
-    // (`Unverified`). The table lock is held on across device creation so two
-    // racing claims cannot both pass `begin_claim`.
+    // The body is parsed, its fields read and the token checked inside
+    // `accept`, with the body still reserved, the wait for the table's lock
+    // included: nothing an unverified claimant sent is kept outside the
+    // pre-authentication budget (`Unverified`). The table lock is held on
+    // across device creation so two racing claims cannot both pass
+    // `begin_claim`.
     let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|body, held| {
+        unverified::token_body(app, req)?.accept(|raw, held| {
+            let body = &render::parse_json(raw)?;
             let enroll = render::field_str(body, "enroll_token")?.to_string();
             let enrolment = devices::enrolment_fields(body)?;
             let vault = vault_details(body)?;
