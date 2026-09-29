@@ -1527,6 +1527,59 @@ Settings, obsync, **Deletions held back**.
 That is obsync refusing to throw away an edit, not a failure. See
 [Conflicts](conflicts.md).
 
+## Words typed on two devices at once went into a conflict copy
+
+**What you see.** Two people typed in one note at the same time, on different
+lines. Afterwards the last words one of them typed are missing from the note,
+and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
+them. A notice said `obsync kept both versions of <note>: every device keeps
+the same one as the note, and the other is in "<copy>".` It happens most on a
+busy computer, and when a third device has the note open.
+
+**Why it happens.** Up to 1.1.4, a device could merge the two typists' versions
+together with words saved on it but not sent yet, so two devices sent two
+different merges of the same versions. When a third device, open and idle,
+merged every change as it arrived, it could then need more history than it
+reads at once to combine those merges, and settled them by a fixed rule
+instead: one side is the note, the other goes into the copy. From 1.1.5 a
+device sends what was typed before it merges, remembers the history it has
+been shown, and both typists' words stay in the note. A device still on 1.1.4
+or earlier can still make such a copy. Nothing is lost: the words are in the
+copy.
+
+**How to fix it.**
+
+1. Open the copy, select the words missing from the note, and paste them into
+   the note where they belong.
+2. Delete the copy once the note holds everything.
+3. Update obsync on every device that syncs this vault (Settings, Community
+   plugins, Check for updates), so no device on 1.1.4 or earlier is left.
+
+## A note paused while people typed in it on a very busy computer
+
+**What you see.** The status bar reads `obsync: paused — <note>`, and a notice
+says the note was rewritten on this device right after a sync, maybe by
+another plugin. No plugin rewrites your notes. You, or someone on another
+device, were typing in that note on a computer so busy that Obsidian stalled
+for a while. The note is paused on every device.
+
+**Why it happens.** obsync treats an edit that lands within seconds of another
+device's version, with no keystroke just before it, as another plugin
+answering the sync, and pauses the note so the two devices do not rewrite it
+back and forth (see
+[Stop repeated rewrites](daily-use.md#stop-repeated-rewrites)). When Obsidian
+gets almost no processor time, your own save can reach the disk long after you
+typed it, and it looks like such an answer. This is a known defect. Nothing is
+lost while the note is paused: each device keeps its own text.
+
+**How to fix it.**
+
+1. On each device, open Show sync status and press Resume on the note. The
+   note becomes what the other devices have, and this device's text goes into
+   `<note> (conflict from <device>, <date> UTC, <id>)` beside it.
+2. Copy any words missing from the note out of those copies, then delete the
+   copies.
+
 ## A note or folder took the other device's name
 
 **What you see.** A note or folder you renamed now has the name another device

@@ -1,0 +1,12 @@
+# M3450: append fetched ancestors after their known parents (M847's mutation, its context moved at this head)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2467,7 +2467,7 @@
+     // Searched for only when a parent is here: a remembered chain is one pass.
+     const before = version.parents.some(parent => known.has(parent))
+       ? file.versions.findIndex(candidate => version.parents.includes(candidate.version_id)) : -1;
+-    file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
++    file.versions.push(version); void before;
+     known.add(version.version_id);
+   };
+   let recalled = 0;

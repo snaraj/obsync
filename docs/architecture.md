@@ -1269,8 +1269,15 @@ long poll and needs its timeout raised.
    publication queue as uploads before making their bytes visible to an
    editor; the reservation lasts through the receipt and record update. A
    completed upload that advanced the record during merge preparation causes
-   a fresh graph read before writing or publishing. When two devices merged one pair differently (each holding
-   keystrokes the other had not seen), the two heads share two newest
+   a fresh graph read before writing or publishing. A merge holds its two
+   parents and nothing typed since (issue #227): a note holding text its
+   recorded version does not is published first, on that version, and the
+   fork is merged from what is published. Two devices resolving one fork then
+   post the same bytes, and the server keeps one version; each carrying its
+   own unsent save had posted two, a criss-cross one level deeper each round
+   while both typed. When two devices merged one pair differently (a device
+   older than this rule, each holding keystrokes the other had not seen), or
+   two pairs sharing a side at once, the two heads share two newest
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to
    at most three levels, each one single-chunk text. A base found once is
@@ -1279,8 +1286,12 @@ long poll and needs its timeout raised.
    round walks only the levels not found before. The remembered bases are
    together no longer than one merge input. A base below the versions the
    server lists is read a version at a time, at most 64 a resolution and
-   never below the two branches' shared frontier; a version read or listed
-   once is remembered too (issue #227). Nothing is written under an editor
+   never below the two branches' shared frontier; every version a resolution
+   reads or is shown is remembered too (issue #227). A third device, open and
+   idle while two type, merges every arrival against a base the listing
+   holds; remembering only what a walk read, it met its first criss-cross
+   across the whole typing history with nothing remembered, read past the
+   budget and settled one typist's last words into a copy. Nothing is written under an editor
    someone is typing in, so two people typing keep a note forked for as long
    as both type and its base sinks a version a save: a resolution reads only
    what none before it did, and the remembered versions are together no

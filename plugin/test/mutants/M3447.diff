@@ -1,0 +1,12 @@
+# M3447: the deferral line carries no age, duration or budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2872,7 +2872,7 @@
+             // window in which its editor's own push was due.
+             const age = before === null ? -1 : context.now() - before.mtime;
+             return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
+-              `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
++              `age_ms=${age}`);
+           }
+         }
+         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A

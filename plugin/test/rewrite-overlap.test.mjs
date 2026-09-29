@@ -119,6 +119,7 @@ for (const settled of [true, false]) for (const delivery of ["control", "overlap
   const answer = await pushFile(r.context, NOTE);
   assert.equal((await decryptRecordManifest(r.context, r.server.journal.find(v => v.version_id === answer.versionId))).answer, true);
   r.host.clock += 100;
+  const stamped = r.host.clock;
   if (!settled) {
     r.context.arrivals.set(NOTE, r.host.clock - 1000);
     background = BASE.replace("stamp: base", "stamp: background again");
@@ -128,6 +129,15 @@ for (const settled of [true, false]) for (const delivery of ["control", "overlap
     r.host.clock += 100;
   }
   const clean = await peer(r, BASE.replace("end", "remote end"), [r.base.versionId], false);
+  if (!settled) {
+    // A merge takes no text the note has not sent (#227): the stamp goes out
+    // first, as the watcher sends it once judged, and carries its verdict.
+    assert.equal(await applyChange(r.context, clean), "skipped");
+    assert.ok(r.host.logs.some(line => line.includes("decision=deferred reason=unpublished_edit")));
+    r.context.answering.set(r.base.fileId, { mtime: stamped, arrived: stamped - 1000 });
+    const sent = await pushFile(r.context, NOTE);
+    assert.equal((await decryptRecordManifest(r.context, r.server.journal.find(v => v.version_id === sent.versionId))).answer, true);
+  }
   assert.equal(await applyChange(r.context, clean), "merged");
   assert.equal(r.host.text(NOTE), background.replace("end", "remote end"));
   assert.deepEqual(r.state.data.paused, {}, "a clean merge alone must not pause syncing");

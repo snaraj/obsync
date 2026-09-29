@@ -208,6 +208,10 @@ test("a merge of an edit made here is still announced", async () => {
   r.host.seed("Notes/Shared.md", "ONE\ntwo\nthree\nfour\n", 1757200005000);
   const right = await publish("one\ntwo\nTHREE\n", [base.version_id], 1757200003000);
 
+  // The edit goes out first, and the fork it makes is merged (#227).
+  assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "skipped");
+  assert.deepEqual(r.host.notices, []);
+  await pushFile(r.context, "Notes/Shared.md");
   assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
   // By its title and the other device's name, never a path or an id (owner, 2026-09-29).
   assert.deepEqual(r.host.notices, ["obsync: combined your edits to \"Shared\" with iPhone's."]);

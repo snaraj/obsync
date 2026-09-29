@@ -1,0 +1,12 @@
+# M3448: a head this device cannot open refuses the incoming version instead of merging it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2866,7 +2866,7 @@
+         // itself makes no merge at all.
+         if (!ahead && !sameBytes(text, theirs)) {
+           // A head this device cannot open proves nothing about the note.
+-          const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
++          const own = await manifestOf(context, file, change, localVersionId);
+           if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
+             // How long the note has held text no version has, against the
+             // window in which its editor's own push was due.

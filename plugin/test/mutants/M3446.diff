@@ -1,0 +1,12 @@
+# M3446: a criss-cross deferral is logged as an ordinary unsent edit
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2871,7 +2871,7 @@
+             // How long the note has held text no version has, against the
+             // window in which its editor's own push was due.
+             const age = before === null ? -1 : context.now() - before.mtime;
+-            return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
++            return await deferToPush(context, change, localPath, `unpublished_edit ` +
+               `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+           }
+         }

@@ -22,7 +22,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { KEYS, STEP_MS, pair, rig } from "./fake.mjs";
+import { DEVICE_B, FakeHost, KEYS, SECRET_B, STEP_MS, fakeState, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { EditorBusy, applyChange } = require("../build/sync/pull.js");
@@ -576,6 +576,10 @@ for (const late of [false, true]) {
     r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
     await pushFile(r.context, NOTE);
     r.host.seed(NOTE, "ONE TYPED\ntwo\nthree\n", 2500);
+    // Typing is published before any merge of it (#227), so an upload that
+    // starts once the merge is writing re-sends bytes already published: a
+    // rename's, or one onto a restored server's head.
+    if (late) await pushFile(r.context, NOTE);
     const other = await foreign(r, base.fileId, "one\ntwo\nTHREE\n", [base.versionId], 3000);
     let release, acknowledged, decided;
     const gate = new Promise((resolve) => { release = resolve; });
@@ -599,7 +603,7 @@ for (const late of [false, true]) {
       const writer = r.host.writer.bind(r.host);
       r.host.writer = async (path) => {
         r.host.writer = writer;
-        sending = pushFile(r.context, NOTE);
+        sending = pushFile(r.context, NOTE, true);
         await ackReady;
         return writer(path);
       };
@@ -786,13 +790,20 @@ test("identical merged heads retain typing saved after their shared content", as
   const typed = "ONE NEXT TYPED\ntwo\nthree\nfour\nFIVE NEXT\n";
   r.host.seed(NOTE, typed, 8000);
 
+  // The typing goes out first, on the head it was typed on (#227), and nothing
+  // of it is written over or copied meanwhile.
+  assert.equal(await applyChange(r.context, theirs), "skipped", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("decision=deferred reason=unpublished_edit")), pulls(r.host));
+  assert.equal(r.host.text(NOTE), typed, "an identical peer head displaced text typed on its shared content");
+  assert.deepEqual(copies(r.host), [], "the old graph base invented an overlap between identical heads");
+  const pushed = await pushFile(r.context, NOTE);
   await applyChange(r.context, theirs);
   assert.equal(r.host.text(NOTE), typed, "an identical peer head displaced text typed on its shared content");
   assert.deepEqual(copies(r.host), [], "the old graph base invented an overlap between identical heads");
   const file = r.server.files.get(root.fileId);
   assert.equal(file.heads.length, 1, "the equivalent heads and typed edit settle together");
   assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
-  assert.deepEqual(file.versions[0].parents, [ours.version_id, theirs.version_id].sort());
+  assert.deepEqual(file.versions[0].parents, [pushed.versionId, theirs.version_id].sort());
 });
 
 test("two merges of one pair merge again, on the pair merged as their base", async () => {
@@ -865,6 +876,196 @@ test("typing beyond a criss-cross head is published before another merge of that
   const file = r.server.files.get(r.state.fileByPath(NOTE).fileId);
   assert.equal(file.heads.length, 1);
   assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+});
+
+/** The other typist: a second device on `r`'s server, driven by hand as `r` is. */
+async function peer(r) {
+  const { Transport } = require("../build/transport.js");
+  const host = new FakeHost({ deviceName: "laptop" });
+  const { state } = await fakeState();
+  state.data.deviceId = DEVICE_B;
+  state.data.deviceSecret = SECRET_B;
+  r.server.addDevice(DEVICE_B, SECRET_B, "laptop", "macos");
+  const transport = new Transport({
+    request: r.server.request,
+    serverUrl: () => state.data.serverUrl,
+    device: () => ({ id: DEVICE_B, secret: Uint8Array.from(Buffer.from(SECRET_B, "hex")) }),
+    edgeHeaders: () => [],
+    now: () => host.clock,
+    sleep: async () => undefined,
+    maxAttempts: 2,
+    log: (line) => host.logs.push(line),
+  });
+  const context = {
+    ...r.context, state, transport, host, deviceId: DEVICE_B,
+    authored: new Set(), written: new Set(), trashed: new Set(), moved: new Set(), createdFolders: new Set(),
+    refused: new Set(), merges: new Map(), pushedAt: new Map(), answering: new Map(), arrivals: new Map(),
+    forked: new Set(), deviceNames: new Map(), now: () => host.clock,
+  };
+  return { host, state, transport, context };
+}
+
+/**
+ * THE INTERLEAVING OF ISSUE #227. Two typists on two lines each resolve the
+ * same fork at once, and each holds a save its push has not sent yet: the
+ * watcher sends a save 150 ms after the editor writes it, and a feed record
+ * or the push's own reconciliation lands inside that window. A merge made
+ * then carried the unsent text, so the two devices posted two different
+ * merges of one pair -- a criss-cross, one level deeper each round while both
+ * typed, until three levels found at once refused it and one typist's line
+ * was settled into a copy (CI, 1.1.4 train: `A0A015`, `A01012`). A merge holds
+ * its two parents and nothing else; the typing goes out first, and the fork it
+ * makes merges to one version on both devices.
+ */
+test("two devices merging one fork while each holds an unsent save post one merge of it (#227)", async () => {
+  const x = await rig();
+  const y = await peer(x);
+  const lines = (one, last) => `# Both${one}\nthe line nobody edits\nthe last fixed line\n${last}`;
+  const frame = (id) => x.server.journal.find((entry) => entry.version_id === id);
+  x.host.seed(NOTE, lines("", ""), 1000);
+  const base = await pushFile(x.context, NOTE);
+  assert.equal(await applyChange(y.context, frame(base.versionId)), "applied", pulls(y.host));
+
+  // Each device resolves the fork at once: neither posts until both have
+  // read it and either reached their post or finished.
+  const together = async (fromX, fromY) => {
+    let open, reached = 0;
+    const gate = new Promise((resolve) => { open = resolve; });
+    const arrive = () => { if (++reached === 2) open(); };
+    const posts = [x, y].map((device) => device.transport.postVersion);
+    for (const device of [x, y]) {
+      const post = device.transport.postVersion.bind(device.transport);
+      device.transport.postVersion = async (...args) => { arrive(); await gate; return post(...args); };
+    }
+    try {
+      return await Promise.all([
+        applyChange(x.context, frame(fromY)).finally(arrive),
+        applyChange(y.context, frame(fromX)).finally(arrive),
+      ]);
+    } finally { [x.transport.postVersion, y.transport.postVersion] = posts; }
+  };
+  // Each types and sends a save, then types again and saves; the second save
+  // is not sent yet when the other's first arrives.
+  x.host.seed(NOTE, lines("", "A001"), 2000);
+  const sentX = await pushFile(x.context, NOTE);
+  y.host.seed(NOTE, lines(" B001", ""), 2000);
+  const sentY = await pushFile(y.context, NOTE);
+  x.host.seed(NOTE, lines("", "A001 A002"), 3000);
+  y.host.seed(NOTE, lines(" B001 B002", ""), 3000);
+  await together(sentX.versionId, sentY.versionId);
+
+  const file = x.server.files.get(base.fileId);
+  const pair = [sentX.versionId, sentY.versionId].sort().join();
+  const merges = file.versions.filter((version) => [...version.parents].sort().join() === pair);
+  assert.ok(merges.length <= 1, `two merges of one pair, a criss-cross:\n  ${pulls(x.host)}\n  ${pulls(y.host)}`);
+  for (const device of [x, y]) {
+    assert.ok(device.host.logs.some((line) => /decision=deferred reason=unpublished_edit .*age_ms=-?\d+ duration_ms=\d+ budget_ms=10000/.test(line)),
+      pulls(device.host));
+  }
+  assert.equal(x.host.text(NOTE), lines("", "A001 A002"), "the unsent save here was written over");
+  assert.equal(y.host.text(NOTE), lines(" B001 B002", ""), "the unsent save there was written over");
+
+  // The typing goes out, and the fork it makes merges to one version on both.
+  const nextX = await pushFile(x.context, NOTE);
+  const nextY = await pushFile(y.context, NOTE);
+  assert.deepEqual(await together(nextX.versionId, nextY.versionId), ["merged", "merged"], `${pulls(x.host)}\n  ${pulls(y.host)}`);
+  const done = x.server.files.get(base.fileId);
+  assert.equal(done.heads.length, 1, "the two merges of the typed pair were not one version");
+  for (const device of [x, y]) {
+    assert.equal(device.host.text(NOTE), lines(" B001 B002", "A001 A002"));
+    assert.equal(device.state.fileByPath(NOTE).versionId, done.heads[0]);
+    assert.deepEqual(copies(device.host), []);
+  }
+});
+
+/**
+ * What goes out first is only text no version holds (#227). An incoming
+ * version that already holds the unsent save, and more, is taken as it is and
+ * nothing is posted; a head without a plaintext digest (an older plugin's)
+ * cannot be compared with the note, and is merged as before.
+ */
+test("an incoming version that holds the unsent save is taken, and a head without a digest is merged (#227)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const first = await pushFile(r.context, NOTE);
+  await pushFile(r.context, NOTE, true);
+  r.host.seed(NOTE, "one\ntwo\nTHREE\n", 2000);
+  const theirs = await foreign(r, first.fileId, "ONE\ntwo\nTHREE\n", [first.versionId], 3000);
+  const posted = r.server.journal.length;
+  assert.equal(await applyChange(r.context, theirs), "applied", pulls(r.host));
+  assert.equal(r.server.journal.length, posted, "a version was posted for text the incoming version holds");
+  assert.equal(r.host.text(NOTE), "ONE\ntwo\nTHREE\n");
+  assert.equal(r.state.fileByPath(NOTE).versionId, theirs.version_id);
+
+  const { encryptChunk, hex } = require("../build/crypto.js");
+  const old = await rig();
+  old.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const root = await pushFile(old.context, NOTE);
+  const bytes = enc("ONE\ntwo\nthree\n");
+  const { cid, sid, ciphertext } = await encryptChunk(old.keys.domainKey, bytes);
+  old.server.chunks.set(sid, ciphertext);
+  const legacy = await old.server.publishManifest({
+    fileId: root.fileId, sids: [sid], parents: [root.versionId], deviceId: KEYS.deviceId, manifestKey: old.keys.manifestKey, bytes: bytes.length,
+    manifest: { v: 1, path: NOTE, size: bytes.length, mtime: 2000, domain: KEYS.domainId, chunks: [{ sid, cid: hex(cid), len: bytes.length }], sha256: "", deleted: false },
+  });
+  old.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  old.state.setFile(NOTE, { fileId: root.fileId, versionId: legacy.version_id, mtime: 2000, size: bytes.length, sha256: await sidDigest([sid]) });
+  const other = await foreign(old, root.fileId, "one\ntwo\nTHREE\n", [root.versionId], 3000);
+  assert.equal(await applyChange(old.context, other), "merged", pulls(old.host));
+  assert.equal(old.host.text(NOTE), "ONE\ntwo\nTHREE\n");
+});
+
+/**
+ * A THIRD DEVICE, OPEN AND IDLE WHILE TWO TYPE (issue #227, live 2026-09-29).
+ * Nothing stops its writes, so it merges every arrival, each against a base
+ * the server's listing holds: it never walked the ancestry, and remembered
+ * none of it. When the typists stopped, one merged the third device's merge
+ * with its own newer typing while the third merged that typist's older
+ * version: two heads sharing two ancestors, whose base lies across the whole
+ * history of the other typist's line. Read version by version it passed the
+ * budget, the base was refused, and the pair was settled by rule: the words
+ * that typist wrote last went into a copy. What a resolution is shown is
+ * remembered, as what it reads is, so that base costs no read.
+ */
+test("a device that merged every arrival remembers what it was shown, and merges the criss-cross over the whole history (#227)", async () => {
+  const r = await rig();
+  const seen = listing(r.transport);
+  const lines = (one, last) => `# Both${one}\nthe line nobody edits\nthe last fixed line\n${last}`;
+  r.host.seed(NOTE, lines("", ""), 1000);
+  const base = await pushFile(r.context, NOTE);
+  let stamp = 1000;
+  const publish = (text, parents, deviceId) => r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(text), mtime: stamp += 1000,
+    parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, deviceId });
+  const [LAPTOP, DESKTOP] = ["1a".repeat(16), "2b".repeat(16)];
+  let a = "", b = "", laptop = base.versionId, desktop = base.versionId;
+  for (let k = 1; k <= 36; k++) {
+    a += `${k === 1 ? "" : " "}A${k}`;
+    b += ` B${k}`;
+    laptop = (await publish(lines("", a), [laptop], LAPTOP)).version_id;
+    assert.equal(await applyChange(r.context, r.server.journal.at(-1)), k === 1 ? "applied" : "merged", pulls(r.host));
+    desktop = (await publish(lines(b, ""), [desktop], DESKTOP)).version_id;
+    assert.equal(await applyChange(r.context, r.server.journal.at(-1)), "merged", pulls(r.host));
+  }
+  const walked = seen.reads.length;
+  // The desktop types on, and this device merges that older version ...
+  const older = await publish(lines(`${b} B37`, ""), [desktop], DESKTOP);
+  const shown = r.state.fileByPath(NOTE).versionId;
+  assert.equal(await applyChange(r.context, older), "merged", pulls(r.host));
+  // ... while the laptop types on, which this device has not taken yet, and
+  // the desktop merges this device's previous merge with its newer typing.
+  for (let k = 37, more = a; k <= 46; k++) {
+    more += ` A${k}`;
+    laptop = (await publish(lines("", more), [laptop], LAPTOP)).version_id;
+  }
+  const newer = await publish(lines(`${b} B37 B38`, ""), [older.version_id], DESKTOP);
+  const theirs = await publish(lines(`${b} B37 B38`, a), [shown, newer.version_id], DESKTOP);
+  // Their merge already holds this device's: it is taken as it is.
+  assert.equal(await applyChange(r.context, theirs), "applied", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(`${b} B37 B38`, a));
+  assert.deepEqual(copies(r.host), [], pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=1 ok=true")), pulls(r.host));
+  assert.ok(!r.host.logs.some((line) => line.includes("reason=merge_ancestry_limit")), pulls(r.host));
+  assert.ok(seen.reads.length - walked <= 2, `the criss-cross read ${seen.reads.length - walked} versions it had been shown`);
 });
 
 /**
@@ -1048,12 +1249,17 @@ async function typists(r, older = []) {
  */
 test("a fork two typists grow round after round is read once and merges when they stop (#227)", async () => {
   const r = await rig();
-  const { seen, editor, lines, base, typed, round, history } = await typists(r, ["draft", "outline"]);
+  // Twelve older versions: the first resolution is shown the ten newest, so
+  // the oldest of the history were never shown, and only the base, found
+  // again among what was, stops the walk above them.
+  const older = Array.from({ length: 12 }, (_, k) => `draft ${k}`);
+  const { seen, editor, lines, base, typed, round, history } = await typists(r, older);
   const rounds = [];
   for (let count = 0; count < 48; count++) rounds.push(await round());
 
   assert.deepEqual(rounds.map((entry) => entry.split(":")[0]), Array(48).fill("active_editor"), pulls(r.host));
-  assert.equal(rounds.filter((entry) => !entry.endsWith(":0")).length, 1, rounds.join(" "));
+  // Every version a resolution was shown is remembered as well: no round reads.
+  assert.equal(rounds.filter((entry) => !entry.endsWith(":0")).length, 0, rounds.join(" "));
   assert.equal(new Set(seen.reads).size, seen.reads.length, "a version was read twice");
   assert.ok(!seen.reads.some((id) => history.includes(id)), "history below the fork was read");
   assert.ok(r.host.logs.some((line) => /reason=merge_ancestry .*reads=0 recalled=[1-9]/.test(line)), pulls(r.host));
@@ -1093,6 +1299,8 @@ test("remembered versions hold one merge input's worth, the oldest forgotten fir
   const held = r.host.logs.filter((line) => line.includes("reason=merge_ancestry")).at(-1).match(/held_chars=(\d+)/)[1];
   assert.ok(Number(held) <= CHUNK_MAX, `remembered ${held} characters`);
   assert.match(await round(), /^active_editor:[1-9]/, pulls(r.host));
+  // What that round read is remembered in its turn: the next reads nothing.
+  assert.equal(await round(), "active_editor:0", pulls(r.host));
 });
 
 /**

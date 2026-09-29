@@ -1,0 +1,11 @@
+# M3445: a resolution remembers only what a walk read, not what it was shown
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2579,7 +2579,6 @@
+   // type -- found each base in the listing, walked nothing and remembered
+   // nothing, and its first criss-cross across the whole typing history read
+   // past the budget, lost its base, and settled one typist's text into a copy.
+-  for (const version of file.versions) hold(context, file.file_id, version);
+   // Obsolete feed entries are not new forks. Counting and merging each one
+   // while catching up can trip the loop breaker on an ordinary typing burst.
+   // The file endpoint caps older versions, but includes EVERY current head.

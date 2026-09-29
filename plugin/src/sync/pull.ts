@@ -2510,7 +2510,6 @@ async function completeMergeAncestry(
     file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
     known.add(version.version_id);
   };
-  for (const version of file.versions) hold(context, file.file_id, version);
   let recalled = 0;
   while (true) {
     const parents = parentsFrom(file.versions);
@@ -2615,6 +2614,12 @@ async function reconcile(
   localPath: string,
   localVersionId: string,
 ): Promise<ApplyResult> {
+  // WHAT A RESOLUTION IS SHOWN IS REMEMBERED, as what it reads is (#227). A
+  // device that merged every arrival -- a third one, open and idle while two
+  // type -- found each base in the listing, walked nothing and remembered
+  // nothing, and its first criss-cross across the whole typing history read
+  // past the budget, lost its base, and settled one typist's text into a copy.
+  for (const version of file.versions) hold(context, file.file_id, version);
   // Obsolete feed entries are not new forks. Counting and merging each one
   // while catching up can trip the loop breaker on an ordinary typing burst.
   // The file endpoint caps older versions, but includes EVERY current head.
@@ -2747,6 +2752,7 @@ async function resolve(
   tally: { left: string },
   tripped: boolean,
 ): Promise<ApplyResult> {
+  const started = context.now();
   // A merge must know the receipt of an upload already carrying these bytes.
   // Otherwise it includes that edit but omits its version from the parents,
   // and the later receipt looks like a competing edit of the same line.
@@ -2886,18 +2892,29 @@ async function resolve(
       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
       if (merged.ok) {
-        if (crossed) {
-          const own = await manifestOf(context, file, change, localVersionId);
-          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
-            // Two devices adding unpublished typing to another merge of a
-            // criss-cross create different merges of the same pair again.
-            // Publish this edit on its recorded parent before merging, so
-            // continued typing cannot grow that ambiguity one level per save.
-            context.host.log(`pull decision=deferred reason=unpublished_criss_cross file=${change.file_id} seq=${change.seq}`);
-            return await deferToPush(context, change, localPath);
+        const text = new TextEncoder().encode(merged.text);
+        // A MERGE HOLDS ITS TWO PARENTS AND NOTHING TYPED SINCE (issue #227).
+        // Both devices resolve one fork at once, and the server keeps one
+        // version for one pair of parents and one text. Text saved here and
+        // not yet pushed made this device's merge of the pair differ from the
+        // other's: two merges of one pair, a criss-cross, one level deeper
+        // each round while both type, until the bound refused it and one
+        // typist's line was settled into a copy. So a note holding text its
+        // recorded version does not is published first, on that version, and
+        // the fork is merged from what is published, as a fast-forward over an
+        // unpushed edit is (below). A result that is the incoming version
+        // itself makes no merge at all.
+        if (!ahead && !sameBytes(text, theirs)) {
+          // A head this device cannot open proves nothing about the note.
+          const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
+          if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
+            // How long the note has held text no version has, against the
+            // window in which its editor's own push was due.
+            const age = before === null ? -1 : context.now() - before.mtime;
+            return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
+              `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
           }
         }
-        const text = new TextEncoder().encode(merged.text);
         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
         // first download, or a replay from zero, meets forks that other devices
         // edited and merged before this one joined, and the person here edited

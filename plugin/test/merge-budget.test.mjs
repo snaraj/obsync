@@ -91,7 +91,8 @@ for (const reset of [false, true]) test(`a late editor refusal preserves a concu
   const refused = assert.rejects(applyChange(r.context, r.incoming), error => error.reason === "active_editor");
   await entered;
   try {
-    if (reset) r.host.seed(NOTE, "Desktop: STARTAB\nPhone: START", 4000);
+    // The new edit goes out before a merge takes it (#227).
+    if (reset) { r.host.seed(NOTE, "Desktop: STARTAB\nPhone: START", 4000); await pushFile(r.context, NOTE); }
     assert.equal(await applyChange(r.context, r.incoming), "merged");
   } finally { release(); }
   await refused;
